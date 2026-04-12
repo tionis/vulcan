@@ -28,7 +28,7 @@ pub use cli::{
     SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand,
     TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
     TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand,
-    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchExtractionMode, WebFetchMode,
+    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -128,7 +128,6 @@ use vulcan_core::{
     TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
     VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
     VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
-    WebFetchExtractionMode as CoreWebFetchExtractionMode,
 };
 use zip::write::FileOptions;
 
@@ -789,7 +788,6 @@ struct WebFetchReport {
     status: u16,
     content_type: String,
     mode: String,
-    extraction_mode: String,
     content: String,
     saved: Option<String>,
 }
@@ -2814,7 +2812,6 @@ fn run_web_fetch_command(
     paths: &VaultPaths,
     url: &str,
     mode: WebFetchMode,
-    extraction_mode: WebFetchExtractionMode,
     save: Option<&PathBuf>,
     permissions: Option<&ProfilePermissionGuard>,
 ) -> Result<WebFetchReport, CliError> {
@@ -2840,7 +2837,7 @@ fn run_web_fetch_command(
         .unwrap_or("application/octet-stream")
         .to_string();
     let bytes = response.bytes().map_err(CliError::operation)?;
-    let content = render_fetched_content(&bytes, &content_type, url, mode, extraction_mode);
+    let content = render_fetched_content(&bytes, &content_type, url, mode)?;
     let saved = save.map(|path| path.to_string_lossy().to_string());
 
     if let Some(path) = save {
@@ -2860,7 +2857,6 @@ fn run_web_fetch_command(
         status,
         content_type,
         mode: format!("{mode:?}").to_ascii_lowercase(),
-        extraction_mode: format!("{extraction_mode:?}").to_ascii_lowercase(),
         content,
         saved,
     })
@@ -2912,30 +2908,17 @@ fn render_fetched_content(
     content_type: &str,
     url: &str,
     mode: WebFetchMode,
-    extraction_mode: WebFetchExtractionMode,
-) -> String {
+) -> Result<String, CliError> {
     let rendered = String::from_utf8_lossy(bytes).to_string();
     match mode {
-        WebFetchMode::Raw | WebFetchMode::Html => rendered,
+        WebFetchMode::Raw | WebFetchMode::Html => Ok(rendered),
         WebFetchMode::Markdown => {
             if content_type.contains("html") {
-                convert_web_html_to_markdown(
-                    &rendered,
-                    Some(url),
-                    extraction_mode_to_core(extraction_mode),
-                )
+                convert_web_html_to_markdown(&rendered, Some(url)).map_err(CliError::operation)
             } else {
-                rendered
+                Ok(rendered)
             }
         }
-    }
-}
-
-fn extraction_mode_to_core(mode: WebFetchExtractionMode) -> CoreWebFetchExtractionMode {
-    match mode {
-        WebFetchExtractionMode::Auto => CoreWebFetchExtractionMode::Auto,
-        WebFetchExtractionMode::Article => CoreWebFetchExtractionMode::Article,
-        WebFetchExtractionMode::Generic => CoreWebFetchExtractionMode::Generic,
     }
 }
 
@@ -30526,8 +30509,6 @@ mod tests {
             "https://example.com",
             "--mode",
             "raw",
-            "--extraction-mode",
-            "generic",
             "--save",
             "page.bin",
         ])
@@ -30539,7 +30520,6 @@ mod tests {
                 command: WebCommand::Fetch {
                     url: "https://example.com".to_string(),
                     mode: WebFetchMode::Raw,
-                    extraction_mode: WebFetchExtractionMode::Generic,
                     save: Some(PathBuf::from("page.bin")),
                 },
             }

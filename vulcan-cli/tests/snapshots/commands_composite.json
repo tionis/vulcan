@@ -5870,7 +5870,7 @@
       },
       {
         "about": "Fetch and search external web content",
-        "after_help": "Subcommands:\n  search      query the configured web search backend\n  fetch       fetch one URL as markdown, html, or raw content\n\nNotes:\n  `web search` reads backend settings from `[web.search]` in `.vulcan/config.toml`.\n  `duckduckgo` is the default backend and works without an API key.\n  `auto` prefers Kagi, Exa, Tavily, then Brave when their API key env vars are set, and falls back to DuckDuckGo.\n  `web fetch --extraction-mode auto` uses Readability article extraction when the page looks readerable.\n  `web fetch --extraction-mode article` forces article extraction; `generic` skips it.\n  `web fetch` uses a Vulcan user-agent and performs a best-effort robots.txt check before fetching.\n\nExamples:\n  vulcan web search \"release notes\" --limit 5\n  vulcan web search \"release notes\" --backend duckduckgo\n  vulcan web fetch https://example.com --mode markdown\n  vulcan web fetch https://example.com --mode raw --save page.bin",
+        "after_help": "Subcommands:\n  search      query the configured web search backend\n  fetch       fetch one URL as markdown, html, or raw content\n\nNotes:\n  `web search` reads backend settings from `[web.search]` in `.vulcan/config.toml`.\n  `duckduckgo` is the default backend and works without an API key.\n  `auto` prefers Kagi, Exa, Tavily, then Brave when their API key env vars are set, and falls back to DuckDuckGo.\n  `web fetch --mode markdown` uses `rs-trafilatura` main-content extraction.\n  If no readable main content can be extracted, retry with `--mode html` or `--mode raw`.\n  `web fetch` uses a Vulcan user-agent and performs a best-effort robots.txt check before fetching.\n\nExamples:\n  vulcan web search \"release notes\" --limit 5\n  vulcan web search \"release notes\" --backend duckduckgo\n  vulcan web fetch https://example.com --mode markdown\n  vulcan web fetch https://example.com --mode raw --save page.bin",
         "name": "web",
         "options": [],
         "subcommands": [
@@ -5949,21 +5949,6 @@
                 "short": null,
                 "value_names": [
                   "MODE"
-                ]
-              },
-              {
-                "help": "Choose HTML extraction behavior for markdown mode",
-                "id": "extraction_mode",
-                "long": "extraction-mode",
-                "possible_values": [
-                  "auto",
-                  "article",
-                  "generic"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "EXTRACTION_MODE"
                 ]
               },
               {

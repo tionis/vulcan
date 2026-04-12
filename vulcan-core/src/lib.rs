@@ -220,7 +220,7 @@ pub use vector::{
     VectorRepairQuery, VectorRepairReport,
 };
 pub use watch::{watch_vault, watch_vault_until, WatchError, WatchOptions, WatchReport};
-pub use web::{html_to_markdown as convert_web_html_to_markdown, WebFetchExtractionMode};
+pub use web::html_to_markdown as convert_web_html_to_markdown;
 
 const FIXED_NOW_ENV: &str = "VULCAN_FIXED_NOW";
 

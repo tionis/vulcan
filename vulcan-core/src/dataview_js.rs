@@ -232,7 +232,7 @@ mod runtime {
     };
     use crate::resolve_note_reference;
     use crate::search::{search_vault_with_filter, SearchQuery};
-    use crate::web::{html_to_markdown as convert_web_html_to_markdown, WebFetchExtractionMode};
+    use crate::web::html_to_markdown as convert_web_html_to_markdown;
     use crate::VaultPaths;
     use crate::{
         move_note, parse_document, query_backlinks_with_filter, query_links_with_filter,
@@ -288,7 +288,6 @@ mod runtime {
         status: u16,
         content_type: String,
         mode: String,
-        extraction_mode: String,
         content: String,
     }
 
@@ -2179,17 +2178,7 @@ const web = {
     );
   },
   fetch(url, opts = {}) {
-    const extractionMode =
-      typeof opts?.extractionMode === "string"
-        ? opts.extractionMode
-        : (opts?.extractArticle ? "article" : "auto");
-    return JSON.parse(
-      __vulcan_web_fetch_json(
-        String(url),
-        opts?.mode ?? "markdown",
-        extractionMode
-      )
-    );
+    return JSON.parse(__vulcan_web_fetch_json(String(url), opts?.mode ?? "markdown"));
   },
 };
 
@@ -2469,16 +2458,16 @@ See also: web.fetch(), vault.search()`
 );
 __vulcanRegisterHelp(
   web.fetch,
-  `web.fetch(url: string, opts?: { mode?: "markdown" | "html" | "raw", extractionMode?: "auto" | "article" | "generic" }): WebFetchReport
+  `web.fetch(url: string, opts?: { mode?: "markdown" | "html" | "raw" }): WebFetchReport
 
 Fetch one URL through Vulcan's web client. Requires --sandbox net or higher.
 
 Parameters:
   url  - Absolute URL to fetch.
-  opts - Optional fetch mode and HTML extraction behavior.
+  opts - Optional fetch mode.
 
 Example:
-  web.fetch("https://example.com", { mode: "markdown", extractionMode: "article" })
+  web.fetch("https://example.com", { mode: "markdown" })
 
 See also: web.search(), vault.transaction()`
 );
@@ -3379,17 +3368,13 @@ globalThis.Function = undefined;
         globals
             .set(
                 "__vulcan_web_fetch_json",
-                Func::from(
-                    move |ctx: Ctx<'_>, url: String, mode: String, extraction_mode: String| {
-                        to_json_string(
-                            &ctx,
-                            run_js_web_fetch(&web_fetch_state, &url, &mode, &extraction_mode)
-                                .map_err(|error| {
-                                    Exception::throw_message(&ctx, &error.to_string())
-                                })?,
-                        )
-                    },
-                ),
+                Func::from(move |ctx: Ctx<'_>, url: String, mode: String| {
+                    to_json_string(
+                        &ctx,
+                        run_js_web_fetch(&web_fetch_state, &url, &mode)
+                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
+                    )
+                }),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
@@ -4586,7 +4571,6 @@ globalThis.Function = undefined;
         state: &JsEvalState,
         url: &str,
         mode: &str,
-        extraction_mode: &str,
     ) -> Result<WebFetchReport, DataviewJsError> {
         ensure_network_access(state, "web.fetch()")?;
         if let Some(permissions) = state.permissions.as_ref() {
@@ -4614,15 +4598,12 @@ globalThis.Function = undefined;
         let bytes = response
             .bytes()
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-        let extraction_mode =
-            parse_web_fetch_extraction_mode(extraction_mode).map_err(DataviewJsError::Message)?;
         Ok(WebFetchReport {
             url: url.to_string(),
             status,
             content_type: content_type.clone(),
             mode: mode.to_string(),
-            extraction_mode: extraction_mode.as_str().to_string(),
-            content: render_fetched_content(&bytes, &content_type, url, mode, extraction_mode),
+            content: render_fetched_content(&bytes, &content_type, url, mode)?,
         })
     }
 
@@ -4729,31 +4710,18 @@ globalThis.Function = undefined;
         content_type: &str,
         url: &str,
         mode: &str,
-        extraction_mode: WebFetchExtractionMode,
-    ) -> String {
+    ) -> Result<String, DataviewJsError> {
         let rendered = String::from_utf8_lossy(bytes).to_string();
         match mode {
-            "raw" | "html" => rendered,
+            "raw" | "html" => Ok(rendered),
             _ => {
                 if content_type.contains("html") {
-                    convert_web_html_to_markdown(&rendered, Some(url), extraction_mode)
+                    convert_web_html_to_markdown(&rendered, Some(url))
+                        .map_err(DataviewJsError::Message)
                 } else {
-                    rendered
+                    Ok(rendered)
                 }
             }
-        }
-    }
-
-    fn parse_web_fetch_extraction_mode(
-        extraction_mode: &str,
-    ) -> Result<WebFetchExtractionMode, String> {
-        match extraction_mode {
-            "auto" => Ok(WebFetchExtractionMode::Auto),
-            "article" => Ok(WebFetchExtractionMode::Article),
-            "generic" => Ok(WebFetchExtractionMode::Generic),
-            other => Err(format!(
-                "invalid extraction mode `{other}`; expected auto, article, or generic"
-            )),
         }
     }
 
@@ -6037,7 +6005,7 @@ cpu_limit_ms = 25
                 &format!(
                     r#"
                     const search = web.search("Alpha", {{ limit: 1 }});
-                    const fetched = web.fetch("{base_url}/article", {{ mode: "markdown", extractionMode: "article" }});
+                    const fetched = web.fetch("{base_url}/article", {{ mode: "markdown" }});
                     dv.table(["title", "status", "content"], [[search.results[0].title, fetched.status, fetched.content.includes("Alpha page")]]);
                     "#
                 ),
