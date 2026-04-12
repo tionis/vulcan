@@ -20,6 +20,27 @@ pub struct NoteOutline {
     pub block_refs: Vec<NoteOutlineBlockRef>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct NoteOutlineOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none", alias = "section")]
+    pub section_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteOutlineSelection {
+    pub total_lines: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frontmatter_span: Option<NoteLineSpan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_section: Option<NoteOutlineSection>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sections: Vec<NoteOutlineSection>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub block_refs: Vec<NoteOutlineBlockRef>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NoteOutlineSection {
     pub id: String,
@@ -224,6 +245,59 @@ pub fn outline_note(source: &str, parsed: &ParsedDocument) -> NoteOutline {
     }
 }
 
+pub fn select_note_outline(
+    outline: &NoteOutline,
+    options: &NoteOutlineOptions,
+) -> Result<NoteOutlineSelection, NoteSelectionError> {
+    let scope_section = options
+        .section_id
+        .as_deref()
+        .map(|section_id| section_for_id(outline, section_id).cloned())
+        .transpose()?;
+    let scope_depth = scope_section
+        .as_ref()
+        .map_or(0, note_outline_section_tree_depth);
+
+    let sections = outline
+        .sections
+        .iter()
+        .filter(|section| note_outline_section_matches_scope(section, scope_section.as_ref()))
+        .filter(|section| {
+            note_outline_section_matches_depth(
+                section,
+                scope_depth,
+                scope_section.is_some(),
+                options.depth,
+            )
+        })
+        .cloned()
+        .collect();
+
+    let block_refs = outline
+        .block_refs
+        .iter()
+        .filter(|block_ref| note_outline_block_ref_matches_scope(block_ref, scope_section.as_ref()))
+        .filter(|block_ref| {
+            note_outline_block_ref_matches_depth(
+                block_ref,
+                outline,
+                scope_depth,
+                scope_section.is_some(),
+                options.depth,
+            )
+        })
+        .cloned()
+        .collect();
+
+    Ok(NoteOutlineSelection {
+        total_lines: outline.total_lines,
+        frontmatter_span: outline.frontmatter_span.clone(),
+        scope_section,
+        sections,
+        block_refs,
+    })
+}
+
 pub fn read_note(
     source: &str,
     parsed: &ParsedDocument,
@@ -394,6 +468,67 @@ fn section_for_id<'a>(
         .iter()
         .find(|section| section.id == section_id)
         .ok_or_else(|| NoteSelectionError::new(format!("no section id '{section_id}' found")))
+}
+
+fn note_outline_section_tree_depth(section: &NoteOutlineSection) -> usize {
+    section.heading_path.len()
+}
+
+fn note_outline_section_matches_scope(
+    section: &NoteOutlineSection,
+    scope_section: Option<&NoteOutlineSection>,
+) -> bool {
+    scope_section.map_or(true, |scope| {
+        section.id != scope.id
+            && section.start_line >= scope.start_line
+            && section.end_line <= scope.end_line
+    })
+}
+
+fn note_outline_section_matches_depth(
+    section: &NoteOutlineSection,
+    scope_depth: usize,
+    has_scope: bool,
+    max_depth: Option<usize>,
+) -> bool {
+    let relative_depth = note_outline_section_tree_depth(section).saturating_sub(scope_depth);
+    (!has_scope || relative_depth > 0) && max_depth.map_or(true, |depth| relative_depth <= depth)
+}
+
+fn note_outline_block_ref_matches_scope(
+    block_ref: &NoteOutlineBlockRef,
+    scope_section: Option<&NoteOutlineSection>,
+) -> bool {
+    scope_section.map_or(true, |scope| {
+        block_ref.start_line >= scope.start_line && block_ref.end_line <= scope.end_line
+    })
+}
+
+fn note_outline_block_ref_matches_depth(
+    block_ref: &NoteOutlineBlockRef,
+    outline: &NoteOutline,
+    scope_depth: usize,
+    has_scope: bool,
+    max_depth: Option<usize>,
+) -> bool {
+    let relative_depth = block_ref
+        .section_id
+        .as_deref()
+        .and_then(|section_id| {
+            outline
+                .sections
+                .iter()
+                .find(|section| section.id == section_id)
+                .map(note_outline_section_tree_depth)
+        })
+        .unwrap_or(0)
+        .saturating_sub(scope_depth);
+
+    if has_scope {
+        return max_depth.map_or(true, |depth| relative_depth > 0 && relative_depth <= depth);
+    }
+
+    max_depth.map_or(true, |depth| relative_depth <= depth)
 }
 
 fn select_section_lines(current: &[usize], section: &NoteOutlineSection) -> Vec<usize> {
@@ -786,6 +921,100 @@ mod tests {
                 section_id: Some("preamble".to_string()),
             }]
         );
+    }
+
+    #[test]
+    fn select_note_outline_limits_depth_from_document_root() {
+        let parsed = parse_document(sample_source(), &VaultConfig::default());
+        let outline = outline_note(sample_source(), &parsed);
+        let selection = select_note_outline(
+            &outline,
+            &NoteOutlineOptions {
+                depth: Some(1),
+                ..NoteOutlineOptions::default()
+            },
+        )
+        .expect("depth-limited selection should succeed");
+
+        assert_eq!(selection.scope_section, None);
+        assert_eq!(
+            selection.sections,
+            vec![
+                NoteOutlineSection {
+                    id: "preamble".to_string(),
+                    heading: None,
+                    heading_path: Vec::new(),
+                    level: 0,
+                    start_line: 4,
+                    end_line: 5,
+                },
+                NoteOutlineSection {
+                    id: "tasks@6".to_string(),
+                    heading: Some("Tasks".to_string()),
+                    heading_path: vec!["Tasks".to_string()],
+                    level: 2,
+                    start_line: 6,
+                    end_line: 10,
+                },
+                NoteOutlineSection {
+                    id: "done@11".to_string(),
+                    heading: Some("Done".to_string()),
+                    heading_path: vec!["Done".to_string()],
+                    level: 2,
+                    start_line: 11,
+                    end_line: 13,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn select_note_outline_scopes_to_section_and_relative_depth() {
+        let source = concat!(
+            "# Root\n",
+            "Body\n",
+            "^root-block\n",
+            "## Child\n",
+            "Child body\n",
+            "^child-block\n",
+            "### Grandchild\n",
+            "Grandchild body\n",
+            "^grandchild-block\n",
+        );
+        let parsed = parse_document(source, &VaultConfig::default());
+        let outline = outline_note(source, &parsed);
+        let selection = select_note_outline(
+            &outline,
+            &NoteOutlineOptions {
+                section_id: Some("root@1".to_string()),
+                depth: Some(1),
+            },
+        )
+        .expect("scoped selection should succeed");
+
+        assert_eq!(
+            selection.scope_section,
+            Some(NoteOutlineSection {
+                id: "root@1".to_string(),
+                heading: Some("Root".to_string()),
+                heading_path: vec!["Root".to_string()],
+                level: 1,
+                start_line: 1,
+                end_line: 9,
+            })
+        );
+        assert_eq!(
+            selection.sections,
+            vec![NoteOutlineSection {
+                id: "root/child@4".to_string(),
+                heading: Some("Child".to_string()),
+                heading_path: vec!["Root".to_string(), "Child".to_string()],
+                level: 2,
+                start_line: 4,
+                end_line: 9,
+            }]
+        );
+        assert!(selection.block_refs.is_empty());
     }
 
     #[test]

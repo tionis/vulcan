@@ -6860,7 +6860,7 @@
         "subcommands": [
           {
             "about": "Inspect one note's section and block outline",
-            "after_help": "Outline contents:\n  frontmatter span        leading YAML block, if present\n  sections                semantic read units with ids, heading paths, and absolute line spans\n  block refs              ^block anchors with absolute line spans and containing section ids\n\nExamples:\n  vulcan note outline Dashboard\n  vulcan note get Dashboard --section tasks@9",
+            "after_help": "Outline contents:\n  frontmatter span        leading YAML block, if present\n  sections                semantic read units with ids, titles, and absolute line spans\n  block refs              ^block anchors with absolute line spans and containing section ids\n\nFilters:\n  --section <id>          focus the outline on one semantic section id\n  --depth <n>             limit descendants relative to the current scope\n\nExamples:\n  vulcan note outline Dashboard --depth 2\n  vulcan note outline Dashboard --section dashboard/tasks@9 --depth 1\n  vulcan note get Dashboard --section tasks@9",
             "name": "outline",
             "options": [
               {
@@ -6872,6 +6872,28 @@
                 "short": null,
                 "value_names": [
                   "NOTE"
+                ]
+              },
+              {
+                "help": "Focus the outline on one semantic section id from `note outline`",
+                "id": "section_id",
+                "long": "section",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SECTION_ID"
+                ]
+              },
+              {
+                "help": "Limit descendants relative to the current outline scope",
+                "id": "depth",
+                "long": "depth",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "N"
                 ]
               }
             ],

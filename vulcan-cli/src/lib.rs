@@ -1644,6 +1644,8 @@ struct NoteOutlineReport {
     path: String,
     total_lines: usize,
     frontmatter_span: Option<vulcan_core::NoteLineSpan>,
+    scope_section: Option<vulcan_core::NoteOutlineSection>,
+    depth_limit: Option<usize>,
     sections: Vec<vulcan_core::NoteOutlineSection>,
     block_refs: Vec<vulcan_core::NoteOutlineBlockRef>,
 }
@@ -10298,6 +10300,24 @@ struct NotePatchScopeSelection {
     byte_end: usize,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ExistingMarkdownTarget {
+    pub(crate) display_path: String,
+    pub(crate) absolute_path: PathBuf,
+    pub(crate) vault_relative_path: Option<String>,
+    pub(crate) config: vulcan_core::VaultConfig,
+}
+
+impl ExistingMarkdownTarget {
+    fn read_source(&self) -> Result<String, CliError> {
+        fs::read_to_string(&self.absolute_path).map_err(CliError::operation)
+    }
+
+    fn is_vault_managed(&self) -> bool {
+        self.vault_relative_path.is_some()
+    }
+}
+
 fn run_note_get_command(
     paths: &VaultPaths,
     options: NoteGetOptions<'_>,
@@ -10314,11 +10334,10 @@ fn run_note_get_command(
         no_frontmatter,
         raw,
     } = options;
-    let (relative_path, source) = read_existing_note_source(paths, note)?;
-    let config = load_vault_config(paths).config;
-    let parsed = vulcan_core::parse_document(&source, &config);
+    let target = read_existing_markdown_source(paths, note)?;
+    let parsed = vulcan_core::parse_document(&target.source, &target.target.config);
     let selection = vulcan_core::read_note(
-        &source,
+        &target.source,
         &parsed,
         &vulcan_core::NoteReadOptions {
             heading: heading.map(ToOwned::to_owned),
@@ -10347,7 +10366,7 @@ fn run_note_get_command(
         .map_err(CliError::operation)?;
 
     Ok(NoteGetReport {
-        path: relative_path,
+        path: target.target.display_path,
         content: rendered_content,
         frontmatter,
         metadata: NoteGetMetadata {
@@ -10370,18 +10389,37 @@ fn run_note_get_command(
     })
 }
 
-fn run_note_outline_command(paths: &VaultPaths, note: &str) -> Result<NoteOutlineReport, CliError> {
-    let (relative_path, source) = read_existing_note_source(paths, note)?;
-    let config = load_vault_config(paths).config;
-    let parsed = vulcan_core::parse_document(&source, &config);
-    let outline = vulcan_core::outline_note(&source, &parsed);
+fn run_note_outline_command(
+    paths: &VaultPaths,
+    note: &str,
+    section_id: Option<&str>,
+    depth: Option<usize>,
+) -> Result<NoteOutlineReport, CliError> {
+    if matches!(depth, Some(0)) {
+        return Err(CliError::operation(
+            "`note outline --depth` must be at least 1",
+        ));
+    }
+    let target = read_existing_markdown_source(paths, note)?;
+    let parsed = vulcan_core::parse_document(&target.source, &target.target.config);
+    let outline = vulcan_core::outline_note(&target.source, &parsed);
+    let selection = vulcan_core::select_note_outline(
+        &outline,
+        &vulcan_core::NoteOutlineOptions {
+            section_id: section_id.map(ToOwned::to_owned),
+            depth,
+        },
+    )
+    .map_err(CliError::operation)?;
 
     Ok(NoteOutlineReport {
-        path: relative_path,
-        total_lines: outline.total_lines,
-        frontmatter_span: outline.frontmatter_span,
-        sections: outline.sections,
-        block_refs: outline.block_refs,
+        path: target.target.display_path,
+        total_lines: selection.total_lines,
+        frontmatter_span: selection.frontmatter_span,
+        scope_section: selection.scope_section,
+        depth_limit: depth,
+        sections: selection.sections,
+        block_refs: selection.block_refs,
     })
 }
 
@@ -10733,11 +10771,11 @@ fn run_note_patch_command(
         check,
         dry_run,
     } = options;
-    let (relative_path, existing) = read_existing_note_source(paths, note)?;
+    let target = read_existing_markdown_source(paths, note)?;
     let matcher = parse_note_patch_matcher(find)?;
     let scope = resolve_note_patch_scope_selection(
-        &existing,
-        &load_vault_config(paths).config,
+        &target.source,
+        &target.target.config,
         section_id,
         heading,
         block_ref,
@@ -10745,19 +10783,19 @@ fn run_note_patch_command(
     )?;
     let application = if let Some(scope) = scope.as_ref() {
         let updated_scope = apply_note_patch(
-            &existing[scope.byte_start..scope.byte_end],
+            &target.source[scope.byte_start..scope.byte_end],
             &matcher,
             replace,
             replace_all,
             "selected note scope",
         )?;
         let mut updated_content = String::with_capacity(
-            existing.len() - (scope.byte_end - scope.byte_start)
+            target.source.len() - (scope.byte_end - scope.byte_start)
                 + updated_scope.updated_content.len(),
         );
-        updated_content.push_str(&existing[..scope.byte_start]);
+        updated_content.push_str(&target.source[..scope.byte_start]);
         updated_content.push_str(&updated_scope.updated_content);
-        updated_content.push_str(&existing[scope.byte_end..]);
+        updated_content.push_str(&target.source[scope.byte_end..]);
         NotePatchApplication {
             updated_content,
             match_count: updated_scope.match_count,
@@ -10765,29 +10803,31 @@ fn run_note_patch_command(
             regex: updated_scope.regex,
         }
     } else {
-        apply_note_patch(&existing, &matcher, replace, replace_all, "note")?
+        apply_note_patch(&target.source, &matcher, replace, replace_all, "note")?
     };
     if !dry_run {
-        dispatch_note_write_plugin_hooks(
-            paths,
-            permission_profile,
-            &relative_path,
-            "patch",
-            Some(&existing),
-            &application.updated_content,
-            quiet,
-        )?;
-        fs::write(
-            paths.vault_root().join(&relative_path),
-            &application.updated_content,
-        )
-        .map_err(CliError::operation)?;
-        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
+        if let Some(relative_path) = target.target.vault_relative_path.as_deref() {
+            dispatch_note_write_plugin_hooks(
+                paths,
+                permission_profile,
+                relative_path,
+                "patch",
+                Some(&target.source),
+                &application.updated_content,
+                quiet,
+            )?;
+        }
+        fs::write(&target.target.absolute_path, &application.updated_content)
+            .map_err(CliError::operation)?;
+        if target.target.is_vault_managed() {
+            run_incremental_scan(paths, output, use_stderr_color, quiet)?;
+        }
     }
-    let diagnostics = maybe_check_note(paths, &relative_path, &application.updated_content, check)?;
+    let diagnostics =
+        maybe_check_markdown_target(paths, &target.target, &application.updated_content, check)?;
 
     Ok(NotePatchReport {
-        path: relative_path,
+        path: target.target.display_path,
         dry_run,
         checked: check,
         section_id: scope
@@ -10984,6 +11024,42 @@ fn system_time_to_millis(time: std::time::SystemTime) -> Option<i64> {
     i64::try_from(duration.as_millis()).ok()
 }
 
+#[derive(Debug, Clone)]
+struct ExistingMarkdownSource {
+    target: ExistingMarkdownTarget,
+    source: String,
+}
+
+pub(crate) fn resolve_existing_markdown_target(
+    paths: &VaultPaths,
+    note: &str,
+) -> Result<ExistingMarkdownTarget, CliError> {
+    if let Ok(relative_path) = resolve_existing_note_path(paths, note) {
+        let absolute_path = paths.vault_root().join(&relative_path);
+        return Ok(ExistingMarkdownTarget {
+            display_path: relative_path.clone(),
+            absolute_path,
+            vault_relative_path: Some(relative_path),
+            config: load_vault_config(paths).config,
+        });
+    }
+
+    if note_argument_looks_like_path(note) {
+        return resolve_existing_direct_markdown_target(paths, note);
+    }
+
+    Err(CliError::operation(format!("note not found: {note}")))
+}
+
+fn read_existing_markdown_source(
+    paths: &VaultPaths,
+    note: &str,
+) -> Result<ExistingMarkdownSource, CliError> {
+    let target = resolve_existing_markdown_target(paths, note)?;
+    let source = target.read_source()?;
+    Ok(ExistingMarkdownSource { target, source })
+}
+
 fn read_existing_note_source(paths: &VaultPaths, note: &str) -> Result<(String, String), CliError> {
     let relative_path = resolve_existing_note_path(paths, note)?;
     let source =
@@ -11018,6 +11094,81 @@ fn normalize_note_path(path: &str) -> Result<String, CliError> {
         },
     )
     .map_err(CliError::operation)
+}
+
+fn note_argument_looks_like_path(note: &str) -> bool {
+    let path = Path::new(note);
+    path.is_absolute()
+        || path.extension().is_some()
+        || note.starts_with('.')
+        || path.components().count() > 1
+}
+
+fn resolve_existing_direct_markdown_target(
+    paths: &VaultPaths,
+    note: &str,
+) -> Result<ExistingMarkdownTarget, CliError> {
+    let current_dir = std::env::current_dir().map_err(CliError::operation)?;
+    for candidate in direct_markdown_path_candidates(note) {
+        if !has_markdown_extension(&candidate) {
+            continue;
+        }
+
+        let absolute_candidate = if candidate.is_absolute() {
+            candidate.clone()
+        } else {
+            current_dir.join(&candidate)
+        };
+        if !absolute_candidate.is_file() {
+            continue;
+        }
+
+        let absolute_path = fs::canonicalize(&absolute_candidate).map_err(CliError::operation)?;
+        let vault_relative_path = paths
+            .relative_to_vault(&absolute_path)
+            .map(|path| path_buf_to_slash_string(&path));
+        let display_path = vault_relative_path.clone().unwrap_or_else(|| {
+            if candidate.is_absolute() {
+                path_buf_to_slash_string(&absolute_path)
+            } else {
+                path_buf_to_slash_string(&candidate)
+            }
+        });
+
+        return Ok(ExistingMarkdownTarget {
+            display_path,
+            absolute_path,
+            vault_relative_path: vault_relative_path.clone(),
+            config: if vault_relative_path.is_some() {
+                load_vault_config(paths).config
+            } else {
+                vulcan_core::VaultConfig::default()
+            },
+        });
+    }
+
+    Err(CliError::operation(format!("note not found: {note}")))
+}
+
+fn direct_markdown_path_candidates(note: &str) -> Vec<PathBuf> {
+    let path = PathBuf::from(note);
+    let mut candidates = vec![path.clone()];
+    if path.extension().is_none() {
+        let mut with_extension = path;
+        with_extension.set_extension("md");
+        candidates.push(with_extension);
+    }
+    candidates
+}
+
+fn has_markdown_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+}
+
+fn path_buf_to_slash_string(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn note_set_input_text(file: Option<&PathBuf>) -> Result<String, CliError> {
@@ -11370,6 +11521,22 @@ fn resolve_note_patch_scope_selection(
     }))
 }
 
+fn maybe_check_markdown_target(
+    paths: &VaultPaths,
+    target: &ExistingMarkdownTarget,
+    content: &str,
+    check: bool,
+) -> Result<Vec<DoctorDiagnosticIssue>, CliError> {
+    if !check {
+        return Ok(Vec::new());
+    }
+
+    match target.vault_relative_path.as_deref() {
+        Some(relative_path) => diagnose_note_contents(paths, relative_path, content),
+        None => diagnose_external_markdown_contents(&target.display_path, &target.config, content),
+    }
+}
+
 fn maybe_check_note(
     paths: &VaultPaths,
     relative_path: &str,
@@ -11422,6 +11589,55 @@ fn diagnose_note_contents(
         &config,
         &parsed,
     )?);
+    diagnostics.sort_by(|left, right| {
+        left.document_path
+            .cmp(&right.document_path)
+            .then(left.message.cmp(&right.message))
+            .then_with(|| match (&left.byte_range, &right.byte_range) {
+                (Some(left), Some(right)) => {
+                    left.start.cmp(&right.start).then(left.end.cmp(&right.end))
+                }
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            })
+    });
+    diagnostics.dedup();
+    Ok(diagnostics)
+}
+
+fn diagnose_external_markdown_contents(
+    display_path: &str,
+    config: &vulcan_core::VaultConfig,
+    content: &str,
+) -> Result<Vec<DoctorDiagnosticIssue>, CliError> {
+    let parsed = vulcan_core::parse_document(content, config);
+    let mut diagnostics = parsed
+        .diagnostics
+        .iter()
+        .map(|diagnostic| DoctorDiagnosticIssue {
+            document_path: Some(display_path.to_string()),
+            message: diagnostic.message.clone(),
+            byte_range: diagnostic.byte_range.as_ref().map(|range| DoctorByteRange {
+                start: range.start,
+                end: range.end,
+            }),
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(indexed) =
+        extract_indexed_properties(&parsed, config).map_err(CliError::operation)?
+    {
+        diagnostics.extend(indexed.diagnostics.into_iter().map(|diagnostic| {
+            DoctorDiagnosticIssue {
+                document_path: Some(display_path.to_string()),
+                message: diagnostic.message,
+                byte_range: None,
+            }
+        }));
+    }
+
+    diagnostics.extend(dataview_parse_diagnostics(display_path, &parsed));
     diagnostics.sort_by(|left, right| {
         left.document_path
             .cmp(&right.document_path)
@@ -16166,49 +16382,78 @@ fn print_note_outline_report(
         OutputFormat::Human | OutputFormat::Markdown => {
             println!("{}", report.path);
             println!("Total lines: {}", report.total_lines);
-            if let Some(frontmatter) = &report.frontmatter_span {
+            println!(
+                "Frontmatter: {}",
+                report
+                    .frontmatter_span
+                    .as_ref()
+                    .map_or_else(|| "none".to_string(), note_line_span_label)
+            );
+            if let Some(scope_section) = &report.scope_section {
                 println!(
-                    "Frontmatter: {}-{}",
-                    frontmatter.start_line, frontmatter.end_line
+                    "Scope: {} [{}]",
+                    note_outline_section_title(scope_section),
+                    note_line_span_label(&vulcan_core::NoteLineSpan {
+                        start_line: scope_section.start_line,
+                        end_line: scope_section.end_line,
+                    })
                 );
+                println!("  id: {}", scope_section.id);
+            }
+            if let Some(depth_limit) = report.depth_limit {
+                println!("Depth limit: {depth_limit}");
             }
 
-            println!("Sections:");
+            println!("Sections ({}):", report.sections.len());
             if report.sections.is_empty() {
-                println!("- none");
+                println!("  none");
             } else {
                 for section in &report.sections {
-                    let label = section
-                        .heading_path
-                        .iter()
-                        .map(String::as_str)
-                        .collect::<Vec<_>>()
-                        .join(" > ");
-                    let label = if label.is_empty() {
-                        "(preamble)".to_string()
-                    } else {
-                        label
-                    };
+                    let indent = "  ".repeat(note_outline_display_depth(
+                        section,
+                        report.scope_section.as_ref(),
+                    ));
+                    let span = note_line_span_label(&vulcan_core::NoteLineSpan {
+                        start_line: section.start_line,
+                        end_line: section.end_line,
+                    });
                     println!(
-                        "- {} [{}-{}] {}",
-                        section.id, section.start_line, section.end_line, label
+                        "{}{}  {}",
+                        indent,
+                        span,
+                        note_outline_section_title(section)
                     );
+                    println!("{}  id: {}", indent, section.id);
                 }
             }
 
-            println!("Block refs:");
+            println!("Block refs ({}):", report.block_refs.len());
             if report.block_refs.is_empty() {
-                println!("- none");
+                println!("  none");
             } else {
                 for block_ref in &report.block_refs {
+                    let indent = "  ".repeat(note_outline_block_ref_display_depth(
+                        report,
+                        block_ref.section_id.as_deref(),
+                    ));
                     match &block_ref.section_id {
                         Some(section_id) => println!(
-                            "- {} [{}-{}] section={section_id}",
-                            block_ref.id, block_ref.start_line, block_ref.end_line
+                            "{}{}  ^{}  section={section_id}",
+                            indent,
+                            note_line_span_label(&vulcan_core::NoteLineSpan {
+                                start_line: block_ref.start_line,
+                                end_line: block_ref.end_line,
+                            }),
+                            block_ref.id,
                         ),
                         None => println!(
-                            "- {} [{}-{}]",
-                            block_ref.id, block_ref.start_line, block_ref.end_line
+                            "{}{}  ^{}",
+                            indent,
+                            note_line_span_label(&vulcan_core::NoteLineSpan {
+                                start_line: block_ref.start_line,
+                                end_line: block_ref.end_line,
+                            }),
+                            block_ref.id,
                         ),
                     }
                 }
@@ -16217,6 +16462,44 @@ fn print_note_outline_report(
         }
         OutputFormat::Json => print_json(report),
     }
+}
+
+fn note_line_span_label(span: &vulcan_core::NoteLineSpan) -> String {
+    format!("{}-{}", span.start_line, span.end_line)
+}
+
+fn note_outline_section_title(section: &vulcan_core::NoteOutlineSection) -> &str {
+    section.heading.as_deref().unwrap_or("(preamble)")
+}
+
+fn note_outline_display_depth(
+    section: &vulcan_core::NoteOutlineSection,
+    scope_section: Option<&vulcan_core::NoteOutlineSection>,
+) -> usize {
+    match scope_section {
+        Some(scope) => section
+            .heading_path
+            .len()
+            .saturating_sub(scope.heading_path.len() + 1),
+        None => section.heading_path.len().saturating_sub(1),
+    }
+}
+
+fn note_outline_block_ref_display_depth(
+    report: &NoteOutlineReport,
+    section_id: Option<&str>,
+) -> usize {
+    section_id
+        .and_then(|id| {
+            report
+                .scope_section
+                .iter()
+                .chain(report.sections.iter())
+                .find(|section| section.id == id)
+        })
+        .map_or(0, |section| {
+            note_outline_display_depth(section, report.scope_section.as_ref())
+        })
 }
 
 fn print_note_set_report(output: OutputFormat, report: &NoteSetReport) -> Result<(), CliError> {
@@ -29080,6 +29363,8 @@ mod tests {
             Command::Note {
                 command: NoteCommand::Outline {
                     note: "Dashboard".to_string(),
+                    section_id: None,
+                    depth: None,
                 },
             }
         );
