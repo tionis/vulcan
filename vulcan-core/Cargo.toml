@@ -14,17 +14,16 @@ aho-corasick = "1"
 blake3.workspace = true
 csv.workspace = true
 fs2.workspace = true
-html-to-markdown-rs.workspace = true
 ignore.workspace = true
 libc.workspace = true
 notify.workspace = true
 pulldown-cmark.workspace = true
 rayon.workspace = true
-readabilityrs.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 rquickjs = { workspace = true, optional = true }
 rquickjs-serde = { workspace = true, optional = true }
+rs-trafilatura.workspace = true
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true

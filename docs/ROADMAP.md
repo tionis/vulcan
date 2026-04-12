@@ -2627,7 +2627,7 @@ vault.transaction(tx => {
 
 ```js
 web.search(query, opts)   // web search via configured backend
-web.fetch(url, opts)      // fetch URL, opts.mode: "markdown"|"html"|"raw", opts.extractionMode?: "auto"|"article"|"generic"
+web.fetch(url, opts)      // fetch URL, opts.mode: "markdown"|"html"|"raw"
 ```
 
 **Tier 4 — Unrestricted (`none` sandbox):**
@@ -2686,11 +2686,11 @@ scripts_folder = ".vulcan/scripts"  # lookup path for named scripts
 **`web fetch`**
 
 - [x] `vulcan web fetch <url>` — fetch a URL and output content
-- [x] `--mode markdown` — convert HTML to markdown with auto article extraction for readerable pages
+- [x] `--mode markdown` — convert HTML to markdown with `rs-trafilatura` main-content extraction
 - [x] `--mode html` — raw HTML
 - [x] `--mode raw` — raw response body
 - [x] `--save <path>` — save output to file (for images, PDFs, binary content)
-- [x] `--extraction-mode auto|article|generic` — auto-detect article pages, force article extraction, or force generic conversion
+- [x] Markdown extraction fails explicitly when no readable main content is found; `html`/`raw` remain the escape hatches
 - [x] `--output json` returns `{ url, status, content_type, content }`
 - [x] Respect `robots.txt` (best effort)
 - [x] User-Agent header identifying Vulcan
@@ -3372,7 +3372,7 @@ Make the search backend an explicit enum (`SearchBackend`) and add support for a
 - [x] Implement Tavily search backend: `api_key_env = "TAVILY_API_KEY"`
 - [x] Implement Brave Search backend: `api_key_env = "BRAVE_API_KEY"`
 - [x] Change default backend order: Kagi (if key present) → Exa (if key present) → Tavily (if key present) → Brave (if key present) → error with setup instructions
-- [x] For `web fetch`, evaluate Tavily Extract and Firecrawl as alternatives to the current readability-based extraction
+- [x] For `web fetch`, evaluate Tavily Extract and Firecrawl as alternatives to the current built-in extraction path
   See `docs/investigations/web_fetch_extract_backends.md`.
 - [x] Add duckduckgo backend
 - [x] Use duckduckgo backend as default backend as it can work without an api key
@@ -5427,6 +5427,6 @@ The `vulcan-daemon` crate depends on `vulcan-core` (for all vault operations) an
 | `regex` | Regex matching in note patch and query predicates | 9.18.2, 9.18.3 |
 | `rquickjs` | QuickJS JS engine bindings (sandboxed runtime) | 9.18.5 (also 9.8.8) |
 | `reqwest` | HTTP client for web search/fetch | 9.18.6 |
-| `htmd` or `readability` | HTML-to-markdown conversion for web fetch | 9.18.6 |
+| `rs-trafilatura` | HTML-to-markdown content extraction for web fetch | 9.18.6 |
 | `termimad` | Terminal markdown rendering for `help` command | 9.18.7 |
 | `rustyline` | REPL line editing, history, and tab completion | 9.18.5 |

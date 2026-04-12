@@ -157,20 +157,9 @@ pub(crate) fn handle_web_command(
                 crate::run_web_search_command(paths, query, *backend, *limit, Some(&guard))?;
             crate::print_web_search_report(cli.output, &report)
         }
-        WebCommand::Fetch {
-            url,
-            mode,
-            extraction_mode,
-            save,
-        } => {
-            let report = crate::run_web_fetch_command(
-                paths,
-                url,
-                *mode,
-                *extraction_mode,
-                save.as_ref(),
-                Some(&guard),
-            )?;
+        WebCommand::Fetch { url, mode, save } => {
+            let report =
+                crate::run_web_fetch_command(paths, url, *mode, save.as_ref(), Some(&guard))?;
             crate::print_web_fetch_report(cli.output, &report, stdout_is_tty, use_stdout_color)
         }
     }

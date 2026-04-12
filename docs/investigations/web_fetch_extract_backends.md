@@ -1,11 +1,11 @@
 # Investigation: `web fetch` extraction backends
 
 **Date:** 7 April 2026  
-**Status:** Keep the current readability-style fetch as the default; defer Tavily Extract and Firecrawl integration
+**Status:** Keep the built-in local extraction path as the default; defer Tavily Extract and Firecrawl integration
 
 ## Question
 
-Should `vulcan web fetch` switch from the current built-in readability-style extraction to Tavily Extract or Firecrawl?
+Should `vulcan web fetch` switch from the current built-in local extraction path to Tavily Extract or Firecrawl?
 
 ## Summary
 
@@ -23,7 +23,8 @@ That is useful future capability, but it is a worse default for Vulcan's current
 
 - `web fetch` performs a normal HTTP GET with a Vulcan user agent.
 - It does a best-effort `robots.txt` check.
-- In markdown mode it strips obvious chrome and converts HTML to readable markdown, with an optional article preference.
+- In markdown mode it runs a local `rs-trafilatura` main-content extraction.
+- If no readable main content is found, callers can fall back to `html` or `raw`.
 - It works with zero provider setup and no per-request network dependency beyond the target page itself.
 
 That makes it a good default for CLI usage, scripts, and the JS sandbox.
@@ -59,7 +60,7 @@ Why not make it the default:
 
 For now:
 
-- Keep the built-in readability-style fetch as the default `web fetch` path.
+- Keep the built-in local extraction path as the default `web fetch` path.
 - Treat Tavily Extract and Firecrawl as future optional backends, not replacements.
 - Revisit provider-backed extraction only when Vulcan adds an explicit structured extraction mode such as:
   - `web fetch --backend tavily --schema ...`
