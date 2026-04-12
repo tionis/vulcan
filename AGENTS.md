@@ -10,6 +10,15 @@ Headless CLI and multi-vault platform for Obsidian vaults and plain Markdown dir
 - `references/` — Plugin source repos and documentation (obsidian-dataview, Templater, obsidian-kanban, quickadd, tasknotes, obsidian-skills). Use these as authoritative references when implementing plugin compatibility.
 - `docs/assistant/` — AGENTS.md template for user vaults and default skills shipped with Vulcan (relevant for 9.12 and 9.18.7 work).
 
+## Repo dogfooding
+
+When working in this repo, prefer using Vulcan itself to inspect and edit long Markdown docs such as the roadmap and design document instead of falling back immediately to ad hoc `grep`/`sed` flows.
+
+- Use `vulcan note outline ./docs/ROADMAP.md` to discover semantic section ids and line spans.
+- Use `vulcan note get ./docs/ROADMAP.md --section vulcan-implementation-roadmap/phase-9-cli-refinements/9-15-tasknotes-compatibility-primary-task-model@1866` to read one roadmap section without reopening the whole file.
+- Use `vulcan note patch ./docs/ROADMAP.md --section <section-id-from-outline> --find 'old text' --replace 'new text' --dry-run` for surgical roadmap edits, then rerun without `--dry-run` once the patch is correct.
+- Prefer `note get`/`note patch` with `--section`, `--heading`, `--block-ref`, or `--lines` for targeted work on large notes. This is good dogfooding and helps keep roadmap/design-document editing aligned with the intended agent workflow.
+
 ## Architecture
 
 Three-layer model: vault (source of truth) → SQLite cache (rebuildable) → search indexes (derived).
