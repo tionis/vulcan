@@ -385,13 +385,14 @@ struct ConfigTuiState {
 
 impl ConfigTuiState {
     fn load(paths: VaultPaths) -> Result<Self, String> {
-        let display =
-            crate::load_display_config_state(&paths).map_err(|error| error.to_string())?;
-        let shared_toml =
-            crate::load_config_file_toml(paths.config_file()).map_err(|error| error.to_string())?;
-        let local_toml = crate::load_config_file_toml(paths.local_config_file())
+        let display = crate::app_config::build_config_show_report(&paths, None, None)
             .map_err(|error| error.to_string())?;
-        let categories = build_categories(&display.toml, &shared_toml, &local_toml);
+        let effective_toml = display.rendered_toml.clone();
+        let shared_toml = crate::app_config::load_config_file_toml(paths.config_file())
+            .map_err(|error| error.to_string())?;
+        let local_toml = crate::app_config::load_config_file_toml(paths.local_config_file())
+            .map_err(|error| error.to_string())?;
+        let categories = build_categories(&effective_toml, &shared_toml, &local_toml);
         let status = if display.diagnostics.is_empty() {
             "Loaded .vulcan/config.toml. Edit a setting, then press Ctrl-S to save.".to_string()
         } else {
@@ -408,7 +409,7 @@ impl ConfigTuiState {
         Ok(Self {
             paths,
             diagnostics: display.diagnostics,
-            effective_toml: display.toml,
+            effective_toml,
             shared_toml: shared_toml.clone(),
             baseline_shared_toml: shared_toml,
             local_toml,
@@ -540,16 +541,13 @@ impl ConfigTuiState {
         let value = parse_toml_literal(trimmed)?;
         let entry = self.selected_entry().clone();
         let mut updated = self.shared_toml.clone();
-        crate::set_config_toml_value(
-            &mut updated,
-            &entry
-                .storage_segments
-                .iter()
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            value,
-        )
-        .map_err(|error| error.to_string())?;
+        let storage_segments = entry
+            .storage_segments
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        crate::app_config::set_config_toml_value(&mut updated, &storage_segments, value)
+            .map_err(|error| error.to_string())?;
         let rendered = toml::to_string_pretty(&updated).map_err(|error| error.to_string())?;
         validate_vulcan_overrides_toml(&rendered).map_err(|error| error.to_string())?;
 
@@ -570,7 +568,22 @@ impl ConfigTuiState {
 
     fn unset_selected(&mut self) {
         let entry = self.selected_entry().clone();
-        if !remove_config_toml_value(&mut self.shared_toml, &entry.storage_segments) {
+        let storage_segments = entry
+            .storage_segments
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        let removed = match crate::app_config::remove_config_toml_value(
+            &mut self.shared_toml,
+            &storage_segments,
+        ) {
+            Ok(removed) => removed,
+            Err(error) => {
+                self.status = error.to_string();
+                return;
+            }
+        };
+        if !removed {
             self.status = format!("{} has no shared override to remove.", entry.display_path);
             return;
         }
@@ -858,33 +871,6 @@ fn get_toml_value<'a>(value: &'a TomlValue, path: &[String]) -> Option<&'a TomlV
         current = current.as_table()?.get(segment)?;
     }
     Some(current)
-}
-
-fn remove_config_toml_value(value: &mut TomlValue, path: &[String]) -> bool {
-    remove_config_toml_value_inner(value, path).0
-}
-
-fn remove_config_toml_value_inner(value: &mut TomlValue, path: &[String]) -> (bool, bool) {
-    let Some(table) = value.as_table_mut() else {
-        return (false, false);
-    };
-    let Some((segment, rest)) = path.split_first() else {
-        return (false, table.is_empty());
-    };
-
-    if rest.is_empty() {
-        let removed = table.remove(segment).is_some();
-        return (removed, table.is_empty());
-    }
-
-    let Some(child) = table.get_mut(segment) else {
-        return (false, table.is_empty());
-    };
-    let (removed, child_empty) = remove_config_toml_value_inner(child, rest);
-    if removed && child_empty {
-        table.remove(segment);
-    }
-    (removed, table.is_empty())
 }
 
 fn parse_toml_literal(raw: &str) -> Result<TomlValue, String> {

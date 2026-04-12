@@ -4450,7 +4450,7 @@ Matrix is explicitly more complex than Telegram because it brings sync loops, ro
 - [ ] Move raw export SQL/schema definitions out of `vulcan-cli` and colocate them with other reusable export/cache code
 - [ ] Move the template engine out of `vulcan-cli` into reusable library code so note creation, append flows, scripts, daemon endpoints, and future assistant flows share one implementation
 - [ ] Move plugin discovery/loading/dispatch out of `vulcan-cli` so plugin event hooks become reusable infrastructure rather than a CLI-local feature
-- [ ] Move config show/get/set/unset helpers and TOML mutation/validation logic out of `vulcan-cli` so the config TUI and future admin/daemon surfaces use the same implementation
+- [x] Move config show/get/set/unset helpers and TOML mutation/validation logic out of `vulcan-cli` so the config TUI and future admin/daemon surfaces use the same implementation
 - [ ] Keep terminal-specific state machines in `vulcan-cli` such as the config TUI and browse TUI, but have them call shared services underneath
 
 ### 9.22.6 CLI slimming and dependency cleanup

@@ -81,6 +81,71 @@ mod trust {
     }
 }
 
+mod app_config {
+    use crate::CliError;
+    use std::path::Path;
+    use toml::Value as TomlValue;
+    use vulcan_core::VaultPaths;
+
+    pub(crate) use vulcan_app::config::{ConfigGetReport, ConfigSetReport, ConfigShowReport};
+
+    pub(crate) fn build_config_show_report(
+        paths: &VaultPaths,
+        section: Option<&str>,
+        selected_permission_profile: Option<&str>,
+    ) -> Result<ConfigShowReport, CliError> {
+        vulcan_app::config::build_config_show_report(paths, section, selected_permission_profile)
+            .map_err(CliError::operation)
+    }
+
+    pub(crate) fn build_config_get_report(
+        paths: &VaultPaths,
+        key: &str,
+    ) -> Result<ConfigGetReport, CliError> {
+        vulcan_app::config::build_config_get_report(paths, key).map_err(CliError::operation)
+    }
+
+    pub(crate) fn plan_config_set_report(
+        paths: &VaultPaths,
+        key: &str,
+        raw_value: &str,
+        dry_run: bool,
+    ) -> Result<ConfigSetReport, CliError> {
+        vulcan_app::config::plan_config_set_report(paths, key, raw_value, dry_run)
+            .map_err(CliError::operation)
+    }
+
+    pub(crate) fn apply_config_set_report(
+        paths: &VaultPaths,
+        report: ConfigSetReport,
+    ) -> Result<ConfigSetReport, CliError> {
+        vulcan_app::config::apply_config_set_report(paths, report).map_err(CliError::operation)
+    }
+
+    pub(crate) fn load_config_file_toml(path: &Path) -> Result<TomlValue, CliError> {
+        vulcan_app::config::load_config_file_toml(path).map_err(CliError::operation)
+    }
+
+    pub(crate) fn config_toml_path_exists(config: &TomlValue, path: &[&str]) -> bool {
+        vulcan_app::config::config_toml_path_exists(config, path)
+    }
+
+    pub(crate) fn set_config_toml_value(
+        config: &mut TomlValue,
+        path: &[&str],
+        value: TomlValue,
+    ) -> Result<(), CliError> {
+        vulcan_app::config::set_config_toml_value(config, path, value).map_err(CliError::operation)
+    }
+
+    pub(crate) fn remove_config_toml_value(
+        config: &mut TomlValue,
+        path: &[&str],
+    ) -> Result<bool, CliError> {
+        vulcan_app::config::remove_config_toml_value(config, path).map_err(CliError::operation)
+    }
+}
+
 pub use cli::{
     AgentCommand, AgentInstallArgs, AutomationCommand, BasesCommand, CacheCommand,
     CheckpointCommand, Cli, ColorMode, Command, ConfigCommand, ConfigImportArgs,
@@ -109,6 +174,7 @@ use crate::template_engine::{
     parse_template_var_bindings, render_template_request, TemplateEngineKind,
     TemplateRenderRequest, TemplateRunMode,
 };
+use app_config::{ConfigGetReport, ConfigSetReport, ConfigShowReport};
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
@@ -153,46 +219,45 @@ use vulcan_core::{
     export_daily_events_to_ics, export_static_search_index, extract_tasknote, fetch_web_content,
     git_blame, git_diff, git_log, git_recent_log, git_status, initialize_vault, inspect_base_file,
     inspect_cache, link_mentions, list_checkpoints, list_daily_note_events, list_saved_reports,
-    load_dataview_blocks, load_events_for_periodic_note, load_kanban_board,
-    load_permission_profiles, load_saved_report, load_tasks_blocks, load_vault_config, merge_tags,
-    move_kanban_card, move_note, parse_document, parse_dql_with_diagnostics,
-    parse_tasknote_natural_language, parse_tasknote_reminders, parse_tasknote_time_entries,
-    parse_tasks_query, period_range_for_date, plan_base_note_create, prepare_search_backend,
-    query_backlinks, query_change_report, query_links, query_notes, rebuild_vault_with_progress,
-    rename_alias, rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
-    render_markdown_html, repair_fts, resolve_link, resolve_note_reference, resolve_periodic_note,
-    resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
-    search_web, shape_tasks_query_result, step_period_start, task_upcoming_occurrences,
-    tasknotes_default_date_value, tasknotes_default_recurrence_rule,
-    tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_definition,
-    tasknotes_status_state, validate_vulcan_overrides_toml, verify_cache, watch_vault,
-    AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport,
-    BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport,
-    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
-    ChangeReport, CheckpointRecord, ClusterReport, ConfigDiagnostic, ConfigImportReport,
-    ConfigPermissionMode, CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput,
-    DataviewJsResult, DoctorByteRange, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue,
-    DoctorReport, DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression,
-    GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport,
-    GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport,
-    GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox,
-    KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter,
-    KanbanMoveReport, KanbanTaskStatus, LinkKind, LinkResolutionMode, LinkResolutionProblem,
-    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount,
-    NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OriginContext, OutgoingLinkRecord,
-    OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter,
-    PermissionFilter, PermissionGuard, PermissionMode, PermissionProfile, PluginEvent,
-    PluginImporter, ProfilePermissionGuard, QueryAst, QueryReport, RebuildQuery, RebuildReport,
-    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, ResolvedPermissionProfile, ResolverDocument, ResolverIndex, ResolverLink,
-    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchBackendKind,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
-    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter,
-    TasksQueryResult, TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
-    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
-    WatchReport,
+    load_dataview_blocks, load_events_for_periodic_note, load_kanban_board, load_saved_report,
+    load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card, move_note, parse_document,
+    parse_dql_with_diagnostics, parse_tasknote_natural_language, parse_tasknote_reminders,
+    parse_tasknote_time_entries, parse_tasks_query, period_range_for_date, plan_base_note_create,
+    prepare_search_backend, query_backlinks, query_change_report, query_links, query_notes,
+    rebuild_vault_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
+    render_markdown_fragment_html, render_markdown_html, repair_fts, resolve_link,
+    resolve_note_reference, resolve_periodic_note, resolve_permission_profile, save_saved_report,
+    scan_vault_with_progress, search_vault, search_web, shape_tasks_query_result,
+    step_period_start, task_upcoming_occurrences, tasknotes_default_date_value,
+    tasknotes_default_recurrence_rule, tasknotes_default_reminder_values,
+    tasknotes_reminder_notify_at, tasknotes_status_definition, tasknotes_status_state,
+    validate_vulcan_overrides_toml, verify_cache, watch_vault, AutoScanMode, BacklinkRecord,
+    BacklinksReport, BasesCreateContext, BasesEvalReport, BasesEvaluator, BasesViewEditReport,
+    BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport,
+    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
+    ClusterReport, ConfigDiagnostic, ConfigImportReport, ConfigPermissionMode, CoreImporter,
+    DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorByteRange,
+    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
+    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
+    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
+    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
+    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
+    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
+    LinkKind, LinkResolutionMode, LinkResolutionProblem, MentionSuggestion,
+    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
+    NoteRecord, NotesReport, OriginContext, OutgoingLinkRecord, OutgoingLinksReport,
+    ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter, PermissionFilter, PermissionGuard,
+    PermissionMode, PermissionProfile, PluginEvent, PluginImporter, ProfilePermissionGuard,
+    QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport,
+    RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile,
+    ResolverDocument, ResolverIndex, ResolverLink, SavedExport, SavedExportFormat,
+    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
+    ScanPhase, ScanProgress, ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport,
+    SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
+    TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
+    TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
+    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
 };
 use zip::write::FileOptions;
 
@@ -1706,35 +1771,6 @@ struct ConfigImportDiscoveryItem {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct ConfigImportListReport {
     importers: Vec<ConfigImportDiscoveryItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct ConfigShowReport {
-    section: Option<String>,
-    config: Value,
-    diagnostics: Vec<ConfigDiagnostic>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    active_permission_profile: Option<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    available_permission_profiles: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct ConfigGetReport {
-    key: String,
-    value: Value,
-    diagnostics: Vec<ConfigDiagnostic>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct ConfigSetReport {
-    key: String,
-    value: Value,
-    config_path: PathBuf,
-    created_config: bool,
-    updated: bool,
-    dry_run: bool,
-    diagnostics: Vec<ConfigDiagnostic>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -16497,135 +16533,13 @@ fn run_config_show(
     section: Option<&str>,
     selected_permission_profile: Option<&str>,
 ) -> Result<(), CliError> {
-    let display_config = load_display_config_state(paths)?;
-    let selected_json = select_config_json_section(&display_config.json, section)?;
-    let selected_toml = select_config_toml_section(&display_config.toml, section)?;
-    let permission_metadata =
-        config_permission_metadata(section, selected_permission_profile, &display_config);
-    let report = ConfigShowReport {
-        section: section.map(ToOwned::to_owned),
-        config: selected_json,
-        diagnostics: normalize_config_diagnostics(paths, &display_config.diagnostics),
-        active_permission_profile: permission_metadata
-            .as_ref()
-            .map(|metadata| metadata.active_profile.clone()),
-        available_permission_profiles: permission_metadata
-            .map_or_else(Vec::new, |metadata| metadata.available_profiles),
-    };
-    print_config_show_report(output, &report, &selected_toml)
+    let report = app_config::build_config_show_report(paths, section, selected_permission_profile)?;
+    print_config_show_report(output, &report)
 }
 
 fn run_config_get(paths: &VaultPaths, output: OutputFormat, key: &str) -> Result<(), CliError> {
-    let display_config = load_display_config_state(paths)?;
-    let value = select_config_json_value(&display_config.json, key)?;
-    let report = ConfigGetReport {
-        key: key.to_string(),
-        value,
-        diagnostics: normalize_config_diagnostics(paths, &display_config.diagnostics),
-    };
+    let report = app_config::build_config_get_report(paths, key)?;
     print_config_get_report(output, &report)
-}
-
-struct DisplayConfigState {
-    json: Value,
-    toml: TomlValue,
-    diagnostics: Vec<ConfigDiagnostic>,
-    permission_profiles: Vec<String>,
-}
-
-struct PermissionConfigMetadata {
-    active_profile: String,
-    available_profiles: Vec<String>,
-}
-
-fn load_display_config_state(paths: &VaultPaths) -> Result<DisplayConfigState, CliError> {
-    let loaded = load_vault_config(paths);
-    let permission_profiles = load_permission_profiles(paths);
-    let json = display_config_json(&loaded.config, &permission_profiles.profiles)?;
-    let toml = display_config_toml(&loaded.config, &permission_profiles.profiles)?;
-    Ok(DisplayConfigState {
-        json,
-        toml,
-        diagnostics: merge_config_diagnostics(
-            &loaded.diagnostics,
-            &permission_profiles.diagnostics,
-        ),
-        permission_profiles: permission_profiles.profiles.keys().cloned().collect(),
-    })
-}
-
-fn display_config_json(
-    config: &vulcan_core::VaultConfig,
-    permission_profiles: &BTreeMap<String, PermissionProfile>,
-) -> Result<Value, CliError> {
-    let mut json = serde_json::to_value(config).map_err(CliError::operation)?;
-    let Value::Object(object) = &mut json else {
-        return Err(CliError::operation(
-            "vault config did not serialize to an object",
-        ));
-    };
-    object.insert(
-        "permissions".to_string(),
-        serde_json::json!({ "profiles": permission_profiles }),
-    );
-    Ok(json)
-}
-
-fn display_config_toml(
-    config: &vulcan_core::VaultConfig,
-    permission_profiles: &BTreeMap<String, PermissionProfile>,
-) -> Result<TomlValue, CliError> {
-    let mut toml_config = TomlValue::try_from(config).map_err(CliError::operation)?;
-    let TomlValue::Table(table) = &mut toml_config else {
-        return Err(CliError::operation(
-            "vault config did not serialize to a TOML table",
-        ));
-    };
-
-    let mut permissions_table = toml::map::Map::new();
-    permissions_table.insert(
-        "profiles".to_string(),
-        TomlValue::try_from(permission_profiles).map_err(CliError::operation)?,
-    );
-    table.insert(
-        "permissions".to_string(),
-        TomlValue::Table(permissions_table),
-    );
-    Ok(toml_config)
-}
-
-fn merge_config_diagnostics(
-    left: &[ConfigDiagnostic],
-    right: &[ConfigDiagnostic],
-) -> Vec<ConfigDiagnostic> {
-    let mut merged = left.to_vec();
-    for diagnostic in right {
-        if merged.iter().any(|existing| {
-            existing.path == diagnostic.path && existing.message == diagnostic.message
-        }) {
-            continue;
-        }
-        merged.push(diagnostic.clone());
-    }
-    merged
-}
-
-fn config_permission_metadata(
-    section: Option<&str>,
-    selected_permission_profile: Option<&str>,
-    display_config: &DisplayConfigState,
-) -> Option<PermissionConfigMetadata> {
-    let section = section?;
-    if section != "permissions" && !section.starts_with("permissions.") {
-        return None;
-    }
-
-    Some(PermissionConfigMetadata {
-        active_profile: selected_permission_profile
-            .unwrap_or("unrestricted")
-            .to_string(),
-        available_profiles: display_config.permission_profiles.clone(),
-    })
 }
 
 fn run_config_set(
@@ -16637,30 +16551,13 @@ fn run_config_set(
     no_commit: bool,
     quiet: bool,
 ) -> Result<(), CliError> {
-    let loaded = load_vault_config(paths);
-    let json_config = serde_json::to_value(&loaded.config).map_err(CliError::operation)?;
-    select_config_json_value(&json_config, key)?;
-
-    let key_path = parse_config_path(key, "key")?;
-    let storage_path = writable_config_storage_path(&key_path, key)?;
-    let value = parse_config_set_value(raw_value);
-    let value_json = serde_json::to_value(&value).map_err(CliError::operation)?;
-
-    let config_path = paths.config_file().to_path_buf();
-    let created_config = !config_path.exists();
     let had_gitignore = paths.gitignore_file().exists();
-    let existing_contents = fs::read_to_string(&config_path).ok();
-    let mut config_value = load_config_file_toml(&config_path)?;
-    set_config_toml_value(&mut config_value, &storage_path, value.clone())?;
-    let rendered = toml::to_string_pretty(&config_value).map_err(CliError::operation)?;
-    validate_vulcan_overrides_toml(&rendered).map_err(CliError::operation)?;
-    let updated = existing_contents.as_deref() != Some(rendered.as_str());
+    let mut report = app_config::plan_config_set_report(paths, key, raw_value, dry_run)?;
 
-    if !dry_run && updated {
+    if !dry_run && report.updated {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
         warn_auto_commit_if_needed(&auto_commit, quiet);
-        ensure_vulcan_dir(paths).map_err(CliError::operation)?;
-        fs::write(&config_path, rendered).map_err(CliError::operation)?;
+        report = app_config::apply_config_set_report(paths, report)?;
         auto_commit
             .commit(
                 paths,
@@ -16671,223 +16568,7 @@ fn run_config_set(
             )
             .map_err(CliError::operation)?;
     }
-
-    let diagnostics = if dry_run || !updated {
-        normalize_config_diagnostics(paths, &loaded.diagnostics)
-    } else {
-        normalize_config_diagnostics(paths, &load_vault_config(paths).diagnostics)
-    };
-    let report = ConfigSetReport {
-        key: key.to_string(),
-        value: value_json,
-        config_path: relativize_config_import_path(paths, &config_path),
-        created_config,
-        updated,
-        dry_run,
-        diagnostics,
-    };
     print_config_set_report(output, &report)
-}
-
-fn select_config_json_section(config: &Value, section: Option<&str>) -> Result<Value, CliError> {
-    let Some(section) = section else {
-        return Ok(config.clone());
-    };
-
-    select_config_json_path(config, section, "section")
-}
-
-fn select_config_json_value(config: &Value, key: &str) -> Result<Value, CliError> {
-    let value = select_config_json_path(config, key, "key")?;
-    if value.is_object() {
-        return Err(CliError::operation(format!(
-            "config key `{key}` resolves to a section; use `vulcan config show {key}` instead"
-        )));
-    }
-    Ok(value)
-}
-
-fn select_config_json_path(config: &Value, path: &str, kind: &str) -> Result<Value, CliError> {
-    let mut current = config;
-    for part in parse_config_path(path, kind)? {
-        current = current
-            .get(part)
-            .ok_or_else(|| CliError::operation(format!("unknown config {kind} `{path}`")))?;
-    }
-    Ok(current.clone())
-}
-
-fn select_config_toml_section(
-    config: &TomlValue,
-    section: Option<&str>,
-) -> Result<TomlValue, CliError> {
-    let Some(section) = section else {
-        return Ok(config.clone());
-    };
-
-    let mut current = config;
-    for part in parse_config_path(section, "section")? {
-        current = current
-            .get(part)
-            .ok_or_else(|| CliError::operation(format!("unknown config section `{section}`")))?;
-    }
-    Ok(current.clone())
-}
-
-fn writable_config_storage_path<'a>(
-    key_path: &[&'a str],
-    key: &str,
-) -> Result<Vec<&'a str>, CliError> {
-    match key_path {
-        ["link_resolution"] => Ok(vec!["links", "resolution"]),
-        ["link_style"] => Ok(vec!["links", "style"]),
-        ["attachment_folder"] => Ok(vec!["links", "attachment_folder"]),
-        ["strict_line_breaks"] | ["property_types", ..] => Err(CliError::operation(format!(
-            "config key `{key}` is not writable via `config set`"
-        ))),
-        _ => Ok(key_path.to_vec()),
-    }
-}
-
-fn parse_config_path<'a>(path: &'a str, kind: &str) -> Result<Vec<&'a str>, CliError> {
-    if path.is_empty() || path.starts_with('.') || path.ends_with('.') {
-        return Err(CliError::operation(format!(
-            "invalid config {kind} `{path}`"
-        )));
-    }
-    let parts = path.split('.').collect::<Vec<_>>();
-    if parts.iter().any(|part| part.is_empty()) {
-        return Err(CliError::operation(format!(
-            "invalid config {kind} `{path}`"
-        )));
-    }
-    Ok(parts)
-}
-
-fn parse_config_set_value(raw_value: &str) -> TomlValue {
-    raw_value
-        .parse::<TomlValue>()
-        .unwrap_or_else(|_| TomlValue::String(raw_value.to_string()))
-}
-
-fn load_config_file_toml(path: &Path) -> Result<TomlValue, CliError> {
-    if !path.exists() {
-        return Ok(TomlValue::Table(toml::map::Map::new()));
-    }
-
-    let contents = fs::read_to_string(path).map_err(CliError::operation)?;
-    if contents.trim().is_empty() {
-        return Ok(TomlValue::Table(toml::map::Map::new()));
-    }
-
-    let value = contents.parse::<TomlValue>().map_err(|error| {
-        CliError::operation(format!("failed to parse {}: {error}", path.display()))
-    })?;
-    if !value.is_table() {
-        return Err(CliError::operation(format!(
-            "expected {} to contain a TOML table",
-            path.display()
-        )));
-    }
-    Ok(value)
-}
-
-fn set_config_toml_value(
-    config: &mut TomlValue,
-    path: &[&str],
-    value: TomlValue,
-) -> Result<(), CliError> {
-    let Some(root) = config.as_table_mut() else {
-        return Err(CliError::operation(
-            "expected config file to contain a TOML table".to_string(),
-        ));
-    };
-
-    set_config_toml_value_in_table(root, path, value)
-}
-
-fn config_toml_path_exists(config: &TomlValue, path: &[&str]) -> bool {
-    let mut current = config;
-    for segment in path {
-        let Some(next) = current.get(*segment) else {
-            return false;
-        };
-        current = next;
-    }
-    true
-}
-
-fn set_config_toml_value_in_table(
-    table: &mut toml::map::Map<String, TomlValue>,
-    path: &[&str],
-    value: TomlValue,
-) -> Result<(), CliError> {
-    let Some((segment, rest)) = path.split_first() else {
-        return Err(CliError::operation(
-            "config key cannot be empty".to_string(),
-        ));
-    };
-
-    if rest.is_empty() {
-        table.insert((*segment).to_string(), value);
-        return Ok(());
-    }
-
-    let entry = table
-        .entry((*segment).to_string())
-        .or_insert_with(|| TomlValue::Table(toml::map::Map::new()));
-    if !entry.is_table() {
-        *entry = TomlValue::Table(toml::map::Map::new());
-    }
-    let Some(child_table) = entry.as_table_mut() else {
-        return Err(CliError::operation(format!(
-            "expected config key `{}` to contain a table",
-            path[..path.len() - rest.len()].join(".")
-        )));
-    };
-
-    set_config_toml_value_in_table(child_table, rest, value)
-}
-
-fn remove_config_toml_value(config: &mut TomlValue, path: &[&str]) -> Result<bool, CliError> {
-    let Some(root) = config.as_table_mut() else {
-        return Err(CliError::operation(
-            "expected config file to contain a TOML table".to_string(),
-        ));
-    };
-
-    remove_config_toml_value_in_table(root, path)
-}
-
-fn remove_config_toml_value_in_table(
-    table: &mut toml::map::Map<String, TomlValue>,
-    path: &[&str],
-) -> Result<bool, CliError> {
-    let Some((segment, rest)) = path.split_first() else {
-        return Err(CliError::operation(
-            "config key cannot be empty".to_string(),
-        ));
-    };
-
-    if rest.is_empty() {
-        return Ok(table.remove(*segment).is_some());
-    }
-
-    let Some(child) = table.get_mut(*segment) else {
-        return Ok(false);
-    };
-    let Some(child_table) = child.as_table_mut() else {
-        return Err(CliError::operation(format!(
-            "expected config key `{}` to contain a table",
-            path[..path.len() - rest.len()].join(".")
-        )));
-    };
-
-    let removed = remove_config_toml_value_in_table(child_table, rest)?;
-    if removed && child_table.is_empty() {
-        table.remove(*segment);
-    }
-    Ok(removed)
 }
 
 fn normalize_config_diagnostics(
@@ -16906,13 +16587,12 @@ fn normalize_config_diagnostics(
 fn print_config_show_report(
     output: OutputFormat,
     report: &ConfigShowReport,
-    config: &TomlValue,
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Human | OutputFormat::Markdown => {
             let rendered_value = match report.section.as_deref() {
-                Some(section) => wrap_config_section_toml(section, config.clone())?,
-                None => config.clone(),
+                Some(section) => wrap_config_section_toml(section, report.rendered_toml.clone()),
+                None => report.rendered_toml.clone(),
             };
             let rendered = toml::to_string_pretty(&rendered_value).map_err(CliError::operation)?;
             print!("{rendered}");
@@ -17026,14 +16706,14 @@ fn print_config_value_human(value: &Value) -> Result<(), CliError> {
     Ok(())
 }
 
-fn wrap_config_section_toml(section: &str, value: TomlValue) -> Result<TomlValue, CliError> {
+fn wrap_config_section_toml(section: &str, value: TomlValue) -> TomlValue {
     let mut wrapped = value;
-    for part in parse_config_path(section, "section")?.into_iter().rev() {
+    for part in section.split('.').rev() {
         let mut table = toml::map::Map::new();
         table.insert(part.to_string(), wrapped);
         wrapped = TomlValue::Table(table);
     }
-    Ok(wrapped)
+    wrapped
 }
 
 fn validate_export_profile_name(name: &str) -> Result<(), CliError> {
@@ -17501,7 +17181,10 @@ fn render_export_profile_section_toml(
     profile: &ExportProfileConfig,
 ) -> Result<TomlValue, CliError> {
     let value = TomlValue::try_from(profile).map_err(CliError::operation)?;
-    wrap_config_section_toml(&format!("export.profiles.{name}"), value)
+    Ok(wrap_config_section_toml(
+        &format!("export.profiles.{name}"),
+        value,
+    ))
 }
 
 fn print_export_profile_show_report(
@@ -17812,9 +17495,9 @@ fn load_shared_export_profile(
     paths: &VaultPaths,
     name: &str,
 ) -> Result<Option<ExportProfileConfig>, CliError> {
-    let config_value = load_config_file_toml(paths.config_file())?;
+    let config_value = app_config::load_config_file_toml(paths.config_file())?;
     let storage_path = shared_export_profile_storage_path(name);
-    if !config_toml_path_exists(&config_value, &storage_path) {
+    if !app_config::config_toml_path_exists(&config_value, &storage_path) {
         return Ok(None);
     }
 
@@ -17844,12 +17527,12 @@ fn persist_shared_export_profile(
     let created_config = !config_path.exists();
     let had_gitignore = paths.gitignore_file().exists();
     let existing_contents = fs::read_to_string(&config_path).ok();
-    let mut config_value = load_config_file_toml(&config_path)?;
+    let mut config_value = app_config::load_config_file_toml(&config_path)?;
     let storage_path = shared_export_profile_storage_path(name);
-    let existing_profile = config_toml_path_exists(&config_value, &storage_path);
+    let existing_profile = app_config::config_toml_path_exists(&config_value, &storage_path);
 
     let profile_toml = TomlValue::try_from(profile).map_err(CliError::operation)?;
-    set_config_toml_value(&mut config_value, &storage_path, profile_toml)?;
+    app_config::set_config_toml_value(&mut config_value, &storage_path, profile_toml)?;
     let rendered = toml::to_string_pretty(&config_value).map_err(CliError::operation)?;
     validate_vulcan_overrides_toml(&rendered).map_err(CliError::operation)?;
     let updated = existing_contents.as_deref() != Some(rendered.as_str());
@@ -22162,14 +21845,14 @@ fn run_export_profile_delete(
     let config_path = paths.config_file().to_path_buf();
     let had_gitignore = paths.gitignore_file().exists();
     let existing_contents = fs::read_to_string(&config_path).ok();
-    let mut config_value = load_config_file_toml(&config_path)?;
+    let mut config_value = app_config::load_config_file_toml(&config_path)?;
     let storage_path = ["export", "profiles", name];
-    if !config_toml_path_exists(&config_value, &storage_path) {
+    if !app_config::config_toml_path_exists(&config_value, &storage_path) {
         return Err(CliError::operation(format!(
             "unknown export profile `{name}`"
         )));
     }
-    let deleted = remove_config_toml_value(&mut config_value, &storage_path)?;
+    let deleted = app_config::remove_config_toml_value(&mut config_value, &storage_path)?;
     let rendered = toml::to_string_pretty(&config_value).map_err(CliError::operation)?;
     validate_vulcan_overrides_toml(&rendered).map_err(CliError::operation)?;
     let updated = existing_contents.as_deref() != Some(rendered.as_str());

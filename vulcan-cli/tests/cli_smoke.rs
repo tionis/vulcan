@@ -1403,6 +1403,41 @@ template = "Daily Shared"
 }
 
 #[test]
+fn config_set_legacy_alias_keys_write_nested_storage_paths() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+
+    let json_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "config",
+            "set",
+            "link_style",
+            "markdown",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&json_assert);
+
+    assert_eq!(json["key"], "link_style");
+    assert_eq!(json["value"], "markdown");
+    assert_eq!(json["config_path"], ".vulcan/config.toml");
+    assert_eq!(json["created_config"], true);
+    assert_eq!(json["updated"], true);
+    assert_eq!(json["dry_run"], false);
+    assert!(fs::read_to_string(vault_root.join(".vulcan/config.toml"))
+        .expect("shared config should be readable")
+        .contains("[links]\nstyle = \"markdown\"\n"));
+}
+
+#[test]
 fn config_import_kanban_json_output_reports_mappings() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
