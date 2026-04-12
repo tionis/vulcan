@@ -107,7 +107,7 @@ Current migration inventory for the Phase 9.22 cleanup:
 
 - Stays in `vulcan-cli`: `src/commands/`, `bases_tui.rs`, `browse_tui.rs`, `config_tui.rs`, `editor.rs`, `note_picker.rs`, `terminal_markdown.rs`, and other terminal-only presentation code.
 - Stays in `vulcan-core`: parser/indexer modules, query/DQL/expression engines, cache schema/migrations, permission models, and shared backend adapters such as the normalized web backend used by multiple surfaces.
-- Moves to or lives in `vulcan-app`: reusable plugin/trust/config mutation services, template and note/task orchestration, export packaging workflows, and other synchronous multi-step operations that should be callable from CLI, daemon, MCP, or assistant entrypoints.
+- Moves to or lives in `vulcan-app`: reusable plugin/trust/config show-get-set and mutation services, template and note/task orchestration, export packaging workflows, and other synchronous multi-step operations that should be callable from CLI, daemon, MCP, or assistant entrypoints.
 - Moves to `vulcan-daemon`: the current interim `serve` transport, background watch/scheduling loops that outlive a single command, chat/platform adapters, and future async API handlers.
 
 Contributor rule: new reusable business logic must not land in `vulcan-cli` unless it is unambiguously CLI- or TUI-only. Treat the size and responsibility spread of `vulcan-cli/src/lib.rs` as a migration target, not the desired steady state.
