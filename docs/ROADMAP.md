@@ -3370,6 +3370,8 @@ Large markdown documents are hard to navigate when the outline repeats full head
 - [x] Add `vulcan note outline --depth <n>` to limit descendants relative to the current scope
 - [x] Render human `vulcan note outline` output as a clearer tree with separate scope metadata instead of repeating full heading paths on every line
 - [x] Allow `vulcan note outline`, `vulcan note get`, and `vulcan note patch` to operate on explicit markdown file paths outside the current vault root
+- [x] Add `vulcan note checkbox` for direct checkbox toggles by absolute line or scoped checkbox index, including standalone markdown files outside the vault root
+- [x] Render human `vulcan note outline` output with heading markers (`#`, `##`, ...) plus nested line/id metadata and ANSI color when enabled
 
 #### 9.19.10 Web search backend expansion
 

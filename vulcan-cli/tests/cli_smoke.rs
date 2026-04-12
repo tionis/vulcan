@@ -1835,6 +1835,66 @@ fn note_outline_supports_section_scopes_and_relative_depth_limits() {
 }
 
 #[test]
+fn note_outline_human_output_shows_heading_markers_and_nested_metadata() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--color",
+            "never",
+            "note",
+            "outline",
+            "Dashboard",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Sections")
+                .and(predicate::str::contains("# Dashboard"))
+                .and(predicate::str::contains("## Tasks"))
+                .and(predicate::str::contains("lines: 9-14"))
+                .and(predicate::str::contains("id: dashboard/tasks@9"))
+                .and(predicate::str::contains("Block refs")),
+        );
+}
+
+#[test]
+fn note_outline_human_output_uses_color_when_requested() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--color",
+            "always",
+            "note",
+            "outline",
+            "Dashboard",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("\u{1b}[36m#")
+                .and(predicate::str::contains("\u{1b}[1mDashboard")),
+        );
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn note_outline_get_and_patch_support_absolute_markdown_paths_outside_vaults() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -2102,6 +2162,164 @@ fn note_patch_supports_semantic_scope_selectors() {
     assert!(updated.contains("TODO first"));
     assert!(updated.contains("DONE nested"));
     assert!(!updated.contains("TODO nested"));
+}
+
+#[test]
+fn note_checkbox_updates_markdown_checkboxes_by_line_and_scope_index() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_checkbox_sample(&vault_root);
+    run_scan(&vault_root);
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    let first_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "note",
+            "checkbox",
+            "Checklist",
+            "--line",
+            "3",
+        ])
+        .assert()
+        .success();
+    let first_json = parse_stdout_json(&first_assert);
+
+    assert_eq!(first_json["path"], "Checklist.md");
+    assert_eq!(first_json["line_number"], 3);
+    assert_eq!(first_json["checkbox_index"], 1);
+    assert_eq!(first_json["state"], "checked");
+    assert_eq!(first_json["before"], "- [ ] Alpha");
+    assert_eq!(first_json["after"], "- [x] Alpha");
+
+    let outline_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "note",
+            "outline",
+            "Checklist",
+        ])
+        .assert()
+        .success();
+    let outline = parse_stdout_json(&outline_assert);
+    let phase_a_id = outline["sections"]
+        .as_array()
+        .expect("sections should be an array")
+        .iter()
+        .find(|section| section["heading"] == "Phase A")
+        .and_then(|section| section["id"].as_str())
+        .expect("Phase A section should be present")
+        .to_string();
+
+    let second_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "note",
+            "checkbox",
+            "Checklist",
+            "--section",
+            &phase_a_id,
+            "--index",
+            "2",
+            "--state",
+            "unchecked",
+        ])
+        .assert()
+        .success();
+    let second_json = parse_stdout_json(&second_assert);
+    let rendered = fs::read_to_string(vault_root.join("Checklist.md"))
+        .expect("Checklist.md should be readable")
+        .replace("\r\n", "\n");
+
+    assert_eq!(second_json["path"], "Checklist.md");
+    assert_eq!(second_json["section_id"], phase_a_id);
+    assert_eq!(second_json["checkbox_index"], 2);
+    assert_eq!(second_json["line_number"], 4);
+    assert_eq!(second_json["state"], "unchecked");
+    assert_eq!(second_json["before"], "- [x] Beta");
+    assert_eq!(second_json["after"], "- [ ] Beta");
+    assert!(rendered.contains("- [x] Alpha"));
+    assert!(rendered.contains("- [ ] Beta"));
+    assert!(rendered.contains("- [ ] Gamma"));
+}
+
+#[test]
+fn note_checkbox_supports_absolute_markdown_paths_outside_vaults() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let workspace = temp_dir.path().join("workspace");
+    let docs_dir = temp_dir.path().join("docs");
+    fs::create_dir_all(&workspace).expect("workspace dir should exist");
+    fs::create_dir_all(&docs_dir).expect("docs dir should exist");
+    let note_path = docs_dir.join("Checklist.md");
+    fs::write(&note_path, "# Tasks\n- [ ] Ship it\n").expect("external markdown file should exist");
+    let note_path_str = note_path
+        .to_str()
+        .expect("note path should be valid utf-8")
+        .to_string();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .current_dir(&workspace)
+        .args([
+            "note",
+            "checkbox",
+            &note_path_str,
+            "--line",
+            "2",
+            "--state",
+            "checked",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Dry run: would set checkbox")
+                .and(predicate::str::contains(&note_path_str)),
+        );
+    assert_eq!(
+        fs::read_to_string(&note_path).expect("external markdown file should remain readable"),
+        "# Tasks\n- [ ] Ship it\n"
+    );
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .current_dir(&workspace)
+        .args([
+            "--output",
+            "json",
+            "note",
+            "checkbox",
+            &note_path_str,
+            "--line",
+            "2",
+            "--state",
+            "checked",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["path"], note_path_str);
+    assert_eq!(json["state"], "checked");
+    assert_eq!(
+        fs::read_to_string(&note_path).expect("external markdown file should be updated"),
+        "# Tasks\n- [x] Ship it\n"
+    );
 }
 
 #[test]
@@ -15537,6 +15755,24 @@ fn write_note_crud_sample(vault_root: &Path) {
         ),
     )
     .expect("Dashboard.md should be written");
+}
+
+fn write_note_checkbox_sample(vault_root: &Path) {
+    fs::create_dir_all(vault_root).expect("vault root should be created");
+    fs::write(
+        vault_root.join("Checklist.md"),
+        concat!(
+            "# Checklist\n",
+            "## Phase A\n",
+            "- [ ] Alpha\n",
+            "- [x] Beta\n",
+            "### Nested\n",
+            "- [ ] Gamma\n",
+            "## Phase B\n",
+            "- [ ] Delta\n",
+        ),
+    )
+    .expect("Checklist.md should be written");
 }
 
 fn write_test_editor(base: &Path, body: &str) -> String {

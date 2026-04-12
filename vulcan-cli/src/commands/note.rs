@@ -9,7 +9,8 @@ use crate::output::ListOutputControls;
 use crate::resolve::resolve_note_argument;
 use crate::{
     selected_permission_guard, selected_read_permission_filter, warn_auto_commit_if_needed, Cli,
-    CliError, NoteAppendMode, NoteAppendOptions, NoteCommand, NoteGetOptions, NotePatchOptions,
+    CliError, NoteAppendMode, NoteAppendOptions, NoteCheckboxOptions, NoteCommand, NoteGetOptions,
+    NotePatchOptions,
 };
 use std::path::Path;
 use vulcan_core::{
@@ -121,7 +122,55 @@ pub(crate) fn handle_note_command(
             check_read_markdown_source_access(cli, paths, note)?;
             let report =
                 crate::run_note_outline_command(paths, note, section_id.as_deref(), *depth)?;
-            crate::print_note_outline_report(cli.output, &report)
+            crate::print_note_outline_report(cli.output, &report, use_stdout_color)
+        }
+        NoteCommand::Checkbox {
+            note,
+            section_id,
+            heading,
+            block_ref,
+            lines,
+            line,
+            index,
+            state,
+            check,
+            dry_run,
+            no_commit,
+        } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            check_write_markdown_source_access(cli, paths, note)?;
+            let report = crate::run_note_checkbox_command(
+                paths,
+                NoteCheckboxOptions {
+                    note,
+                    section_id: section_id.as_deref(),
+                    heading: heading.as_deref(),
+                    block_ref: block_ref.as_deref(),
+                    lines: lines.as_deref(),
+                    line: *line,
+                    index: *index,
+                    state: *state,
+                    check: *check,
+                    dry_run: *dry_run,
+                },
+                cli.permissions.as_deref(),
+                cli.output,
+                use_stderr_color,
+                cli.quiet,
+            )?;
+            if !*dry_run && report.changed {
+                auto_commit
+                    .commit(
+                        paths,
+                        "note-checkbox",
+                        std::slice::from_ref(&report.path),
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
+                    .map_err(CliError::operation)?;
+            }
+            crate::print_note_checkbox_report(cli.output, &report)
         }
         NoteCommand::Get {
             note,
