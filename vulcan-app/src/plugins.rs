@@ -1,19 +1,20 @@
-use crate::{trust, CliError};
+use crate::config::{load_config_file_toml, set_config_toml_value};
+use crate::{trust, AppError};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use vulcan_core::{
-    evaluate_dataview_js_with_options, load_vault_config, resolve_permission_profile,
-    DataviewJsEvalOptions, DataviewJsResult, JsRuntimeSandbox, PluginEvent, PluginRegistration,
-    VaultPaths,
+    ensure_vulcan_dir, evaluate_dataview_js_with_options, load_vault_config,
+    resolve_permission_profile, validate_vulcan_overrides_toml, DataviewJsEvalOptions,
+    DataviewJsResult, JsRuntimeSandbox, PluginEvent, PluginRegistration, VaultPaths,
 };
 
 const PLUGINS_DIR: &str = ".vulcan/plugins";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub(crate) struct PluginDescriptor {
+pub struct PluginDescriptor {
     pub name: String,
     pub path: PathBuf,
     pub exists: bool,
@@ -35,7 +36,18 @@ struct ResolvedPlugin {
     absolute_path: PathBuf,
 }
 
-pub(crate) fn list_plugins(paths: &VaultPaths) -> Vec<PluginDescriptor> {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PluginToggleOutcome {
+    pub name: String,
+    pub enabled: bool,
+    pub updated: bool,
+    pub registered: bool,
+    pub config_path: PathBuf,
+    pub path: PathBuf,
+}
+
+#[must_use]
+pub fn list_plugins(paths: &VaultPaths) -> Vec<PluginDescriptor> {
     let registered = load_vault_config(paths).config.plugins;
     let discovered = discover_plugin_files(paths);
     let mut names = registered.keys().cloned().collect::<Vec<_>>();
@@ -54,15 +66,16 @@ pub(crate) fn list_plugins(paths: &VaultPaths) -> Vec<PluginDescriptor> {
         .collect()
 }
 
-pub(crate) fn plugin_default_config_path(name: &str) -> PathBuf {
+#[must_use]
+pub fn plugin_default_config_path(name: &str) -> PathBuf {
     PathBuf::from(PLUGINS_DIR).join(format!("{name}.js"))
 }
 
-pub(crate) fn run_plugin(
+pub fn run_plugin(
     paths: &VaultPaths,
     active_permission_profile: Option<&str>,
     name: &str,
-) -> Result<DataviewJsResult, CliError> {
+) -> Result<DataviewJsResult, AppError> {
     let plugin = resolve_plugin(paths, name)?;
     require_trusted_plugin_execution(paths, Some(&plugin.descriptor.name))?;
     invoke_plugin(
@@ -77,13 +90,13 @@ pub(crate) fn run_plugin(
     )
 }
 
-pub(crate) fn dispatch_plugin_event(
+pub fn dispatch_plugin_event(
     paths: &VaultPaths,
     active_permission_profile: Option<&str>,
     event: PluginEvent,
     payload: &Value,
     quiet: bool,
-) -> Result<(), CliError> {
+) -> Result<(), AppError> {
     let plugins = list_plugins(paths)
         .into_iter()
         .filter(|plugin| {
@@ -130,27 +143,83 @@ pub(crate) fn dispatch_plugin_event(
     Ok(())
 }
 
-pub(crate) fn require_trusted_plugin_execution(
+pub fn require_trusted_plugin_execution(
     paths: &VaultPaths,
     plugin_name: Option<&str>,
-) -> Result<(), CliError> {
+) -> Result<(), AppError> {
     if trust::is_trusted(paths.vault_root()) {
         return Ok(());
     }
 
     let target = plugin_name.map_or("plugins".to_string(), |name| format!("plugin `{name}`"));
-    Err(CliError::operation(format!(
+    Err(AppError::operation(format!(
         "{target} require a trusted vault; run `vulcan trust add` first"
     )))
 }
 
-fn resolve_plugin(paths: &VaultPaths, name: &str) -> Result<ResolvedPlugin, CliError> {
+pub fn set_plugin_enabled(
+    paths: &VaultPaths,
+    name: &str,
+    enabled: bool,
+) -> Result<PluginToggleOutcome, AppError> {
+    let config_path = paths.config_file().to_path_buf();
+    let created_config = !config_path.exists();
+    let existing_contents = fs::read_to_string(&config_path).ok();
+    let descriptor = list_plugins(paths)
+        .into_iter()
+        .find(|plugin| plugin.name == name)
+        .unwrap_or_else(|| PluginDescriptor {
+            name: name.to_string(),
+            path: plugin_default_config_path(name),
+            exists: false,
+            registered: false,
+            enabled: false,
+            events: Vec::new(),
+            sandbox: None,
+            permission_profile: None,
+            description: None,
+        });
+
+    let mut config_value = load_config_file_toml(&config_path)?;
+    set_config_toml_value(
+        &mut config_value,
+        &["plugins", name, "enabled"],
+        toml::Value::Boolean(enabled),
+    )?;
+    let default_path = plugin_default_config_path(name);
+    if !descriptor.registered && descriptor.path != default_path {
+        set_config_toml_value(
+            &mut config_value,
+            &["plugins", name, "path"],
+            toml::Value::String(descriptor.path.to_string_lossy().into_owned()),
+        )?;
+    }
+
+    let rendered = toml::to_string_pretty(&config_value).map_err(AppError::operation)?;
+    validate_vulcan_overrides_toml(&rendered).map_err(AppError::operation)?;
+    let updated = existing_contents.as_deref() != Some(rendered.as_str());
+    if updated {
+        ensure_vulcan_dir(paths).map_err(AppError::operation)?;
+        fs::write(&config_path, rendered).map_err(AppError::operation)?;
+    }
+
+    Ok(PluginToggleOutcome {
+        name: name.to_string(),
+        enabled,
+        updated,
+        registered: descriptor.registered || updated || created_config,
+        config_path,
+        path: descriptor.path,
+    })
+}
+
+fn resolve_plugin(paths: &VaultPaths, name: &str) -> Result<ResolvedPlugin, AppError> {
     let registered = load_vault_config(paths).config.plugins;
     let discovered = discover_plugin_files(paths);
     let descriptor =
         resolve_plugin_descriptor(paths, name, registered.get(name), discovered.get(name));
     if !descriptor.exists {
-        return Err(CliError::operation(format!(
+        return Err(AppError::operation(format!(
             "plugin `{name}` was not found at {}",
             descriptor.path.display()
         )));
@@ -169,8 +238,8 @@ fn invoke_plugin(
     active_permission_profile: Option<&str>,
     handler_name: &str,
     payload: &Value,
-) -> Result<DataviewJsResult, CliError> {
-    let source = fs::read_to_string(&plugin.absolute_path).map_err(CliError::operation)?;
+) -> Result<DataviewJsResult, AppError> {
+    let source = fs::read_to_string(&plugin.absolute_path).map_err(AppError::operation)?;
     let effective_permission_profile =
         effective_plugin_permission_profile(paths, active_permission_profile, &plugin.descriptor)?;
     let source = build_plugin_invocation_source(
@@ -190,7 +259,7 @@ fn invoke_plugin(
             ..DataviewJsEvalOptions::default()
         },
     )
-    .map_err(CliError::operation)
+    .map_err(AppError::operation)
 }
 
 fn build_plugin_invocation_source(
@@ -198,9 +267,9 @@ fn build_plugin_invocation_source(
     handler_name: &str,
     payload: &Value,
     descriptor: &PluginDescriptor,
-) -> Result<String, CliError> {
-    let handler_name = serde_json::to_string(handler_name).map_err(CliError::operation)?;
-    let payload = serde_json::to_string(payload).map_err(CliError::operation)?;
+) -> Result<String, AppError> {
+    let handler_name = serde_json::to_string(handler_name).map_err(AppError::operation)?;
+    let payload = serde_json::to_string(payload).map_err(AppError::operation)?;
     let context = serde_json::to_string(&json!({
         "plugin": {
             "name": descriptor.name,
@@ -213,7 +282,7 @@ fn build_plugin_invocation_source(
             "description": descriptor.description,
         }
     }))
-    .map_err(CliError::operation)?;
+    .map_err(AppError::operation)?;
 
     Ok(format!(
         "const __vulcanPluginEvent = {payload};\n\
@@ -232,26 +301,26 @@ fn effective_plugin_permission_profile(
     paths: &VaultPaths,
     active_permission_profile: Option<&str>,
     descriptor: &PluginDescriptor,
-) -> Result<Option<String>, CliError> {
+) -> Result<Option<String>, AppError> {
     match (
         active_permission_profile,
         descriptor.permission_profile.as_deref(),
     ) {
         (None, None) => Ok(None),
         (None, Some(requested)) => {
-            resolve_permission_profile(paths, Some(requested)).map_err(CliError::operation)?;
+            resolve_permission_profile(paths, Some(requested)).map_err(AppError::operation)?;
             Ok(Some(requested.to_string()))
         }
         (Some(active), None) => Ok(Some(active.to_string())),
         (Some(active), Some(requested)) => {
             let active_profile =
-                resolve_permission_profile(paths, Some(active)).map_err(CliError::operation)?;
+                resolve_permission_profile(paths, Some(active)).map_err(AppError::operation)?;
             let requested_profile =
-                resolve_permission_profile(paths, Some(requested)).map_err(CliError::operation)?;
+                resolve_permission_profile(paths, Some(requested)).map_err(AppError::operation)?;
             if requested_profile.grant.is_subset_of(&active_profile.grant) {
                 Ok(Some(requested.to_string()))
             } else {
-                Err(CliError::operation(format!(
+                Err(AppError::operation(format!(
                     "plugin `{}` requires permission profile `{requested}`, which is broader than active profile `{active}`",
                     descriptor.name
                 )))
@@ -478,5 +547,27 @@ memory_limit_mb = 32
         let effective = effective_plugin_permission_profile(&paths, Some("agent"), &descriptor)
             .expect("subset profile should be accepted");
         assert_eq!(effective.as_deref(), Some("plugin"));
+    }
+
+    #[test]
+    fn set_plugin_enabled_creates_plugin_registration_from_discovered_file() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(PLUGINS_DIR)).expect("plugin dir should exist");
+        fs::write(
+            vault_root.join(PLUGINS_DIR).join("lint.js"),
+            "function main() {}",
+        )
+        .expect("plugin should write");
+        let paths = VaultPaths::new(vault_root);
+
+        let outcome = set_plugin_enabled(&paths, "lint", true).expect("plugin should be enabled");
+        let config = fs::read_to_string(paths.config_file()).expect("config should be written");
+
+        assert!(outcome.updated);
+        assert!(outcome.registered);
+        assert_eq!(outcome.path, plugin_default_config_path("lint"));
+        assert!(config.contains("[plugins.lint]"));
+        assert!(config.contains("enabled = true"));
     }
 }

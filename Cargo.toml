@@ -1,5 +1,5 @@
 [workspace]
-members = ["vulcan-cli", "vulcan-core", "vulcan-embed"]
+members = ["vulcan-app", "vulcan-cli", "vulcan-core", "vulcan-embed"]
 exclude = ["fuzz"]
 resolver = "2"
 

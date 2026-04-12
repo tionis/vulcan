@@ -1,3 +1,9 @@
+//! Command-agnostic vault semantics and shared backend logic for Vulcan.
+//!
+//! `vulcan-core` owns parsing, indexing, cache abstractions, config models,
+//! query/evaluation logic, and reusable domain types that can be shared across
+//! CLI, daemon, assistant, and other entrypoints.
+
 pub mod bases;
 pub mod cache;
 pub mod chunking;

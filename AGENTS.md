@@ -25,10 +25,13 @@ Three-layer model: vault (source of truth) → SQLite cache (rebuildable) → se
 
 Cargo workspace with crates:
 - `vulcan-core` — Parser, indexer, data model, SQLite cache, file scanning, config, git integration, expression evaluator, query AST, DQL, DataviewJS (rquickjs), Kanban, TaskNotes, periodic notes, refactoring
+- `vulcan-app` — Reusable synchronous application workflows that compose `vulcan-core` with filesystem mutation, plugin dispatch, config edits, scan refresh, and other non-UI orchestration
 - `vulcan-embed` — Embedding provider trait, OpenAI-compatible provider, vector store abstraction
-- `vulcan-cli` — CLI binary, command handlers, output formatting, TUI (note picker, bases TUI, browse TUI), JS REPL, template engine, serve
+- `vulcan-cli` — CLI binary, command handlers, output formatting, TUI (note picker, bases TUI, browse TUI), JS REPL, and transport/presentation adapters over shared services
 - `vulcan-daemon` (planned) — axum-based HTTP daemon, multi-vault registry, middleware
 - `vulcan-sync` (planned) — Sync backend trait and implementations
+
+Contributor boundary rule: new reusable business logic must not land in `vulcan-cli` unless it is clearly CLI/TUI-only. Prefer `vulcan-core` for reusable semantics and `vulcan-app` for reusable synchronous workflow orchestration.
 
 ## Critical constraints
 
