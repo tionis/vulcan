@@ -401,11 +401,16 @@ Examples:
 const NOTE_OUTLINE_COMMAND_AFTER_HELP: &str = "\
 Outline contents:
   frontmatter span        leading YAML block, if present
-  sections                semantic read units with ids, heading paths, and absolute line spans
+  sections                semantic read units with ids, titles, and absolute line spans
   block refs              ^block anchors with absolute line spans and containing section ids
 
+Filters:
+  --section <id>          focus the outline on one semantic section id
+  --depth <n>             limit descendants relative to the current scope
+
 Examples:
-  vulcan note outline Dashboard
+  vulcan note outline Dashboard --depth 2
+  vulcan note outline Dashboard --section dashboard/tasks@9 --depth 1
   vulcan note get Dashboard --section tasks@9";
 
 const GIT_COMMAND_AFTER_HELP: &str = "\
@@ -3322,6 +3327,17 @@ pub enum NoteCommand {
     Outline {
         #[arg(help = "Note path, filename, or alias to inspect")]
         note: String,
+        #[arg(
+            long = "section",
+            help = "Focus the outline on one semantic section id from `note outline`"
+        )]
+        section_id: Option<String>,
+        #[arg(
+            long,
+            value_name = "N",
+            help = "Limit descendants relative to the current outline scope"
+        )]
+        depth: Option<usize>,
     },
     #[command(
         about = "Read one note, optionally narrowed by selectors",

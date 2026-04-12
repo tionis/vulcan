@@ -58,6 +58,50 @@ fn check_refactor_note_access(cli: &Cli, paths: &VaultPaths, note: &str) -> Resu
         .map_err(CliError::operation)
 }
 
+fn check_read_markdown_source_access(
+    cli: &Cli,
+    paths: &VaultPaths,
+    note: &str,
+) -> Result<(), CliError> {
+    let guard = selected_permission_guard(cli, paths)?;
+    if guard.read_filter().path_permission().is_unrestricted() && !guard.has_policy_hook() {
+        return Ok(());
+    }
+
+    let target = crate::resolve_existing_markdown_target(paths, note)?;
+    let Some(relative_path) = target.vault_relative_path.as_deref() else {
+        return Err(CliError::operation(format!(
+            "permission profiles cannot read markdown files outside the selected vault root: {}",
+            target.display_path
+        )));
+    };
+    guard
+        .check_read_path(relative_path)
+        .map_err(CliError::operation)
+}
+
+fn check_write_markdown_source_access(
+    cli: &Cli,
+    paths: &VaultPaths,
+    note: &str,
+) -> Result<(), CliError> {
+    let guard = selected_permission_guard(cli, paths)?;
+    if guard.write_filter().path_permission().is_unrestricted() && !guard.has_policy_hook() {
+        return Ok(());
+    }
+
+    let target = crate::resolve_existing_markdown_target(paths, note)?;
+    let Some(relative_path) = target.vault_relative_path.as_deref() else {
+        return Err(CliError::operation(format!(
+            "permission profiles cannot write markdown files outside the selected vault root: {}",
+            target.display_path
+        )));
+    };
+    guard
+        .check_write_path(relative_path)
+        .map_err(CliError::operation)
+}
+
 pub(crate) fn handle_note_command(
     cli: &Cli,
     paths: &VaultPaths,
@@ -69,9 +113,14 @@ pub(crate) fn handle_note_command(
     use_stderr_color: bool,
 ) -> Result<(), CliError> {
     match command {
-        NoteCommand::Outline { note } => {
-            check_read_note_access(cli, paths, note)?;
-            let report = crate::run_note_outline_command(paths, note)?;
+        NoteCommand::Outline {
+            note,
+            section_id,
+            depth,
+        } => {
+            check_read_markdown_source_access(cli, paths, note)?;
+            let report =
+                crate::run_note_outline_command(paths, note, section_id.as_deref(), *depth)?;
             crate::print_note_outline_report(cli.output, &report)
         }
         NoteCommand::Get {
@@ -86,7 +135,7 @@ pub(crate) fn handle_note_command(
             no_frontmatter,
             raw,
         } => {
-            check_read_note_access(cli, paths, note)?;
+            check_read_markdown_source_access(cli, paths, note)?;
             let report = crate::run_note_get_command(
                 paths,
                 NoteGetOptions {
@@ -248,7 +297,7 @@ pub(crate) fn handle_note_command(
         } => {
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
-            check_write_note_access(cli, paths, note)?;
+            check_write_markdown_source_access(cli, paths, note)?;
             let report = crate::run_note_patch_command(
                 paths,
                 NotePatchOptions {

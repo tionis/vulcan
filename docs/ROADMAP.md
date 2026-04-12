@@ -3362,6 +3362,15 @@ The command may not correctly toggle between TaskNotes-only and all-tasks (inclu
 - [x] At minimum, add a clear error message when `vulcan notes get` or `vulcan note --where` is attempted: suggest the correct command
 - [x] Long-term: absorb `notes` into `query` (see 9.19.7) to eliminate the confusion entirely; `vulcan notes` now rewrites to `vulcan query --format table` and is no longer a first-class command
 
+**`vulcan note outline` on large docs**
+
+Large markdown documents are hard to navigate when the outline repeats full heading paths on every line, and agents often need to inspect/patch standalone `.md` files outside the current vault root.
+
+- [x] Add `vulcan note outline --section <id>` to focus on one outline subtree
+- [x] Add `vulcan note outline --depth <n>` to limit descendants relative to the current scope
+- [x] Render human `vulcan note outline` output as a clearer tree with separate scope metadata instead of repeating full heading paths on every line
+- [x] Allow `vulcan note outline`, `vulcan note get`, and `vulcan note patch` to operate on explicit markdown file paths outside the current vault root
+
 #### 9.19.10 Web search backend expansion
 
 Make the search backend an explicit enum (`SearchBackend`) and add support for additional providers beyond the current Kagi implementation.

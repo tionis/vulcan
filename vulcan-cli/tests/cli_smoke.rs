@@ -1791,6 +1791,159 @@ fn note_outline_and_section_reads_expose_semantic_spans() {
 }
 
 #[test]
+fn note_outline_supports_section_scopes_and_relative_depth_limits() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    write_note_crud_sample(&vault_root);
+    run_scan(&vault_root);
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "note",
+            "outline",
+            "Dashboard",
+            "--section",
+            "dashboard/tasks@9",
+            "--depth",
+            "1",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["path"], "Dashboard.md");
+    assert_eq!(json["scope_section"]["id"], "dashboard/tasks@9");
+    let sections = json["sections"]
+        .as_array()
+        .expect("sections should be an array");
+    assert_eq!(sections.len(), 1);
+    assert_eq!(sections[0]["heading"], "Nested");
+    assert_eq!(sections[0]["id"], "dashboard/tasks/nested@13");
+    assert!(json["block_refs"]
+        .as_array()
+        .expect("block refs should be an array")
+        .is_empty());
+}
+
+#[test]
+#[allow(clippy::too_many_lines)]
+fn note_outline_get_and_patch_support_absolute_markdown_paths_outside_vaults() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let workspace = temp_dir.path().join("workspace");
+    let docs_dir = temp_dir.path().join("docs");
+    fs::create_dir_all(&workspace).expect("workspace dir should exist");
+    fs::create_dir_all(&docs_dir).expect("docs dir should exist");
+    let note_path = docs_dir.join("Large.md");
+    fs::write(
+        &note_path,
+        concat!(
+            "# Root\n",
+            "Body\n",
+            "^root-block\n",
+            "## Child\n",
+            "Child body\n",
+            "### Grandchild\n",
+            "Grandchild body\n",
+        ),
+    )
+    .expect("external markdown file should be written");
+    let note_path_str = note_path
+        .to_str()
+        .expect("note path should be valid utf-8")
+        .to_string();
+
+    let outline_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .current_dir(&workspace)
+        .args([
+            "--output",
+            "json",
+            "note",
+            "outline",
+            &note_path_str,
+            "--section",
+            "root@1",
+            "--depth",
+            "1",
+        ])
+        .assert()
+        .success();
+    let outline = parse_stdout_json(&outline_assert);
+    assert_eq!(outline["path"], note_path_str);
+    assert_eq!(outline["scope_section"]["id"], "root@1");
+    assert_eq!(outline["sections"][0]["id"], "root/child@4");
+    assert_eq!(
+        outline["sections"]
+            .as_array()
+            .expect("sections should be an array")
+            .len(),
+        1
+    );
+
+    let get_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .current_dir(&workspace)
+        .args([
+            "--output",
+            "json",
+            "note",
+            "get",
+            &note_path_str,
+            "--section",
+            "root/child@4",
+        ])
+        .assert()
+        .success();
+    let get_json = parse_stdout_json(&get_assert);
+    assert_eq!(get_json["path"], note_path_str);
+    assert_eq!(
+        get_json["content"],
+        "## Child\nChild body\n### Grandchild\nGrandchild body\n"
+    );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .current_dir(&workspace)
+        .args([
+            "note",
+            "patch",
+            &note_path_str,
+            "--find",
+            "Child body",
+            "--replace",
+            "Kid body",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(&note_path_str)
+                .and(predicate::str::contains("Child body -> Kid body")),
+        );
+    assert_eq!(
+        fs::read_to_string(&note_path).expect("external markdown file should remain readable"),
+        concat!(
+            "# Root\n",
+            "Body\n",
+            "^root-block\n",
+            "## Child\n",
+            "Child body\n",
+            "### Grandchild\n",
+            "Grandchild body\n",
+        )
+    );
+}
+
+#[test]
 fn note_get_human_output_adds_line_numbers_unless_raw() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

@@ -129,9 +129,10 @@ pub use maintenance::{
 };
 pub use move_rewrite::{move_note, LinkChange, MoveError, MoveSummary, RewrittenFile};
 pub use note::{
-    byte_range_for_line_span, locate_note_range, outline_note, read_note, NoteLineSpan,
-    NoteLocatedRange, NoteOutline, NoteOutlineBlockRef, NoteOutlineSection, NoteReadOptions,
-    NoteReadSelection, NoteSelectedLine, NoteSelectionError,
+    byte_range_for_line_span, locate_note_range, outline_note, read_note, select_note_outline,
+    NoteLineSpan, NoteLocatedRange, NoteOutline, NoteOutlineBlockRef, NoteOutlineOptions,
+    NoteOutlineSection, NoteOutlineSelection, NoteReadOptions, NoteReadSelection, NoteSelectedLine,
+    NoteSelectionError,
 };
 pub use parser::{
     parse_document, ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind,
