@@ -4503,21 +4503,25 @@ token = "$argon2id$v=19$..."  # hashed
 id = "work"
 path = "/home/user/vaults/work"
 token = "$argon2id$v=19$..."
-read_only = true  # no mutation endpoints
+permissions_profile = "readonly"  # clamp all API requests for this vault to a named permission profile
 ```
 
 - [ ] Vault registry config at `~/.config/vulcan/daemon.toml` (XDG_CONFIG_HOME respected)
-- [ ] Each vault entry: `id` (short name, URL-safe), `path`, `token` (argon2 hashed), optional `read_only` flag
+- [ ] Each vault entry: `id` (short name, URL-safe), `path`, `token` (argon2 hashed), optional `permissions_profile` (defaults to `unrestricted`, can point at any named profile from Phase 9.19.13)
 - [ ] `vulcan daemon config add <id> <path>` — register a vault, generate and display a token
 - [ ] `vulcan daemon config remove <id>` — unregister a vault
 - [ ] `vulcan daemon config list` — show registered vaults (paths, IDs, status)
 - [ ] Auth tokens stored outside vault content — avoids coupling auth to the data it protects
+- [ ] Token-authenticated daemon requests resolve to a vault plus a named permission profile; all endpoint authorization and result filtering reuse the existing `PermissionGuard` / `PermissionFilter` layer instead of adding daemon-specific ACL logic
 - [ ] Vault auto-discovery: optionally scan a directory for vaults (e.g., `scan_dir = "/home/user/vaults"`)
-- **Forward reference:** Phase 17 replaces the per-vault token model with multi-user accounts, groups, and per-vault roles. The token infrastructure here (argon2 hashing, Bearer auth middleware) is reused — Phase 17 extends it, not replaces it.
+- **Forward reference:** Phase 17 replaces the per-vault token model with multi-user accounts, groups, and per-vault roles. The token infrastructure here (argon2 hashing, Bearer auth middleware) and Phase 9.19.13 permission-profile plumbing are reused — Phase 17 extends them, not replaces them.
 
 ### 10.3 REST API
 
 All endpoints are namespaced by vault ID: `/{vault_id}/...`
+
+- [ ] Every daemon route goes through the permission-profile layer from Phase 9.19.13; denied write/refactor/git/network/config operations return explicit authorization errors, and read/query/search routes apply `PermissionFilter` so restricted callers only see allowed content
+- [ ] `GET /openapi.json` — machine-readable OpenAPI document for the daemon REST surface, including a standard HTTP Bearer auth security scheme, path/query/body schemas, and the fact that requests are constrained by the selected permission profile
 
 **Read endpoints** (map 1:1 to existing CLI commands):
 - [ ] `GET /{id}/search?q=...` — full-text and hybrid search
@@ -4548,7 +4552,7 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 **Daemon management:**
 - [ ] `GET /health` — daemon health, vault statuses
 - [ ] `GET /vaults` — list registered vaults with status
-- [ ] Auth: per-vault `Authorization: Bearer <token>` header, validated against argon2 hash
+- [ ] Auth: standard HTTP `Authorization: Bearer <token>` authentication for daemon clients; validate the token against the stored argon2 hash and resolve it to the vault's configured permission profile
 
 ### 10.4 Per-vault watcher
 
@@ -4570,6 +4574,8 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - **`serve` becomes a lightweight shim over daemon internals.** The existing `vulcan serve` command is kept for single-vault convenience but refactored to use the same router and handler code as the daemon. Internally it registers the current vault as the sole vault and starts the daemon in single-vault mode. This ensures API consistency between `serve` and `daemon` without maintaining two codepaths.
 - **Daemon dependencies (axum, tokio) are included unconditionally.** If compile time or binary size becomes a problem, they can be moved behind a `--features daemon` cargo feature flag later, but start without the complexity.
 - Response format matches existing `--output json` format from CLI commands — the daemon serializes the same report structs
+- OpenAPI generation should derive from the same router/request/response contracts used by the live daemon so `/openapi.json` stays in lockstep with the implementation rather than becoming hand-maintained documentation
+- Standardize on Bearer auth across daemon-exposed HTTP surfaces. The single-vault `serve` shim should accept the same `Authorization: Bearer <token>` flow as the multi-vault daemon so API clients do not need transport-specific auth logic.
 - Rate limiting and request logging via tower middleware
 - CORS headers configurable for WebUI integration (Phase 13)
 
