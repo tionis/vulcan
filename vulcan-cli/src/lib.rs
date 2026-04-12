@@ -153,13 +153,13 @@ pub use cli::{
     DataviewCommand, DescribeFormatArg, EpubTocStyle, ExportArgs, ExportCommand, ExportFormat,
     ExportProfileCommand, ExportProfileFormatArg, ExportProfileRuleCommand, ExportQueryArgs,
     ExportTransformArgs, GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs,
-    KanbanCommand, NoteAppendPeriodicArg, NoteCommand, NoteGetMode, OutputFormat, PeriodicOpenArgs,
-    PeriodicSubcommand, PluginCommand, PropertySortArg, QueryEngineArg, QueryFormatArg,
-    RefactorCommand, RefreshMode, RenderArgs, RepairCommand, SavedCommand, SavedCreateCommand,
-    SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand,
-    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
-    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand,
-    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    KanbanCommand, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
+    OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PropertySortArg,
+    QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RepairCommand,
+    SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand,
+    TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
+    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
+    TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -1648,6 +1648,26 @@ struct NoteOutlineReport {
     depth_limit: Option<usize>,
     sections: Vec<vulcan_core::NoteOutlineSection>,
     block_refs: Vec<vulcan_core::NoteOutlineBlockRef>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct NoteCheckboxReport {
+    path: String,
+    dry_run: bool,
+    checked: bool,
+    changed: bool,
+    section_id: Option<String>,
+    heading: Option<String>,
+    block_ref: Option<String>,
+    lines: Option<String>,
+    line_number: usize,
+    checkbox_index: usize,
+    state: String,
+    before_marker: String,
+    after_marker: String,
+    before: String,
+    after: String,
+    diagnostics: Vec<DoctorDiagnosticIssue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -10264,6 +10284,20 @@ struct NoteGetOptions<'a> {
     raw: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct NoteCheckboxOptions<'a> {
+    note: &'a str,
+    section_id: Option<&'a str>,
+    heading: Option<&'a str>,
+    block_ref: Option<&'a str>,
+    lines: Option<&'a str>,
+    line: Option<usize>,
+    index: Option<usize>,
+    state: NoteCheckboxState,
+    check: bool,
+    dry_run: bool,
+}
+
 #[derive(Debug, Clone)]
 enum NotePatchMatcher {
     Literal(String),
@@ -10298,6 +10332,14 @@ struct NotePatchScopeSelection {
     line_spans: Vec<vulcan_core::NoteLineSpan>,
     byte_start: usize,
     byte_end: usize,
+}
+
+#[derive(Debug, Clone)]
+struct NoteCheckboxCandidate {
+    checkbox_index: usize,
+    line_number: usize,
+    marker: char,
+    line: String,
 }
 
 #[derive(Debug, Clone)]
@@ -10423,6 +10465,103 @@ fn run_note_outline_command(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+fn run_note_checkbox_command(
+    paths: &VaultPaths,
+    options: NoteCheckboxOptions<'_>,
+    permission_profile: Option<&str>,
+    output: OutputFormat,
+    use_stderr_color: bool,
+    quiet: bool,
+) -> Result<NoteCheckboxReport, CliError> {
+    let NoteCheckboxOptions {
+        note,
+        section_id,
+        heading,
+        block_ref,
+        lines,
+        line,
+        index,
+        state,
+        check,
+        dry_run,
+    } = options;
+    if matches!(line, Some(0)) {
+        return Err(CliError::operation(
+            "`note checkbox --line` must be at least 1",
+        ));
+    }
+    if matches!(index, Some(0)) {
+        return Err(CliError::operation(
+            "`note checkbox --index` must be at least 1",
+        ));
+    }
+
+    let target = read_existing_markdown_source(paths, note)?;
+    let selection = resolve_note_checkbox_selection(
+        &target.source,
+        &target.target.config,
+        section_id,
+        heading,
+        block_ref,
+        lines,
+    )?;
+    let candidates = collect_note_checkbox_candidates(&selection.selected_lines);
+    let scope_label = note_checkbox_scope_label(
+        section_id,
+        heading,
+        block_ref,
+        lines,
+        selection.section_id.as_deref(),
+    );
+    let candidate = select_note_checkbox_candidate(&candidates, line, index, &scope_label)?;
+    let (updated_line, after_marker) = update_note_checkbox_line(&candidate.line, state)?;
+    let changed = updated_line != candidate.line;
+    let updated_content = if changed {
+        replace_source_line(&target.source, candidate.line_number, &updated_line)?
+    } else {
+        target.source.clone()
+    };
+
+    if !dry_run && changed {
+        if let Some(relative_path) = target.target.vault_relative_path.as_deref() {
+            dispatch_note_write_plugin_hooks(
+                paths,
+                permission_profile,
+                relative_path,
+                "checkbox",
+                Some(&target.source),
+                &updated_content,
+                quiet,
+            )?;
+        }
+        fs::write(&target.target.absolute_path, &updated_content).map_err(CliError::operation)?;
+        if target.target.is_vault_managed() {
+            run_incremental_scan(paths, output, use_stderr_color, quiet)?;
+        }
+    }
+    let diagnostics = maybe_check_markdown_target(paths, &target.target, &updated_content, check)?;
+
+    Ok(NoteCheckboxReport {
+        path: target.target.display_path,
+        dry_run,
+        checked: check,
+        changed,
+        section_id: selection.section_id,
+        heading: heading.map(ToOwned::to_owned),
+        block_ref: block_ref.map(ToOwned::to_owned),
+        lines: lines.map(ToOwned::to_owned),
+        line_number: candidate.line_number,
+        checkbox_index: candidate.checkbox_index,
+        state: note_checkbox_marker_state_name(after_marker).to_string(),
+        before_marker: candidate.marker.to_string(),
+        after_marker: after_marker.to_string(),
+        before: candidate.line,
+        after: updated_line,
+        diagnostics,
+    })
+}
+
 fn render_note_get_content(content: &str, mode: NoteGetMode, full_document: bool) -> String {
     match mode {
         NoteGetMode::Markdown => content.to_string(),
@@ -10441,6 +10580,248 @@ fn note_get_mode_name(mode: NoteGetMode) -> &'static str {
         NoteGetMode::Markdown => "markdown",
         NoteGetMode::Html => "html",
     }
+}
+
+fn resolve_note_checkbox_selection(
+    source: &str,
+    config: &vulcan_core::VaultConfig,
+    section_id: Option<&str>,
+    heading: Option<&str>,
+    block_ref: Option<&str>,
+    lines: Option<&str>,
+) -> Result<vulcan_core::NoteReadSelection, CliError> {
+    let parsed = vulcan_core::parse_document(source, config);
+    vulcan_core::read_note(
+        source,
+        &parsed,
+        &vulcan_core::NoteReadOptions {
+            heading: heading.map(ToOwned::to_owned),
+            section_id: section_id.map(ToOwned::to_owned),
+            block_ref: block_ref.map(ToOwned::to_owned),
+            lines: lines.map(ToOwned::to_owned),
+            match_pattern: None,
+            context: 0,
+            no_frontmatter: false,
+        },
+    )
+    .map_err(CliError::operation)
+}
+
+fn collect_note_checkbox_candidates(
+    lines: &[vulcan_core::NoteSelectedLine],
+) -> Vec<NoteCheckboxCandidate> {
+    let checkbox =
+        Regex::new(r"^(\s*(?:[-*+]|\d+[.)])\s+\[)(.)(\])").expect("checkbox regex should compile");
+    lines
+        .iter()
+        .filter_map(|line| {
+            let captures = checkbox.captures(&line.text)?;
+            let marker = captures.get(2)?.as_str().chars().next()?;
+            Some((line.line_number, marker, line.text.clone()))
+        })
+        .enumerate()
+        .map(
+            |(index, (line_number, marker, line))| NoteCheckboxCandidate {
+                checkbox_index: index + 1,
+                line_number,
+                marker,
+                line,
+            },
+        )
+        .collect()
+}
+
+fn select_note_checkbox_candidate(
+    candidates: &[NoteCheckboxCandidate],
+    line: Option<usize>,
+    index: Option<usize>,
+    scope_label: &str,
+) -> Result<NoteCheckboxCandidate, CliError> {
+    if let Some(line_number) = line {
+        return candidates
+            .iter()
+            .find(|candidate| candidate.line_number == line_number)
+            .cloned()
+            .ok_or_else(|| {
+                let available = note_checkbox_candidate_summary(candidates);
+                let detail = if available.is_empty() {
+                    String::new()
+                } else {
+                    format!(" Available checkbox lines: {available}.")
+                };
+                CliError::operation(format!(
+                    "no checkbox found at line {line_number} in {scope_label}.{detail}"
+                ))
+            });
+    }
+
+    if let Some(requested_index) = index {
+        return candidates
+            .iter()
+            .find(|candidate| candidate.checkbox_index == requested_index)
+            .cloned()
+            .ok_or_else(|| {
+                CliError::operation(format!(
+                    "checkbox index {requested_index} is out of range for {scope_label}; found {} checkbox{}",
+                    candidates.len(),
+                    if candidates.len() == 1 { "" } else { "es" }
+                ))
+            });
+    }
+
+    match candidates {
+        [] => Err(CliError::operation(format!(
+            "no markdown checkboxes found in {scope_label}"
+        ))),
+        [candidate] => Ok(candidate.clone()),
+        _ => Err(CliError::operation(format!(
+            "found {} markdown checkboxes in {scope_label}; rerun with --line <n> or --index <n>: {}",
+            candidates.len(),
+            note_checkbox_candidate_preview(candidates)
+        ))),
+    }
+}
+
+fn note_checkbox_scope_label(
+    section_id: Option<&str>,
+    heading: Option<&str>,
+    block_ref: Option<&str>,
+    lines: Option<&str>,
+    resolved_section_id: Option<&str>,
+) -> String {
+    if let Some(section_id) = section_id {
+        return format!("section `{section_id}`");
+    }
+    if let Some(section_id) = resolved_section_id {
+        if heading.is_some() || block_ref.is_some() {
+            return format!("selected scope `{section_id}`");
+        }
+    }
+    if let Some(heading) = heading {
+        return format!("heading `{heading}`");
+    }
+    if let Some(block_ref) = block_ref {
+        return format!("block reference `^{block_ref}`");
+    }
+    if let Some(lines) = lines {
+        return format!("line range `{lines}`");
+    }
+    "note".to_string()
+}
+
+fn note_checkbox_candidate_summary(candidates: &[NoteCheckboxCandidate]) -> String {
+    candidates
+        .iter()
+        .map(|candidate| candidate.line_number.to_string())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn note_checkbox_candidate_preview(candidates: &[NoteCheckboxCandidate]) -> String {
+    candidates
+        .iter()
+        .map(|candidate| {
+            format!(
+                "{}:{}",
+                candidate.line_number,
+                note_checkbox_preview_text(&candidate.line)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+fn note_checkbox_preview_text(line: &str) -> String {
+    const MAX_PREVIEW_CHARS: usize = 48;
+    let preview = line.trim();
+    let mut truncated = preview.chars().take(MAX_PREVIEW_CHARS).collect::<String>();
+    if preview.chars().count() > MAX_PREVIEW_CHARS {
+        truncated.push_str("...");
+    }
+    truncated
+}
+
+fn update_note_checkbox_line(
+    line: &str,
+    state: NoteCheckboxState,
+) -> Result<(String, char), CliError> {
+    let checkbox =
+        Regex::new(r"^(\s*(?:[-*+]|\d+[.)])\s+\[)(.)(\])").expect("checkbox regex should compile");
+    let captures = checkbox.captures(line).ok_or_else(|| {
+        CliError::operation(format!(
+            "line is not a markdown checkbox and cannot be edited: {line}"
+        ))
+    })?;
+    let full = captures
+        .get(0)
+        .ok_or_else(|| CliError::operation("failed to locate checkbox marker"))?;
+    let prefix = captures.get(1).map_or("", |capture| capture.as_str());
+    let marker = captures
+        .get(2)
+        .and_then(|capture| capture.as_str().chars().next())
+        .ok_or_else(|| CliError::operation("failed to read checkbox marker"))?;
+    let suffix = captures.get(3).map_or("", |capture| capture.as_str());
+    let updated_marker = match state {
+        NoteCheckboxState::Toggle => note_checkbox_toggled_marker(marker)?,
+        NoteCheckboxState::Checked => 'x',
+        NoteCheckboxState::Unchecked => ' ',
+    };
+
+    Ok((
+        format!(
+            "{}{}{}{}{}",
+            &line[..full.start()],
+            prefix,
+            updated_marker,
+            suffix,
+            &line[full.end()..]
+        ),
+        updated_marker,
+    ))
+}
+
+fn note_checkbox_toggled_marker(marker: char) -> Result<char, CliError> {
+    match marker {
+        ' ' => Ok('x'),
+        'x' | 'X' => Ok(' '),
+        other => Err(CliError::operation(format!(
+            "cannot toggle non-standard checkbox marker `[{other}]`; use `--state checked` or `--state unchecked` to normalize it"
+        ))),
+    }
+}
+
+fn note_checkbox_marker_state_name(marker: char) -> &'static str {
+    if marker == ' ' {
+        "unchecked"
+    } else {
+        "checked"
+    }
+}
+
+fn replace_source_line(
+    source: &str,
+    line_number: usize,
+    updated_line: &str,
+) -> Result<String, CliError> {
+    let index = line_number
+        .checked_sub(1)
+        .ok_or_else(|| CliError::operation(format!("invalid line number: {line_number}")))?;
+    let mut lines = source
+        .split_inclusive('\n')
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    let current = lines
+        .get(index)
+        .ok_or_else(|| CliError::operation(format!("line {line_number} not found")))?;
+    let newline = if current.ends_with("\r\n") {
+        "\r\n"
+    } else if current.ends_with('\n') {
+        "\n"
+    } else {
+        ""
+    };
+    lines[index] = format!("{updated_line}{newline}");
+    Ok(lines.concat())
 }
 
 fn selection_covers_full_document(
@@ -16377,84 +16758,76 @@ fn print_note_get_report(
 fn print_note_outline_report(
     output: OutputFormat,
     report: &NoteOutlineReport,
+    use_color: bool,
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Human | OutputFormat::Markdown => {
-            println!("{}", report.path);
-            println!("Total lines: {}", report.total_lines);
+            let palette = AnsiPalette::new(matches!(output, OutputFormat::Human) && use_color);
+            println!("{}", palette.bold(&report.path));
+            println!("{} {}", palette.dim("lines:"), report.total_lines);
             println!(
-                "Frontmatter: {}",
+                "{} {}",
+                palette.dim("frontmatter:"),
                 report
                     .frontmatter_span
                     .as_ref()
                     .map_or_else(|| "none".to_string(), note_line_span_label)
             );
-            if let Some(scope_section) = &report.scope_section {
-                println!(
-                    "Scope: {} [{}]",
-                    note_outline_section_title(scope_section),
-                    note_line_span_label(&vulcan_core::NoteLineSpan {
-                        start_line: scope_section.start_line,
-                        end_line: scope_section.end_line,
-                    })
-                );
-                println!("  id: {}", scope_section.id);
-            }
             if let Some(depth_limit) = report.depth_limit {
-                println!("Depth limit: {depth_limit}");
+                println!("{} {depth_limit}", palette.dim("depth:"));
+            }
+            if let Some(scope_section) = &report.scope_section {
+                println!();
+                println!("{}", palette.bold("Scope"));
+                print_note_outline_section_entry(report, scope_section, palette, true);
             }
 
-            println!("Sections ({}):", report.sections.len());
+            println!();
+            println!(
+                "{} {}",
+                palette.bold("Sections"),
+                palette.dim(&format!("({})", report.sections.len()))
+            );
             if report.sections.is_empty() {
-                println!("  none");
+                println!("  {}", palette.dim("none"));
             } else {
                 for section in &report.sections {
-                    let indent = "  ".repeat(note_outline_display_depth(
-                        section,
-                        report.scope_section.as_ref(),
-                    ));
-                    let span = note_line_span_label(&vulcan_core::NoteLineSpan {
-                        start_line: section.start_line,
-                        end_line: section.end_line,
-                    });
-                    println!(
-                        "{}{}  {}",
-                        indent,
-                        span,
-                        note_outline_section_title(section)
-                    );
-                    println!("{}  id: {}", indent, section.id);
+                    print_note_outline_section_entry(report, section, palette, false);
                 }
             }
 
-            println!("Block refs ({}):", report.block_refs.len());
+            println!();
+            println!(
+                "{} {}",
+                palette.bold("Block refs"),
+                palette.dim(&format!("({})", report.block_refs.len()))
+            );
             if report.block_refs.is_empty() {
-                println!("  none");
+                println!("  {}", palette.dim("none"));
             } else {
                 for block_ref in &report.block_refs {
-                    let indent = "  ".repeat(note_outline_block_ref_display_depth(
+                    let depth = note_outline_block_ref_display_depth(
                         report,
                         block_ref.section_id.as_deref(),
-                    ));
-                    match &block_ref.section_id {
-                        Some(section_id) => println!(
-                            "{}{}  ^{}  section={section_id}",
+                    );
+                    let indent = "  ".repeat(depth + 1);
+                    println!("{}{}", indent, palette.green(&format!("^{}", block_ref.id)));
+                    println!(
+                        "{}  {} {}",
+                        indent,
+                        palette.dim("lines:"),
+                        note_line_span_label(&vulcan_core::NoteLineSpan {
+                            start_line: block_ref.start_line,
+                            end_line: block_ref.end_line,
+                        })
+                    );
+                    if let Some(section_id) = block_ref.section_id.as_deref() {
+                        println!(
+                            "{}  {} {}",
                             indent,
-                            note_line_span_label(&vulcan_core::NoteLineSpan {
-                                start_line: block_ref.start_line,
-                                end_line: block_ref.end_line,
-                            }),
-                            block_ref.id,
-                        ),
-                        None => println!(
-                            "{}{}  ^{}",
-                            indent,
-                            note_line_span_label(&vulcan_core::NoteLineSpan {
-                                start_line: block_ref.start_line,
-                                end_line: block_ref.end_line,
-                            }),
-                            block_ref.id,
-                        ),
+                            palette.dim("section:"),
+                            palette.yellow(section_id)
+                        );
                     }
                 }
             }
@@ -16468,8 +16841,47 @@ fn note_line_span_label(span: &vulcan_core::NoteLineSpan) -> String {
     format!("{}-{}", span.start_line, span.end_line)
 }
 
-fn note_outline_section_title(section: &vulcan_core::NoteOutlineSection) -> &str {
-    section.heading.as_deref().unwrap_or("(preamble)")
+fn print_note_outline_section_entry(
+    report: &NoteOutlineReport,
+    section: &vulcan_core::NoteOutlineSection,
+    palette: AnsiPalette,
+    is_scope: bool,
+) {
+    let depth = if is_scope {
+        0
+    } else {
+        note_outline_display_depth(section, report.scope_section.as_ref()) + 1
+    };
+    let indent = "  ".repeat(depth);
+    println!("{}{}", indent, note_outline_heading_label(section, palette));
+    println!(
+        "{}  {} {}",
+        indent,
+        palette.dim("lines:"),
+        note_line_span_label(&vulcan_core::NoteLineSpan {
+            start_line: section.start_line,
+            end_line: section.end_line,
+        })
+    );
+    println!(
+        "{}  {} {}",
+        indent,
+        palette.dim("id:"),
+        palette.yellow(&section.id)
+    );
+}
+
+fn note_outline_heading_label(
+    section: &vulcan_core::NoteOutlineSection,
+    palette: AnsiPalette,
+) -> String {
+    match section.heading.as_deref() {
+        Some(heading) => {
+            let hashes = "#".repeat(usize::from(section.level.max(1)));
+            format!("{} {}", palette.cyan(&hashes), palette.bold(heading))
+        }
+        None => palette.bold("[preamble]"),
+    }
 }
 
 fn note_outline_display_depth(
@@ -16573,6 +16985,38 @@ fn print_note_append_report(
             for warning in &report.warnings {
                 eprintln!("warning: {warning}");
             }
+            print_note_check_warnings(&report.path, &report.diagnostics);
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_note_checkbox_report(
+    output: OutputFormat,
+    report: &NoteCheckboxReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human | OutputFormat::Markdown => {
+            let target = format!("{} line {}", report.path, report.line_number);
+            if report.dry_run {
+                if report.changed {
+                    println!(
+                        "Dry run: would set checkbox {} to {}.",
+                        target, report.state
+                    );
+                } else {
+                    println!("Dry run: checkbox {} is already {}.", target, report.state);
+                }
+            } else if report.changed {
+                println!("Set checkbox {} to {}.", target, report.state);
+            } else {
+                println!("Checkbox {} was already {}.", target, report.state);
+            }
+            println!(
+                "Checkbox #{}: {} -> {}",
+                report.checkbox_index, report.before, report.after
+            );
             print_note_check_warnings(&report.path, &report.diagnostics);
             Ok(())
         }
@@ -29365,6 +29809,44 @@ mod tests {
                     note: "Dashboard".to_string(),
                     section_id: None,
                     depth: None,
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_note_checkbox_command() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "note",
+            "checkbox",
+            "Dashboard",
+            "--section",
+            "dashboard/tasks@9",
+            "--index",
+            "2",
+            "--state",
+            "unchecked",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Note {
+                command: NoteCommand::Checkbox {
+                    note: "Dashboard".to_string(),
+                    section_id: Some("dashboard/tasks@9".to_string()),
+                    heading: None,
+                    block_ref: None,
+                    lines: None,
+                    line: None,
+                    index: Some(2),
+                    state: NoteCheckboxState::Unchecked,
+                    check: false,
+                    dry_run: true,
+                    no_commit: true,
                 },
             }
         );

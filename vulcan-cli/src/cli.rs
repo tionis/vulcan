@@ -280,6 +280,7 @@ Subcommands:
   set         replace one note's contents from stdin or --file
   create      create a new note, optionally from a template and extra frontmatter
   append      append text to the end of a note, at the top, or under a heading
+  checkbox    flip or set one markdown checkbox line
   update      bulk-set a frontmatter property across filtered or piped notes
   unset       bulk-remove a frontmatter property across filtered or piped notes
   patch       perform a guarded single-note find/replace
@@ -306,6 +307,7 @@ Examples:
   vulcan note set Projects/Alpha --no-frontmatter < body.md
   vulcan note create Inbox/Idea --template daily --frontmatter status=idea
   vulcan note append Projects/Alpha \"Shipped\" --after-heading \"## Log\"
+  vulcan note checkbox Projects/Alpha --line 12 --state checked
   vulcan note append Projects/Alpha \"Pinned\" --prepend
   vulcan note append \"- {{VALUE}}\" --periodic daily --var value=\"Called Alice\"
   vulcan ls --tag project | vulcan note update --stdin --key status --value done
@@ -412,6 +414,31 @@ Examples:
   vulcan note outline Dashboard --depth 2
   vulcan note outline Dashboard --section dashboard/tasks@9 --depth 1
   vulcan note get Dashboard --section tasks@9";
+
+const NOTE_CHECKBOX_COMMAND_AFTER_HELP: &str = "\
+Selectors:
+  --section <id>          limit the checkbox search to one semantic section id
+  --heading <name>        limit the checkbox search to one heading section
+  --block-ref <id>        limit the checkbox search to one block
+  --lines <range>         limit the checkbox search to a line range within the current selection
+
+Targets:
+  --line <n>              edit one checkbox by absolute line number
+  --index <n>             edit the Nth checkbox in the current selection
+  Without --line/--index, `note checkbox` requires exactly one checkbox in scope.
+
+States:
+  --state toggle          flip `[ ]` <-> `[x]` (default)
+  --state checked         set the checkbox marker to `[x]`
+  --state unchecked       set the checkbox marker to `[ ]`
+
+Notes:
+  This command only edits markdown checkbox markers. Use `vulcan tasks ...` for task-aware status, recurrence, or completion-date workflows.
+
+Examples:
+  vulcan note checkbox Dashboard --line 11
+  vulcan note checkbox Dashboard --section dashboard/tasks@9 --index 1 --state checked
+  vulcan note checkbox ./docs/ROADMAP.md --line 3309 --state unchecked --dry-run";
 
 const GIT_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
@@ -3340,6 +3367,64 @@ pub enum NoteCommand {
         depth: Option<usize>,
     },
     #[command(
+        about = "Flip or set one markdown checkbox line",
+        after_help = NOTE_CHECKBOX_COMMAND_AFTER_HELP
+    )]
+    Checkbox {
+        #[arg(help = "Note path, filename, or alias to update")]
+        note: String,
+        #[arg(
+            long = "section",
+            conflicts_with = "heading",
+            help = "Limit the checkbox search to one semantic section id from `note outline`"
+        )]
+        section_id: Option<String>,
+        #[arg(
+            long,
+            help = "Limit the checkbox search to one heading section by exact heading text"
+        )]
+        heading: Option<String>,
+        #[arg(
+            long = "block-ref",
+            help = "Limit the checkbox search to one block by block reference id"
+        )]
+        block_ref: Option<String>,
+        #[arg(
+            long,
+            help = "Limit the checkbox search to a 1-based line range such as 1-10, 50-, or -5"
+        )]
+        lines: Option<String>,
+        #[arg(
+            long,
+            value_name = "LINE",
+            help = "Edit one checkbox by its absolute 1-based line number"
+        )]
+        line: Option<usize>,
+        #[arg(
+            long,
+            value_name = "N",
+            conflicts_with = "line",
+            help = "Edit the Nth checkbox in the current selection (1-based)"
+        )]
+        index: Option<usize>,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = NoteCheckboxState::Toggle,
+            help = "Set the checkbox state explicitly or toggle it"
+        )]
+        state: NoteCheckboxState,
+        #[arg(long, help = "Run non-blocking doctor-like diagnostics after editing")]
+        check: bool,
+        #[arg(
+            long,
+            help = "Report the planned checkbox edit without writing the file"
+        )]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(
         about = "Read one note, optionally narrowed by selectors",
         after_help = NOTE_GET_COMMAND_AFTER_HELP
     )]
@@ -3627,6 +3712,14 @@ pub enum NoteGetMode {
     #[default]
     Markdown,
     Html,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum NoteCheckboxState {
+    #[default]
+    Toggle,
+    Checked,
+    Unchecked,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
