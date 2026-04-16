@@ -16,7 +16,6 @@ mod note_picker;
 mod output;
 mod resolve;
 mod serve;
-mod template_engine;
 mod terminal_markdown;
 
 mod plugins {
@@ -170,10 +169,6 @@ use crate::output::{
     render_human_value, select_fields, ListOutputControls,
 };
 use crate::resolve::{interactive_note_selection_allowed, resolve_note_argument};
-use crate::template_engine::{
-    parse_template_var_bindings, render_template_request, TemplateEngineKind,
-    TemplateRenderRequest, TemplateRunMode,
-};
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
@@ -197,6 +192,20 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
+use vulcan_app::templates::{
+    apply_template_insertion_mode, discover_templates, find_frontmatter_block,
+    format_frontmatter_block, merge_template_frontmatter, parse_frontmatter_document,
+    parse_template_var_bindings, prepare_template_insertion, render_note_from_parts,
+    render_template_request, resolve_template_file, template_output_path,
+    template_variables_for_path, TemplateEngineKind, TemplateInsertMode, TemplateRenderRequest,
+    TemplateRunMode, TemplateTimestamp, TemplateVariables,
+};
+#[cfg(test)]
+use vulcan_app::templates::{
+    list_templates_in_directory, render_template_variable, TemplateCandidate,
+};
+#[cfg(test)]
+use vulcan_core::config::TemplatesConfig;
 use vulcan_core::config::{
     ContentReplacementRuleConfig, ContentTransformConfig, ContentTransformRuleConfig,
     ExportEpubTocStyleConfig, ExportGraphFormatConfig, ExportProfileConfig, ExportProfileFormat,
@@ -254,9 +263,9 @@ use vulcan_core::{
     ScanPhase, ScanProgress, ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport,
     SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
     TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
-    TemplaterImporter, TemplatesConfig, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
-    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
+    TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase,
+    VectorIndexProgress, VectorIndexReport, VectorNeighborHit, VectorNeighborsReport,
+    VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
 };
 use zip::write::FileOptions;
 
@@ -333,6 +342,12 @@ impl Display for CliError {
 }
 
 impl std::error::Error for CliError {}
+
+impl From<vulcan_app::AppError> for CliError {
+    fn from(error: vulcan_app::AppError) -> Self {
+        Self::operation(error)
+    }
+}
 
 fn permission_error_to_cli(error: impl Display) -> CliError {
     CliError::operation(error)
@@ -439,42 +454,6 @@ pub(crate) fn bundled_support_relative_paths() -> Vec<&'static str> {
 enum RefreshTarget {
     Command,
     Browse,
-}
-
-impl Display for TemplateInsertionError {
-    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::NoteFrontmatterNotMapping => {
-                formatter.write_str("target note frontmatter must be a YAML mapping")
-            }
-            Self::NoteFrontmatterParse(error) => {
-                write!(
-                    formatter,
-                    "failed to parse target note frontmatter: {error}"
-                )
-            }
-            Self::TemplateFrontmatterNotMapping => {
-                formatter.write_str("template frontmatter must be a YAML mapping")
-            }
-            Self::TemplateFrontmatterParse(error) => {
-                write!(formatter, "failed to parse template frontmatter: {error}")
-            }
-            Self::YamlSerialize(error) => {
-                write!(formatter, "failed to serialize merged frontmatter: {error}")
-            }
-        }
-    }
-}
-
-impl std::error::Error for TemplateInsertionError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::NoteFrontmatterParse(error)
-            | Self::TemplateFrontmatterParse(error)
-            | Self::YamlSerialize(error) => Some(error),
-            Self::NoteFrontmatterNotMapping | Self::TemplateFrontmatterNotMapping => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -1567,43 +1546,6 @@ struct TemplateSummary {
     path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TemplateCandidate {
-    name: String,
-    source: &'static str,
-    display_path: String,
-    absolute_path: PathBuf,
-    warning: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TemplateDiscovery {
-    templates: Vec<TemplateCandidate>,
-    warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TemplateInsertMode {
-    Append,
-    Prepend,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct PreparedTemplateInsertion {
-    merged_frontmatter: Option<YamlMapping>,
-    target_body: String,
-    template_body: String,
-}
-
-#[derive(Debug)]
-enum TemplateInsertionError {
-    NoteFrontmatterNotMapping,
-    NoteFrontmatterParse(serde_yaml::Error),
-    TemplateFrontmatterNotMapping,
-    TemplateFrontmatterParse(serde_yaml::Error),
-    YamlSerialize(serde_yaml::Error),
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct OpenReport {
     path: String,
@@ -1862,27 +1804,6 @@ struct InitReport {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct AgentInstallReport {
     support_files: Vec<SupportFileReport>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TemplateVariables {
-    title: String,
-    date: String,
-    time: String,
-    datetime: String,
-    uuid: String,
-    timestamp: TemplateTimestamp,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TemplateTimestamp {
-    days_since_epoch: i64,
-    year: i64,
-    month: i64,
-    day: i64,
-    hour: i64,
-    minute: i64,
-    second: i64,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -9464,368 +9385,6 @@ enum TemplateCommandResult {
     Preview(TemplatePreviewReport),
 }
 
-fn discover_templates(
-    paths: &VaultPaths,
-    obsidian_folder: Option<&Path>,
-    templater_folder: Option<&Path>,
-) -> Result<TemplateDiscovery, CliError> {
-    let mut warnings = Vec::new();
-    let mut templates = list_templates_in_directory(
-        &paths.vulcan_dir().join("templates"),
-        ".vulcan/templates",
-        "vulcan",
-    )?;
-    merge_template_source(
-        &mut templates,
-        &mut warnings,
-        paths,
-        templater_folder,
-        "templater",
-    )?;
-    merge_template_source(
-        &mut templates,
-        &mut warnings,
-        paths,
-        obsidian_folder,
-        "obsidian",
-    )?;
-
-    templates.sort_by(|left, right| left.name.cmp(&right.name));
-    Ok(TemplateDiscovery {
-        templates,
-        warnings,
-    })
-}
-
-fn merge_template_source(
-    templates: &mut Vec<TemplateCandidate>,
-    warnings: &mut Vec<String>,
-    paths: &VaultPaths,
-    folder: Option<&Path>,
-    source: &'static str,
-) -> Result<(), CliError> {
-    let mut discovered = folder
-        .filter(|folder| !folder.as_os_str().is_empty())
-        .map(|folder| {
-            list_templates_in_directory(
-                &paths.vault_root().join(folder),
-                &folder.to_string_lossy(),
-                source,
-            )
-        })
-        .transpose()?
-        .unwrap_or_default();
-
-    for candidate in discovered.drain(..) {
-        if let Some(existing) = templates
-            .iter_mut()
-            .find(|template| template.name == candidate.name)
-        {
-            let warning = format!(
-                "template {} exists in both {} and {}; using {}",
-                existing.name, candidate.display_path, existing.display_path, existing.display_path
-            );
-            existing.warning = Some(warning.clone());
-            warnings.push(warning);
-        } else {
-            templates.push(candidate);
-        }
-    }
-
-    Ok(())
-}
-
-fn resolve_template_file(
-    paths: &VaultPaths,
-    templates: &[TemplateCandidate],
-    name: &str,
-) -> Result<TemplateCandidate, CliError> {
-    // Normalize the requested name: strip .md suffix and normalize path separators
-    let name_normalized = name.trim_end_matches(".md").replace('\\', "/");
-
-    if let Some(template) = templates.iter().find(|template| {
-        let stem = template.name.trim_end_matches(".md");
-        let display_stem = template
-            .display_path
-            .trim_end_matches(".md")
-            .replace('\\', "/");
-        // Match by bare filename (e.g. "daily") or by display_path which includes
-        // directory components (e.g. "00-09 Templates/daily")
-        stem == name_normalized
-            || stem == name
-            || display_stem == name_normalized
-            || display_stem == name
-    }) {
-        return Ok(template.clone());
-    }
-
-    let mut searched = vec![paths.vulcan_dir().join("templates").display().to_string()];
-    let templates_config = load_vault_config(paths).config.templates;
-    let templater_folder = templates_config.templater_folder;
-    let obsidian_folder = templates_config.obsidian_folder;
-    if let Some(folder) = templater_folder.filter(|folder| !folder.as_os_str().is_empty()) {
-        searched.push(paths.vault_root().join(folder).display().to_string());
-    }
-    if let Some(folder) = obsidian_folder.filter(|folder| !folder.as_os_str().is_empty()) {
-        searched.push(paths.vault_root().join(folder).display().to_string());
-    }
-
-    Err(CliError::operation(format!(
-        "template not found in {}: {name}",
-        searched.join(", ")
-    )))
-}
-
-fn list_templates_in_directory(
-    template_dir: &Path,
-    display_root: &str,
-    source: &'static str,
-) -> Result<Vec<TemplateCandidate>, CliError> {
-    if !template_dir.exists() {
-        return Ok(Vec::new());
-    }
-
-    let mut templates = Vec::new();
-    collect_templates_recursive(
-        template_dir,
-        template_dir,
-        display_root,
-        source,
-        &mut templates,
-    )?;
-    templates.sort_by(|left, right| left.display_path.cmp(&right.display_path));
-    Ok(templates)
-}
-
-fn collect_templates_recursive(
-    base_dir: &Path,
-    current_dir: &Path,
-    display_root: &str,
-    source: &'static str,
-    out: &mut Vec<TemplateCandidate>,
-) -> Result<(), CliError> {
-    let entries = fs::read_dir(current_dir).map_err(CliError::operation)?;
-    for entry in entries.filter_map(std::result::Result::ok) {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_templates_recursive(base_dir, &path, display_root, source, out)?;
-        } else if path.extension().and_then(|ext| ext.to_str()) == Some("md") {
-            let Some(name) = path
-                .file_name()
-                .and_then(|v| v.to_str())
-                .map(ToOwned::to_owned)
-            else {
-                continue;
-            };
-            // relative path from the template directory root, using forward slashes
-            let rel = path
-                .strip_prefix(base_dir)
-                .unwrap_or(&path)
-                .to_string_lossy()
-                .replace('\\', "/");
-            let display_path = format!("{display_root}/{rel}");
-            out.push(TemplateCandidate {
-                name,
-                display_path,
-                source,
-                absolute_path: path,
-                warning: None,
-            });
-        }
-    }
-    Ok(())
-}
-
-fn template_output_path(
-    template_file: &str,
-    output_path: Option<&str>,
-    now: &TemplateTimestamp,
-) -> Result<String, CliError> {
-    let path = if let Some(path) = output_path {
-        path.to_string()
-    } else {
-        let date = now.default_date_string();
-        format!("{date}-{template_file}")
-    };
-
-    normalize_relative_input_path(
-        &path,
-        RelativePathOptions {
-            expected_extension: Some("md"),
-            append_extension_if_missing: true,
-        },
-    )
-    .map_err(CliError::operation)
-}
-
-fn prepare_template_insertion(
-    target_source: &str,
-    rendered_template: &str,
-) -> Result<PreparedTemplateInsertion, TemplateInsertionError> {
-    let (target_frontmatter, target_body) = parse_frontmatter_document(target_source, false)?;
-    let (template_frontmatter, template_body) =
-        parse_frontmatter_document(rendered_template, true)?;
-
-    Ok(PreparedTemplateInsertion {
-        merged_frontmatter: merge_template_frontmatter(target_frontmatter, template_frontmatter),
-        target_body,
-        template_body,
-    })
-}
-
-fn parse_frontmatter_document(
-    source: &str,
-    template_document: bool,
-) -> Result<(Option<YamlMapping>, String), TemplateInsertionError> {
-    let Some((yaml_start, yaml_end, body_start)) = find_frontmatter_block(source) else {
-        return Ok((None, source.to_string()));
-    };
-
-    let raw_yaml = &source[yaml_start..yaml_end];
-    let value = serde_yaml::from_str::<YamlValue>(raw_yaml).map_err(|error| {
-        if template_document {
-            TemplateInsertionError::TemplateFrontmatterParse(error)
-        } else {
-            TemplateInsertionError::NoteFrontmatterParse(error)
-        }
-    })?;
-    let mapping = value.as_mapping().cloned().ok_or({
-        if template_document {
-            TemplateInsertionError::TemplateFrontmatterNotMapping
-        } else {
-            TemplateInsertionError::NoteFrontmatterNotMapping
-        }
-    })?;
-
-    Ok((Some(mapping), source[body_start..].to_string()))
-}
-
-fn merge_template_frontmatter(
-    target_frontmatter: Option<YamlMapping>,
-    template_frontmatter: Option<YamlMapping>,
-) -> Option<YamlMapping> {
-    match (target_frontmatter, template_frontmatter) {
-        (None, None) => None,
-        (Some(target), None) => Some(target),
-        (None, Some(template)) => Some(template),
-        (Some(mut target), Some(template)) => {
-            for (key, template_value) in template {
-                if let Some(existing_value) = target.get_mut(&key) {
-                    merge_template_property_value(existing_value, &template_value);
-                } else {
-                    target.insert(key, template_value);
-                }
-            }
-            Some(target)
-        }
-    }
-}
-
-fn merge_template_property_value(existing: &mut YamlValue, template: &YamlValue) {
-    if let (Some(existing_items), Some(template_items)) =
-        (existing.as_sequence_mut(), template.as_sequence())
-    {
-        for template_item in template_items {
-            if !existing_items.iter().any(|item| item == template_item) {
-                existing_items.push(template_item.clone());
-            }
-        }
-    }
-}
-
-fn render_note_from_parts(
-    frontmatter: Option<&YamlMapping>,
-    body: &str,
-) -> Result<String, TemplateInsertionError> {
-    let mut rendered = String::new();
-    if let Some(frontmatter) = frontmatter {
-        rendered.push_str(&format_frontmatter_block(frontmatter)?);
-    }
-    rendered.push_str(body);
-    Ok(rendered)
-}
-
-fn apply_template_insertion_mode(
-    prepared: &PreparedTemplateInsertion,
-    mode: TemplateInsertMode,
-) -> Result<String, TemplateInsertionError> {
-    let body = match mode {
-        TemplateInsertMode::Append => {
-            append_template_body(&prepared.target_body, &prepared.template_body)
-        }
-        TemplateInsertMode::Prepend => {
-            prepend_template_body(&prepared.target_body, &prepared.template_body)
-        }
-    };
-
-    render_note_from_parts(prepared.merged_frontmatter.as_ref(), &body)
-}
-
-fn append_template_body(target_body: &str, template_body: &str) -> String {
-    merge_body_sections(target_body, template_body, false)
-}
-
-fn prepend_template_body(target_body: &str, template_body: &str) -> String {
-    merge_body_sections(template_body, target_body, true)
-}
-
-fn merge_body_sections(first: &str, second: &str, preserve_second_leading_space: bool) -> String {
-    let first = first.trim_end_matches('\n');
-    let second = if preserve_second_leading_space {
-        second.trim_end_matches('\n')
-    } else {
-        second.trim_matches('\n')
-    };
-
-    match (first.is_empty(), second.is_empty()) {
-        (true, true) => String::new(),
-        (false, true) => format!("{first}\n"),
-        (true, false) => format!("{second}\n"),
-        (false, false) => format!("{first}\n\n{second}\n"),
-    }
-}
-
-impl TemplateInsertMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Append => "append",
-            Self::Prepend => "prepend",
-        }
-    }
-}
-
-fn format_frontmatter_block(frontmatter: &YamlMapping) -> Result<String, TemplateInsertionError> {
-    let mut yaml = serde_yaml::to_string(&YamlValue::Mapping(frontmatter.clone()))
-        .map_err(TemplateInsertionError::YamlSerialize)?;
-    if let Some(stripped) = yaml.strip_prefix("---\n") {
-        yaml = stripped.to_string();
-    }
-    if !yaml.ends_with('\n') {
-        yaml.push('\n');
-    }
-    Ok(format!("---\n{yaml}---\n"))
-}
-
-fn find_frontmatter_block(source: &str) -> Option<(usize, usize, usize)> {
-    let mut lines = source.split_inclusive('\n');
-    let first_line = lines.next()?;
-    if !matches!(first_line, "---\n" | "---\r\n" | "---") {
-        return None;
-    }
-
-    let yaml_start = first_line.len();
-    let mut offset = yaml_start;
-    for line in lines {
-        let trimmed = line.trim_end_matches(['\n', '\r']);
-        if trimmed == "---" {
-            return Some((yaml_start, offset, offset + line.len()));
-        }
-        offset += line.len();
-    }
-
-    None
-}
-
 fn inbox_input_text(text: Option<&str>, file: Option<&PathBuf>) -> Result<String, CliError> {
     if let Some(file) = file {
         return fs::read_to_string(file).map_err(CliError::operation);
@@ -9886,274 +9445,6 @@ fn render_template_contents(
 
     rendered.push_str(remaining);
     rendered
-}
-
-fn render_template_variable(
-    expression: &str,
-    variables: &TemplateVariables,
-    config: &TemplatesConfig,
-) -> Option<String> {
-    if let Some(format) = expression.strip_prefix("date:") {
-        return Some(variables.timestamp.format_obsidian(format.trim()));
-    }
-    if let Some(format) = expression.strip_prefix("time:") {
-        return Some(variables.timestamp.format_obsidian(format.trim()));
-    }
-
-    match expression {
-        "title" => Some(variables.title.clone()),
-        "date" => Some(
-            variables
-                .timestamp
-                .format_obsidian(config.date_format.trim()),
-        ),
-        "time" => Some(
-            variables
-                .timestamp
-                .format_obsidian(config.time_format.trim()),
-        ),
-        "datetime" => Some(variables.datetime.clone()),
-        "uuid" => Some(variables.uuid.clone()),
-        _ => None,
-    }
-}
-
-fn template_variables_for_path(path: &str, timestamp: TemplateTimestamp) -> TemplateVariables {
-    let path = Path::new(path);
-    let title = path
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("Untitled")
-        .to_string();
-    let strings = timestamp.default_strings();
-
-    TemplateVariables {
-        title,
-        date: strings.date,
-        time: strings.time,
-        datetime: strings.datetime,
-        uuid: generated_uuid_string(),
-        timestamp,
-    }
-}
-
-struct TimestampStrings {
-    date: String,
-    time: String,
-    datetime: String,
-}
-
-impl TemplateTimestamp {
-    fn current() -> Self {
-        Self::from_millis(vulcan_core::current_utc_timestamp_ms())
-    }
-
-    fn from_millis(ms: i64) -> Self {
-        let seconds = ms.div_euclid(1_000);
-        let days_since_epoch = seconds.div_euclid(86_400);
-        let seconds_of_day = seconds.rem_euclid(86_400);
-        let hour = seconds_of_day / 3_600;
-        let minute = (seconds_of_day % 3_600) / 60;
-        let second = seconds_of_day % 60;
-        let (year, month, day) = civil_from_days(days_since_epoch);
-
-        Self {
-            days_since_epoch,
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-        }
-    }
-
-    fn default_strings(self) -> TimestampStrings {
-        let date = self.default_date_string();
-        let time = format!("{:02}:{:02}:{:02}Z", self.hour, self.minute, self.second);
-        let datetime = format!("{date}T{time}");
-
-        TimestampStrings {
-            date,
-            time,
-            datetime,
-        }
-    }
-
-    fn default_date_string(self) -> String {
-        format!("{:04}-{:02}-{:02}", self.year, self.month, self.day)
-    }
-
-    fn weekday_index(self) -> usize {
-        usize::try_from((self.days_since_epoch + 4).rem_euclid(7)).unwrap_or(0)
-    }
-
-    fn format_obsidian(self, format: &str) -> String {
-        let format = if format.is_empty() {
-            "YYYY-MM-DD"
-        } else {
-            format
-        };
-        let mut rendered = String::with_capacity(format.len());
-        let mut remaining = format;
-
-        while !remaining.is_empty() {
-            if let Some(token) = Self::next_obsidian_token(remaining) {
-                rendered.push_str(&self.token_value(token));
-                remaining = &remaining[token.len()..];
-            } else if let Some(character) = remaining.chars().next() {
-                rendered.push(character);
-                remaining = &remaining[character.len_utf8()..];
-            } else {
-                break;
-            }
-        }
-
-        rendered
-    }
-
-    fn next_obsidian_token(input: &str) -> Option<&'static str> {
-        const TOKENS: [&str; 19] = [
-            "YYYY", "dddd", "MMMM", "MMM", "ddd", "Do", "YY", "MM", "DD", "dd", "HH", "hh", "mm",
-            "ss", "M", "D", "H", "h", "A",
-        ];
-
-        for token in TOKENS {
-            if input.starts_with(token) {
-                return Some(token);
-            }
-        }
-        if input.starts_with('m') {
-            return Some("m");
-        }
-        if input.starts_with('s') {
-            return Some("s");
-        }
-        if input.starts_with('a') {
-            return Some("a");
-        }
-        None
-    }
-
-    fn token_value(self, token: &str) -> String {
-        const MONTH_NAMES: [&str; 12] = [
-            "January",
-            "February",
-            "March",
-            "April",
-            "May",
-            "June",
-            "July",
-            "August",
-            "September",
-            "October",
-            "November",
-            "December",
-        ];
-        const MONTH_ABBREVIATIONS: [&str; 12] = [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-        ];
-        const WEEKDAY_NAMES: [&str; 7] = [
-            "Sunday",
-            "Monday",
-            "Tuesday",
-            "Wednesday",
-            "Thursday",
-            "Friday",
-            "Saturday",
-        ];
-        const WEEKDAY_ABBREVIATIONS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-        const WEEKDAY_SHORT: [&str; 7] = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"];
-
-        let month_index = usize::try_from(self.month.saturating_sub(1)).unwrap_or(0);
-        let weekday_index = self.weekday_index();
-        let hour_12 = match self.hour % 12 {
-            0 => 12,
-            hour => hour,
-        };
-
-        match token {
-            "YYYY" => format!("{:04}", self.year),
-            "YY" => format!("{:02}", self.year.rem_euclid(100)),
-            "MMMM" => MONTH_NAMES[month_index].to_string(),
-            "MMM" => MONTH_ABBREVIATIONS[month_index].to_string(),
-            "MM" => format!("{:02}", self.month),
-            "M" => self.month.to_string(),
-            "DD" => format!("{:02}", self.day),
-            "Do" => ordinal_day(self.day),
-            "D" => self.day.to_string(),
-            "dddd" => WEEKDAY_NAMES[weekday_index].to_string(),
-            "ddd" => WEEKDAY_ABBREVIATIONS[weekday_index].to_string(),
-            "dd" => WEEKDAY_SHORT[weekday_index].to_string(),
-            "HH" => format!("{:02}", self.hour),
-            "H" => self.hour.to_string(),
-            "hh" => format!("{hour_12:02}"),
-            "h" => hour_12.to_string(),
-            "mm" => format!("{:02}", self.minute),
-            "m" => self.minute.to_string(),
-            "ss" => format!("{:02}", self.second),
-            "s" => self.second.to_string(),
-            "A" => {
-                if self.hour < 12 {
-                    "AM".to_string()
-                } else {
-                    "PM".to_string()
-                }
-            }
-            "a" => {
-                if self.hour < 12 {
-                    "am".to_string()
-                } else {
-                    "pm".to_string()
-                }
-            }
-            _ => token.to_string(),
-        }
-    }
-}
-
-fn ordinal_day(day: i64) -> String {
-    let suffix = match day.rem_euclid(100) {
-        11..=13 => "th",
-        _ => match day.rem_euclid(10) {
-            1 => "st",
-            2 => "nd",
-            3 => "rd",
-            _ => "th",
-        },
-    };
-    format!("{day}{suffix}")
-}
-
-fn generated_uuid_string() -> String {
-    let value = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos()
-        ^ u128::from(std::process::id());
-    let hex = format!("{value:032x}");
-    format!(
-        "{}-{}-{}-{}-{}",
-        &hex[0..8],
-        &hex[8..12],
-        &hex[12..16],
-        &hex[16..20],
-        &hex[20..32]
-    )
-}
-
-fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
-    let z = days_since_epoch + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = mp + if mp < 10 { 3 } else { -9 };
-    let year = y + i64::from(month <= 2);
-    (year, month, day)
 }
 
 fn append_at_end(contents: &str, entry: &str) -> String {
@@ -11709,7 +11000,11 @@ fn merge_note_create_bodies(template_body: &str, stdin_body: &str) -> String {
         (true, true) => String::new(),
         (false, true) => template_body.to_string(),
         (true, false) => stdin_body.to_string(),
-        (false, false) => merge_body_sections(template_body, stdin_body, true),
+        (false, false) => {
+            let first = template_body.trim_end_matches('\n');
+            let second = stdin_body.trim_end_matches('\n');
+            format!("{first}\n\n{second}\n")
+        }
     }
 }
 
@@ -31374,30 +30669,10 @@ mod tests {
         minute: i64,
         second: i64,
     ) -> TemplateTimestamp {
-        TemplateTimestamp {
-            days_since_epoch: days_from_civil(year, month, day),
-            year,
-            month,
-            day,
-            hour,
-            minute,
-            second,
-        }
-    }
-
-    fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
-        let adjusted_year = year - i64::from(month <= 2);
-        let era = if adjusted_year >= 0 {
-            adjusted_year
-        } else {
-            adjusted_year - 399
-        } / 400;
-        let year_of_era = adjusted_year - era * 400;
-        let month_index = month + if month > 2 { -3 } else { 9 };
-        let day_of_year = (153 * month_index + 2) / 5 + day - 1;
-        let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
-
-        era * 146_097 + day_of_era - 719_468
+        let timestamp = format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z");
+        TemplateTimestamp::from_millis(
+            parse_date_like_string(&timestamp).expect("fixed template timestamp should parse"),
+        )
     }
 
     #[test]

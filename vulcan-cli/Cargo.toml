@@ -16,7 +16,7 @@ path = "src/main.rs"
 
 [features]
 default = ["js_runtime"]
-js_runtime = ["dep:rquickjs", "vulcan-core/js_runtime"]
+js_runtime = ["dep:rquickjs", "vulcan-app/js_runtime", "vulcan-core/js_runtime"]
 
 [dependencies]
 clap.workspace = true

@@ -9,6 +9,7 @@ mod error;
 
 pub mod config;
 pub mod plugins;
+pub mod templates;
 pub mod trust;
 
 pub use error::AppError;
