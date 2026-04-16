@@ -1,5 +1,6 @@
 use crate::AppError;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
@@ -24,8 +25,10 @@ const MAX_QUICKADD_EXPANSION_DEPTH: usize = 10;
 const DEFAULT_FILE_DATE_FORMAT: &str = "YYYY-MM-DD HH:mm";
 const DAY_MS: i64 = 86_400_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum TemplateEngineKind {
+    #[default]
     Auto,
     Native,
     Templater,
@@ -42,7 +45,8 @@ impl TemplateEngineKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TemplateRunMode {
     Create,
     Append,
@@ -82,6 +86,115 @@ pub struct TemplateRenderOutput {
     pub warnings: Vec<String>,
     pub diagnostics: Vec<String>,
     pub changed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TemplateSummary {
+    pub name: String,
+    pub source: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TemplateListReport {
+    pub templates: Vec<TemplateSummary>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TemplateShowReport {
+    pub name: String,
+    pub source: String,
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplatePreviewRequest {
+    pub template: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_path: Option<String>,
+    #[serde(default)]
+    pub engine: TemplateEngineKind,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub vars: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TemplatePreviewReport {
+    pub template: String,
+    pub template_source: String,
+    pub path: String,
+    pub engine: String,
+    pub content: String,
+    pub warnings: Vec<String>,
+    pub diagnostics: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateCreateRequest {
+    pub template: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_path: Option<String>,
+    #[serde(default)]
+    pub engine: TemplateEngineKind,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub vars: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TemplateCreateReport {
+    pub template: String,
+    pub template_source: String,
+    pub path: String,
+    pub engine: String,
+    pub warnings: Vec<String>,
+    pub diagnostics: Vec<String>,
+    #[serde(skip)]
+    pub absolute_path: PathBuf,
+    #[serde(skip)]
+    pub changed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplateInsertRequest {
+    pub template: String,
+    pub note: String,
+    pub mode: TemplateInsertMode,
+    #[serde(default)]
+    pub engine: TemplateEngineKind,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub vars: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TemplateInsertReport {
+    pub template: String,
+    pub template_source: String,
+    pub note: String,
+    pub mode: String,
+    pub engine: String,
+    pub warnings: Vec<String>,
+    pub diagnostics: Vec<String>,
+    #[serde(skip)]
+    pub changed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedTemplateSource {
+    pub template: TemplateCandidate,
+    pub templates: Vec<TemplateCandidate>,
+    pub source: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct LoadedTemplateRenderRequest<'a> {
+    pub target_path: &'a str,
+    pub target_contents: Option<&'a str>,
+    pub engine: TemplateEngineKind,
+    pub vars: &'a HashMap<String, String>,
+    pub allow_mutations: bool,
+    pub run_mode: TemplateRunMode,
 }
 
 pub fn parse_template_var_bindings(vars: &[String]) -> Result<HashMap<String, String>, CliError> {
@@ -134,6 +247,231 @@ pub fn render_template_request(
         warnings: session.warnings,
         diagnostics: session.diagnostics,
         changed_paths: session.changed_paths.into_iter().collect(),
+    })
+}
+
+pub fn build_template_list_report(paths: &VaultPaths) -> Result<TemplateListReport, AppError> {
+    let config = load_vault_config(paths).config;
+    let templates = discover_templates(
+        paths,
+        config.templates.obsidian_folder.as_deref(),
+        config.templates.templater_folder.as_deref(),
+    )?;
+    Ok(TemplateListReport {
+        templates: templates
+            .templates
+            .into_iter()
+            .map(|template| TemplateSummary {
+                name: template.name,
+                source: template.source.to_string(),
+                path: template.display_path,
+            })
+            .collect(),
+        warnings: templates.warnings,
+    })
+}
+
+pub fn load_named_template(
+    paths: &VaultPaths,
+    vault_config: &VaultConfig,
+    template_name: &str,
+) -> Result<LoadedTemplateSource, AppError> {
+    let templates = discover_templates(
+        paths,
+        vault_config.templates.obsidian_folder.as_deref(),
+        vault_config.templates.templater_folder.as_deref(),
+    )?;
+    let template = resolve_template_file(paths, &templates.templates, template_name)?;
+    let source = fs::read_to_string(&template.absolute_path).map_err(AppError::operation)?;
+    Ok(LoadedTemplateSource {
+        template,
+        templates: templates.templates,
+        source,
+    })
+}
+
+pub fn render_loaded_template(
+    paths: &VaultPaths,
+    vault_config: &VaultConfig,
+    loaded: &LoadedTemplateSource,
+    request: &LoadedTemplateRenderRequest<'_>,
+) -> Result<TemplateRenderOutput, AppError> {
+    render_template_request(TemplateRenderRequest {
+        paths,
+        vault_config,
+        templates: &loaded.templates,
+        template_path: Some(&loaded.template.absolute_path),
+        template_text: &loaded.source,
+        target_path: request.target_path,
+        target_contents: request.target_contents,
+        engine: request.engine,
+        vars: request.vars,
+        allow_mutations: request.allow_mutations,
+        run_mode: request.run_mode,
+    })
+}
+
+pub fn build_template_show_report(
+    paths: &VaultPaths,
+    name: &str,
+) -> Result<TemplateShowReport, AppError> {
+    let config = load_vault_config(paths).config;
+    let loaded = load_named_template(paths, &config, name)?;
+    Ok(TemplateShowReport {
+        name: loaded.template.name,
+        source: loaded.template.source.to_string(),
+        path: loaded.template.display_path,
+        content: loaded.source,
+    })
+}
+
+pub fn build_template_preview_report(
+    paths: &VaultPaths,
+    request: &TemplatePreviewRequest,
+) -> Result<TemplatePreviewReport, AppError> {
+    let config = load_vault_config(paths).config;
+    let loaded = load_named_template(paths, &config, &request.template)?;
+    let output_path = template_output_path(
+        &loaded.template.name,
+        request.output_path.as_deref(),
+        &TemplateTimestamp::current(),
+    )?;
+    let rendered = render_loaded_template(
+        paths,
+        &config,
+        &loaded,
+        &LoadedTemplateRenderRequest {
+            target_path: &output_path,
+            target_contents: None,
+            engine: request.engine,
+            vars: &request.vars,
+            allow_mutations: false,
+            run_mode: TemplateRunMode::Dynamic,
+        },
+    )?;
+    Ok(TemplatePreviewReport {
+        template: loaded.template.name,
+        template_source: loaded.template.source.to_string(),
+        path: rendered.target_path,
+        engine: rendered.engine.as_str().to_string(),
+        content: rendered.content,
+        warnings: loaded
+            .template
+            .warning
+            .into_iter()
+            .chain(rendered.warnings)
+            .collect(),
+        diagnostics: rendered.diagnostics,
+    })
+}
+
+pub fn apply_template_create(
+    paths: &VaultPaths,
+    request: &TemplateCreateRequest,
+) -> Result<TemplateCreateReport, AppError> {
+    let config = load_vault_config(paths).config;
+    let loaded = load_named_template(paths, &config, &request.template)?;
+    let output_path = template_output_path(
+        &loaded.template.name,
+        request.output_path.as_deref(),
+        &TemplateTimestamp::current(),
+    )?;
+    let rendered = render_loaded_template(
+        paths,
+        &config,
+        &loaded,
+        &LoadedTemplateRenderRequest {
+            target_path: &output_path,
+            target_contents: None,
+            engine: request.engine,
+            vars: &request.vars,
+            allow_mutations: true,
+            run_mode: TemplateRunMode::Create,
+        },
+    )?;
+    let absolute_output = paths.vault_root().join(&rendered.target_path);
+    if absolute_output.exists() {
+        return Err(AppError::operation(format!(
+            "destination note already exists: {}",
+            rendered.target_path
+        )));
+    }
+    if let Some(parent) = absolute_output.parent() {
+        fs::create_dir_all(parent).map_err(AppError::operation)?;
+    }
+    fs::write(&absolute_output, &rendered.content).map_err(AppError::operation)?;
+
+    let mut changed_paths = vec![rendered.target_path.clone()];
+    changed_paths.extend(rendered.changed_paths.iter().cloned());
+    changed_paths.sort();
+    changed_paths.dedup();
+
+    Ok(TemplateCreateReport {
+        template: loaded.template.name,
+        template_source: loaded.template.source.to_string(),
+        path: rendered.target_path,
+        engine: rendered.engine.as_str().to_string(),
+        warnings: loaded
+            .template
+            .warning
+            .into_iter()
+            .chain(rendered.warnings)
+            .collect(),
+        diagnostics: rendered.diagnostics,
+        absolute_path: absolute_output,
+        changed_paths,
+    })
+}
+
+pub fn apply_template_insert(
+    paths: &VaultPaths,
+    request: &TemplateInsertRequest,
+) -> Result<TemplateInsertReport, AppError> {
+    let config = load_vault_config(paths).config;
+    let loaded = load_named_template(paths, &config, &request.template)?;
+    let resolved = resolve_note_reference(paths, &request.note).map_err(AppError::operation)?;
+    let target_path = resolved.path;
+    let target_absolute = paths.vault_root().join(&target_path);
+    let target_source = fs::read_to_string(&target_absolute).map_err(AppError::operation)?;
+    let rendered = render_loaded_template(
+        paths,
+        &config,
+        &loaded,
+        &LoadedTemplateRenderRequest {
+            target_path: &target_path,
+            target_contents: Some(&target_source),
+            engine: request.engine,
+            vars: &request.vars,
+            allow_mutations: true,
+            run_mode: TemplateRunMode::Append,
+        },
+    )?;
+    let final_target_absolute = paths.vault_root().join(&rendered.target_path);
+    let prepared = prepare_template_insertion(&target_source, &rendered.content)
+        .map_err(AppError::operation)?;
+    let updated =
+        apply_template_insertion_mode(&prepared, request.mode).map_err(AppError::operation)?;
+    fs::write(&final_target_absolute, updated).map_err(AppError::operation)?;
+
+    let mut changed_paths = vec![rendered.target_path.clone()];
+    changed_paths.extend(rendered.changed_paths.iter().cloned());
+    changed_paths.sort();
+    changed_paths.dedup();
+
+    Ok(TemplateInsertReport {
+        template: loaded.template.name,
+        template_source: loaded.template.source.to_string(),
+        note: rendered.target_path,
+        mode: request.mode.as_str().to_string(),
+        engine: rendered.engine.as_str().to_string(),
+        warnings: loaded
+            .template
+            .warning
+            .into_iter()
+            .chain(rendered.warnings)
+            .collect(),
+        diagnostics: rendered.diagnostics,
+        changed_paths,
     })
 }
 
@@ -3301,7 +3639,8 @@ pub struct TemplateDiscovery {
     pub warnings: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TemplateInsertMode {
     Append,
     Prepend,
@@ -4019,13 +4358,15 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_right_trim, parse_native_expression, parse_template_var_bindings,
-        parse_templater_tag, random_picture_markdown, render_template_request,
-        template_value_to_string, TemplateCandidate, TemplateEngineKind, TemplateRenderRequest,
-        TemplateRunMode, TemplateSession, TemplateTimestamp, TemplateValue, TrimMode,
+        apply_right_trim, apply_template_create, apply_template_insert, build_template_list_report,
+        build_template_preview_report, build_template_show_report, parse_native_expression,
+        parse_template_var_bindings, parse_templater_tag, random_picture_markdown,
+        render_template_request, template_value_to_string, TemplateCandidate,
+        TemplateCreateRequest, TemplateEngineKind, TemplateInsertMode, TemplateInsertRequest,
+        TemplatePreviewRequest, TemplateRenderRequest, TemplateRunMode, TemplateSession,
+        TemplateTimestamp, TemplateValue, TrimMode,
     };
     use std::collections::HashMap;
-    #[cfg(feature = "js_runtime")]
     use std::fs;
     #[cfg(feature = "js_runtime")]
     use std::io::{Read, Write};
@@ -4035,7 +4376,7 @@ mod tests {
     use std::path::Path;
     use std::path::PathBuf;
     use tempfile::tempdir;
-    use vulcan_core::{VaultConfig, VaultPaths};
+    use vulcan_core::{scan_vault, ScanMode, VaultConfig, VaultPaths};
 
     fn fixed_template_timestamp() -> TemplateTimestamp {
         TemplateTimestamp::from_millis(
@@ -4577,5 +4918,132 @@ mod tests {
             .find(|template| template.name == "nested.md")
             .expect("nested template should be present");
         assert!(nested.display_path.contains("subdir"));
+    }
+
+    #[test]
+    fn build_template_list_report_lists_vulcan_templates() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+        fs::write(root.join(".vulcan/templates/daily.md"), "# Daily\n").expect("daily template");
+        fs::write(root.join(".vulcan/templates/weekly.md"), "# Weekly\n").expect("weekly template");
+
+        let report = build_template_list_report(&VaultPaths::new(root)).expect("list report");
+        assert_eq!(report.templates.len(), 2);
+        assert_eq!(report.templates[0].name, "daily.md");
+        assert_eq!(report.templates[1].name, "weekly.md");
+        assert!(report.warnings.is_empty());
+    }
+
+    #[test]
+    fn build_template_show_report_reads_template_contents() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+        fs::write(root.join(".vulcan/templates/daily.md"), "# Daily\nHello\n").expect("template");
+
+        let report =
+            build_template_show_report(&VaultPaths::new(root), "daily").expect("show report");
+        assert_eq!(report.name, "daily.md");
+        assert_eq!(report.source, "vulcan");
+        assert_eq!(report.path, ".vulcan/templates/daily.md");
+        assert_eq!(report.content, "# Daily\nHello\n");
+    }
+
+    #[test]
+    fn build_template_preview_report_renders_named_template() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+        fs::write(root.join(".vulcan/templates/daily.md"), "# {{title}}\n").expect("template");
+
+        let report = build_template_preview_report(
+            &VaultPaths::new(root),
+            &TemplatePreviewRequest {
+                template: "daily".to_string(),
+                output_path: Some("Projects/Alpha".to_string()),
+                engine: TemplateEngineKind::Auto,
+                vars: HashMap::new(),
+            },
+        )
+        .expect("preview report");
+
+        assert_eq!(report.template, "daily.md");
+        assert_eq!(report.template_source, "vulcan");
+        assert_eq!(report.path, "Projects/Alpha.md");
+        assert_eq!(report.engine, "native");
+        assert_eq!(report.content, "# Alpha\n");
+    }
+
+    #[test]
+    fn apply_template_create_writes_note_and_reports_changed_paths() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+        fs::write(root.join(".vulcan/templates/daily.md"), "# {{title}}\n").expect("template");
+
+        let report = apply_template_create(
+            &VaultPaths::new(root),
+            &TemplateCreateRequest {
+                template: "daily".to_string(),
+                output_path: Some("Projects/Alpha".to_string()),
+                engine: TemplateEngineKind::Auto,
+                vars: HashMap::new(),
+            },
+        )
+        .expect("create report");
+
+        assert_eq!(report.template, "daily.md");
+        assert_eq!(report.path, "Projects/Alpha.md");
+        assert_eq!(report.engine, "native");
+        assert_eq!(report.changed_paths, vec!["Projects/Alpha.md".to_string()]);
+        assert_eq!(
+            fs::read_to_string(root.join("Projects/Alpha.md")).expect("created note"),
+            "# Alpha\n"
+        );
+    }
+
+    #[test]
+    fn apply_template_insert_merges_frontmatter_and_updates_note() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+        fs::write(
+            root.join(".vulcan/templates/daily.md"),
+            "---\nstatus: backlog\ntags:\n- team\n---\n\n## Template Section\n",
+        )
+        .expect("template");
+        fs::write(
+            root.join("Home.md"),
+            "---\npriority: high\ntags:\n- release\n---\n\n# Home\n",
+        )
+        .expect("note");
+        scan_vault(&VaultPaths::new(root), ScanMode::Full).expect("scan should succeed");
+
+        let report = apply_template_insert(
+            &VaultPaths::new(root),
+            &TemplateInsertRequest {
+                template: "daily".to_string(),
+                note: "Home".to_string(),
+                mode: TemplateInsertMode::Prepend,
+                engine: TemplateEngineKind::Auto,
+                vars: HashMap::new(),
+            },
+        )
+        .expect("insert report");
+
+        assert_eq!(report.template, "daily.md");
+        assert_eq!(report.note, "Home.md");
+        assert_eq!(report.mode, "prepend");
+        assert_eq!(report.engine, "native");
+        assert_eq!(report.changed_paths, vec!["Home.md".to_string()]);
+
+        let updated = fs::read_to_string(root.join("Home.md")).expect("updated note");
+        assert!(updated.contains("status: backlog"));
+        assert!(updated.contains("priority: high"));
+        assert!(updated.contains("- release"));
+        assert!(updated.contains("- team"));
+        assert!(updated.contains("## Template Section"));
+        assert!(updated.contains("# Home"));
     }
 }
