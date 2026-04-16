@@ -193,16 +193,19 @@ use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
 use vulcan_app::templates::{
-    apply_template_insertion_mode, discover_templates, find_frontmatter_block,
-    format_frontmatter_block, merge_template_frontmatter, parse_frontmatter_document,
-    parse_template_var_bindings, prepare_template_insertion, render_note_from_parts,
-    render_template_request, resolve_template_file, template_output_path,
-    template_variables_for_path, TemplateEngineKind, TemplateInsertMode, TemplateRenderRequest,
-    TemplateRunMode, TemplateTimestamp, TemplateVariables,
+    apply_template_create, apply_template_insert, build_template_list_report,
+    build_template_preview_report, build_template_show_report, find_frontmatter_block,
+    format_frontmatter_block, load_named_template, merge_template_frontmatter,
+    parse_frontmatter_document, parse_template_var_bindings, render_loaded_template,
+    render_note_from_parts, render_template_request, template_variables_for_path,
+    LoadedTemplateRenderRequest, TemplateCreateRequest, TemplateEngineKind, TemplateInsertMode,
+    TemplateInsertRequest, TemplatePreviewRequest, TemplateRenderRequest, TemplateRunMode,
+    TemplateTimestamp, TemplateVariables,
 };
 #[cfg(test)]
 use vulcan_app::templates::{
-    list_templates_in_directory, render_template_variable, TemplateCandidate,
+    list_templates_in_directory, prepare_template_insertion, render_template_variable,
+    resolve_template_file, TemplateCandidate,
 };
 #[cfg(test)]
 use vulcan_core::config::TemplatesConfig;
@@ -5005,28 +5008,21 @@ fn load_tasknote_template(
     template_name: &str,
     target_path: &str,
 ) -> Result<(Option<YamlMapping>, String), CliError> {
-    let templates = discover_templates(
-        paths,
-        config.templates.obsidian_folder.as_deref(),
-        config.templates.templater_folder.as_deref(),
-    )?;
-    let template_file = resolve_template_file(paths, &templates.templates, template_name)?;
-    let template_source =
-        fs::read_to_string(&template_file.absolute_path).map_err(CliError::operation)?;
+    let loaded = load_named_template(paths, config, template_name)?;
     let vars = HashMap::new();
-    let rendered = render_template_request(TemplateRenderRequest {
+    let rendered = render_loaded_template(
         paths,
-        vault_config: config,
-        templates: &templates.templates,
-        template_path: Some(&template_file.absolute_path),
-        template_text: &template_source,
-        target_path,
-        target_contents: None,
-        engine: TemplateEngineKind::Auto,
-        vars: &vars,
-        allow_mutations: true,
-        run_mode: TemplateRunMode::Create,
-    })?;
+        config,
+        &loaded,
+        &LoadedTemplateRenderRequest {
+            target_path,
+            target_contents: None,
+            engine: TemplateEngineKind::Auto,
+            vars: &vars,
+            allow_mutations: true,
+            run_mode: TemplateRunMode::Create,
+        },
+    )?;
     let (frontmatter, body) =
         parse_frontmatter_document(&rendered.content, true).map_err(CliError::operation)?;
     Ok((frontmatter, normalize_tasknote_body(&body)))
@@ -8442,90 +8438,56 @@ fn run_template_command(
     quiet: bool,
     stdout_is_tty: bool,
 ) -> Result<TemplateCommandResult, CliError> {
-    let config = load_vault_config(paths).config;
-    let bound_vars = parse_template_var_bindings(vars)?;
-    let templates = discover_templates(
-        paths,
-        config.templates.obsidian_folder.as_deref(),
-        config.templates.templater_folder.as_deref(),
-    )?;
     if list {
+        let report = build_template_list_report(paths)?;
         return Ok(TemplateCommandResult::List(TemplateListReport {
-            templates: templates
+            templates: report
                 .templates
-                .iter()
+                .into_iter()
                 .map(|template| TemplateSummary {
-                    name: template.name.clone(),
-                    source: template.source.to_string(),
-                    path: template.display_path.clone(),
+                    name: template.name,
+                    source: template.source,
+                    path: template.path,
                 })
                 .collect(),
-            warnings: templates.warnings,
+            warnings: report.warnings,
         }));
     }
 
     let template_name = name.ok_or_else(|| {
         CliError::operation("`template` requires a template name unless --list is used")
     })?;
-    let now = TemplateTimestamp::current();
-    let template = resolve_template_file(paths, &templates.templates, template_name)?;
-    let output_path = template_output_path(&template.name, output_path, &now)?;
-    let template_source =
-        fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?;
-    let rendered = render_template_request(TemplateRenderRequest {
+    let created = apply_template_create(
         paths,
-        vault_config: &config,
-        templates: &templates.templates,
-        template_path: Some(&template.absolute_path),
-        template_text: &template_source,
-        target_path: &output_path,
-        target_contents: None,
-        engine: template_engine_kind(engine),
-        vars: &bound_vars,
-        allow_mutations: true,
-        run_mode: TemplateRunMode::Create,
-    })?;
-    let absolute_output = paths.vault_root().join(&rendered.target_path);
-    if absolute_output.exists() {
-        return Err(CliError::operation(format!(
-            "destination note already exists: {}",
-            rendered.target_path
-        )));
-    }
-    if let Some(parent) = absolute_output.parent() {
-        fs::create_dir_all(parent).map_err(CliError::operation)?;
-    }
-    fs::write(&absolute_output, &rendered.content).map_err(CliError::operation)?;
+        &TemplateCreateRequest {
+            template: template_name.to_string(),
+            output_path: output_path.map(ToOwned::to_owned),
+            engine: template_engine_kind(engine),
+            vars: parse_template_var_bindings(vars)?,
+        },
+    )?;
 
     let mut opened_editor = false;
     if stdout_is_tty && io::stdin().is_terminal() {
-        open_in_editor(&absolute_output).map_err(CliError::operation)?;
+        open_in_editor(&created.absolute_path).map_err(CliError::operation)?;
         opened_editor = true;
     }
 
     run_incremental_scan(paths, OutputFormat::Human, false, false)?;
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
     warn_auto_commit_if_needed(&auto_commit, quiet);
-    let mut changed_paths = vec![rendered.target_path.clone()];
-    changed_paths.extend(rendered.changed_paths.clone());
-    changed_paths.sort();
-    changed_paths.dedup();
     auto_commit
-        .commit(paths, "template", &changed_paths, None, quiet)
+        .commit(paths, "template", &created.changed_paths, None, quiet)
         .map_err(CliError::operation)?;
 
     Ok(TemplateCommandResult::Create(TemplateCreateReport {
-        template: template.name,
-        template_source: template.source.to_string(),
-        path: rendered.target_path,
-        engine: rendered.engine.as_str().to_string(),
+        template: created.template,
+        template_source: created.template_source,
+        path: created.path,
+        engine: created.engine,
         opened_editor,
-        warnings: template
-            .warning
-            .into_iter()
-            .chain(rendered.warnings)
-            .collect(),
-        diagnostics: rendered.diagnostics,
+        warnings: created.warnings,
+        diagnostics: created.diagnostics,
     }))
 }
 
@@ -8541,69 +8503,38 @@ fn run_template_insert_command(
     quiet: bool,
     interactive_note_selection: bool,
 ) -> Result<TemplateInsertReport, CliError> {
-    let config = load_vault_config(paths).config;
-    let bound_vars = parse_template_var_bindings(vars)?;
-    let templates = discover_templates(
-        paths,
-        config.templates.obsidian_folder.as_deref(),
-        config.templates.templater_folder.as_deref(),
-    )?;
-    let template = resolve_template_file(paths, &templates.templates, template_name)?;
     let target_identifier = resolve_note_argument(
         paths,
         note,
         interactive_note_selection,
         "template insert target note",
     )?;
-    let resolved =
-        resolve_note_reference(paths, &target_identifier).map_err(CliError::operation)?;
-    let target_path = resolved.path;
-    let target_absolute = paths.vault_root().join(&target_path);
-    let target_source = fs::read_to_string(&target_absolute).map_err(CliError::operation)?;
-    let template_source =
-        fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?;
-    let rendered_template = render_template_request(TemplateRenderRequest {
+    let report = apply_template_insert(
         paths,
-        vault_config: &config,
-        templates: &templates.templates,
-        template_path: Some(&template.absolute_path),
-        template_text: &template_source,
-        target_path: &target_path,
-        target_contents: Some(&target_source),
-        engine: template_engine_kind(engine),
-        vars: &bound_vars,
-        allow_mutations: true,
-        run_mode: TemplateRunMode::Append,
-    })?;
-    let final_target_absolute = paths.vault_root().join(&rendered_template.target_path);
-    let prepared = prepare_template_insertion(&target_source, &rendered_template.content)
-        .map_err(CliError::operation)?;
-    let updated = apply_template_insertion_mode(&prepared, mode).map_err(CliError::operation)?;
-    fs::write(&final_target_absolute, updated).map_err(CliError::operation)?;
+        &TemplateInsertRequest {
+            template: template_name.to_string(),
+            note: target_identifier,
+            mode,
+            engine: template_engine_kind(engine),
+            vars: parse_template_var_bindings(vars)?,
+        },
+    )?;
 
     run_incremental_scan(paths, OutputFormat::Human, false, false)?;
     let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
     warn_auto_commit_if_needed(&auto_commit, quiet);
-    let mut changed_paths = vec![rendered_template.target_path.clone()];
-    changed_paths.extend(rendered_template.changed_paths.clone());
-    changed_paths.sort();
-    changed_paths.dedup();
     auto_commit
-        .commit(paths, "template insert", &changed_paths, None, quiet)
+        .commit(paths, "template insert", &report.changed_paths, None, quiet)
         .map_err(CliError::operation)?;
 
     Ok(TemplateInsertReport {
-        template: template.name,
-        template_source: template.source.to_string(),
-        note: rendered_template.target_path,
-        mode: mode.as_str().to_string(),
-        engine: rendered_template.engine.as_str().to_string(),
-        warnings: template
-            .warning
-            .into_iter()
-            .chain(rendered_template.warnings)
-            .collect(),
-        diagnostics: rendered_template.diagnostics,
+        template: report.template,
+        template_source: report.template_source,
+        note: report.note,
+        mode: report.mode,
+        engine: report.engine,
+        warnings: report.warnings,
+        diagnostics: report.diagnostics,
     })
 }
 
@@ -8614,43 +8545,23 @@ fn run_template_preview_command(
     engine: TemplateEngineArg,
     vars: &[String],
 ) -> Result<TemplatePreviewReport, CliError> {
-    let config = load_vault_config(paths).config;
-    let bound_vars = parse_template_var_bindings(vars)?;
-    let templates = discover_templates(
+    let report = build_template_preview_report(
         paths,
-        config.templates.obsidian_folder.as_deref(),
-        config.templates.templater_folder.as_deref(),
+        &TemplatePreviewRequest {
+            template: template_name.to_string(),
+            output_path: output_path.map(ToOwned::to_owned),
+            engine: template_engine_kind(engine),
+            vars: parse_template_var_bindings(vars)?,
+        },
     )?;
-    let template = resolve_template_file(paths, &templates.templates, template_name)?;
-    let now = TemplateTimestamp::current();
-    let output_path = template_output_path(&template.name, output_path, &now)?;
-    let template_source =
-        fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?;
-    let rendered = render_template_request(TemplateRenderRequest {
-        paths,
-        vault_config: &config,
-        templates: &templates.templates,
-        template_path: Some(&template.absolute_path),
-        template_text: &template_source,
-        target_path: &output_path,
-        target_contents: None,
-        engine: template_engine_kind(engine),
-        vars: &bound_vars,
-        allow_mutations: false,
-        run_mode: TemplateRunMode::Dynamic,
-    })?;
     Ok(TemplatePreviewReport {
-        template: template.name,
-        template_source: template.source.to_string(),
-        path: rendered.target_path,
-        engine: rendered.engine.as_str().to_string(),
-        content: rendered.content,
-        warnings: template
-            .warning
-            .into_iter()
-            .chain(rendered.warnings)
-            .collect(),
-        diagnostics: rendered.diagnostics,
+        template: report.template,
+        template_source: report.template_source,
+        path: report.path,
+        engine: report.engine,
+        content: report.content,
+        warnings: report.warnings,
+        diagnostics: report.diagnostics,
     })
 }
 
@@ -8745,13 +8656,8 @@ fn render_periodic_note_contents(
         return Ok(String::new());
     };
 
-    let templates = discover_templates(
-        paths,
-        config.templates.obsidian_folder.as_deref(),
-        config.templates.templater_folder.as_deref(),
-    )?;
-    let template = match resolve_template_file(paths, &templates.templates, template_name) {
-        Ok(template) => template,
+    let loaded = match load_named_template(paths, &config, template_name) {
+        Ok(loaded) => loaded,
         Err(error) => {
             warnings.push(format!(
                 "failed to resolve periodic template `{template_name}` for `{period_type}`: {error}"
@@ -8759,25 +8665,20 @@ fn render_periodic_note_contents(
             return Ok(String::new());
         }
     };
-    let contents = fs::read_to_string(&template.absolute_path).map_err(|error| {
-        CliError::operation(format!(
-            "failed to read template `{}` for `{period_type}`: {error}",
-            template.display_path
-        ))
-    })?;
-    let rendered = render_template_request(TemplateRenderRequest {
+    let rendered = render_loaded_template(
         paths,
-        vault_config: &config,
-        templates: &templates.templates,
-        template_path: Some(&template.absolute_path),
-        template_text: &contents,
-        target_path: relative_path,
-        target_contents: None,
-        engine: TemplateEngineKind::Auto,
-        vars: &HashMap::new(),
-        allow_mutations: true,
-        run_mode: TemplateRunMode::Create,
-    })?;
+        &config,
+        &loaded,
+        &LoadedTemplateRenderRequest {
+            target_path: relative_path,
+            target_contents: None,
+            engine: TemplateEngineKind::Auto,
+            vars: &HashMap::new(),
+            allow_mutations: true,
+            run_mode: TemplateRunMode::Create,
+        },
+    )?;
+    warnings.extend(loaded.template.warning);
     warnings.extend(rendered.warnings);
     warnings.extend(rendered.diagnostics);
     Ok(rendered.content)
@@ -9329,26 +9230,20 @@ fn render_bases_note_contents(
 ) -> Result<String, CliError> {
     let config = load_vault_config(paths).config;
     let rendered_template = if let Some(template_name) = context.template.as_deref() {
-        let templates = discover_templates(
+        let loaded = load_named_template(paths, &config, template_name)?;
+        render_loaded_template(
             paths,
-            config.templates.obsidian_folder.as_deref(),
-            config.templates.templater_folder.as_deref(),
-        )?;
-        let template = resolve_template_file(paths, &templates.templates, template_name)?;
-        let source = fs::read_to_string(&template.absolute_path).map_err(CliError::operation)?;
-        render_template_request(TemplateRenderRequest {
-            paths,
-            vault_config: &config,
-            templates: &templates.templates,
-            template_path: Some(&template.absolute_path),
-            template_text: &source,
-            target_path: relative_path,
-            target_contents: None,
-            engine: TemplateEngineKind::Auto,
-            vars: &HashMap::new(),
-            allow_mutations: true,
-            run_mode: TemplateRunMode::Create,
-        })?
+            &config,
+            &loaded,
+            &LoadedTemplateRenderRequest {
+                target_path: relative_path,
+                target_contents: None,
+                engine: TemplateEngineKind::Auto,
+                vars: &HashMap::new(),
+                allow_mutations: true,
+                run_mode: TemplateRunMode::Create,
+            },
+        )?
         .content
     } else {
         String::new()
@@ -10189,34 +10084,27 @@ fn run_note_create_command(
     let mut changed_paths = Vec::new();
 
     if let Some(template_name) = template {
-        let templates = discover_templates(
-            paths,
-            config.templates.obsidian_folder.as_deref(),
-            config.templates.templater_folder.as_deref(),
-        )?;
-        let template_file = resolve_template_file(paths, &templates.templates, template_name)?;
-        let template_source =
-            fs::read_to_string(&template_file.absolute_path).map_err(CliError::operation)?;
+        let loaded = load_named_template(paths, &config, template_name)?;
         let vars = HashMap::new();
-        let rendered = render_template_request(TemplateRenderRequest {
+        let rendered = render_loaded_template(
             paths,
-            vault_config: &config,
-            templates: &templates.templates,
-            template_path: Some(&template_file.absolute_path),
-            template_text: &template_source,
-            target_path: &requested_path,
-            target_contents: None,
-            engine: TemplateEngineKind::Auto,
-            vars: &vars,
-            allow_mutations: true,
-            run_mode: TemplateRunMode::Create,
-        })?;
+            &config,
+            &loaded,
+            &LoadedTemplateRenderRequest {
+                target_path: &requested_path,
+                target_contents: None,
+                engine: TemplateEngineKind::Auto,
+                vars: &vars,
+                allow_mutations: true,
+                run_mode: TemplateRunMode::Create,
+            },
+        )?;
         let (template_frontmatter, template_body) =
             parse_frontmatter_document(&rendered.content, true).map_err(CliError::operation)?;
         frontmatter_mapping = merge_explicit_frontmatter(template_frontmatter, frontmatter_mapping);
         body = merge_note_create_bodies(&template_body, &body);
         final_path.clone_from(&rendered.target_path);
-        warnings.extend(template_file.warning);
+        warnings.extend(loaded.template.warning);
         warnings.extend(rendered.warnings.clone());
         warnings.extend(rendered.diagnostics.clone());
         changed_paths.extend(rendered.changed_paths.clone());
@@ -26778,34 +26666,12 @@ fn print_graph_export_report(
 // template show
 // ────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
-struct TemplateShowReport {
-    name: String,
-    source: String,
-    path: String,
-    content: String,
-}
-
 fn run_template_show_command(
     paths: &VaultPaths,
     name: &str,
     output: OutputFormat,
 ) -> Result<(), CliError> {
-    let config = load_vault_config(paths).config;
-    let templates = discover_templates(
-        paths,
-        config.templates.obsidian_folder.as_deref(),
-        config.templates.templater_folder.as_deref(),
-    )?;
-    let template = resolve_template_file(paths, &templates.templates, name)?;
-    let absolute = &template.absolute_path;
-    let content = fs::read_to_string(absolute).map_err(CliError::operation)?;
-    let report = TemplateShowReport {
-        name: template.name.clone(),
-        source: template.source.to_string(),
-        path: template.display_path.clone(),
-        content: content.clone(),
-    };
+    let report = build_template_show_report(paths, name)?;
     match output {
         OutputFormat::Json => print_json(&report),
         OutputFormat::Human | OutputFormat::Markdown => {
@@ -26813,7 +26679,7 @@ fn run_template_show_command(
             println!("Source: {}", report.source);
             println!("Path:   {}", report.path);
             println!();
-            print!("{content}");
+            print!("{}", report.content);
             Ok(())
         }
     }
