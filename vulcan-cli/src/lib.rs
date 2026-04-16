@@ -192,15 +192,18 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
+use vulcan_app::notes::{
+    apply_note_append, apply_note_create, NoteAppendMode,
+    NoteAppendRequest as AppNoteAppendRequest, NoteCreateRequest as AppNoteCreateRequest,
+};
 use vulcan_app::templates::{
     apply_template_create, apply_template_insert, build_template_list_report,
     build_template_preview_report, build_template_show_report, find_frontmatter_block,
     format_frontmatter_block, load_named_template, merge_template_frontmatter,
     parse_frontmatter_document, parse_template_var_bindings, render_loaded_template,
-    render_note_from_parts, render_template_request, template_variables_for_path,
-    LoadedTemplateRenderRequest, TemplateCreateRequest, TemplateEngineKind, TemplateInsertMode,
-    TemplateInsertRequest, TemplatePreviewRequest, TemplateRenderRequest, TemplateRunMode,
-    TemplateTimestamp, TemplateVariables,
+    render_note_from_parts, template_variables_for_path, LoadedTemplateRenderRequest,
+    TemplateCreateRequest, TemplateEngineKind, TemplateInsertMode, TemplateInsertRequest,
+    TemplatePreviewRequest, TemplateRunMode, TemplateTimestamp, TemplateVariables,
 };
 #[cfg(test)]
 use vulcan_app::templates::{
@@ -1648,23 +1651,6 @@ struct NoteAppendReport {
     reference_date: Option<String>,
     warnings: Vec<String>,
     diagnostics: Vec<DoctorDiagnosticIssue>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NoteAppendMode {
-    Append,
-    Prepend,
-    AfterHeading,
-}
-
-impl NoteAppendMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Append => "append",
-            Self::Prepend => "prepend",
-            Self::AfterHeading => "after_heading",
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -10073,92 +10059,29 @@ fn run_note_create_command(
     use_stderr_color: bool,
     quiet: bool,
 ) -> Result<NoteCreateReport, CliError> {
-    let requested_path = normalize_note_path(path)?;
-
-    let config = load_vault_config(paths).config;
-    let mut warnings = Vec::new();
-    let mut rendered_template = None;
-    let mut frontmatter_mapping = parse_frontmatter_bindings(frontmatter)?;
-    let mut body = read_optional_stdin_text().map_err(CliError::operation)?;
-    let mut final_path = requested_path.clone();
-    let mut changed_paths = Vec::new();
-
-    if let Some(template_name) = template {
-        let loaded = load_named_template(paths, &config, template_name)?;
-        let vars = HashMap::new();
-        let rendered = render_loaded_template(
-            paths,
-            &config,
-            &loaded,
-            &LoadedTemplateRenderRequest {
-                target_path: &requested_path,
-                target_contents: None,
-                engine: TemplateEngineKind::Auto,
-                vars: &vars,
-                allow_mutations: true,
-                run_mode: TemplateRunMode::Create,
-            },
-        )?;
-        let (template_frontmatter, template_body) =
-            parse_frontmatter_document(&rendered.content, true).map_err(CliError::operation)?;
-        frontmatter_mapping = merge_explicit_frontmatter(template_frontmatter, frontmatter_mapping);
-        body = merge_note_create_bodies(&template_body, &body);
-        final_path.clone_from(&rendered.target_path);
-        warnings.extend(loaded.template.warning);
-        warnings.extend(rendered.warnings.clone());
-        warnings.extend(rendered.diagnostics.clone());
-        changed_paths.extend(rendered.changed_paths.clone());
-        rendered_template = Some((template_name.to_string(), rendered));
-    }
-
-    let absolute_path = paths.vault_root().join(&final_path);
-    if absolute_path.exists() {
-        return Err(CliError::operation(format!(
-            "destination note already exists: {final_path}"
-        )));
-    }
-
-    let final_content =
-        render_note_from_parts(frontmatter_mapping.as_ref(), &body).map_err(CliError::operation)?;
-    dispatch_note_write_plugin_hooks(
+    let report = apply_note_create(
         paths,
+        &AppNoteCreateRequest {
+            path: path.to_string(),
+            template: template.map(ToOwned::to_owned),
+            frontmatter: parse_frontmatter_bindings(frontmatter)?,
+            body: read_optional_stdin_text().map_err(CliError::operation)?,
+        },
         permission_profile,
-        &final_path,
-        "create",
-        None,
-        &final_content,
         quiet,
     )?;
-    if let Some(parent) = absolute_path.parent() {
-        fs::create_dir_all(parent).map_err(CliError::operation)?;
-    }
-    fs::write(&absolute_path, &final_content).map_err(CliError::operation)?;
-    let diagnostics = maybe_check_note(paths, &final_path, &final_content, check)?;
+    let diagnostics = maybe_check_note(paths, &report.path, &report.content, check)?;
     run_incremental_scan(paths, output, use_stderr_color, quiet)?;
-    dispatch_note_create_plugin_hooks(
-        paths,
-        permission_profile,
-        &final_path,
-        &final_content,
-        quiet,
-    );
-    changed_paths.push(final_path.clone());
-    changed_paths.sort();
-    changed_paths.dedup();
 
     Ok(NoteCreateReport {
-        path: final_path,
+        path: report.path,
         created: true,
         checked: check,
-        template: rendered_template
-            .as_ref()
-            .map(|(template_name, _)| template_name.clone()),
-        engine: rendered_template
-            .as_ref()
-            .map(|(_, rendered)| rendered.engine.as_str().to_string()),
-        warnings,
+        template: report.template,
+        engine: report.engine,
+        warnings: report.warnings,
         diagnostics,
-        changed_paths,
+        changed_paths: report.changed_paths,
     })
 }
 
@@ -10167,31 +10090,6 @@ fn note_append_periodic_type(periodic: NoteAppendPeriodicArg) -> &'static str {
         NoteAppendPeriodicArg::Daily => "daily",
         NoteAppendPeriodicArg::Weekly => "weekly",
         NoteAppendPeriodicArg::Monthly => "monthly",
-    }
-}
-
-fn prepend_entry_after_frontmatter(contents: &str, entry: &str) -> NoteEntryInsertion {
-    let body_start = find_frontmatter_block(contents).map_or(0, |(_, _, body_start)| body_start);
-    let prefix = &contents[..body_start];
-    let body = contents[body_start..].trim_start_matches('\n');
-    let mut updated = prefix.to_string();
-    let line_number = i64::try_from(updated.lines().count().saturating_add(1))
-        .expect("line count should fit in i64");
-    updated.push_str(entry.trim_end());
-    updated.push('\n');
-    if !body.is_empty() {
-        updated.push('\n');
-        updated.push_str(body.trim_end_matches('\n'));
-        updated.push('\n');
-    }
-
-    NoteEntryInsertion {
-        updated,
-        line_number,
-        change: RefactorChange {
-            before: String::new(),
-            after: entry.trim_end().to_string(),
-        },
     }
 }
 
@@ -10225,88 +10123,33 @@ fn run_note_append_command(
         vars,
         check,
     } = options;
-    let config = load_vault_config(paths).config;
-    let bound_vars = parse_template_var_bindings(vars)?;
-    let (relative_path, existing, created, period_type, reference_date, mut warnings) =
-        if let Some(periodic) = periodic {
-            let period_type = note_append_periodic_type(periodic);
-            let target = resolve_periodic_target(&config.periodic, period_type, date, true)?;
-            let mut warnings = Vec::new();
-            let created =
-                write_periodic_note_if_missing(paths, period_type, &target.path, &mut warnings)?;
-            let absolute_path = paths.vault_root().join(&target.path);
-            let existing = fs::read_to_string(&absolute_path).unwrap_or_default();
-            (
-                target.path,
-                existing,
-                created,
-                Some(period_type.to_string()),
-                Some(target.reference_date),
-                warnings,
-            )
-        } else {
-            let note = note.ok_or_else(|| {
-                CliError::operation("`note append` requires a note or --periodic <type>")
-            })?;
-            let (relative_path, existing) = read_existing_note_source(paths, note)?;
-            (relative_path, existing, false, None, None, Vec::new())
-        };
-    let appended_text = note_append_input_text(text)?;
-    let rendered = render_template_request(TemplateRenderRequest {
+    let report = apply_note_append(
         paths,
-        vault_config: &config,
-        templates: &[],
-        template_path: None,
-        template_text: &appended_text,
-        target_path: &relative_path,
-        target_contents: Some(&existing),
-        engine: TemplateEngineKind::Native,
-        vars: &bound_vars,
-        allow_mutations: false,
-        run_mode: TemplateRunMode::Append,
-    })?;
-    warnings.extend(rendered.warnings);
-    warnings.extend(rendered.diagnostics);
-    let insertion = match mode {
-        NoteAppendMode::Append => append_entry_at_end(&existing, &rendered.content),
-        NoteAppendMode::Prepend => prepend_entry_after_frontmatter(&existing, &rendered.content),
-        NoteAppendMode::AfterHeading => {
-            append_entry_under_heading(&existing, heading.unwrap_or_default(), &rendered.content)
-        }
-    };
-    dispatch_note_write_plugin_hooks(
-        paths,
+        &AppNoteAppendRequest {
+            note: note.map(ToOwned::to_owned),
+            text: note_append_input_text(text)?,
+            mode,
+            heading: heading.map(ToOwned::to_owned),
+            periodic: periodic.map(|value| note_append_periodic_type(value).to_string()),
+            date: date.map(ToOwned::to_owned),
+            vars: parse_template_var_bindings(vars)?,
+        },
         permission_profile,
-        &relative_path,
-        "append",
-        Some(&existing),
-        &insertion.updated,
         quiet,
     )?;
-    fs::write(paths.vault_root().join(&relative_path), &insertion.updated)
-        .map_err(CliError::operation)?;
-    let diagnostics = maybe_check_note(paths, &relative_path, &insertion.updated, check)?;
+    let diagnostics = maybe_check_note(paths, &report.path, &report.content, check)?;
     run_incremental_scan(paths, output, use_stderr_color, quiet)?;
-    if created {
-        dispatch_note_create_plugin_hooks(
-            paths,
-            permission_profile,
-            &relative_path,
-            &insertion.updated,
-            quiet,
-        );
-    }
 
     Ok(NoteAppendReport {
-        path: relative_path,
+        path: report.path,
         appended: true,
-        mode: mode.as_str().to_string(),
+        mode: report.mode,
         checked: check,
-        created,
-        heading: heading.map(ToOwned::to_owned),
-        period_type,
-        reference_date,
-        warnings,
+        created: report.created,
+        heading: report.heading,
+        period_type: report.period_type,
+        reference_date: report.reference_date,
+        warnings: report.warnings,
         diagnostics,
     })
 }
@@ -10784,26 +10627,6 @@ fn dispatch_note_write_plugin_hooks(
     )
 }
 
-fn dispatch_note_create_plugin_hooks(
-    paths: &VaultPaths,
-    permission_profile: Option<&str>,
-    relative_path: &str,
-    content: &str,
-    quiet: bool,
-) {
-    let _ = crate::plugins::dispatch_plugin_event(
-        paths,
-        permission_profile,
-        PluginEvent::OnNoteCreate,
-        &serde_json::json!({
-            "kind": PluginEvent::OnNoteCreate,
-            "path": relative_path,
-            "content": content,
-        }),
-        quiet,
-    );
-}
-
 fn dispatch_note_delete_plugin_hooks(
     paths: &VaultPaths,
     permission_profile: Option<&str>,
@@ -10880,22 +10703,6 @@ fn preserve_existing_frontmatter(existing: &str, body: &str) -> String {
     )
 }
 
-fn merge_note_create_bodies(template_body: &str, stdin_body: &str) -> String {
-    match (
-        template_body.trim().is_empty(),
-        stdin_body.trim().is_empty(),
-    ) {
-        (true, true) => String::new(),
-        (false, true) => template_body.to_string(),
-        (true, false) => stdin_body.to_string(),
-        (false, false) => {
-            let first = template_body.trim_end_matches('\n');
-            let second = stdin_body.trim_end_matches('\n');
-            format!("{first}\n\n{second}\n")
-        }
-    }
-}
-
 fn parse_frontmatter_bindings(bindings: &[String]) -> Result<Option<YamlMapping>, CliError> {
     if bindings.is_empty() {
         return Ok(None);
@@ -10920,22 +10727,6 @@ fn parse_frontmatter_bindings(bindings: &[String]) -> Result<Option<YamlMapping>
     }
 
     Ok(Some(mapping))
-}
-
-fn merge_explicit_frontmatter(
-    existing: Option<YamlMapping>,
-    explicit: Option<YamlMapping>,
-) -> Option<YamlMapping> {
-    match (existing, explicit) {
-        (None, None) => None,
-        (Some(mapping), None) | (None, Some(mapping)) => Some(mapping),
-        (Some(mut existing), Some(explicit)) => {
-            for (key, value) in explicit {
-                existing.insert(key, value);
-            }
-            Some(existing)
-        }
-    }
 }
 
 fn parse_note_patch_matcher(pattern: &str) -> Result<NotePatchMatcher, CliError> {
