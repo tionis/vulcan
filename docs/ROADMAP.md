@@ -4449,7 +4449,7 @@ Matrix is explicitly more complex than Telegram because it brings sync loops, ro
 
 ### 9.22.4 Note and task workflow extraction
 
-- [ ] Move note CRUD orchestration out of `vulcan-cli`: note create/append/set/patch/delete planning, writes, plugin hook dispatch, shared diagnostics/check passes, and patch dry-run planning now live in `vulcan-app`, but scan refresh logic still needs extraction
+- [x] Move note CRUD orchestration out of `vulcan-cli`: note create/append/set/patch/delete planning, writes, plugin hook dispatch, shared diagnostics/check passes, patch dry-run planning, and incremental scan refresh now live in reusable `vulcan-app` services
 - [ ] Keep CLI-only concerns in `vulcan-cli`: reading stdin, mapping flags to request structs, selecting permission profiles, auto-commit policy selection, and human/JSON rendering
 - [ ] Move TaskNotes and inline-task mutation workflows out of `vulcan-cli`: task creation, NLP/default resolution, inline-to-TaskNotes conversion, reschedule/complete/archive flows, and time-tracking/pomodoro mutation helpers
 - [ ] Provide reusable dry-run planning APIs for note and task mutations so CLI, daemon, MCP, and assistant surfaces preview the same mutation plan and changed-path set
