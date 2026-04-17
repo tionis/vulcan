@@ -206,19 +206,21 @@ use vulcan_app::tasks::{
     apply_task_track_start, apply_task_track_stop, build_task_due_report,
     build_task_pomodoro_status_report, build_task_reminders_report, build_task_show_report,
     build_task_track_log_report, build_task_track_status_report, build_task_track_summary_report,
-    build_tasks_blocked_report, build_tasks_graph_report, build_tasks_next_report,
-    build_tasks_query_result, TaskAddReport, TaskAddRequest as AppTaskAddRequest,
-    TaskArchiveRequest as AppTaskArchiveRequest, TaskCompleteRequest as AppTaskCompleteRequest,
-    TaskConvertReport, TaskConvertRequest as AppTaskConvertRequest, TaskCreateReport,
-    TaskCreateRequest as AppTaskCreateRequest, TaskDueReport, TaskMutationReport,
-    TaskPomodoroReport, TaskPomodoroStartRequest as AppTaskPomodoroStartRequest,
-    TaskPomodoroStatusReport, TaskPomodoroStopRequest as AppTaskPomodoroStopRequest,
-    TaskRemindersReport, TaskRescheduleRequest as AppTaskRescheduleRequest,
-    TaskSetRequest as AppTaskSetRequest, TaskShowReport, TaskTrackLogReport, TaskTrackReport,
+    build_tasks_blocked_report, build_tasks_eval_report, build_tasks_graph_report,
+    build_tasks_list_report, build_tasks_next_report, build_tasks_query_result, TaskAddReport,
+    TaskAddRequest as AppTaskAddRequest, TaskArchiveRequest as AppTaskArchiveRequest,
+    TaskCompleteRequest as AppTaskCompleteRequest, TaskConvertReport,
+    TaskConvertRequest as AppTaskConvertRequest, TaskCreateReport,
+    TaskCreateRequest as AppTaskCreateRequest, TaskDueReport, TaskEvalRequest, TaskListRequest,
+    TaskMutationReport, TaskPomodoroReport,
+    TaskPomodoroStartRequest as AppTaskPomodoroStartRequest, TaskPomodoroStatusReport,
+    TaskPomodoroStopRequest as AppTaskPomodoroStopRequest, TaskRemindersReport,
+    TaskRescheduleRequest as AppTaskRescheduleRequest, TaskSetRequest as AppTaskSetRequest,
+    TaskShowReport, TaskTrackLogReport, TaskTrackReport,
     TaskTrackStartRequest as AppTaskTrackStartRequest, TaskTrackStatusReport,
     TaskTrackStopRequest as AppTaskTrackStopRequest,
     TaskTrackSummaryPeriod as AppTaskTrackSummaryPeriod, TaskTrackSummaryReport,
-    TasksBlockedReport, TasksGraphReport, TasksNextReport,
+    TasksBlockedReport, TasksEvalReport, TasksGraphReport, TasksNextReport,
 };
 use vulcan_app::templates::{
     apply_template_create, apply_template_insert, build_template_list_report,
@@ -241,11 +243,9 @@ use vulcan_core::config::{
     ExportEpubTocStyleConfig, ExportGraphFormatConfig, ExportProfileConfig, ExportProfileFormat,
     QuickAddImporter, TasksDefaultSource,
 };
-use vulcan_core::expression::eval::{evaluate as evaluate_expression, is_truthy, EvalContext};
 use vulcan_core::expression::functions::{
     date_components, parse_date_like_string, parse_duration_string,
 };
-use vulcan_core::expression::parse_expression;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
@@ -253,44 +253,44 @@ use vulcan_core::{
     archive_kanban_card, bulk_replace, cache_vacuum, create_checkpoint, delete_saved_report,
     doctor_fix, doctor_vault, ensure_vulcan_dir, evaluate_base_file,
     evaluate_dataview_js_with_options, evaluate_dql_with_filter, evaluate_note_inline_expressions,
-    evaluate_tasks_query, execute_query_report_with_filter, expected_periodic_note_path,
-    export_daily_events_to_ics, export_static_search_index, extract_tasknote, fetch_web_content,
-    git_blame, git_diff, git_log, git_recent_log, git_status, initialize_vault, inspect_base_file,
-    inspect_cache, link_mentions, list_checkpoints, list_daily_note_events, list_saved_reports,
-    load_dataview_blocks, load_events_for_periodic_note, load_kanban_board, load_saved_report,
-    load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card, move_note, parse_document,
-    parse_tasks_query, period_range_for_date, plan_base_note_create, prepare_search_backend,
-    query_backlinks, query_change_report, query_links, query_notes, rebuild_vault_with_progress,
-    rename_alias, rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
-    render_markdown_html, repair_fts, resolve_note_reference, resolve_periodic_note,
-    resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
-    search_web, shape_tasks_query_result, step_period_start, tasknotes_status_definition,
-    tasknotes_status_state, validate_vulcan_overrides_toml, verify_cache, watch_vault,
-    AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport,
-    BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport,
-    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
-    ChangeReport, CheckpointRecord, ClusterReport, ConfigDiagnostic, ConfigImportReport,
-    ConfigPermissionMode, CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput,
-    DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
-    DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine,
-    GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
-    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
-    GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport,
-    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport,
-    KanbanTaskStatus, LinkKind, LinkResolutionMode, MentionSuggestion, MentionSuggestionsReport,
-    MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport,
-    OriginContext, OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter,
-    PermissionFilter, PermissionGuard, PermissionMode, PermissionProfile, PluginEvent,
-    PluginImporter, ProfilePermissionGuard, QueryAst, QueryReport, RebuildQuery, RebuildReport,
-    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, ResolvedPermissionProfile, ResolverDocument, ResolverIndex, ResolverLink,
-    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchBackendKind,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
-    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter,
-    TasksQueryResult, TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
-    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
+    execute_query_report_with_filter, expected_periodic_note_path, export_daily_events_to_ics,
+    export_static_search_index, extract_tasknote, fetch_web_content, git_blame, git_diff, git_log,
+    git_recent_log, git_status, initialize_vault, inspect_base_file, inspect_cache, link_mentions,
+    list_checkpoints, list_daily_note_events, list_saved_reports, load_dataview_blocks,
+    load_events_for_periodic_note, load_kanban_board, load_saved_report, load_vault_config,
+    merge_tags, move_kanban_card, move_note, parse_document, period_range_for_date,
+    plan_base_note_create, prepare_search_backend, query_backlinks, query_change_report,
+    query_links, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
+    rename_heading, rename_property, render_markdown_fragment_html, render_markdown_html,
+    repair_fts, resolve_note_reference, resolve_periodic_note, resolve_permission_profile,
+    save_saved_report, scan_vault_with_progress, search_vault, search_web, step_period_start,
+    tasknotes_status_definition, tasknotes_status_state, validate_vulcan_overrides_toml,
+    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext,
+    BasesEvalReport, BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase,
+    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
+    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterReport, ConfigDiagnostic,
+    ConfigImportReport, ConfigPermissionMode, CoreImporter, DataviewImporter,
+    DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue,
+    DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
+    EvaluatedInlineExpression, GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport,
+    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
+    GraphPathReport, GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary,
+    JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary,
+    KanbanImporter, KanbanMoveReport, KanbanTaskStatus, LinkKind, LinkResolutionMode,
+    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount,
+    NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OriginContext, OutgoingLinkRecord,
+    OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter, PermissionFilter, PermissionGuard,
+    PermissionMode, PermissionProfile, PluginEvent, PluginImporter, ProfilePermissionGuard,
+    QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport,
+    RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile,
+    ResolverDocument, ResolverIndex, ResolverLink, SavedExport, SavedExportFormat,
+    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
+    ScanPhase, ScanProgress, ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport,
+    SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
+    TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
+    TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase,
+    VectorIndexProgress, VectorIndexReport, VectorNeighborHit, VectorNeighborsReport,
+    VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
 };
 use zip::write::FileOptions;
 
@@ -937,23 +937,6 @@ struct DataviewBlockReport {
     language: String,
     source: String,
     result: Option<DataviewBlockResult>,
-    error: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct TasksEvalReport {
-    file: String,
-    blocks: Vec<TasksBlockEvalReport>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct TasksBlockEvalReport {
-    block_index: usize,
-    line_number: i64,
-    source: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    effective_source: Option<String>,
-    result: Option<TasksQueryResult>,
     error: Option<String>,
 }
 
@@ -4066,81 +4049,37 @@ fn run_tasks_eval_command(
     file: &str,
     block: Option<usize>,
 ) -> Result<TasksEvalReport, CliError> {
-    let config = load_vault_config(paths).config.tasks;
-    let blocks = load_tasks_blocks(paths, file, block).map_err(CliError::operation)?;
-    let file = blocks
-        .first()
-        .map_or_else(|| file.to_string(), |block| block.file.clone());
-    let mut reports = Vec::with_capacity(blocks.len());
-
-    for block in blocks {
-        let effective_source = tasks_query_source(&config, &block.source, true);
-        let effective_source_override =
-            (effective_source != block.source).then(|| effective_source.clone());
-        let (mut result, error) = match evaluate_tasks_query(paths, &effective_source) {
-            Ok(result) => (Some(result), None),
-            Err(error) => (None, Some(error.to_string())),
-        };
-        if let Some(result) = result.as_mut() {
-            strip_global_filter_from_output(result, &config);
-        }
-
-        reports.push(TasksBlockEvalReport {
-            block_index: block.block_index,
-            line_number: block.line_number,
-            source: block.source,
-            effective_source: effective_source_override,
-            result,
-            error,
-        });
-    }
-
-    Ok(TasksEvalReport {
-        file,
-        blocks: reports,
-    })
+    build_tasks_eval_report(
+        paths,
+        &TaskEvalRequest {
+            file: file.to_string(),
+            block,
+        },
+    )
+    .map_err(CliError::operation)
 }
 
 fn run_tasks_list_command(
     paths: &VaultPaths,
     options: TasksListOptions<'_>,
 ) -> Result<TasksQueryResult, CliError> {
-    let config = load_vault_config(paths).config.tasks;
-    let filter = options
-        .filter
-        .map(str::trim)
-        .filter(|filter| !filter.is_empty());
-    let effective_source = options.source.map_or(config.default_source, Into::into);
-    let prefilter_source = tasks_list_prefilter_source(&options, effective_source);
-    let layout_source = tasks_list_layout_source(&options);
-
-    match filter {
-        None => {
-            let source = join_tasks_query_sections([
-                Some(prefilter_source.as_str()),
-                Some(layout_source.as_str()),
-            ]);
-            run_tasks_query_command(paths, &source)
-        }
-        Some(filter) => match parse_tasks_query(filter) {
-            Ok(_) => {
-                let source = join_tasks_query_sections([
-                    Some(prefilter_source.as_str()),
-                    Some(filter),
-                    Some(layout_source.as_str()),
-                ]);
-                run_tasks_query_command(paths, &source)
-            }
-            Err(tasks_error) => run_tasks_list_dql_filter(
-                paths,
-                filter,
-                &tasks_error,
-                &config,
-                &prefilter_source,
-                &layout_source,
-            ),
+    build_tasks_list_report(
+        paths,
+        &TaskListRequest {
+            filter: options.filter.map(ToOwned::to_owned),
+            source: options.source.map(Into::into),
+            status: options.status.map(ToOwned::to_owned),
+            priority: options.priority.map(ToOwned::to_owned),
+            due_before: options.due_before.map(ToOwned::to_owned),
+            due_after: options.due_after.map(ToOwned::to_owned),
+            project: options.project.map(ToOwned::to_owned),
+            context: options.context.map(ToOwned::to_owned),
+            group_by: options.group_by.map(ToOwned::to_owned),
+            sort_by: options.sort_by.map(ToOwned::to_owned),
+            include_archived: options.include_archived,
         },
-    }
+    )
+    .map_err(CliError::operation)
 }
 
 fn run_tasks_next_command(
@@ -4149,103 +4088,6 @@ fn run_tasks_next_command(
     from: Option<&str>,
 ) -> Result<TasksNextReport, CliError> {
     build_tasks_next_report(paths, count, from).map_err(CliError::operation)
-}
-
-fn run_tasks_list_dql_filter(
-    paths: &VaultPaths,
-    filter: &str,
-    tasks_error: &str,
-    config: &vulcan_core::config::TasksConfig,
-    prefilter_source: &str,
-    layout_source: &str,
-) -> Result<TasksQueryResult, CliError> {
-    let expression_source = tasks_dql_filter_expression(config, filter);
-    let expression = parse_expression(&expression_source).map_err(|expression_error| {
-        CliError::operation(format!(
-            "failed to parse filter as Tasks DSL ({tasks_error}); failed to parse as Dataview expression ({expression_error})"
-        ))
-    })?;
-
-    let base_source = tasks_query_source(config, prefilter_source, false);
-    let base_result = evaluate_tasks_query(paths, &base_source).map_err(CliError::operation)?;
-    let note_index = load_note_index(paths).map_err(CliError::operation)?;
-    let note_by_path = note_index
-        .values()
-        .map(|note| (note.document_path.as_str(), note))
-        .collect::<HashMap<_, _>>();
-    let formulas = BTreeMap::new();
-    let mut tasks = Vec::new();
-
-    for task in base_result.tasks {
-        let Some(path) = task.get("path").and_then(Value::as_str) else {
-            continue;
-        };
-        let Some(note) = note_by_path.get(path) else {
-            continue;
-        };
-        let Value::Object(task_fields) = task.clone() else {
-            continue;
-        };
-
-        let mut scoped_note = (*note).clone();
-        scoped_note.properties = Value::Object(task_fields);
-        let context = EvalContext::new(&scoped_note, &formulas).with_note_lookup(&note_index);
-        let value = evaluate_expression(&expression, &context).map_err(|error| {
-            CliError::operation(format!(
-                "failed to evaluate Dataview expression for {path}: {error}"
-            ))
-        })?;
-        if is_truthy(&value) {
-            tasks.push(task);
-        }
-    }
-
-    let mut result = if layout_source.trim().is_empty() {
-        TasksQueryResult {
-            result_count: tasks.len(),
-            tasks,
-            groups: Vec::new(),
-            hidden_fields: Vec::new(),
-            shown_fields: Vec::new(),
-            short_mode: false,
-            plan: None,
-        }
-    } else {
-        let layout_query = parse_tasks_query(layout_source).map_err(CliError::operation)?;
-        shape_tasks_query_result(tasks, &layout_query)
-    };
-    strip_global_filter_from_output(&mut result, config);
-    Ok(result)
-}
-
-fn tasks_query_source(
-    config: &vulcan_core::config::TasksConfig,
-    source: &str,
-    include_global_query: bool,
-) -> String {
-    let mut sections = Vec::new();
-    if let Some(tag) = config
-        .global_filter
-        .as_deref()
-        .map(str::trim)
-        .filter(|tag| !tag.is_empty())
-    {
-        sections.push(format!("tag includes {tag}"));
-    }
-    if include_global_query {
-        if let Some(query) = config
-            .global_query
-            .as_deref()
-            .map(str::trim)
-            .filter(|query| !query.is_empty())
-        {
-            sections.push(query.to_string());
-        }
-    }
-    if !source.trim().is_empty() {
-        sections.push(source.trim().to_string());
-    }
-    sections.join("\n")
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4263,49 +4105,6 @@ struct TasksListOptions<'a> {
     include_archived: bool,
 }
 
-fn tasks_list_prefilter_source(
-    options: &TasksListOptions<'_>,
-    source: TasksDefaultSource,
-) -> String {
-    let mut sections = Vec::new();
-    if !options.include_archived {
-        sections.push("is not archived".to_string());
-    }
-    match source {
-        TasksDefaultSource::Tasknotes => sections.push("source is file".to_string()),
-        TasksDefaultSource::Inline => sections.push("source is inline".to_string()),
-        TasksDefaultSource::All => {}
-    }
-    if let Some(status) = tasks_query_value(options.status) {
-        sections.push(format!("status is {}", quote_tasks_query_value(status)));
-    }
-    if let Some(priority) = tasks_query_value(options.priority) {
-        sections.push(format!("priority is {}", quote_tasks_query_value(priority)));
-    }
-    if let Some(due_before) = tasks_query_value(options.due_before) {
-        sections.push(format!(
-            "due before {}",
-            quote_tasks_query_value(due_before)
-        ));
-    }
-    if let Some(due_after) = tasks_query_value(options.due_after) {
-        sections.push(format!("due after {}", quote_tasks_query_value(due_after)));
-    }
-    if let Some(project) = tasks_query_value(options.project) {
-        sections.push(format!(
-            "project includes {}",
-            quote_tasks_query_value(project)
-        ));
-    }
-    if let Some(context) = tasks_query_value(options.context) {
-        sections.push(format!(
-            "context includes {}",
-            quote_tasks_query_value(context)
-        ));
-    }
-    sections.join("\n")
-}
-
 impl From<TasksListSourceArg> for TasksDefaultSource {
     fn from(value: TasksListSourceArg) -> Self {
         match value {
@@ -4314,130 +4113,6 @@ impl From<TasksListSourceArg> for TasksDefaultSource {
             TasksListSourceArg::All => Self::All,
         }
     }
-}
-
-fn tasks_list_layout_source(options: &TasksListOptions<'_>) -> String {
-    let mut sections = Vec::new();
-    if let Some(sort_by) = tasks_query_value(options.sort_by) {
-        sections.push(format!("sort by {}", quote_tasks_query_value(sort_by)));
-    }
-    if let Some(group_by) = tasks_query_value(options.group_by) {
-        sections.push(format!("group by {}", quote_tasks_query_value(group_by)));
-    }
-    sections.join("\n")
-}
-
-fn tasks_query_value(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
-}
-
-fn quote_tasks_query_value(value: &str) -> String {
-    if value
-        .chars()
-        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | '#' | '@'))
-    {
-        return value.to_string();
-    }
-
-    if !value.contains('"') {
-        return format!("\"{value}\"");
-    }
-    if !value.contains('\'') {
-        return format!("'{value}'");
-    }
-
-    value.to_string()
-}
-
-fn join_tasks_query_sections<'a>(sections: impl IntoIterator<Item = Option<&'a str>>) -> String {
-    sections
-        .into_iter()
-        .flatten()
-        .map(str::trim)
-        .filter(|section| !section.is_empty())
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn tasks_dql_filter_expression(config: &vulcan_core::config::TasksConfig, filter: &str) -> String {
-    let mut clauses = Vec::new();
-    if let Some(tag) = config
-        .global_filter
-        .as_deref()
-        .map(str::trim)
-        .filter(|tag| !tag.is_empty())
-    {
-        let quoted = serde_json::to_string(tag).expect("task filter tag should serialize");
-        clauses.push(format!("contains(tags, {quoted})"));
-    }
-    clauses.push(format!("({})", filter.trim()));
-    clauses.join(" && ")
-}
-
-fn strip_global_filter_from_output(
-    result: &mut TasksQueryResult,
-    config: &vulcan_core::config::TasksConfig,
-) {
-    if !config.remove_global_filter {
-        return;
-    }
-    let Some(global_filter) = config
-        .global_filter
-        .as_deref()
-        .map(str::trim)
-        .filter(|tag| !tag.is_empty())
-    else {
-        return;
-    };
-
-    let normalized = normalize_tag_name(global_filter);
-    for task in &mut result.tasks {
-        strip_task_global_filter(task, global_filter, &normalized);
-    }
-    for group in &mut result.groups {
-        for task in &mut group.tasks {
-            strip_task_global_filter(task, global_filter, &normalized);
-        }
-    }
-}
-
-fn strip_task_global_filter(task: &mut Value, raw_tag: &str, normalized_tag: &str) {
-    let Some(object) = task.as_object_mut() else {
-        return;
-    };
-
-    if let Some(Value::Array(tags)) = object.get_mut("tags") {
-        tags.retain(|tag| {
-            tag.as_str()
-                .map_or(true, |tag| normalize_tag_name(tag) != normalized_tag)
-        });
-    }
-
-    for field in ["text", "visual"] {
-        if let Some(Value::String(text)) = object.get_mut(field) {
-            *text = strip_tag_from_text(text, raw_tag, normalized_tag);
-        }
-    }
-
-    if let Some(Value::Array(children)) = object.get_mut("children") {
-        for child in children {
-            strip_task_global_filter(child, raw_tag, normalized_tag);
-        }
-    }
-}
-
-fn strip_tag_from_text(text: &str, raw_tag: &str, normalized_tag: &str) -> String {
-    text.split_whitespace()
-        .filter(|token| {
-            !token.eq_ignore_ascii_case(raw_tag) && normalize_tag_name(token) != normalized_tag
-        })
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn normalize_tag_name(tag: &str) -> String {
-    tag.trim().trim_start_matches('#').to_ascii_lowercase()
 }
 
 fn run_tasks_blocked_command(paths: &VaultPaths) -> Result<TasksBlockedReport, CliError> {
