@@ -12,17 +12,21 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::Path;
+use vulcan_core::config::TasksDefaultSource;
+use vulcan_core::expression::eval::{evaluate as evaluate_expression, is_truthy, EvalContext};
 use vulcan_core::expression::functions::{
     date_components, parse_date_like_string, parse_duration_string,
 };
+use vulcan_core::expression::parse_expression;
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     active_tasknote_time_entry, evaluate_tasks_query, expected_periodic_note_path,
-    extract_tasknote, load_vault_config, parse_tasknote_natural_language, parse_tasknote_reminders,
-    parse_tasknote_time_entries, period_range_for_date, resolve_note_reference,
+    extract_tasknote, load_tasks_blocks, load_vault_config, parse_tasknote_natural_language,
+    parse_tasknote_reminders, parse_tasknote_time_entries, parse_tasks_query,
+    period_range_for_date, resolve_note_reference, shape_tasks_query_result,
     task_upcoming_occurrences, tasknotes_default_date_value, tasknotes_default_recurrence_rule,
     tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_state,
     GraphQueryError, IndexedTaskNote, NoteRecord, ParsedTaskNoteInput, RefactorChange,
@@ -236,6 +240,44 @@ pub struct TaskReminderItem {
     pub description: Option<String>,
     pub notify_at: String,
     pub overdue: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskEvalRequest {
+    pub file: String,
+    pub block: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TasksEvalReport {
+    pub file: String,
+    pub blocks: Vec<TasksBlockEvalReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TasksBlockEvalReport {
+    pub block_index: usize,
+    pub line_number: i64,
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effective_source: Option<String>,
+    pub result: Option<TasksQueryResult>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TaskListRequest {
+    pub filter: Option<String>,
+    pub source: Option<TasksDefaultSource>,
+    pub status: Option<String>,
+    pub priority: Option<String>,
+    pub due_before: Option<String>,
+    pub due_after: Option<String>,
+    pub project: Option<String>,
+    pub context: Option<String>,
+    pub group_by: Option<String>,
+    pub sort_by: Option<String>,
+    pub include_archived: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1574,11 +1616,90 @@ pub fn build_tasks_query_result(
     paths: &VaultPaths,
     source: &str,
 ) -> Result<TasksQueryResult, AppError> {
+    build_tasks_query_result_with_options(paths, source, false)
+}
+
+pub fn build_tasks_eval_report(
+    paths: &VaultPaths,
+    request: &TaskEvalRequest,
+) -> Result<TasksEvalReport, AppError> {
+    let blocks =
+        load_tasks_blocks(paths, &request.file, request.block).map_err(AppError::operation)?;
+    let file = blocks
+        .first()
+        .map_or_else(|| request.file.clone(), |block| block.file.clone());
     let config = load_vault_config(paths).config.tasks;
-    let effective_source = tasks_query_source(&config, source, false);
-    let mut result = evaluate_tasks_query(paths, &effective_source).map_err(AppError::operation)?;
-    strip_global_filter_from_output(&mut result, &config);
-    Ok(result)
+    let mut reports = Vec::with_capacity(blocks.len());
+
+    for block in blocks {
+        let effective_source = tasks_query_source(&config, &block.source, true);
+        let effective_source_override =
+            (effective_source != block.source).then(|| effective_source.clone());
+        let (mut result, error) = match evaluate_tasks_query(paths, &effective_source) {
+            Ok(result) => (Some(result), None),
+            Err(error) => (None, Some(error.to_string())),
+        };
+        if let Some(result) = result.as_mut() {
+            strip_global_filter_from_output(result, &config);
+        }
+
+        reports.push(TasksBlockEvalReport {
+            block_index: block.block_index,
+            line_number: block.line_number,
+            source: block.source,
+            effective_source: effective_source_override,
+            result,
+            error,
+        });
+    }
+
+    Ok(TasksEvalReport {
+        file,
+        blocks: reports,
+    })
+}
+
+pub fn build_tasks_list_report(
+    paths: &VaultPaths,
+    request: &TaskListRequest,
+) -> Result<TasksQueryResult, AppError> {
+    let config = load_vault_config(paths).config.tasks;
+    let filter = request
+        .filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|filter| !filter.is_empty());
+    let effective_source = request.source.unwrap_or(config.default_source);
+    let prefilter_source = tasks_list_prefilter_source(request, effective_source);
+    let layout_source = tasks_list_layout_source(request);
+
+    match filter {
+        None => {
+            let source = join_tasks_query_sections([
+                Some(prefilter_source.as_str()),
+                Some(layout_source.as_str()),
+            ]);
+            build_tasks_query_result(paths, &source)
+        }
+        Some(filter) => match parse_tasks_query(filter) {
+            Ok(_) => {
+                let source = join_tasks_query_sections([
+                    Some(prefilter_source.as_str()),
+                    Some(filter),
+                    Some(layout_source.as_str()),
+                ]);
+                build_tasks_query_result(paths, &source)
+            }
+            Err(tasks_error) => build_tasks_list_dql_filter(
+                paths,
+                filter,
+                &tasks_error,
+                &config,
+                &prefilter_source,
+                &layout_source,
+            ),
+        },
+    }
 }
 
 pub fn build_tasks_next_report(
@@ -1751,6 +1872,18 @@ fn day_string_from_ms(ms: i64) -> String {
     format!("{year:04}-{month:02}-{day:02}")
 }
 
+fn build_tasks_query_result_with_options(
+    paths: &VaultPaths,
+    source: &str,
+    include_global_query: bool,
+) -> Result<TasksQueryResult, AppError> {
+    let config = load_vault_config(paths).config.tasks;
+    let effective_source = tasks_query_source(&config, source, include_global_query);
+    let mut result = evaluate_tasks_query(paths, &effective_source).map_err(AppError::operation)?;
+    strip_global_filter_from_output(&mut result, &config);
+    Ok(result)
+}
+
 fn tasks_query_source(
     config: &vulcan_core::config::TasksConfig,
     source: &str,
@@ -1779,6 +1912,172 @@ fn tasks_query_source(
         sections.push(source.trim().to_string());
     }
     sections.join("\n")
+}
+
+fn build_tasks_list_dql_filter(
+    paths: &VaultPaths,
+    filter: &str,
+    tasks_error: &str,
+    config: &vulcan_core::config::TasksConfig,
+    prefilter_source: &str,
+    layout_source: &str,
+) -> Result<TasksQueryResult, AppError> {
+    let expression_source = tasks_dql_filter_expression(config, filter);
+    let expression = parse_expression(&expression_source).map_err(|expression_error| {
+        AppError::operation(format!(
+            "failed to parse filter as Tasks DSL ({tasks_error}); failed to parse as Dataview expression ({expression_error})"
+        ))
+    })?;
+
+    let base_source = tasks_query_source(config, prefilter_source, false);
+    let base_result = evaluate_tasks_query(paths, &base_source).map_err(AppError::operation)?;
+    let note_index = load_note_index(paths).map_err(AppError::operation)?;
+    let note_by_path = note_index
+        .values()
+        .map(|note| (note.document_path.as_str(), note))
+        .collect::<HashMap<_, _>>();
+    let formulas = BTreeMap::new();
+    let mut tasks = Vec::new();
+
+    for task in base_result.tasks {
+        let Some(path) = task.get("path").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(note) = note_by_path.get(path) else {
+            continue;
+        };
+        let Value::Object(task_fields) = task.clone() else {
+            continue;
+        };
+
+        let mut scoped_note = (*note).clone();
+        scoped_note.properties = Value::Object(task_fields);
+        let context = EvalContext::new(&scoped_note, &formulas).with_note_lookup(&note_index);
+        let value = evaluate_expression(&expression, &context).map_err(|error| {
+            AppError::operation(format!(
+                "failed to evaluate Dataview expression for {path}: {error}"
+            ))
+        })?;
+        if is_truthy(&value) {
+            tasks.push(task);
+        }
+    }
+
+    let mut result = if layout_source.trim().is_empty() {
+        TasksQueryResult {
+            result_count: tasks.len(),
+            tasks,
+            groups: Vec::new(),
+            hidden_fields: Vec::new(),
+            shown_fields: Vec::new(),
+            short_mode: false,
+            plan: None,
+        }
+    } else {
+        let layout_query = parse_tasks_query(layout_source).map_err(AppError::operation)?;
+        shape_tasks_query_result(tasks, &layout_query)
+    };
+    strip_global_filter_from_output(&mut result, config);
+    Ok(result)
+}
+
+fn tasks_list_prefilter_source(request: &TaskListRequest, source: TasksDefaultSource) -> String {
+    let mut sections = Vec::new();
+    if !request.include_archived {
+        sections.push("is not archived".to_string());
+    }
+    match source {
+        TasksDefaultSource::Tasknotes => sections.push("source is file".to_string()),
+        TasksDefaultSource::Inline => sections.push("source is inline".to_string()),
+        TasksDefaultSource::All => {}
+    }
+    if let Some(status) = tasks_query_value(request.status.as_deref()) {
+        sections.push(format!("status is {}", quote_tasks_query_value(status)));
+    }
+    if let Some(priority) = tasks_query_value(request.priority.as_deref()) {
+        sections.push(format!("priority is {}", quote_tasks_query_value(priority)));
+    }
+    if let Some(due_before) = tasks_query_value(request.due_before.as_deref()) {
+        sections.push(format!(
+            "due before {}",
+            quote_tasks_query_value(due_before)
+        ));
+    }
+    if let Some(due_after) = tasks_query_value(request.due_after.as_deref()) {
+        sections.push(format!("due after {}", quote_tasks_query_value(due_after)));
+    }
+    if let Some(project) = tasks_query_value(request.project.as_deref()) {
+        sections.push(format!(
+            "project includes {}",
+            quote_tasks_query_value(project)
+        ));
+    }
+    if let Some(context) = tasks_query_value(request.context.as_deref()) {
+        sections.push(format!(
+            "context includes {}",
+            quote_tasks_query_value(context)
+        ));
+    }
+    sections.join("\n")
+}
+
+fn tasks_list_layout_source(request: &TaskListRequest) -> String {
+    let mut sections = Vec::new();
+    if let Some(sort_by) = tasks_query_value(request.sort_by.as_deref()) {
+        sections.push(format!("sort by {}", quote_tasks_query_value(sort_by)));
+    }
+    if let Some(group_by) = tasks_query_value(request.group_by.as_deref()) {
+        sections.push(format!("group by {}", quote_tasks_query_value(group_by)));
+    }
+    sections.join("\n")
+}
+
+fn tasks_query_value(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn quote_tasks_query_value(value: &str) -> String {
+    if value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.' | '/' | '#' | '@'))
+    {
+        return value.to_string();
+    }
+
+    if !value.contains('"') {
+        return format!("\"{value}\"");
+    }
+    if !value.contains('\'') {
+        return format!("'{value}'");
+    }
+
+    value.to_string()
+}
+
+fn join_tasks_query_sections<'a>(sections: impl IntoIterator<Item = Option<&'a str>>) -> String {
+    sections
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|section| !section.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn tasks_dql_filter_expression(config: &vulcan_core::config::TasksConfig, filter: &str) -> String {
+    let mut clauses = Vec::new();
+    if let Some(tag) = config
+        .global_filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+    {
+        let quoted = serde_json::to_string(tag).expect("task filter tag should serialize");
+        clauses.push(format!("contains(tags, {quoted})"));
+    }
+    clauses.push(format!("({})", filter.trim()));
+    clauses.join(" && ")
 }
 
 fn strip_global_filter_from_output(
@@ -4721,11 +5020,12 @@ mod tests {
         apply_task_reschedule, apply_task_set, apply_task_track_start, apply_task_track_stop,
         build_task_due_report, build_task_pomodoro_status_report, build_task_reminders_report,
         build_task_show_report, build_task_track_log_report, build_task_track_status_report,
-        build_task_track_summary_report, build_tasks_blocked_report, build_tasks_graph_report,
-        build_tasks_next_report, current_utc_date_string, TaskAddRequest, TaskArchiveRequest,
-        TaskCompleteRequest, TaskConvertRequest, TaskCreateRequest, TaskPomodoroStartRequest,
-        TaskPomodoroStopRequest, TaskRescheduleRequest, TaskSetRequest, TaskTrackStartRequest,
-        TaskTrackStopRequest, TaskTrackSummaryPeriod,
+        build_task_track_summary_report, build_tasks_blocked_report, build_tasks_eval_report,
+        build_tasks_graph_report, build_tasks_list_report, build_tasks_next_report,
+        current_utc_date_string, TaskAddRequest, TaskArchiveRequest, TaskCompleteRequest,
+        TaskConvertRequest, TaskCreateRequest, TaskEvalRequest, TaskListRequest,
+        TaskPomodoroStartRequest, TaskPomodoroStopRequest, TaskRescheduleRequest, TaskSetRequest,
+        TaskTrackStartRequest, TaskTrackStopRequest, TaskTrackSummaryPeriod,
     };
     use crate::templates::render_note_from_parts;
     use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -5381,6 +5681,61 @@ mod tests {
     }
 
     #[test]
+    fn build_tasks_eval_report_evaluates_selected_block_with_defaults() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        write_tasks_query_fixture(&paths);
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+        let report = build_tasks_eval_report(
+            &paths,
+            &TaskEvalRequest {
+                file: "Dashboard".to_string(),
+                block: Some(1),
+            },
+        )
+        .expect("tasks eval report");
+
+        assert_eq!(report.file, "Dashboard.md");
+        assert_eq!(report.blocks.len(), 1);
+        assert_eq!(report.blocks[0].block_index, 1);
+        assert_eq!(report.blocks[0].source, "path includes Tasks");
+        assert_eq!(
+            report.blocks[0].effective_source.as_deref(),
+            Some("tag includes #task\nnot done\npath includes Tasks")
+        );
+        let result = report.blocks[0].result.as_ref().expect("tasks result");
+        assert_eq!(result.result_count, 2);
+        assert_eq!(result.tasks[0]["text"], "Write docs");
+        assert_eq!(result.tasks[1]["text"], "Plan backlog");
+    }
+
+    #[test]
+    fn build_tasks_list_report_accepts_tasks_dsl_filters() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        write_tasks_query_fixture(&paths);
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+        let report = build_tasks_list_report(
+            &paths,
+            &TaskListRequest {
+                filter: Some("not done".to_string()),
+                ..TaskListRequest::default()
+            },
+        )
+        .expect("tasks list report");
+
+        assert_eq!(report.result_count, 2);
+        assert_eq!(report.tasks.len(), 2);
+        assert_eq!(report.tasks[0]["text"], "Write docs");
+        assert_eq!(report.tasks[0]["tags"], serde_json::json!([]));
+        assert_eq!(report.tasks[1]["text"], "Plan backlog");
+    }
+
+    #[test]
     fn build_tasks_blocked_report_lists_open_and_unresolved_blockers() {
         let temp_dir = tempdir().expect("temp dir");
         let paths = VaultPaths::new(temp_dir.path());
@@ -5662,6 +6017,42 @@ mod tests {
             fs::create_dir_all(parent).map_err(AppError::operation)?;
         }
         fs::write(absolute_path, rendered).map_err(AppError::operation)
+    }
+
+    fn write_tasks_query_fixture(paths: &VaultPaths) {
+        fs::write(
+            paths.vault_root().join(".vulcan/config.toml"),
+            concat!(
+                "[tasks]\n",
+                "global_filter = \"#task\"\n",
+                "global_query = \"not done\"\n",
+                "remove_global_filter = true\n",
+            ),
+        )
+        .expect("config should be written");
+        fs::write(
+            paths.vault_root().join("Tasks.md"),
+            concat!(
+                "# Sprint\n\n",
+                "- [ ] Write docs #task\n",
+                "- [x] Ship release #task\n",
+                "- [x] Archive misc #misc\n",
+                "- [ ] Plan backlog #task\n",
+            ),
+        )
+        .expect("tasks note should be written");
+        fs::write(
+            paths.vault_root().join("Dashboard.md"),
+            concat!(
+                "```tasks\n",
+                "done\n",
+                "```\n\n",
+                "```tasks\n",
+                "path includes Tasks\n",
+                "```\n",
+            ),
+        )
+        .expect("dashboard note should be written");
     }
 
     fn write_tasks_dependency_fixture(paths: &VaultPaths) {
