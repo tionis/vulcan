@@ -193,9 +193,11 @@ use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
 use vulcan_app::notes::{
-    apply_note_append, apply_note_create, apply_note_set, diagnose_external_markdown_contents,
-    diagnose_note_contents, NoteAppendMode, NoteAppendRequest as AppNoteAppendRequest,
-    NoteCreateRequest as AppNoteCreateRequest, NoteSetRequest as AppNoteSetRequest,
+    apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
+    diagnose_external_markdown_contents, diagnose_note_contents,
+    MarkdownTarget as AppMarkdownTarget, NoteAppendMode, NoteAppendRequest as AppNoteAppendRequest,
+    NoteCreateRequest as AppNoteCreateRequest, NoteDeleteRequest as AppNoteDeleteRequest,
+    NotePatchRequest as AppNotePatchRequest, NoteSetRequest as AppNoteSetRequest,
 };
 use vulcan_app::templates::{
     apply_template_create, apply_template_insert, build_template_list_report,
@@ -9470,12 +9472,6 @@ struct NoteCheckboxOptions<'a> {
     dry_run: bool,
 }
 
-#[derive(Debug, Clone)]
-enum NotePatchMatcher {
-    Literal(String),
-    Regex(Regex),
-}
-
 #[derive(Debug, Clone, Copy)]
 struct NotePatchOptions<'a> {
     note: &'a str,
@@ -9488,22 +9484,6 @@ struct NotePatchOptions<'a> {
     replace_all: bool,
     check: bool,
     dry_run: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NotePatchApplication {
-    updated_content: String,
-    match_count: usize,
-    changes: Vec<RefactorChange>,
-    regex: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct NotePatchScopeSelection {
-    section_id: Option<String>,
-    line_spans: Vec<vulcan_core::NoteLineSpan>,
-    byte_start: usize,
-    byte_end: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -9529,6 +9509,15 @@ impl ExistingMarkdownTarget {
 
     fn is_vault_managed(&self) -> bool {
         self.vault_relative_path.is_some()
+    }
+}
+
+fn app_markdown_target(target: &ExistingMarkdownTarget) -> AppMarkdownTarget {
+    AppMarkdownTarget {
+        display_path: target.display_path.clone(),
+        absolute_path: target.absolute_path.clone(),
+        vault_relative_path: target.vault_relative_path.clone(),
+        config: target.config.clone(),
     }
 }
 
@@ -10168,79 +10157,42 @@ fn run_note_patch_command(
         check,
         dry_run,
     } = options;
-    let target = read_existing_markdown_source(paths, note)?;
-    let matcher = parse_note_patch_matcher(find)?;
-    let scope = resolve_note_patch_scope_selection(
-        &target.source,
-        &target.target.config,
-        section_id,
-        heading,
-        block_ref,
-        lines,
-    )?;
-    let application = if let Some(scope) = scope.as_ref() {
-        let updated_scope = apply_note_patch(
-            &target.source[scope.byte_start..scope.byte_end],
-            &matcher,
-            replace,
+    let target = resolve_existing_markdown_target(paths, note)?;
+    let report = apply_note_patch(
+        paths,
+        &AppNotePatchRequest {
+            target: app_markdown_target(&target),
+            section_id: section_id.map(ToOwned::to_owned),
+            heading: heading.map(ToOwned::to_owned),
+            block_ref: block_ref.map(ToOwned::to_owned),
+            lines: lines.map(ToOwned::to_owned),
+            find: find.to_string(),
+            replace: replace.to_string(),
             replace_all,
-            "selected note scope",
-        )?;
-        let mut updated_content = String::with_capacity(
-            target.source.len() - (scope.byte_end - scope.byte_start)
-                + updated_scope.updated_content.len(),
-        );
-        updated_content.push_str(&target.source[..scope.byte_start]);
-        updated_content.push_str(&updated_scope.updated_content);
-        updated_content.push_str(&target.source[scope.byte_end..]);
-        NotePatchApplication {
-            updated_content,
-            match_count: updated_scope.match_count,
-            changes: updated_scope.changes,
-            regex: updated_scope.regex,
-        }
-    } else {
-        apply_note_patch(&target.source, &matcher, replace, replace_all, "note")?
-    };
-    if !dry_run {
-        if let Some(relative_path) = target.target.vault_relative_path.as_deref() {
-            dispatch_note_write_plugin_hooks(
-                paths,
-                permission_profile,
-                relative_path,
-                "patch",
-                Some(&target.source),
-                &application.updated_content,
-                quiet,
-            )?;
-        }
-        fs::write(&target.target.absolute_path, &application.updated_content)
-            .map_err(CliError::operation)?;
-        if target.target.is_vault_managed() {
-            run_incremental_scan(paths, output, use_stderr_color, quiet)?;
-        }
+            dry_run,
+        },
+        permission_profile,
+        quiet,
+    )?;
+    if !report.dry_run && !report.changed_paths.is_empty() {
+        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
     }
-    let diagnostics =
-        maybe_check_markdown_target(paths, &target.target, &application.updated_content, check)?;
+    let diagnostics = maybe_check_markdown_target(paths, &target, &report.content, check)?;
 
     Ok(NotePatchReport {
-        path: target.target.display_path,
-        dry_run,
+        path: report.path,
+        dry_run: report.dry_run,
         checked: check,
-        section_id: scope
-            .as_ref()
-            .and_then(|selection| selection.section_id.clone()),
+        section_id: report.section_id,
         heading: heading.map(ToOwned::to_owned),
         block_ref: block_ref.map(ToOwned::to_owned),
         lines: lines.map(ToOwned::to_owned),
-        line_spans: scope
-            .as_ref()
-            .map_or_else(Vec::new, |selection| selection.line_spans.clone()),
+        line_spans: report.line_spans,
         pattern: find.to_string(),
-        regex: application.regex,
+        regex: report.regex,
         replace: replace.to_string(),
-        match_count: application.match_count,
-        changes: application.changes,
+        match_count: report.match_count,
+        changes: report.changes,
         diagnostics,
     })
 }
@@ -10254,24 +10206,25 @@ fn run_note_delete_command(
     use_stderr_color: bool,
     quiet: bool,
 ) -> Result<NoteDeleteReport, CliError> {
-    let relative_path = resolve_existing_note_path(paths, note)?;
-    let backlinks = match query_backlinks(paths, &relative_path) {
-        Ok(report) => report.backlinks,
-        Err(GraphQueryError::CacheMissing | GraphQueryError::NoteNotFound { .. }) => Vec::new(),
-        Err(error) => return Err(CliError::operation(error)),
-    };
-    if !dry_run {
-        fs::remove_file(paths.vault_root().join(&relative_path)).map_err(CliError::operation)?;
+    let report = apply_note_delete(
+        paths,
+        &AppNoteDeleteRequest {
+            note: note.to_string(),
+            dry_run,
+        },
+        permission_profile,
+        quiet,
+    )?;
+    if !report.dry_run {
         run_incremental_scan(paths, output, use_stderr_color, quiet)?;
-        dispatch_note_delete_plugin_hooks(paths, permission_profile, &relative_path, quiet);
     }
 
     Ok(NoteDeleteReport {
-        path: relative_path,
-        dry_run,
-        deleted: !dry_run,
-        backlink_count: backlinks.len(),
-        backlinks,
+        path: report.path,
+        dry_run: report.dry_run,
+        deleted: report.deleted,
+        backlink_count: report.backlink_count,
+        backlinks: report.backlinks,
     })
 }
 
@@ -10621,24 +10574,6 @@ fn dispatch_note_write_plugin_hooks(
     )
 }
 
-fn dispatch_note_delete_plugin_hooks(
-    paths: &VaultPaths,
-    permission_profile: Option<&str>,
-    relative_path: &str,
-    quiet: bool,
-) {
-    let _ = crate::plugins::dispatch_plugin_event(
-        paths,
-        permission_profile,
-        PluginEvent::OnNoteDelete,
-        &serde_json::json!({
-            "kind": PluginEvent::OnNoteDelete,
-            "path": relative_path,
-        }),
-        quiet,
-    );
-}
-
 fn read_optional_stdin_text() -> io::Result<String> {
     if io::stdin().is_terminal() {
         return Ok(String::new());
@@ -10710,153 +10645,6 @@ fn parse_frontmatter_bindings(bindings: &[String]) -> Result<Option<YamlMapping>
     }
 
     Ok(Some(mapping))
-}
-
-fn parse_note_patch_matcher(pattern: &str) -> Result<NotePatchMatcher, CliError> {
-    if pattern.is_empty() {
-        return Err(CliError::operation("`note patch --find` must not be empty"));
-    }
-
-    if let Some(regex_body) = pattern.strip_prefix('/') {
-        let Some(regex_body) = regex_body.strip_suffix('/') else {
-            return Err(CliError::operation(
-                "regex patterns must use /.../ syntax, for example `/TODO \\d+/`",
-            ));
-        };
-        if regex_body.is_empty() {
-            return Err(CliError::operation("regex patterns must not be empty"));
-        }
-        return Regex::new(regex_body)
-            .map(NotePatchMatcher::Regex)
-            .map_err(CliError::operation);
-    }
-
-    Ok(NotePatchMatcher::Literal(pattern.to_string()))
-}
-
-fn apply_note_patch(
-    source: &str,
-    matcher: &NotePatchMatcher,
-    replace: &str,
-    all: bool,
-    target: &str,
-) -> Result<NotePatchApplication, CliError> {
-    match matcher {
-        NotePatchMatcher::Literal(find) => {
-            let patch_matches = source
-                .match_indices(find)
-                .map(|(start, matched)| {
-                    (
-                        start,
-                        start + matched.len(),
-                        matched.to_string(),
-                        replace.to_string(),
-                    )
-                })
-                .collect::<Vec<_>>();
-            build_note_patch_application(source, patch_matches, all, false, target)
-        }
-        NotePatchMatcher::Regex(regex) => {
-            let patch_matches = regex
-                .find_iter(source)
-                .map(|matched| {
-                    if matched.start() == matched.end() {
-                        Err(CliError::operation(
-                            "regex patterns for `note patch` must not match empty strings",
-                        ))
-                    } else {
-                        Ok((
-                            matched.start(),
-                            matched.end(),
-                            matched.as_str().to_string(),
-                            regex.replace(matched.as_str(), replace).into_owned(),
-                        ))
-                    }
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            build_note_patch_application(source, patch_matches, all, true, target)
-        }
-    }
-}
-
-fn build_note_patch_application(
-    source: &str,
-    matches: Vec<(usize, usize, String, String)>,
-    all: bool,
-    regex: bool,
-    target: &str,
-) -> Result<NotePatchApplication, CliError> {
-    match matches.len() {
-        0 => Err(CliError::operation(format!(
-            "pattern not found in {target}"
-        ))),
-        count if count > 1 && !all => Err(CliError::operation(format!(
-            "pattern matched {count} times in {target}; rerun with --all to replace every match"
-        ))),
-        _ => {
-            let mut updated = source.to_string();
-            for (start, end, _, replacement) in matches.iter().rev() {
-                updated.replace_range(*start..*end, replacement);
-            }
-            Ok(NotePatchApplication {
-                updated_content: updated,
-                match_count: matches.len(),
-                changes: matches
-                    .into_iter()
-                    .map(|(_, _, before, after)| RefactorChange { before, after })
-                    .collect(),
-                regex,
-            })
-        }
-    }
-}
-
-fn resolve_note_patch_scope_selection(
-    source: &str,
-    config: &vulcan_core::VaultConfig,
-    section_id: Option<&str>,
-    heading: Option<&str>,
-    block_ref: Option<&str>,
-    lines: Option<&str>,
-) -> Result<Option<NotePatchScopeSelection>, CliError> {
-    if section_id.is_none() && heading.is_none() && block_ref.is_none() && lines.is_none() {
-        return Ok(None);
-    }
-
-    let parsed = vulcan_core::parse_document(source, config);
-    let selection = vulcan_core::read_note(
-        source,
-        &parsed,
-        &vulcan_core::NoteReadOptions {
-            heading: heading.map(ToOwned::to_owned),
-            section_id: section_id.map(ToOwned::to_owned),
-            block_ref: block_ref.map(ToOwned::to_owned),
-            lines: lines.map(ToOwned::to_owned),
-            match_pattern: None,
-            context: 0,
-            no_frontmatter: false,
-        },
-    )
-    .map_err(CliError::operation)?;
-
-    let [line_span] = selection.line_spans.as_slice() else {
-        return Err(CliError::operation(
-            "selected note scope is empty or not contiguous",
-        ));
-    };
-    let Some((byte_start, byte_end)) = vulcan_core::byte_range_for_line_span(source, line_span)
-    else {
-        return Err(CliError::operation(
-            "selected note scope could not be mapped back to source bytes",
-        ));
-    };
-
-    Ok(Some(NotePatchScopeSelection {
-        section_id: selection.section_id,
-        line_spans: selection.line_spans,
-        byte_start,
-        byte_end,
-    }))
 }
 
 fn maybe_check_markdown_target(
