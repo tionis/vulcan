@@ -199,6 +199,7 @@ use vulcan_app::notes::{
     NoteCreateRequest as AppNoteCreateRequest, NoteDeleteRequest as AppNoteDeleteRequest,
     NotePatchRequest as AppNotePatchRequest, NoteSetRequest as AppNoteSetRequest,
 };
+use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::templates::{
     apply_template_create, apply_template_insert, build_template_list_report,
     build_template_preview_report, build_template_show_report, find_frontmatter_block,
@@ -1970,7 +1971,7 @@ fn run_incremental_scan(
 ) -> Result<ScanSummary, CliError> {
     let mut progress = (output == OutputFormat::Human && !quiet)
         .then(|| ScanProgressReporter::new(use_stderr_color));
-    scan_vault_with_progress(paths, ScanMode::Incremental, |event| {
+    refresh_cache_incrementally_with_progress(paths, |event| {
         if let Some(progress) = progress.as_mut() {
             progress.record(&event);
         }
