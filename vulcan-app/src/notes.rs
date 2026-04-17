@@ -5,20 +5,22 @@ use crate::templates::{
     TemplateEngineKind, TemplateRunMode, TemplateTimestamp, YamlMapping,
 };
 use crate::AppError;
+use regex::Regex;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use vulcan_core::expression::functions::{date_components, parse_date_like_string};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     expected_periodic_note_path, load_vault_config, parse_document, parse_dql_with_diagnostics,
-    period_range_for_date, resolve_link, resolve_note_reference, DoctorByteRange,
-    DoctorDiagnosticIssue, GraphQueryError, LinkResolutionProblem, ParsedDocument, PeriodicConfig,
-    PluginEvent, ResolverDocument, ResolverLink, VaultConfig, VaultPaths,
+    period_range_for_date, query_backlinks, resolve_link, resolve_note_reference, BacklinkRecord,
+    DoctorByteRange, DoctorDiagnosticIssue, GraphQueryError, LinkResolutionProblem, NoteLineSpan,
+    ParsedDocument, PeriodicConfig, PluginEvent, RefactorChange, ResolverDocument, ResolverLink,
+    VaultConfig, VaultPaths,
 };
 
 #[derive(Debug, Clone)]
@@ -106,6 +108,93 @@ pub struct NoteSetReport {
     pub changed_paths: Vec<String>,
     #[serde(skip)]
     pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct MarkdownTarget {
+    pub display_path: String,
+    pub absolute_path: PathBuf,
+    pub vault_relative_path: Option<String>,
+    pub config: VaultConfig,
+}
+
+impl MarkdownTarget {
+    #[must_use]
+    pub fn is_vault_managed(&self) -> bool {
+        self.vault_relative_path.is_some()
+    }
+
+    pub fn read_source(&self) -> Result<String, AppError> {
+        fs::read_to_string(&self.absolute_path).map_err(AppError::operation)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct NotePatchRequest {
+    pub target: MarkdownTarget,
+    pub section_id: Option<String>,
+    pub heading: Option<String>,
+    pub block_ref: Option<String>,
+    pub lines: Option<String>,
+    pub find: String,
+    pub replace: String,
+    pub replace_all: bool,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NotePatchReport {
+    pub path: String,
+    pub dry_run: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub section_id: Option<String>,
+    pub line_spans: Vec<NoteLineSpan>,
+    pub regex: bool,
+    pub match_count: usize,
+    pub changes: Vec<RefactorChange>,
+    #[serde(skip)]
+    pub changed_paths: Vec<String>,
+    #[serde(skip)]
+    pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NoteDeleteRequest {
+    pub note: String,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NoteDeleteReport {
+    pub path: String,
+    pub dry_run: bool,
+    pub deleted: bool,
+    pub backlink_count: usize,
+    pub backlinks: Vec<BacklinkRecord>,
+    #[serde(skip)]
+    pub changed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+enum NotePatchMatcher {
+    Literal(String),
+    Regex(Regex),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NotePatchApplication {
+    updated_content: String,
+    match_count: usize,
+    changes: Vec<RefactorChange>,
+    regex: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NotePatchScopeSelection {
+    section_id: Option<String>,
+    line_spans: Vec<NoteLineSpan>,
+    byte_start: usize,
+    byte_end: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -305,6 +394,119 @@ pub fn apply_note_set(
         preserved_frontmatter: request.preserve_frontmatter,
         changed_paths: vec![path],
         content,
+    })
+}
+
+pub fn apply_note_patch(
+    paths: &VaultPaths,
+    request: &NotePatchRequest,
+    permission_profile: Option<&str>,
+    quiet: bool,
+) -> Result<NotePatchReport, AppError> {
+    let source = request.target.read_source()?;
+    let matcher = parse_note_patch_matcher(&request.find)?;
+    let scope = resolve_note_patch_scope_selection(
+        &source,
+        &request.target.config,
+        request.section_id.as_deref(),
+        request.heading.as_deref(),
+        request.block_ref.as_deref(),
+        request.lines.as_deref(),
+    )?;
+    let application = if let Some(scope) = scope.as_ref() {
+        let updated_scope = apply_note_patch_to_source(
+            &source[scope.byte_start..scope.byte_end],
+            &matcher,
+            &request.replace,
+            request.replace_all,
+            "selected note scope",
+        )?;
+        let mut updated_content = String::with_capacity(
+            source.len() - (scope.byte_end - scope.byte_start)
+                + updated_scope.updated_content.len(),
+        );
+        updated_content.push_str(&source[..scope.byte_start]);
+        updated_content.push_str(&updated_scope.updated_content);
+        updated_content.push_str(&source[scope.byte_end..]);
+        NotePatchApplication {
+            updated_content,
+            match_count: updated_scope.match_count,
+            changes: updated_scope.changes,
+            regex: updated_scope.regex,
+        }
+    } else {
+        apply_note_patch_to_source(
+            &source,
+            &matcher,
+            &request.replace,
+            request.replace_all,
+            "note",
+        )?
+    };
+
+    if !request.dry_run {
+        if let Some(relative_path) = request.target.vault_relative_path.as_deref() {
+            dispatch_note_write_plugin_hooks(
+                paths,
+                permission_profile,
+                relative_path,
+                "patch",
+                Some(&source),
+                &application.updated_content,
+                quiet,
+            )?;
+        }
+        fs::write(&request.target.absolute_path, &application.updated_content)
+            .map_err(AppError::operation)?;
+    }
+
+    Ok(NotePatchReport {
+        path: request.target.display_path.clone(),
+        dry_run: request.dry_run,
+        section_id: scope
+            .as_ref()
+            .and_then(|selection| selection.section_id.clone()),
+        line_spans: scope
+            .as_ref()
+            .map_or_else(Vec::new, |selection| selection.line_spans.clone()),
+        regex: application.regex,
+        match_count: application.match_count,
+        changes: application.changes,
+        changed_paths: request
+            .target
+            .vault_relative_path
+            .clone()
+            .into_iter()
+            .collect(),
+        content: application.updated_content,
+    })
+}
+
+pub fn apply_note_delete(
+    paths: &VaultPaths,
+    request: &NoteDeleteRequest,
+    permission_profile: Option<&str>,
+    quiet: bool,
+) -> Result<NoteDeleteReport, AppError> {
+    let path = resolve_existing_note_path(paths, &request.note)?;
+    let backlinks = match query_backlinks(paths, &path) {
+        Ok(report) => report.backlinks,
+        Err(GraphQueryError::CacheMissing | GraphQueryError::NoteNotFound { .. }) => Vec::new(),
+        Err(error) => return Err(AppError::operation(error)),
+    };
+
+    if !request.dry_run {
+        fs::remove_file(paths.vault_root().join(&path)).map_err(AppError::operation)?;
+        dispatch_note_delete_plugin_hooks(paths, permission_profile, &path, quiet);
+    }
+
+    Ok(NoteDeleteReport {
+        path: path.clone(),
+        dry_run: request.dry_run,
+        deleted: !request.dry_run,
+        backlink_count: backlinks.len(),
+        backlinks,
+        changed_paths: vec![path],
     })
 }
 
@@ -510,6 +712,153 @@ fn preserve_existing_frontmatter(existing: &str, body: &str) -> String {
             rendered
         },
     )
+}
+
+fn parse_note_patch_matcher(pattern: &str) -> Result<NotePatchMatcher, AppError> {
+    if pattern.is_empty() {
+        return Err(AppError::operation("`note patch --find` must not be empty"));
+    }
+
+    if let Some(regex_body) = pattern.strip_prefix('/') {
+        let Some(regex_body) = regex_body.strip_suffix('/') else {
+            return Err(AppError::operation(
+                "regex patterns must use /.../ syntax, for example `/TODO \\d+/`",
+            ));
+        };
+        if regex_body.is_empty() {
+            return Err(AppError::operation("regex patterns must not be empty"));
+        }
+        return Regex::new(regex_body)
+            .map(NotePatchMatcher::Regex)
+            .map_err(AppError::operation);
+    }
+
+    Ok(NotePatchMatcher::Literal(pattern.to_string()))
+}
+
+fn apply_note_patch_to_source(
+    source: &str,
+    matcher: &NotePatchMatcher,
+    replace: &str,
+    all: bool,
+    target: &str,
+) -> Result<NotePatchApplication, AppError> {
+    match matcher {
+        NotePatchMatcher::Literal(find) => {
+            let patch_matches = source
+                .match_indices(find)
+                .map(|(start, matched)| {
+                    (
+                        start,
+                        start + matched.len(),
+                        matched.to_string(),
+                        replace.to_string(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            build_note_patch_application(source, patch_matches, all, false, target)
+        }
+        NotePatchMatcher::Regex(regex) => {
+            let patch_matches = regex
+                .find_iter(source)
+                .map(|matched| {
+                    if matched.start() == matched.end() {
+                        Err(AppError::operation(
+                            "regex patterns for `note patch` must not match empty strings",
+                        ))
+                    } else {
+                        Ok((
+                            matched.start(),
+                            matched.end(),
+                            matched.as_str().to_string(),
+                            regex.replace(matched.as_str(), replace).into_owned(),
+                        ))
+                    }
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            build_note_patch_application(source, patch_matches, all, true, target)
+        }
+    }
+}
+
+fn build_note_patch_application(
+    source: &str,
+    matches: Vec<(usize, usize, String, String)>,
+    all: bool,
+    regex: bool,
+    target: &str,
+) -> Result<NotePatchApplication, AppError> {
+    match matches.len() {
+        0 => Err(AppError::operation(format!(
+            "pattern not found in {target}"
+        ))),
+        count if count > 1 && !all => Err(AppError::operation(format!(
+            "pattern matched {count} times in {target}; rerun with --all to replace every match"
+        ))),
+        _ => {
+            let mut updated = source.to_string();
+            for (start, end, _, replacement) in matches.iter().rev() {
+                updated.replace_range(*start..*end, replacement);
+            }
+            Ok(NotePatchApplication {
+                updated_content: updated,
+                match_count: matches.len(),
+                changes: matches
+                    .into_iter()
+                    .map(|(_, _, before, after)| RefactorChange { before, after })
+                    .collect(),
+                regex,
+            })
+        }
+    }
+}
+
+fn resolve_note_patch_scope_selection(
+    source: &str,
+    config: &VaultConfig,
+    section_id: Option<&str>,
+    heading: Option<&str>,
+    block_ref: Option<&str>,
+    lines: Option<&str>,
+) -> Result<Option<NotePatchScopeSelection>, AppError> {
+    if section_id.is_none() && heading.is_none() && block_ref.is_none() && lines.is_none() {
+        return Ok(None);
+    }
+
+    let parsed = parse_document(source, config);
+    let selection = vulcan_core::read_note(
+        source,
+        &parsed,
+        &vulcan_core::NoteReadOptions {
+            heading: heading.map(ToOwned::to_owned),
+            section_id: section_id.map(ToOwned::to_owned),
+            block_ref: block_ref.map(ToOwned::to_owned),
+            lines: lines.map(ToOwned::to_owned),
+            match_pattern: None,
+            context: 0,
+            no_frontmatter: false,
+        },
+    )
+    .map_err(AppError::operation)?;
+
+    let [line_span] = selection.line_spans.as_slice() else {
+        return Err(AppError::operation(
+            "selected note scope is empty or not contiguous",
+        ));
+    };
+    let Some((byte_start, byte_end)) = vulcan_core::byte_range_for_line_span(source, line_span)
+    else {
+        return Err(AppError::operation(
+            "selected note scope could not be mapped back to source bytes",
+        ));
+    };
+
+    Ok(Some(NotePatchScopeSelection {
+        section_id: selection.section_id,
+        line_spans: selection.line_spans,
+        byte_start,
+        byte_end,
+    }))
 }
 
 fn collect_parse_diagnostics(
@@ -949,6 +1298,24 @@ fn dispatch_note_create_plugin_hooks(
     );
 }
 
+fn dispatch_note_delete_plugin_hooks(
+    paths: &VaultPaths,
+    permission_profile: Option<&str>,
+    relative_path: &str,
+    quiet: bool,
+) {
+    let _ = plugins::dispatch_plugin_event(
+        paths,
+        permission_profile,
+        PluginEvent::OnNoteDelete,
+        &json!({
+            "kind": PluginEvent::OnNoteDelete,
+            "path": relative_path,
+        }),
+        quiet,
+    );
+}
+
 struct LoadedAppendTarget {
     path: String,
     existing: String,
@@ -1015,14 +1382,16 @@ fn load_note_append_target(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_note_append, apply_note_create, apply_note_set, diagnose_note_contents,
-        NoteAppendMode, NoteAppendRequest, NoteCreateRequest, NoteSetRequest,
+        apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
+        diagnose_note_contents, MarkdownTarget, NoteAppendMode, NoteAppendRequest,
+        NoteCreateRequest, NoteDeleteRequest, NotePatchRequest, NoteSetRequest,
     };
     use crate::templates::{YamlMapping, YamlValue};
     use std::collections::HashMap;
     use std::fs;
+    use std::path::Path;
     use tempfile::tempdir;
-    use vulcan_core::{initialize_vulcan_dir, VaultPaths};
+    use vulcan_core::{initialize_vulcan_dir, scan_vault_with_progress, ScanMode, VaultPaths};
 
     #[test]
     fn apply_note_create_renders_template_and_writes_note() {
@@ -1159,5 +1528,80 @@ mod tests {
         assert!(diagnostics.iter().any(|issue| issue
             .message
             .contains("Unresolved link target `[[Ghost Note]]`")));
+    }
+
+    #[test]
+    fn apply_note_patch_updates_selected_heading_scope() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        let note_path = root.join("scope.md");
+        fs::write(&note_path, "# Title\n\n## Status\nTODO\n\n## Notes\nTODO\n").expect("seed note");
+
+        let report = apply_note_patch(
+            &VaultPaths::new(root),
+            &NotePatchRequest {
+                target: MarkdownTarget {
+                    display_path: path_to_slash_string(&note_path),
+                    absolute_path: note_path.clone(),
+                    vault_relative_path: None,
+                    config: vulcan_core::VaultConfig::default(),
+                },
+                section_id: None,
+                heading: Some("Status".to_string()),
+                block_ref: None,
+                lines: None,
+                find: "TODO".to_string(),
+                replace: "DONE".to_string(),
+                replace_all: false,
+                dry_run: false,
+            },
+            None,
+            true,
+        )
+        .expect("patch report");
+
+        assert_eq!(report.path, path_to_slash_string(&note_path));
+        assert_eq!(report.match_count, 1);
+        assert_eq!(report.changes.len(), 1);
+        assert_eq!(report.line_spans.len(), 1);
+
+        let updated = fs::read_to_string(&note_path)
+            .expect("patched note")
+            .replace("\r\n", "\n");
+        assert_eq!(updated, "# Title\n\n## Status\nDONE\n\n## Notes\nTODO\n");
+    }
+
+    #[test]
+    fn apply_note_delete_reports_backlinks_and_removes_note() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        let paths = VaultPaths::new(root);
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        fs::create_dir_all(root.join("Projects")).expect("projects dir");
+        fs::write(root.join("Home.md"), "Links to [[Projects/Alpha]].\n").expect("home");
+        fs::write(root.join("Projects/Alpha.md"), "# Alpha\n").expect("alpha");
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+        let report = apply_note_delete(
+            &paths,
+            &NoteDeleteRequest {
+                note: "Projects/Alpha".to_string(),
+                dry_run: false,
+            },
+            None,
+            true,
+        )
+        .expect("delete report");
+
+        assert_eq!(report.path, "Projects/Alpha.md");
+        assert!(report.deleted);
+        assert_eq!(report.backlink_count, 1);
+        assert_eq!(report.changed_paths, vec!["Projects/Alpha.md".to_string()]);
+        assert_eq!(report.backlinks[0].source_path, "Home.md");
+        assert!(!root.join("Projects/Alpha.md").exists());
+    }
+
+    fn path_to_slash_string(path: &Path) -> String {
+        path.to_string_lossy().replace('\\', "/")
     }
 }
