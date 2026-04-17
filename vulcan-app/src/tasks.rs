@@ -15,13 +15,14 @@ use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use vulcan_core::expression::functions::parse_date_like_string;
+use vulcan_core::expression::functions::{parse_date_like_string, parse_duration_string};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     active_tasknote_time_entry, expected_periodic_note_path, extract_tasknote, load_vault_config,
-    parse_tasknote_natural_language, parse_tasknote_time_entries, period_range_for_date,
-    resolve_note_reference, tasknotes_default_date_value, tasknotes_default_recurrence_rule,
-    tasknotes_default_reminder_values, tasknotes_status_state, GraphQueryError, IndexedTaskNote,
+    parse_tasknote_natural_language, parse_tasknote_reminders, parse_tasknote_time_entries,
+    period_range_for_date, resolve_note_reference, tasknotes_default_date_value,
+    tasknotes_default_recurrence_rule, tasknotes_default_reminder_values,
+    tasknotes_reminder_notify_at, tasknotes_status_state, GraphQueryError, IndexedTaskNote,
     NoteRecord, ParsedTaskNoteInput, RefactorChange, VaultConfig, VaultPaths,
 };
 
@@ -161,6 +162,77 @@ pub struct TaskConvertReport {
     pub body: String,
     #[serde(skip)]
     pub changed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TaskShowReport {
+    pub path: String,
+    pub title: String,
+    pub status: String,
+    pub status_type: String,
+    pub completed: bool,
+    pub archived: bool,
+    pub priority: String,
+    pub due: Option<String>,
+    pub scheduled: Option<String>,
+    pub completed_date: Option<String>,
+    pub date_created: Option<String>,
+    pub date_modified: Option<String>,
+    pub contexts: Vec<String>,
+    pub projects: Vec<String>,
+    pub tags: Vec<String>,
+    pub recurrence: Option<String>,
+    pub recurrence_anchor: Option<String>,
+    pub complete_instances: Vec<String>,
+    pub skipped_instances: Vec<String>,
+    pub blocked_by: Vec<Value>,
+    pub reminders: Vec<Value>,
+    pub time_entries: Vec<Value>,
+    pub total_time_minutes: i64,
+    pub active_time_minutes: i64,
+    pub estimate_remaining_minutes: Option<i64>,
+    pub efficiency_ratio: Option<i64>,
+    pub custom_fields: Value,
+    pub frontmatter: Value,
+    pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TaskDueReport {
+    pub reference_time: String,
+    pub within: String,
+    pub tasks: Vec<TaskDueItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TaskDueItem {
+    pub path: String,
+    pub title: String,
+    pub status: String,
+    pub priority: String,
+    pub due: String,
+    pub overdue: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TaskRemindersReport {
+    pub reference_time: String,
+    pub upcoming: String,
+    pub reminders: Vec<TaskReminderItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TaskReminderItem {
+    pub path: String,
+    pub title: String,
+    pub status: String,
+    pub priority: String,
+    pub reminder_id: String,
+    pub reminder_type: String,
+    pub related_to: Option<String>,
+    pub description: Option<String>,
+    pub notify_at: String,
+    pub overdue: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -352,6 +424,7 @@ struct LoadedTaskNote {
     path: String,
     body: String,
     frontmatter: YamlMapping,
+    frontmatter_json: Value,
     indexed: IndexedTaskNote,
     config: VaultConfig,
 }
@@ -1069,6 +1142,46 @@ pub fn apply_task_convert(
     })
 }
 
+pub fn build_task_show_report(paths: &VaultPaths, task: &str) -> Result<TaskShowReport, AppError> {
+    let loaded = load_tasknote_note(paths, task)?;
+    let status_state = tasknotes_status_state(&loaded.config.tasknotes, &loaded.indexed.status);
+    let now_ms = current_utc_timestamp_ms();
+    let (total_time_minutes, active_time_minutes, estimate_remaining_minutes, efficiency_ratio) =
+        tasknote_time_metrics(&loaded.indexed, now_ms);
+
+    Ok(TaskShowReport {
+        path: loaded.path,
+        title: loaded.indexed.title,
+        status: loaded.indexed.status,
+        status_type: status_state.status_type,
+        completed: status_state.completed,
+        archived: loaded.indexed.archived,
+        priority: loaded.indexed.priority,
+        due: loaded.indexed.due,
+        scheduled: loaded.indexed.scheduled,
+        completed_date: loaded.indexed.completed_date,
+        date_created: loaded.indexed.date_created,
+        date_modified: loaded.indexed.date_modified,
+        contexts: loaded.indexed.contexts,
+        projects: loaded.indexed.projects,
+        tags: loaded.indexed.tags,
+        recurrence: loaded.indexed.recurrence,
+        recurrence_anchor: loaded.indexed.recurrence_anchor,
+        complete_instances: loaded.indexed.complete_instances,
+        skipped_instances: loaded.indexed.skipped_instances,
+        blocked_by: loaded.indexed.blocked_by,
+        reminders: loaded.indexed.reminders,
+        time_entries: loaded.indexed.time_entries,
+        total_time_minutes,
+        active_time_minutes,
+        estimate_remaining_minutes,
+        efficiency_ratio,
+        custom_fields: Value::Object(loaded.indexed.custom_fields),
+        frontmatter: loaded.frontmatter_json,
+        body: loaded.body,
+    })
+}
+
 pub fn apply_task_track_start(
     paths: &VaultPaths,
     request: &TaskTrackStartRequest,
@@ -1297,6 +1410,98 @@ pub fn build_task_track_status_report(
         total_active_sessions: active_sessions.len(),
         total_elapsed_minutes,
         active_sessions,
+    })
+}
+
+pub fn build_task_due_report(paths: &VaultPaths, within: &str) -> Result<TaskDueReport, AppError> {
+    let window_ms = parse_duration_string(within).ok_or_else(|| {
+        AppError::operation(format!("failed to parse due window duration: {within}"))
+    })?;
+    let now_ms = current_utc_timestamp_ms();
+    let deadline_ms = now_ms.saturating_add(window_ms.max(0));
+    let mut tasks = load_tasknote_records(paths)?
+        .into_iter()
+        .filter(|record| !record.indexed.archived && !record.completed)
+        .filter_map(|record| {
+            let due = record.indexed.due.as_ref()?;
+            let due_ms = parse_date_like_string(due)?;
+            (due_ms <= deadline_ms).then_some(TaskDueItem {
+                path: record.path,
+                title: record.indexed.title,
+                status: record.indexed.status,
+                priority: record.indexed.priority,
+                due: due.clone(),
+                overdue: due_ms < now_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+    tasks.sort_by(|left, right| {
+        let left_due = parse_date_like_string(&left.due).unwrap_or(i64::MAX);
+        let right_due = parse_date_like_string(&right.due).unwrap_or(i64::MAX);
+        left_due
+            .cmp(&right_due)
+            .then_with(|| left.path.cmp(&right.path))
+    });
+
+    Ok(TaskDueReport {
+        reference_time: current_utc_timestamp_string(),
+        within: within.to_string(),
+        tasks,
+    })
+}
+
+pub fn build_task_reminders_report(
+    paths: &VaultPaths,
+    upcoming: &str,
+) -> Result<TaskRemindersReport, AppError> {
+    let window_ms = parse_duration_string(upcoming).ok_or_else(|| {
+        AppError::operation(format!(
+            "failed to parse reminder window duration: {upcoming}"
+        ))
+    })?;
+    let now_ms = current_utc_timestamp_ms();
+    let deadline_ms = now_ms.saturating_add(window_ms.max(0));
+    let mut reminders = Vec::new();
+
+    for record in load_tasknote_records(paths)?
+        .into_iter()
+        .filter(|record| !record.indexed.archived && !record.completed)
+    {
+        for reminder in parse_tasknote_reminders(&record.indexed.reminders) {
+            let Some(notify_at) = tasknotes_reminder_notify_at(&record.indexed, &reminder) else {
+                continue;
+            };
+            if notify_at > deadline_ms {
+                continue;
+            }
+            reminders.push(TaskReminderItem {
+                path: record.path.clone(),
+                title: record.indexed.title.clone(),
+                status: record.indexed.status.clone(),
+                priority: record.indexed.priority.clone(),
+                reminder_id: reminder.id,
+                reminder_type: reminder.reminder_type,
+                related_to: reminder.related_to,
+                description: reminder.description,
+                notify_at: format_utc_timestamp_ms(notify_at),
+                overdue: notify_at < now_ms,
+            });
+        }
+    }
+
+    reminders.sort_by(|left, right| {
+        let left_at = parse_date_like_string(&left.notify_at).unwrap_or(i64::MAX);
+        let right_at = parse_date_like_string(&right.notify_at).unwrap_or(i64::MAX);
+        left_at
+            .cmp(&right_at)
+            .then_with(|| left.path.cmp(&right.path))
+            .then_with(|| left.reminder_id.cmp(&right.reminder_id))
+    });
+
+    Ok(TaskRemindersReport {
+        reference_time: current_utc_timestamp_string(),
+        upcoming: upcoming.to_string(),
+        reminders,
     })
 }
 
@@ -2789,6 +2994,7 @@ fn load_tasknote_note(paths: &VaultPaths, task: &str) -> Result<LoadedTaskNote, 
         path,
         body: normalize_tasknote_body(&body),
         frontmatter,
+        frontmatter_json,
         indexed,
         config,
     })
@@ -4094,12 +4300,12 @@ mod tests {
         apply_task_add, apply_task_archive, apply_task_complete, apply_task_convert,
         apply_task_create, apply_task_pomodoro_start, apply_task_pomodoro_stop,
         apply_task_reschedule, apply_task_set, apply_task_track_start, apply_task_track_stop,
-        build_task_pomodoro_status_report, build_task_track_log_report,
-        build_task_track_status_report, build_task_track_summary_report, current_utc_date_string,
-        TaskAddRequest, TaskArchiveRequest, TaskCompleteRequest, TaskConvertRequest,
-        TaskCreateRequest, TaskPomodoroStartRequest, TaskPomodoroStopRequest,
-        TaskRescheduleRequest, TaskSetRequest, TaskTrackStartRequest, TaskTrackStopRequest,
-        TaskTrackSummaryPeriod,
+        build_task_due_report, build_task_pomodoro_status_report, build_task_reminders_report,
+        build_task_show_report, build_task_track_log_report, build_task_track_status_report,
+        build_task_track_summary_report, current_utc_date_string, TaskAddRequest,
+        TaskArchiveRequest, TaskCompleteRequest, TaskConvertRequest, TaskCreateRequest,
+        TaskPomodoroStartRequest, TaskPomodoroStopRequest, TaskRescheduleRequest, TaskSetRequest,
+        TaskTrackStartRequest, TaskTrackStopRequest, TaskTrackSummaryPeriod,
     };
     use crate::templates::render_note_from_parts;
     use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -4412,6 +4618,309 @@ mod tests {
             .expect("archived task")
             .replace("\r\n", "\n");
         assert!(rendered.contains(&format!("- {}", config.tasknotes.field_mapping.archive_tag)));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn build_task_show_report_reports_tasknote_details_and_metrics() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        let config = load_vault_config(&paths).config;
+        let mapping = &config.tasknotes.field_mapping;
+        let reminder = YamlValue::Mapping(YamlMapping::from_iter([
+            (
+                YamlValue::String("id".to_string()),
+                YamlValue::String("due-warning".to_string()),
+            ),
+            (
+                YamlValue::String("type".to_string()),
+                YamlValue::String("relative".to_string()),
+            ),
+            (
+                YamlValue::String("relatedTo".to_string()),
+                YamlValue::String("due".to_string()),
+            ),
+            (
+                YamlValue::String("offset".to_string()),
+                YamlValue::String("-PT15M".to_string()),
+            ),
+        ]));
+        let time_entry = YamlValue::Mapping(YamlMapping::from_iter([
+            (
+                YamlValue::String("startTime".to_string()),
+                YamlValue::String("2026-04-17T08:00:00Z".to_string()),
+            ),
+            (
+                YamlValue::String("endTime".to_string()),
+                YamlValue::String("2026-04-17T09:00:00Z".to_string()),
+            ),
+            (
+                YamlValue::String("description".to_string()),
+                YamlValue::String("Deep work".to_string()),
+            ),
+        ]));
+        seed_tasknote(
+            &paths,
+            &config,
+            "Tasks/Write Docs.md",
+            "Write docs",
+            "in-progress",
+            &[
+                (
+                    mapping.priority.as_str(),
+                    YamlValue::String("high".to_string()),
+                ),
+                (
+                    mapping.due.as_str(),
+                    YamlValue::String("2026-04-20T10:00:00Z".to_string()),
+                ),
+                (
+                    mapping.contexts.as_str(),
+                    YamlValue::Sequence(vec![
+                        YamlValue::String("@desk".to_string()),
+                        YamlValue::String("@work".to_string()),
+                    ]),
+                ),
+                (
+                    mapping.projects.as_str(),
+                    YamlValue::Sequence(vec![YamlValue::String(
+                        "[[Projects/Website]]".to_string(),
+                    )]),
+                ),
+                (
+                    mapping.blocked_by.as_str(),
+                    YamlValue::Sequence(vec![YamlValue::String(
+                        "TaskNotes/Tasks/Prep Outline.md".to_string(),
+                    )]),
+                ),
+                (
+                    mapping.reminders.as_str(),
+                    YamlValue::Sequence(vec![reminder]),
+                ),
+                (
+                    mapping.time_entries.as_str(),
+                    YamlValue::Sequence(vec![time_entry]),
+                ),
+                (
+                    mapping.time_estimate.as_str(),
+                    YamlValue::Number(serde_yaml::Number::from(90_u64)),
+                ),
+                (
+                    "effort",
+                    serde_yaml::to_value(3.0_f64).expect("float yaml value"),
+                ),
+            ],
+            "Write the docs body.\n",
+        )
+        .expect("seed task");
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+        let report = build_task_show_report(&paths, "Tasks/Write Docs").expect("show report");
+
+        assert_eq!(report.path, "Tasks/Write Docs.md");
+        assert_eq!(report.title, "Write docs");
+        assert_eq!(report.status, "in-progress");
+        assert_eq!(report.status_type, "IN_PROGRESS");
+        assert!(!report.completed);
+        assert_eq!(report.priority, "high");
+        assert_eq!(report.due.as_deref(), Some("2026-04-20T10:00:00Z"));
+        assert_eq!(report.contexts, vec!["@desk", "@work"]);
+        assert_eq!(report.projects, vec!["[[Projects/Website]]"]);
+        assert_eq!(report.blocked_by.len(), 1);
+        assert_eq!(report.reminders.len(), 1);
+        assert_eq!(report.time_entries.len(), 1);
+        assert_eq!(report.total_time_minutes, 60);
+        assert_eq!(report.active_time_minutes, 0);
+        assert_eq!(report.estimate_remaining_minutes, Some(30));
+        assert_eq!(report.efficiency_ratio, Some(67));
+        assert_eq!(report.custom_fields["effort"], serde_json::json!(3.0));
+        assert_eq!(report.frontmatter["title"], "Write docs");
+        assert_eq!(report.body, "Write the docs body.\n");
+    }
+
+    #[test]
+    fn build_task_due_report_filters_tasks_within_window() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        let config = load_vault_config(&paths).config;
+        let due_key = config.tasknotes.field_mapping.due.clone();
+        seed_tasknote(
+            &paths,
+            &config,
+            "Tasks/Future.md",
+            "Future",
+            "open",
+            &[(
+                due_key.as_str(),
+                YamlValue::String("2999-01-01T10:00:00Z".to_string()),
+            )],
+            "",
+        )
+        .expect("seed future task");
+        seed_tasknote(
+            &paths,
+            &config,
+            "Tasks/Overdue.md",
+            "Overdue",
+            "open",
+            &[(
+                due_key.as_str(),
+                YamlValue::String("2000-01-01T10:00:00Z".to_string()),
+            )],
+            "",
+        )
+        .expect("seed overdue task");
+        seed_tasknote(
+            &paths,
+            &config,
+            "Tasks/Done.md",
+            "Done",
+            &first_completed_status_for_test(&config),
+            &[(
+                due_key.as_str(),
+                YamlValue::String("2000-01-01T10:00:00Z".to_string()),
+            )],
+            "",
+        )
+        .expect("seed completed task");
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+        let report = build_task_due_report(&paths, "2000y").expect("due report");
+
+        assert_eq!(report.within, "2000y");
+        assert_eq!(report.tasks.len(), 2);
+        assert_eq!(report.tasks[0].path, "Tasks/Overdue.md");
+        assert!(report.tasks[0].overdue);
+        assert_eq!(report.tasks[1].path, "Tasks/Future.md");
+        assert!(!report.tasks[1].overdue);
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn build_task_reminders_report_includes_relative_and_absolute_reminders() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        let config = load_vault_config(&paths).config;
+        let mapping = &config.tasknotes.field_mapping;
+        let relative_reminder = YamlValue::Mapping(YamlMapping::from_iter([
+            (
+                YamlValue::String("id".to_string()),
+                YamlValue::String("rel-1".to_string()),
+            ),
+            (
+                YamlValue::String("type".to_string()),
+                YamlValue::String("relative".to_string()),
+            ),
+            (
+                YamlValue::String("relatedTo".to_string()),
+                YamlValue::String("due".to_string()),
+            ),
+            (
+                YamlValue::String("offset".to_string()),
+                YamlValue::String("-PT15M".to_string()),
+            ),
+            (
+                YamlValue::String("description".to_string()),
+                YamlValue::String("Before due".to_string()),
+            ),
+        ]));
+        let absolute_reminder = YamlValue::Mapping(YamlMapping::from_iter([
+            (
+                YamlValue::String("id".to_string()),
+                YamlValue::String("abs-1".to_string()),
+            ),
+            (
+                YamlValue::String("type".to_string()),
+                YamlValue::String("absolute".to_string()),
+            ),
+            (
+                YamlValue::String("absoluteTime".to_string()),
+                YamlValue::String("2999-01-01T09:00:00Z".to_string()),
+            ),
+            (
+                YamlValue::String("description".to_string()),
+                YamlValue::String("Absolute reminder".to_string()),
+            ),
+        ]));
+        let far_future_reminder = YamlValue::Mapping(YamlMapping::from_iter([
+            (
+                YamlValue::String("id".to_string()),
+                YamlValue::String("abs-2".to_string()),
+            ),
+            (
+                YamlValue::String("type".to_string()),
+                YamlValue::String("absolute".to_string()),
+            ),
+            (
+                YamlValue::String("absoluteTime".to_string()),
+                YamlValue::String("4999-01-01T09:00:00Z".to_string()),
+            ),
+        ]));
+        seed_tasknote(
+            &paths,
+            &config,
+            "Tasks/Relative.md",
+            "Relative",
+            "open",
+            &[
+                (
+                    mapping.due.as_str(),
+                    YamlValue::String("2999-01-01T10:00:00Z".to_string()),
+                ),
+                (
+                    mapping.reminders.as_str(),
+                    YamlValue::Sequence(vec![relative_reminder]),
+                ),
+            ],
+            "",
+        )
+        .expect("seed relative task");
+        seed_tasknote(
+            &paths,
+            &config,
+            "Tasks/Absolute.md",
+            "Absolute",
+            "open",
+            &[(
+                mapping.reminders.as_str(),
+                YamlValue::Sequence(vec![absolute_reminder]),
+            )],
+            "",
+        )
+        .expect("seed absolute task");
+        seed_tasknote(
+            &paths,
+            &config,
+            "Tasks/FarFuture.md",
+            "Far Future",
+            "open",
+            &[(
+                mapping.reminders.as_str(),
+                YamlValue::Sequence(vec![far_future_reminder]),
+            )],
+            "",
+        )
+        .expect("seed far future task");
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+        let report = build_task_reminders_report(&paths, "2000y").expect("task reminders report");
+
+        assert_eq!(report.upcoming, "2000y");
+        assert_eq!(report.reminders.len(), 2);
+        assert_eq!(report.reminders[0].path, "Tasks/Absolute.md");
+        assert_eq!(report.reminders[0].reminder_id, "abs-1");
+        assert_eq!(report.reminders[0].notify_at, "2999-01-01T09:00:00Z");
+        assert!(!report.reminders[0].overdue);
+        assert_eq!(report.reminders[1].path, "Tasks/Relative.md");
+        assert_eq!(report.reminders[1].reminder_id, "rel-1");
+        assert_eq!(report.reminders[1].notify_at, "2999-01-01T09:45:00Z");
+        assert_eq!(
+            report.reminders[1].description.as_deref(),
+            Some("Before due")
+        );
     }
 
     #[test]
