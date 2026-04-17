@@ -632,7 +632,7 @@ fn normalize_note_path(path: &str) -> Result<String, AppError> {
     .map_err(AppError::operation)
 }
 
-fn normalize_date_argument(date: Option<&str>) -> Result<String, AppError> {
+pub(crate) fn normalize_date_argument(date: Option<&str>) -> Result<String, AppError> {
     match date
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -685,7 +685,10 @@ fn merge_explicit_frontmatter(
     }
 }
 
-fn resolve_existing_note_path(paths: &VaultPaths, note: &str) -> Result<String, AppError> {
+pub(crate) fn resolve_existing_note_path(
+    paths: &VaultPaths,
+    note: &str,
+) -> Result<String, AppError> {
     match resolve_note_reference(paths, note) {
         Ok(resolved) => Ok(resolved.path),
         Err(GraphQueryError::AmbiguousIdentifier { .. }) => Err(AppError::operation(format!(
