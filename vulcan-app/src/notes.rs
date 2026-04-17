@@ -621,7 +621,7 @@ pub fn render_periodic_note_contents(
     Ok(rendered.content)
 }
 
-fn normalize_note_path(path: &str) -> Result<String, AppError> {
+pub(crate) fn normalize_note_path(path: &str) -> Result<String, AppError> {
     normalize_relative_input_path(
         path,
         RelativePathOptions {
