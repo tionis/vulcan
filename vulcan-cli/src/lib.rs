@@ -203,17 +203,19 @@ use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::tasks::{
     apply_task_add, apply_task_archive, apply_task_complete, apply_task_convert, apply_task_create,
     apply_task_pomodoro_start, apply_task_pomodoro_stop, apply_task_reschedule, apply_task_set,
-    apply_task_track_start, apply_task_track_stop, build_task_pomodoro_status_report,
+    apply_task_track_start, apply_task_track_stop, build_task_due_report,
+    build_task_pomodoro_status_report, build_task_reminders_report, build_task_show_report,
     build_task_track_log_report, build_task_track_status_report, build_task_track_summary_report,
     TaskAddReport, TaskAddRequest as AppTaskAddRequest,
     TaskArchiveRequest as AppTaskArchiveRequest, TaskCompleteRequest as AppTaskCompleteRequest,
     TaskConvertReport, TaskConvertRequest as AppTaskConvertRequest, TaskCreateReport,
-    TaskCreateRequest as AppTaskCreateRequest, TaskMutationReport, TaskPomodoroReport,
-    TaskPomodoroStartRequest as AppTaskPomodoroStartRequest, TaskPomodoroStatusReport,
-    TaskPomodoroStopRequest as AppTaskPomodoroStopRequest,
-    TaskRescheduleRequest as AppTaskRescheduleRequest, TaskSetRequest as AppTaskSetRequest,
-    TaskTrackLogReport, TaskTrackReport, TaskTrackStartRequest as AppTaskTrackStartRequest,
-    TaskTrackStatusReport, TaskTrackStopRequest as AppTaskTrackStopRequest,
+    TaskCreateRequest as AppTaskCreateRequest, TaskDueReport, TaskMutationReport,
+    TaskPomodoroReport, TaskPomodoroStartRequest as AppTaskPomodoroStartRequest,
+    TaskPomodoroStatusReport, TaskPomodoroStopRequest as AppTaskPomodoroStopRequest,
+    TaskRemindersReport, TaskRescheduleRequest as AppTaskRescheduleRequest,
+    TaskSetRequest as AppTaskSetRequest, TaskShowReport, TaskTrackLogReport, TaskTrackReport,
+    TaskTrackStartRequest as AppTaskTrackStartRequest, TaskTrackStatusReport,
+    TaskTrackStopRequest as AppTaskTrackStopRequest,
     TaskTrackSummaryPeriod as AppTaskTrackSummaryPeriod, TaskTrackSummaryReport,
 };
 use vulcan_app::templates::{
@@ -255,40 +257,39 @@ use vulcan_core::{
     inspect_cache, link_mentions, list_checkpoints, list_daily_note_events, list_saved_reports,
     load_dataview_blocks, load_events_for_periodic_note, load_kanban_board, load_saved_report,
     load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card, move_note, parse_document,
-    parse_tasknote_reminders, parse_tasknote_time_entries, parse_tasks_query,
-    period_range_for_date, plan_base_note_create, prepare_search_backend, query_backlinks,
-    query_change_report, query_links, query_notes, rebuild_vault_with_progress, rename_alias,
-    rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
+    parse_tasks_query, period_range_for_date, plan_base_note_create, prepare_search_backend,
+    query_backlinks, query_change_report, query_links, query_notes, rebuild_vault_with_progress,
+    rename_alias, rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
     render_markdown_html, repair_fts, resolve_note_reference, resolve_periodic_note,
     resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
     search_web, shape_tasks_query_result, step_period_start, task_upcoming_occurrences,
-    tasknotes_reminder_notify_at, tasknotes_status_definition, tasknotes_status_state,
-    validate_vulcan_overrides_toml, verify_cache, watch_vault, AutoScanMode, BacklinkRecord,
-    BacklinksReport, BasesCreateContext, BasesEvalReport, BasesEvaluator, BasesViewEditReport,
-    BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport,
-    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
-    ClusterReport, ConfigDiagnostic, ConfigImportReport, ConfigPermissionMode, CoreImporter,
-    DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
-    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
-    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
-    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
-    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
-    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
-    LinkKind, LinkResolutionMode, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OriginContext,
-    OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter,
-    PermissionFilter, PermissionGuard, PermissionMode, PermissionProfile, PluginEvent,
-    PluginImporter, ProfilePermissionGuard, QueryAst, QueryReport, RebuildQuery, RebuildReport,
-    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, ResolvedPermissionProfile, ResolverDocument, ResolverIndex, ResolverLink,
-    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchBackendKind,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
-    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter,
-    TasksQueryResult, TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
-    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
-    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
+    tasknotes_status_definition, tasknotes_status_state, validate_vulcan_overrides_toml,
+    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext,
+    BasesEvalReport, BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase,
+    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
+    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterReport, ConfigDiagnostic,
+    ConfigImportReport, ConfigPermissionMode, CoreImporter, DataviewImporter,
+    DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue,
+    DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
+    EvaluatedInlineExpression, GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport,
+    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
+    GraphPathReport, GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary,
+    JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary,
+    KanbanImporter, KanbanMoveReport, KanbanTaskStatus, LinkKind, LinkResolutionMode,
+    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount,
+    NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OriginContext, OutgoingLinkRecord,
+    OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter, PermissionFilter, PermissionGuard,
+    PermissionMode, PermissionProfile, PluginEvent, PluginImporter, ProfilePermissionGuard,
+    QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport,
+    RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile,
+    ResolverDocument, ResolverIndex, ResolverLink, SavedExport, SavedExportFormat,
+    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
+    ScanPhase, ScanProgress, ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport,
+    SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
+    TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
+    TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase,
+    VectorIndexProgress, VectorIndexReport, VectorNeighborHit, VectorNeighborsReport,
+    VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
 };
 use zip::write::FileOptions;
 
@@ -986,83 +987,11 @@ struct TasksGraphReport {
     edges: Vec<TaskDependencyEdge>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct TaskShowReport {
-    path: String,
-    title: String,
-    status: String,
-    status_type: String,
-    completed: bool,
-    archived: bool,
-    priority: String,
-    due: Option<String>,
-    scheduled: Option<String>,
-    completed_date: Option<String>,
-    date_created: Option<String>,
-    date_modified: Option<String>,
-    contexts: Vec<String>,
-    projects: Vec<String>,
-    tags: Vec<String>,
-    recurrence: Option<String>,
-    recurrence_anchor: Option<String>,
-    complete_instances: Vec<String>,
-    skipped_instances: Vec<String>,
-    blocked_by: Vec<Value>,
-    reminders: Vec<Value>,
-    time_entries: Vec<Value>,
-    total_time_minutes: i64,
-    active_time_minutes: i64,
-    estimate_remaining_minutes: Option<i64>,
-    efficiency_ratio: Option<i64>,
-    custom_fields: Value,
-    frontmatter: Value,
-    body: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct TaskDueReport {
-    reference_time: String,
-    within: String,
-    tasks: Vec<TaskDueItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct TaskDueItem {
-    path: String,
-    title: String,
-    status: String,
-    priority: String,
-    due: String,
-    overdue: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct TaskRemindersReport {
-    reference_time: String,
-    upcoming: String,
-    reminders: Vec<TaskReminderItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct TaskReminderItem {
-    path: String,
-    title: String,
-    status: String,
-    priority: String,
-    reminder_id: String,
-    reminder_type: String,
-    related_to: Option<String>,
-    description: Option<String>,
-    notify_at: String,
-    overdue: bool,
-}
-
 #[derive(Debug, Clone)]
 struct LoadedTaskNote {
     path: String,
     body: String,
     frontmatter: YamlMapping,
-    frontmatter_json: Value,
     indexed: vulcan_core::IndexedTaskNote,
     config: vulcan_core::VaultConfig,
 }
@@ -1071,7 +1000,6 @@ struct LoadedTaskNote {
 struct TaskNoteRecord {
     path: String,
     indexed: vulcan_core::IndexedTaskNote,
-    completed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3531,7 +3459,6 @@ fn load_tasknote_note(paths: &VaultPaths, task: &str) -> Result<LoadedTaskNote, 
         path,
         body: normalize_tasknote_body(&body),
         frontmatter,
-        frontmatter_json,
         indexed,
         config,
     })
@@ -3556,59 +3483,6 @@ fn format_utc_timestamp_ms(ms: i64) -> String {
         .datetime
 }
 
-fn parse_rounded_i64(value: f64) -> Option<i64> {
-    format!("{value:.0}").parse::<i64>().ok()
-}
-
-fn parse_f64_value(value: i64) -> f64 {
-    value.to_string().parse::<f64>().unwrap_or(0.0)
-}
-
-fn tasknote_estimate_minutes(task: &vulcan_core::IndexedTaskNote) -> Option<i64> {
-    task.time_estimate.and_then(|minutes| {
-        minutes
-            .is_finite()
-            .then(|| parse_rounded_i64(minutes))
-            .flatten()
-            .filter(|minutes| *minutes > 0)
-    })
-}
-
-fn tasknote_time_metrics(
-    task: &vulcan_core::IndexedTaskNote,
-    now_ms: i64,
-) -> (i64, i64, Option<i64>, Option<i64>) {
-    let entries = parse_tasknote_time_entries(&task.time_entries, now_ms);
-    let total_time_minutes = entries
-        .iter()
-        .map(|entry| entry.duration_minutes)
-        .sum::<i64>();
-    let active_time_minutes = entries
-        .iter()
-        .filter(|entry| entry.is_active)
-        .map(|entry| entry.duration_minutes)
-        .sum::<i64>();
-    let estimate_remaining_minutes =
-        tasknote_estimate_minutes(task).map(|estimate| estimate.saturating_sub(total_time_minutes));
-    let efficiency_ratio = tasknote_estimate_minutes(task).map(|estimate| {
-        if estimate <= 0 {
-            0
-        } else {
-            parse_rounded_i64(
-                (parse_f64_value(total_time_minutes) / parse_f64_value(estimate)) * 100.0,
-            )
-            .unwrap_or_default()
-        }
-    });
-
-    (
-        total_time_minutes,
-        active_time_minutes,
-        estimate_remaining_minutes,
-        efficiency_ratio,
-    )
-}
-
 fn load_tasknote_records(paths: &VaultPaths) -> Result<Vec<TaskNoteRecord>, CliError> {
     let config = load_vault_config(paths).config;
     let note_index = load_note_index(paths).map_err(CliError::operation)?;
@@ -3625,11 +3499,9 @@ fn load_tasknote_records(paths: &VaultPaths) -> Result<Vec<TaskNoteRecord>, CliE
                 &note.properties,
                 &config.tasknotes,
             )?;
-            let completed = tasknotes_status_state(&config.tasknotes, &indexed.status).completed;
             Some(TaskNoteRecord {
                 path: note.document_path,
                 indexed,
-                completed,
             })
         })
         .collect::<Vec<_>>();
@@ -3925,43 +3797,7 @@ where
 }
 
 fn run_tasks_show_command(paths: &VaultPaths, task: &str) -> Result<TaskShowReport, CliError> {
-    let loaded = load_tasknote_note(paths, task)?;
-    let status_state = tasknotes_status_state(&loaded.config.tasknotes, &loaded.indexed.status);
-    let now_ms = current_utc_timestamp_ms();
-    let (total_time_minutes, active_time_minutes, estimate_remaining_minutes, efficiency_ratio) =
-        tasknote_time_metrics(&loaded.indexed, now_ms);
-
-    Ok(TaskShowReport {
-        path: loaded.path,
-        title: loaded.indexed.title,
-        status: loaded.indexed.status,
-        status_type: status_state.status_type,
-        completed: status_state.completed,
-        archived: loaded.indexed.archived,
-        priority: loaded.indexed.priority,
-        due: loaded.indexed.due,
-        scheduled: loaded.indexed.scheduled,
-        completed_date: loaded.indexed.completed_date,
-        date_created: loaded.indexed.date_created,
-        date_modified: loaded.indexed.date_modified,
-        contexts: loaded.indexed.contexts,
-        projects: loaded.indexed.projects,
-        tags: loaded.indexed.tags,
-        recurrence: loaded.indexed.recurrence,
-        recurrence_anchor: loaded.indexed.recurrence_anchor,
-        complete_instances: loaded.indexed.complete_instances,
-        skipped_instances: loaded.indexed.skipped_instances,
-        blocked_by: loaded.indexed.blocked_by,
-        reminders: loaded.indexed.reminders,
-        time_entries: loaded.indexed.time_entries,
-        total_time_minutes,
-        active_time_minutes,
-        estimate_remaining_minutes,
-        efficiency_ratio,
-        custom_fields: Value::Object(loaded.indexed.custom_fields),
-        frontmatter: loaded.frontmatter_json,
-        body: loaded.body,
-    })
+    build_task_show_report(paths, task).map_err(CliError::operation)
 }
 
 fn run_tasks_track_start_command(
@@ -4092,95 +3928,14 @@ fn run_tasks_pomodoro_status_command(
 }
 
 fn run_tasks_due_command(paths: &VaultPaths, within: &str) -> Result<TaskDueReport, CliError> {
-    let window_ms = parse_duration_string(within).ok_or_else(|| {
-        CliError::operation(format!("failed to parse due window duration: {within}"))
-    })?;
-    let now_ms = current_utc_timestamp_ms();
-    let deadline_ms = now_ms.saturating_add(window_ms.max(0));
-    let mut tasks = load_tasknote_records(paths)?
-        .into_iter()
-        .filter(|record| !record.indexed.archived && !record.completed)
-        .filter_map(|record| {
-            let due = record.indexed.due.as_ref()?;
-            let due_ms = parse_date_like_string(due)?;
-            (due_ms <= deadline_ms).then_some(TaskDueItem {
-                path: record.path,
-                title: record.indexed.title,
-                status: record.indexed.status,
-                priority: record.indexed.priority,
-                due: due.clone(),
-                overdue: due_ms < now_ms,
-            })
-        })
-        .collect::<Vec<_>>();
-    tasks.sort_by(|left, right| {
-        let left_due = parse_date_like_string(&left.due).unwrap_or(i64::MAX);
-        let right_due = parse_date_like_string(&right.due).unwrap_or(i64::MAX);
-        left_due
-            .cmp(&right_due)
-            .then_with(|| left.path.cmp(&right.path))
-    });
-
-    Ok(TaskDueReport {
-        reference_time: current_utc_timestamp_string(),
-        within: within.to_string(),
-        tasks,
-    })
+    build_task_due_report(paths, within).map_err(CliError::operation)
 }
 
 fn run_tasks_reminders_command(
     paths: &VaultPaths,
     upcoming: &str,
 ) -> Result<TaskRemindersReport, CliError> {
-    let window_ms = parse_duration_string(upcoming).ok_or_else(|| {
-        CliError::operation(format!(
-            "failed to parse reminder window duration: {upcoming}"
-        ))
-    })?;
-    let now_ms = current_utc_timestamp_ms();
-    let deadline_ms = now_ms.saturating_add(window_ms.max(0));
-    let mut reminders = Vec::new();
-
-    for record in load_tasknote_records(paths)?
-        .into_iter()
-        .filter(|record| !record.indexed.archived && !record.completed)
-    {
-        for reminder in parse_tasknote_reminders(&record.indexed.reminders) {
-            let Some(notify_at) = tasknotes_reminder_notify_at(&record.indexed, &reminder) else {
-                continue;
-            };
-            if notify_at > deadline_ms {
-                continue;
-            }
-            reminders.push(TaskReminderItem {
-                path: record.path.clone(),
-                title: record.indexed.title.clone(),
-                status: record.indexed.status.clone(),
-                priority: record.indexed.priority.clone(),
-                reminder_id: reminder.id,
-                reminder_type: reminder.reminder_type,
-                related_to: reminder.related_to,
-                description: reminder.description,
-                notify_at: format_utc_timestamp_ms(notify_at),
-                overdue: notify_at < now_ms,
-            });
-        }
-    }
-
-    reminders.sort_by(|left, right| {
-        let left_at = parse_date_like_string(&left.notify_at).unwrap_or(i64::MAX);
-        let right_at = parse_date_like_string(&right.notify_at).unwrap_or(i64::MAX);
-        left_at
-            .cmp(&right_at)
-            .then_with(|| left.path.cmp(&right.path))
-            .then_with(|| left.reminder_id.cmp(&right.reminder_id))
-    });
-
-    Ok(TaskRemindersReport {
-        reference_time: current_utc_timestamp_string(),
-        upcoming: upcoming.to_string(),
-        reminders,
-    })
+    build_task_reminders_report(paths, upcoming).map_err(CliError::operation)
 }
 
 fn run_tasks_edit_command(
