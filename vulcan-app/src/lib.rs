@@ -11,6 +11,7 @@ pub mod config;
 pub mod notes;
 pub mod plugins;
 pub mod scan;
+pub mod tasks;
 pub mod templates;
 pub mod trust;
 
