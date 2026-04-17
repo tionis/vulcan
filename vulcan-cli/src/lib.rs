@@ -193,8 +193,9 @@ use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
 use vulcan_app::notes::{
-    apply_note_append, apply_note_create, NoteAppendMode,
-    NoteAppendRequest as AppNoteAppendRequest, NoteCreateRequest as AppNoteCreateRequest,
+    apply_note_append, apply_note_create, apply_note_set, diagnose_external_markdown_contents,
+    diagnose_note_contents, NoteAppendMode, NoteAppendRequest as AppNoteAppendRequest,
+    NoteCreateRequest as AppNoteCreateRequest, NoteSetRequest as AppNoteSetRequest,
 };
 use vulcan_app::templates::{
     apply_template_create, apply_template_insert, build_template_list_report,
@@ -235,43 +236,42 @@ use vulcan_core::{
     inspect_cache, link_mentions, list_checkpoints, list_daily_note_events, list_saved_reports,
     load_dataview_blocks, load_events_for_periodic_note, load_kanban_board, load_saved_report,
     load_tasks_blocks, load_vault_config, merge_tags, move_kanban_card, move_note, parse_document,
-    parse_dql_with_diagnostics, parse_tasknote_natural_language, parse_tasknote_reminders,
-    parse_tasknote_time_entries, parse_tasks_query, period_range_for_date, plan_base_note_create,
-    prepare_search_backend, query_backlinks, query_change_report, query_links, query_notes,
-    rebuild_vault_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
-    render_markdown_fragment_html, render_markdown_html, repair_fts, resolve_link,
-    resolve_note_reference, resolve_periodic_note, resolve_permission_profile, save_saved_report,
-    scan_vault_with_progress, search_vault, search_web, shape_tasks_query_result,
-    step_period_start, task_upcoming_occurrences, tasknotes_default_date_value,
-    tasknotes_default_recurrence_rule, tasknotes_default_reminder_values,
-    tasknotes_reminder_notify_at, tasknotes_status_definition, tasknotes_status_state,
-    validate_vulcan_overrides_toml, verify_cache, watch_vault, AutoScanMode, BacklinkRecord,
-    BacklinksReport, BasesCreateContext, BasesEvalReport, BasesEvaluator, BasesViewEditReport,
-    BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport,
-    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
-    ClusterReport, ConfigDiagnostic, ConfigImportReport, ConfigPermissionMode, CoreImporter,
-    DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorByteRange,
-    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
-    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
-    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
-    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
-    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
-    LinkKind, LinkResolutionMode, LinkResolutionProblem, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
-    NoteRecord, NotesReport, OriginContext, OutgoingLinkRecord, OutgoingLinksReport,
-    ParsedTaskNoteInput, PeriodicConfig, PeriodicNotesImporter, PermissionFilter, PermissionGuard,
-    PermissionMode, PermissionProfile, PluginEvent, PluginImporter, ProfilePermissionGuard,
-    QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport,
-    RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile,
-    ResolverDocument, ResolverIndex, ResolverLink, SavedExport, SavedExportFormat,
-    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
-    ScanPhase, ScanProgress, ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport,
-    SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
-    TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
-    TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase,
-    VectorIndexProgress, VectorIndexReport, VectorNeighborHit, VectorNeighborsReport,
-    VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
+    parse_tasknote_natural_language, parse_tasknote_reminders, parse_tasknote_time_entries,
+    parse_tasks_query, period_range_for_date, plan_base_note_create, prepare_search_backend,
+    query_backlinks, query_change_report, query_links, query_notes, rebuild_vault_with_progress,
+    rename_alias, rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
+    render_markdown_html, repair_fts, resolve_note_reference, resolve_periodic_note,
+    resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
+    search_web, shape_tasks_query_result, step_period_start, task_upcoming_occurrences,
+    tasknotes_default_date_value, tasknotes_default_recurrence_rule,
+    tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_definition,
+    tasknotes_status_state, validate_vulcan_overrides_toml, verify_cache, watch_vault,
+    AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport,
+    BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport,
+    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
+    ChangeReport, CheckpointRecord, ClusterReport, ConfigDiagnostic, ConfigImportReport,
+    ConfigPermissionMode, CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput,
+    DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine,
+    GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
+    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
+    GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport,
+    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport,
+    KanbanTaskStatus, LinkKind, LinkResolutionMode, MentionSuggestion, MentionSuggestionsReport,
+    MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport,
+    OriginContext, OutgoingLinkRecord, OutgoingLinksReport, ParsedTaskNoteInput, PeriodicConfig,
+    PeriodicNotesImporter, PermissionFilter, PermissionGuard, PermissionMode, PermissionProfile,
+    PluginEvent, PluginImporter, ProfilePermissionGuard, QueryAst, QueryReport, RebuildQuery,
+    RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport,
+    RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, ResolverDocument, ResolverIndex,
+    ResolverLink, SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind,
+    SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary,
+    SearchBackendKind, SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo,
+    TaskNotesImporter, TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue,
+    TaskNotesSavedViewNode, TasksImporter, TasksQueryResult, TemplaterImporter, VaultPaths,
+    VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
+    VectorIndexReport, VectorNeighborHit, VectorNeighborsReport, VectorQueueReport,
+    VectorRepairReport, WatchOptions, WatchReport,
 };
 use zip::write::FileOptions;
 
@@ -10019,30 +10019,24 @@ fn run_note_set_command(
     use_stderr_color: bool,
     quiet: bool,
 ) -> Result<NoteSetReport, CliError> {
-    let (relative_path, existing) = read_existing_note_source(paths, note)?;
     let replacement = note_set_input_text(file)?;
-    let updated = if no_frontmatter {
-        preserve_existing_frontmatter(&existing, &replacement)
-    } else {
-        replacement
-    };
-    dispatch_note_write_plugin_hooks(
+    let report = apply_note_set(
         paths,
+        &AppNoteSetRequest {
+            note: note.to_string(),
+            replacement,
+            preserve_frontmatter: no_frontmatter,
+        },
         permission_profile,
-        &relative_path,
-        "set",
-        Some(&existing),
-        &updated,
         quiet,
     )?;
-    fs::write(paths.vault_root().join(&relative_path), &updated).map_err(CliError::operation)?;
-    let diagnostics = maybe_check_note(paths, &relative_path, &updated, check)?;
+    let diagnostics = maybe_check_note(paths, &report.path, &report.content, check)?;
     run_incremental_scan(paths, output, use_stderr_color, quiet)?;
 
     Ok(NoteSetReport {
-        path: relative_path,
+        path: report.path,
         checked: check,
-        preserved_frontmatter: no_frontmatter,
+        preserved_frontmatter: report.preserved_frontmatter,
         diagnostics,
     })
 }
@@ -10692,17 +10686,6 @@ pub(crate) fn read_note_paths_from_stdin() -> Result<Vec<String>, CliError> {
     Ok(paths)
 }
 
-fn preserve_existing_frontmatter(existing: &str, body: &str) -> String {
-    find_frontmatter_block(existing).map_or_else(
-        || body.to_string(),
-        |(_, _, body_start)| {
-            let mut rendered = existing[..body_start].to_string();
-            rendered.push_str(body);
-            rendered
-        },
-    )
-}
-
 fn parse_frontmatter_bindings(bindings: &[String]) -> Result<Option<YamlMapping>, CliError> {
     if bindings.is_empty() {
         return Ok(None);
@@ -10887,8 +10870,11 @@ fn maybe_check_markdown_target(
     }
 
     match target.vault_relative_path.as_deref() {
-        Some(relative_path) => diagnose_note_contents(paths, relative_path, content),
-        None => diagnose_external_markdown_contents(&target.display_path, &target.config, content),
+        Some(relative_path) => {
+            diagnose_note_contents(paths, relative_path, content).map_err(Into::into)
+        }
+        None => diagnose_external_markdown_contents(&target.display_path, &target.config, content)
+            .map_err(Into::into),
     }
 }
 
@@ -10902,373 +10888,7 @@ fn maybe_check_note(
         return Ok(Vec::new());
     }
 
-    diagnose_note_contents(paths, relative_path, content)
-}
-
-fn diagnose_note_contents(
-    paths: &VaultPaths,
-    relative_path: &str,
-    content: &str,
-) -> Result<Vec<DoctorDiagnosticIssue>, CliError> {
-    let config = load_vault_config(paths).config;
-    let parsed = vulcan_core::parse_document(content, &config);
-    let mut diagnostics = parsed
-        .diagnostics
-        .iter()
-        .map(|diagnostic| DoctorDiagnosticIssue {
-            document_path: Some(relative_path.to_string()),
-            message: diagnostic.message.clone(),
-            byte_range: diagnostic.byte_range.as_ref().map(|range| DoctorByteRange {
-                start: range.start,
-                end: range.end,
-            }),
-        })
-        .collect::<Vec<_>>();
-
-    if let Some(indexed) =
-        extract_indexed_properties(&parsed, &config).map_err(CliError::operation)?
-    {
-        diagnostics.extend(indexed.diagnostics.into_iter().map(|diagnostic| {
-            DoctorDiagnosticIssue {
-                document_path: Some(relative_path.to_string()),
-                message: diagnostic.message,
-                byte_range: None,
-            }
-        }));
-    }
-
-    diagnostics.extend(dataview_parse_diagnostics(relative_path, &parsed));
-    diagnostics.extend(link_resolution_diagnostics(
-        paths,
-        relative_path,
-        &config,
-        &parsed,
-    )?);
-    diagnostics.sort_by(|left, right| {
-        left.document_path
-            .cmp(&right.document_path)
-            .then(left.message.cmp(&right.message))
-            .then_with(|| match (&left.byte_range, &right.byte_range) {
-                (Some(left), Some(right)) => {
-                    left.start.cmp(&right.start).then(left.end.cmp(&right.end))
-                }
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            })
-    });
-    diagnostics.dedup();
-    Ok(diagnostics)
-}
-
-fn diagnose_external_markdown_contents(
-    display_path: &str,
-    config: &vulcan_core::VaultConfig,
-    content: &str,
-) -> Result<Vec<DoctorDiagnosticIssue>, CliError> {
-    let parsed = vulcan_core::parse_document(content, config);
-    let mut diagnostics = parsed
-        .diagnostics
-        .iter()
-        .map(|diagnostic| DoctorDiagnosticIssue {
-            document_path: Some(display_path.to_string()),
-            message: diagnostic.message.clone(),
-            byte_range: diagnostic.byte_range.as_ref().map(|range| DoctorByteRange {
-                start: range.start,
-                end: range.end,
-            }),
-        })
-        .collect::<Vec<_>>();
-
-    if let Some(indexed) =
-        extract_indexed_properties(&parsed, config).map_err(CliError::operation)?
-    {
-        diagnostics.extend(indexed.diagnostics.into_iter().map(|diagnostic| {
-            DoctorDiagnosticIssue {
-                document_path: Some(display_path.to_string()),
-                message: diagnostic.message,
-                byte_range: None,
-            }
-        }));
-    }
-
-    diagnostics.extend(dataview_parse_diagnostics(display_path, &parsed));
-    diagnostics.sort_by(|left, right| {
-        left.document_path
-            .cmp(&right.document_path)
-            .then(left.message.cmp(&right.message))
-            .then_with(|| match (&left.byte_range, &right.byte_range) {
-                (Some(left), Some(right)) => {
-                    left.start.cmp(&right.start).then(left.end.cmp(&right.end))
-                }
-                (None, Some(_)) => std::cmp::Ordering::Less,
-                (Some(_), None) => std::cmp::Ordering::Greater,
-                (None, None) => std::cmp::Ordering::Equal,
-            })
-    });
-    diagnostics.dedup();
-    Ok(diagnostics)
-}
-
-fn dataview_parse_diagnostics(
-    relative_path: &str,
-    parsed: &vulcan_core::ParsedDocument,
-) -> Vec<DoctorDiagnosticIssue> {
-    parsed
-        .dataview_blocks
-        .iter()
-        .filter(|block| block.language == "dataview")
-        .filter_map(|block| {
-            let output = parse_dql_with_diagnostics(&block.text);
-            output
-                .diagnostics
-                .first()
-                .map(|diagnostic| DoctorDiagnosticIssue {
-                    document_path: Some(relative_path.to_string()),
-                    message: format!(
-                        "Dataview block {} at line {} failed to parse: {}",
-                        block.block_index, block.line_number, diagnostic.message
-                    ),
-                    byte_range: Some(DoctorByteRange {
-                        start: block.byte_range.start,
-                        end: block.byte_range.end,
-                    }),
-                })
-        })
-        .collect()
-}
-
-fn link_resolution_diagnostics(
-    paths: &VaultPaths,
-    relative_path: &str,
-    config: &vulcan_core::VaultConfig,
-    parsed: &vulcan_core::ParsedDocument,
-) -> Result<Vec<DoctorDiagnosticIssue>, CliError> {
-    let resolver_documents = build_resolver_documents(paths, relative_path, parsed)?;
-    let mut target_documents = HashMap::new();
-    let mut diagnostics = Vec::new();
-
-    for link in &parsed.links {
-        let resolution = resolve_link(
-            &resolver_documents,
-            &vulcan_core::ResolverLink {
-                source_document_id: relative_path.to_string(),
-                source_path: relative_path.to_string(),
-                target_path_candidate: link.target_path_candidate.clone(),
-                link_kind: link.link_kind,
-            },
-            config.link_resolution,
-        );
-        match resolution.problem {
-            Some(LinkResolutionProblem::Unresolved) => diagnostics.push(DoctorDiagnosticIssue {
-                document_path: Some(relative_path.to_string()),
-                message: format!("Unresolved link target `{}`", link.raw_text),
-                byte_range: Some(DoctorByteRange {
-                    start: link.byte_offset,
-                    end: link.byte_offset + link.raw_text.len(),
-                }),
-            }),
-            Some(LinkResolutionProblem::Ambiguous(matches)) => {
-                diagnostics.push(DoctorDiagnosticIssue {
-                    document_path: Some(relative_path.to_string()),
-                    message: format!(
-                        "Ambiguous link target `{}` matched {}",
-                        link.raw_text,
-                        matches.join(", ")
-                    ),
-                    byte_range: Some(DoctorByteRange {
-                        start: link.byte_offset,
-                        end: link.byte_offset + link.raw_text.len(),
-                    }),
-                });
-            }
-            None => {
-                let Some(target_path) = resolution.resolved_target_id else {
-                    continue;
-                };
-                if let Some(target_heading) = link.target_heading.as_deref() {
-                    let target = load_target_document(
-                        paths,
-                        relative_path,
-                        parsed,
-                        &target_path,
-                        &mut target_documents,
-                    )?;
-                    if !target
-                        .headings
-                        .iter()
-                        .any(|heading| heading.text == target_heading)
-                    {
-                        diagnostics.push(DoctorDiagnosticIssue {
-                            document_path: Some(relative_path.to_string()),
-                            message: format!(
-                                "Broken heading link `{}`: heading `{target_heading}` was not found in {target_path}",
-                                link.raw_text
-                            ),
-                            byte_range: Some(DoctorByteRange {
-                                start: link.byte_offset,
-                                end: link.byte_offset + link.raw_text.len(),
-                            }),
-                        });
-                    }
-                }
-                if let Some(target_block) = link.target_block.as_deref() {
-                    let target = load_target_document(
-                        paths,
-                        relative_path,
-                        parsed,
-                        &target_path,
-                        &mut target_documents,
-                    )?;
-                    if !target
-                        .block_refs
-                        .iter()
-                        .any(|block_ref| block_ref.block_id_text == target_block)
-                    {
-                        diagnostics.push(DoctorDiagnosticIssue {
-                            document_path: Some(relative_path.to_string()),
-                            message: format!(
-                                "Broken block link `{}`: block `^{target_block}` was not found in {target_path}",
-                                link.raw_text
-                            ),
-                            byte_range: Some(DoctorByteRange {
-                                start: link.byte_offset,
-                                end: link.byte_offset + link.raw_text.len(),
-                            }),
-                        });
-                    }
-                }
-            }
-        }
-    }
-
-    Ok(diagnostics)
-}
-
-fn build_resolver_documents(
-    paths: &VaultPaths,
-    relative_path: &str,
-    parsed: &vulcan_core::ParsedDocument,
-) -> Result<Vec<vulcan_core::ResolverDocument>, CliError> {
-    if let Ok(note_index) = load_note_index(paths) {
-        let mut documents = note_index
-            .into_values()
-            .map(|note| vulcan_core::ResolverDocument {
-                id: note.document_path.clone(),
-                path: note.document_path,
-                filename: note.file_name,
-                aliases: note.aliases,
-            })
-            .collect::<Vec<_>>();
-        if let Some(existing) = documents
-            .iter_mut()
-            .find(|document| document.path == relative_path)
-        {
-            existing.aliases.clone_from(&parsed.aliases);
-        } else {
-            documents.push(resolver_document_from_parsed(relative_path, parsed));
-        }
-        return Ok(documents);
-    }
-
-    let mut documents = Vec::new();
-    for path in discover_markdown_note_paths(paths.vault_root()).map_err(CliError::operation)? {
-        if path == relative_path {
-            documents.push(resolver_document_from_parsed(relative_path, parsed));
-            continue;
-        }
-        let source =
-            fs::read_to_string(paths.vault_root().join(&path)).map_err(CliError::operation)?;
-        let parsed_document =
-            vulcan_core::parse_document(&source, &load_vault_config(paths).config);
-        documents.push(resolver_document_from_parsed(&path, &parsed_document));
-    }
-
-    if !documents
-        .iter()
-        .any(|document| document.path == relative_path)
-    {
-        documents.push(resolver_document_from_parsed(relative_path, parsed));
-    }
-    Ok(documents)
-}
-
-fn resolver_document_from_parsed(
-    relative_path: &str,
-    parsed: &vulcan_core::ParsedDocument,
-) -> vulcan_core::ResolverDocument {
-    let filename = Path::new(relative_path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or(relative_path)
-        .to_string();
-    vulcan_core::ResolverDocument {
-        id: relative_path.to_string(),
-        path: relative_path.to_string(),
-        filename,
-        aliases: parsed.aliases.clone(),
-    }
-}
-
-fn load_target_document<'a>(
-    paths: &VaultPaths,
-    current_path: &str,
-    current_parsed: &vulcan_core::ParsedDocument,
-    target_path: &str,
-    cache: &'a mut HashMap<String, vulcan_core::ParsedDocument>,
-) -> Result<&'a vulcan_core::ParsedDocument, CliError> {
-    if target_path == current_path {
-        cache
-            .entry(target_path.to_string())
-            .or_insert_with(|| current_parsed.clone());
-    } else {
-        let config = load_vault_config(paths).config;
-        if !cache.contains_key(target_path) {
-            let source = fs::read_to_string(paths.vault_root().join(target_path))
-                .map_err(CliError::operation)?;
-            cache.insert(
-                target_path.to_string(),
-                vulcan_core::parse_document(&source, &config),
-            );
-        }
-    }
-    cache
-        .get(target_path)
-        .ok_or_else(|| CliError::operation(format!("failed to load target note {target_path}")))
-}
-
-fn discover_markdown_note_paths(root: &Path) -> io::Result<Vec<String>> {
-    fn walk(root: &Path, current: &Path, paths: &mut Vec<String>) -> io::Result<()> {
-        for entry in fs::read_dir(current)? {
-            let entry = entry?;
-            let path = entry.path();
-            let file_name = entry.file_name();
-            if file_name.to_string_lossy() == ".vulcan" {
-                continue;
-            }
-            if path.is_dir() {
-                walk(root, &path, paths)?;
-            } else if path
-                .extension()
-                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
-            {
-                let relative = path
-                    .strip_prefix(root)
-                    .map_err(io::Error::other)?
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                paths.push(relative);
-            }
-        }
-        Ok(())
-    }
-
-    let mut paths = Vec::new();
-    if root.is_dir() {
-        walk(root, root, &mut paths)?;
-    }
-    paths.sort();
-    Ok(paths)
+    diagnose_note_contents(paths, relative_path, content).map_err(Into::into)
 }
 
 fn run_open_command(

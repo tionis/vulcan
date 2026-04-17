@@ -9,11 +9,16 @@ use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
+use std::io;
+use std::path::Path;
 use vulcan_core::expression::functions::{date_components, parse_date_like_string};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
+use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
-    expected_periodic_note_path, load_vault_config, period_range_for_date, resolve_note_reference,
-    GraphQueryError, PeriodicConfig, PluginEvent, VaultPaths,
+    expected_periodic_note_path, load_vault_config, parse_document, parse_dql_with_diagnostics,
+    period_range_for_date, resolve_link, resolve_note_reference, DoctorByteRange,
+    DoctorDiagnosticIssue, GraphQueryError, LinkResolutionProblem, ParsedDocument, PeriodicConfig,
+    PluginEvent, ResolverDocument, ResolverLink, VaultConfig, VaultPaths,
 };
 
 #[derive(Debug, Clone)]
@@ -80,6 +85,23 @@ pub struct NoteAppendReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reference_date: Option<String>,
     pub warnings: Vec<String>,
+    #[serde(skip)]
+    pub changed_paths: Vec<String>,
+    #[serde(skip)]
+    pub content: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct NoteSetRequest {
+    pub note: String,
+    pub replacement: String,
+    pub preserve_frontmatter: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct NoteSetReport {
+    pub path: String,
+    pub preserved_frontmatter: bool,
     #[serde(skip)]
     pub changed_paths: Vec<String>,
     #[serde(skip)]
@@ -253,6 +275,68 @@ pub fn apply_note_append(
     })
 }
 
+pub fn apply_note_set(
+    paths: &VaultPaths,
+    request: &NoteSetRequest,
+    permission_profile: Option<&str>,
+    quiet: bool,
+) -> Result<NoteSetReport, AppError> {
+    let path = resolve_existing_note_path(paths, &request.note)?;
+    let absolute_path = paths.vault_root().join(&path);
+    let existing = fs::read_to_string(&absolute_path).map_err(AppError::operation)?;
+    let content = if request.preserve_frontmatter {
+        preserve_existing_frontmatter(&existing, &request.replacement)
+    } else {
+        request.replacement.clone()
+    };
+    dispatch_note_write_plugin_hooks(
+        paths,
+        permission_profile,
+        &path,
+        "set",
+        Some(&existing),
+        &content,
+        quiet,
+    )?;
+    fs::write(&absolute_path, &content).map_err(AppError::operation)?;
+
+    Ok(NoteSetReport {
+        path: path.clone(),
+        preserved_frontmatter: request.preserve_frontmatter,
+        changed_paths: vec![path],
+        content,
+    })
+}
+
+pub fn diagnose_note_contents(
+    paths: &VaultPaths,
+    relative_path: &str,
+    content: &str,
+) -> Result<Vec<DoctorDiagnosticIssue>, AppError> {
+    let config = load_vault_config(paths).config;
+    let parsed = parse_document(content, &config);
+    let mut diagnostics = collect_parse_diagnostics(relative_path, &config, &parsed)?;
+    diagnostics.extend(link_resolution_diagnostics(
+        paths,
+        relative_path,
+        &config,
+        &parsed,
+    )?);
+    sort_and_dedup_diagnostics(&mut diagnostics);
+    Ok(diagnostics)
+}
+
+pub fn diagnose_external_markdown_contents(
+    display_path: &str,
+    config: &VaultConfig,
+    content: &str,
+) -> Result<Vec<DoctorDiagnosticIssue>, AppError> {
+    let parsed = parse_document(content, config);
+    let mut diagnostics = collect_parse_diagnostics(display_path, config, &parsed)?;
+    sort_and_dedup_diagnostics(&mut diagnostics);
+    Ok(diagnostics)
+}
+
 pub fn resolve_periodic_target(
     config: &PeriodicConfig,
     period_type: &str,
@@ -415,6 +499,324 @@ fn resolve_existing_note_path(paths: &VaultPaths, note: &str) -> Result<String, 
         }
         Err(error) => Err(AppError::operation(error)),
     }
+}
+
+fn preserve_existing_frontmatter(existing: &str, body: &str) -> String {
+    find_frontmatter_block(existing).map_or_else(
+        || body.to_string(),
+        |(_, _, body_start)| {
+            let mut rendered = existing[..body_start].to_string();
+            rendered.push_str(body);
+            rendered
+        },
+    )
+}
+
+fn collect_parse_diagnostics(
+    display_path: &str,
+    config: &VaultConfig,
+    parsed: &ParsedDocument,
+) -> Result<Vec<DoctorDiagnosticIssue>, AppError> {
+    let mut diagnostics = parsed
+        .diagnostics
+        .iter()
+        .map(|diagnostic| DoctorDiagnosticIssue {
+            document_path: Some(display_path.to_string()),
+            message: diagnostic.message.clone(),
+            byte_range: diagnostic.byte_range.as_ref().map(|range| DoctorByteRange {
+                start: range.start,
+                end: range.end,
+            }),
+        })
+        .collect::<Vec<_>>();
+
+    if let Some(indexed) =
+        extract_indexed_properties(parsed, config).map_err(AppError::operation)?
+    {
+        diagnostics.extend(indexed.diagnostics.into_iter().map(|diagnostic| {
+            DoctorDiagnosticIssue {
+                document_path: Some(display_path.to_string()),
+                message: diagnostic.message,
+                byte_range: None,
+            }
+        }));
+    }
+
+    diagnostics.extend(dataview_parse_diagnostics(display_path, parsed));
+    Ok(diagnostics)
+}
+
+fn dataview_parse_diagnostics(
+    display_path: &str,
+    parsed: &ParsedDocument,
+) -> Vec<DoctorDiagnosticIssue> {
+    parsed
+        .dataview_blocks
+        .iter()
+        .filter(|block| block.language == "dataview")
+        .filter_map(|block| {
+            let output = parse_dql_with_diagnostics(&block.text);
+            output
+                .diagnostics
+                .first()
+                .map(|diagnostic| DoctorDiagnosticIssue {
+                    document_path: Some(display_path.to_string()),
+                    message: format!(
+                        "Dataview block {} at line {} failed to parse: {}",
+                        block.block_index, block.line_number, diagnostic.message
+                    ),
+                    byte_range: Some(DoctorByteRange {
+                        start: block.byte_range.start,
+                        end: block.byte_range.end,
+                    }),
+                })
+        })
+        .collect()
+}
+
+fn link_resolution_diagnostics(
+    paths: &VaultPaths,
+    relative_path: &str,
+    config: &VaultConfig,
+    parsed: &ParsedDocument,
+) -> Result<Vec<DoctorDiagnosticIssue>, AppError> {
+    let resolver_documents = build_resolver_documents(paths, relative_path, parsed, config)?;
+    let mut target_documents = HashMap::new();
+    let mut diagnostics = Vec::new();
+
+    for link in &parsed.links {
+        let resolution = resolve_link(
+            &resolver_documents,
+            &ResolverLink {
+                source_document_id: relative_path.to_string(),
+                source_path: relative_path.to_string(),
+                target_path_candidate: link.target_path_candidate.clone(),
+                link_kind: link.link_kind,
+            },
+            config.link_resolution,
+        );
+        match resolution.problem {
+            Some(LinkResolutionProblem::Unresolved) => diagnostics.push(DoctorDiagnosticIssue {
+                document_path: Some(relative_path.to_string()),
+                message: format!("Unresolved link target `{}`", link.raw_text),
+                byte_range: Some(DoctorByteRange {
+                    start: link.byte_offset,
+                    end: link.byte_offset + link.raw_text.len(),
+                }),
+            }),
+            Some(LinkResolutionProblem::Ambiguous(matches)) => {
+                diagnostics.push(DoctorDiagnosticIssue {
+                    document_path: Some(relative_path.to_string()),
+                    message: format!(
+                        "Ambiguous link target `{}` matched {}",
+                        link.raw_text,
+                        matches.join(", ")
+                    ),
+                    byte_range: Some(DoctorByteRange {
+                        start: link.byte_offset,
+                        end: link.byte_offset + link.raw_text.len(),
+                    }),
+                });
+            }
+            None => {
+                let Some(target_path) = resolution.resolved_target_id else {
+                    continue;
+                };
+                if let Some(target_heading) = link.target_heading.as_deref() {
+                    let target = load_target_document(
+                        paths,
+                        relative_path,
+                        parsed,
+                        config,
+                        &target_path,
+                        &mut target_documents,
+                    )?;
+                    if !target
+                        .headings
+                        .iter()
+                        .any(|heading| heading.text == target_heading)
+                    {
+                        diagnostics.push(DoctorDiagnosticIssue {
+                            document_path: Some(relative_path.to_string()),
+                            message: format!(
+                                "Broken heading link `{}`: heading `{target_heading}` was not found in {target_path}",
+                                link.raw_text
+                            ),
+                            byte_range: Some(DoctorByteRange {
+                                start: link.byte_offset,
+                                end: link.byte_offset + link.raw_text.len(),
+                            }),
+                        });
+                    }
+                }
+                if let Some(target_block) = link.target_block.as_deref() {
+                    let target = load_target_document(
+                        paths,
+                        relative_path,
+                        parsed,
+                        config,
+                        &target_path,
+                        &mut target_documents,
+                    )?;
+                    if !target
+                        .block_refs
+                        .iter()
+                        .any(|block_ref| block_ref.block_id_text == target_block)
+                    {
+                        diagnostics.push(DoctorDiagnosticIssue {
+                            document_path: Some(relative_path.to_string()),
+                            message: format!(
+                                "Broken block link `{}`: block `^{target_block}` was not found in {target_path}",
+                                link.raw_text
+                            ),
+                            byte_range: Some(DoctorByteRange {
+                                start: link.byte_offset,
+                                end: link.byte_offset + link.raw_text.len(),
+                            }),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(diagnostics)
+}
+
+fn build_resolver_documents(
+    paths: &VaultPaths,
+    relative_path: &str,
+    parsed: &ParsedDocument,
+    config: &VaultConfig,
+) -> Result<Vec<ResolverDocument>, AppError> {
+    if let Ok(note_index) = load_note_index(paths) {
+        let mut documents = note_index
+            .into_values()
+            .map(|note| ResolverDocument {
+                id: note.document_path.clone(),
+                path: note.document_path,
+                filename: note.file_name,
+                aliases: note.aliases,
+            })
+            .collect::<Vec<_>>();
+        if let Some(existing) = documents
+            .iter_mut()
+            .find(|document| document.path == relative_path)
+        {
+            existing.aliases.clone_from(&parsed.aliases);
+        } else {
+            documents.push(resolver_document_from_parsed(relative_path, parsed));
+        }
+        return Ok(documents);
+    }
+
+    let mut documents = Vec::new();
+    for path in discover_markdown_note_paths(paths.vault_root()).map_err(AppError::operation)? {
+        if path == relative_path {
+            documents.push(resolver_document_from_parsed(relative_path, parsed));
+            continue;
+        }
+        let source =
+            fs::read_to_string(paths.vault_root().join(&path)).map_err(AppError::operation)?;
+        let parsed_document = parse_document(&source, config);
+        documents.push(resolver_document_from_parsed(&path, &parsed_document));
+    }
+
+    if !documents
+        .iter()
+        .any(|document| document.path == relative_path)
+    {
+        documents.push(resolver_document_from_parsed(relative_path, parsed));
+    }
+    Ok(documents)
+}
+
+fn resolver_document_from_parsed(relative_path: &str, parsed: &ParsedDocument) -> ResolverDocument {
+    let filename = Path::new(relative_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(relative_path)
+        .to_string();
+    ResolverDocument {
+        id: relative_path.to_string(),
+        path: relative_path.to_string(),
+        filename,
+        aliases: parsed.aliases.clone(),
+    }
+}
+
+fn load_target_document<'a>(
+    paths: &VaultPaths,
+    current_path: &str,
+    current_parsed: &ParsedDocument,
+    config: &VaultConfig,
+    target_path: &str,
+    cache: &'a mut HashMap<String, ParsedDocument>,
+) -> Result<&'a ParsedDocument, AppError> {
+    if target_path == current_path {
+        cache
+            .entry(target_path.to_string())
+            .or_insert_with(|| current_parsed.clone());
+    } else if !cache.contains_key(target_path) {
+        let source = fs::read_to_string(paths.vault_root().join(target_path))
+            .map_err(AppError::operation)?;
+        cache.insert(target_path.to_string(), parse_document(&source, config));
+    }
+
+    cache
+        .get(target_path)
+        .ok_or_else(|| AppError::operation(format!("failed to load target note {target_path}")))
+}
+
+fn discover_markdown_note_paths(root: &Path) -> io::Result<Vec<String>> {
+    fn walk(root: &Path, current: &Path, paths: &mut Vec<String>) -> io::Result<()> {
+        for entry in fs::read_dir(current)? {
+            let entry = entry?;
+            let path = entry.path();
+            let file_name = entry.file_name();
+            if file_name.to_string_lossy() == ".vulcan" {
+                continue;
+            }
+            if path.is_dir() {
+                walk(root, &path, paths)?;
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            {
+                let relative = path
+                    .strip_prefix(root)
+                    .map_err(io::Error::other)?
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                paths.push(relative);
+            }
+        }
+        Ok(())
+    }
+
+    let mut paths = Vec::new();
+    if root.is_dir() {
+        walk(root, root, &mut paths)?;
+    }
+    paths.sort();
+    Ok(paths)
+}
+
+fn sort_and_dedup_diagnostics(diagnostics: &mut Vec<DoctorDiagnosticIssue>) {
+    diagnostics.sort_by(|left, right| {
+        left.document_path
+            .cmp(&right.document_path)
+            .then(left.message.cmp(&right.message))
+            .then_with(|| match (&left.byte_range, &right.byte_range) {
+                (Some(left), Some(right)) => {
+                    left.start.cmp(&right.start).then(left.end.cmp(&right.end))
+                }
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            })
+    });
+    diagnostics.dedup();
 }
 
 fn append_entry_at_end(contents: &str, entry: &str) -> String {
@@ -613,7 +1015,8 @@ fn load_note_append_target(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_note_append, apply_note_create, NoteAppendMode, NoteAppendRequest, NoteCreateRequest,
+        apply_note_append, apply_note_create, apply_note_set, diagnose_note_contents,
+        NoteAppendMode, NoteAppendRequest, NoteCreateRequest, NoteSetRequest,
     };
     use crate::templates::{YamlMapping, YamlValue};
     use std::collections::HashMap;
@@ -701,5 +1104,60 @@ mod tests {
             .expect("daily note")
             .replace("\r\n", "\n");
         assert!(rendered.contains("- release-planning due 2026-04-05\n"));
+    }
+
+    #[test]
+    fn apply_note_set_preserves_frontmatter() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        let paths = VaultPaths::new(root);
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        fs::create_dir_all(root.join("Inbox")).expect("note dir");
+        fs::write(
+            root.join("Inbox/Idea.md"),
+            "---\nstatus: draft\n---\nOriginal body\n",
+        )
+        .expect("seed note");
+
+        let report = apply_note_set(
+            &paths,
+            &NoteSetRequest {
+                note: "Inbox/Idea".to_string(),
+                replacement: "Updated body\n".to_string(),
+                preserve_frontmatter: true,
+            },
+            None,
+            true,
+        )
+        .expect("set report");
+
+        assert_eq!(report.path, "Inbox/Idea.md");
+        assert!(report.preserved_frontmatter);
+        assert_eq!(report.changed_paths, vec!["Inbox/Idea.md".to_string()]);
+
+        let rendered = fs::read_to_string(root.join("Inbox/Idea.md"))
+            .expect("updated note")
+            .replace("\r\n", "\n");
+        assert_eq!(rendered, "---\nstatus: draft\n---\nUpdated body\n");
+    }
+
+    #[test]
+    fn diagnose_note_contents_reports_unresolved_links() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        let paths = VaultPaths::new(root);
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        fs::create_dir_all(root.join("Inbox")).expect("note dir");
+
+        let diagnostics = diagnose_note_contents(
+            &paths,
+            "Inbox/Idea.md",
+            "# Idea\n\nMissing [[Ghost Note]]\n",
+        )
+        .expect("diagnostics");
+
+        assert!(diagnostics.iter().any(|issue| issue
+            .message
+            .contains("Unresolved link target `[[Ghost Note]]`")));
     }
 }
