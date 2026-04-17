@@ -15,15 +15,18 @@ use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
-use vulcan_core::expression::functions::{parse_date_like_string, parse_duration_string};
+use vulcan_core::expression::functions::{
+    date_components, parse_date_like_string, parse_duration_string,
+};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
-    active_tasknote_time_entry, expected_periodic_note_path, extract_tasknote, load_vault_config,
-    parse_tasknote_natural_language, parse_tasknote_reminders, parse_tasknote_time_entries,
-    period_range_for_date, resolve_note_reference, tasknotes_default_date_value,
-    tasknotes_default_recurrence_rule, tasknotes_default_reminder_values,
-    tasknotes_reminder_notify_at, tasknotes_status_state, GraphQueryError, IndexedTaskNote,
-    NoteRecord, ParsedTaskNoteInput, RefactorChange, VaultConfig, VaultPaths,
+    active_tasknote_time_entry, evaluate_tasks_query, expected_periodic_note_path,
+    extract_tasknote, load_vault_config, parse_tasknote_natural_language, parse_tasknote_reminders,
+    parse_tasknote_time_entries, period_range_for_date, resolve_note_reference,
+    task_upcoming_occurrences, tasknotes_default_date_value, tasknotes_default_recurrence_rule,
+    tasknotes_default_reminder_values, tasknotes_reminder_notify_at, tasknotes_status_state,
+    GraphQueryError, IndexedTaskNote, NoteRecord, ParsedTaskNoteInput, RefactorChange,
+    TasksQueryResult, VaultConfig, VaultPaths,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -233,6 +236,61 @@ pub struct TaskReminderItem {
     pub description: Option<String>,
     pub notify_at: String,
     pub overdue: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TasksNextReport {
+    pub reference_date: String,
+    pub result_count: usize,
+    pub occurrences: Vec<TasksNextOccurrence>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TasksNextOccurrence {
+    pub date: String,
+    pub sequence: usize,
+    pub task: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TasksBlockedReport {
+    pub tasks: Vec<TasksBlockedItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TasksBlockedItem {
+    pub task: Value,
+    pub blockers: Vec<TaskDependencyEdge>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TasksGraphReport {
+    pub nodes: Vec<TaskDependencyNode>,
+    pub edges: Vec<TaskDependencyEdge>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TaskDependencyNode {
+    pub key: String,
+    pub id: Option<String>,
+    pub path: String,
+    pub line: i64,
+    pub text: String,
+    pub completed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TaskDependencyEdge {
+    pub blocked_key: String,
+    pub blocker_id: String,
+    pub relation_type: Option<String>,
+    pub gap: Option<String>,
+    pub resolved: bool,
+    pub blocker_key: Option<String>,
+    pub blocker_path: Option<String>,
+    pub blocker_line: Option<i64>,
+    pub blocker_text: Option<String>,
+    pub blocker_completed: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -480,6 +538,13 @@ struct TaskNoteRecord {
     path: String,
     indexed: IndexedTaskNote,
     completed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TaskDependencyReference {
+    blocker_id: String,
+    relation_type: Option<String>,
+    gap: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1503,6 +1568,360 @@ pub fn build_task_reminders_report(
         upcoming: upcoming.to_string(),
         reminders,
     })
+}
+
+pub fn build_tasks_query_result(
+    paths: &VaultPaths,
+    source: &str,
+) -> Result<TasksQueryResult, AppError> {
+    let config = load_vault_config(paths).config.tasks;
+    let effective_source = tasks_query_source(&config, source, false);
+    let mut result = evaluate_tasks_query(paths, &effective_source).map_err(AppError::operation)?;
+    strip_global_filter_from_output(&mut result, &config);
+    Ok(result)
+}
+
+pub fn build_tasks_next_report(
+    paths: &VaultPaths,
+    count: usize,
+    from: Option<&str>,
+) -> Result<TasksNextReport, AppError> {
+    let (reference_date, reference_ms) = resolve_tasks_reference_date(from)?;
+    let result = build_tasks_query_result(paths, "is recurring")?;
+    let mut occurrences = Vec::new();
+
+    for task in result.tasks {
+        let Value::Object(task_object) = task.clone() else {
+            continue;
+        };
+
+        for (sequence, date) in task_upcoming_occurrences(&task_object, reference_ms, count)
+            .into_iter()
+            .enumerate()
+        {
+            occurrences.push(TasksNextOccurrence {
+                date,
+                sequence: sequence.saturating_add(1),
+                task: task.clone(),
+            });
+        }
+    }
+
+    occurrences.sort_by(|left, right| {
+        left.date
+            .cmp(&right.date)
+            .then_with(|| task_sort_key(&left.task).cmp(&task_sort_key(&right.task)))
+            .then_with(|| left.sequence.cmp(&right.sequence))
+    });
+    occurrences.truncate(count);
+
+    Ok(TasksNextReport {
+        reference_date,
+        result_count: occurrences.len(),
+        occurrences,
+    })
+}
+
+pub fn build_tasks_blocked_report(paths: &VaultPaths) -> Result<TasksBlockedReport, AppError> {
+    let graph = build_tasks_graph_report(paths)?;
+    let task_result = build_tasks_query_result(paths, "")?;
+    let tasks_by_key = task_result
+        .tasks
+        .into_iter()
+        .filter_map(|task| task_dependency_key(&task).map(|key| (key, task)))
+        .collect::<HashMap<_, _>>();
+
+    let mut blockers_by_task = HashMap::<String, Vec<TaskDependencyEdge>>::new();
+    for edge in graph.edges {
+        if !edge.resolved || edge.blocker_completed != Some(true) {
+            blockers_by_task
+                .entry(edge.blocked_key.clone())
+                .or_default()
+                .push(edge);
+        }
+    }
+
+    let mut tasks = blockers_by_task
+        .into_iter()
+        .filter_map(|(key, blockers)| {
+            tasks_by_key
+                .get(&key)
+                .cloned()
+                .map(|task| TasksBlockedItem { task, blockers })
+        })
+        .collect::<Vec<_>>();
+    tasks.sort_by(|left, right| task_sort_key(&left.task).cmp(&task_sort_key(&right.task)));
+
+    Ok(TasksBlockedReport { tasks })
+}
+
+pub fn build_tasks_graph_report(paths: &VaultPaths) -> Result<TasksGraphReport, AppError> {
+    let result = build_tasks_query_result(paths, "")?;
+    let mut tasks = result
+        .tasks
+        .into_iter()
+        .filter_map(|task| {
+            let key = task_dependency_key(&task)?;
+            Some((key, task))
+        })
+        .collect::<Vec<_>>();
+    tasks.sort_by(|left, right| task_sort_key(&left.1).cmp(&task_sort_key(&right.1)));
+
+    let mut node_by_id = HashMap::<String, TaskDependencyNode>::new();
+    let mut nodes = Vec::with_capacity(tasks.len());
+    for (key, task) in &tasks {
+        let node = TaskDependencyNode {
+            key: key.clone(),
+            id: task
+                .get("id")
+                .and_then(Value::as_str)
+                .map(ToOwned::to_owned)
+                .filter(|id| !id.trim().is_empty()),
+            path: task
+                .get("path")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            line: task.get("line").and_then(Value::as_i64).unwrap_or_default(),
+            text: task
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            completed: task
+                .get("completed")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        };
+        if let Some(id) = node.id.clone() {
+            node_by_id.entry(id).or_insert_with(|| node.clone());
+        }
+        nodes.push(node);
+    }
+
+    let mut edges = tasks
+        .iter()
+        .flat_map(|(key, task)| {
+            task_blocker_references(task).into_iter().map(|reference| {
+                let blocker_id = reference.blocker_id;
+                let blocker = node_by_id.get(blocker_id.as_str());
+                TaskDependencyEdge {
+                    blocked_key: key.clone(),
+                    blocker_id,
+                    relation_type: reference.relation_type,
+                    gap: reference.gap,
+                    resolved: blocker.is_some(),
+                    blocker_key: blocker.map(|node| node.key.clone()),
+                    blocker_path: blocker.map(|node| node.path.clone()),
+                    blocker_line: blocker.map(|node| node.line),
+                    blocker_text: blocker.map(|node| node.text.clone()),
+                    blocker_completed: blocker.map(|node| node.completed),
+                }
+            })
+        })
+        .collect::<Vec<_>>();
+    edges.sort_by(|left, right| {
+        left.blocked_key
+            .cmp(&right.blocked_key)
+            .then_with(|| left.blocker_id.cmp(&right.blocker_id))
+    });
+
+    Ok(TasksGraphReport { nodes, edges })
+}
+
+fn resolve_tasks_reference_date(from: Option<&str>) -> Result<(String, i64), AppError> {
+    let reference_date = from
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map_or_else(
+            || TemplateTimestamp::current().default_date_string(),
+            ToOwned::to_owned,
+        );
+    let reference_ms = parse_date_like_string(&reference_date).ok_or_else(|| {
+        AppError::operation(format!(
+            "failed to parse recurrence reference date: {reference_date}"
+        ))
+    })?;
+
+    Ok((day_string_from_ms(reference_ms), reference_ms))
+}
+
+fn day_string_from_ms(ms: i64) -> String {
+    let (year, month, day, _, _, _, _) = date_components(ms);
+    format!("{year:04}-{month:02}-{day:02}")
+}
+
+fn tasks_query_source(
+    config: &vulcan_core::config::TasksConfig,
+    source: &str,
+    include_global_query: bool,
+) -> String {
+    let mut sections = Vec::new();
+    if let Some(tag) = config
+        .global_filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+    {
+        sections.push(format!("tag includes {tag}"));
+    }
+    if include_global_query {
+        if let Some(query) = config
+            .global_query
+            .as_deref()
+            .map(str::trim)
+            .filter(|query| !query.is_empty())
+        {
+            sections.push(query.to_string());
+        }
+    }
+    if !source.trim().is_empty() {
+        sections.push(source.trim().to_string());
+    }
+    sections.join("\n")
+}
+
+fn strip_global_filter_from_output(
+    result: &mut TasksQueryResult,
+    config: &vulcan_core::config::TasksConfig,
+) {
+    if !config.remove_global_filter {
+        return;
+    }
+    let Some(global_filter) = config
+        .global_filter
+        .as_deref()
+        .map(str::trim)
+        .filter(|tag| !tag.is_empty())
+    else {
+        return;
+    };
+
+    let normalized = normalize_tag_name(global_filter);
+    for task in &mut result.tasks {
+        strip_task_global_filter(task, global_filter, &normalized);
+    }
+    for group in &mut result.groups {
+        for task in &mut group.tasks {
+            strip_task_global_filter(task, global_filter, &normalized);
+        }
+    }
+}
+
+fn strip_task_global_filter(task: &mut Value, raw_tag: &str, normalized_tag: &str) {
+    let Some(object) = task.as_object_mut() else {
+        return;
+    };
+
+    if let Some(Value::Array(tags)) = object.get_mut("tags") {
+        tags.retain(|tag| {
+            tag.as_str()
+                .map_or(true, |tag| normalize_tag_name(tag) != normalized_tag)
+        });
+    }
+
+    for field in ["text", "visual"] {
+        if let Some(Value::String(text)) = object.get_mut(field) {
+            *text = strip_tag_from_text(text, raw_tag, normalized_tag);
+        }
+    }
+
+    if let Some(Value::Array(children)) = object.get_mut("children") {
+        for child in children {
+            strip_task_global_filter(child, raw_tag, normalized_tag);
+        }
+    }
+}
+
+fn strip_tag_from_text(text: &str, raw_tag: &str, normalized_tag: &str) -> String {
+    text.split_whitespace()
+        .filter(|token| {
+            !token.eq_ignore_ascii_case(raw_tag) && normalize_tag_name(token) != normalized_tag
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn task_dependency_key(task: &Value) -> Option<String> {
+    let path = task.get("path").and_then(Value::as_str)?;
+    let line = task.get("line").and_then(Value::as_i64).unwrap_or_default();
+    Some(
+        task.get("id")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .map_or_else(|| format!("{path}:{line}"), ToOwned::to_owned),
+    )
+}
+
+fn task_blocker_references(task: &Value) -> Vec<TaskDependencyReference> {
+    let mut references = Vec::new();
+    collect_task_blocker_references(
+        task.get("blockedBy").unwrap_or(&Value::Null),
+        &mut references,
+    );
+    if references.is_empty() {
+        collect_task_blocker_references(
+            task.get("blocked-by").unwrap_or(&Value::Null),
+            &mut references,
+        );
+    }
+    references.sort_by(|left, right| {
+        left.blocker_id
+            .cmp(&right.blocker_id)
+            .then_with(|| left.relation_type.cmp(&right.relation_type))
+            .then_with(|| left.gap.cmp(&right.gap))
+    });
+    references.dedup();
+    references
+}
+
+fn collect_task_blocker_references(value: &Value, references: &mut Vec<TaskDependencyReference>) {
+    match value {
+        Value::String(text) => {
+            let text = text.trim();
+            if !text.is_empty() {
+                references.push(TaskDependencyReference {
+                    blocker_id: text.to_string(),
+                    relation_type: None,
+                    gap: None,
+                });
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                collect_task_blocker_references(value, references);
+            }
+        }
+        Value::Object(object) => {
+            if let Some(uid) = object.get("uid").and_then(Value::as_str).map(str::trim) {
+                if !uid.is_empty() {
+                    references.push(TaskDependencyReference {
+                        blocker_id: uid.to_string(),
+                        relation_type: object
+                            .get("reltype")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned),
+                        gap: object
+                            .get("gap")
+                            .and_then(Value::as_str)
+                            .map(ToOwned::to_owned),
+                    });
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn task_sort_key(task: &Value) -> (String, i64) {
+    (
+        task.get("path")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        task.get("line").and_then(Value::as_i64).unwrap_or_default(),
+    )
 }
 
 pub fn build_task_track_log_report(
@@ -4302,10 +4721,11 @@ mod tests {
         apply_task_reschedule, apply_task_set, apply_task_track_start, apply_task_track_stop,
         build_task_due_report, build_task_pomodoro_status_report, build_task_reminders_report,
         build_task_show_report, build_task_track_log_report, build_task_track_status_report,
-        build_task_track_summary_report, current_utc_date_string, TaskAddRequest,
-        TaskArchiveRequest, TaskCompleteRequest, TaskConvertRequest, TaskCreateRequest,
-        TaskPomodoroStartRequest, TaskPomodoroStopRequest, TaskRescheduleRequest, TaskSetRequest,
-        TaskTrackStartRequest, TaskTrackStopRequest, TaskTrackSummaryPeriod,
+        build_task_track_summary_report, build_tasks_blocked_report, build_tasks_graph_report,
+        build_tasks_next_report, current_utc_date_string, TaskAddRequest, TaskArchiveRequest,
+        TaskCompleteRequest, TaskConvertRequest, TaskCreateRequest, TaskPomodoroStartRequest,
+        TaskPomodoroStopRequest, TaskRescheduleRequest, TaskSetRequest, TaskTrackStartRequest,
+        TaskTrackStopRequest, TaskTrackSummaryPeriod,
     };
     use crate::templates::render_note_from_parts;
     use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -4924,6 +5344,79 @@ mod tests {
     }
 
     #[test]
+    fn build_tasks_next_report_lists_upcoming_recurring_instances() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        write_tasks_recurrence_fixture(&paths);
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+        let report =
+            build_tasks_next_report(&paths, 4, Some("2026-03-29")).expect("tasks next report");
+
+        assert_eq!(report.reference_date, "2026-03-29");
+        assert_eq!(report.result_count, 4);
+        assert_eq!(report.occurrences.len(), 4);
+        assert_eq!(report.occurrences[0].date, "2026-03-30");
+        assert_eq!(
+            report.occurrences[0].task["recurrenceRule"],
+            serde_json::json!("FREQ=WEEKLY;INTERVAL=2")
+        );
+        assert_eq!(report.occurrences[1].date, "2026-04-09");
+        assert_eq!(
+            report.occurrences[1].task["recurrenceRule"],
+            serde_json::json!("FREQ=WEEKLY;INTERVAL=2;BYDAY=TH")
+        );
+        assert_eq!(report.occurrences[2].date, "2026-04-13");
+        assert_eq!(report.occurrences[2].sequence, 2);
+        assert_eq!(report.occurrences[3].date, "2026-04-15");
+        assert_eq!(
+            report.occurrences[3].task["recurrence"],
+            serde_json::json!("every month on the 15th")
+        );
+        assert_eq!(
+            report.occurrences[3].task["recurrenceMonthDay"],
+            serde_json::json!(15)
+        );
+    }
+
+    #[test]
+    fn build_tasks_blocked_report_lists_open_and_unresolved_blockers() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        write_tasks_dependency_fixture(&paths);
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+        let report = build_tasks_blocked_report(&paths).expect("tasks blocked report");
+
+        assert_eq!(report.tasks.len(), 2);
+        assert_eq!(report.tasks[0].task["text"], "Publish docs ⛔ SHIP-1");
+        assert_eq!(report.tasks[0].blockers[0].blocker_id, "SHIP-1");
+        assert_eq!(report.tasks[0].blockers[0].blocker_completed, Some(false));
+        assert_eq!(report.tasks[1].task["text"], "Prep launch ⛔ MISSING-1");
+        assert!(!report.tasks[1].blockers[0].resolved);
+    }
+
+    #[test]
+    fn build_tasks_graph_report_lists_dependency_nodes_and_edges() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        write_tasks_dependency_fixture(&paths);
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+        let report = build_tasks_graph_report(&paths).expect("tasks graph report");
+
+        assert_eq!(report.nodes.len(), 4);
+        assert_eq!(report.edges.len(), 2);
+        assert_eq!(report.edges[0].blocker_id, "SHIP-1");
+        assert!(report.edges[0].resolved);
+        assert_eq!(report.edges[1].blocker_id, "MISSING-1");
+        assert!(!report.edges[1].resolved);
+    }
+
+    #[test]
     fn task_track_workflows_update_entries_and_reports() {
         let temp_dir = tempdir().expect("temp dir");
         let paths = VaultPaths::new(temp_dir.path());
@@ -5169,6 +5662,43 @@ mod tests {
             fs::create_dir_all(parent).map_err(AppError::operation)?;
         }
         fs::write(absolute_path, rendered).map_err(AppError::operation)
+    }
+
+    fn write_tasks_dependency_fixture(paths: &VaultPaths) {
+        fs::write(
+            paths.vault_root().join(".vulcan/config.toml"),
+            "[tasks]\nglobal_filter = \"#task\"\nremove_global_filter = true\n",
+        )
+        .expect("config should be written");
+        fs::write(
+            paths.vault_root().join("Tasks.md"),
+            concat!(
+                "- [ ] Write docs #task 🆔 WRITE-1\n",
+                "- [ ] Ship release #task 🆔 SHIP-1\n",
+                "- [ ] Publish docs #task ⛔ SHIP-1\n",
+                "- [ ] Prep launch #task ⛔ MISSING-1\n",
+                "- [ ] Archive misc #misc ⛔ WRITE-1\n",
+            ),
+        )
+        .expect("dependency note should be written");
+    }
+
+    fn write_tasks_recurrence_fixture(paths: &VaultPaths) {
+        fs::write(
+            paths.vault_root().join(".vulcan/config.toml"),
+            "[tasks]\nglobal_filter = \"#task\"\nremove_global_filter = true\n",
+        )
+        .expect("config should be written");
+        fs::write(
+            paths.vault_root().join("Recurring.md"),
+            concat!(
+                "- [ ] Review sprint #task ⏳ 2026-03-30 🔁 every 2 weeks\n",
+                "- [ ] Close books #task ⏳ 2026-02-15 [repeat:: every month on the 15th]\n",
+                "- [ ] Publish notes #task ⏳ 2026-03-26 [repeat:: RRULE:FREQ=WEEKLY;INTERVAL=2;BYDAY=TH]\n",
+                "- [ ] Ignore misc #misc ⏳ 2026-03-30 🔁 every 2 weeks\n",
+            ),
+        )
+        .expect("recurring note should be written");
     }
 
     fn first_completed_status_for_test(config: &VaultConfig) -> String {

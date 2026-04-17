@@ -335,7 +335,7 @@ pub(crate) fn handle_tasks_command(
             crate::print_tasks_blocked_report(cli.output, &report)
         }
         TasksCommand::Graph => {
-            let report = crate::build_tasks_graph_report(paths)?;
+            let report = crate::run_tasks_graph_command(paths)?;
             crate::print_tasks_graph_report(cli.output, &report)
         }
         TasksCommand::Track { command } => match command {

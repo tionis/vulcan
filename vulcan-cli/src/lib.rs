@@ -206,7 +206,8 @@ use vulcan_app::tasks::{
     apply_task_track_start, apply_task_track_stop, build_task_due_report,
     build_task_pomodoro_status_report, build_task_reminders_report, build_task_show_report,
     build_task_track_log_report, build_task_track_status_report, build_task_track_summary_report,
-    TaskAddReport, TaskAddRequest as AppTaskAddRequest,
+    build_tasks_blocked_report, build_tasks_graph_report, build_tasks_next_report,
+    build_tasks_query_result, TaskAddReport, TaskAddRequest as AppTaskAddRequest,
     TaskArchiveRequest as AppTaskArchiveRequest, TaskCompleteRequest as AppTaskCompleteRequest,
     TaskConvertReport, TaskConvertRequest as AppTaskConvertRequest, TaskCreateReport,
     TaskCreateRequest as AppTaskCreateRequest, TaskDueReport, TaskMutationReport,
@@ -217,6 +218,7 @@ use vulcan_app::tasks::{
     TaskTrackStartRequest as AppTaskTrackStartRequest, TaskTrackStatusReport,
     TaskTrackStopRequest as AppTaskTrackStopRequest,
     TaskTrackSummaryPeriod as AppTaskTrackSummaryPeriod, TaskTrackSummaryReport,
+    TasksBlockedReport, TasksGraphReport, TasksNextReport,
 };
 use vulcan_app::templates::{
     apply_template_create, apply_template_insert, build_template_list_report,
@@ -262,34 +264,33 @@ use vulcan_core::{
     rename_alias, rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
     render_markdown_html, repair_fts, resolve_note_reference, resolve_periodic_note,
     resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
-    search_web, shape_tasks_query_result, step_period_start, task_upcoming_occurrences,
-    tasknotes_status_definition, tasknotes_status_state, validate_vulcan_overrides_toml,
-    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext,
-    BasesEvalReport, BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase,
-    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
-    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterReport, ConfigDiagnostic,
-    ConfigImportReport, ConfigPermissionMode, CoreImporter, DataviewImporter,
-    DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue,
-    DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
-    EvaluatedInlineExpression, GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport,
-    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
-    GraphPathReport, GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary,
-    JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary,
-    KanbanImporter, KanbanMoveReport, KanbanTaskStatus, LinkKind, LinkResolutionMode,
-    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount,
-    NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OriginContext, OutgoingLinkRecord,
-    OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter, PermissionFilter, PermissionGuard,
-    PermissionMode, PermissionProfile, PluginEvent, PluginImporter, ProfilePermissionGuard,
-    QueryAst, QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport,
-    RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile,
-    ResolverDocument, ResolverIndex, ResolverLink, SavedExport, SavedExportFormat,
-    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
-    ScanPhase, ScanProgress, ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport,
-    SearchSort, StoredModelInfo, TaskNotesImporter, TaskNotesSavedViewConfig,
-    TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter, TasksQueryResult,
-    TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase,
-    VectorIndexProgress, VectorIndexReport, VectorNeighborHit, VectorNeighborsReport,
-    VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
+    search_web, shape_tasks_query_result, step_period_start, tasknotes_status_definition,
+    tasknotes_status_state, validate_vulcan_overrides_toml, verify_cache, watch_vault,
+    AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport,
+    BasesEvaluator, BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport,
+    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
+    ChangeReport, CheckpointRecord, ClusterReport, ConfigDiagnostic, ConfigImportReport,
+    ConfigPermissionMode, CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput,
+    DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    DqlQueryResult, DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine,
+    GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport,
+    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
+    GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport,
+    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport,
+    KanbanTaskStatus, LinkKind, LinkResolutionMode, MentionSuggestion, MentionSuggestionsReport,
+    MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport,
+    OriginContext, OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter,
+    PermissionFilter, PermissionGuard, PermissionMode, PermissionProfile, PluginEvent,
+    PluginImporter, ProfilePermissionGuard, QueryAst, QueryReport, RebuildQuery, RebuildReport,
+    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
+    RepairFtsReport, ResolvedPermissionProfile, ResolverDocument, ResolverIndex, ResolverLink,
+    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchBackendKind,
+    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
+    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode, TasksImporter,
+    TasksQueryResult, TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport,
+    VectorIndexPhase, VectorIndexProgress, VectorIndexReport, VectorNeighborHit,
+    VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
 };
 use zip::write::FileOptions;
 
@@ -956,37 +957,6 @@ struct TasksBlockEvalReport {
     error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct TasksNextReport {
-    reference_date: String,
-    result_count: usize,
-    occurrences: Vec<TasksNextOccurrence>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct TasksNextOccurrence {
-    date: String,
-    sequence: usize,
-    task: Value,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct TasksBlockedReport {
-    tasks: Vec<TasksBlockedItem>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct TasksBlockedItem {
-    task: Value,
-    blockers: Vec<TaskDependencyEdge>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct TasksGraphReport {
-    nodes: Vec<TaskDependencyNode>,
-    edges: Vec<TaskDependencyEdge>,
-}
-
 #[derive(Debug, Clone)]
 struct LoadedTaskNote {
     path: String,
@@ -1036,37 +1006,6 @@ struct KanbanCardListItem {
     inline_fields: Value,
     metadata: Value,
     task: Option<KanbanTaskStatus>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct TaskDependencyNode {
-    key: String,
-    id: Option<String>,
-    path: String,
-    line: i64,
-    text: String,
-    completed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct TaskDependencyEdge {
-    blocked_key: String,
-    blocker_id: String,
-    relation_type: Option<String>,
-    gap: Option<String>,
-    resolved: bool,
-    blocker_key: Option<String>,
-    blocker_path: Option<String>,
-    blocker_line: Option<i64>,
-    blocker_text: Option<String>,
-    blocker_completed: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TaskDependencyReference {
-    blocker_id: String,
-    relation_type: Option<String>,
-    gap: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2560,11 +2499,7 @@ fn run_dataview_eval_command(
 }
 
 fn run_tasks_query_command(paths: &VaultPaths, source: &str) -> Result<TasksQueryResult, CliError> {
-    let config = load_vault_config(paths).config.tasks;
-    let effective_source = tasks_query_source(&config, source, false);
-    let mut result = evaluate_tasks_query(paths, &effective_source).map_err(CliError::operation)?;
-    strip_global_filter_from_output(&mut result, &config);
-    Ok(result)
+    build_tasks_query_result(paths, source).map_err(CliError::operation)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -4213,40 +4148,7 @@ fn run_tasks_next_command(
     count: usize,
     from: Option<&str>,
 ) -> Result<TasksNextReport, CliError> {
-    let (reference_date, reference_ms) = resolve_tasks_reference_date(from)?;
-    let result = run_tasks_query_command(paths, "is recurring")?;
-    let mut occurrences = Vec::new();
-
-    for task in result.tasks {
-        let Value::Object(task_object) = task.clone() else {
-            continue;
-        };
-
-        for (sequence, date) in task_upcoming_occurrences(&task_object, reference_ms, count)
-            .into_iter()
-            .enumerate()
-        {
-            occurrences.push(TasksNextOccurrence {
-                date,
-                sequence: sequence.saturating_add(1),
-                task: task.clone(),
-            });
-        }
-    }
-
-    occurrences.sort_by(|left, right| {
-        left.date
-            .cmp(&right.date)
-            .then_with(|| task_sort_key(&left.task).cmp(&task_sort_key(&right.task)))
-            .then_with(|| left.sequence.cmp(&right.sequence))
-    });
-    occurrences.truncate(count);
-
-    Ok(TasksNextReport {
-        reference_date,
-        result_count: occurrences.len(),
-        occurrences,
-    })
+    build_tasks_next_report(paths, count, from).map_err(CliError::operation)
 }
 
 fn run_tasks_list_dql_filter(
@@ -4314,28 +4216,6 @@ fn run_tasks_list_dql_filter(
     };
     strip_global_filter_from_output(&mut result, config);
     Ok(result)
-}
-
-fn resolve_tasks_reference_date(from: Option<&str>) -> Result<(String, i64), CliError> {
-    let reference_date = from
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map_or_else(
-            || TemplateTimestamp::current().default_date_string(),
-            ToOwned::to_owned,
-        );
-    let reference_ms = parse_date_like_string(&reference_date).ok_or_else(|| {
-        CliError::operation(format!(
-            "failed to parse recurrence reference date: {reference_date}"
-        ))
-    })?;
-
-    Ok((day_string_from_ms(reference_ms), reference_ms))
-}
-
-fn day_string_from_ms(ms: i64) -> String {
-    let (year, month, day, _, _, _, _) = date_components(ms);
-    format!("{year:04}-{month:02}-{day:02}")
 }
 
 fn tasks_query_source(
@@ -4561,110 +4441,11 @@ fn normalize_tag_name(tag: &str) -> String {
 }
 
 fn run_tasks_blocked_command(paths: &VaultPaths) -> Result<TasksBlockedReport, CliError> {
-    let graph = build_tasks_graph_report(paths)?;
-    let task_result = run_tasks_query_command(paths, "")?;
-    let tasks_by_key = task_result
-        .tasks
-        .into_iter()
-        .filter_map(|task| task_dependency_key(&task).map(|key| (key, task)))
-        .collect::<HashMap<_, _>>();
-
-    let mut blockers_by_task = HashMap::<String, Vec<TaskDependencyEdge>>::new();
-    for edge in graph.edges {
-        if !edge.resolved || edge.blocker_completed != Some(true) {
-            blockers_by_task
-                .entry(edge.blocked_key.clone())
-                .or_default()
-                .push(edge);
-        }
-    }
-
-    let mut tasks = blockers_by_task
-        .into_iter()
-        .filter_map(|(key, blockers)| {
-            tasks_by_key
-                .get(&key)
-                .cloned()
-                .map(|task| TasksBlockedItem { task, blockers })
-        })
-        .collect::<Vec<_>>();
-    tasks.sort_by(|left, right| task_sort_key(&left.task).cmp(&task_sort_key(&right.task)));
-
-    Ok(TasksBlockedReport { tasks })
+    build_tasks_blocked_report(paths).map_err(CliError::operation)
 }
 
-fn build_tasks_graph_report(paths: &VaultPaths) -> Result<TasksGraphReport, CliError> {
-    let result = run_tasks_query_command(paths, "")?;
-    let mut tasks = result
-        .tasks
-        .into_iter()
-        .filter_map(|task| {
-            let key = task_dependency_key(&task)?;
-            Some((key, task))
-        })
-        .collect::<Vec<_>>();
-    tasks.sort_by(|left, right| task_sort_key(&left.1).cmp(&task_sort_key(&right.1)));
-
-    let mut node_by_id = HashMap::<String, TaskDependencyNode>::new();
-    let mut nodes = Vec::with_capacity(tasks.len());
-    for (key, task) in &tasks {
-        let node = TaskDependencyNode {
-            key: key.clone(),
-            id: task
-                .get("id")
-                .and_then(Value::as_str)
-                .map(ToOwned::to_owned)
-                .filter(|id| !id.trim().is_empty()),
-            path: task
-                .get("path")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            line: task.get("line").and_then(Value::as_i64).unwrap_or_default(),
-            text: task
-                .get("text")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
-            completed: task
-                .get("completed")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-        };
-        if let Some(id) = node.id.clone() {
-            node_by_id.entry(id).or_insert_with(|| node.clone());
-        }
-        nodes.push(node);
-    }
-
-    let mut edges = tasks
-        .iter()
-        .flat_map(|(key, task)| {
-            task_blocker_references(task).into_iter().map(|reference| {
-                let blocker_id = reference.blocker_id;
-                let blocker = node_by_id.get(blocker_id.as_str());
-                TaskDependencyEdge {
-                    blocked_key: key.clone(),
-                    blocker_id,
-                    relation_type: reference.relation_type,
-                    gap: reference.gap,
-                    resolved: blocker.is_some(),
-                    blocker_key: blocker.map(|node| node.key.clone()),
-                    blocker_path: blocker.map(|node| node.path.clone()),
-                    blocker_line: blocker.map(|node| node.line),
-                    blocker_text: blocker.map(|node| node.text.clone()),
-                    blocker_completed: blocker.map(|node| node.completed),
-                }
-            })
-        })
-        .collect::<Vec<_>>();
-    edges.sort_by(|left, right| {
-        left.blocked_key
-            .cmp(&right.blocked_key)
-            .then_with(|| left.blocker_id.cmp(&right.blocker_id))
-    });
-
-    Ok(TasksGraphReport { nodes, edges })
+fn run_tasks_graph_command(paths: &VaultPaths) -> Result<TasksGraphReport, CliError> {
+    build_tasks_graph_report(paths).map_err(CliError::operation)
 }
 
 fn run_kanban_cards_command(
@@ -4774,88 +4555,6 @@ fn kanban_status_matches(task: Option<&KanbanTaskStatus>, filter: Option<&str>) 
         || task.status_char.eq_ignore_ascii_case(filter)
         || task.status_name.eq_ignore_ascii_case(filter)
         || task.status_type.eq_ignore_ascii_case(filter)
-}
-
-fn task_dependency_key(task: &Value) -> Option<String> {
-    let path = task.get("path").and_then(Value::as_str)?;
-    let line = task.get("line").and_then(Value::as_i64).unwrap_or_default();
-    Some(
-        task.get("id")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .map_or_else(|| format!("{path}:{line}"), ToOwned::to_owned),
-    )
-}
-
-fn task_blocker_references(task: &Value) -> Vec<TaskDependencyReference> {
-    let mut references = Vec::new();
-    collect_task_blocker_references(
-        task.get("blockedBy").unwrap_or(&Value::Null),
-        &mut references,
-    );
-    if references.is_empty() {
-        collect_task_blocker_references(
-            task.get("blocked-by").unwrap_or(&Value::Null),
-            &mut references,
-        );
-    }
-    references.sort_by(|left, right| {
-        left.blocker_id
-            .cmp(&right.blocker_id)
-            .then_with(|| left.relation_type.cmp(&right.relation_type))
-            .then_with(|| left.gap.cmp(&right.gap))
-    });
-    references.dedup();
-    references
-}
-
-fn collect_task_blocker_references(value: &Value, references: &mut Vec<TaskDependencyReference>) {
-    match value {
-        Value::String(text) => {
-            let text = text.trim();
-            if !text.is_empty() {
-                references.push(TaskDependencyReference {
-                    blocker_id: text.to_string(),
-                    relation_type: None,
-                    gap: None,
-                });
-            }
-        }
-        Value::Array(values) => {
-            for value in values {
-                collect_task_blocker_references(value, references);
-            }
-        }
-        Value::Object(object) => {
-            if let Some(uid) = object.get("uid").and_then(Value::as_str).map(str::trim) {
-                if !uid.is_empty() {
-                    references.push(TaskDependencyReference {
-                        blocker_id: uid.to_string(),
-                        relation_type: object
-                            .get("reltype")
-                            .and_then(Value::as_str)
-                            .map(ToOwned::to_owned),
-                        gap: object
-                            .get("gap")
-                            .and_then(Value::as_str)
-                            .map(ToOwned::to_owned),
-                    });
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-fn task_sort_key(task: &Value) -> (String, i64) {
-    (
-        task.get("path")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
-        task.get("line").and_then(Value::as_i64).unwrap_or_default(),
-    )
 }
 
 type ChangeKindStatus = vulcan_core::ChangeStatus;
