@@ -2785,6 +2785,7 @@ name = "vulcan-app"
 version = "0.1.0"
 dependencies = [
  "csv",
+ "pulldown-cmark",
  "regex",
  "reqwest",
  "rquickjs",
