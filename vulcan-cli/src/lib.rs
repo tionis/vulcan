@@ -192,6 +192,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
+use vulcan_app::export::{write_sqlite_export, ExportLinkRecord, ExportedNoteDocument};
 use vulcan_app::notes::{
     apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
     diagnose_external_markdown_contents, diagnose_note_contents,
@@ -8002,7 +8003,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     )?;
                     let notes = load_exported_notes(&paths, &report)?;
                     let links = load_export_links(&paths, &notes)?;
-                    let summary = write_sqlite_export(path, &report, &notes, &links)?;
+                    let summary = write_sqlite_export(path, &report, &notes, &links)
+                        .map_err(CliError::operation)?;
                     match cli.output {
                         OutputFormat::Human | OutputFormat::Markdown => {
                             println!("{}", summary.path);
@@ -14424,12 +14426,6 @@ fn print_static_search_index_report(
 // ────────────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone)]
-struct ExportedNoteDocument {
-    note: NoteRecord,
-    content: String,
-}
-
-#[derive(Debug, Clone)]
 struct PreparedExportData {
     notes: Vec<ExportedNoteDocument>,
     links: Vec<ExportLinkRecord>,
@@ -14721,36 +14717,11 @@ struct ZipExportSummary {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct SqliteExportSummary {
-    path: String,
-    result_count: usize,
-    link_count: usize,
-    tag_count: usize,
-    task_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
 struct ZipExportManifest {
     query: QueryAst,
     result_count: usize,
     notes: Vec<String>,
     attachments: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ExportLinkRecord {
-    source_document_path: String,
-    raw_text: String,
-    link_kind: String,
-    display_text: Option<String>,
-    target_path_candidate: Option<String>,
-    target_heading: Option<String>,
-    target_block: Option<String>,
-    resolved_target_path: Option<String>,
-    origin_context: String,
-    byte_offset: i64,
-    #[serde(skip_serializing)]
-    resolved_target_extension: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -16302,7 +16273,8 @@ fn run_sqlite_export_profile(
     let report = execute_export_query(paths, query, query_json, read_filter)?;
     let notes = load_exported_notes(paths, &report)?;
     let links = load_export_links(paths, &notes)?;
-    let summary = write_sqlite_export(output_path, &report, &notes, &links)?;
+    let summary =
+        write_sqlite_export(output_path, &report, &notes, &links).map_err(CliError::operation)?;
     finish_export_profile_binary(output, &summary.path, &summary)
 }
 
@@ -18164,219 +18136,6 @@ fn write_zip_export(
         path: output_path.display().to_string(),
         result_count: notes.len(),
         attachment_count: manifest.attachments.len(),
-    })
-}
-
-fn initialize_sqlite_export(connection: &Connection) -> Result<(), CliError> {
-    connection
-        .execute_batch(
-            "
-            PRAGMA user_version = 1;
-
-            CREATE TABLE meta (
-                key TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-
-            CREATE TABLE notes (
-                document_path TEXT PRIMARY KEY,
-                file_name TEXT NOT NULL,
-                file_ext TEXT NOT NULL,
-                file_mtime INTEGER NOT NULL,
-                file_size INTEGER NOT NULL,
-                tags_json TEXT NOT NULL,
-                aliases_json TEXT NOT NULL,
-                frontmatter_json TEXT NOT NULL,
-                properties_json TEXT NOT NULL,
-                content TEXT NOT NULL
-            );
-
-            CREATE TABLE links (
-                source_document_path TEXT NOT NULL,
-                raw_text TEXT NOT NULL,
-                link_kind TEXT NOT NULL,
-                display_text TEXT,
-                target_path_candidate TEXT,
-                target_heading TEXT,
-                target_block TEXT,
-                resolved_target_path TEXT,
-                origin_context TEXT NOT NULL,
-                byte_offset INTEGER NOT NULL
-            );
-
-            CREATE TABLE tags (
-                document_path TEXT NOT NULL,
-                tag_text TEXT NOT NULL
-            );
-
-            CREATE TABLE tasks (
-                task_id TEXT PRIMARY KEY,
-                document_path TEXT NOT NULL,
-                task_source TEXT NOT NULL,
-                text TEXT NOT NULL,
-                status_char TEXT NOT NULL,
-                status_name TEXT NOT NULL,
-                status_type TEXT NOT NULL,
-                line_number INTEGER NOT NULL,
-                byte_offset INTEGER NOT NULL,
-                section_heading TEXT,
-                properties_json TEXT NOT NULL
-            );
-
-            CREATE INDEX idx_links_source_document_path ON links(source_document_path);
-            CREATE INDEX idx_tags_document_path ON tags(document_path);
-            CREATE INDEX idx_tasks_document_path ON tasks(document_path);
-            ",
-        )
-        .map_err(CliError::operation)
-}
-
-fn insert_sqlite_export_meta(
-    connection: &Connection,
-    report: &QueryReport,
-    result_count: usize,
-) -> Result<(), CliError> {
-    let query_json = serde_json::to_string(&report.query).map_err(CliError::operation)?;
-    let timestamp = TemplateTimestamp::current().default_strings().datetime;
-    connection
-        .execute(
-            "INSERT INTO meta (key, value) VALUES (?1, ?2), (?3, ?4), (?5, ?6)",
-            rusqlite::params![
-                "query_json",
-                query_json,
-                "result_count",
-                result_count.to_string(),
-                "generated_at",
-                timestamp
-            ],
-        )
-        .map_err(CliError::operation)?;
-    Ok(())
-}
-
-fn insert_sqlite_export_notes(
-    transaction: &rusqlite::Transaction<'_>,
-    notes: &[ExportedNoteDocument],
-) -> Result<(usize, usize), CliError> {
-    let mut tag_count = 0;
-    let mut task_count = 0;
-
-    for note in notes {
-        transaction
-            .execute(
-                "INSERT INTO notes (
-                    document_path, file_name, file_ext, file_mtime, file_size,
-                    tags_json, aliases_json, frontmatter_json, properties_json, content
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                rusqlite::params![
-                    &note.note.document_path,
-                    &note.note.file_name,
-                    &note.note.file_ext,
-                    note.note.file_mtime,
-                    note.note.file_size,
-                    serde_json::to_string(&note.note.tags).map_err(CliError::operation)?,
-                    serde_json::to_string(&note.note.aliases).map_err(CliError::operation)?,
-                    serde_json::to_string(&note.note.frontmatter).map_err(CliError::operation)?,
-                    serde_json::to_string(&note.note.properties).map_err(CliError::operation)?,
-                    &note.content,
-                ],
-            )
-            .map_err(CliError::operation)?;
-
-        for tag in &note.note.tags {
-            transaction
-                .execute(
-                    "INSERT INTO tags (document_path, tag_text) VALUES (?1, ?2)",
-                    rusqlite::params![&note.note.document_path, tag],
-                )
-                .map_err(CliError::operation)?;
-            tag_count += 1;
-        }
-
-        for task in &note.note.tasks {
-            let task_source = task
-                .properties
-                .get("taskSource")
-                .and_then(Value::as_str)
-                .unwrap_or("inline");
-            transaction
-                .execute(
-                    "INSERT INTO tasks (
-                        task_id, document_path, task_source, text, status_char, status_name,
-                        status_type, line_number, byte_offset, section_heading, properties_json
-                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    rusqlite::params![
-                        &task.id,
-                        &note.note.document_path,
-                        task_source,
-                        &task.text,
-                        &task.status_char,
-                        &task.status_name,
-                        &task.status_type,
-                        task.line_number,
-                        task.byte_offset,
-                        &task.section_heading,
-                        serde_json::to_string(&task.properties).map_err(CliError::operation)?,
-                    ],
-                )
-                .map_err(CliError::operation)?;
-            task_count += 1;
-        }
-    }
-
-    Ok((tag_count, task_count))
-}
-
-fn insert_sqlite_export_links(
-    transaction: &rusqlite::Transaction<'_>,
-    links: &[ExportLinkRecord],
-) -> Result<(), CliError> {
-    for link in links {
-        transaction
-            .execute(
-                "INSERT INTO links (
-                    source_document_path, raw_text, link_kind, display_text, target_path_candidate,
-                    target_heading, target_block, resolved_target_path, origin_context, byte_offset
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
-                rusqlite::params![
-                    &link.source_document_path,
-                    &link.raw_text,
-                    &link.link_kind,
-                    &link.display_text,
-                    &link.target_path_candidate,
-                    &link.target_heading,
-                    &link.target_block,
-                    &link.resolved_target_path,
-                    &link.origin_context,
-                    link.byte_offset,
-                ],
-            )
-            .map_err(CliError::operation)?;
-    }
-    Ok(())
-}
-
-fn write_sqlite_export(
-    output_path: &Path,
-    report: &QueryReport,
-    notes: &[ExportedNoteDocument],
-    links: &[ExportLinkRecord],
-) -> Result<SqliteExportSummary, CliError> {
-    prepare_export_output_path(output_path)?;
-    let mut connection = Connection::open(output_path).map_err(CliError::operation)?;
-    initialize_sqlite_export(&connection)?;
-    insert_sqlite_export_meta(&connection, report, notes.len())?;
-    let transaction = connection.transaction().map_err(CliError::operation)?;
-    let (tag_count, task_count) = insert_sqlite_export_notes(&transaction, notes)?;
-    insert_sqlite_export_links(&transaction, links)?;
-    transaction.commit().map_err(CliError::operation)?;
-
-    Ok(SqliteExportSummary {
-        path: output_path.display().to_string(),
-        result_count: notes.len(),
-        link_count: links.len(),
-        tag_count,
-        task_count,
     })
 }
 

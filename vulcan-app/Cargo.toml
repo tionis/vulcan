@@ -12,6 +12,7 @@ js_runtime = ["dep:rquickjs", "vulcan-core/js_runtime"]
 [dependencies]
 regex.workspace = true
 reqwest.workspace = true
+rusqlite.workspace = true
 serde_yaml.workspace = true
 serde.workspace = true
 serde_json.workspace = true

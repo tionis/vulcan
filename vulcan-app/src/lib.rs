@@ -8,6 +8,7 @@
 mod error;
 
 pub mod config;
+pub mod export;
 pub mod notes;
 pub mod plugins;
 pub mod scan;

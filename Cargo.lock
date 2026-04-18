@@ -2787,6 +2787,7 @@ dependencies = [
  "regex",
  "reqwest",
  "rquickjs",
+ "rusqlite",
  "serde",
  "serde_json",
  "serde_yaml",
