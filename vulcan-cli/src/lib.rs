@@ -173,7 +173,6 @@ use pulldown_cmark::{
     Tag as MarkdownTag,
 };
 use regex::Regex;
-use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -193,13 +192,16 @@ use vulcan_app::export::{
     apply_export_profile_rule_delete, apply_export_profile_rule_move,
     apply_export_profile_rule_update, apply_export_profile_set, build_content_transform_rules,
     build_export_profile_list, build_export_profile_rule_list, build_export_profile_show_report,
-    export_profile_format_label, export_profile_query_args, require_export_profile_format,
-    require_export_profile_path, validate_export_profile_config, write_sqlite_export,
-    BoolConfigUpdate, ConfigValueUpdate, ExportLinkRecord, ExportProfileCreateRequest,
-    ExportProfileDeleteReport, ExportProfileListEntry, ExportProfileRuleListEntry,
-    ExportProfileRuleMoveRequest, ExportProfileRuleRequest, ExportProfileRuleWriteAction,
-    ExportProfileRuleWriteReport, ExportProfileSetRequest, ExportProfileShowReport,
-    ExportProfileWriteAction, ExportProfileWriteReport, ExportedNoteDocument,
+    collect_export_attachment_paths, execute_export_query, export_profile_format_label,
+    export_profile_query_args, load_export_links, load_exported_notes, prepare_export_data,
+    render_csv_export_payload, render_json_export_payload, render_markdown_export_payload,
+    require_export_profile_format, require_export_profile_path, validate_export_profile_config,
+    write_sqlite_export, write_zip_export, BoolConfigUpdate, ConfigValueUpdate, CsvExportSummary,
+    ExportLinkRecord, ExportProfileCreateRequest, ExportProfileDeleteReport,
+    ExportProfileListEntry, ExportProfileRuleListEntry, ExportProfileRuleMoveRequest,
+    ExportProfileRuleRequest, ExportProfileRuleWriteAction, ExportProfileRuleWriteReport,
+    ExportProfileSetRequest, ExportProfileShowReport, ExportProfileWriteAction,
+    ExportProfileWriteReport, ExportedNoteDocument, JsonExportSummary, MarkdownExportSummary,
 };
 use vulcan_app::notes::{
     apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
@@ -249,9 +251,8 @@ use vulcan_app::templates::{
 #[cfg(test)]
 use vulcan_core::config::TemplatesConfig;
 use vulcan_core::config::{
-    ContentTransformConfig, ContentTransformRuleConfig, ExportEpubTocStyleConfig,
-    ExportGraphFormatConfig, ExportProfileConfig, ExportProfileFormat, QuickAddImporter,
-    TasksDefaultSource,
+    ContentTransformRuleConfig, ExportEpubTocStyleConfig, ExportGraphFormatConfig,
+    ExportProfileConfig, ExportProfileFormat, QuickAddImporter, TasksDefaultSource,
 };
 use vulcan_core::expression::functions::{
     date_components, parse_date_like_string, parse_duration_string,
@@ -259,46 +260,44 @@ use vulcan_core::expression::functions::{
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
-    add_kanban_card, all_importers, annotate_import_conflicts, apply_content_transforms,
-    archive_kanban_card, bulk_replace, cache_vacuum, create_checkpoint, delete_saved_report,
-    doctor_fix, doctor_vault, evaluate_base_file, evaluate_dataview_js_with_options,
-    evaluate_dql_with_filter, evaluate_note_inline_expressions, execute_query_report_with_filter,
-    expected_periodic_note_path, export_daily_events_to_ics, export_static_search_index,
-    extract_tasknote, fetch_web_content, git_blame, git_diff, git_log, git_recent_log, git_status,
-    initialize_vault, inspect_cache, link_mentions, list_checkpoints, list_daily_note_events,
-    list_saved_reports, load_dataview_blocks, load_events_for_periodic_note, load_kanban_board,
-    load_saved_report, load_vault_config, merge_tags, move_kanban_card, move_note, parse_document,
-    period_range_for_date, plan_base_note_create, prepare_search_backend, query_backlinks,
-    query_change_report, query_links, query_notes, rebuild_vault_with_progress, rename_alias,
-    rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
-    render_markdown_html, repair_fts, resolve_note_reference, resolve_periodic_note,
-    resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
-    search_web, step_period_start, tasknotes_status_definition, tasknotes_status_state,
-    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext,
-    BasesEvalReport, BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport,
-    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
-    ChangeReport, CheckpointRecord, ClusterReport, ConfigImportReport, ConfigPermissionMode,
-    CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
-    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
-    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
-    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
-    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
-    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
-    LinkKind, LinkResolutionMode, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OriginContext,
-    OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter,
-    PermissionFilter, PermissionGuard, PermissionMode, PermissionProfile, PluginEvent,
-    PluginImporter, ProfilePermissionGuard, QueryAst, QueryReport, RebuildQuery, RebuildReport,
+    add_kanban_card, all_importers, annotate_import_conflicts, archive_kanban_card, bulk_replace,
+    cache_vacuum, create_checkpoint, delete_saved_report, doctor_fix, doctor_vault,
+    evaluate_base_file, evaluate_dataview_js_with_options, evaluate_dql_with_filter,
+    evaluate_note_inline_expressions, expected_periodic_note_path, export_daily_events_to_ics,
+    export_static_search_index, extract_tasknote, fetch_web_content, git_blame, git_diff, git_log,
+    git_recent_log, git_status, initialize_vault, inspect_cache, link_mentions, list_checkpoints,
+    list_daily_note_events, list_saved_reports, load_dataview_blocks,
+    load_events_for_periodic_note, load_kanban_board, load_saved_report, load_vault_config,
+    merge_tags, move_kanban_card, move_note, parse_document, period_range_for_date,
+    plan_base_note_create, prepare_search_backend, query_backlinks, query_change_report,
+    query_links, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
+    rename_heading, rename_property, render_markdown_fragment_html, render_markdown_html,
+    repair_fts, resolve_note_reference, resolve_periodic_note, resolve_permission_profile,
+    save_saved_report, scan_vault_with_progress, search_vault, search_web, step_period_start,
+    tasknotes_status_definition, tasknotes_status_state, verify_cache, watch_vault, AutoScanMode,
+    BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport, BasesViewEditReport,
+    BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport,
+    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
+    ClusterReport, ConfigImportReport, ConfigPermissionMode, CoreImporter, DataviewImporter,
+    DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue,
+    DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
+    EvaluatedInlineExpression, GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport,
+    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
+    GraphPathReport, GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary,
+    JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary,
+    KanbanImporter, KanbanMoveReport, KanbanTaskStatus, MentionSuggestion,
+    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
+    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig,
+    PeriodicNotesImporter, PermissionFilter, PermissionGuard, PermissionMode, PermissionProfile,
+    PluginEvent, PluginImporter, ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport,
     RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, ResolvedPermissionProfile, ResolverDocument, ResolverIndex, ResolverLink,
-    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchBackendKind,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
-    TasksImporter, TasksQueryResult, TemplaterImporter, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
-    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
-    WatchReport,
+    RepairFtsReport, ResolvedPermissionProfile, SavedExport, SavedExportFormat,
+    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
+    ScanPhase, ScanProgress, ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport,
+    SearchSort, StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult,
+    TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase,
+    VectorIndexProgress, VectorIndexReport, VectorNeighborHit, VectorNeighborsReport,
+    VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
 };
 use zip::write::FileOptions;
 
@@ -7851,7 +7850,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query.as_deref(),
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
-                    )?;
+                    )
+                    .map_err(CliError::operation)?;
                     let transform_rules = build_content_transform_rules(
                         &transforms.exclude_callouts,
                         &transforms.exclude_headings,
@@ -7865,9 +7865,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &report,
                         read_filter.as_ref(),
                         transform_rules.as_deref(),
-                    )?;
-                    let payload =
-                        render_markdown_export_payload(&report, &prepared.notes, title.as_deref());
+                    )
+                    .map_err(CliError::operation)?;
+                    let payload = render_markdown_export_payload(&prepared.notes, title.as_deref());
                     let summary = MarkdownExportSummary {
                         path: path
                             .as_ref()
@@ -7887,7 +7887,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query.as_deref(),
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
-                    )?;
+                    )
+                    .map_err(CliError::operation)?;
                     let transform_rules = build_content_transform_rules(
                         &transforms.exclude_callouts,
                         &transforms.exclude_headings,
@@ -7901,8 +7902,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &report,
                         read_filter.as_ref(),
                         transform_rules.as_deref(),
-                    )?;
-                    let payload = render_json_export_payload(&report, &prepared.notes, *pretty)?;
+                    )
+                    .map_err(CliError::operation)?;
+                    let payload = render_json_export_payload(&report, &prepared.notes, *pretty)
+                        .map_err(CliError::operation)?;
                     let summary = JsonExportSummary {
                         path: path
                             .as_ref()
@@ -7917,10 +7920,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query.as_deref(),
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
-                    )?;
-                    let rows = query_export_rows(&report);
-                    let fields = query_export_fields();
-                    let payload = render_csv_export_payload(&rows, &fields)?;
+                    )
+                    .map_err(CliError::operation)?;
+                    let payload =
+                        render_csv_export_payload(&report).map_err(CliError::operation)?;
                     let summary = CsvExportSummary {
                         path: path
                             .as_ref()
@@ -7950,7 +7953,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query.as_deref(),
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
-                    )?;
+                    )
+                    .map_err(CliError::operation)?;
                     let transform_rules = build_content_transform_rules(
                         &transforms.exclude_callouts,
                         &transforms.exclude_headings,
@@ -7964,7 +7968,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &report,
                         read_filter.as_ref(),
                         transform_rules.as_deref(),
-                    )?;
+                    )
+                    .map_err(CliError::operation)?;
                     let summary = write_epub_export(
                         &paths,
                         path,
@@ -7996,7 +8001,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query.as_deref(),
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
-                    )?;
+                    )
+                    .map_err(CliError::operation)?;
                     let transform_rules = build_content_transform_rules(
                         &transforms.exclude_callouts,
                         &transforms.exclude_headings,
@@ -8010,9 +8016,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &report,
                         read_filter.as_ref(),
                         transform_rules.as_deref(),
-                    )?;
+                    )
+                    .map_err(CliError::operation)?;
                     let summary =
-                        write_zip_export(&paths, path, &report, &prepared.notes, &prepared.links)?;
+                        write_zip_export(&paths, path, &report, &prepared.notes, &prepared.links)
+                            .map_err(CliError::operation)?;
                     match cli.output {
                         OutputFormat::Human | OutputFormat::Markdown => {
                             println!("{}", summary.path);
@@ -8027,9 +8035,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query.query.as_deref(),
                         query.query_json.as_deref(),
                         read_filter.as_ref(),
-                    )?;
-                    let notes = load_exported_notes(&paths, &report)?;
-                    let links = load_export_links(&paths, &notes)?;
+                    )
+                    .map_err(CliError::operation)?;
+                    let notes =
+                        load_exported_notes(&paths, &report).map_err(CliError::operation)?;
+                    let links = load_export_links(&paths, &notes).map_err(CliError::operation)?;
                     let summary = write_sqlite_export(path, &report, &notes, &links)
                         .map_err(CliError::operation)?;
                     match cli.output {
@@ -13887,73 +13897,12 @@ fn print_static_search_index_report(
 // export targets
 // ────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
-struct PreparedExportData {
-    notes: Vec<ExportedNoteDocument>,
-    links: Vec<ExportLinkRecord>,
-}
-
-#[derive(Debug, Clone)]
-struct ParsedExportedNoteDocument {
-    note: NoteRecord,
-    content: String,
-    parsed: vulcan_core::ParsedDocument,
-}
-
-#[derive(Debug, Clone)]
-struct ExportResolvedDocument {
-    path: String,
-    extension: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct JsonNoteExportDocument {
-    document_path: String,
-    file_name: String,
-    file_ext: String,
-    file_mtime: i64,
-    file_size: i64,
-    tags: Vec<String>,
-    links: Vec<String>,
-    inlinks: Vec<String>,
-    aliases: Vec<String>,
-    frontmatter: Value,
-    properties: Value,
-    inline_expressions: Vec<EvaluatedInlineExpression>,
-    content: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct JsonNotesExportReport {
-    query: QueryAst,
-    result_count: usize,
-    notes: Vec<JsonNoteExportDocument>,
-}
-
 #[derive(Debug, Clone, Serialize)]
 struct GraphExportSummary {
     path: String,
     format: String,
     nodes: usize,
     edges: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct MarkdownExportSummary {
-    path: String,
-    result_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct CsvExportSummary {
-    path: String,
-    result_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct JsonExportSummary {
-    path: String,
-    result_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -14015,21 +13964,6 @@ struct EpubExportOptions<'a> {
     backlinks: bool,
     frontmatter: bool,
     toc_style: EpubTocStyle,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ZipExportSummary {
-    path: String,
-    result_count: usize,
-    attachment_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ZipExportManifest {
-    query: QueryAst,
-    result_count: usize,
-    notes: Vec<String>,
-    attachments: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -14100,668 +14034,6 @@ enum EpubNavNode {
 struct EpubMarkdownReplacement {
     range: std::ops::Range<usize>,
     replacement: String,
-}
-
-fn resolve_export_query_ast(
-    query: Option<&str>,
-    query_json: Option<&str>,
-) -> Result<QueryAst, CliError> {
-    match (query, query_json) {
-        (Some(_), Some(_)) => Err(CliError::operation(
-            "provide either a note query DSL argument or --query-json, not both",
-        )),
-        (Some(query), None) => QueryAst::from_dsl(query).map_err(CliError::operation),
-        (None, Some(query_json)) => QueryAst::from_json(query_json).map_err(CliError::operation),
-        (None, None) => Err(CliError::operation(
-            "provide a note query DSL argument or --query-json payload",
-        )),
-    }
-}
-
-fn execute_export_query(
-    paths: &VaultPaths,
-    query: Option<&str>,
-    query_json: Option<&str>,
-    filter: Option<&PermissionFilter>,
-) -> Result<QueryReport, CliError> {
-    let ast = resolve_export_query_ast(query, query_json)?;
-    execute_query_report_with_filter(paths, ast, filter).map_err(CliError::operation)
-}
-
-fn load_exported_notes(
-    paths: &VaultPaths,
-    report: &QueryReport,
-) -> Result<Vec<ExportedNoteDocument>, CliError> {
-    report
-        .notes
-        .iter()
-        .map(|note| {
-            let content = fs::read_to_string(paths.vault_root().join(&note.document_path))
-                .map_err(CliError::operation)?;
-            Ok(ExportedNoteDocument {
-                note: note.clone(),
-                content,
-            })
-        })
-        .collect()
-}
-
-fn synthetic_export_file_link(path: &str, extension: &str) -> String {
-    if extension.eq_ignore_ascii_case("md") {
-        format!("[[{}]]", path.strip_suffix(".md").unwrap_or(path))
-    } else {
-        format!("[[{path}]]")
-    }
-}
-
-fn render_export_link_kind(kind: LinkKind) -> String {
-    match kind {
-        LinkKind::Wikilink => "wikilink",
-        LinkKind::Markdown => "markdown",
-        LinkKind::Embed => "embed",
-        LinkKind::External => "external",
-    }
-    .to_string()
-}
-
-fn render_export_origin_context(origin: OriginContext) -> String {
-    match origin {
-        OriginContext::Body => "body",
-        OriginContext::Frontmatter => "frontmatter",
-        OriginContext::Property => "property",
-    }
-    .to_string()
-}
-
-fn load_export_resolution_documents(
-    paths: &VaultPaths,
-) -> Result<(ResolverIndex, HashMap<String, ExportResolvedDocument>), CliError> {
-    let connection = Connection::open(paths.cache_db()).map_err(CliError::operation)?;
-
-    let mut alias_statement = connection
-        .prepare("SELECT document_id, alias_text FROM aliases ORDER BY document_id, alias_text")
-        .map_err(CliError::operation)?;
-    let alias_rows = alias_statement
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .map_err(CliError::operation)?;
-    let mut aliases_by_document = HashMap::<String, Vec<String>>::new();
-    for row in alias_rows {
-        let (document_id, alias_text) = row.map_err(CliError::operation)?;
-        aliases_by_document
-            .entry(document_id)
-            .or_default()
-            .push(alias_text);
-    }
-
-    let mut document_statement = connection
-        .prepare("SELECT id, path, filename, extension FROM documents ORDER BY path")
-        .map_err(CliError::operation)?;
-    let document_rows = document_statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })
-        .map_err(CliError::operation)?;
-
-    let mut resolver_documents = Vec::new();
-    let mut documents_by_id = HashMap::new();
-    for row in document_rows {
-        let (id, path, filename, extension) = row.map_err(CliError::operation)?;
-        resolver_documents.push(ResolverDocument {
-            id: id.clone(),
-            path: path.clone(),
-            filename,
-            aliases: aliases_by_document.remove(&id).unwrap_or_default(),
-        });
-        documents_by_id.insert(id, ExportResolvedDocument { path, extension });
-    }
-
-    Ok((ResolverIndex::build(&resolver_documents), documents_by_id))
-}
-
-fn derive_export_links_from_notes(
-    paths: &VaultPaths,
-    notes: &[ParsedExportedNoteDocument],
-    resolution_mode: LinkResolutionMode,
-) -> Result<Vec<ExportLinkRecord>, CliError> {
-    let (resolver_index, documents_by_id) = load_export_resolution_documents(paths)?;
-    let mut links = Vec::new();
-
-    for note in notes {
-        for link in &note.parsed.links {
-            let resolution = resolver_index.resolve(
-                &ResolverLink {
-                    source_document_id: note.note.document_id.clone(),
-                    source_path: note.note.document_path.clone(),
-                    target_path_candidate: link.target_path_candidate.clone(),
-                    link_kind: link.link_kind,
-                },
-                resolution_mode,
-            );
-            let resolved = resolution
-                .resolved_target_id
-                .as_deref()
-                .and_then(|id| documents_by_id.get(id));
-            let byte_offset = i64::try_from(link.byte_offset).map_err(|_| {
-                CliError::operation(format!(
-                    "link byte offset overflow in {}",
-                    note.note.document_path
-                ))
-            })?;
-
-            links.push(ExportLinkRecord {
-                source_document_path: note.note.document_path.clone(),
-                raw_text: link.raw_text.clone(),
-                link_kind: render_export_link_kind(link.link_kind),
-                display_text: link.display_text.clone(),
-                target_path_candidate: link.target_path_candidate.clone(),
-                target_heading: link.target_heading.clone(),
-                target_block: link.target_block.clone(),
-                resolved_target_path: resolved.map(|document| document.path.clone()),
-                origin_context: render_export_origin_context(link.origin_context),
-                byte_offset,
-                resolved_target_extension: resolved.map(|document| document.extension.clone()),
-            });
-        }
-    }
-
-    links.sort_by(|left, right| {
-        left.source_document_path
-            .cmp(&right.source_document_path)
-            .then(left.byte_offset.cmp(&right.byte_offset))
-    });
-    Ok(links)
-}
-
-fn note_targets_by_source(links: &[ExportLinkRecord]) -> HashMap<String, BTreeSet<String>> {
-    let mut targets = HashMap::<String, BTreeSet<String>>::new();
-    for link in links {
-        if link.link_kind != "wikilink" {
-            continue;
-        }
-        if !link
-            .resolved_target_extension
-            .as_deref()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
-        {
-            continue;
-        }
-        let Some(target_path) = link.resolved_target_path.as_ref() else {
-            continue;
-        };
-        targets
-            .entry(link.source_document_path.clone())
-            .or_default()
-            .insert(target_path.clone());
-    }
-    targets
-}
-
-fn transformed_note_links_by_source(links: &[ExportLinkRecord]) -> HashMap<String, Vec<String>> {
-    let mut grouped = HashMap::<String, Vec<(i64, String)>>::new();
-    for link in links {
-        if link.link_kind != "wikilink" {
-            continue;
-        }
-        grouped
-            .entry(link.source_document_path.clone())
-            .or_default()
-            .push((link.byte_offset, link.raw_text.clone()));
-    }
-
-    grouped
-        .into_iter()
-        .map(|(path, mut values)| {
-            values.sort_by_key(|(offset, _)| *offset);
-            (
-                path,
-                values
-                    .into_iter()
-                    .map(|(_, raw_text)| raw_text)
-                    .collect::<Vec<_>>(),
-            )
-        })
-        .collect()
-}
-
-fn content_transform_rules_have_effective_transforms(rules: &[ContentTransformRuleConfig]) -> bool {
-    rules.iter().any(|rule| !rule.is_empty())
-}
-
-fn prepare_export_data(
-    paths: &VaultPaths,
-    report: &QueryReport,
-    read_filter: Option<&PermissionFilter>,
-    transform_rules: Option<&[ContentTransformRuleConfig]>,
-) -> Result<PreparedExportData, CliError> {
-    let notes = load_exported_notes(paths, report)?;
-    let Some(transform_rules) =
-        transform_rules.filter(|rules| content_transform_rules_have_effective_transforms(rules))
-    else {
-        let links = load_export_links(paths, &notes)?;
-        return Ok(PreparedExportData { notes, links });
-    };
-    let effective_transforms =
-        build_effective_content_transforms(paths, report, read_filter, transform_rules)?;
-    if effective_transforms.is_empty() {
-        let links = load_export_links(paths, &notes)?;
-        return Ok(PreparedExportData { notes, links });
-    }
-
-    prepare_transformed_export_data(paths, notes, &effective_transforms)
-}
-
-fn prepare_transformed_export_data(
-    paths: &VaultPaths,
-    notes: Vec<ExportedNoteDocument>,
-    effective_transforms: &HashMap<String, ContentTransformConfig>,
-) -> Result<PreparedExportData, CliError> {
-    let original_links = load_export_links(paths, &notes)?;
-    let config = load_vault_config(paths).config;
-    let parsed_notes = notes
-        .into_iter()
-        .map(|entry| {
-            let content = match effective_transforms.get(&entry.note.document_path) {
-                Some(transforms) => apply_content_transforms(&entry.content, transforms),
-                None => entry.content,
-            };
-            let parsed = parse_document(&content, &config);
-            ParsedExportedNoteDocument {
-                note: entry.note,
-                content,
-                parsed,
-            }
-        })
-        .collect::<Vec<_>>();
-    let transformed_links =
-        derive_export_links_from_notes(paths, &parsed_notes, config.link_resolution)?;
-    let transformed_targets = note_targets_by_source(&transformed_links);
-    let original_targets = note_targets_by_source(&original_links);
-    let transformed_note_links = transformed_note_links_by_source(&transformed_links);
-    let (mut exported_notes, note_indexes) =
-        build_transformed_exported_notes(parsed_notes, &transformed_note_links, &config)?;
-    apply_transformed_backlink_adjustments(
-        &mut exported_notes,
-        &note_indexes,
-        &original_targets,
-        &transformed_targets,
-    );
-    evaluate_transformed_export_inline_expressions(paths, &mut exported_notes)?;
-
-    Ok(PreparedExportData {
-        notes: exported_notes,
-        links: transformed_links,
-    })
-}
-
-fn build_transformed_exported_notes(
-    parsed_notes: Vec<ParsedExportedNoteDocument>,
-    transformed_note_links: &HashMap<String, Vec<String>>,
-    config: &vulcan_core::VaultConfig,
-) -> Result<(Vec<ExportedNoteDocument>, HashMap<String, usize>), CliError> {
-    let mut exported_notes = Vec::with_capacity(parsed_notes.len());
-    let mut note_indexes = HashMap::<String, usize>::new();
-
-    for parsed_note in parsed_notes {
-        let mut note = parsed_note.note;
-        note.tags = parsed_note
-            .parsed
-            .tags
-            .iter()
-            .map(|tag| tag.tag_text.clone())
-            .collect();
-        note.links = transformed_note_links
-            .get(&note.document_path)
-            .cloned()
-            .unwrap_or_default();
-        note.aliases.clone_from(&parsed_note.parsed.aliases);
-        note.frontmatter = transformed_export_frontmatter(&parsed_note.parsed);
-        note.properties = transformed_export_properties(&parsed_note.parsed, config)?;
-        note.raw_inline_expressions = parsed_note
-            .parsed
-            .inline_expressions
-            .iter()
-            .map(|expression| expression.expression.clone())
-            .collect();
-        note.inline_expressions.clear();
-
-        note_indexes.insert(note.document_path.clone(), exported_notes.len());
-        exported_notes.push(ExportedNoteDocument {
-            note,
-            content: parsed_note.content,
-        });
-    }
-
-    Ok((exported_notes, note_indexes))
-}
-
-fn apply_transformed_backlink_adjustments(
-    exported_notes: &mut [ExportedNoteDocument],
-    note_indexes: &HashMap<String, usize>,
-    original_targets: &HashMap<String, BTreeSet<String>>,
-    transformed_targets: &HashMap<String, BTreeSet<String>>,
-) {
-    let backlink_adjustments = exported_notes
-        .iter()
-        .map(|export_note| {
-            let source_path = export_note.note.document_path.clone();
-            let source_link = synthetic_export_file_link(&source_path, &export_note.note.file_ext);
-            let original = original_targets
-                .get(&source_path)
-                .cloned()
-                .unwrap_or_default();
-            let transformed = transformed_targets
-                .get(&source_path)
-                .cloned()
-                .unwrap_or_default();
-            (source_link, original, transformed)
-        })
-        .collect::<Vec<_>>();
-
-    for (source_link, original, transformed) in backlink_adjustments {
-        for target in original.difference(&transformed) {
-            let Some(&target_index) = note_indexes.get(target) else {
-                continue;
-            };
-            exported_notes[target_index]
-                .note
-                .inlinks
-                .retain(|candidate| candidate != &source_link);
-        }
-        for target in transformed.difference(&original) {
-            let Some(&target_index) = note_indexes.get(target) else {
-                continue;
-            };
-            if !exported_notes[target_index]
-                .note
-                .inlinks
-                .iter()
-                .any(|candidate| candidate == &source_link)
-            {
-                exported_notes[target_index]
-                    .note
-                    .inlinks
-                    .push(source_link.clone());
-            }
-        }
-    }
-}
-
-fn evaluate_transformed_export_inline_expressions(
-    paths: &VaultPaths,
-    exported_notes: &mut [ExportedNoteDocument],
-) -> Result<(), CliError> {
-    let mut note_lookup = load_note_index(paths).map_err(CliError::operation)?;
-    for export_note in exported_notes.iter() {
-        note_lookup.insert(export_note.note.file_name.clone(), export_note.note.clone());
-    }
-    for export_note in exported_notes.iter_mut() {
-        export_note.note.inline_expressions =
-            evaluate_note_inline_expressions(&export_note.note, &note_lookup);
-    }
-    Ok(())
-}
-
-fn transformed_export_frontmatter(parsed: &vulcan_core::ParsedDocument) -> Value {
-    parsed.frontmatter.as_ref().map_or_else(
-        || Value::Object(Map::new()),
-        |frontmatter| match serde_json::to_value(frontmatter) {
-            Ok(Value::Object(object)) => Value::Object(object),
-            Ok(_) | Err(_) => Value::Object(Map::new()),
-        },
-    )
-}
-
-fn transformed_export_properties(
-    parsed: &vulcan_core::ParsedDocument,
-    config: &vulcan_core::VaultConfig,
-) -> Result<Value, CliError> {
-    let Some(indexed) = extract_indexed_properties(parsed, config).map_err(CliError::operation)?
-    else {
-        return Ok(Value::Object(Map::new()));
-    };
-
-    serde_json::from_str(&indexed.canonical_json).map_err(CliError::operation)
-}
-
-fn build_effective_content_transforms(
-    paths: &VaultPaths,
-    report: &QueryReport,
-    read_filter: Option<&PermissionFilter>,
-    transform_rules: &[ContentTransformRuleConfig],
-) -> Result<HashMap<String, ContentTransformConfig>, CliError> {
-    let exported_paths = report
-        .notes
-        .iter()
-        .map(|note| note.document_path.clone())
-        .collect::<HashSet<_>>();
-    let mut effective = HashMap::<String, ContentTransformConfig>::new();
-
-    for rule in transform_rules.iter().filter(|rule| !rule.is_empty()) {
-        let matched_paths = if rule.query.is_none() && rule.query_json.is_none() {
-            exported_paths.iter().cloned().collect::<Vec<_>>()
-        } else {
-            execute_export_query(
-                paths,
-                rule.query.as_deref(),
-                rule.query_json.as_deref(),
-                read_filter,
-            )?
-            .notes
-            .into_iter()
-            .map(|note| note.document_path)
-            .filter(|path| exported_paths.contains(path))
-            .collect::<Vec<_>>()
-        };
-
-        for path in matched_paths {
-            effective
-                .entry(path)
-                .or_default()
-                .merge_in(&rule.transforms);
-        }
-    }
-
-    Ok(effective)
-}
-
-fn json_note_export_report(
-    report: &QueryReport,
-    notes: &[ExportedNoteDocument],
-) -> JsonNotesExportReport {
-    JsonNotesExportReport {
-        query: report.query.clone(),
-        result_count: notes.len(),
-        notes: notes
-            .iter()
-            .map(|entry| JsonNoteExportDocument {
-                document_path: entry.note.document_path.clone(),
-                file_name: entry.note.file_name.clone(),
-                file_ext: entry.note.file_ext.clone(),
-                file_mtime: entry.note.file_mtime,
-                file_size: entry.note.file_size,
-                tags: entry.note.tags.clone(),
-                links: entry.note.links.clone(),
-                inlinks: entry.note.inlinks.clone(),
-                aliases: entry.note.aliases.clone(),
-                frontmatter: entry.note.frontmatter.clone(),
-                properties: entry.note.properties.clone(),
-                inline_expressions: entry.note.inline_expressions.clone(),
-                content: entry.content.clone(),
-            })
-            .collect(),
-    }
-}
-
-fn render_json_export_payload(
-    report: &QueryReport,
-    notes: &[ExportedNoteDocument],
-    pretty: bool,
-) -> Result<String, CliError> {
-    let payload = json_note_export_report(report, notes);
-    if pretty {
-        serde_json::to_string_pretty(&payload).map_err(CliError::operation)
-    } else {
-        serde_json::to_string(&payload).map_err(CliError::operation)
-    }
-}
-
-fn render_markdown_export_payload(
-    _report: &QueryReport,
-    notes: &[ExportedNoteDocument],
-    title: Option<&str>,
-) -> String {
-    if notes.len() == 1 && title.is_none() {
-        let mut rendered = notes[0].content.clone();
-        if !rendered.ends_with('\n') {
-            rendered.push('\n');
-        }
-        return rendered;
-    }
-
-    let mut rendered = String::new();
-    if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
-        rendered.push_str("# ");
-        rendered.push_str(title);
-        rendered.push_str("\n\n");
-    }
-
-    for (index, note) in notes.iter().enumerate() {
-        if index > 0 {
-            rendered.push_str("\n\n---\n\n");
-        }
-        rendered.push_str("## ");
-        rendered.push_str(&note.note.document_path);
-        rendered.push_str("\n\n");
-        rendered.push_str(&note.content);
-        if !note.content.ends_with('\n') {
-            rendered.push('\n');
-        }
-    }
-
-    rendered
-}
-
-fn query_export_rows(report: &QueryReport) -> Vec<Value> {
-    let notes = report.notes.iter().collect::<Vec<_>>();
-    query_report_rows(report, &notes)
-}
-
-fn query_export_fields() -> Vec<String> {
-    [
-        "document_path",
-        "file_name",
-        "file_ext",
-        "file_mtime",
-        "tags",
-        "starred",
-        "properties",
-        "inline_expressions",
-        "query",
-    ]
-    .into_iter()
-    .map(ToOwned::to_owned)
-    .collect()
-}
-
-fn render_csv_export_payload(rows: &[Value], fields: &[String]) -> Result<String, CliError> {
-    let mut writer = csv::Writer::from_writer(Vec::new());
-    writer
-        .write_record(fields.iter().map(String::as_str))
-        .map_err(CliError::operation)?;
-    for row in rows {
-        let selected = select_fields(row.clone(), Some(fields));
-        let record = fields
-            .iter()
-            .map(|field| csv_cell_for_value(selected.get(field)))
-            .collect::<Vec<_>>();
-        writer.write_record(record).map_err(CliError::operation)?;
-    }
-    writer.flush().map_err(CliError::operation)?;
-    let bytes = writer.into_inner().map_err(CliError::operation)?;
-    String::from_utf8(bytes)
-        .map_err(|error| CliError::operation(format!("csv export was not valid UTF-8: {error}")))
-}
-
-fn load_export_links(
-    paths: &VaultPaths,
-    notes: &[ExportedNoteDocument],
-) -> Result<Vec<ExportLinkRecord>, CliError> {
-    if notes.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let document_ids = notes
-        .iter()
-        .map(|entry| entry.note.document_id.as_str())
-        .collect::<Vec<_>>();
-    let placeholders = document_ids
-        .iter()
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "SELECT
-            source.path,
-            links.raw_text,
-            links.link_kind,
-            links.display_text,
-            links.target_path_candidate,
-            links.target_heading,
-            links.target_block,
-            target.path,
-            links.origin_context,
-            links.byte_offset,
-            target.extension
-         FROM links
-         JOIN documents AS source ON source.id = links.source_document_id
-         LEFT JOIN documents AS target ON target.id = links.resolved_target_id
-         WHERE links.source_document_id IN ({placeholders})
-         ORDER BY source.path ASC, links.byte_offset ASC"
-    );
-
-    let connection = Connection::open(paths.cache_db()).map_err(CliError::operation)?;
-    let mut statement = connection.prepare(&sql).map_err(CliError::operation)?;
-    let rows = statement
-        .query_map(rusqlite::params_from_iter(document_ids.iter()), |row| {
-            Ok(ExportLinkRecord {
-                source_document_path: row.get(0)?,
-                raw_text: row.get(1)?,
-                link_kind: row.get(2)?,
-                display_text: row.get(3)?,
-                target_path_candidate: row.get(4)?,
-                target_heading: row.get(5)?,
-                target_block: row.get(6)?,
-                resolved_target_path: row.get(7)?,
-                origin_context: row.get(8)?,
-                byte_offset: row.get(9)?,
-                resolved_target_extension: row.get(10)?,
-            })
-        })
-        .map_err(CliError::operation)?;
-
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(CliError::operation)
-}
-
-fn collect_export_attachment_paths(links: &[ExportLinkRecord]) -> Vec<String> {
-    let mut attachments = links
-        .iter()
-        .filter_map(|link| {
-            let extension = link.resolved_target_extension.as_deref()?;
-            (!matches!(extension, "md" | "base"))
-                .then(|| link.resolved_target_path.clone())
-                .flatten()
-        })
-        .collect::<BTreeSet<_>>();
-    attachments.retain(|path| !path.trim().is_empty());
-    attachments.into_iter().collect()
 }
 
 fn extension_suffix(path: &str) -> String {
@@ -15129,9 +14401,11 @@ fn run_markdown_export_profile(
         request.query,
         request.query_json,
         request.read_filter,
-    )?;
-    let prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)?;
-    let payload = render_markdown_export_payload(&report, &prepared.notes, title);
+    )
+    .map_err(CliError::operation)?;
+    let prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)
+        .map_err(CliError::operation)?;
+    let payload = render_markdown_export_payload(&prepared.notes, title);
     let summary = MarkdownExportSummary {
         path: output_path.display().to_string(),
         result_count: prepared.notes.len(),
@@ -15151,9 +14425,12 @@ fn run_json_export_profile(
         request.query,
         request.query_json,
         request.read_filter,
-    )?;
-    let prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)?;
-    let payload = render_json_export_payload(&report, &prepared.notes, pretty)?;
+    )
+    .map_err(CliError::operation)?;
+    let prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)
+        .map_err(CliError::operation)?;
+    let payload = render_json_export_payload(&report, &prepared.notes, pretty)
+        .map_err(CliError::operation)?;
     let summary = JsonExportSummary {
         path: output_path.display().to_string(),
         result_count: prepared.notes.len(),
@@ -15169,10 +14446,9 @@ fn run_csv_export_profile(
     query_json: Option<&str>,
     read_filter: Option<&PermissionFilter>,
 ) -> Result<Value, CliError> {
-    let report = execute_export_query(paths, query, query_json, read_filter)?;
-    let rows = query_export_rows(&report);
-    let fields = query_export_fields();
-    let payload = render_csv_export_payload(&rows, &fields)?;
+    let report =
+        execute_export_query(paths, query, query_json, read_filter).map_err(CliError::operation)?;
+    let payload = render_csv_export_payload(&report).map_err(CliError::operation)?;
     let summary = CsvExportSummary {
         path: output_path.display().to_string(),
         result_count: report.notes.len(),
@@ -15214,13 +14490,15 @@ fn run_epub_export_profile(
     read_filter: Option<&PermissionFilter>,
     profile: &ExportProfileConfig,
 ) -> Result<Value, CliError> {
-    let report = execute_export_query(paths, query, query_json, read_filter)?;
+    let report =
+        execute_export_query(paths, query, query_json, read_filter).map_err(CliError::operation)?;
     let prepared = prepare_export_data(
         paths,
         &report,
         read_filter,
         profile.content_transform_rules.as_deref(),
-    )?;
+    )
+    .map_err(CliError::operation)?;
     let summary = write_epub_export(
         paths,
         output_path,
@@ -15248,15 +14526,18 @@ fn run_zip_export_profile(
         request.query,
         request.query_json,
         request.read_filter,
-    )?;
-    let prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)?;
+    )
+    .map_err(CliError::operation)?;
+    let prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)
+        .map_err(CliError::operation)?;
     let summary = write_zip_export(
         paths,
         output_path,
         &report,
         &prepared.notes,
         &prepared.links,
-    )?;
+    )
+    .map_err(CliError::operation)?;
     finish_export_profile_binary(output, &summary.path, &summary)
 }
 
@@ -15268,9 +14549,10 @@ fn run_sqlite_export_profile(
     query_json: Option<&str>,
     read_filter: Option<&PermissionFilter>,
 ) -> Result<Value, CliError> {
-    let report = execute_export_query(paths, query, query_json, read_filter)?;
-    let notes = load_exported_notes(paths, &report)?;
-    let links = load_export_links(paths, &notes)?;
+    let report =
+        execute_export_query(paths, query, query_json, read_filter).map_err(CliError::operation)?;
+    let notes = load_exported_notes(paths, &report).map_err(CliError::operation)?;
+    let links = load_export_links(paths, &notes).map_err(CliError::operation)?;
     let summary =
         write_sqlite_export(output_path, &report, &notes, &links).map_err(CliError::operation)?;
     finish_export_profile_binary(output, &summary.path, &summary)
@@ -17072,71 +16354,6 @@ fn write_graph_export(
         Some(summary) => write_text_export(output, path, &payload, summary),
         None => write_text_export(output, path, &payload, &serde_json::json!({})),
     }
-}
-
-fn write_zip_export(
-    paths: &VaultPaths,
-    output_path: &Path,
-    report: &QueryReport,
-    notes: &[ExportedNoteDocument],
-    links: &[ExportLinkRecord],
-) -> Result<ZipExportSummary, CliError> {
-    prepare_export_output_path(output_path)?;
-
-    let attachments = collect_export_attachment_paths(links);
-    let file = fs::File::create(output_path).map_err(CliError::operation)?;
-    let mut writer = zip::ZipWriter::new(file);
-    let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
-
-    for note in notes {
-        writer
-            .start_file(&note.note.document_path, options)
-            .map_err(CliError::operation)?;
-        writer
-            .write_all(note.content.as_bytes())
-            .map_err(CliError::operation)?;
-    }
-
-    for attachment in &attachments {
-        writer
-            .start_file(attachment, options)
-            .map_err(CliError::operation)?;
-        let bytes = fs::read(paths.vault_root().join(attachment)).map_err(CliError::operation)?;
-        writer.write_all(&bytes).map_err(CliError::operation)?;
-    }
-
-    let notes_json = render_json_export_payload(report, notes, true)?;
-    writer
-        .start_file(".vulcan-export/notes.json", options)
-        .map_err(CliError::operation)?;
-    writer
-        .write_all(notes_json.as_bytes())
-        .map_err(CliError::operation)?;
-
-    let manifest = ZipExportManifest {
-        query: report.query.clone(),
-        result_count: notes.len(),
-        notes: notes
-            .iter()
-            .map(|entry| entry.note.document_path.clone())
-            .collect(),
-        attachments,
-    };
-    let manifest_json = serde_json::to_string_pretty(&manifest).map_err(CliError::operation)?;
-    writer
-        .start_file(".vulcan-export/manifest.json", options)
-        .map_err(CliError::operation)?;
-    writer
-        .write_all(manifest_json.as_bytes())
-        .map_err(CliError::operation)?;
-
-    writer.finish().map_err(CliError::operation)?;
-
-    Ok(ZipExportSummary {
-        path: output_path.display().to_string(),
-        result_count: notes.len(),
-        attachment_count: manifest.attachments.len(),
-    })
 }
 
 fn print_automation_run_report(

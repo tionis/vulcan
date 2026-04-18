@@ -10,6 +10,7 @@ default = ["js_runtime"]
 js_runtime = ["dep:rquickjs", "vulcan-core/js_runtime"]
 
 [dependencies]
+csv.workspace = true
 regex.workspace = true
 reqwest.workspace = true
 rusqlite.workspace = true
@@ -19,6 +20,7 @@ serde_json.workspace = true
 toml.workspace = true
 vulcan-core = { path = "../vulcan-core", default-features = false }
 rquickjs = { workspace = true, optional = true }
+zip.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

@@ -2784,6 +2784,7 @@ checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 name = "vulcan-app"
 version = "0.1.0"
 dependencies = [
+ "csv",
  "regex",
  "reqwest",
  "rquickjs",
@@ -2794,6 +2795,7 @@ dependencies = [
  "tempfile",
  "toml",
  "vulcan-core",
+ "zip",
 ]
 
 [[package]]

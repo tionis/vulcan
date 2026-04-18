@@ -5,19 +5,30 @@ use regex::Regex;
 use rusqlite::Connection;
 use serde::Serialize;
 use serde_json::Value;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use toml::Value as TomlValue;
 use vulcan_core::config::{
     ExportEpubTocStyleConfig, ExportGraphFormatConfig, ExportProfileConfig, ExportProfileFormat,
+    LinkResolutionMode, VaultConfig,
 };
+use vulcan_core::content_transforms::apply_content_transforms;
 use vulcan_core::content_transforms::{
     ContentReplacementRuleConfig, ContentTransformConfig, ContentTransformRuleConfig,
 };
+use vulcan_core::parser::{LinkKind, OriginContext};
+use vulcan_core::permissions::PermissionFilter;
+use vulcan_core::properties::load_note_index;
+use vulcan_core::properties::{evaluate_note_inline_expressions, extract_indexed_properties};
+use vulcan_core::resolver::{ResolverDocument, ResolverIndex, ResolverLink};
 use vulcan_core::{
-    ensure_vulcan_dir, load_vault_config, validate_vulcan_overrides_toml, ConfigDiagnostic,
-    NoteRecord, QueryReport, VaultPaths,
+    ensure_vulcan_dir, execute_query_report_with_filter, load_vault_config, parse_document,
+    validate_vulcan_overrides_toml, ConfigDiagnostic, EvaluatedInlineExpression, NoteRecord,
+    ParsedDocument, QueryAst, QueryReport, VaultPaths,
 };
+use zip::write::FileOptions;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ExportProfileListEntry {
@@ -194,6 +205,833 @@ struct ExportProfilePersistOutcome {
     updated: bool,
     diagnostics: Vec<ConfigDiagnostic>,
     changed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PreparedExportData {
+    pub notes: Vec<ExportedNoteDocument>,
+    pub links: Vec<ExportLinkRecord>,
+}
+
+#[derive(Debug, Clone)]
+struct ParsedExportedNoteDocument {
+    note: NoteRecord,
+    content: String,
+    parsed: ParsedDocument,
+}
+
+#[derive(Debug, Clone)]
+struct ExportResolvedDocument {
+    path: String,
+    extension: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonNoteExportDocument {
+    pub document_path: String,
+    pub file_name: String,
+    pub file_ext: String,
+    pub file_mtime: i64,
+    pub file_size: i64,
+    pub tags: Vec<String>,
+    pub links: Vec<String>,
+    pub inlinks: Vec<String>,
+    pub aliases: Vec<String>,
+    pub frontmatter: Value,
+    pub properties: Value,
+    pub inline_expressions: Vec<EvaluatedInlineExpression>,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct JsonNotesExportReport {
+    pub query: QueryAst,
+    pub result_count: usize,
+    pub notes: Vec<JsonNoteExportDocument>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MarkdownExportSummary {
+    pub path: String,
+    pub result_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CsvExportSummary {
+    pub path: String,
+    pub result_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct JsonExportSummary {
+    pub path: String,
+    pub result_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ZipExportSummary {
+    pub path: String,
+    pub result_count: usize,
+    pub attachment_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ZipExportManifest {
+    pub query: QueryAst,
+    pub result_count: usize,
+    pub notes: Vec<String>,
+    pub attachments: Vec<String>,
+}
+
+fn resolve_export_query_ast(
+    query: Option<&str>,
+    query_json: Option<&str>,
+) -> Result<QueryAst, AppError> {
+    match (query, query_json) {
+        (Some(_), Some(_)) => Err(AppError::operation(
+            "provide either a note query DSL argument or --query-json, not both",
+        )),
+        (Some(query), None) => QueryAst::from_dsl(query).map_err(AppError::operation),
+        (None, Some(query_json)) => QueryAst::from_json(query_json).map_err(AppError::operation),
+        (None, None) => Err(AppError::operation(
+            "provide a note query DSL argument or --query-json payload",
+        )),
+    }
+}
+
+pub fn execute_export_query(
+    paths: &VaultPaths,
+    query: Option<&str>,
+    query_json: Option<&str>,
+    filter: Option<&PermissionFilter>,
+) -> Result<QueryReport, AppError> {
+    let ast = resolve_export_query_ast(query, query_json)?;
+    execute_query_report_with_filter(paths, ast, filter).map_err(AppError::operation)
+}
+
+pub fn load_exported_notes(
+    paths: &VaultPaths,
+    report: &QueryReport,
+) -> Result<Vec<ExportedNoteDocument>, AppError> {
+    report
+        .notes
+        .iter()
+        .map(|note| {
+            let content = fs::read_to_string(paths.vault_root().join(&note.document_path))
+                .map_err(AppError::operation)?;
+            Ok(ExportedNoteDocument {
+                note: note.clone(),
+                content,
+            })
+        })
+        .collect()
+}
+
+fn synthetic_export_file_link(path: &str, extension: &str) -> String {
+    if extension.eq_ignore_ascii_case("md") {
+        format!("[[{}]]", path.strip_suffix(".md").unwrap_or(path))
+    } else {
+        format!("[[{path}]]")
+    }
+}
+
+fn render_export_link_kind(kind: LinkKind) -> String {
+    match kind {
+        LinkKind::Wikilink => "wikilink",
+        LinkKind::Markdown => "markdown",
+        LinkKind::Embed => "embed",
+        LinkKind::External => "external",
+    }
+    .to_string()
+}
+
+fn render_export_origin_context(origin: OriginContext) -> String {
+    match origin {
+        OriginContext::Body => "body",
+        OriginContext::Frontmatter => "frontmatter",
+        OriginContext::Property => "property",
+    }
+    .to_string()
+}
+
+fn load_export_resolution_documents(
+    paths: &VaultPaths,
+) -> Result<(ResolverIndex, HashMap<String, ExportResolvedDocument>), AppError> {
+    let connection = Connection::open(paths.cache_db()).map_err(AppError::operation)?;
+
+    let mut alias_statement = connection
+        .prepare("SELECT document_id, alias_text FROM aliases ORDER BY document_id, alias_text")
+        .map_err(AppError::operation)?;
+    let alias_rows = alias_statement
+        .query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(AppError::operation)?;
+    let mut aliases_by_document = HashMap::<String, Vec<String>>::new();
+    for row in alias_rows {
+        let (document_id, alias_text) = row.map_err(AppError::operation)?;
+        aliases_by_document
+            .entry(document_id)
+            .or_default()
+            .push(alias_text);
+    }
+
+    let mut document_statement = connection
+        .prepare("SELECT id, path, filename, extension FROM documents ORDER BY path")
+        .map_err(AppError::operation)?;
+    let document_rows = document_statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(AppError::operation)?;
+
+    let mut resolver_documents = Vec::new();
+    let mut documents_by_id = HashMap::new();
+    for row in document_rows {
+        let (id, path, filename, extension) = row.map_err(AppError::operation)?;
+        resolver_documents.push(ResolverDocument {
+            id: id.clone(),
+            path: path.clone(),
+            filename,
+            aliases: aliases_by_document.remove(&id).unwrap_or_default(),
+        });
+        documents_by_id.insert(id, ExportResolvedDocument { path, extension });
+    }
+
+    Ok((ResolverIndex::build(&resolver_documents), documents_by_id))
+}
+
+pub fn load_export_links(
+    paths: &VaultPaths,
+    notes: &[ExportedNoteDocument],
+) -> Result<Vec<ExportLinkRecord>, AppError> {
+    if notes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let document_ids = notes
+        .iter()
+        .map(|entry| entry.note.document_id.as_str())
+        .collect::<Vec<_>>();
+    let placeholders = document_ids
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT
+            source.path,
+            links.raw_text,
+            links.link_kind,
+            links.display_text,
+            links.target_path_candidate,
+            links.target_heading,
+            links.target_block,
+            target.path,
+            links.origin_context,
+            links.byte_offset,
+            target.extension
+         FROM links
+         JOIN documents AS source ON source.id = links.source_document_id
+         LEFT JOIN documents AS target ON target.id = links.resolved_target_id
+         WHERE links.source_document_id IN ({placeholders})
+         ORDER BY source.path ASC, links.byte_offset ASC"
+    );
+
+    let connection = Connection::open(paths.cache_db()).map_err(AppError::operation)?;
+    let mut statement = connection.prepare(&sql).map_err(AppError::operation)?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(document_ids.iter()), |row| {
+            Ok(ExportLinkRecord {
+                source_document_path: row.get(0)?,
+                raw_text: row.get(1)?,
+                link_kind: row.get(2)?,
+                display_text: row.get(3)?,
+                target_path_candidate: row.get(4)?,
+                target_heading: row.get(5)?,
+                target_block: row.get(6)?,
+                resolved_target_path: row.get(7)?,
+                origin_context: row.get(8)?,
+                byte_offset: row.get(9)?,
+                resolved_target_extension: row.get(10)?,
+            })
+        })
+        .map_err(AppError::operation)?;
+
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(AppError::operation)
+}
+
+fn derive_export_links_from_notes(
+    paths: &VaultPaths,
+    notes: &[ParsedExportedNoteDocument],
+    resolution_mode: LinkResolutionMode,
+) -> Result<Vec<ExportLinkRecord>, AppError> {
+    let (resolver_index, documents_by_id) = load_export_resolution_documents(paths)?;
+    let mut links = Vec::new();
+
+    for note in notes {
+        for link in &note.parsed.links {
+            let resolution = resolver_index.resolve(
+                &ResolverLink {
+                    source_document_id: note.note.document_id.clone(),
+                    source_path: note.note.document_path.clone(),
+                    target_path_candidate: link.target_path_candidate.clone(),
+                    link_kind: link.link_kind,
+                },
+                resolution_mode,
+            );
+            let resolved = resolution
+                .resolved_target_id
+                .as_deref()
+                .and_then(|id| documents_by_id.get(id));
+            let byte_offset = i64::try_from(link.byte_offset).map_err(|_| {
+                AppError::operation(format!(
+                    "link byte offset overflow in {}",
+                    note.note.document_path
+                ))
+            })?;
+
+            links.push(ExportLinkRecord {
+                source_document_path: note.note.document_path.clone(),
+                raw_text: link.raw_text.clone(),
+                link_kind: render_export_link_kind(link.link_kind),
+                display_text: link.display_text.clone(),
+                target_path_candidate: link.target_path_candidate.clone(),
+                target_heading: link.target_heading.clone(),
+                target_block: link.target_block.clone(),
+                resolved_target_path: resolved.map(|document| document.path.clone()),
+                origin_context: render_export_origin_context(link.origin_context),
+                byte_offset,
+                resolved_target_extension: resolved.map(|document| document.extension.clone()),
+            });
+        }
+    }
+
+    links.sort_by(|left, right| {
+        left.source_document_path
+            .cmp(&right.source_document_path)
+            .then(left.byte_offset.cmp(&right.byte_offset))
+    });
+    Ok(links)
+}
+
+fn note_targets_by_source(links: &[ExportLinkRecord]) -> HashMap<String, BTreeSet<String>> {
+    let mut targets = HashMap::<String, BTreeSet<String>>::new();
+    for link in links {
+        if link.link_kind != "wikilink" {
+            continue;
+        }
+        if !link
+            .resolved_target_extension
+            .as_deref()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        {
+            continue;
+        }
+        let Some(target_path) = link.resolved_target_path.as_ref() else {
+            continue;
+        };
+        targets
+            .entry(link.source_document_path.clone())
+            .or_default()
+            .insert(target_path.clone());
+    }
+    targets
+}
+
+fn transformed_note_links_by_source(links: &[ExportLinkRecord]) -> HashMap<String, Vec<String>> {
+    let mut grouped = HashMap::<String, Vec<(i64, String)>>::new();
+    for link in links {
+        if link.link_kind != "wikilink" {
+            continue;
+        }
+        grouped
+            .entry(link.source_document_path.clone())
+            .or_default()
+            .push((link.byte_offset, link.raw_text.clone()));
+    }
+
+    grouped
+        .into_iter()
+        .map(|(path, mut values)| {
+            values.sort_by_key(|(offset, _)| *offset);
+            (
+                path,
+                values
+                    .into_iter()
+                    .map(|(_, raw_text)| raw_text)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect()
+}
+
+pub fn prepare_export_data(
+    paths: &VaultPaths,
+    report: &QueryReport,
+    read_filter: Option<&PermissionFilter>,
+    transform_rules: Option<&[ContentTransformRuleConfig]>,
+) -> Result<PreparedExportData, AppError> {
+    let notes = load_exported_notes(paths, report)?;
+    let Some(transform_rules) =
+        transform_rules.filter(|rules| content_transform_rules_have_effective_transforms(rules))
+    else {
+        let links = load_export_links(paths, &notes)?;
+        return Ok(PreparedExportData { notes, links });
+    };
+    let effective_transforms =
+        build_effective_content_transforms(paths, report, read_filter, transform_rules)?;
+    if effective_transforms.is_empty() {
+        let links = load_export_links(paths, &notes)?;
+        return Ok(PreparedExportData { notes, links });
+    }
+
+    prepare_transformed_export_data(paths, notes, &effective_transforms)
+}
+
+fn prepare_transformed_export_data(
+    paths: &VaultPaths,
+    notes: Vec<ExportedNoteDocument>,
+    effective_transforms: &HashMap<String, ContentTransformConfig>,
+) -> Result<PreparedExportData, AppError> {
+    let original_links = load_export_links(paths, &notes)?;
+    let config = load_vault_config(paths).config;
+    let parsed_notes = notes
+        .into_iter()
+        .map(|entry| {
+            let content = match effective_transforms.get(&entry.note.document_path) {
+                Some(transforms) => apply_content_transforms(&entry.content, transforms),
+                None => entry.content,
+            };
+            let parsed = parse_document(&content, &config);
+            ParsedExportedNoteDocument {
+                note: entry.note,
+                content,
+                parsed,
+            }
+        })
+        .collect::<Vec<_>>();
+    let transformed_links =
+        derive_export_links_from_notes(paths, &parsed_notes, config.link_resolution)?;
+    let transformed_targets = note_targets_by_source(&transformed_links);
+    let original_targets = note_targets_by_source(&original_links);
+    let transformed_note_links = transformed_note_links_by_source(&transformed_links);
+    let (mut exported_notes, note_indexes) =
+        build_transformed_exported_notes(parsed_notes, &transformed_note_links, &config)?;
+    apply_transformed_backlink_adjustments(
+        &mut exported_notes,
+        &note_indexes,
+        &original_targets,
+        &transformed_targets,
+    );
+    evaluate_transformed_export_inline_expressions(paths, &mut exported_notes)?;
+
+    Ok(PreparedExportData {
+        notes: exported_notes,
+        links: transformed_links,
+    })
+}
+
+fn build_transformed_exported_notes(
+    parsed_notes: Vec<ParsedExportedNoteDocument>,
+    transformed_note_links: &HashMap<String, Vec<String>>,
+    config: &VaultConfig,
+) -> Result<(Vec<ExportedNoteDocument>, HashMap<String, usize>), AppError> {
+    let mut exported_notes = Vec::with_capacity(parsed_notes.len());
+    let mut note_indexes = HashMap::<String, usize>::new();
+
+    for parsed_note in parsed_notes {
+        let mut note = parsed_note.note;
+        note.tags = parsed_note
+            .parsed
+            .tags
+            .iter()
+            .map(|tag| tag.tag_text.clone())
+            .collect();
+        note.links = transformed_note_links
+            .get(&note.document_path)
+            .cloned()
+            .unwrap_or_default();
+        note.aliases.clone_from(&parsed_note.parsed.aliases);
+        note.frontmatter = transformed_export_frontmatter(&parsed_note.parsed);
+        note.properties = transformed_export_properties(&parsed_note.parsed, config)?;
+        note.raw_inline_expressions = parsed_note
+            .parsed
+            .inline_expressions
+            .iter()
+            .map(|expression| expression.expression.clone())
+            .collect();
+        note.inline_expressions.clear();
+
+        note_indexes.insert(note.document_path.clone(), exported_notes.len());
+        exported_notes.push(ExportedNoteDocument {
+            note,
+            content: parsed_note.content,
+        });
+    }
+
+    Ok((exported_notes, note_indexes))
+}
+
+fn apply_transformed_backlink_adjustments(
+    exported_notes: &mut [ExportedNoteDocument],
+    note_indexes: &HashMap<String, usize>,
+    original_targets: &HashMap<String, BTreeSet<String>>,
+    transformed_targets: &HashMap<String, BTreeSet<String>>,
+) {
+    let backlink_adjustments = exported_notes
+        .iter()
+        .map(|export_note| {
+            let source_path = export_note.note.document_path.clone();
+            let source_link = synthetic_export_file_link(&source_path, &export_note.note.file_ext);
+            let original = original_targets
+                .get(&source_path)
+                .cloned()
+                .unwrap_or_default();
+            let transformed = transformed_targets
+                .get(&source_path)
+                .cloned()
+                .unwrap_or_default();
+            (source_link, original, transformed)
+        })
+        .collect::<Vec<_>>();
+
+    for (source_link, original, transformed) in backlink_adjustments {
+        for target in original.difference(&transformed) {
+            let Some(&target_index) = note_indexes.get(target) else {
+                continue;
+            };
+            exported_notes[target_index]
+                .note
+                .inlinks
+                .retain(|candidate| candidate != &source_link);
+        }
+        for target in transformed.difference(&original) {
+            let Some(&target_index) = note_indexes.get(target) else {
+                continue;
+            };
+            if !exported_notes[target_index]
+                .note
+                .inlinks
+                .iter()
+                .any(|candidate| candidate == &source_link)
+            {
+                exported_notes[target_index]
+                    .note
+                    .inlinks
+                    .push(source_link.clone());
+            }
+        }
+    }
+}
+
+fn evaluate_transformed_export_inline_expressions(
+    paths: &VaultPaths,
+    exported_notes: &mut [ExportedNoteDocument],
+) -> Result<(), AppError> {
+    let mut note_lookup = load_note_index(paths).map_err(AppError::operation)?;
+    for export_note in exported_notes.iter() {
+        note_lookup.insert(export_note.note.file_name.clone(), export_note.note.clone());
+    }
+    for export_note in exported_notes.iter_mut() {
+        export_note.note.inline_expressions =
+            evaluate_note_inline_expressions(&export_note.note, &note_lookup);
+    }
+    Ok(())
+}
+
+fn transformed_export_frontmatter(parsed: &ParsedDocument) -> Value {
+    parsed.frontmatter.as_ref().map_or_else(
+        || Value::Object(serde_json::Map::new()),
+        |frontmatter| match serde_json::to_value(frontmatter) {
+            Ok(Value::Object(object)) => Value::Object(object),
+            Ok(_) | Err(_) => Value::Object(serde_json::Map::new()),
+        },
+    )
+}
+
+fn transformed_export_properties(
+    parsed: &ParsedDocument,
+    config: &VaultConfig,
+) -> Result<Value, AppError> {
+    let Some(indexed) = extract_indexed_properties(parsed, config).map_err(AppError::operation)?
+    else {
+        return Ok(Value::Object(serde_json::Map::new()));
+    };
+
+    serde_json::from_str(&indexed.canonical_json).map_err(AppError::operation)
+}
+
+fn build_effective_content_transforms(
+    paths: &VaultPaths,
+    report: &QueryReport,
+    read_filter: Option<&PermissionFilter>,
+    transform_rules: &[ContentTransformRuleConfig],
+) -> Result<HashMap<String, ContentTransformConfig>, AppError> {
+    let exported_paths = report
+        .notes
+        .iter()
+        .map(|note| note.document_path.clone())
+        .collect::<HashSet<_>>();
+    let mut effective = HashMap::<String, ContentTransformConfig>::new();
+
+    for rule in transform_rules.iter().filter(|rule| !rule.is_empty()) {
+        let matched_paths = if rule.query.is_none() && rule.query_json.is_none() {
+            exported_paths.iter().cloned().collect::<Vec<_>>()
+        } else {
+            execute_export_query(
+                paths,
+                rule.query.as_deref(),
+                rule.query_json.as_deref(),
+                read_filter,
+            )?
+            .notes
+            .into_iter()
+            .map(|note| note.document_path)
+            .filter(|path| exported_paths.contains(path))
+            .collect::<Vec<_>>()
+        };
+
+        for path in matched_paths {
+            effective
+                .entry(path)
+                .or_default()
+                .merge_in(&rule.transforms);
+        }
+    }
+
+    Ok(effective)
+}
+
+fn json_note_export_report(
+    report: &QueryReport,
+    notes: &[ExportedNoteDocument],
+) -> JsonNotesExportReport {
+    JsonNotesExportReport {
+        query: report.query.clone(),
+        result_count: notes.len(),
+        notes: notes
+            .iter()
+            .map(|entry| JsonNoteExportDocument {
+                document_path: entry.note.document_path.clone(),
+                file_name: entry.note.file_name.clone(),
+                file_ext: entry.note.file_ext.clone(),
+                file_mtime: entry.note.file_mtime,
+                file_size: entry.note.file_size,
+                tags: entry.note.tags.clone(),
+                links: entry.note.links.clone(),
+                inlinks: entry.note.inlinks.clone(),
+                aliases: entry.note.aliases.clone(),
+                frontmatter: entry.note.frontmatter.clone(),
+                properties: entry.note.properties.clone(),
+                inline_expressions: entry.note.inline_expressions.clone(),
+                content: entry.content.clone(),
+            })
+            .collect(),
+    }
+}
+
+pub fn render_json_export_payload(
+    report: &QueryReport,
+    notes: &[ExportedNoteDocument],
+    pretty: bool,
+) -> Result<String, AppError> {
+    let payload = json_note_export_report(report, notes);
+    if pretty {
+        serde_json::to_string_pretty(&payload).map_err(AppError::operation)
+    } else {
+        serde_json::to_string(&payload).map_err(AppError::operation)
+    }
+}
+
+#[must_use]
+pub fn render_markdown_export_payload(
+    notes: &[ExportedNoteDocument],
+    title: Option<&str>,
+) -> String {
+    if notes.len() == 1 && title.is_none() {
+        let mut rendered = notes[0].content.clone();
+        if !rendered.ends_with('\n') {
+            rendered.push('\n');
+        }
+        return rendered;
+    }
+
+    let mut rendered = String::new();
+    if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
+        rendered.push_str("# ");
+        rendered.push_str(title);
+        rendered.push_str("\n\n");
+    }
+
+    for (index, note) in notes.iter().enumerate() {
+        if index > 0 {
+            rendered.push_str("\n\n---\n\n");
+        }
+        rendered.push_str("## ");
+        rendered.push_str(&note.note.document_path);
+        rendered.push_str("\n\n");
+        rendered.push_str(&note.content);
+        if !note.content.ends_with('\n') {
+            rendered.push('\n');
+        }
+    }
+
+    rendered
+}
+
+fn query_export_rows(report: &QueryReport) -> Result<Vec<Value>, AppError> {
+    let query_value = serde_json::to_value(&report.query).map_err(AppError::operation)?;
+    Ok(report
+        .notes
+        .iter()
+        .map(|note| {
+            serde_json::json!({
+                "document_path": note.document_path,
+                "file_name": note.file_name,
+                "file_ext": note.file_ext,
+                "file_mtime": note.file_mtime,
+                "tags": note.tags,
+                "starred": note.starred,
+                "properties": note.properties,
+                "inline_expressions": note.inline_expressions,
+                "query": query_value,
+            })
+        })
+        .collect())
+}
+
+fn query_export_fields() -> &'static [&'static str] {
+    &[
+        "document_path",
+        "file_name",
+        "file_ext",
+        "file_mtime",
+        "tags",
+        "starred",
+        "properties",
+        "inline_expressions",
+        "query",
+    ]
+}
+
+pub fn render_csv_export_payload(report: &QueryReport) -> Result<String, AppError> {
+    let rows = query_export_rows(report)?;
+    let fields = query_export_fields();
+    let mut writer = csv::Writer::from_writer(Vec::new());
+    writer
+        .write_record(fields.iter().copied())
+        .map_err(AppError::operation)?;
+    for row in &rows {
+        let selected = row
+            .as_object()
+            .ok_or_else(|| AppError::operation("query export row was not an object"))?;
+        let record = fields
+            .iter()
+            .map(|field| csv_cell_for_value(selected.get(*field)))
+            .collect::<Vec<_>>();
+        writer.write_record(record).map_err(AppError::operation)?;
+    }
+    writer.flush().map_err(AppError::operation)?;
+    let bytes = writer.into_inner().map_err(AppError::operation)?;
+    String::from_utf8(bytes)
+        .map_err(|error| AppError::operation(format!("csv export was not valid UTF-8: {error}")))
+}
+
+#[must_use]
+pub fn collect_export_attachment_paths(links: &[ExportLinkRecord]) -> Vec<String> {
+    let mut attachments = links
+        .iter()
+        .filter_map(|link| {
+            let extension = link.resolved_target_extension.as_deref()?;
+            (!matches!(extension, "md" | "base"))
+                .then(|| link.resolved_target_path.clone())
+                .flatten()
+        })
+        .collect::<BTreeSet<_>>();
+    attachments.retain(|path| !path.trim().is_empty());
+    attachments.into_iter().collect()
+}
+
+fn csv_cell_for_value(value: Option<&Value>) -> String {
+    match value {
+        None | Some(Value::Null) => String::new(),
+        Some(Value::String(value)) => value.clone(),
+        Some(Value::Bool(value)) => value.to_string(),
+        Some(Value::Number(value)) => value.to_string(),
+        Some(other) => serde_json::to_string(other).unwrap_or_else(|_| other.to_string()),
+    }
+}
+
+pub fn write_zip_export(
+    paths: &VaultPaths,
+    output_path: &Path,
+    report: &QueryReport,
+    notes: &[ExportedNoteDocument],
+    links: &[ExportLinkRecord],
+) -> Result<ZipExportSummary, AppError> {
+    prepare_export_output_path(output_path)?;
+
+    let attachments = collect_export_attachment_paths(links);
+    let file = fs::File::create(output_path).map_err(AppError::operation)?;
+    let mut writer = zip::ZipWriter::new(file);
+    let options = FileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+
+    for note in notes {
+        writer
+            .start_file(&note.note.document_path, options)
+            .map_err(AppError::operation)?;
+        writer
+            .write_all(note.content.as_bytes())
+            .map_err(AppError::operation)?;
+    }
+
+    for attachment in &attachments {
+        writer
+            .start_file(attachment, options)
+            .map_err(AppError::operation)?;
+        let bytes = fs::read(paths.vault_root().join(attachment)).map_err(AppError::operation)?;
+        writer.write_all(&bytes).map_err(AppError::operation)?;
+    }
+
+    let notes_json = render_json_export_payload(report, notes, true)?;
+    writer
+        .start_file(".vulcan-export/notes.json", options)
+        .map_err(AppError::operation)?;
+    writer
+        .write_all(notes_json.as_bytes())
+        .map_err(AppError::operation)?;
+
+    let manifest = ZipExportManifest {
+        query: report.query.clone(),
+        result_count: notes.len(),
+        notes: notes
+            .iter()
+            .map(|entry| entry.note.document_path.clone())
+            .collect(),
+        attachments,
+    };
+    let manifest_json = serde_json::to_string_pretty(&manifest).map_err(AppError::operation)?;
+    writer
+        .start_file(".vulcan-export/manifest.json", options)
+        .map_err(AppError::operation)?;
+    writer
+        .write_all(manifest_json.as_bytes())
+        .map_err(AppError::operation)?;
+
+    writer.finish().map_err(AppError::operation)?;
+
+    Ok(ZipExportSummary {
+        path: output_path.display().to_string(),
+        result_count: notes.len(),
+        attachment_count: manifest.attachments.len(),
+    })
 }
 
 #[must_use]
@@ -1556,20 +2394,25 @@ mod tests {
         apply_export_profile_rule_delete, apply_export_profile_rule_move,
         apply_export_profile_rule_update, apply_export_profile_set, build_content_transform_rules,
         build_export_profile_list, build_export_profile_rule_list,
-        build_export_profile_show_report, write_sqlite_export, BoolConfigUpdate, ConfigValueUpdate,
-        ExportLinkRecord, ExportProfileCreateRequest, ExportProfileFormat,
-        ExportProfileRuleMoveRequest, ExportProfileRuleRequest, ExportProfileRuleWriteAction,
-        ExportProfileSetRequest, ExportProfileWriteAction, ExportedNoteDocument,
+        build_export_profile_show_report, collect_export_attachment_paths, execute_export_query,
+        load_export_links, load_exported_notes, prepare_export_data, render_csv_export_payload,
+        render_json_export_payload, render_markdown_export_payload, write_sqlite_export,
+        write_zip_export, BoolConfigUpdate, ConfigValueUpdate, ExportLinkRecord,
+        ExportProfileCreateRequest, ExportProfileFormat, ExportProfileRuleMoveRequest,
+        ExportProfileRuleRequest, ExportProfileRuleWriteAction, ExportProfileSetRequest,
+        ExportProfileWriteAction, ExportedNoteDocument,
     };
     use serde_json::{Map, Value};
     use std::fs;
+    use std::io::Read;
     use std::path::{Path, PathBuf};
     use tempfile::tempdir;
     use vulcan_core::properties::NoteTaskRecord;
     use vulcan_core::{
-        EvaluatedInlineExpression, NoteRecord, QueryAst, QueryProjection, QueryReport, QuerySource,
-        VaultPaths,
+        scan_vault, EvaluatedInlineExpression, NoteRecord, QueryAst, QueryProjection, QueryReport,
+        QuerySource, ScanMode, VaultPaths,
     };
+    use zip::ZipArchive;
 
     fn export_paths() -> (tempfile::TempDir, VaultPaths) {
         let temp_dir = tempdir().expect("temp dir");
@@ -1598,6 +2441,32 @@ mod tests {
 
     fn config_contents(path: &Path) -> String {
         fs::read_to_string(path.join(".vulcan/config.toml")).expect("config contents")
+    }
+
+    fn build_export_transform_vault() -> (tempfile::TempDir, VaultPaths) {
+        let temp_dir = tempdir().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+        fs::create_dir_all(vault_root.join("People")).expect("people dir");
+        fs::create_dir_all(vault_root.join("assets")).expect("assets dir");
+        fs::write(
+            vault_root.join("Home.md"),
+            concat!(
+                "# Home\n\n",
+                "Visible note.\n\n",
+                "> [!secret gm]- Internal\n",
+                "> Hidden [[People/Bob]].\n",
+                "> ![[assets/secret.png]]\n\n",
+                "![[assets/public.png]]\n",
+            ),
+        )
+        .expect("home note");
+        fs::write(vault_root.join("People/Bob.md"), "# Bob\n").expect("bob note");
+        fs::write(vault_root.join("assets/public.png"), b"public").expect("public asset");
+        fs::write(vault_root.join("assets/secret.png"), b"secret").expect("secret asset");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        (temp_dir, paths)
     }
 
     #[test]
@@ -1844,6 +2713,154 @@ mod tests {
             vec![".vulcan/config.toml".to_string()]
         );
         assert!(!config_contents(paths.vault_root()).contains("public_json"));
+    }
+
+    #[test]
+    fn prepare_export_data_applies_transforms_and_backlink_adjustments() {
+        let (_temp_dir, paths) = build_export_transform_vault();
+        let report = execute_export_query(
+            &paths,
+            Some(r#"from notes where file.path matches "^(Home|People/Bob)\.md$""#),
+            None,
+            None,
+        )
+        .expect("query report");
+        let raw_notes = load_exported_notes(&paths, &report).expect("raw notes");
+        let raw_links = load_export_links(&paths, &raw_notes).expect("raw links");
+        let transform_rules =
+            build_content_transform_rules(&["secret gm".to_string()], &[], &[], &[], &[])
+                .expect("rules");
+        let prepared = prepare_export_data(&paths, &report, None, transform_rules.as_deref())
+            .expect("prepared export");
+
+        let home = prepared
+            .notes
+            .iter()
+            .find(|note| note.note.document_path == "Home.md")
+            .expect("home note");
+        let bob = prepared
+            .notes
+            .iter()
+            .find(|note| note.note.document_path == "People/Bob.md")
+            .expect("bob note");
+
+        assert!(home.content.contains("assets/public.png"));
+        assert!(!home.content.contains("assets/secret.png"));
+        assert!(!home.content.contains("Hidden [[People/Bob]]"));
+        assert_eq!(
+            collect_export_attachment_paths(&raw_links),
+            vec![
+                "assets/public.png".to_string(),
+                "assets/secret.png".to_string()
+            ]
+        );
+        assert_eq!(
+            collect_export_attachment_paths(&prepared.links),
+            vec!["assets/public.png".to_string()]
+        );
+        assert!(!bob.note.inlinks.iter().any(|link| link == "[[Home]]"));
+    }
+
+    #[test]
+    fn shared_export_renderers_emit_expected_json_markdown_and_csv() {
+        let (_temp_dir, paths) = build_export_transform_vault();
+        let report = execute_export_query(
+            &paths,
+            Some(r#"from notes where file.path matches "^(Home|People/Bob)\.md$""#),
+            None,
+            None,
+        )
+        .expect("query report");
+        let transform_rules =
+            build_content_transform_rules(&["secret gm".to_string()], &[], &[], &[], &[])
+                .expect("rules");
+        let prepared = prepare_export_data(&paths, &report, None, transform_rules.as_deref())
+            .expect("prepared export");
+
+        let json = render_json_export_payload(&report, &prepared.notes, true).expect("json export");
+        let parsed: Value = serde_json::from_str(&json).expect("json payload");
+        assert_eq!(parsed["result_count"], Value::Number(2.into()));
+        assert!(!json.contains("assets/secret.png"));
+
+        let markdown = render_markdown_export_payload(&prepared.notes, Some("Public Notes"));
+        assert!(markdown.starts_with("# Public Notes"));
+        assert!(!markdown.contains("assets/secret.png"));
+        assert!(markdown.contains("assets/public.png"));
+
+        let csv = render_csv_export_payload(&report).expect("csv export");
+        assert!(csv.starts_with(
+            "document_path,file_name,file_ext,file_mtime,tags,starred,properties,inline_expressions,query"
+        ));
+        assert!(csv.contains("Home.md"));
+        assert!(csv.contains("People/Bob.md"));
+    }
+
+    #[test]
+    fn write_zip_export_packages_transformed_notes_and_manifest() {
+        let (_temp_dir, paths) = build_export_transform_vault();
+        let report = execute_export_query(
+            &paths,
+            Some(r#"from notes where file.path matches "^(Home|People/Bob)\.md$""#),
+            None,
+            None,
+        )
+        .expect("query report");
+        let transform_rules =
+            build_content_transform_rules(&["secret gm".to_string()], &[], &[], &[], &[])
+                .expect("rules");
+        let prepared = prepare_export_data(&paths, &report, None, transform_rules.as_deref())
+            .expect("prepared export");
+        let output_path = paths.vault_root().join("exports/public.zip");
+
+        let summary = write_zip_export(
+            &paths,
+            &output_path,
+            &report,
+            &prepared.notes,
+            &prepared.links,
+        )
+        .expect("zip export");
+
+        assert_eq!(summary.result_count, 2);
+        assert_eq!(summary.attachment_count, 1);
+
+        let file = fs::File::open(&output_path).expect("zip file");
+        let mut archive = ZipArchive::new(file).expect("zip archive");
+        let mut names = Vec::new();
+        for index in 0..archive.len() {
+            names.push(
+                archive
+                    .by_index(index)
+                    .expect("zip entry")
+                    .name()
+                    .to_string(),
+            );
+        }
+
+        assert!(names.contains(&"Home.md".to_string()));
+        assert!(names.contains(&"People/Bob.md".to_string()));
+        assert!(names.contains(&"assets/public.png".to_string()));
+        assert!(!names.contains(&"assets/secret.png".to_string()));
+        assert!(names.contains(&".vulcan-export/manifest.json".to_string()));
+        assert!(names.contains(&".vulcan-export/notes.json".to_string()));
+
+        let mut manifest = String::new();
+        archive
+            .by_name(".vulcan-export/manifest.json")
+            .expect("manifest")
+            .read_to_string(&mut manifest)
+            .expect("manifest read");
+        assert!(manifest.contains("assets/public.png"));
+        assert!(!manifest.contains("assets/secret.png"));
+
+        let mut notes_json = String::new();
+        archive
+            .by_name(".vulcan-export/notes.json")
+            .expect("notes json")
+            .read_to_string(&mut notes_json)
+            .expect("notes json read");
+        assert!(notes_json.contains("assets/public.png"));
+        assert!(!notes_json.contains("assets/secret.png"));
     }
 
     #[test]
