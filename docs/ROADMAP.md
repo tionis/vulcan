@@ -4457,7 +4457,7 @@ Matrix is explicitly more complex than Telegram because it brings sync loops, ro
 
 ### 9.22.5 Export, template, plugin, and config service extraction
 
-- [ ] Move remaining export orchestration out of `vulcan-cli`: export profile list/show/create/set/delete/rule services plus shared profile validation/TOML persistence are now in `vulcan-app`; query resolution, transformed export preparation, backlink adjustment, attachment discovery, and JSON/CSV/EPUB/ZIP packaging still need extraction
+- [ ] Move remaining export orchestration out of `vulcan-cli`: export profile list/show/create/set/delete/rule services plus shared profile validation/TOML persistence, query resolution, transformed export preparation, backlink adjustment, attachment discovery, and JSON/CSV/ZIP packaging are now in `vulcan-app`; EPUB packaging/rendering still needs extraction
 - [x] Move raw export SQL/schema definitions out of `vulcan-cli` and colocate them with other reusable export/cache code
 - [x] Move the template engine and reusable template workflow services out of `vulcan-cli` into reusable library code so note creation, append/insert flows, scripts, daemon endpoints, and future assistant flows share one implementation
 - [x] Move plugin discovery/loading/dispatch out of `vulcan-cli` so plugin event hooks become reusable infrastructure rather than a CLI-local feature
