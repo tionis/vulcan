@@ -39,8 +39,8 @@ use vulcan_core::ScanMode;
 use vulcan_core::{
     expected_periodic_note_path, AutoScanMode, BacklinkRecord, DataviewJsOutput,
     DoctorDiagnosticIssue, DoctorLinkIssue, DqlQueryResult, GitLogEntry, KanbanBoardRecord,
-    NamedCount, NoteIdentity, NoteQuery, OutgoingLinkRecord, PeriodicConfig,
-    PeriodicStartOfWeek, ResolutionStatus, ScanSummary, SearchHit, SearchQuery, VaultPaths,
+    NamedCount, NoteIdentity, NoteQuery, OutgoingLinkRecord, PeriodicConfig, PeriodicStartOfWeek,
+    ResolutionStatus, ScanSummary, SearchHit, SearchQuery, VaultPaths,
 };
 
 const FULL_TEXT_LIMIT: usize = 200;

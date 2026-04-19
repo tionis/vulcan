@@ -1140,11 +1140,7 @@ pub fn apply_task_add(
         frontmatter: frontmatter_json,
         body: template_body,
         parsed_input,
-        changed_paths: if request.dry_run {
-            Vec::new()
-        } else {
-            vec![relative_path]
-        },
+        changed_paths: vec![relative_path],
     })
 }
 
@@ -1171,11 +1167,7 @@ pub fn apply_task_create(
     )?;
     let insertion = append_entry_to_note(&existing, &planned.line, heading.as_deref());
     let task = format!("{}:{}", relative_path, insertion.line_number);
-    let changed_paths = if request.dry_run {
-        Vec::new()
-    } else {
-        vec![relative_path.clone()]
-    };
+    let changed_paths = vec![relative_path.clone()];
 
     if !request.dry_run {
         if let Some(parent) = absolute_path.parent() {
@@ -1245,7 +1237,7 @@ pub fn apply_task_convert(
     .ok_or_else(|| AppError::operation("failed to convert note into a TaskNotes task"))?;
     let rendered =
         render_note_from_parts(Some(&frontmatter), &body).map_err(AppError::operation)?;
-    let changed_paths = if request.dry_run || task_changes.is_empty() {
+    let changed_paths = if task_changes.is_empty() {
         Vec::new()
     } else {
         vec![relative_path.clone()]
@@ -3190,7 +3182,7 @@ pub fn apply_task_pomodoro_start(
     request: &TaskPomodoroStartRequest,
 ) -> Result<TaskPomodoroReport, AppError> {
     let mut changed_paths = if request.dry_run {
-        Vec::new()
+        process_due_task_pomodoros(paths, true)?
     } else {
         process_due_task_pomodoros(paths, false)?
     };
@@ -3309,7 +3301,7 @@ pub fn apply_task_pomodoro_stop(
     request: &TaskPomodoroStopRequest,
 ) -> Result<TaskPomodoroReport, AppError> {
     let mut changed_paths = if request.dry_run {
-        Vec::new()
+        process_due_task_pomodoros(paths, true)?
     } else {
         process_due_task_pomodoros(paths, false)?
     };
@@ -3503,11 +3495,7 @@ fn apply_task_convert_line(
     let rendered_task = render_note_from_parts(Some(&planned.frontmatter), &planned.body)
         .map_err(AppError::operation)?;
     let frontmatter_json = tasknote_frontmatter_json(&planned.frontmatter);
-    let changed_paths = if dry_run {
-        Vec::new()
-    } else {
-        vec![source_path.clone(), planned.relative_path.clone()]
-    };
+    let changed_paths = vec![source_path.clone(), planned.relative_path.clone()];
 
     if !dry_run {
         let task_path = paths.vault_root().join(&planned.relative_path);
@@ -5429,7 +5417,7 @@ fn apply_inline_task_reschedule(
     let (rendered, change) =
         reschedule_inline_task_source(&source, resolved.line_number, &due_value)?;
     let changes = change.into_iter().collect::<Vec<_>>();
-    let changed_paths = if request.dry_run || changes.is_empty() {
+    let changed_paths = if changes.is_empty() {
         Vec::new()
     } else {
         vec![resolved.path.clone()]
@@ -5467,7 +5455,7 @@ fn apply_inline_task_complete(
         &completed_date,
     )?;
     let changes = change.into_iter().collect::<Vec<_>>();
-    let changed_paths = if request.dry_run || changes.is_empty() {
+    let changed_paths = if changes.is_empty() {
         Vec::new()
     } else {
         vec![resolved.path.clone()]
@@ -6000,6 +5988,29 @@ mod tests {
     }
 
     #[test]
+    fn apply_task_reschedule_dry_run_reports_inline_changed_path() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        fs::write(temp_dir.path().join("Inbox.md"), "- [ ] Call Alice\n").expect("seed note");
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+        let report = apply_task_reschedule(
+            &paths,
+            &TaskRescheduleRequest {
+                task: "Inbox.md:1".to_string(),
+                due: "2026-04-20".to_string(),
+                dry_run: true,
+            },
+        )
+        .expect("reschedule report");
+
+        assert_eq!(report.changed_paths, vec!["Inbox.md".to_string()]);
+        let rendered = fs::read_to_string(temp_dir.path().join("Inbox.md")).expect("source note");
+        assert_eq!(rendered, "- [ ] Call Alice\n");
+    }
+
+    #[test]
     fn apply_task_complete_updates_inline_task_checkbox_and_date() {
         let temp_dir = tempdir().expect("temp dir");
         let paths = VaultPaths::new(temp_dir.path());
@@ -6021,6 +6032,29 @@ mod tests {
         assert_eq!(report.path, "Inbox.md");
         let rendered = fs::read_to_string(temp_dir.path().join("Inbox.md")).expect("updated note");
         assert!(rendered.contains("- [x] Call Alice ✅ 2026-04-20"));
+    }
+
+    #[test]
+    fn apply_task_complete_dry_run_reports_inline_changed_path() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        fs::write(temp_dir.path().join("Inbox.md"), "- [ ] Call Alice\n").expect("seed note");
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan");
+
+        let report = apply_task_complete(
+            &paths,
+            &TaskCompleteRequest {
+                task: "Inbox.md:1".to_string(),
+                date: Some("2026-04-20".to_string()),
+                dry_run: true,
+            },
+        )
+        .expect("complete report");
+
+        assert_eq!(report.changed_paths, vec!["Inbox.md".to_string()]);
+        let rendered = fs::read_to_string(temp_dir.path().join("Inbox.md")).expect("source note");
+        assert_eq!(rendered, "- [ ] Call Alice\n");
     }
 
     #[test]
@@ -6066,6 +6100,34 @@ mod tests {
     }
 
     #[test]
+    fn apply_task_add_dry_run_reports_changed_path() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+
+        let report = apply_task_add(
+            &paths,
+            &TaskAddRequest {
+                text: "Review launch plan tomorrow".to_string(),
+                no_nlp: false,
+                status: None,
+                priority: None,
+                due: None,
+                scheduled: None,
+                contexts: Vec::new(),
+                projects: Vec::new(),
+                tags: Vec::new(),
+                template: None,
+                dry_run: true,
+            },
+        )
+        .expect("add report");
+
+        assert_eq!(report.changed_paths, vec![report.path.clone()]);
+        assert!(!temp_dir.path().join(&report.path).exists());
+    }
+
+    #[test]
     fn apply_task_create_appends_inline_task_to_target_note() {
         let temp_dir = tempdir().expect("temp dir");
         let paths = VaultPaths::new(temp_dir.path());
@@ -6094,6 +6156,31 @@ mod tests {
     }
 
     #[test]
+    fn apply_task_create_dry_run_reports_changed_path() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        fs::write(temp_dir.path().join("Inbox.md"), "# Tasks\n").expect("seed inbox");
+
+        let report = apply_task_create(
+            &paths,
+            &TaskCreateRequest {
+                text: "Call Alice".to_string(),
+                note: Some("Inbox".to_string()),
+                due: None,
+                priority: None,
+                dry_run: true,
+            },
+        )
+        .expect("create report");
+
+        assert_eq!(report.changed_paths, vec!["Inbox.md".to_string()]);
+        let rendered =
+            fs::read_to_string(temp_dir.path().join("Inbox.md")).expect("original inbox");
+        assert_eq!(rendered, "# Tasks\n");
+    }
+
+    #[test]
     fn apply_task_convert_note_promotes_existing_note_to_tasknote() {
         let temp_dir = tempdir().expect("temp dir");
         let paths = VaultPaths::new(temp_dir.path());
@@ -6119,6 +6206,30 @@ mod tests {
             .replace("\r\n", "\n");
         assert!(rendered.contains("title: Alpha"));
         assert!(rendered.contains("status: open"));
+    }
+
+    #[test]
+    fn apply_task_convert_note_dry_run_reports_changed_path() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        fs::create_dir_all(temp_dir.path().join("Ideas")).expect("ideas dir");
+        fs::write(temp_dir.path().join("Ideas/Alpha.md"), "Alpha details\n").expect("seed note");
+
+        let report = apply_task_convert(
+            &paths,
+            &TaskConvertRequest {
+                file: "Ideas/Alpha".to_string(),
+                line: None,
+                dry_run: true,
+            },
+        )
+        .expect("convert note report");
+
+        assert_eq!(report.changed_paths, vec!["Ideas/Alpha.md".to_string()]);
+        let rendered =
+            fs::read_to_string(temp_dir.path().join("Ideas/Alpha.md")).expect("source note");
+        assert_eq!(rendered, "Alpha details\n");
     }
 
     #[test]
@@ -6151,6 +6262,34 @@ mod tests {
             .replace("\r\n", "\n");
         let link_target = report.target_path.trim_end_matches(".md");
         assert!(source.contains(&format!("[[{link_target}]]")));
+    }
+
+    #[test]
+    fn apply_task_convert_line_dry_run_reports_both_changed_paths() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        fs::write(
+            temp_dir.path().join("Inbox.md"),
+            "- [ ] Review launch plan tomorrow @work\n",
+        )
+        .expect("seed inbox");
+
+        let report = apply_task_convert(
+            &paths,
+            &TaskConvertRequest {
+                file: "Inbox".to_string(),
+                line: Some(1),
+                dry_run: true,
+            },
+        )
+        .expect("convert line report");
+
+        assert_eq!(
+            report.changed_paths,
+            vec!["Inbox.md".to_string(), report.target_path.clone()]
+        );
+        assert!(!temp_dir.path().join(&report.target_path).exists());
     }
 
     #[test]

@@ -4450,9 +4450,9 @@ Matrix is explicitly more complex than Telegram because it brings sync loops, ro
 ### 9.22.4 Note and task workflow extraction
 
 - [x] Move note CRUD orchestration out of `vulcan-cli`: note create/append/set/patch/delete planning, writes, plugin hook dispatch, shared diagnostics/check passes, patch dry-run planning, and incremental scan refresh now live in reusable `vulcan-app` services
-- [ ] Keep CLI-only concerns in `vulcan-cli`: reading stdin, mapping flags to request structs, selecting permission profiles, auto-commit policy selection, and human/JSON rendering
+- [x] Keep CLI-only concerns in `vulcan-cli`: reading stdin, mapping flags to request structs, selecting permission profiles, auto-commit policy selection, and human/JSON rendering remain outside the shared workflow layer
 - [x] Move TaskNotes and inline-task workflows out of `vulcan-cli`: task add/create/set/reschedule/complete/archive, note/line conversion, shared NLP/default resolution, `tasks query`/`tasks eval`/`tasks list`/`tasks show`/`tasks due`/`tasks reminders`/`tasks view list`/`tasks view show`/`tasks next`/`tasks blocked`/`tasks graph` reporting, time-tracking, and pomodoro workflows now live in reusable `vulcan-app` services
-- [ ] Provide reusable dry-run planning APIs for note and task mutations so CLI, daemon, MCP, and assistant surfaces preview the same mutation plan and changed-path set
+- [x] Provide reusable dry-run request/report previews for the note and task mutations that expose preview mode so CLI, daemon, MCP, and assistant surfaces can reuse the same mutation summary and changed-path set; dry-run task add/create/convert/reschedule/complete/pomodoro flows now retain their changed-path summaries in `vulcan-app`
 - [x] Add regression tests covering parity of note/task behavior before and after extraction
 
 ### 9.22.5 Export, template, plugin, and config service extraction
