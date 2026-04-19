@@ -28,9 +28,10 @@ pub struct PreparedWebSearchRequest {
     user_agent: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum WebFetchMode {
+    #[default]
     Markdown,
     Html,
     Raw,
@@ -54,12 +55,6 @@ pub struct WebFetchRequest {
     pub mode: WebFetchMode,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub save: Option<PathBuf>,
-}
-
-impl Default for WebFetchMode {
-    fn default() -> Self {
-        Self::Markdown
-    }
 }
 
 const fn default_search_limit() -> usize {
@@ -116,7 +111,7 @@ pub fn apply_web_fetch_report(
         }
         match request.mode {
             WebFetchMode::Raw => {
-                fs::write(path, &fetched.raw_bytes).map_err(AppError::operation)?
+                fs::write(path, &fetched.raw_bytes).map_err(AppError::operation)?;
             }
             WebFetchMode::Html | WebFetchMode::Markdown => {
                 fs::write(path, fetched.report.content.as_bytes()).map_err(AppError::operation)?;

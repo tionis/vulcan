@@ -90,6 +90,8 @@ pub fn evaluate_dataview_js_query(
     core_evaluate_dataview_js_query(paths, source, source_path).map_err(AppError::operation)
 }
 
+#[must_use]
+#[allow(clippy::implicit_hasher)]
 pub fn evaluate_note_inline_expressions(
     note: &NoteRecord,
     note_index: &HashMap<String, NoteRecord>,
