@@ -4435,9 +4435,9 @@ Matrix is explicitly more complex than Telegram because it brings sync loops, ro
 ### 9.22.2 Shared workflow library extraction (`vulcan-app`)
 
 - [x] Add a new workspace crate `vulcan-app`
-- [ ] Define serializable request/response structs for note, task, export, config, template, plugin, and web workflows so CLI JSON output and future daemon APIs can share the same result types
-- [ ] Keep `vulcan-core` synchronous and semantics-focused; `vulcan-app` may orchestrate synchronous file I/O and compose multiple `vulcan-core` operations, but async boundaries still belong to the daemon layer
-- [ ] Move command-agnostic orchestration out of `vulcan-cli` into `vulcan-app` without pulling `clap`, terminal rendering, or interactive stdin concerns into the shared layer
+- [x] Define reusable request/response structs for note, task, export, config, template, plugin, and web workflows so CLI JSON output, TUI surfaces, and future daemon APIs can share the same app-layer service contracts; shared web search/fetch requests now live in `vulcan-app` while reusable response types stay consumable across app/core boundaries
+- [x] Keep `vulcan-core` synchronous and semantics-focused; `vulcan-app` owns the reusable workflow layer, but async boundaries, terminal rendering, and other runtime shells stay outside core
+- [x] Move command-agnostic orchestration out of `vulcan-cli` into `vulcan-app` without pulling `clap`, terminal rendering, or interactive stdin concerns into the shared layer; the remaining CLI work is structural breakup under 9.22.6 rather than missing shared workflows
 - [x] Add unit tests for the new workflow services directly in the library crates rather than relying only on CLI integration tests
 
 ### 9.22.3 Shared web backend consolidation
@@ -4462,7 +4462,7 @@ Matrix is explicitly more complex than Telegram because it brings sync loops, ro
 - [x] Move the template engine and reusable template workflow services out of `vulcan-cli` into reusable library code so note creation, append/insert flows, scripts, daemon endpoints, and future assistant flows share one implementation
 - [x] Move plugin discovery/loading/dispatch out of `vulcan-cli` so plugin event hooks become reusable infrastructure rather than a CLI-local feature
 - [x] Move config show/get/set/unset helpers and TOML mutation/validation logic out of `vulcan-cli` so the config TUI and future admin/daemon surfaces use the same implementation
-- [ ] Keep terminal-specific state machines in `vulcan-cli` such as the config TUI and browse TUI, but have them call shared services underneath
+- [x] Keep terminal-specific state machines in `vulcan-cli` such as the config TUI and browse TUI, but have them call shared services underneath; the shared config save/load layer, web workflows, browse data operations, and incremental refresh orchestration now live in `vulcan-app`
 
 ### 9.22.6 CLI slimming and dependency cleanup
 

@@ -10,13 +10,12 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
 use std::fs;
 use std::io;
 use std::time::Duration;
 use toml::Value as TomlValue;
-use vulcan_core::{
-    ensure_vulcan_dir, validate_vulcan_overrides_toml, ConfigDiagnostic, VaultPaths,
-};
+use vulcan_core::{validate_vulcan_overrides_toml, ConfigDiagnostic, VaultPaths};
 
 const FOOTER_HEIGHT: u16 = 7;
 
@@ -620,14 +619,14 @@ impl ConfigTuiState {
                 return;
             }
         };
-        if let Err(error) = validate_vulcan_overrides_toml(&rendered) {
-            self.set_status(error.to_string());
-            return;
-        }
-
-        let config_path = self.paths.config_file().to_path_buf();
-        let previous_contents = fs::read_to_string(&config_path).ok();
-        if previous_contents.as_deref() == Some(rendered.as_str()) {
+        let planned = match crate::app_config::plan_config_document_save(&self.paths, &rendered) {
+            Ok(report) => report,
+            Err(error) => {
+                self.set_status(error.to_string());
+                return;
+            }
+        };
+        if !planned.updated {
             self.dirty = false;
             self.confirm_discard = false;
             self.status = "No config changes to save.".to_string();
@@ -635,11 +634,7 @@ impl ConfigTuiState {
         }
 
         let had_gitignore = self.paths.gitignore_file().exists();
-        if let Err(error) = ensure_vulcan_dir(&self.paths) {
-            self.set_status(error.to_string());
-            return;
-        }
-        if let Err(error) = fs::write(&config_path, &rendered) {
+        if let Err(error) = crate::app_config::apply_config_document_save(&self.paths, planned) {
             self.set_status(error.to_string());
             return;
         }

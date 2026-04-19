@@ -86,7 +86,9 @@ mod app_config {
     use toml::Value as TomlValue;
     use vulcan_core::VaultPaths;
 
-    pub(crate) use vulcan_app::config::{ConfigGetReport, ConfigSetReport, ConfigShowReport};
+    pub(crate) use vulcan_app::config::{
+        ConfigDocumentSaveReport, ConfigGetReport, ConfigSetReport, ConfigShowReport,
+    };
 
     pub(crate) fn build_config_show_report(
         paths: &VaultPaths,
@@ -119,6 +121,21 @@ mod app_config {
         report: ConfigSetReport,
     ) -> Result<ConfigSetReport, CliError> {
         vulcan_app::config::apply_config_set_report(paths, report).map_err(CliError::operation)
+    }
+
+    pub(crate) fn plan_config_document_save(
+        paths: &VaultPaths,
+        rendered_contents: &str,
+    ) -> Result<ConfigDocumentSaveReport, CliError> {
+        vulcan_app::config::plan_config_document_save(paths, rendered_contents)
+            .map_err(CliError::operation)
+    }
+
+    pub(crate) fn apply_config_document_save(
+        paths: &VaultPaths,
+        report: ConfigDocumentSaveReport,
+    ) -> Result<ConfigDocumentSaveReport, CliError> {
+        vulcan_app::config::apply_config_document_save(paths, report).map_err(CliError::operation)
     }
 
     pub(crate) fn load_config_file_toml(path: &Path) -> Result<TomlValue, CliError> {
@@ -246,6 +263,12 @@ use vulcan_app::templates::{
     list_templates_in_directory, prepare_template_insertion, render_template_variable,
     resolve_template_file, TemplateCandidate,
 };
+use vulcan_app::web::{
+    apply_web_fetch_report, execute_web_search, prepare_web_search,
+    WebFetchMode as AppWebFetchMode, WebFetchReport as AppWebFetchReport,
+    WebFetchRequest as AppWebFetchRequest, WebSearchReport as AppWebSearchReport,
+    WebSearchRequest as AppWebSearchRequest,
+};
 #[cfg(test)]
 use vulcan_core::config::TemplatesConfig;
 use vulcan_core::config::{
@@ -262,40 +285,40 @@ use vulcan_core::{
     cache_vacuum, create_checkpoint, delete_saved_report, doctor_fix, doctor_vault,
     evaluate_base_file, evaluate_dataview_js_with_options, evaluate_dql_with_filter,
     evaluate_note_inline_expressions, expected_periodic_note_path, export_daily_events_to_ics,
-    export_static_search_index, extract_tasknote, fetch_web_content, git_blame, git_diff, git_log,
-    git_recent_log, git_status, initialize_vault, inspect_cache, link_mentions, list_checkpoints,
+    export_static_search_index, extract_tasknote, git_blame, git_diff, git_log, git_recent_log,
+    git_status, initialize_vault, inspect_cache, link_mentions, list_checkpoints,
     list_daily_note_events, list_saved_reports, load_dataview_blocks,
     load_events_for_periodic_note, load_kanban_board, load_saved_report, load_vault_config,
     merge_tags, move_kanban_card, move_note, period_range_for_date, plan_base_note_create,
-    prepare_search_backend, query_backlinks, query_change_report, query_links, query_notes,
-    rebuild_vault_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
-    render_markdown_fragment_html, render_markdown_html, repair_fts, resolve_note_reference,
-    resolve_periodic_note, resolve_permission_profile, save_saved_report, scan_vault_with_progress,
-    search_vault, search_web, step_period_start, tasknotes_status_definition,
-    tasknotes_status_state, verify_cache, watch_vault, AutoScanMode, BacklinkRecord,
-    BacklinksReport, BasesCreateContext, BasesEvalReport, BasesViewEditReport, BulkMutationReport,
-    CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport,
-    ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterReport,
-    ConfigImportReport, ConfigPermissionMode, CoreImporter, DataviewImporter,
-    DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue,
-    DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
-    EvaluatedInlineExpression, GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport,
-    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
-    GraphPathReport, GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary,
-    JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary,
-    KanbanImporter, KanbanMoveReport, KanbanTaskStatus, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
-    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig,
-    PeriodicNotesImporter, PermissionFilter, PermissionGuard, PermissionMode, PermissionProfile,
-    PluginEvent, PluginImporter, ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport,
-    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, ResolvedPermissionProfile, SavedExport, SavedExportFormat,
-    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
-    ScanPhase, ScanProgress, ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport,
-    SearchSort, StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult,
-    TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase,
-    VectorIndexProgress, VectorIndexReport, VectorNeighborHit, VectorNeighborsReport,
-    VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
+    query_backlinks, query_change_report, query_links, query_notes, rebuild_vault_with_progress,
+    rename_alias, rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
+    render_markdown_html, repair_fts, resolve_note_reference, resolve_periodic_note,
+    resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
+    step_period_start, tasknotes_status_definition, tasknotes_status_state, verify_cache,
+    watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext,
+    BasesEvalReport, BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport,
+    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
+    ChangeReport, CheckpointRecord, ClusterReport, ConfigImportReport, ConfigPermissionMode,
+    CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
+    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
+    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
+    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
+    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
+    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
+    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
+    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount,
+    NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport,
+    PeriodicConfig, PeriodicNotesImporter, PermissionFilter, PermissionGuard, PermissionMode,
+    PermissionProfile, PluginEvent, PluginImporter, ProfilePermissionGuard, QueryReport,
+    RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit,
+    RelatedNotesReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchBackendKind,
+    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
+    TasksImporter, TasksQueryResult, TemplaterImporter, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
+    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
+    WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -904,8 +927,8 @@ struct GitBlameReport {
     lines: Vec<GitBlameLine>,
 }
 
-type WebSearchReport = vulcan_core::WebSearchReport;
-type WebFetchReport = vulcan_core::WebFetchReport;
+type WebSearchReport = AppWebSearchReport;
+type WebFetchReport = AppWebFetchReport;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct RenderReport {
@@ -1939,11 +1962,11 @@ fn search_backend_kind_from_arg(arg: SearchBackendArg) -> SearchBackendKind {
     }
 }
 
-fn web_fetch_mode_name(mode: WebFetchMode) -> &'static str {
+fn app_web_fetch_mode(mode: WebFetchMode) -> AppWebFetchMode {
     match mode {
-        WebFetchMode::Markdown => "markdown",
-        WebFetchMode::Html => "html",
-        WebFetchMode::Raw => "raw",
+        WebFetchMode::Markdown => AppWebFetchMode::Markdown,
+        WebFetchMode::Html => AppWebFetchMode::Html,
+        WebFetchMode::Raw => AppWebFetchMode::Raw,
     }
 }
 
@@ -1954,16 +1977,21 @@ fn run_web_search_command(
     limit: usize,
     permissions: Option<&ProfilePermissionGuard>,
 ) -> Result<WebSearchReport, CliError> {
-    let config = load_vault_config(paths).config.web;
-    let prepared =
-        prepare_search_backend(&config, backend_override.map(search_backend_kind_from_arg))
-            .map_err(CliError::operation)?;
+    let prepared = prepare_web_search(
+        paths,
+        &AppWebSearchRequest {
+            query: query.to_string(),
+            backend: backend_override.map(search_backend_kind_from_arg),
+            limit,
+        },
+    )
+    .map_err(CliError::operation)?;
     if let Some(permissions) = permissions {
         permissions
             .check_network(&prepared.base_url)
             .map_err(CliError::operation)?;
     }
-    search_web(&config.user_agent, &prepared, query, limit).map_err(CliError::operation)
+    execute_web_search(&prepared).map_err(CliError::operation)
 }
 
 fn run_web_fetch_command(
@@ -1973,31 +2001,20 @@ fn run_web_fetch_command(
     save: Option<&PathBuf>,
     permissions: Option<&ProfilePermissionGuard>,
 ) -> Result<WebFetchReport, CliError> {
-    let config = load_vault_config(paths).config.web;
     if let Some(permissions) = permissions {
         permissions
             .check_network(url)
             .map_err(CliError::operation)?;
     }
-    let mut fetched =
-        fetch_web_content(&config, url, web_fetch_mode_name(mode)).map_err(CliError::operation)?;
-
-    if let Some(path) = save {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(CliError::operation)?;
-        }
-        match mode {
-            WebFetchMode::Raw => {
-                fs::write(path, &fetched.raw_bytes).map_err(CliError::operation)?;
-            }
-            WebFetchMode::Html | WebFetchMode::Markdown => {
-                fs::write(path, fetched.report.content.as_bytes()).map_err(CliError::operation)?;
-            }
-        }
-        fetched.report.saved = Some(path.to_string_lossy().to_string());
-    }
-
-    Ok(fetched.report)
+    apply_web_fetch_report(
+        paths,
+        &AppWebFetchRequest {
+            url: url.to_string(),
+            mode: app_web_fetch_mode(mode),
+            save: save.cloned(),
+        },
+    )
+    .map_err(CliError::operation)
 }
 
 fn run_dataview_inline_command(
