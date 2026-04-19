@@ -45,6 +45,18 @@ pub struct ConfigSetReport {
     pub rendered_contents: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ConfigDocumentSaveReport {
+    pub config_path: PathBuf,
+    pub created_config: bool,
+    pub updated: bool,
+    pub diagnostics: Vec<ConfigDiagnostic>,
+    #[serde(skip_serializing)]
+    pub absolute_config_path: PathBuf,
+    #[serde(skip_serializing)]
+    pub rendered_contents: String,
+}
+
 #[derive(Debug, Clone)]
 struct DisplayConfigState {
     json: Value,
@@ -266,6 +278,40 @@ pub fn apply_config_set_report(
     Ok(report)
 }
 
+pub fn plan_config_document_save(
+    paths: &VaultPaths,
+    rendered_contents: &str,
+) -> Result<ConfigDocumentSaveReport, AppError> {
+    validate_vulcan_overrides_toml(rendered_contents).map_err(AppError::operation)?;
+
+    let absolute_config_path = paths.config_file().to_path_buf();
+    let created_config = !absolute_config_path.exists();
+    let existing_contents = fs::read_to_string(&absolute_config_path).ok();
+    let updated = existing_contents.as_deref() != Some(rendered_contents);
+
+    Ok(ConfigDocumentSaveReport {
+        config_path: relativize_config_path(paths, &absolute_config_path),
+        created_config,
+        updated,
+        diagnostics: normalize_config_diagnostics(paths, &load_vault_config(paths).diagnostics),
+        absolute_config_path,
+        rendered_contents: rendered_contents.to_string(),
+    })
+}
+
+pub fn apply_config_document_save(
+    paths: &VaultPaths,
+    mut report: ConfigDocumentSaveReport,
+) -> Result<ConfigDocumentSaveReport, AppError> {
+    if report.updated {
+        ensure_vulcan_dir(paths).map_err(AppError::operation)?;
+        fs::write(&report.absolute_config_path, &report.rendered_contents)
+            .map_err(AppError::operation)?;
+    }
+    report.diagnostics = normalize_config_diagnostics(paths, &load_vault_config(paths).diagnostics);
+    Ok(report)
+}
+
 fn load_display_config_state(paths: &VaultPaths) -> Result<DisplayConfigState, AppError> {
     let loaded = load_vault_config(paths);
     let permission_profiles = load_permission_profiles(paths);
@@ -463,9 +509,10 @@ fn relativize_config_path(paths: &VaultPaths, path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_config_set_report, build_config_get_report, build_config_show_report,
-        config_toml_path_exists, load_config_file_toml, plan_config_set_report,
-        remove_config_toml_value, set_config_toml_value,
+        apply_config_document_save, apply_config_set_report, build_config_get_report,
+        build_config_show_report, config_toml_path_exists, load_config_file_toml,
+        plan_config_document_save, plan_config_set_report, remove_config_toml_value,
+        set_config_toml_value,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -627,5 +674,33 @@ read = { allow = ["folder:Projects/**"] }
 
         assert_eq!(stored, applied.rendered_contents);
         assert_eq!(loaded.value, serde_json::json!("markdown"));
+    }
+
+    #[test]
+    fn plan_and_apply_config_document_save_persists_rendered_contents() {
+        let (_dir, paths) = test_paths();
+        let rendered = "[links]\nstyle = \"markdown\"\n";
+
+        let planned =
+            plan_config_document_save(&paths, rendered).expect("document save should plan");
+        assert!(planned.created_config);
+        assert!(planned.updated);
+
+        let applied =
+            apply_config_document_save(&paths, planned).expect("document save should apply");
+
+        assert!(applied.updated);
+        assert_eq!(
+            fs::read_to_string(paths.config_file()).expect("config should be written"),
+            rendered
+        );
+    }
+
+    #[test]
+    fn plan_config_document_save_rejects_invalid_toml() {
+        let (_dir, paths) = test_paths();
+        let error = plan_config_document_save(&paths, "links = [")
+            .expect_err("invalid config should be rejected");
+        assert!(error.to_string().contains("parse"));
     }
 }

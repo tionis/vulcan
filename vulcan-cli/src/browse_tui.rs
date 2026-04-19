@@ -21,19 +21,26 @@ use std::path::Path;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::thread;
 use std::time::{Duration, SystemTime};
+use vulcan_app::browse::{
+    doctor_vault, evaluate_base_file, evaluate_dataview_js_query, evaluate_dql,
+    evaluate_note_inline_expressions, git_log, is_git_repo, list_daily_note_events,
+    list_kanban_boards, list_note_identities, list_tagged_note_identities, list_tags,
+    load_dataview_blocks, load_kanban_board, load_periodic_config, move_note, query_backlinks,
+    query_links, query_notes, refresh_browse_cache, search_vault,
+};
+use vulcan_app::scan::refresh_cache_incrementally;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::properties::load_note_index;
+#[cfg(test)]
+use vulcan_core::scan_vault;
 use vulcan_core::search::{SearchMode, SearchSort};
+#[cfg(test)]
+use vulcan_core::ScanMode;
 use vulcan_core::{
-    doctor_vault, evaluate_base_file, evaluate_dataview_js_query, evaluate_dql,
-    evaluate_note_inline_expressions, expected_periodic_note_path, git_log, is_git_repo,
-    list_daily_note_events, list_kanban_boards, list_note_identities, list_tagged_note_identities,
-    list_tags, load_dataview_blocks, load_kanban_board, load_vault_config, move_note,
-    query_backlinks, query_links, query_notes, scan_vault, search_vault, AutoScanMode,
-    BacklinkRecord, DataviewJsOutput, DoctorDiagnosticIssue, DoctorLinkIssue, DqlEvalError,
-    DqlQueryResult, GitLogEntry, KanbanBoardRecord, NamedCount, NoteIdentity, NoteQuery,
-    OutgoingLinkRecord, PeriodicConfig, PeriodicStartOfWeek, ResolutionStatus, ScanMode,
-    ScanSummary, SearchHit, SearchQuery, VaultPaths,
+    expected_periodic_note_path, AutoScanMode, BacklinkRecord, DataviewJsOutput,
+    DoctorDiagnosticIssue, DoctorLinkIssue, DqlQueryResult, GitLogEntry, KanbanBoardRecord,
+    NamedCount, NoteIdentity, NoteQuery, OutgoingLinkRecord, PeriodicConfig,
+    PeriodicStartOfWeek, ResolutionStatus, ScanSummary, SearchHit, SearchQuery, VaultPaths,
 };
 
 const FULL_TEXT_LIMIT: usize = 200;
@@ -104,7 +111,7 @@ fn run_event_loop(
                     let paths = state.paths.clone();
                     let edit_result = with_terminal_suspended(terminal, || {
                         open_in_editor(&absolute)?;
-                        scan_vault(&paths, ScanMode::Incremental)
+                        refresh_cache_incrementally(&paths)
                             .map(|_| ())
                             .map_err(|error| error.to_string())
                     });
@@ -139,7 +146,7 @@ fn run_event_loop(
                             evaluate_base_file(&paths, &path).map_err(|error| error.to_string())?;
                         bases_tui::run_bases_tui(&paths, &path, &report)
                             .map_err(|error| error.to_string())?;
-                        scan_vault(&paths, ScanMode::Incremental)
+                        refresh_cache_incrementally(&paths)
                             .map(|_| ())
                             .map_err(|error| error.to_string())
                     });
@@ -178,7 +185,7 @@ fn run_event_loop(
                             fs::write(&absolute, "").map_err(|error| error.to_string())?;
                         }
                         open_in_editor(&absolute)?;
-                        scan_vault(&paths, ScanMode::Incremental)
+                        refresh_cache_incrementally(&paths)
                             .map(|_| ())
                             .map_err(|error| error.to_string())
                     });
@@ -249,14 +256,14 @@ fn prepare_browse_refresh(
     refresh_mode: AutoScanMode,
 ) -> Result<Option<BackgroundRefreshState>, io::Error> {
     if !paths.cache_db().exists() {
-        scan_vault(paths, ScanMode::Incremental).map_err(io::Error::other)?;
+        refresh_browse_cache(paths).map_err(io::Error::other)?;
         return Ok(None);
     }
 
     match refresh_mode {
         AutoScanMode::Off => Ok(None),
         AutoScanMode::Blocking => {
-            scan_vault(paths, ScanMode::Incremental).map_err(io::Error::other)?;
+            refresh_browse_cache(paths).map_err(io::Error::other)?;
             Ok(None)
         }
         AutoScanMode::Background => Ok(Some(BackgroundRefreshState::spawn(paths.clone()))),
@@ -687,8 +694,7 @@ impl BackgroundRefreshState {
     fn spawn(paths: VaultPaths) -> Self {
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
-            let result =
-                scan_vault(&paths, ScanMode::Incremental).map_err(|error| error.to_string());
+            let result = refresh_browse_cache(&paths).map_err(|error| error.to_string());
             let _ = sender.send(result);
         });
         Self { receiver }
@@ -2773,7 +2779,7 @@ impl CalendarViewState {
     fn new(paths: &VaultPaths) -> Result<Self, String> {
         let selected_date = parse_calendar_date(&super::current_utc_date_string())
             .ok_or_else(|| "failed to resolve today's date for the calendar view".to_string())?;
-        let config = load_vault_config(paths).config.periodic;
+        let config = load_periodic_config(paths);
         let start_of_week = calendar_start_of_week(&config);
         let mut state = Self {
             query: String::new(),
@@ -2788,7 +2794,7 @@ impl CalendarViewState {
     }
 
     fn refresh(&mut self, paths: &VaultPaths) -> Result<(), String> {
-        self.config = load_vault_config(paths).config.periodic;
+        self.config = load_periodic_config(paths);
         self.start_of_week = calendar_start_of_week(&self.config);
         self.visible_month = calendar_month_start(self.selected_date);
 
@@ -3725,8 +3731,10 @@ fn build_dataview_preview(paths: &VaultPaths, path: &str) -> Vec<String> {
     let inline_results = evaluate_note_inline_expressions(note, &note_index);
     let blocks = match load_dataview_blocks(paths, path, None) {
         Ok(blocks) => blocks,
-        Err(DqlEvalError::Message(message))
-            if message.starts_with("no Dataview blocks found in ") =>
+        Err(error)
+            if error
+                .to_string()
+                .starts_with("no Dataview blocks found in ") =>
         {
             Vec::new()
         }

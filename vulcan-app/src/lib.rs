@@ -7,6 +7,7 @@
 
 mod error;
 
+pub mod browse;
 pub mod config;
 pub mod export;
 pub mod notes;
@@ -15,5 +16,6 @@ pub mod scan;
 pub mod tasks;
 pub mod templates;
 pub mod trust;
+pub mod web;
 
 pub use error::AppError;
