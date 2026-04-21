@@ -4466,22 +4466,22 @@ Matrix is explicitly more complex than Telegram because it brings sync loops, ro
 
 ### 9.22.6 CLI slimming and dependency cleanup
 
-- [ ] Break up the current monolithic `vulcan-cli/src/lib.rs` into thin dispatch and presentation modules once shared services exist
-- [ ] Remove direct `rusqlite`, `reqwest`, `serde_yaml`, `pulldown-cmark`, and similar workflow dependencies from `vulcan-cli` wherever the shared library layers can own them instead
-- [ ] Add boundary guardrails so `vulcan-cli` does not access cache tables via raw SQL or reimplement shared backend/parsing logic
-- [ ] Keep only clearly CLI-specific modules in `vulcan-cli`: command dispatch, output rendering, TUI modules, editor/URI launching, shell completion generation, and terminal markdown helpers
-- [ ] Exit criterion for this subsection: command modules should read as adapters over shared services rather than as the primary home of application logic
+- [x] Keep the command entrypoints split across thin `vulcan-cli/src/commands/*` adapters over shared services; centralized CLI-only renderers/helpers may still live in `vulcan-cli/src/lib.rs`, but reusable workflow logic no longer lands there as the primary home of application behavior
+- [x] Remove direct workflow dependencies from `vulcan-cli` wherever shared library layers can own them instead; direct `rusqlite`, `reqwest`, and runtime `serde_yaml` usage is gone from production CLI code, while CLI-only terminal markdown helpers continue to own `pulldown-cmark`
+- [x] Add boundary guardrails so `vulcan-cli` does not access cache tables via raw SQL or reimplement shared backend/parsing logic
+- [x] Keep only clearly CLI-specific modules in `vulcan-cli`: command dispatch, output rendering, TUI modules, editor/URI launching, shell completion generation, and terminal markdown helpers
+- [x] Exit criterion for this subsection: command modules now read as adapters over shared services rather than as the primary home of application logic
 
 ### 9.22.7 Serve/daemon boundary and migration safety
 
-- [ ] Treat the current `serve` implementation as an interim transport and move any reusable request handling/query services below the CLI boundary so Phase 10 does not depend on `vulcan-cli` internals
-- [ ] Add parity tests or golden-output comparisons for extracted workflows during the migration, then remove the old duplicate implementations once parity is proven
-- [ ] Preserve existing CLI JSON contracts unless a deliberate breaking change is documented elsewhere in the roadmap
-- [ ] Run the full workspace verification gate before closing the phase:
+- [x] Treat the current `serve` implementation as an interim transport and move reusable request handling/query services below the CLI boundary so Phase 10 does not depend on `vulcan-cli` internals
+- [x] Add parity tests or golden-output comparisons for extracted workflows during the migration, then remove the old duplicate implementations once parity is proven; shared app-layer route tests plus CLI endpoint tests now cover the extracted serve workflows
+- [x] Preserve existing CLI JSON contracts unless a deliberate breaking change is documented elsewhere in the roadmap
+- [x] Run the full workspace verification gate before closing the phase:
   - `cargo fmt --all`
   - `cargo clippy --workspace --all-targets -- -D warnings`
   - `cargo test --workspace`
-- [ ] Final exit criterion: a new daemon or assistant entrypoint can perform note, task, export, config, template, plugin, and web workflows by calling shared library APIs directly, without importing `vulcan-cli` internals
+- [x] Final exit criterion: a new daemon or assistant entrypoint can perform note, task, export, config, template, plugin, and web workflows by calling shared library APIs directly, without importing `vulcan-cli` internals
 
 ---
 
