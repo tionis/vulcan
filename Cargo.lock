@@ -2812,7 +2812,6 @@ dependencies = [
  "pulldown-cmark",
  "ratatui",
  "regex",
- "reqwest",
  "rquickjs",
  "rusqlite",
  "rustyline",
