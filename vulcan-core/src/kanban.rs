@@ -1095,7 +1095,7 @@ fn footer_settings_start_offset(source: &str, line_starts: &[usize]) -> Option<u
 fn apply_text_edits(source: &str, edits: &[(std::ops::Range<usize>, String)]) -> String {
     let mut updated = source.to_string();
     let mut ordered = edits.to_vec();
-    ordered.sort_by(|left, right| right.0.start.cmp(&left.0.start));
+    ordered.sort_by_key(|edit| std::cmp::Reverse(edit.0.start));
     for (range, replacement) in ordered {
         updated.replace_range(range, replacement.as_str());
     }

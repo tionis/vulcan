@@ -990,7 +990,7 @@ fn build_file_plan(
 fn apply_edits(source: &str, edits: &[TextEdit]) -> String {
     let mut updated = source.to_string();
     let mut sorted = edits.to_vec();
-    sorted.sort_by(|left, right| right.start.cmp(&left.start));
+    sorted.sort_by_key(|edit| std::cmp::Reverse(edit.start));
     for edit in sorted {
         updated.replace_range(edit.start..edit.end, &edit.replacement);
     }
