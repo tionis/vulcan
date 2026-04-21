@@ -1926,7 +1926,7 @@ pub fn build_tasks_blocked_report(paths: &VaultPaths) -> Result<TasksBlockedRepo
                 .map(|task| TasksBlockedItem { task, blockers })
         })
         .collect::<Vec<_>>();
-    tasks.sort_by(|left, right| task_sort_key(&left.task).cmp(&task_sort_key(&right.task)));
+    tasks.sort_by_key(|item| task_sort_key(&item.task));
 
     Ok(TasksBlockedReport { tasks })
 }
@@ -1941,7 +1941,7 @@ pub fn build_tasks_graph_report(paths: &VaultPaths) -> Result<TasksGraphReport, 
             Some((key, task))
         })
         .collect::<Vec<_>>();
-    tasks.sort_by(|left, right| task_sort_key(&left.1).cmp(&task_sort_key(&right.1)));
+    tasks.sort_by_key(|item| task_sort_key(&item.1));
 
     let mut node_by_id = HashMap::<String, TaskDependencyNode>::new();
     let mut nodes = Vec::with_capacity(tasks.len());

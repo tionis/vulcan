@@ -49,9 +49,7 @@ pub fn is_trusted(vault_root: &Path) -> bool {
     let Ok(canonical) = vault_root.canonicalize() else {
         return false;
     };
-    load()
-        .map(|data| data.vaults.contains(&canonical))
-        .unwrap_or(false)
+    load().is_ok_and(|data| data.vaults.contains(&canonical))
 }
 
 /// Mark `vault_root` as trusted. Returns `true` if it was newly added.
