@@ -5074,9 +5074,9 @@ fn resolve_existing_direct_markdown_target(
             .map(|path| path_buf_to_slash_string(&path));
         let display_path = vault_relative_path.clone().unwrap_or_else(|| {
             if candidate.is_absolute() {
-                path_buf_to_slash_string(&absolute_path)
+                absolute_candidate.to_string_lossy().into_owned()
             } else {
-                path_buf_to_slash_string(&candidate)
+                candidate.to_string_lossy().into_owned()
             }
         });
 

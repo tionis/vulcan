@@ -412,7 +412,9 @@ fn count_search_rows_tx(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{scan_vault, search_vault, CacheDatabase, ScanMode, SearchQuery};
+    use crate::{
+        initialize_vulcan_dir, scan_vault, search_vault, CacheDatabase, ScanMode, SearchQuery,
+    };
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -424,6 +426,7 @@ mod tests {
         let vault_root = temp_dir.path().join("vault");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
+        initialize_vulcan_dir(&paths).expect("vault should initialize");
 
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
         let mut database = CacheDatabase::open(&paths).expect("database should open");
@@ -445,6 +448,7 @@ mod tests {
         let vault_root = temp_dir.path().join("vault");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
+        initialize_vulcan_dir(&paths).expect("vault should initialize");
 
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
         let mut database = CacheDatabase::open(&paths).expect("database should open");
@@ -468,6 +472,7 @@ mod tests {
         let vault_root = temp_dir.path().join("vault");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
+        initialize_vulcan_dir(&paths).expect("vault should initialize");
 
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
         let mut database = CacheDatabase::open(&paths).expect("database should open");
@@ -512,6 +517,7 @@ mod tests {
         let vault_root = temp_dir.path().join("vault");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
+        initialize_vulcan_dir(&paths).expect("vault should initialize");
 
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
         let mut database = CacheDatabase::open(&paths).expect("database should open");
@@ -546,6 +552,7 @@ mod tests {
         let vault_root = temp_dir.path().join("vault");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
+        initialize_vulcan_dir(&paths).expect("vault should initialize");
 
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
         let report = inspect_cache(&paths).expect("inspect should succeed");
@@ -565,6 +572,7 @@ mod tests {
         let vault_root = temp_dir.path().join("vault");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
+        initialize_vulcan_dir(&paths).expect("vault should initialize");
 
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
         CacheDatabase::open(&paths)
@@ -592,6 +600,7 @@ mod tests {
         let vault_root = temp_dir.path().join("vault");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
+        initialize_vulcan_dir(&paths).expect("vault should initialize");
 
         scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
         let dry_run = cache_vacuum(&paths, &CacheVacuumQuery { dry_run: true })

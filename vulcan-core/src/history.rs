@@ -1167,7 +1167,7 @@ fn open_existing_cache(paths: &VaultPaths) -> Result<CacheDatabase, CheckpointEr
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{scan_vault, ScanMode};
+    use crate::{initialize_vulcan_dir, scan_vault, ScanMode};
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
@@ -1178,6 +1178,7 @@ mod tests {
         let vault_root = temp_dir.path().join("vault");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
+        initialize_vulcan_dir(&paths).expect("vault should initialize");
 
         scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
         create_checkpoint(&paths, "baseline").expect("checkpoint should create");
@@ -1206,6 +1207,7 @@ mod tests {
         let vault_root = temp_dir.path().join("vault");
         copy_fixture_vault("basic", &vault_root);
         let paths = VaultPaths::new(&vault_root);
+        initialize_vulcan_dir(&paths).expect("vault should initialize");
 
         scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
         fs::write(vault_root.join("Extra.md"), "# Extra\n").expect("extra note should write");
