@@ -30,10 +30,10 @@ use vulcan_core::{
     parse_tasknote_time_entries, parse_tasks_query, period_range_for_date, resolve_note_reference,
     shape_tasks_query_result, task_upcoming_occurrences, tasknotes_default_date_value,
     tasknotes_default_recurrence_rule, tasknotes_default_reminder_values,
-    tasknotes_reminder_notify_at, tasknotes_status_state, BasesEvalReport, BasesEvaluator,
-    GraphQueryError, IndexedTaskNote, NoteRecord, ParsedTaskNoteInput, RefactorChange,
-    TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue, TaskNotesSavedViewNode,
-    TasksQueryResult, VaultConfig, VaultPaths,
+    tasknotes_reminder_notify_at, tasknotes_status_definition, tasknotes_status_state,
+    BasesEvalReport, BasesEvaluator, GraphQueryError, IndexedTaskNote, NoteRecord,
+    ParsedTaskNoteInput, RefactorChange, TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue,
+    TaskNotesSavedViewNode, TasksQueryResult, VaultConfig, VaultPaths,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -850,6 +850,68 @@ pub fn apply_task_archive(
         request.dry_run,
         prepare_tasknote_archive_plan,
     )
+}
+
+pub fn process_due_tasknote_auto_archives(
+    paths: &VaultPaths,
+    exclude_task: Option<&str>,
+) -> Result<Vec<String>, AppError> {
+    let config = load_vault_config(paths).config;
+    let now_ms = current_utc_timestamp_ms();
+    let excluded_path = exclude_task
+        .and_then(|task| load_tasknote_note(paths, task).ok())
+        .map(|loaded| loaded.path);
+    let candidates = load_tasknote_records(paths)?
+        .into_iter()
+        .filter(|record| excluded_path.as_ref() != Some(&record.path))
+        .filter(|record| {
+            if record.indexed.archived {
+                return false;
+            }
+
+            let Some(status) =
+                tasknotes_status_definition(&config.tasknotes, &record.indexed.status)
+            else {
+                return false;
+            };
+            if !status.is_completed || !status.auto_archive {
+                return false;
+            }
+
+            let completed_at = record
+                .indexed
+                .completed_date
+                .as_deref()
+                .and_then(parse_date_like_string)
+                .unwrap_or_default();
+            if completed_at <= 0 {
+                return false;
+            }
+
+            let delay_ms = i64::try_from(status.auto_archive_delay)
+                .unwrap_or(i64::MAX)
+                .saturating_mul(60_000);
+            now_ms >= completed_at.saturating_add(delay_ms)
+        })
+        .map(|record| record.path)
+        .collect::<Vec<_>>();
+    let mut changed_paths = Vec::new();
+
+    for path in candidates {
+        let loaded = load_tasknote_note(paths, &path)?;
+        let report = apply_loaded_tasknote_mutation(
+            paths,
+            &loaded,
+            "auto_archive",
+            false,
+            prepare_tasknote_archive_plan,
+        )?;
+        changed_paths.extend(report.changed_paths);
+    }
+
+    changed_paths.sort();
+    changed_paths.dedup();
+    Ok(changed_paths)
 }
 
 #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
@@ -5861,10 +5923,10 @@ mod tests {
         build_task_track_summary_report, build_tasks_blocked_report, build_tasks_eval_report,
         build_tasks_graph_report, build_tasks_list_report, build_tasks_next_report,
         build_tasks_view_list_report, build_tasks_view_report, current_utc_date_string,
-        TaskAddRequest, TaskArchiveRequest, TaskCompleteRequest, TaskConvertRequest,
-        TaskCreateRequest, TaskEvalRequest, TaskListRequest, TaskPomodoroStartRequest,
-        TaskPomodoroStopRequest, TaskRescheduleRequest, TaskSetRequest, TaskTrackStartRequest,
-        TaskTrackStopRequest, TaskTrackSummaryPeriod,
+        process_due_tasknote_auto_archives, TaskAddRequest, TaskArchiveRequest,
+        TaskCompleteRequest, TaskConvertRequest, TaskCreateRequest, TaskEvalRequest,
+        TaskListRequest, TaskPomodoroStartRequest, TaskPomodoroStopRequest, TaskRescheduleRequest,
+        TaskSetRequest, TaskTrackStartRequest, TaskTrackStopRequest, TaskTrackSummaryPeriod,
     };
     use crate::templates::render_note_from_parts;
     use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
@@ -5873,6 +5935,69 @@ mod tests {
     use vulcan_core::{
         initialize_vulcan_dir, load_vault_config, scan_vault_with_progress, ScanMode, VaultPaths,
     };
+
+    #[test]
+    fn process_due_tasknote_auto_archives_moves_completed_tasks() {
+        let temp_dir = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path());
+        initialize_vulcan_dir(&paths).expect("init should succeed");
+        fs::write(
+            paths.config_file(),
+            concat!(
+                "tasknotes.default_status = \"open\"\n",
+                "tasknotes.default_priority = \"normal\"\n",
+                "tasknotes.archive_folder = \"Archive/Tasks\"\n\n",
+                "[[tasknotes.statuses]]\n",
+                "id = \"open\"\n",
+                "value = \"open\"\n",
+                "label = \"Open\"\n",
+                "color = \"#808080\"\n",
+                "isCompleted = false\n",
+                "order = 1\n",
+                "autoArchive = false\n",
+                "autoArchiveDelay = 5\n\n",
+                "[[tasknotes.statuses]]\n",
+                "id = \"done\"\n",
+                "value = \"done\"\n",
+                "label = \"Done\"\n",
+                "color = \"#16a34a\"\n",
+                "isCompleted = true\n",
+                "order = 2\n",
+                "autoArchive = true\n",
+                "autoArchiveDelay = 0\n",
+            ),
+        )
+        .expect("config should write");
+        let config = load_vault_config(&paths).config;
+        let completed_key = config.tasknotes.field_mapping.completed_date.clone();
+        seed_tasknote(
+            &paths,
+            &config,
+            "Tasks/Done.md",
+            "Done",
+            "done",
+            &[(
+                completed_key.as_str(),
+                YamlValue::String("2026-04-01T09:00:00Z".to_string()),
+            )],
+            "",
+        )
+        .expect("seed task");
+        scan_vault_with_progress(&paths, ScanMode::Full, |_| {}).expect("scan should succeed");
+
+        let changed_paths =
+            process_due_tasknote_auto_archives(&paths, None).expect("auto archive should succeed");
+
+        assert_eq!(
+            changed_paths,
+            vec![
+                "Archive/Tasks/Done.md".to_string(),
+                "Tasks/Done.md".to_string(),
+            ]
+        );
+        assert!(!paths.vault_root().join("Tasks/Done.md").exists());
+        assert!(paths.vault_root().join("Archive/Tasks/Done.md").exists());
+    }
 
     #[test]
     fn apply_task_set_marks_completed_tasks_with_completed_date() {

@@ -188,7 +188,6 @@ use clap_complete::generate;
 use regex::Regex;
 use serde::Serialize;
 use serde_json::{Map, Value};
-use serde_yaml::{Mapping as YamlMapping, Value as YamlValue};
 use serve::{serve_forever, ServeOptions};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
@@ -200,6 +199,18 @@ use std::path::{Component, Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
+use vulcan_app::browse::{
+    build_dataview_eval_report as app_build_dataview_eval_report,
+    build_dataview_inline_report as app_build_dataview_inline_report,
+    build_dataview_query_js_report as app_build_dataview_query_js_report,
+    build_dataview_query_report as app_build_dataview_query_report,
+    build_periodic_list_report as app_build_periodic_list_report,
+    build_vault_status_report as app_build_vault_status_report,
+    collect_complete_candidates as app_collect_complete_candidates,
+    DataviewBlockResult as AppDataviewBlockResult, DataviewEvalReport as AppDataviewEvalReport,
+    DataviewInlineReport as AppDataviewInlineReport, PeriodicListItem as AppPeriodicListItem,
+    VaultStatusReport as AppVaultStatusReport,
+};
 use vulcan_app::export::{
     apply_export_profile_create, apply_export_profile_delete, apply_export_profile_rule_add,
     apply_export_profile_rule_delete, apply_export_profile_rule_move,
@@ -220,10 +231,11 @@ use vulcan_app::export::{
 };
 use vulcan_app::notes::{
     apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
-    diagnose_external_markdown_contents, diagnose_note_contents,
-    MarkdownTarget as AppMarkdownTarget, NoteAppendMode, NoteAppendRequest as AppNoteAppendRequest,
-    NoteCreateRequest as AppNoteCreateRequest, NoteDeleteRequest as AppNoteDeleteRequest,
-    NotePatchRequest as AppNotePatchRequest, NoteSetRequest as AppNoteSetRequest,
+    diagnose_external_markdown_contents, diagnose_note_contents, json_properties_to_frontmatter,
+    parse_note_frontmatter_bindings, MarkdownTarget as AppMarkdownTarget, NoteAppendMode,
+    NoteAppendRequest as AppNoteAppendRequest, NoteCreateRequest as AppNoteCreateRequest,
+    NoteDeleteRequest as AppNoteDeleteRequest, NotePatchRequest as AppNotePatchRequest,
+    NoteSetRequest as AppNoteSetRequest,
 };
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::tasks::{
@@ -234,7 +246,8 @@ use vulcan_app::tasks::{
     build_task_track_log_report, build_task_track_status_report, build_task_track_summary_report,
     build_tasks_blocked_report, build_tasks_eval_report, build_tasks_graph_report,
     build_tasks_list_report, build_tasks_next_report, build_tasks_query_result,
-    build_tasks_view_list_report, build_tasks_view_report, TaskAddReport,
+    build_tasks_view_list_report, build_tasks_view_report,
+    process_due_tasknote_auto_archives as app_process_due_tasknote_auto_archives, TaskAddReport,
     TaskAddRequest as AppTaskAddRequest, TaskArchiveRequest as AppTaskArchiveRequest,
     TaskCompleteRequest as AppTaskCompleteRequest, TaskConvertReport,
     TaskConvertRequest as AppTaskConvertRequest, TaskCreateReport,
@@ -279,46 +292,42 @@ use vulcan_core::expression::functions::{
     date_components, parse_date_like_string, parse_duration_string,
 };
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
-use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     add_kanban_card, all_importers, annotate_import_conflicts, archive_kanban_card, bulk_replace,
     cache_vacuum, create_checkpoint, delete_saved_report, doctor_fix, doctor_vault,
     evaluate_base_file, evaluate_dataview_js_with_options, evaluate_dql_with_filter,
-    evaluate_note_inline_expressions, expected_periodic_note_path, export_daily_events_to_ics,
-    export_static_search_index, extract_tasknote, git_blame, git_diff, git_log, git_recent_log,
-    git_status, initialize_vault, inspect_cache, link_mentions, list_checkpoints,
-    list_daily_note_events, list_saved_reports, load_dataview_blocks,
-    load_events_for_periodic_note, load_kanban_board, load_saved_report, load_vault_config,
-    merge_tags, move_kanban_card, move_note, period_range_for_date, plan_base_note_create,
-    query_backlinks, query_change_report, query_links, query_notes, rebuild_vault_with_progress,
-    rename_alias, rename_block_ref, rename_heading, rename_property, render_markdown_fragment_html,
-    render_markdown_html, repair_fts, resolve_note_reference, resolve_periodic_note,
-    resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
-    step_period_start, tasknotes_status_definition, tasknotes_status_state, verify_cache,
+    expected_periodic_note_path, export_daily_events_to_ics, export_static_search_index, git_blame,
+    git_diff, git_log, git_recent_log, git_status, initialize_vault, inspect_cache, link_mentions,
+    list_checkpoints, list_daily_note_events, list_saved_reports, load_events_for_periodic_note,
+    load_kanban_board, load_saved_report, load_vault_config, merge_tags, move_kanban_card,
+    move_note, period_range_for_date, plan_base_note_create, query_backlinks, query_change_report,
+    query_links, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
+    rename_heading, rename_property, render_markdown_fragment_html, render_markdown_html,
+    repair_fts, resolve_note_reference, resolve_periodic_note, resolve_permission_profile,
+    save_saved_report, scan_vault_with_progress, search_vault, step_period_start, verify_cache,
     watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext,
-    BasesEvalReport, BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport,
-    CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind,
-    ChangeReport, CheckpointRecord, ClusterReport, ConfigImportReport, ConfigPermissionMode,
-    CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
+    BasesEvalReport, BasesViewEditReport, BulkMutationReport, CacheInspectReport, CacheVacuumQuery,
+    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
+    CheckpointRecord, ClusterReport, ConfigImportReport, ConfigPermissionMode, CoreImporter,
+    DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
     DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
-    DuplicateSuggestionsReport, EvaluatedInlineExpression, GitBlameLine, GitCommitReport,
-    GitLogEntry, GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
-    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
-    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
-    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount,
-    NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport,
-    PeriodicConfig, PeriodicNotesImporter, PermissionFilter, PermissionGuard, PermissionMode,
-    PermissionProfile, PluginEvent, PluginImporter, ProfilePermissionGuard, QueryReport,
-    RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit,
-    RelatedNotesReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport,
-    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchBackendKind,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
-    TasksImporter, TasksQueryResult, TemplaterImporter, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
-    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
-    WatchReport,
+    DuplicateSuggestionsReport, GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport,
+    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
+    GraphPathReport, GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary,
+    JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary,
+    KanbanImporter, KanbanMoveReport, KanbanTaskStatus, MentionSuggestion,
+    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
+    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig,
+    PeriodicNotesImporter, PermissionFilter, PermissionGuard, PermissionMode, PermissionProfile,
+    PluginEvent, PluginImporter, ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport,
+    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
+    RepairFtsReport, ResolvedPermissionProfile, SavedExport, SavedExportFormat,
+    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
+    ScanPhase, ScanProgress, ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport,
+    SearchSort, StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult,
+    TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase,
+    VectorIndexProgress, VectorIndexReport, VectorNeighborHit, VectorNeighborsReport,
+    VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -929,56 +938,17 @@ struct GitBlameReport {
 
 type WebSearchReport = AppWebSearchReport;
 type WebFetchReport = AppWebFetchReport;
+type DataviewInlineReport = AppDataviewInlineReport;
+type DataviewEvalReport = AppDataviewEvalReport;
+type DataviewBlockResult = AppDataviewBlockResult;
+type PeriodicListItem = AppPeriodicListItem;
+type VaultStatusReport = AppVaultStatusReport;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct RenderReport {
     path: Option<String>,
     source: String,
     rendered: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct DataviewInlineReport {
-    file: String,
-    results: Vec<EvaluatedInlineExpression>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct DataviewEvalReport {
-    file: String,
-    blocks: Vec<DataviewBlockReport>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "engine", content = "data", rename_all = "snake_case")]
-enum DataviewBlockResult {
-    Dql(DqlQueryResult),
-    Js(DataviewJsResult),
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct DataviewBlockReport {
-    block_index: usize,
-    line_number: i64,
-    language: String,
-    source: String,
-    result: Option<DataviewBlockResult>,
-    error: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-struct LoadedTaskNote {
-    path: String,
-    body: String,
-    frontmatter: YamlMapping,
-    indexed: vulcan_core::IndexedTaskNote,
-    config: vulcan_core::VaultConfig,
-}
-
-#[derive(Debug, Clone)]
-struct TaskNoteRecord {
-    path: String,
-    indexed: vulcan_core::IndexedTaskNote,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1101,14 +1071,6 @@ struct DailyListItem {
     path: String,
     event_count: usize,
     events: Vec<PeriodicEventReport>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct PeriodicListItem {
-    period_type: String,
-    date: String,
-    path: String,
-    event_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2022,23 +1984,7 @@ fn run_dataview_inline_command(
     file: &str,
     permissions: Option<&ProfilePermissionGuard>,
 ) -> Result<DataviewInlineReport, CliError> {
-    let resolved = resolve_note_reference(paths, file).map_err(CliError::operation)?;
-    if let Some(permissions) = permissions {
-        permissions
-            .check_read_path(&resolved.path)
-            .map_err(CliError::operation)?;
-    }
-    let note_index = load_note_index(paths).map_err(CliError::operation)?;
-    let note = note_index
-        .values()
-        .find(|note| note.document_path == resolved.path)
-        .ok_or_else(|| CliError::operation(format!("note is not indexed: {}", resolved.path)))?;
-    let results = evaluate_note_inline_expressions(note, &note_index);
-
-    Ok(DataviewInlineReport {
-        file: resolved.path,
-        results,
-    })
+    app_build_dataview_inline_report(paths, file, permissions).map_err(CliError::operation)
 }
 
 fn run_dataview_query_command(
@@ -2046,7 +1992,7 @@ fn run_dataview_query_command(
     dql: &str,
     filter: Option<&PermissionFilter>,
 ) -> Result<DqlQueryResult, CliError> {
-    evaluate_dql_with_filter(paths, dql, None, filter).map_err(CliError::operation)
+    app_build_dataview_query_report(paths, dql, None, filter).map_err(CliError::operation)
 }
 
 fn run_dataview_query_js_command(
@@ -2055,18 +2001,8 @@ fn run_dataview_query_js_command(
     file: Option<&str>,
     permission_profile: Option<&str>,
 ) -> Result<DataviewJsResult, CliError> {
-    evaluate_dataview_js_with_options(
-        paths,
-        js,
-        file,
-        DataviewJsEvalOptions {
-            timeout: None,
-            sandbox: None,
-            permission_profile: permission_profile.map(ToOwned::to_owned),
-            ..DataviewJsEvalOptions::default()
-        },
-    )
-    .map_err(CliError::operation)
+    app_build_dataview_query_js_report(paths, js, file, permission_profile)
+        .map_err(CliError::operation)
 }
 
 fn strip_shebang_line(source: &str) -> &str {
@@ -2441,64 +2377,8 @@ fn run_dataview_eval_command(
     permission_profile: Option<&str>,
     permissions: Option<&ProfilePermissionGuard>,
 ) -> Result<DataviewEvalReport, CliError> {
-    let resolved = resolve_note_reference(paths, file).map_err(CliError::operation)?;
-    if let Some(permissions) = permissions {
-        permissions
-            .check_read_path(&resolved.path)
-            .map_err(CliError::operation)?;
-    }
-    let blocks = load_dataview_blocks(paths, file, block).map_err(CliError::operation)?;
-    let file = blocks
-        .first()
-        .map_or_else(|| file.to_string(), |block| block.file.clone());
-    let mut reports = Vec::with_capacity(blocks.len());
-    let read_filter = permissions.map(PermissionGuard::read_filter);
-
-    for block in blocks {
-        let (result, error) = if block.language == "dataview" {
-            match evaluate_dql_with_filter(
-                paths,
-                &block.source,
-                Some(&block.file),
-                read_filter.as_ref(),
-            ) {
-                Ok(result) => (Some(DataviewBlockResult::Dql(result)), None),
-                Err(error) => (None, Some(error.to_string())),
-            }
-        } else if block.language == "dataviewjs" {
-            match run_dataview_query_js_command(
-                paths,
-                &block.source,
-                Some(&block.file),
-                permission_profile,
-            ) {
-                Ok(result) => (Some(DataviewBlockResult::Js(result)), None),
-                Err(error) => (None, Some(error.to_string())),
-            }
-        } else {
-            (
-                None,
-                Some(format!(
-                    "unsupported Dataview block language `{}`",
-                    block.language
-                )),
-            )
-        };
-
-        reports.push(DataviewBlockReport {
-            block_index: block.block_index,
-            line_number: block.line_number,
-            language: block.language,
-            source: block.source,
-            result,
-            error,
-        });
-    }
-
-    Ok(DataviewEvalReport {
-        file,
-        blocks: reports,
-    })
+    app_build_dataview_eval_report(paths, file, block, permission_profile, permissions)
+        .map_err(CliError::operation)
 }
 
 fn run_tasks_query_command(paths: &VaultPaths, source: &str) -> Result<TasksQueryResult, CliError> {
@@ -2511,186 +2391,6 @@ fn run_tasks_view_list_command(paths: &VaultPaths) -> Result<TaskNotesViewListRe
 
 fn run_tasks_view_command(paths: &VaultPaths, name: &str) -> Result<BasesEvalReport, CliError> {
     build_tasks_view_report(paths, name).map_err(CliError::operation)
-}
-
-#[derive(Debug)]
-struct TaskMutationPlan {
-    changes: Vec<RefactorChange>,
-    moved_to: Option<String>,
-}
-
-fn current_utc_timestamp_string() -> String {
-    TemplateTimestamp::current().default_strings().datetime
-}
-
-fn load_tasknote_note(paths: &VaultPaths, task: &str) -> Result<LoadedTaskNote, CliError> {
-    let path = resolve_existing_note_path(paths, task)?;
-    let source = fs::read_to_string(paths.vault_root().join(&path)).map_err(CliError::operation)?;
-    let config = load_vault_config(paths).config;
-    let parsed = vulcan_core::parse_document(&source, &config);
-    let indexed_properties = extract_indexed_properties(&parsed, &config)
-        .map_err(CliError::operation)?
-        .map(|properties| serde_json::from_str::<Value>(&properties.canonical_json))
-        .transpose()
-        .map_err(CliError::operation)?;
-    let (frontmatter, body) =
-        parse_frontmatter_document(&source, false).map_err(CliError::operation)?;
-    let frontmatter = frontmatter.unwrap_or_default();
-    let frontmatter_json = load_note_index(paths)
-        .ok()
-        .and_then(|index| {
-            index
-                .into_values()
-                .find(|note| note.document_path == path)
-                .map(|note| note.properties)
-        })
-        .or(indexed_properties)
-        .unwrap_or_else(|| Value::Object(Map::new()));
-    let title = Path::new(&path)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or_default();
-    let indexed =
-        extract_tasknote(&path, title, &frontmatter_json, &config.tasknotes).or_else(|| {
-            let mut permissive = config.tasknotes.clone();
-            permissive.excluded_folders.clear();
-            extract_tasknote(&path, title, &frontmatter_json, &permissive)
-        });
-    let indexed = indexed
-        .ok_or_else(|| CliError::operation(format!("note is not a TaskNotes task: {task}")))?;
-
-    Ok(LoadedTaskNote {
-        path,
-        body: normalize_tasknote_body(&body),
-        frontmatter,
-        indexed,
-        config,
-    })
-}
-
-fn normalize_tasknote_body(body: &str) -> String {
-    let body = body.trim_start_matches('\n').trim_end_matches('\n');
-    if body.is_empty() {
-        String::new()
-    } else {
-        format!("{body}\n")
-    }
-}
-
-fn current_utc_timestamp_ms() -> i64 {
-    vulcan_core::current_utc_timestamp_ms()
-}
-
-fn format_utc_timestamp_ms(ms: i64) -> String {
-    TemplateTimestamp::from_millis(ms)
-        .default_strings()
-        .datetime
-}
-
-fn load_tasknote_records(paths: &VaultPaths) -> Result<Vec<TaskNoteRecord>, CliError> {
-    let config = load_vault_config(paths).config;
-    let note_index = load_note_index(paths).map_err(CliError::operation)?;
-    let mut records = note_index
-        .into_values()
-        .filter_map(|note| {
-            let title = Path::new(&note.document_path)
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-                .unwrap_or_default();
-            let indexed = extract_tasknote(
-                &note.document_path,
-                title,
-                &note.properties,
-                &config.tasknotes,
-            )?;
-            Some(TaskNoteRecord {
-                path: note.document_path,
-                indexed,
-            })
-        })
-        .collect::<Vec<_>>();
-    records.sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(records)
-}
-
-fn tasknote_auto_archive_due(
-    record: &TaskNoteRecord,
-    config: &vulcan_core::VaultConfig,
-    now_ms: i64,
-) -> bool {
-    if record.indexed.archived {
-        return false;
-    }
-
-    let Some(status) = tasknotes_status_definition(&config.tasknotes, &record.indexed.status)
-    else {
-        return false;
-    };
-    if !status.is_completed || !status.auto_archive {
-        return false;
-    }
-
-    let completed_at = record
-        .indexed
-        .completed_date
-        .as_deref()
-        .and_then(parse_date_like_string)
-        .unwrap_or_default();
-    if completed_at <= 0 {
-        return false;
-    }
-
-    let delay_ms = i64::try_from(status.auto_archive_delay)
-        .unwrap_or(i64::MAX)
-        .saturating_mul(60_000);
-    now_ms >= completed_at.saturating_add(delay_ms)
-}
-
-fn tasknote_change_summary(value: Option<&YamlValue>) -> String {
-    match value {
-        None => "<missing>".to_string(),
-        Some(YamlValue::String(text)) => text.clone(),
-        Some(value) => serde_json::to_string(&serde_json::to_value(value).unwrap_or(Value::Null))
-            .unwrap_or_else(|_| "<unserializable>".to_string()),
-    }
-}
-
-fn set_tasknote_frontmatter_value(
-    frontmatter: &mut YamlMapping,
-    key: &str,
-    value: Option<YamlValue>,
-) -> Option<RefactorChange> {
-    let yaml_key = YamlValue::String(key.to_string());
-    let before = frontmatter.get(&yaml_key).cloned();
-
-    if let Some(value) = value {
-        if before.as_ref() == Some(&value) {
-            return None;
-        }
-        frontmatter.insert(yaml_key, value.clone());
-        Some(RefactorChange {
-            before: format!("{key}: {}", tasknote_change_summary(before.as_ref())),
-            after: format!("{key}: {}", tasknote_change_summary(Some(&value))),
-        })
-    } else {
-        before.as_ref()?;
-        frontmatter.remove(&yaml_key);
-        Some(RefactorChange {
-            before: format!("{key}: {}", tasknote_change_summary(before.as_ref())),
-            after: format!("{key}: <removed>"),
-        })
-    }
-}
-
-fn yaml_string_list(value: Option<&YamlValue>) -> Vec<String> {
-    match value {
-        Some(YamlValue::String(text)) => vec![text.clone()],
-        Some(YamlValue::Sequence(items)) => items
-            .iter()
-            .filter_map(|item| item.as_str().map(ToOwned::to_owned))
-            .collect(),
-        _ => Vec::new(),
-    }
 }
 
 #[allow(
@@ -2824,80 +2524,6 @@ fn run_tasks_convert_command(
         run_incremental_scan(paths, output, use_stderr_color, quiet)?;
     }
     Ok(report)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn apply_loaded_tasknote_mutation<F>(
-    paths: &VaultPaths,
-    loaded: &LoadedTaskNote,
-    action: &str,
-    dry_run: bool,
-    output: OutputFormat,
-    use_stderr_color: bool,
-    quiet: bool,
-    mutate: F,
-) -> Result<TaskMutationReport, CliError>
-where
-    F: FnOnce(&mut YamlMapping, &LoadedTaskNote) -> Result<TaskMutationPlan, CliError>,
-{
-    let mut frontmatter = loaded.frontmatter.clone();
-    let TaskMutationPlan {
-        mut changes,
-        moved_to,
-    } = mutate(&mut frontmatter, loaded)?;
-    let moved_to = moved_to.filter(|path| path != &loaded.path);
-    let rendered =
-        render_note_from_parts(Some(&frontmatter), &loaded.body).map_err(CliError::operation)?;
-
-    let mut changed_paths = Vec::new();
-    if !changes.is_empty() || moved_to.is_some() {
-        changed_paths.push(loaded.path.clone());
-        if let Some(path) = moved_to.as_ref() {
-            changed_paths.push(path.clone());
-        }
-    }
-    changed_paths.sort();
-    changed_paths.dedup();
-
-    if !dry_run && !changed_paths.is_empty() {
-        let source_path = paths.vault_root().join(&loaded.path);
-        if let Some(destination) = moved_to.as_ref() {
-            let destination_path = paths.vault_root().join(destination);
-            if destination_path.exists() {
-                return Err(CliError::operation(format!(
-                    "destination task already exists: {destination}"
-                )));
-            }
-        }
-        fs::write(&source_path, rendered).map_err(CliError::operation)?;
-
-        if let Some(destination) = moved_to.as_ref() {
-            let destination_path = paths.vault_root().join(destination);
-            if let Some(parent) = destination_path.parent() {
-                fs::create_dir_all(parent).map_err(CliError::operation)?;
-            }
-            fs::rename(&source_path, &destination_path).map_err(CliError::operation)?;
-        }
-
-        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
-    }
-
-    if changes.is_empty() && moved_to.is_some() {
-        changes.push(RefactorChange {
-            before: loaded.path.clone(),
-            after: moved_to.clone().unwrap_or_else(|| loaded.path.clone()),
-        });
-    }
-
-    Ok(TaskMutationReport {
-        action: action.to_string(),
-        dry_run,
-        path: moved_to.clone().unwrap_or_else(|| loaded.path.clone()),
-        moved_from: moved_to.as_ref().map(|_| loaded.path.clone()),
-        moved_to,
-        changes,
-        changed_paths,
-    })
 }
 
 fn run_tasks_show_command(paths: &VaultPaths, task: &str) -> Result<TaskShowReport, CliError> {
@@ -3049,13 +2675,13 @@ fn run_tasks_edit_command(
     use_stderr_color: bool,
     quiet: bool,
 ) -> Result<EditReport, CliError> {
-    let loaded = load_tasknote_note(paths, task)?;
-    let absolute_path = paths.vault_root().join(&loaded.path);
+    let report = build_task_show_report(paths, task).map_err(CliError::operation)?;
+    let absolute_path = paths.vault_root().join(&report.path);
     open_in_editor(&absolute_path).map_err(CliError::operation)?;
     run_incremental_scan(paths, output, use_stderr_color, quiet)?;
 
     Ok(EditReport {
-        path: loaded.path,
+        path: report.path,
         created: false,
         rescanned: true,
     })
@@ -3113,61 +2739,6 @@ fn run_tasks_complete_command(
     Ok(report)
 }
 
-fn prepare_tasknote_archive_plan(
-    frontmatter: &mut YamlMapping,
-    loaded: &LoadedTaskNote,
-) -> Result<TaskMutationPlan, CliError> {
-    let status_state = tasknotes_status_state(&loaded.config.tasknotes, &loaded.indexed.status);
-    if !loaded.indexed.archived && !status_state.completed {
-        return Err(CliError::operation(format!(
-            "task must be completed before archiving: {}",
-            loaded.path
-        )));
-    }
-
-    let mut changes = Vec::new();
-    let archive_tag = &loaded.config.tasknotes.field_mapping.archive_tag;
-    let tags_key = YamlValue::String("tags".to_string());
-    let mut tags = yaml_string_list(frontmatter.get(&tags_key));
-    if !tags.iter().any(|tag| tag.eq_ignore_ascii_case(archive_tag)) {
-        tags.push(archive_tag.clone());
-        tags.sort();
-        if let Some(change) = set_tasknote_frontmatter_value(
-            frontmatter,
-            "tags",
-            Some(YamlValue::Sequence(
-                tags.iter().cloned().map(YamlValue::String).collect(),
-            )),
-        ) {
-            changes.push(change);
-        }
-    }
-
-    let modified_key = &loaded.config.tasknotes.field_mapping.date_modified;
-    if let Some(change) = set_tasknote_frontmatter_value(
-        frontmatter,
-        modified_key,
-        Some(YamlValue::String(current_utc_timestamp_string())),
-    ) {
-        changes.push(change);
-    }
-
-    let moved_to = Path::new(&loaded.path)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| {
-            let archive_folder = loaded
-                .config
-                .tasknotes
-                .archive_folder
-                .trim()
-                .trim_matches('/');
-            (!archive_folder.is_empty()).then(|| format!("{archive_folder}/{name}"))
-        });
-
-    Ok(TaskMutationPlan { changes, moved_to })
-}
-
 pub(crate) fn process_due_tasknote_auto_archives(
     paths: &VaultPaths,
     exclude_task: Option<&str>,
@@ -3175,36 +2746,11 @@ pub(crate) fn process_due_tasknote_auto_archives(
     use_stderr_color: bool,
     quiet: bool,
 ) -> Result<Vec<String>, CliError> {
-    let config = load_vault_config(paths).config;
-    let now_ms = current_utc_timestamp_ms();
-    let excluded_path = exclude_task
-        .and_then(|task| load_tasknote_note(paths, task).ok())
-        .map(|loaded| loaded.path);
-    let candidates = load_tasknote_records(paths)?
-        .into_iter()
-        .filter(|record| excluded_path.as_ref() != Some(&record.path))
-        .filter(|record| tasknote_auto_archive_due(record, &config, now_ms))
-        .map(|record| record.path)
-        .collect::<Vec<_>>();
-    let mut changed_paths = Vec::new();
-
-    for path in candidates {
-        let loaded = load_tasknote_note(paths, &path)?;
-        let report = apply_loaded_tasknote_mutation(
-            paths,
-            &loaded,
-            "auto_archive",
-            false,
-            output,
-            use_stderr_color,
-            quiet,
-            prepare_tasknote_archive_plan,
-        )?;
-        changed_paths.extend(report.changed_paths);
+    let changed_paths =
+        app_process_due_tasknote_auto_archives(paths, exclude_task).map_err(CliError::operation)?;
+    if !changed_paths.is_empty() {
+        run_incremental_scan(paths, output, use_stderr_color, quiet)?;
     }
-
-    changed_paths.sort();
-    changed_paths.dedup();
     Ok(changed_paths)
 }
 
@@ -4085,45 +3631,7 @@ fn run_periodic_list_command(
     paths: &VaultPaths,
     period_type: Option<&str>,
 ) -> Result<Vec<PeriodicListItem>, CliError> {
-    let config = load_vault_config(paths).config;
-    if let Some(period_type) = period_type {
-        validate_periodic_type(&config.periodic, period_type)?;
-    }
-
-    let database = CacheDatabase::open(paths).map_err(CliError::operation)?;
-    let mut statement = database
-        .connection()
-        .prepare(
-            "
-            SELECT
-                documents.periodic_type,
-                documents.periodic_date,
-                documents.path,
-                (
-                    SELECT COUNT(*)
-                    FROM events
-                    WHERE events.document_id = documents.id
-                ) AS event_count
-            FROM documents
-            WHERE documents.periodic_type IS NOT NULL
-              AND (?1 IS NULL OR documents.periodic_type = ?1)
-            ORDER BY documents.periodic_type, documents.periodic_date, documents.path
-            ",
-        )
-        .map_err(CliError::operation)?;
-    let rows = statement
-        .query_map([period_type], |row| {
-            Ok(PeriodicListItem {
-                period_type: row.get(0)?,
-                date: row.get(1)?,
-                path: row.get(2)?,
-                event_count: row.get::<_, i64>(3)?.try_into().unwrap_or(usize::MAX),
-            })
-        })
-        .map_err(CliError::operation)?;
-
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(CliError::operation)
+    app_build_periodic_list_report(paths, period_type).map_err(CliError::operation)
 }
 
 fn resolve_gap_range_for_type(
@@ -4346,19 +3854,8 @@ fn render_bases_note_contents(
 
 fn build_bases_create_frontmatter(
     properties: &BTreeMap<String, Value>,
-) -> Result<Option<YamlMapping>, CliError> {
-    if properties.is_empty() {
-        return Ok(None);
-    }
-
-    let mut mapping = YamlMapping::new();
-    for (key, value) in properties {
-        mapping.insert(
-            YamlValue::String(key.clone()),
-            serde_yaml::to_value(value).map_err(CliError::operation)?,
-        );
-    }
-    Ok(Some(mapping))
+) -> Result<Option<vulcan_app::templates::YamlMapping>, CliError> {
+    json_properties_to_frontmatter(properties).map_err(CliError::operation)
 }
 
 enum TemplateCommandResult {
@@ -5341,11 +4838,11 @@ fn run_note_info_command(paths: &VaultPaths, note: &str) -> Result<NoteInfoRepor
     let mut frontmatter_keys = parsed
         .frontmatter
         .as_ref()
-        .and_then(YamlValue::as_mapping)
+        .and_then(|frontmatter| frontmatter.as_mapping())
         .map(|mapping| {
             mapping
                 .keys()
-                .filter_map(YamlValue::as_str)
+                .filter_map(|value| value.as_str())
                 .map(ToOwned::to_owned)
                 .collect::<Vec<_>>()
         })
@@ -5464,6 +4961,12 @@ fn strip_markdown_list_marker(line: &str) -> &str {
 fn system_time_to_millis(time: std::time::SystemTime) -> Option<i64> {
     let duration = time.duration_since(std::time::UNIX_EPOCH).ok()?;
     i64::try_from(duration.as_millis()).ok()
+}
+
+fn format_utc_timestamp_ms(ms: i64) -> String {
+    TemplateTimestamp::from_millis(ms)
+        .default_strings()
+        .datetime
 }
 
 #[derive(Debug, Clone)]
@@ -5713,30 +5216,10 @@ pub(crate) fn read_note_paths_from_stdin() -> Result<Vec<String>, CliError> {
     Ok(paths)
 }
 
-fn parse_frontmatter_bindings(bindings: &[String]) -> Result<Option<YamlMapping>, CliError> {
-    if bindings.is_empty() {
-        return Ok(None);
-    }
-
-    let mut mapping = YamlMapping::new();
-    for binding in bindings {
-        let Some((key, value)) = binding.split_once('=') else {
-            return Err(CliError::operation(format!(
-                "frontmatter bindings must use key=value syntax: {binding}"
-            )));
-        };
-        let key = key.trim();
-        if key.is_empty() {
-            return Err(CliError::operation(format!(
-                "frontmatter bindings need a non-empty key: {binding}"
-            )));
-        }
-        let parsed =
-            serde_yaml::from_str::<YamlValue>(value.trim()).map_err(CliError::operation)?;
-        mapping.insert(YamlValue::String(key.to_string()), parsed);
-    }
-
-    Ok(Some(mapping))
+fn parse_frontmatter_bindings(
+    bindings: &[String],
+) -> Result<Option<vulcan_app::templates::YamlMapping>, CliError> {
+    parse_note_frontmatter_bindings(bindings).map_err(CliError::operation)
 }
 
 fn maybe_check_markdown_target(
@@ -13829,7 +13312,9 @@ fn print_periodic_list_report(
                 }
                 println!(
                     "- {} {} ({} event(s))",
-                    item.date, item.path, item.event_count
+                    item.date.as_deref().unwrap_or("-"),
+                    item.path,
+                    item.event_count
                 );
             }
             Ok(())
@@ -17094,84 +16579,8 @@ fn append_change_rows(rows: &mut Vec<Value>, anchor: &str, kind: ChangeKind, ite
 // vulcan status
 // ────────────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize)]
-struct VaultStatusReport {
-    vault_root: String,
-    note_count: usize,
-    attachment_count: usize,
-    last_scan: Option<String>,
-    cache_bytes: u64,
-    git_branch: Option<String>,
-    git_dirty: bool,
-    git_staged: usize,
-    git_unstaged: usize,
-    git_untracked: usize,
-}
-
 fn run_status_command(paths: &VaultPaths) -> Result<VaultStatusReport, CliError> {
-    let cache = inspect_cache(paths).map_err(CliError::operation)?;
-
-    let last_scan = {
-        use vulcan_core::CacheDatabase;
-        let db = CacheDatabase::open(paths).ok();
-        db.and_then(|db| {
-            db.connection()
-                .query_row("SELECT MAX(indexed_at) FROM documents", [], |row| {
-                    row.get::<_, Option<String>>(0)
-                })
-                .ok()
-                .flatten()
-        })
-    };
-
-    let (git_branch, git_dirty, git_staged, git_unstaged, git_untracked) =
-        if vulcan_core::is_git_repo(paths.vault_root()) {
-            match git_status(paths.vault_root()) {
-                Ok(status) => {
-                    let branch = {
-                        let output = ProcessCommand::new("git")
-                            .arg("-C")
-                            .arg(paths.vault_root())
-                            .args(["rev-parse", "--abbrev-ref", "HEAD"])
-                            .output()
-                            .ok();
-                        output.and_then(|o| {
-                            if o.status.success() {
-                                String::from_utf8(o.stdout)
-                                    .ok()
-                                    .map(|s| s.trim().to_string())
-                                    .filter(|s| !s.is_empty())
-                            } else {
-                                None
-                            }
-                        })
-                    };
-                    (
-                        branch,
-                        !status.clean,
-                        status.staged.len(),
-                        status.unstaged.len(),
-                        status.untracked.len(),
-                    )
-                }
-                Err(_) => (None, false, 0, 0, 0),
-            }
-        } else {
-            (None, false, 0, 0, 0)
-        };
-
-    Ok(VaultStatusReport {
-        vault_root: paths.vault_root().display().to_string(),
-        note_count: cache.notes,
-        attachment_count: cache.attachments,
-        last_scan,
-        cache_bytes: cache.database_bytes,
-        git_branch,
-        git_dirty,
-        git_staged,
-        git_unstaged,
-        git_untracked,
-    })
+    app_build_vault_status_report(paths).map_err(CliError::operation)
 }
 
 fn print_status_report(
@@ -18049,94 +17458,15 @@ fn collect_complete_candidates(
     context: &str,
     prefix: Option<&str>,
 ) -> Vec<String> {
-    // vault-free contexts that also have a vault-dependent branch are handled in
-    // dispatch() using a HashSet merge; skip them here to avoid masking the DB branch.
     if context != "daily-date" {
         let vault_free = collect_complete_candidates_no_vault(context, prefix);
         if !vault_free.is_empty() {
             return vault_free;
         }
     }
+
     let candidates = match context {
-        "note" => {
-            // Note names and vault-relative paths from the cache.
-            use vulcan_core::CacheDatabase;
-            let Ok(db) = CacheDatabase::open(paths) else {
-                return Vec::new();
-            };
-            let conn = db.connection();
-            let Ok(mut stmt) = conn.prepare("SELECT path, filename FROM documents ORDER BY path")
-            else {
-                return Vec::new();
-            };
-            let rows = stmt.query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0).unwrap_or_default(),
-                    row.get::<_, String>(1).unwrap_or_default(),
-                ))
-            });
-            match rows {
-                Ok(iter) => {
-                    let mut out = Vec::new();
-                    for row in iter.flatten() {
-                        let (path, name) = row;
-                        if !name.is_empty() && name != path {
-                            out.push(name);
-                        }
-                        out.push(path);
-                    }
-                    out
-                }
-                Err(_) => Vec::new(),
-            }
-        }
         "vault-path" => collect_vault_path_candidates(paths, prefix),
-        "daily-date" => {
-            // Vault-dependent supplement: dates of existing daily notes.
-            use vulcan_core::CacheDatabase;
-            let Ok(db) = CacheDatabase::open(paths) else {
-                return Vec::new();
-            };
-            let conn = db.connection();
-            let Ok(mut stmt) = conn.prepare(
-                "SELECT periodic_date FROM documents \
-                 WHERE periodic_type = 'daily' AND periodic_date IS NOT NULL \
-                 ORDER BY periodic_date DESC",
-            ) else {
-                return Vec::new();
-            };
-            let rows = stmt.query_map([], |row| row.get::<_, String>(0));
-            match rows {
-                Ok(iter) => iter.flatten().collect(),
-                Err(_) => Vec::new(),
-            }
-        }
-        "kanban-board" => {
-            use vulcan_core::list_kanban_boards;
-            list_kanban_boards(paths)
-                .unwrap_or_default()
-                .into_iter()
-                .map(|b| b.path)
-                .collect()
-        }
-        "bases-file" | "bases-view" => {
-            // Vault-relative paths to .base files.
-            use vulcan_core::CacheDatabase;
-            let Ok(db) = CacheDatabase::open(paths) else {
-                return Vec::new();
-            };
-            let conn = db.connection();
-            let Ok(mut stmt) =
-                conn.prepare("SELECT path FROM documents WHERE path LIKE '%.base' ORDER BY path")
-            else {
-                return Vec::new();
-            };
-            let rows = stmt.query_map([], |row| row.get::<_, String>(0));
-            match rows {
-                Ok(iter) => iter.flatten().collect(),
-                Err(_) => Vec::new(),
-            }
-        }
         "script" => {
             let scripts_dir = paths.vulcan_dir().join("scripts");
             if !scripts_dir.is_dir() {
@@ -18146,11 +17476,11 @@ fn collect_complete_candidates(
                 .map(|entries| {
                     entries
                         .flatten()
-                        .filter_map(|e| {
-                            let name = e.file_name();
-                            let s = name.to_string_lossy();
-                            if s.ends_with(".js") {
-                                Some(s.trim_end_matches(".js").to_string())
+                        .filter_map(|entry| {
+                            let name = entry.file_name();
+                            let candidate = name.to_string_lossy();
+                            if candidate.ends_with(".js") {
+                                Some(candidate.trim_end_matches(".js").to_string())
                             } else {
                                 None
                             }
@@ -18159,31 +17489,7 @@ fn collect_complete_candidates(
                 })
                 .unwrap_or_default()
         }
-        "task-view" => {
-            // Saved view IDs from config plus .base file paths from the DB
-            // (tasks view show accepts either).
-            use vulcan_core::{load_vault_config, CacheDatabase};
-            let mut out: Vec<String> = load_vault_config(paths)
-                .config
-                .tasknotes
-                .saved_views
-                .iter()
-                .map(|v| v.id.clone())
-                .collect();
-            if let Ok(db) = CacheDatabase::open(paths) {
-                let conn = db.connection();
-                if let Ok(mut stmt) = conn
-                    .prepare("SELECT path FROM documents WHERE path LIKE '%.base' ORDER BY path")
-                {
-                    let rows = stmt.query_map([], |row| row.get::<_, String>(0));
-                    if let Ok(iter) = rows {
-                        out.extend(iter.flatten());
-                    }
-                }
-            }
-            out
-        }
-        _ => Vec::new(),
+        _ => app_collect_complete_candidates(paths, context).unwrap_or_default(),
     };
     if context == "vault-path" {
         candidates
@@ -18622,6 +17928,7 @@ _vulcan_complete_task_view() {
 mod tests {
     use super::*;
     use clap::Parser;
+    use serde_yaml::Value as YamlValue;
     use std::fs;
     use std::process::Command as ProcessCommand;
     use tempfile::TempDir;

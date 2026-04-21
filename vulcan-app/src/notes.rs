@@ -2,13 +2,13 @@ use crate::plugins;
 use crate::templates::{
     find_frontmatter_block, load_named_template, parse_frontmatter_document,
     render_loaded_template, render_note_from_parts, LoadedTemplateRenderRequest,
-    TemplateEngineKind, TemplateRunMode, TemplateTimestamp, YamlMapping,
+    TemplateEngineKind, TemplateRunMode, TemplateTimestamp, YamlMapping, YamlValue,
 };
 use crate::AppError;
 use regex::Regex;
 use serde::Serialize;
-use serde_json::json;
-use std::collections::HashMap;
+use serde_json::{json, Value as JsonValue};
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -286,6 +286,51 @@ pub fn apply_note_create(
         changed_paths,
         content,
     })
+}
+
+pub fn parse_note_frontmatter_bindings(
+    bindings: &[String],
+) -> Result<Option<YamlMapping>, AppError> {
+    if bindings.is_empty() {
+        return Ok(None);
+    }
+
+    let mut mapping = YamlMapping::new();
+    for binding in bindings {
+        let Some((key, value)) = binding.split_once('=') else {
+            return Err(AppError::operation(format!(
+                "frontmatter bindings must use key=value syntax: {binding}"
+            )));
+        };
+        let key = key.trim();
+        if key.is_empty() {
+            return Err(AppError::operation(format!(
+                "frontmatter bindings need a non-empty key: {binding}"
+            )));
+        }
+        let parsed =
+            serde_yaml::from_str::<YamlValue>(value.trim()).map_err(AppError::operation)?;
+        mapping.insert(YamlValue::String(key.to_string()), parsed);
+    }
+
+    Ok(Some(mapping))
+}
+
+pub fn json_properties_to_frontmatter(
+    properties: &BTreeMap<String, JsonValue>,
+) -> Result<Option<YamlMapping>, AppError> {
+    if properties.is_empty() {
+        return Ok(None);
+    }
+
+    let mut mapping = YamlMapping::new();
+    for (key, value) in properties {
+        mapping.insert(
+            YamlValue::String(key.clone()),
+            serde_yaml::to_value(value).map_err(AppError::operation)?,
+        );
+    }
+    Ok(Some(mapping))
 }
 
 pub fn apply_note_append(
@@ -1386,15 +1431,60 @@ fn load_note_append_target(
 mod tests {
     use super::{
         apply_note_append, apply_note_create, apply_note_delete, apply_note_patch, apply_note_set,
-        diagnose_note_contents, MarkdownTarget, NoteAppendMode, NoteAppendRequest,
-        NoteCreateRequest, NoteDeleteRequest, NotePatchRequest, NoteSetRequest,
+        diagnose_note_contents, json_properties_to_frontmatter, parse_note_frontmatter_bindings,
+        MarkdownTarget, NoteAppendMode, NoteAppendRequest, NoteCreateRequest, NoteDeleteRequest,
+        NotePatchRequest, NoteSetRequest,
     };
     use crate::templates::{YamlMapping, YamlValue};
-    use std::collections::HashMap;
+    use serde_json::Value as JsonValue;
+    use std::collections::{BTreeMap, HashMap};
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
     use vulcan_core::{initialize_vulcan_dir, scan_vault_with_progress, ScanMode, VaultPaths};
+
+    #[test]
+    fn parse_note_frontmatter_bindings_parses_yaml_scalars_and_lists() {
+        let bindings = vec!["status=done".to_string(), "tags=[alpha, beta]".to_string()];
+
+        let parsed = parse_note_frontmatter_bindings(&bindings)
+            .expect("bindings should parse")
+            .expect("bindings should produce frontmatter");
+
+        assert_eq!(parsed["status"], YamlValue::String("done".to_string()));
+        assert_eq!(
+            parsed["tags"],
+            serde_yaml::from_str::<YamlValue>(
+                "- alpha
+- beta
+"
+            )
+            .expect("tag yaml")
+        );
+    }
+
+    #[test]
+    fn json_properties_to_frontmatter_converts_json_values() {
+        let properties = BTreeMap::from([
+            ("done".to_string(), JsonValue::Bool(true)),
+            ("owners".to_string(), serde_json::json!(["alice", "bob"])),
+        ]);
+
+        let frontmatter = json_properties_to_frontmatter(&properties)
+            .expect("properties should convert")
+            .expect("properties should produce frontmatter");
+
+        assert_eq!(frontmatter["done"], YamlValue::Bool(true));
+        assert_eq!(
+            frontmatter["owners"],
+            serde_yaml::from_str::<YamlValue>(
+                "- alice
+- bob
+"
+            )
+            .expect("owners yaml")
+        );
+    }
 
     #[test]
     fn apply_note_create_renders_template_and_writes_note() {
