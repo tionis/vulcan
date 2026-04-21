@@ -499,12 +499,9 @@ impl ConfigTuiState {
                     return ConfigTuiAction::Quit;
                 }
             }
-            KeyCode::Esc => {
-                if self.dirty {
-                    self.confirm_discard = true;
-                    self.status =
-                        "Unsaved changes. Press q to discard, or Ctrl-S to save.".to_string();
-                }
+            KeyCode::Esc if self.dirty => {
+                self.confirm_discard = true;
+                self.status = "Unsaved changes. Press q to discard, or Ctrl-S to save.".to_string();
             }
             KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return ConfigTuiAction::Save;

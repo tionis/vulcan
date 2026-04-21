@@ -1833,8 +1833,7 @@ impl BrowseState {
             return false;
         };
         list_kanban_boards(&self.paths)
-            .map(|boards| boards.into_iter().any(|board| board.path == path))
-            .unwrap_or(false)
+            .is_ok_and(|boards| boards.into_iter().any(|board| board.path == path))
     }
 
     fn status_line(&self) -> String {

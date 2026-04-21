@@ -17373,8 +17373,7 @@ fn collect_complete_candidates_no_vault(context: &str, prefix: Option<&str>) -> 
             ];
             let now_secs = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| i64::try_from(d.as_secs()).unwrap_or(0))
-                .unwrap_or(0);
+                .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
             for offset in 1..=14i64 {
                 let past_secs = now_secs - offset * 86400;
                 let ms = past_secs * 1000;
@@ -17440,11 +17439,7 @@ fn collect_vault_path_candidates(paths: &VaultPaths, prefix: Option<&str>) -> Ve
         } else {
             format!("{dir_prefix}/{name}")
         };
-        if entry
-            .file_type()
-            .map(|file_type| file_type.is_dir())
-            .unwrap_or(false)
-        {
+        if entry.file_type().is_ok_and(|file_type| file_type.is_dir()) {
             candidate.push('/');
         }
         candidates.insert(candidate.replace('\\', "/"));
