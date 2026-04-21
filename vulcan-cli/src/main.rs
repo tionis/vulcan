@@ -54,7 +54,10 @@ fn install_broken_pipe_panic_hook() {
 fn is_broken_pipe_panic_payload(payload: &(dyn Any + Send)) -> bool {
     extract_panic_message(payload).is_some_and(|message| {
         message.contains("failed printing to stdout")
-            && (message.contains("Broken pipe") || message.contains("os error 32"))
+            && (message.contains("Broken pipe")
+                || message.contains("os error 32")
+                || message.contains("The pipe has been ended.")
+                || message.contains("os error 109"))
     })
 }
 
