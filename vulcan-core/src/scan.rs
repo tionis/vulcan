@@ -982,9 +982,7 @@ fn prepare_full_scan_documents(
 }
 
 fn full_scan_prepare_batch_size() -> usize {
-    let workers = std::thread::available_parallelism()
-        .map(std::num::NonZeroUsize::get)
-        .unwrap_or(1);
+    let workers = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
     workers.saturating_mul(8).max(32)
 }
 
