@@ -459,8 +459,7 @@ impl VectorStore for SqliteVecStore<'_> {
                     .query_row(&format!("SELECT COUNT(*) FROM [{table_name}]"), [], |row| {
                         row.get::<_, i64>(0)
                     })
-                    .map(|c| usize::try_from(c).unwrap_or(0))
-                    .unwrap_or(0)
+                    .map_or(0, |c| usize::try_from(c).unwrap_or(0))
             } else {
                 0
             };
@@ -658,8 +657,7 @@ fn migrate_legacy_state(connection: &Connection) -> Result<(), String> {
         .query_row("SELECT COUNT(*) FROM vector_index_state", [], |row| {
             row.get::<_, i64>(0)
         })
-        .map(|c| c > 0)
-        .unwrap_or(false);
+        .is_ok_and(|c| c > 0);
 
     if !legacy_exists {
         return Ok(());
