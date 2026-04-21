@@ -13,6 +13,7 @@ pub mod export;
 pub mod notes;
 pub mod plugins;
 pub mod scan;
+pub mod serve;
 pub mod tasks;
 pub mod templates;
 pub mod trust;

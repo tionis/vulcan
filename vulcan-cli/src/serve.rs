@@ -1,8 +1,5 @@
-use crate::{
-    run_dataview_eval_command, run_dataview_inline_command, run_dataview_query_command,
-    run_dataview_query_js_command, CliError,
-};
-use serde_json::{json, Value};
+use crate::CliError;
+use serde_json::json;
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -11,12 +8,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use vulcan_core::{
-    query_graph_analytics_with_filter, query_notes_with_filter, query_related_notes_with_filter,
-    resolve_permission_profile, search_vault_with_filter, watch_vault_until, NoteQuery,
-    PermissionFilter, PermissionGuard, ProfilePermissionGuard, RelatedNotesQuery, SearchQuery,
-    SearchSort, VaultPaths, WatchOptions, WatchReport,
+use vulcan_app::serve::{
+    route_request as route_serve_request, ServeHealthState, ServeRequest as AppServeRequest,
+    ServeResponse as AppServeResponse, ServeRouteOptions,
 };
+use vulcan_core::{watch_vault_until, VaultPaths, WatchOptions};
 
 #[derive(Debug, Clone)]
 pub struct ServeOptions {
@@ -35,40 +31,10 @@ pub struct ServeHandle {
     join_handle: Option<thread::JoinHandle<Result<(), CliError>>>,
 }
 
-#[derive(Debug, Default, Clone)]
-struct ServeState {
-    watch_error: Option<String>,
-    last_watch_report: Option<WatchReport>,
-}
-
 #[derive(Debug)]
 struct Request {
-    method: String,
-    path: String,
-    query: HashMap<String, Vec<String>>,
+    request: AppServeRequest,
     headers: HashMap<String, String>,
-}
-
-#[derive(Debug)]
-struct Response {
-    status: u16,
-    body: Value,
-}
-
-impl Response {
-    fn ok(body: Value) -> Self {
-        Self { status: 200, body }
-    }
-
-    fn error(status: u16, message: impl Into<String>) -> Self {
-        Self {
-            status,
-            body: json!({
-                "ok": false,
-                "error": message.into(),
-            }),
-        }
-    }
 }
 
 #[cfg(test)]
@@ -107,7 +73,7 @@ pub fn spawn_server(paths: VaultPaths, options: ServeOptions) -> Result<ServeHan
         .map_err(CliError::operation)?;
     let addr = listener.local_addr().map_err(CliError::operation)?;
     let shutdown = Arc::new(AtomicBool::new(false));
-    let state = Arc::new(Mutex::new(ServeState::default()));
+    let state = Arc::new(Mutex::new(ServeHealthState::default()));
     let join_shutdown = Arc::clone(&shutdown);
     let join_state = Arc::clone(&state);
 
@@ -164,19 +130,16 @@ fn run_server_loop(
     listener: &TcpListener,
     options: &ServeOptions,
     shutdown: &Arc<AtomicBool>,
-    state: &Arc<Mutex<ServeState>>,
+    state: &Arc<Mutex<ServeHealthState>>,
 ) -> Result<(), CliError> {
     while !shutdown.load(Ordering::SeqCst) {
         match listener.accept() {
             Ok((mut stream, _)) => {
-                // Accepted streams may inherit the listener's non-blocking mode
-                // on some platforms (macOS). Switch to blocking with a timeout so
-                // that read_request can reliably receive the full request.
                 let _ = stream.set_nonblocking(false);
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                 let response = match read_request(&mut stream) {
                     Ok(request) => route_request(paths, options, state, &request),
-                    Err(error) => Response::error(400, error),
+                    Err(error) => response_error(400, error),
                 };
                 write_response(&mut stream, &response).map_err(CliError::operation)?;
             }
@@ -190,16 +153,12 @@ fn run_server_loop(
     Ok(())
 }
 
-#[allow(clippy::too_many_lines)]
 fn route_request(
     paths: &VaultPaths,
     options: &ServeOptions,
-    state: &Arc<Mutex<ServeState>>,
+    state: &Arc<Mutex<ServeHealthState>>,
     request: &Request,
-) -> Response {
-    if request.method != "GET" {
-        return Response::error(405, "only GET requests are supported");
-    }
+) -> AppServeResponse {
     if let Some(expected_token) = options.auth_token.as_deref() {
         let actual_token = request
             .headers
@@ -207,184 +166,34 @@ fn route_request(
             .map(String::as_str)
             .unwrap_or_default();
         if actual_token != expected_token {
-            return Response::error(401, "missing or invalid X-Vulcan-Token header");
+            return response_error(401, "missing or invalid X-Vulcan-Token header");
         }
     }
-    let permissions = match serve_permission_guard(paths, options) {
-        Ok(permissions) => permissions,
-        Err(error) => return Response::error(500, error),
-    };
-    let read_filter = match serve_read_filter(paths, options) {
-        Ok(filter) => filter,
-        Err(error) => return Response::error(500, error),
-    };
 
-    match request.path.as_str() {
-        "/" => Response::ok(json!({
-            "ok": true,
-            "service": "vulcan",
-            "endpoints": [
-                "/health",
-                "/search",
-                "/notes",
-                "/graph/stats",
-                "/related",
-                "/dataview/inline",
-                "/dataview/query",
-                "/dataview/query-js",
-                "/dataview/eval"
-            ],
-        })),
-        "/health" => {
-            let state = state
-                .lock()
-                .ok()
-                .map(|state| state.clone())
-                .unwrap_or_default();
-            Response::ok(json!({
-                "ok": true,
-                "watch_enabled": options.watch,
-                "watch_error": state.watch_error,
-                "last_watch_report": state.last_watch_report,
-            }))
-        }
-        "/search" => {
-            let Some(query) = first_param(&request.query, "q") else {
-                return Response::error(400, "missing required query parameter: q");
-            };
-            let sort = match parse_optional_search_sort(&request.query, "sort") {
-                Ok(sort) => sort,
-                Err(error) => return Response::error(400, error),
-            };
-            let search_query = SearchQuery {
-                text: query.to_string(),
-                tag: first_param(&request.query, "tag").map(ToOwned::to_owned),
-                path_prefix: first_param(&request.query, "path_prefix").map(ToOwned::to_owned),
-                has_property: first_param(&request.query, "has_property").map(ToOwned::to_owned),
-                filters: request.query.get("where").cloned().unwrap_or_default(),
-                provider: first_param(&request.query, "provider").map(ToOwned::to_owned),
-                mode: match first_param(&request.query, "mode") {
-                    Some("hybrid") => vulcan_core::search::SearchMode::Hybrid,
-                    _ => vulcan_core::search::SearchMode::Keyword,
-                },
-                sort,
-                match_case: parse_optional_bool(&request.query, "match_case"),
-                limit: parse_optional_usize(&request.query, "limit"),
-                context_size: parse_optional_usize(&request.query, "context_size").unwrap_or(18),
-                raw_query: parse_optional_bool(&request.query, "raw_query").unwrap_or(false),
-                fuzzy: parse_optional_bool(&request.query, "fuzzy").unwrap_or(false),
-                explain: parse_optional_bool(&request.query, "explain").unwrap_or(false),
-            };
-            match search_vault_with_filter(paths, &search_query, read_filter.as_ref()) {
-                Ok(report) => Response::ok(json!({ "ok": true, "result": report })),
-                Err(error) => Response::error(500, error.to_string()),
-            }
-        }
-        "/notes" => {
-            let filters = request.query.get("where").cloned().unwrap_or_default();
-            let query = NoteQuery {
-                filters,
-                sort_by: first_param(&request.query, "sort").map(ToOwned::to_owned),
-                sort_descending: parse_optional_bool(&request.query, "desc").unwrap_or(false),
-            };
-            match query_notes_with_filter(paths, &query, read_filter.as_ref()) {
-                Ok(mut report) => {
-                    let offset = parse_optional_usize(&request.query, "offset").unwrap_or(0);
-                    let limit = parse_optional_usize(&request.query, "limit");
-                    let start = offset.min(report.notes.len());
-                    let end = limit.map_or(report.notes.len(), |limit| {
-                        start.saturating_add(limit).min(report.notes.len())
-                    });
-                    report.notes = report.notes[start..end].to_vec();
-                    Response::ok(json!({ "ok": true, "result": report }))
-                }
-                Err(error) => Response::error(500, error.to_string()),
-            }
-        }
-        "/graph/stats" => match query_graph_analytics_with_filter(paths, read_filter.as_ref()) {
-            Ok(report) => Response::ok(json!({ "ok": true, "result": report })),
-            Err(error) => Response::error(500, error.to_string()),
+    let state = state
+        .lock()
+        .ok()
+        .map(|state| state.clone())
+        .unwrap_or_default();
+    route_serve_request(
+        paths,
+        &ServeRouteOptions {
+            permissions: options.permissions.clone(),
+            watch_enabled: options.watch,
         },
-        "/related" => {
-            let Some(note) = first_param(&request.query, "note") else {
-                return Response::error(400, "missing required query parameter: note");
-            };
-            let query = RelatedNotesQuery {
-                provider: first_param(&request.query, "provider").map(ToOwned::to_owned),
-                note: note.to_string(),
-                limit: parse_optional_usize(&request.query, "limit").unwrap_or(10),
-            };
-            match query_related_notes_with_filter(paths, &query, read_filter.as_ref()) {
-                Ok(report) => Response::ok(json!({ "ok": true, "result": report })),
-                Err(error) => Response::error(500, error.to_string()),
-            }
-        }
-        "/dataview/inline" => {
-            let Some(file) = first_param(&request.query, "file") else {
-                return Response::error(400, "missing required query parameter: file");
-            };
-            match run_dataview_inline_command(paths, file, Some(&permissions)) {
-                Ok(report) => Response::ok(json!({ "ok": true, "result": report })),
-                Err(error) => Response::error(500, error.to_string()),
-            }
-        }
-        "/dataview/query" => {
-            let Some(dql) = first_param(&request.query, "dql") else {
-                return Response::error(400, "missing required query parameter: dql");
-            };
-            match run_dataview_query_command(paths, dql, read_filter.as_ref()) {
-                Ok(result) => Response::ok(json!({ "ok": true, "result": result })),
-                Err(error) => Response::error(500, error.to_string()),
-            }
-        }
-        "/dataview/query-js" => {
-            let Some(js) = first_param(&request.query, "js") else {
-                return Response::error(400, "missing required query parameter: js");
-            };
-            match run_dataview_query_js_command(
-                paths,
-                js,
-                first_param(&request.query, "file"),
-                options.permissions.as_deref(),
-            ) {
-                Ok(result) => Response::ok(json!({ "ok": true, "result": result })),
-                Err(error) => Response::error(500, error.to_string()),
-            }
-        }
-        "/dataview/eval" => {
-            let Some(file) = first_param(&request.query, "file") else {
-                return Response::error(400, "missing required query parameter: file");
-            };
-            match run_dataview_eval_command(
-                paths,
-                file,
-                parse_optional_usize(&request.query, "block"),
-                options.permissions.as_deref(),
-                Some(&permissions),
-            ) {
-                Ok(report) => Response::ok(json!({ "ok": true, "result": report })),
-                Err(error) => Response::error(500, error.to_string()),
-            }
-        }
-        _ => Response::error(404, "unknown endpoint"),
+        &state,
+        &request.request,
+    )
+}
+
+fn response_error(status: u16, message: impl Into<String>) -> AppServeResponse {
+    AppServeResponse {
+        status,
+        body: json!({
+            "ok": false,
+            "error": message.into(),
+        }),
     }
-}
-
-fn serve_read_filter(
-    paths: &VaultPaths,
-    options: &ServeOptions,
-) -> Result<Option<PermissionFilter>, String> {
-    let filter = serve_permission_guard(paths, options)?.read_filter();
-    Ok((!filter.path_permission().is_unrestricted()).then_some(filter))
-}
-
-fn serve_permission_guard(
-    paths: &VaultPaths,
-    options: &ServeOptions,
-) -> Result<ProfilePermissionGuard, String> {
-    let selection = resolve_permission_profile(paths, options.permissions.as_deref())
-        .map_err(|error| error.to_string())?;
-    Ok(ProfilePermissionGuard::new(paths, selection))
 }
 
 fn parse_bind_addr(bind: &str, allow_remote: bool) -> Result<SocketAddr, CliError> {
@@ -441,9 +250,11 @@ fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
         .collect::<HashMap<_, _>>();
 
     Ok(Request {
-        method,
-        path,
-        query,
+        request: AppServeRequest {
+            method,
+            path,
+            query,
+        },
         headers,
     })
 }
@@ -463,51 +274,6 @@ fn parse_target(target: &str) -> (String, HashMap<String, Vec<String>>) {
             .push(percent_decode(value));
     }
     (path.to_string(), params)
-}
-
-fn first_param<'a>(params: &'a HashMap<String, Vec<String>>, key: &str) -> Option<&'a str> {
-    params
-        .get(key)
-        .and_then(|values| values.first())
-        .map(String::as_str)
-}
-
-fn parse_optional_usize(params: &HashMap<String, Vec<String>>, key: &str) -> Option<usize> {
-    first_param(params, key).and_then(|value| value.parse::<usize>().ok())
-}
-
-fn parse_optional_bool(params: &HashMap<String, Vec<String>>, key: &str) -> Option<bool> {
-    first_param(params, key).and_then(|value| match value {
-        "1" | "true" | "yes" => Some(true),
-        "0" | "false" | "no" => Some(false),
-        _ => None,
-    })
-}
-
-fn parse_optional_search_sort(
-    params: &HashMap<String, Vec<String>>,
-    key: &str,
-) -> Result<Option<SearchSort>, String> {
-    let Some(value) = first_param(params, key) else {
-        return Ok(None);
-    };
-
-    let sort = match value {
-        "relevance" => SearchSort::Relevance,
-        "path-asc" => SearchSort::PathAsc,
-        "path-desc" => SearchSort::PathDesc,
-        "modified-newest" => SearchSort::ModifiedNewest,
-        "modified-oldest" => SearchSort::ModifiedOldest,
-        "created-newest" => SearchSort::CreatedNewest,
-        "created-oldest" => SearchSort::CreatedOldest,
-        _ => {
-            return Err(format!(
-                "invalid search sort `{value}`; expected relevance, path-asc, path-desc, modified-newest, modified-oldest, created-newest, or created-oldest"
-            ))
-        }
-    };
-
-    Ok(Some(sort))
 }
 
 fn percent_decode(value: &str) -> String {
@@ -539,7 +305,10 @@ fn percent_decode(value: &str) -> String {
     String::from_utf8(decoded).unwrap_or_else(|_| value.to_string())
 }
 
-fn write_response(stream: &mut TcpStream, response: &Response) -> Result<(), std::io::Error> {
+fn write_response(
+    stream: &mut TcpStream,
+    response: &AppServeResponse,
+) -> Result<(), std::io::Error> {
     let status_text = match response.status {
         200 => "OK",
         400 => "Bad Request",
