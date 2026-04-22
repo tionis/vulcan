@@ -579,12 +579,16 @@ Examples:
 const PLUGIN_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   list            list discovered and registered JS plugins
-  enable <name>   enable one plugin in .vulcan/config.toml
-  disable <name>  disable one plugin in .vulcan/config.toml
+  enable <name>   enable one plugin in shared or local config
+  disable <name>  disable one plugin in shared or local config
+  set <name>      update plugin path, events, sandbox, permissions, and description
+  delete <name>   remove one plugin registration override
   run <name>      execute one plugin's `main(event, ctx)` entrypoint
 
 Notes:
   Plugin files live under `.vulcan/plugins/` by default and are registered under `[plugins.<name>]`.
+  `plugin set` can create registrations without editing TOML directly.
+  Mutating plugin commands accept `--target <shared|local>`, `--dry-run`, and `--no-commit`.
   Event handlers are named after their subscription keys: `on_note_write`, `on_pre_commit`, etc.
   `on_note_write` and `on_pre_commit` are blocking hooks; throw an error to abort the operation.
   Other hooks are post-hooks: Vulcan logs failures as warnings but does not roll back the action.
@@ -594,6 +598,8 @@ Examples:
   vulcan plugin list
   vulcan plugin enable lint
   vulcan plugin disable lint
+  vulcan plugin set lint --add-event on_pre_commit --sandbox strict
+  vulcan plugin delete lint --dry-run
   vulcan plugin run lint
   vulcan --output json plugin list";
 
@@ -682,9 +688,13 @@ Examples:
 const CONFIG_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   show [section] print effective Vulcan config as TOML or JSON
+  list [section] list supported config keys from the schema registry
   get <key>      read a single effective config value
   edit           open the interactive settings editor for .vulcan/config.toml
-  set <key> <value> write one shared config value with type validation
+  set <key> <value> write one config value with type validation
+  unset <key>    remove one config override and prune empty tables
+  alias          manage command aliases under [aliases]
+  permissions    manage named permission profiles under [permissions.profiles]
   import core    import Obsidian core settings into Vulcan config
   import dataview import Obsidian Dataview plugin settings into .vulcan/config.toml
   import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml
@@ -696,21 +706,28 @@ Subcommands:
 
 Notes:
   `config show` merges built-in defaults with `.vulcan/config.toml` and `.vulcan/config.local.toml` when present.
-  `config edit` requires an interactive terminal and writes `.vulcan/config.toml` on save.
-  `config set` writes `.vulcan/config.toml`; quote strings when the shell would otherwise strip them.
+  `config list` is derived from the schema registry used by config mutation commands and the settings TUI.
+  `config edit` requires an interactive terminal, is schema-driven, and can edit shared or local overrides before saving.
+  `config set` and `config unset` accept `--target <shared|local>`; quote strings when the shell would otherwise strip them.
+  Use `config alias ...`, `config permissions profile ...`, `plugin set`, and `export profile ...` when a dedicated command is available.
   Import commands preserve unrelated config sections and overwrite the mapped target keys.
   Import flags: --preview/--dry-run, --apply, --target <shared|local>, --no-commit
   Use `config import --all` to apply every detected importer in registry order.
   Use `config import --list` to inspect detectable sources without writing.
-  When git auto-commit is enabled for mutations, `config set` and config imports participate like other mutating commands.
+  When git auto-commit is enabled for mutations, config edits, config CRUD, plugin config changes, and config imports participate like other mutating commands.
 
 Examples:
   vulcan config show
+  vulcan config list web
   vulcan config show periodic.daily
   vulcan config get periodic.daily.template
   vulcan config edit
   vulcan config set periodic.daily.template \"Templates/Daily\"
-  vulcan config set web.search.backend brave --dry-run
+  vulcan config set web.search.backend brave --target local
+  vulcan config unset web.search.backend --target local
+  vulcan config alias set ship \"query --where 'status = shipped'\"
+  vulcan config permissions profile create agent --clone readonly
+  vulcan config permissions profile set agent network '{ allow = true, domains = [\"example.com\"] }'
   vulcan config import core --preview
   vulcan config import core --apply
   vulcan config import dataview
@@ -723,6 +740,7 @@ Examples:
   vulcan config import tasks --preview
   vulcan config import templater --target local
   vulcan --output json config get web.search.backend
+  vulcan --output json config list plugins
   vulcan --output json config show web.search
   vulcan --output json config import tasks";
 
@@ -2262,7 +2280,7 @@ pub enum ConfigImportCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum ConfigImportTargetArg {
+pub enum ConfigTargetArg {
     Shared,
     Local,
 }
@@ -2287,10 +2305,10 @@ pub struct ConfigImportArgs {
         long,
         global = true,
         value_enum,
-        default_value_t = ConfigImportTargetArg::Shared,
+        default_value_t = ConfigTargetArg::Shared,
         help = "Select the target Vulcan config file"
     )]
-    pub target: ConfigImportTargetArg,
+    pub target: ConfigTargetArg,
     #[arg(long, global = true, help = "Suppress auto-commit for this invocation")]
     pub no_commit: bool,
 }
@@ -2316,10 +2334,104 @@ pub struct ConfigImportSelection {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ConfigAliasCommand {
+    #[command(about = "List effective command aliases")]
+    List,
+    #[command(about = "Create or update one command alias")]
+    Set {
+        #[arg(help = "Alias name under [aliases]")]
+        name: String,
+        #[arg(help = "Expansion inserted before clap parsing")]
+        expansion: String,
+        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        target: ConfigTargetArg,
+        #[arg(long, help = "Preview the config change without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Delete one command alias override")]
+    Delete {
+        #[arg(help = "Alias name under [aliases]")]
+        name: String,
+        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        target: ConfigTargetArg,
+        #[arg(long, help = "Preview the config change without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ConfigPermissionsProfileCommand {
+    #[command(about = "List effective permission profiles")]
+    List,
+    #[command(about = "Show one effective permission profile")]
+    Show {
+        #[arg(help = "Permission profile name")]
+        name: String,
+    },
+    #[command(about = "Create one permission profile")]
+    Create {
+        #[arg(help = "Permission profile name")]
+        name: String,
+        #[arg(long, help = "Optional base profile to clone before writing overrides")]
+        clone: Option<String>,
+        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        target: ConfigTargetArg,
+        #[arg(long, help = "Preview the config change without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Set one permission profile field")]
+    Set {
+        #[arg(help = "Permission profile name")]
+        name: String,
+        #[arg(help = "Dimension such as read, write, network, config, or cpu_limit_ms")]
+        dimension: String,
+        #[arg(help = "TOML literal or bare string value to write")]
+        value: String,
+        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        target: ConfigTargetArg,
+        #[arg(long, help = "Preview the config change without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Delete one permission profile override")]
+    Delete {
+        #[arg(help = "Permission profile name")]
+        name: String,
+        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        target: ConfigTargetArg,
+        #[arg(long, help = "Preview the config change without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ConfigPermissionsCommand {
+    #[command(about = "Run or manage named permission profiles")]
+    Profile {
+        #[command(subcommand)]
+        command: ConfigPermissionsProfileCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ConfigCommand {
     #[command(about = "Show the effective merged Vulcan config")]
     Show {
         #[arg(help = "Optional section path such as `periodic.daily` or `web.search`")]
+        section: Option<String>,
+    },
+    #[command(about = "List supported config keys from the schema registry")]
+    List {
+        #[arg(help = "Optional section or category such as `web`, `periodic.daily`, or `plugins`")]
         section: Option<String>,
     },
     #[command(about = "Read a single effective config value")]
@@ -2327,21 +2439,44 @@ pub enum ConfigCommand {
         #[arg(help = "Dot-notation config key such as `periodic.daily.template`")]
         key: String,
     },
-    #[command(about = "Open the interactive settings editor for .vulcan/config.toml")]
+    #[command(about = "Open the interactive settings editor")]
     Edit {
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Write a single shared config value")]
+    #[command(about = "Write a single config value with schema validation")]
     Set {
         #[arg(help = "Dot-notation config key such as `periodic.daily.template`")]
         key: String,
         #[arg(help = "TOML literal or bare string value to write")]
         value: String,
+        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
         dry_run: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
+    },
+    #[command(about = "Remove one config override and prune empty tables")]
+    Unset {
+        #[arg(help = "Dot-notation config key such as `periodic.daily.template`")]
+        key: String,
+        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        target: ConfigTargetArg,
+        #[arg(long, help = "Preview the config change without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Manage command aliases under [aliases]")]
+    Alias {
+        #[command(subcommand)]
+        command: ConfigAliasCommand,
+    },
+    #[command(about = "Manage config-backed permission profiles")]
+    Permissions {
+        #[command(subcommand)]
+        command: ConfigPermissionsCommand,
     },
     #[command(about = "Import compatible Obsidian plugin settings")]
     Import(ConfigImportSelection),
@@ -2351,21 +2486,109 @@ pub enum ConfigCommand {
 pub enum PluginCommand {
     #[command(about = "List discovered and registered JS plugins")]
     List,
-    #[command(about = "Enable one plugin in .vulcan/config.toml")]
+    #[command(about = "Enable one plugin in shared or local config")]
     Enable {
         #[arg(help = "Plugin name (defaults to .vulcan/plugins/<name>.js)")]
         name: String,
+        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        target: ConfigTargetArg,
+        #[arg(long, help = "Preview the config change without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
-    #[command(about = "Disable one plugin in .vulcan/config.toml")]
+    #[command(about = "Disable one plugin in shared or local config")]
     Disable {
         #[arg(help = "Plugin name (defaults to .vulcan/plugins/<name>.js)")]
         name: String,
+        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        target: ConfigTargetArg,
+        #[arg(long, help = "Preview the config change without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Create or update one plugin registration")]
+    Set {
+        #[arg(help = "Plugin name under [plugins.<name>]")]
+        name: String,
+        #[arg(long, help = "Optional plugin path override")]
+        path: Option<String>,
+        #[arg(long, help = "Remove any stored plugin path override")]
+        clear_path: bool,
+        #[arg(long, conflicts_with = "disable", help = "Mark the plugin enabled")]
+        enable: bool,
+        #[arg(long, conflicts_with = "enable", help = "Mark the plugin disabled")]
+        disable: bool,
+        #[arg(long = "add-event", value_enum)]
+        add_events: Vec<PluginEventArg>,
+        #[arg(long = "remove-event", value_enum)]
+        remove_events: Vec<PluginEventArg>,
+        #[arg(long, value_enum)]
+        sandbox: Option<PluginSandboxArg>,
+        #[arg(long, help = "Remove any stored sandbox override")]
+        clear_sandbox: bool,
+        #[arg(long = "permission-profile")]
+        permission_profile: Option<String>,
+        #[arg(long = "clear-permission-profile")]
+        clear_permission_profile: bool,
+        #[arg(long)]
+        description: Option<String>,
+        #[arg(long = "clear-description")]
+        clear_description: bool,
+        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        target: ConfigTargetArg,
+        #[arg(long, help = "Preview the config change without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Delete one plugin registration override")]
+    Delete {
+        #[arg(help = "Plugin name under [plugins.<name>]")]
+        name: String,
+        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        target: ConfigTargetArg,
+        #[arg(long, help = "Preview the config change without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
     },
     #[command(about = "Execute one plugin's main(event, ctx) entrypoint")]
     Run {
         #[arg(help = "Plugin name to execute")]
         name: String,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PluginEventArg {
+    #[value(name = "on_note_write")]
+    OnNoteWrite,
+    #[value(name = "on_note_create")]
+    OnNoteCreate,
+    #[value(name = "on_note_delete")]
+    OnNoteDelete,
+    #[value(name = "on_pre_commit")]
+    OnPreCommit,
+    #[value(name = "on_post_commit")]
+    OnPostCommit,
+    #[value(name = "on_scan_complete")]
+    OnScanComplete,
+    #[value(name = "on_refactor")]
+    OnRefactor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum PluginSandboxArg {
+    #[value(name = "strict")]
+    Strict,
+    #[value(name = "fs")]
+    Fs,
+    #[value(name = "net")]
+    Net,
+    #[value(name = "none")]
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]

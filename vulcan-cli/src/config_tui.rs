@@ -10,12 +10,13 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use std::collections::{BTreeMap, BTreeSet};
-#[cfg(test)]
 use std::fs;
 use std::io;
+use std::path::Path;
 use std::time::Duration;
 use toml::Value as TomlValue;
-use vulcan_core::{validate_vulcan_overrides_toml, ConfigDiagnostic, VaultPaths};
+use ulid::Ulid;
+use vulcan_core::{ConfigDiagnostic, VaultPaths};
 
 const FOOTER_HEIGHT: u16 = 7;
 
@@ -63,6 +64,8 @@ fn run_event_loop(
                     state.save(auto_commit, quiet);
                 }
                 ConfigTuiAction::Unset => state.unset_selected(),
+                ConfigTuiAction::ToggleTarget => state.toggle_target(),
+                ConfigTuiAction::Create => state.open_create(),
             },
             Event::Paste(text) => state.handle_paste(&text),
             _ => {}
@@ -93,12 +96,9 @@ fn draw(frame: &mut Frame<'_>, state: &ConfigTuiState) {
 
 fn draw_header(frame: &mut Frame<'_>, state: &ConfigTuiState, area: Rect) {
     let title = if state.dirty {
-        format!(
-            "Config Editor: {} [modified]",
-            state.paths.config_file().display()
-        )
+        "Config Editor [modified]".to_string()
     } else {
-        format!("Config Editor: {}", state.paths.config_file().display())
+        "Config Editor".to_string()
     };
     let header = Paragraph::new(Line::from(vec![
         Span::styled(title, Style::default().fg(Color::Cyan)),
@@ -108,6 +108,11 @@ fn draw_header(frame: &mut Frame<'_>, state: &ConfigTuiState, area: Rect) {
             Style::default()
                 .fg(Color::Yellow)
                 .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("target: {}", state.selected_target_label()),
+            Style::default().fg(Color::Green),
         ),
     ]))
     .block(Block::default().borders(Borders::ALL));
@@ -163,13 +168,11 @@ fn draw_entries(frame: &mut Frame<'_>, state: &ConfigTuiState, area: Rect) {
                 spans.push(Span::raw(" = "));
                 spans.push(Span::styled(summary, Style::default().fg(Color::Gray)));
             }
-            if state.local_value(entry).is_some() {
-                spans.push(Span::styled(" [local]", Style::default().fg(Color::Yellow)));
-            } else if state.shared_value(entry).is_some() {
-                spans.push(Span::styled(" [shared]", Style::default().fg(Color::Green)));
-            } else {
-                spans.push(Span::styled(" [default]", Style::default().fg(Color::Blue)));
-            }
+            let (source_label, source_color) = ConfigTuiState::entry_source_badge(entry);
+            spans.push(Span::styled(
+                format!(" [{source_label}]"),
+                Style::default().fg(source_color),
+            ));
             ListItem::new(Line::from(spans))
         })
         .collect::<Vec<_>>();
@@ -198,10 +201,44 @@ fn draw_detail(frame: &mut Frame<'_>, state: &ConfigTuiState, area: Rect) {
             ),
             Span::raw(entry.display_path.clone()),
         ]),
+        Line::from(vec![
+            Span::styled(
+                "Type: ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(ConfigTuiState::entry_kind_label(entry)),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Target: ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(ConfigTuiState::entry_target_label(entry)),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Source: ",
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(ConfigTuiState::value_source_label(entry).to_string()),
+        ]),
         Line::from(""),
         Line::from(entry.description.clone()),
         Line::from(""),
     ];
+    if !entry.enum_values.is_empty() {
+        lines.push(Line::from(format!(
+            "Allowed values: {}",
+            entry.enum_values.join(", ")
+        )));
+        lines.push(Line::from(""));
+    }
     lines.extend(render_value_block(
         "Shared override",
         state.shared_value(entry),
@@ -216,8 +253,28 @@ fn draw_detail(frame: &mut Frame<'_>, state: &ConfigTuiState, area: Rect) {
         "Effective value",
         state.effective_value(entry).as_ref(),
     ));
+    if let Some(default_value) = entry.default_value.as_ref() {
+        lines.push(Line::from(""));
+        lines.extend(render_value_block("Default value", Some(default_value)));
+    }
 
-    if state.local_value(entry).is_some() {
+    if let Some(command) = entry.preferred_command.as_deref() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!("Preferred command: {command}")));
+    }
+
+    if let Some(example) = entry.examples.first() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(format!("Example: {example}")));
+    }
+
+    if entry.key.contains('<') {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![Span::styled(
+            "This is a schema template. Press Enter or `n` to create a concrete entry.",
+            Style::default().fg(Color::Yellow),
+        )]));
+    } else if state.local_value(entry).is_some() {
         lines.push(Line::from(""));
         lines.push(Line::from(vec![Span::styled(
             "config.local.toml overrides the shared value until that local override is removed.",
@@ -255,7 +312,9 @@ fn render_value_block<'a>(title: &'a str, value: Option<&'a TomlValue>) -> Vec<L
 
 fn draw_footer(frame: &mut Frame<'_>, state: &ConfigTuiState, area: Rect) {
     let footer = Paragraph::new(vec![
-        Line::from("Arrows/Tab navigate  Enter edit  u unset  Ctrl-S save  r revert  q quit"),
+        Line::from(
+            "Arrows/Tab navigate  Enter edit/create  n create  t target  u unset  Ctrl-S save  r revert  q quit",
+        ),
         Line::from(state.selected_category().description.clone()),
         Line::from(state.mode_help_line()),
         Line::from(format!(
@@ -283,29 +342,11 @@ fn draw_edit_overlay(frame: &mut Frame<'_>, state: &ConfigTuiState) {
     let area = centered_rect(70, 35, frame.area());
     frame.render_widget(Clear, area);
     let entry = state.selected_entry();
-    let mut lines = vec![
-        Line::from(format!("Edit {}", entry.display_path)),
-        Line::from("Enter a TOML literal. Bare text is stored as a string."),
-        Line::from(""),
-    ];
-    if let ConfigInputMode::Edit { buffer, error } = &state.input_mode {
-        lines.push(Line::from(format!("Value: {buffer}")));
-        lines.push(Line::from(""));
-        if let Some(error) = error {
-            lines.push(Line::from(vec![Span::styled(
-                error.clone(),
-                Style::default().fg(Color::Red),
-            )]));
-        } else {
-            lines.push(Line::from(
-                "Press Enter to apply, Esc to cancel, Backspace to edit.",
-            ));
-        }
-    }
+    let lines = state.overlay_lines(entry);
     let paragraph = Paragraph::new(lines)
         .block(
             Block::default()
-                .title("Edit Value")
+                .title(state.overlay_title(entry))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Cyan)),
         )
@@ -332,7 +373,7 @@ fn centered_rect(horizontal_percent: u16, vertical_percent: u16, area: Rect) -> 
         .split(popup[1])[1]
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct ConfigCategory {
     key: String,
     title: String,
@@ -340,13 +381,34 @@ struct ConfigCategory {
     entries: Vec<ConfigEntry>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct ConfigEntry {
+    key: String,
+    storage_key: String,
     display_path: String,
     display_segments: Vec<String>,
     storage_segments: Vec<String>,
     label: String,
     description: String,
+    kind: crate::app_config::ConfigValueKind,
+    enum_values: Vec<String>,
+    target_support: crate::app_config::ConfigTargetSupport,
+    value_source: crate::app_config::ConfigValueSource,
+    default_value: Option<TomlValue>,
+    default_display: Option<String>,
+    examples: Vec<String>,
+    preferred_command: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ValueEditorMode {
+    RawToml,
+    Enum {
+        options: Vec<String>,
+        selected: usize,
+    },
+    StringList,
+    ScalarMap,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -354,6 +416,13 @@ enum ConfigInputMode {
     Normal,
     Edit {
         buffer: String,
+        editor: ValueEditorMode,
+        error: Option<String>,
+    },
+    CreateDynamic {
+        name: String,
+        value: String,
+        editing_value: bool,
         error: Option<String>,
     },
 }
@@ -364,6 +433,8 @@ enum ConfigTuiAction {
     Quit,
     Save,
     Unset,
+    ToggleTarget,
+    Create,
 }
 
 struct ConfigTuiState {
@@ -373,10 +444,12 @@ struct ConfigTuiState {
     shared_toml: TomlValue,
     baseline_shared_toml: TomlValue,
     local_toml: TomlValue,
+    baseline_local_toml: TomlValue,
     categories: Vec<ConfigCategory>,
     selected_category: usize,
     selected_entry: usize,
     input_mode: ConfigInputMode,
+    selected_target: crate::app_config::ConfigTarget,
     status: String,
     dirty: bool,
     confirm_discard: bool,
@@ -384,44 +457,41 @@ struct ConfigTuiState {
 
 impl ConfigTuiState {
     fn load(paths: VaultPaths) -> Result<Self, String> {
-        let display = crate::app_config::build_config_show_report(&paths, None, None)
-            .map_err(|error| error.to_string())?;
-        let effective_toml = display.rendered_toml.clone();
         let shared_toml = crate::app_config::load_config_file_toml(paths.config_file())
             .map_err(|error| error.to_string())?;
         let local_toml = crate::app_config::load_config_file_toml(paths.local_config_file())
             .map_err(|error| error.to_string())?;
-        let categories = build_categories(&effective_toml, &shared_toml, &local_toml);
-        let status = if display.diagnostics.is_empty() {
+        let (effective_toml, diagnostics, categories) =
+            rebuild_schema_state(&paths, &shared_toml, &local_toml)?;
+        let status = if diagnostics.is_empty() {
             "Loaded .vulcan/config.toml. Edit a setting, then press Ctrl-S to save.".to_string()
         } else {
             format!(
                 "Loaded config with {} warning{}.",
-                display.diagnostics.len(),
-                if display.diagnostics.len() == 1 {
-                    ""
-                } else {
-                    "s"
-                }
+                diagnostics.len(),
+                if diagnostics.len() == 1 { "" } else { "s" }
             )
         };
         Ok(Self {
             paths,
-            diagnostics: display.diagnostics,
+            diagnostics,
             effective_toml,
             shared_toml: shared_toml.clone(),
             baseline_shared_toml: shared_toml,
-            local_toml,
+            local_toml: local_toml.clone(),
+            baseline_local_toml: local_toml,
             categories,
             selected_category: 0,
             selected_entry: 0,
             input_mode: ConfigInputMode::Normal,
+            selected_target: crate::app_config::ConfigTarget::Shared,
             status,
             dirty: false,
             confirm_discard: false,
         })
     }
 
+    #[allow(clippy::too_many_lines)]
     fn handle_key(&mut self, key: KeyEvent) -> ConfigTuiAction {
         if matches!(self.input_mode, ConfigInputMode::Normal) {
             return self.handle_normal_key(key);
@@ -429,33 +499,121 @@ impl ConfigTuiState {
 
         self.confirm_discard = false;
         let mut apply_buffer = None;
+        let mut apply_create = None;
         let mut cancel_edit = false;
-        if let ConfigInputMode::Edit { buffer, error } = &mut self.input_mode {
-            match key.code {
+        match &mut self.input_mode {
+            ConfigInputMode::Edit {
+                buffer,
+                editor,
+                error,
+            } => match editor {
+                ValueEditorMode::Enum { options, selected } => match key.code {
+                    KeyCode::Esc => cancel_edit = true,
+                    KeyCode::Enter => {
+                        apply_buffer = options.get(*selected).cloned();
+                    }
+                    KeyCode::Up | KeyCode::Left | KeyCode::Char('k') => {
+                        *selected = wrap_index(*selected, options.len(), -1);
+                        if let Some(value) = options.get(*selected) {
+                            *buffer = value.clone();
+                        }
+                        *error = None;
+                    }
+                    KeyCode::Down | KeyCode::Right | KeyCode::Tab | KeyCode::Char('j') => {
+                        *selected = wrap_index(*selected, options.len(), 1);
+                        if let Some(value) = options.get(*selected) {
+                            *buffer = value.clone();
+                        }
+                        *error = None;
+                    }
+                    KeyCode::Char(character)
+                        if !key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !key.modifiers.contains(KeyModifiers::ALT) =>
+                    {
+                        let needle = character.to_ascii_lowercase().to_string();
+                        if let Some((index, value)) = options
+                            .iter()
+                            .enumerate()
+                            .find(|(_, value)| value.to_ascii_lowercase().starts_with(&needle))
+                        {
+                            *selected = index;
+                            *buffer = value.clone();
+                        }
+                        *error = None;
+                    }
+                    _ => {}
+                },
+                ValueEditorMode::RawToml
+                | ValueEditorMode::StringList
+                | ValueEditorMode::ScalarMap => match key.code {
+                    KeyCode::Esc => cancel_edit = true,
+                    KeyCode::Enter => apply_buffer = Some(buffer.clone()),
+                    KeyCode::Backspace => {
+                        buffer.pop();
+                        *error = None;
+                    }
+                    KeyCode::Char(character)
+                        if !key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !key.modifiers.contains(KeyModifiers::ALT) =>
+                    {
+                        buffer.push(character);
+                        *error = None;
+                    }
+                    KeyCode::Tab => {
+                        *error = None;
+                    }
+                    _ => {}
+                },
+            },
+            ConfigInputMode::CreateDynamic {
+                name,
+                value,
+                editing_value,
+                error,
+            } => match key.code {
                 KeyCode::Esc => cancel_edit = true,
-                KeyCode::Enter => apply_buffer = Some(buffer.clone()),
+                KeyCode::Enter if !*editing_value => *editing_value = true,
+                KeyCode::Enter => apply_create = Some((name.clone(), value.clone())),
                 KeyCode::Backspace => {
-                    buffer.pop();
+                    if *editing_value {
+                        value.pop();
+                    } else {
+                        name.pop();
+                    }
+                    *error = None;
+                }
+                KeyCode::Tab => {
+                    *editing_value = !*editing_value;
                     *error = None;
                 }
                 KeyCode::Char(character)
                     if !key.modifiers.contains(KeyModifiers::CONTROL)
                         && !key.modifiers.contains(KeyModifiers::ALT) =>
                 {
-                    buffer.push(character);
-                    *error = None;
-                }
-                KeyCode::Tab => {
-                    buffer.push('\t');
+                    if *editing_value {
+                        value.push(character);
+                    } else {
+                        name.push(character);
+                    }
                     *error = None;
                 }
                 _ => {}
-            }
+            },
+            ConfigInputMode::Normal => {}
         }
 
         if cancel_edit {
             self.input_mode = ConfigInputMode::Normal;
             self.status = "Cancelled edit.".to_string();
+            return ConfigTuiAction::Continue;
+        }
+
+        if let Some((name, value)) = apply_create {
+            if let Err(message) = self.apply_create_dynamic_entry(&name, &value) {
+                if let ConfigInputMode::CreateDynamic { error, .. } = &mut self.input_mode {
+                    *error = Some(message);
+                }
+            }
             return ConfigTuiAction::Continue;
         }
 
@@ -471,9 +629,25 @@ impl ConfigTuiState {
     }
 
     fn handle_paste(&mut self, text: &str) {
-        if let ConfigInputMode::Edit { buffer, error } = &mut self.input_mode {
-            buffer.push_str(text);
-            *error = None;
+        match &mut self.input_mode {
+            ConfigInputMode::Edit { buffer, error, .. } => {
+                buffer.push_str(text);
+                *error = None;
+            }
+            ConfigInputMode::CreateDynamic {
+                name,
+                value,
+                editing_value,
+                error,
+            } => {
+                if *editing_value {
+                    value.push_str(text);
+                } else {
+                    name.push_str(text);
+                }
+                *error = None;
+            }
+            ConfigInputMode::Normal => {}
         }
     }
 
@@ -484,7 +658,14 @@ impl ConfigTuiState {
             KeyCode::Down | KeyCode::Char('j') => self.move_entry(1),
             KeyCode::Left | KeyCode::BackTab => self.move_category(-1),
             KeyCode::Right | KeyCode::Tab => self.move_category(1),
-            KeyCode::Enter | KeyCode::Char('e') => self.open_edit(),
+            KeyCode::Enter | KeyCode::Char('e') => {
+                if self.selected_entry().key.contains('<') {
+                    return ConfigTuiAction::Create;
+                }
+                self.open_edit();
+            }
+            KeyCode::Char('n') => return ConfigTuiAction::Create,
+            KeyCode::Char('t') => return ConfigTuiAction::ToggleTarget,
             KeyCode::Char('u') => return ConfigTuiAction::Unset,
             KeyCode::Char('r') => self.revert_changes(),
             KeyCode::Char('q') => {
@@ -513,30 +694,91 @@ impl ConfigTuiState {
 
     fn open_edit(&mut self) {
         let entry = self.selected_entry().clone();
+        if entry.key.contains('<') {
+            self.open_create();
+            return;
+        }
+        if !entry.target_support.allows(self.selected_target) {
+            self.status = format!(
+                "{} can only be edited in {}.",
+                entry.display_path,
+                Self::entry_target_label(&entry)
+            );
+            return;
+        }
         let current = self
-            .shared_value(&entry)
-            .or_else(|| self.local_value(&entry))
+            .target_value(&entry)
             .cloned()
-            .or_else(|| self.effective_value(&entry));
-        let buffer = current.as_ref().map_or_else(String::new, toml_literal);
+            .or_else(|| self.effective_value(&entry))
+            .or_else(|| entry.default_value.clone());
+        let editor = editor_mode_for_entry(&entry, current.as_ref());
+        let buffer = editor_buffer(&editor, current.as_ref());
         self.input_mode = ConfigInputMode::Edit {
             buffer,
+            editor,
             error: None,
         };
-        self.status = format!("Editing {}.", entry.display_path);
+        self.status = format!(
+            "Editing {} in {}.",
+            entry.display_path,
+            self.selected_target_label()
+        );
+    }
+
+    fn open_create(&mut self) {
+        let entry = self.selected_entry().clone();
+        if !entry.key.contains('<') {
+            self.status = format!("{} is already concrete.", entry.display_path);
+            return;
+        }
+        if !entry.target_support.allows(self.selected_target) {
+            self.status = format!(
+                "{} can only be created in {}.",
+                entry.display_path,
+                Self::entry_target_label(&entry)
+            );
+            return;
+        }
+        let mut value = entry
+            .default_value
+            .as_ref()
+            .map(toml_literal)
+            .unwrap_or_default();
+        if value.is_empty() {
+            value = match entry.kind {
+                crate::app_config::ConfigValueKind::Object => "{}".to_string(),
+                crate::app_config::ConfigValueKind::Array => "[]".to_string(),
+                crate::app_config::ConfigValueKind::Boolean => "true".to_string(),
+                _ => String::new(),
+            };
+        }
+        self.input_mode = ConfigInputMode::CreateDynamic {
+            name: String::new(),
+            value,
+            editing_value: false,
+            error: None,
+        };
+        self.status = format!(
+            "Creating {} in {}.",
+            entry.display_path,
+            self.selected_target_label()
+        );
     }
 
     fn apply_buffered_edit(&mut self, buffer: &str) -> Result<(), String> {
-        let trimmed = buffer.trim();
-        if trimmed.is_empty() {
-            return Err(
-                "Empty values are not allowed. Use `u` to unset the shared override.".to_string(),
-            );
-        }
-
-        let value = parse_toml_literal(trimmed)?;
         let entry = self.selected_entry().clone();
-        let mut updated = self.shared_toml.clone();
+        let editor = self.active_editor_mode(&entry);
+        let value = parse_editor_input(&entry, buffer, &editor)?;
+        crate::app_config::plan_config_set_report_to(
+            &self.paths,
+            &entry.display_path,
+            &value,
+            self.selected_target,
+            true,
+        )
+        .map_err(|error| error.to_string())?;
+
+        let mut updated = self.target_toml().clone();
         let storage_segments = entry
             .storage_segments
             .iter()
@@ -545,32 +787,106 @@ impl ConfigTuiState {
         crate::app_config::set_config_toml_value(&mut updated, &storage_segments, value)
             .map_err(|error| error.to_string())?;
         let rendered = toml::to_string_pretty(&updated).map_err(|error| error.to_string())?;
-        validate_vulcan_overrides_toml(&rendered).map_err(|error| error.to_string())?;
+        vulcan_core::validate_vulcan_overrides_toml(&rendered)
+            .map_err(|error| error.to_string())?;
 
-        self.shared_toml = updated;
-        self.dirty = self.shared_toml != self.baseline_shared_toml;
+        *self.target_toml_mut() = updated;
+        self.refresh_from_working_state(Some(entry.display_path.clone()))?;
         self.input_mode = ConfigInputMode::Normal;
-        self.refresh_categories(Some(entry.display_path.clone()));
-        if self.local_value(self.selected_entry()).is_some() {
+        if self.selected_target == crate::app_config::ConfigTarget::Shared
+            && self.local_value(self.selected_entry()).is_some()
+        {
             self.status = format!(
                 "Updated {} in shared config. A local override still wins for the effective value.",
                 entry.display_path
             );
         } else {
-            self.status = format!("Updated {} in the working copy.", entry.display_path);
+            self.status = format!(
+                "Updated {} in the {} working copy.",
+                entry.display_path,
+                self.selected_target_label()
+            );
         }
+        Ok(())
+    }
+
+    fn apply_create_dynamic_entry(&mut self, name: &str, value: &str) -> Result<(), String> {
+        let entry = self.selected_entry().clone();
+        if !entry.key.contains('<') {
+            return Err(format!("{} is already concrete.", entry.display_path));
+        }
+        let trimmed_name = name.trim();
+        if trimmed_name.is_empty() {
+            return Err("A concrete name is required.".to_string());
+        }
+        if trimmed_name.contains('.') || trimmed_name.contains('<') || trimmed_name.contains('>') {
+            return Err("Names may not contain `.`, `<`, or `>`.".to_string());
+        }
+
+        let concrete_key = entry.key.replace("<name>", trimmed_name);
+        let raw_value = if value.trim().is_empty() {
+            match entry.kind {
+                crate::app_config::ConfigValueKind::Object => "{}",
+                crate::app_config::ConfigValueKind::Array => "[]",
+                _ => return Err("A TOML value is required for this entry.".to_string()),
+            }
+        } else {
+            value.trim()
+        };
+        let parsed_value = parse_entry_literal(&entry, raw_value)?;
+        crate::app_config::plan_config_set_report_to(
+            &self.paths,
+            &concrete_key,
+            &parsed_value,
+            self.selected_target,
+            true,
+        )
+        .map_err(|error| error.to_string())?;
+
+        let mut updated = self.target_toml().clone();
+        let storage_segments = storage_segments_for_key(&concrete_key);
+        let storage_refs = storage_segments
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        crate::app_config::set_config_toml_value(&mut updated, &storage_refs, parsed_value)
+            .map_err(|error| error.to_string())?;
+        let rendered = toml::to_string_pretty(&updated).map_err(|error| error.to_string())?;
+        vulcan_core::validate_vulcan_overrides_toml(&rendered)
+            .map_err(|error| error.to_string())?;
+
+        *self.target_toml_mut() = updated;
+        self.refresh_from_working_state(Some(concrete_key.clone()))?;
+        self.input_mode = ConfigInputMode::Normal;
+        self.status = format!(
+            "Created {} in {}.",
+            concrete_key,
+            self.selected_target_label()
+        );
         Ok(())
     }
 
     fn unset_selected(&mut self) {
         let entry = self.selected_entry().clone();
+        if entry.key.contains('<') {
+            self.status = "Select a concrete config key before unsetting it.".to_string();
+            return;
+        }
+        if !entry.target_support.allows(self.selected_target) {
+            self.status = format!(
+                "{} can only be unset in {}.",
+                entry.display_path,
+                Self::entry_target_label(&entry)
+            );
+            return;
+        }
         let storage_segments = entry
             .storage_segments
             .iter()
             .map(String::as_str)
             .collect::<Vec<_>>();
         let removed = match crate::app_config::remove_config_toml_value(
-            &mut self.shared_toml,
+            self.target_toml_mut(),
             &storage_segments,
         ) {
             Ok(removed) => removed,
@@ -580,16 +896,26 @@ impl ConfigTuiState {
             }
         };
         if !removed {
-            self.status = format!("{} has no shared override to remove.", entry.display_path);
+            self.status = format!(
+                "{} has no {} override to remove.",
+                entry.display_path,
+                self.selected_target_label()
+            );
             return;
         }
-        self.dirty = self.shared_toml != self.baseline_shared_toml;
-        self.refresh_categories(Some(entry.display_path.clone()));
-        self.status = if self.local_value(self.selected_entry()).is_some() {
+        if let Err(error) = self.refresh_from_working_state(Some(entry.display_path.clone())) {
+            self.status = error;
+            return;
+        }
+        self.status = if self.selected_target == crate::app_config::ConfigTarget::Shared
+            && self.local_value(self.selected_entry()).is_some()
+        {
             format!(
                 "Removed the shared override for {}. config.local.toml still overrides it.",
                 entry.display_path
             )
+        } else if self.selected_target == crate::app_config::ConfigTarget::Local {
+            format!("Removed the local override for {}.", entry.display_path)
         } else {
             format!("Removed the shared override for {}.", entry.display_path)
         };
@@ -602,44 +928,81 @@ impl ConfigTuiState {
         }
         let selected = self.selected_entry().display_path.clone();
         self.shared_toml = self.baseline_shared_toml.clone();
+        self.local_toml = self.baseline_local_toml.clone();
         self.dirty = false;
         self.input_mode = ConfigInputMode::Normal;
-        self.refresh_categories(Some(selected));
+        if let Err(error) = self.refresh_from_working_state(Some(selected)) {
+            self.status = error;
+            return;
+        }
         self.status = "Reverted unsaved changes.".to_string();
     }
 
     fn save(&mut self, auto_commit: &AutoCommitPolicy, quiet: bool) {
-        let rendered = match toml::to_string_pretty(&self.shared_toml) {
-            Ok(rendered) => rendered,
-            Err(error) => {
+        let had_gitignore = self.paths.gitignore_file().exists();
+        let mut changed_files = BTreeSet::new();
+
+        for target in [
+            crate::app_config::ConfigTarget::Shared,
+            crate::app_config::ConfigTarget::Local,
+        ] {
+            let value = match target {
+                crate::app_config::ConfigTarget::Shared => &self.shared_toml,
+                crate::app_config::ConfigTarget::Local => &self.local_toml,
+            };
+            let baseline = match target {
+                crate::app_config::ConfigTarget::Shared => &self.baseline_shared_toml,
+                crate::app_config::ConfigTarget::Local => &self.baseline_local_toml,
+            };
+            if value == baseline {
+                continue;
+            }
+
+            let rendered = match toml::to_string_pretty(value) {
+                Ok(rendered) => rendered,
+                Err(error) => {
+                    self.set_status(error.to_string());
+                    return;
+                }
+            };
+            let planned = match crate::app_config::plan_config_document_save_for_target(
+                &self.paths,
+                &rendered,
+                target,
+            ) {
+                Ok(report) => report,
+                Err(error) => {
+                    self.set_status(error.to_string());
+                    return;
+                }
+            };
+            if !planned.updated {
+                continue;
+            }
+            if let Err(error) =
+                crate::app_config::apply_config_document_save(&self.paths, planned.clone())
+            {
                 self.set_status(error.to_string());
                 return;
             }
-        };
-        let planned = match crate::app_config::plan_config_document_save(&self.paths, &rendered) {
-            Ok(report) => report,
-            Err(error) => {
-                self.set_status(error.to_string());
-                return;
+            for path in
+                crate::config_changed_files(&self.paths, &planned.config_path, had_gitignore)
+            {
+                changed_files.insert(path);
             }
-        };
-        if !planned.updated {
+        }
+
+        if changed_files.is_empty() {
             self.dirty = false;
             self.confirm_discard = false;
             self.status = "No config changes to save.".to_string();
             return;
         }
 
-        let had_gitignore = self.paths.gitignore_file().exists();
-        if let Err(error) = crate::app_config::apply_config_document_save(&self.paths, planned) {
-            self.set_status(error.to_string());
-            return;
-        }
-
         let commit_result = auto_commit.commit(
             &self.paths,
             "config-edit",
-            &crate::config_set_changed_files(&self.paths, had_gitignore),
+            &changed_files.into_iter().collect::<Vec<_>>(),
             None,
             quiet,
         );
@@ -647,19 +1010,21 @@ impl ConfigTuiState {
         match Self::load(self.paths.clone()) {
             Ok(mut reloaded) => {
                 reloaded.status = if let Err(error) = commit_result {
-                    format!("Saved .vulcan/config.toml, but auto-commit failed: {error}")
+                    format!("Saved config changes, but auto-commit failed: {error}")
                 } else {
-                    "Saved .vulcan/config.toml.".to_string()
+                    "Saved config changes.".to_string()
                 };
                 *self = reloaded;
             }
             Err(error) => {
                 self.baseline_shared_toml = self.shared_toml.clone();
-                self.dirty = false;
+                self.baseline_local_toml = self.local_toml.clone();
+                self.dirty = self.shared_toml != self.baseline_shared_toml
+                    || self.local_toml != self.baseline_local_toml;
                 self.confirm_discard = false;
                 self.status = if let Err(commit_error) = commit_result {
                     format!(
-                        "Saved .vulcan/config.toml, but reload failed ({error}) and auto-commit failed: {commit_error}"
+                        "Saved config changes, but reload failed ({error}) and auto-commit failed: {commit_error}"
                     )
                 } else {
                     format!("Saved .vulcan/config.toml, but reload failed: {error}")
@@ -676,39 +1041,102 @@ impl ConfigTuiState {
         &self.selected_category().entries[self.selected_entry]
     }
 
+    fn selected_target_label(&self) -> &'static str {
+        match self.selected_target {
+            crate::app_config::ConfigTarget::Shared => "shared",
+            crate::app_config::ConfigTarget::Local => "local",
+        }
+    }
+
+    fn target_toml(&self) -> &TomlValue {
+        match self.selected_target {
+            crate::app_config::ConfigTarget::Shared => &self.shared_toml,
+            crate::app_config::ConfigTarget::Local => &self.local_toml,
+        }
+    }
+
+    fn target_toml_mut(&mut self) -> &mut TomlValue {
+        match self.selected_target {
+            crate::app_config::ConfigTarget::Shared => &mut self.shared_toml,
+            crate::app_config::ConfigTarget::Local => &mut self.local_toml,
+        }
+    }
+
     fn shared_value(&self, entry: &ConfigEntry) -> Option<&TomlValue> {
+        if entry.key.contains('<') {
+            return None;
+        }
         get_toml_value(&self.shared_toml, &entry.storage_segments)
     }
 
     fn local_value(&self, entry: &ConfigEntry) -> Option<&TomlValue> {
+        if entry.key.contains('<') {
+            return None;
+        }
         get_toml_value(&self.local_toml, &entry.storage_segments)
     }
 
     fn effective_value(&self, entry: &ConfigEntry) -> Option<TomlValue> {
+        if entry.key.contains('<') {
+            return None;
+        }
         get_toml_value(&self.effective_toml, &entry.display_segments).cloned()
     }
 
+    fn target_value(&self, entry: &ConfigEntry) -> Option<&TomlValue> {
+        match self.selected_target {
+            crate::app_config::ConfigTarget::Shared => self.shared_value(entry),
+            crate::app_config::ConfigTarget::Local => self.local_value(entry),
+        }
+    }
+
     fn display_summary(&self, entry: &ConfigEntry) -> String {
-        self.local_value(entry)
-            .or_else(|| self.shared_value(entry))
+        if entry.key.contains('<') {
+            return "create...".to_string();
+        }
+        self.target_value(entry)
             .cloned()
             .or_else(|| self.effective_value(entry))
+            .or_else(|| entry.default_value.clone())
             .map_or_else(String::new, |value| summarize_toml_value(&value))
     }
 
     fn mode_help_line(&self) -> String {
-        match self.input_mode {
+        match &self.input_mode {
             ConfigInputMode::Normal => {
                 if self.confirm_discard {
                     "Discard is armed until you press another key.".to_string()
                 } else {
-                    "Browse categories on the left, settings in the middle, and details on the right."
+                    "Browse categories on the left, settings in the middle, and use `t` to switch the active target."
                         .to_string()
                 }
             }
-            ConfigInputMode::Edit { .. } => {
-                "Editing one TOML literal in memory. Save writes the whole shared config file."
-                    .to_string()
+            ConfigInputMode::Edit { editor, .. } => match editor {
+                ValueEditorMode::RawToml => {
+                    "Editing one TOML literal in memory. Save writes any changed shared and local config files."
+                        .to_string()
+                }
+                ValueEditorMode::Enum { .. } => {
+                    "Pick from the allowed values with arrows or j/k, then press Enter to apply."
+                        .to_string()
+                }
+                ValueEditorMode::StringList => {
+                    "Edit a comma-separated string list. Save writes any changed shared and local config files."
+                        .to_string()
+                }
+                ValueEditorMode::ScalarMap => {
+                    "Edit comma-separated key=value pairs for a simple scalar map."
+                        .to_string()
+                }
+            },
+            ConfigInputMode::CreateDynamic { editing_value, .. } => {
+                if *editing_value {
+                    "Creating a concrete entry. Enter applies the value, Tab returns to the name field."
+                        .to_string()
+                } else {
+                    "Creating a concrete entry. Type the name to replace `<name>`, then press Enter."
+                        .to_string()
+                }
             }
         }
     }
@@ -735,20 +1163,25 @@ impl ConfigTuiState {
         );
     }
 
-    fn refresh_categories(&mut self, selected_path: Option<String>) {
-        self.categories =
-            build_categories(&self.effective_toml, &self.shared_toml, &self.local_toml);
+    fn refresh_from_working_state(&mut self, selected_path: Option<String>) -> Result<(), String> {
+        let (effective_toml, diagnostics, categories) =
+            rebuild_schema_state(&self.paths, &self.shared_toml, &self.local_toml)?;
+        self.effective_toml = effective_toml;
+        self.diagnostics = diagnostics;
+        self.categories = categories;
+        self.dirty = self.shared_toml != self.baseline_shared_toml
+            || self.local_toml != self.baseline_local_toml;
         if self.categories.is_empty() {
             self.selected_category = 0;
             self.selected_entry = 0;
-            return;
+            return Ok(());
         }
 
         if let Some(selected_path) = selected_path {
             if let Some((category_index, entry_index)) = self.find_entry(&selected_path) {
                 self.selected_category = category_index;
                 self.selected_entry = entry_index;
-                return;
+                return Ok(());
             }
         }
 
@@ -758,6 +1191,7 @@ impl ConfigTuiState {
         self.selected_entry = self
             .selected_entry
             .min(self.selected_category().entries.len().saturating_sub(1));
+        Ok(())
     }
 
     fn find_entry(&self, display_path: &str) -> Option<(usize, usize)> {
@@ -776,58 +1210,310 @@ impl ConfigTuiState {
     fn set_status(&mut self, status: String) {
         self.status = status;
     }
+
+    fn toggle_target(&mut self) {
+        let entry = self.selected_entry().clone();
+        match entry.target_support {
+            crate::app_config::ConfigTargetSupport::SharedOnly => {
+                self.selected_target = crate::app_config::ConfigTarget::Shared;
+                self.status = format!("{} is shared-only.", entry.display_path);
+            }
+            crate::app_config::ConfigTargetSupport::LocalOnly => {
+                self.selected_target = crate::app_config::ConfigTarget::Local;
+                self.status = format!("{} is local-only.", entry.display_path);
+            }
+            crate::app_config::ConfigTargetSupport::SharedAndLocal => {
+                self.selected_target = match self.selected_target {
+                    crate::app_config::ConfigTarget::Shared => {
+                        crate::app_config::ConfigTarget::Local
+                    }
+                    crate::app_config::ConfigTarget::Local => {
+                        crate::app_config::ConfigTarget::Shared
+                    }
+                };
+                self.status = format!("Active target: {}.", self.selected_target_label());
+            }
+        }
+    }
+
+    fn entry_kind_label(entry: &ConfigEntry) -> &'static str {
+        match entry.kind {
+            crate::app_config::ConfigValueKind::String => "string",
+            crate::app_config::ConfigValueKind::Integer => "integer",
+            crate::app_config::ConfigValueKind::Float => "float",
+            crate::app_config::ConfigValueKind::Boolean => "boolean",
+            crate::app_config::ConfigValueKind::Array => "array",
+            crate::app_config::ConfigValueKind::Object => "object",
+            crate::app_config::ConfigValueKind::Enum => "enum",
+            crate::app_config::ConfigValueKind::Flexible => "flexible",
+        }
+    }
+
+    fn entry_target_label(entry: &ConfigEntry) -> &'static str {
+        match entry.target_support {
+            crate::app_config::ConfigTargetSupport::SharedOnly => "shared",
+            crate::app_config::ConfigTargetSupport::LocalOnly => "local",
+            crate::app_config::ConfigTargetSupport::SharedAndLocal => "shared|local",
+        }
+    }
+
+    fn value_source_label(entry: &ConfigEntry) -> &'static str {
+        match entry.value_source {
+            crate::app_config::ConfigValueSource::Default => "default",
+            crate::app_config::ConfigValueSource::ObsidianImport => "obsidian import",
+            crate::app_config::ConfigValueSource::SharedOverride => "shared override",
+            crate::app_config::ConfigValueSource::LocalOverride => "local override",
+            crate::app_config::ConfigValueSource::Unset => "unset",
+        }
+    }
+
+    fn entry_source_badge(entry: &ConfigEntry) -> (&'static str, Color) {
+        match entry.value_source {
+            crate::app_config::ConfigValueSource::Default => ("default", Color::Blue),
+            crate::app_config::ConfigValueSource::ObsidianImport => ("import", Color::Magenta),
+            crate::app_config::ConfigValueSource::SharedOverride => ("shared", Color::Green),
+            crate::app_config::ConfigValueSource::LocalOverride => ("local", Color::Yellow),
+            crate::app_config::ConfigValueSource::Unset => ("unset", Color::DarkGray),
+        }
+    }
+
+    fn overlay_title(&self, entry: &ConfigEntry) -> &'static str {
+        match self.input_mode {
+            ConfigInputMode::Edit { ref editor, .. } => match editor {
+                ValueEditorMode::RawToml => "Edit Value",
+                ValueEditorMode::Enum { .. } => "Pick Value",
+                ValueEditorMode::StringList => "Edit List",
+                ValueEditorMode::ScalarMap => "Edit Map",
+            },
+            ConfigInputMode::CreateDynamic { .. } => {
+                if entry.key.starts_with("export.profiles.") {
+                    "Create Export Profile Entry"
+                } else {
+                    "Create Entry"
+                }
+            }
+            ConfigInputMode::Normal => "Config Editor",
+        }
+    }
+
+    #[allow(clippy::too_many_lines)]
+    fn overlay_lines(&self, entry: &ConfigEntry) -> Vec<Line<'static>> {
+        match &self.input_mode {
+            ConfigInputMode::Edit {
+                buffer,
+                editor,
+                error,
+            } => match editor {
+                ValueEditorMode::RawToml => {
+                    let mut lines = vec![
+                        Line::from(format!(
+                            "Edit {} in {}",
+                            entry.display_path,
+                            self.selected_target_label()
+                        )),
+                        Line::from("Enter a TOML literal. Bare text is stored as a string."),
+                        Line::from(""),
+                        Line::from(format!("Value: {buffer}")),
+                        Line::from(""),
+                    ];
+                    if let Some(error) = error {
+                        lines.push(Line::from(vec![Span::styled(
+                            error.clone(),
+                            Style::default().fg(Color::Red),
+                        )]));
+                    } else {
+                        lines.push(Line::from(
+                            "Press Enter to apply, Esc to cancel, Backspace to edit.",
+                        ));
+                    }
+                    lines
+                }
+                ValueEditorMode::Enum { options, selected } => {
+                    let mut lines = vec![
+                        Line::from(format!(
+                            "Choose {} in {}",
+                            entry.display_path,
+                            self.selected_target_label()
+                        )),
+                        Line::from("Use arrows or j/k to select one allowed value."),
+                        Line::from(""),
+                    ];
+                    for (index, option) in options.iter().enumerate() {
+                        lines.push(Line::from(format!(
+                            "{}{}",
+                            if index == *selected { "> " } else { "  " },
+                            option
+                        )));
+                    }
+                    lines.push(Line::from(""));
+                    if let Some(error) = error {
+                        lines.push(Line::from(vec![Span::styled(
+                            error.clone(),
+                            Style::default().fg(Color::Red),
+                        )]));
+                    } else {
+                        lines.push(Line::from("Press Enter to apply, Esc to cancel."));
+                    }
+                    lines
+                }
+                ValueEditorMode::StringList => {
+                    let mut lines = vec![
+                        Line::from(format!(
+                            "Edit {} in {}",
+                            entry.display_path,
+                            self.selected_target_label()
+                        )),
+                        Line::from(
+                            "Enter a comma-separated list of strings. Quotes are optional unless one item contains commas.",
+                        ),
+                        Line::from(""),
+                        Line::from(format!("Items: {buffer}")),
+                        Line::from(""),
+                    ];
+                    if let Some(error) = error {
+                        lines.push(Line::from(vec![Span::styled(
+                            error.clone(),
+                            Style::default().fg(Color::Red),
+                        )]));
+                    } else {
+                        lines.push(Line::from(
+                            "Press Enter to apply, Esc to cancel, Backspace to edit.",
+                        ));
+                    }
+                    lines
+                }
+                ValueEditorMode::ScalarMap => {
+                    let mut lines = vec![
+                        Line::from(format!(
+                            "Edit {} in {}",
+                            entry.display_path,
+                            self.selected_target_label()
+                        )),
+                        Line::from(
+                            "Enter comma-separated key=value pairs. Values may be bare strings, numbers, booleans, or quoted strings.",
+                        ),
+                        Line::from(""),
+                        Line::from(format!("Pairs: {buffer}")),
+                        Line::from(""),
+                    ];
+                    if let Some(error) = error {
+                        lines.push(Line::from(vec![Span::styled(
+                            error.clone(),
+                            Style::default().fg(Color::Red),
+                        )]));
+                    } else {
+                        lines.push(Line::from(
+                            "Press Enter to apply, Esc to cancel, Backspace to edit.",
+                        ));
+                    }
+                    lines
+                }
+            },
+            ConfigInputMode::CreateDynamic {
+                name,
+                value,
+                editing_value,
+                error,
+            } => {
+                let mut lines = vec![
+                    Line::from(format!(
+                        "Create {} in {}",
+                        entry.display_path,
+                        self.selected_target_label()
+                    )),
+                    Line::from(
+                        "Replace `<name>` with a concrete entry name, then enter a TOML literal.",
+                    ),
+                    Line::from(""),
+                    Line::from(format!(
+                        "{}Name: {}",
+                        if *editing_value { "  " } else { "> " },
+                        name
+                    )),
+                    Line::from(format!(
+                        "{}Value: {}",
+                        if *editing_value { "> " } else { "  " },
+                        value
+                    )),
+                    Line::from(""),
+                ];
+                if let Some(error) = error {
+                    lines.push(Line::from(vec![Span::styled(
+                        error.clone(),
+                        Style::default().fg(Color::Red),
+                    )]));
+                } else if entry.key.starts_with("export.profiles.") {
+                    lines.push(Line::from(
+                        "Export profiles are discoverable here, but `vulcan export profile ...` remains the preferred write path.",
+                    ));
+                } else {
+                    lines.push(Line::from(
+                        "Press Enter to advance/apply, Tab to switch fields, Esc to cancel.",
+                    ));
+                }
+                lines
+            }
+            ConfigInputMode::Normal => vec![Line::from(String::new())],
+        }
+    }
+
+    fn active_editor_mode(&self, entry: &ConfigEntry) -> ValueEditorMode {
+        match &self.input_mode {
+            ConfigInputMode::Edit { editor, .. } => editor.clone(),
+            ConfigInputMode::Normal | ConfigInputMode::CreateDynamic { .. } => {
+                let current = self
+                    .target_value(entry)
+                    .cloned()
+                    .or_else(|| self.effective_value(entry))
+                    .or_else(|| entry.default_value.clone());
+                editor_mode_for_entry(entry, current.as_ref())
+            }
+        }
+    }
 }
 
-fn build_categories(
-    effective_toml: &TomlValue,
-    shared_toml: &TomlValue,
-    local_toml: &TomlValue,
-) -> Vec<ConfigCategory> {
-    let mut display_paths = BTreeSet::new();
-    collect_leaf_paths(effective_toml, &mut Vec::new(), &mut display_paths);
-
-    let mut shared_paths = BTreeSet::new();
-    collect_leaf_paths(shared_toml, &mut Vec::new(), &mut shared_paths);
-    display_paths.extend(
-        shared_paths
-            .into_iter()
-            .map(|segments| storage_path_to_display_path(&segments)),
-    );
-
-    let mut local_paths = BTreeSet::new();
-    collect_leaf_paths(local_toml, &mut Vec::new(), &mut local_paths);
-    display_paths.extend(
-        local_paths
-            .into_iter()
-            .map(|segments| storage_path_to_display_path(&segments)),
-    );
-
+fn build_categories(entries: &[crate::app_config::ConfigListEntry]) -> Vec<ConfigCategory> {
     let mut grouped = BTreeMap::<String, ConfigCategory>::new();
-    for display_segments in display_paths {
-        let display_path = display_segments.join(".");
-        let storage_segments = display_path_to_storage_path(&display_segments);
-        let descriptor = category_descriptor(&display_segments);
-        let entry = ConfigEntry {
-            label: entry_label(&display_segments),
-            description: option_description(&display_path),
-            display_path: display_path.clone(),
+    for entry in entries {
+        let display_segments = parse_key_segments(&entry.key);
+        let storage_segments = parse_key_segments(&entry.storage_key);
+        let default_value = entry
+            .default_value
+            .as_ref()
+            .and_then(|value: &serde_json::Value| TomlValue::try_from(value.clone()).ok());
+        let category = grouped
+            .entry(entry.section.clone())
+            .or_insert_with(|| ConfigCategory {
+                key: entry.section.clone(),
+                title: entry.section_title.clone(),
+                description: entry.section_description.clone(),
+                entries: Vec::new(),
+            });
+        category.entries.push(ConfigEntry {
+            key: entry.key.clone(),
+            storage_key: entry.storage_key.clone(),
+            display_path: entry.key.clone(),
             display_segments,
             storage_segments,
-        };
-        grouped
-            .entry(descriptor.key.to_string())
-            .or_insert_with(|| ConfigCategory {
-                key: descriptor.key.to_string(),
-                title: descriptor.title.to_string(),
-                description: descriptor.description.to_string(),
-                entries: Vec::new(),
-            })
-            .entries
-            .push(entry);
+            label: entry_label(entry),
+            description: entry.description.clone(),
+            kind: entry.kind.clone(),
+            enum_values: entry.enum_values.clone(),
+            target_support: entry.target_support,
+            value_source: entry.value_source,
+            default_value,
+            default_display: entry.default_display.clone(),
+            examples: entry.examples.clone(),
+            preferred_command: entry.preferred_command.clone(),
+        });
     }
 
     let mut categories = grouped.into_values().collect::<Vec<_>>();
-    categories.sort_by_key(|category| category_order(&category.key));
+    categories.sort_by(|left, right| {
+        category_order(&left.key)
+            .cmp(&category_order(&right.key))
+            .then_with(|| left.key.cmp(&right.key))
+    });
     for category in &mut categories {
         category
             .entries
@@ -836,25 +1522,113 @@ fn build_categories(
     categories
 }
 
-fn collect_leaf_paths(
-    value: &TomlValue,
-    prefix: &mut Vec<String>,
-    out: &mut BTreeSet<Vec<String>>,
-) {
-    match value {
-        TomlValue::Table(table) => {
-            for (key, child) in table {
-                prefix.push(key.clone());
-                collect_leaf_paths(child, prefix, out);
-                prefix.pop();
-            }
-        }
-        _ => {
-            if !prefix.is_empty() {
-                out.insert(prefix.clone());
-            }
+fn parse_key_segments(key: &str) -> Vec<String> {
+    key.split('.')
+        .filter(|segment| !segment.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn entry_label(entry: &crate::app_config::ConfigListEntry) -> String {
+    if entry.key.contains("<name>") {
+        return match entry.key.as_str() {
+            "aliases.<name>" => "new alias...".to_string(),
+            "permissions.profiles.<name>" => "new profile...".to_string(),
+            "plugins.<name>" => "new plugin...".to_string(),
+            "export.profiles.<name>" => "new export profile...".to_string(),
+            _ => entry.key.clone(),
+        };
+    }
+    let display_segments = parse_key_segments(&entry.key);
+    if entry.section == "general" || display_segments.len() == 1 {
+        entry.key.clone()
+    } else {
+        display_segments[1..].join(".")
+    }
+}
+
+fn category_order(key: &str) -> usize {
+    match key {
+        "general" => 0,
+        "links" => 1,
+        "properties" => 2,
+        "templates" => 3,
+        "periodic" => 4,
+        "tasks" => 5,
+        "tasknotes" => 6,
+        "kanban" => 7,
+        "dataview" => 8,
+        "js_runtime" => 9,
+        "web" => 10,
+        "plugins" => 11,
+        "permissions" => 12,
+        "aliases" => 13,
+        "export" => 14,
+        _ => 50,
+    }
+}
+
+fn rebuild_schema_state(
+    paths: &VaultPaths,
+    shared_toml: &TomlValue,
+    local_toml: &TomlValue,
+) -> Result<(TomlValue, Vec<ConfigDiagnostic>, Vec<ConfigCategory>), String> {
+    let temp_root = create_temp_config_root();
+    fs::create_dir_all(temp_root.join(".vulcan")).map_err(|error| error.to_string())?;
+    write_temp_config_file(temp_root.join(".vulcan/config.toml"), shared_toml)?;
+    write_temp_config_file(temp_root.join(".vulcan/config.local.toml"), local_toml)?;
+    let real_obsidian = paths.vault_root().join(".obsidian");
+    if real_obsidian.exists() {
+        copy_dir_recursive(&real_obsidian, &temp_root.join(".obsidian"))?;
+    }
+
+    let temp_paths = VaultPaths::new(&temp_root);
+    let result = (|| {
+        let display = crate::app_config::build_config_show_report(&temp_paths, None, None)
+            .map_err(|error| error.to_string())?;
+        let list = crate::app_config::build_config_list_report(&temp_paths, None)
+            .map_err(|error| error.to_string())?;
+        Ok((
+            display.rendered_toml,
+            display.diagnostics,
+            build_categories(&list.entries),
+        ))
+    })();
+    remove_dir_all_best_effort(&temp_root);
+    result
+}
+
+fn create_temp_config_root() -> std::path::PathBuf {
+    std::env::temp_dir().join(format!("vulcan-config-tui-{}", Ulid::new()))
+}
+
+fn write_temp_config_file(path: impl AsRef<Path>, value: &TomlValue) -> Result<(), String> {
+    let path = path.as_ref();
+    let rendered = toml::to_string_pretty(value).map_err(|error| error.to_string())?;
+    fs::write(path, rendered).map_err(|error| error.to_string())
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), String> {
+    fs::create_dir_all(destination).map_err(|error| error.to_string())?;
+    for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        let destination_path = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&entry.path(), &destination_path)?;
+        } else if file_type.is_file() {
+            fs::copy(entry.path(), destination_path).map_err(|error| error.to_string())?;
         }
     }
+    Ok(())
+}
+
+fn remove_dir_all_best_effort(path: &Path) {
+    let _ = fs::remove_dir_all(path);
+}
+
+fn storage_segments_for_key(key: &str) -> Vec<String> {
+    display_path_to_storage_path(&parse_key_segments(key))
 }
 
 fn get_toml_value<'a>(value: &'a TomlValue, path: &[String]) -> Option<&'a TomlValue> {
@@ -863,6 +1637,139 @@ fn get_toml_value<'a>(value: &'a TomlValue, path: &[String]) -> Option<&'a TomlV
         current = current.as_table()?.get(segment)?;
     }
     Some(current)
+}
+
+fn editor_mode_for_entry(entry: &ConfigEntry, current: Option<&TomlValue>) -> ValueEditorMode {
+    if !entry.enum_values.is_empty() {
+        let selected = current
+            .and_then(|value| value.as_str())
+            .and_then(|value| entry.enum_values.iter().position(|option| option == value))
+            .unwrap_or(0);
+        return ValueEditorMode::Enum {
+            options: entry.enum_values.clone(),
+            selected,
+        };
+    }
+
+    if supports_string_list_editor(entry, current) {
+        return ValueEditorMode::StringList;
+    }
+
+    if supports_scalar_map_editor(entry, current) {
+        return ValueEditorMode::ScalarMap;
+    }
+
+    ValueEditorMode::RawToml
+}
+
+fn supports_string_list_editor(entry: &ConfigEntry, current: Option<&TomlValue>) -> bool {
+    match current {
+        Some(TomlValue::Array(values)) if !values.is_empty() => {
+            values.iter().all(TomlValue::is_str)
+        }
+        Some(TomlValue::Array(_)) | None => {
+            matches!(
+                entry.display_path.as_str(),
+                "templates.web_allowlist" | "git.exclude"
+            ) || (entry.display_path.starts_with("plugins.")
+                && entry.display_path.ends_with(".events"))
+        }
+        _ => false,
+    }
+}
+
+fn supports_scalar_map_editor(entry: &ConfigEntry, current: Option<&TomlValue>) -> bool {
+    match current {
+        Some(TomlValue::Table(values)) if !values.is_empty() => values
+            .values()
+            .all(|value| !matches!(value, TomlValue::Array(_) | TomlValue::Table(_))),
+        Some(TomlValue::Table(_)) | None => matches!(
+            entry.display_path.as_str(),
+            "quickadd.global_variables" | "kanban.table_sizing"
+        ),
+        _ => false,
+    }
+}
+
+fn editor_buffer(editor: &ValueEditorMode, current: Option<&TomlValue>) -> String {
+    match editor {
+        ValueEditorMode::RawToml => current.map_or_else(String::new, toml_literal),
+        ValueEditorMode::Enum { options, selected } => options
+            .get(*selected)
+            .cloned()
+            .or_else(|| {
+                current
+                    .and_then(|value| value.as_str())
+                    .map(ToOwned::to_owned)
+            })
+            .unwrap_or_default(),
+        ValueEditorMode::StringList => current
+            .and_then(|value| value.as_array())
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map_or_else(|| toml_literal(value), ToOwned::to_owned)
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default(),
+        ValueEditorMode::ScalarMap => current
+            .and_then(|value| value.as_table())
+            .map(|table| {
+                table
+                    .iter()
+                    .map(|(key, value)| format!("{key}={}", toml_literal(value)))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            })
+            .unwrap_or_default(),
+    }
+}
+
+fn parse_editor_input(
+    entry: &ConfigEntry,
+    raw: &str,
+    editor: &ValueEditorMode,
+) -> Result<TomlValue, String> {
+    match editor {
+        ValueEditorMode::RawToml => {
+            let trimmed = raw.trim();
+            if trimmed.is_empty() {
+                return Err(format!(
+                    "Empty values are not allowed. Use `u` to unset the {} override.",
+                    entry_target_scope_label(entry)
+                ));
+            }
+            parse_entry_literal(entry, trimmed)
+        }
+        ValueEditorMode::Enum { options, .. } => {
+            let trimmed = raw.trim();
+            if let Some(value) = options.iter().find(|value| value.as_str() == trimmed) {
+                Ok(TomlValue::String(value.clone()))
+            } else {
+                Err(format!("Expected one of: {}.", options.join(", ")))
+            }
+        }
+        ValueEditorMode::StringList => parse_string_list_input(raw),
+        ValueEditorMode::ScalarMap => parse_scalar_map_input(raw),
+    }
+}
+
+fn parse_entry_literal(entry: &ConfigEntry, raw: &str) -> Result<TomlValue, String> {
+    match parse_toml_literal(raw) {
+        Ok(value) => Ok(value),
+        Err(_error)
+            if entry.kind == crate::app_config::ConfigValueKind::String
+                && looks_like_unstructured_string(raw) =>
+        {
+            Ok(TomlValue::String(raw.to_string()))
+        }
+        Err(error) => Err(error),
+    }
 }
 
 fn parse_toml_literal(raw: &str) -> Result<TomlValue, String> {
@@ -882,6 +1789,180 @@ fn parse_toml_literal(raw: &str) -> Result<TomlValue, String> {
     }
 }
 
+fn parse_string_list_input(raw: &str) -> Result<TomlValue, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(TomlValue::Array(Vec::new()));
+    }
+
+    let values = split_unquoted_segments(trimmed, ',')?
+        .into_iter()
+        .filter_map(|segment| {
+            let item = segment.trim();
+            if item.is_empty() {
+                None
+            } else {
+                Some(parse_string_list_item(item))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(TomlValue::Array(values))
+}
+
+fn parse_string_list_item(raw: &str) -> Result<TomlValue, String> {
+    if is_quoted_text(raw) {
+        match parse_toml_literal(raw)? {
+            TomlValue::String(text) => Ok(TomlValue::String(text)),
+            _ => Err("Quoted list items must parse as strings.".to_string()),
+        }
+    } else {
+        Ok(TomlValue::String(raw.to_string()))
+    }
+}
+
+fn parse_scalar_map_input(raw: &str) -> Result<TomlValue, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(TomlValue::Table(toml::map::Map::new()));
+    }
+
+    let mut table = toml::map::Map::new();
+    for segment in split_unquoted_segments(trimmed, ',')? {
+        let pair = segment.trim();
+        if pair.is_empty() {
+            continue;
+        }
+        let Some((raw_key, raw_value)) = split_unquoted_pair(pair, '=') else {
+            return Err(format!(
+                "Expected `key=value` pairs, but `{pair}` is missing `=`."
+            ));
+        };
+        let key = raw_key.trim();
+        if !is_valid_inline_map_key(key) {
+            return Err(format!(
+                "Invalid key `{key}`. Use bare keys containing letters, digits, `_`, or `-`."
+            ));
+        }
+        let value = parse_toml_literal(raw_value.trim())?;
+        if matches!(value, TomlValue::Array(_) | TomlValue::Table(_)) {
+            return Err(format!(
+                "Map editor values must be scalar; `{key}` used a nested structure."
+            ));
+        }
+        table.insert(key.to_string(), value);
+    }
+    Ok(TomlValue::Table(table))
+}
+
+fn split_unquoted_pair(raw: &str, separator: char) -> Option<(&str, &str)> {
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    for (index, character) in raw.char_indices() {
+        if in_double {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            match character {
+                '\\' => escaped = true,
+                '"' => in_double = false,
+                _ => {}
+            }
+            continue;
+        }
+        if in_single {
+            if character == '\'' {
+                in_single = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => in_double = true,
+            '\'' => in_single = true,
+            value if value == separator => return Some((&raw[..index], &raw[index + 1..])),
+            _ => {}
+        }
+    }
+
+    None
+}
+
+fn split_unquoted_segments(raw: &str, separator: char) -> Result<Vec<String>, String> {
+    let mut parts = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut escaped = false;
+
+    for character in raw.chars() {
+        if in_double {
+            current.push(character);
+            if escaped {
+                escaped = false;
+            } else {
+                match character {
+                    '\\' => escaped = true,
+                    '"' => in_double = false,
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        if in_single {
+            current.push(character);
+            if character == '\'' {
+                in_single = false;
+            }
+            continue;
+        }
+
+        match character {
+            '"' => {
+                in_double = true;
+                current.push(character);
+            }
+            '\'' => {
+                in_single = true;
+                current.push(character);
+            }
+            value if value == separator => {
+                parts.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(character),
+        }
+    }
+
+    if in_single || in_double {
+        return Err("Unterminated quoted string.".to_string());
+    }
+
+    parts.push(current.trim().to_string());
+    Ok(parts)
+}
+
+fn is_quoted_text(raw: &str) -> bool {
+    (raw.starts_with('"') && raw.ends_with('"') && raw.len() >= 2)
+        || (raw.starts_with('\'') && raw.ends_with('\'') && raw.len() >= 2)
+}
+
+fn is_valid_inline_map_key(key: &str) -> bool {
+    !key.is_empty()
+        && key
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+}
+
+fn entry_target_scope_label(entry: &ConfigEntry) -> &'static str {
+    match entry.target_support {
+        crate::app_config::ConfigTargetSupport::SharedOnly => "shared",
+        crate::app_config::ConfigTargetSupport::LocalOnly => "local",
+        crate::app_config::ConfigTargetSupport::SharedAndLocal => "selected",
+    }
+}
+
 fn looks_like_plain_string(raw: &str) -> bool {
     !raw.chars().any(|character| {
         matches!(
@@ -889,6 +1970,11 @@ fn looks_like_plain_string(raw: &str) -> bool {
             '{' | '}' | '[' | ']' | ',' | '\n' | '\r' | '"' | '\''
         )
     })
+}
+
+fn looks_like_unstructured_string(raw: &str) -> bool {
+    !raw.chars()
+        .any(|character| matches!(character, '{' | '}' | '[' | ']' | ',' | '\n' | '\r'))
 }
 
 fn toml_literal(value: &TomlValue) -> String {
@@ -946,6 +2032,7 @@ fn toml_value_multiline(value: &TomlValue) -> String {
     }
 }
 
+#[cfg(test)]
 fn storage_path_to_display_path(storage_segments: &[String]) -> Vec<String> {
     match storage_segments {
         [first, second] if first == "links" && second == "resolution" => {
@@ -973,167 +2060,6 @@ fn display_path_to_storage_path(display_segments: &[String]) -> Vec<String> {
             vec!["links".to_string(), "attachment_folder".to_string()]
         }
         _ => display_segments.to_vec(),
-    }
-}
-
-struct CategoryDescriptor {
-    key: &'static str,
-    title: &'static str,
-    description: &'static str,
-}
-
-fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
-    match display_segments.first().map(String::as_str) {
-        Some("link_resolution" | "link_style" | "attachment_folder" | "strict_line_breaks") => {
-            CategoryDescriptor {
-                key: "links",
-                title: "Links",
-                description:
-                    "Link formatting, resolution rules, attachment paths, and Markdown compatibility.",
-            }
-        }
-        Some("property_types") => CategoryDescriptor {
-            key: "properties",
-            title: "Properties",
-            description: "Typed frontmatter and property parsing overrides.",
-        },
-        Some("templates") => CategoryDescriptor {
-            key: "templates",
-            title: "Templates",
-            description: "Template folders, triggers, and Templater-compatible defaults.",
-        },
-        Some("periodic") => CategoryDescriptor {
-            key: "periodic",
-            title: "Periodic Notes",
-            description: "Daily, weekly, monthly, quarterly, and yearly note generation settings.",
-        },
-        Some("tasks") => CategoryDescriptor {
-            key: "tasks",
-            title: "Tasks",
-            description: "Tasks query defaults, statuses, and recurrence behavior.",
-        },
-        Some("tasknotes") => CategoryDescriptor {
-            key: "tasknotes",
-            title: "TaskNotes",
-            description: "TaskNotes folders, statuses, NLP, pomodoro, and saved views.",
-        },
-        Some("kanban") => CategoryDescriptor {
-            key: "kanban",
-            title: "Kanban",
-            description: "Kanban board formatting, archiving, and display preferences.",
-        },
-        Some("dataview") => CategoryDescriptor {
-            key: "dataview",
-            title: "Dataview",
-            description: "Dataview compatibility flags, rendering behavior, and JS limits.",
-        },
-        Some("js_runtime") => CategoryDescriptor {
-            key: "js_runtime",
-            title: "JS Runtime",
-            description: "Sandbox defaults, runtime memory limits, and script locations.",
-        },
-        Some("web") => CategoryDescriptor {
-            key: "web",
-            title: "Web",
-            description: "Web search backend selection and API endpoint configuration.",
-        },
-        Some("plugins") => CategoryDescriptor {
-            key: "plugins",
-            title: "Plugins",
-            description: "Registered event-driven plugin settings for the current vault.",
-        },
-        Some("permissions") => CategoryDescriptor {
-            key: "permissions",
-            title: "Permissions",
-            description: "Static permission profiles used by plugins, MCP, and scripted callers.",
-        },
-        Some("aliases") => CategoryDescriptor {
-            key: "aliases",
-            title: "Aliases",
-            description: "Custom top-level CLI command aliases expanded before clap parsing.",
-        },
-        Some(_) | None => CategoryDescriptor {
-            key: "general",
-            title: "General",
-            description: "Top-level vault configuration not covered by a more specific section.",
-        },
-    }
-}
-
-fn category_order(key: &str) -> usize {
-    match key {
-        "general" => 0,
-        "links" => 1,
-        "properties" => 2,
-        "templates" => 3,
-        "periodic" => 4,
-        "tasks" => 5,
-        "tasknotes" => 6,
-        "kanban" => 7,
-        "dataview" => 8,
-        "js_runtime" => 9,
-        "web" => 10,
-        "plugins" => 11,
-        "permissions" => 12,
-        "aliases" => 13,
-        _ => 50,
-    }
-}
-
-fn entry_label(display_segments: &[String]) -> String {
-    let category_key = category_descriptor(display_segments).key;
-    if category_key == "general" || display_segments.len() == 1 {
-        return display_segments.join(".");
-    }
-    display_segments[1..].join(".")
-}
-
-fn option_description(path: &str) -> String {
-    match path {
-        "link_resolution" => "Choose whether new links resolve relative to the current file or the vault root.".to_string(),
-        "link_style" => "Select wikilink or Markdown link formatting for generated links.".to_string(),
-        "attachment_folder" => "Override the preferred folder for new attachments.".to_string(),
-        "strict_line_breaks" => "Mirror Obsidian's strict line break behavior when rendering Markdown.".to_string(),
-        _ if path.starts_with("periodic.") => {
-            "Periodic note folder, filename format, template, cadence, and schedule heading.".to_string()
-        }
-        _ if path.starts_with("templates.") => {
-            "Template discovery, file triggers, folder mappings, and shell integration.".to_string()
-        }
-        _ if path.starts_with("tasks.") => {
-            "Task query defaults, status sets, created-date behavior, and recurrence settings.".to_string()
-        }
-        _ if path.starts_with("tasknotes.") => {
-            "TaskNotes task storage, metadata mapping, automation defaults, and saved view settings.".to_string()
-        }
-        _ if path.starts_with("kanban.") => {
-            "Kanban board metadata keys, archiving, layout, and card creation settings.".to_string()
-        }
-        _ if path.starts_with("dataview.") => {
-            "Dataview rendering compatibility, inline query prefixes, and JS execution limits.".to_string()
-        }
-        _ if path.starts_with("js_runtime.") => {
-            "Default sandbox, memory, stack, timeout, and script folder settings for `vulcan run`.".to_string()
-        }
-        _ if path.starts_with("web.search.") => {
-            "Configure the preferred web search provider, API key env var, and base URL.".to_string()
-        }
-        _ if path.starts_with("web.") => {
-            "Shared web client settings such as the user agent used by fetch/search helpers.".to_string()
-        }
-        _ if path.starts_with("permissions.profiles.") => {
-            "Static permission profile rule used to restrict reads, writes, network, shell, or runtime limits.".to_string()
-        }
-        _ if path.starts_with("plugins.") => {
-            "Per-plugin registration, hook subscription, sandbox, and permission profile settings.".to_string()
-        }
-        _ if path.starts_with("aliases.") => {
-            "Alias expansion for short custom commands like `today = \"query --format count\"`.".to_string()
-        }
-        _ if path.starts_with("property_types.") => {
-            "Explicit type overrides for frontmatter properties discovered in the vault.".to_string()
-        }
-        _ => format!("Edit `{path}` in `.vulcan/config.toml`."),
     }
 }
 
@@ -1258,6 +2184,164 @@ mod tests {
         assert_eq!(
             state.local_value(&entry),
             Some(&TomlValue::String("Templates/Local".to_string()))
+        );
+    }
+
+    #[test]
+    fn schema_driven_state_lists_dynamic_placeholders_when_absent() {
+        let state = sample_state();
+
+        assert!(state.find_entry("aliases.<name>").is_some());
+        assert!(state.find_entry("plugins.<name>").is_some());
+        assert!(state.find_entry("permissions.profiles.<name>").is_some());
+    }
+
+    #[test]
+    fn create_dynamic_alias_and_unset_round_trip_updates_working_copy() {
+        let mut state = sample_state();
+        let (category_index, entry_index) = state
+            .find_entry("aliases.<name>")
+            .expect("alias placeholder should exist");
+        state.selected_category = category_index;
+        state.selected_entry = entry_index;
+
+        state
+            .apply_create_dynamic_entry("ship", "query --where 'status = shipped'")
+            .expect("dynamic alias should be created");
+        let (category_index, entry_index) = state
+            .find_entry("aliases.ship")
+            .expect("concrete alias should exist after creation");
+        state.selected_category = category_index;
+        state.selected_entry = entry_index;
+
+        let entry = state.selected_entry().clone();
+        assert_eq!(
+            state.shared_value(&entry),
+            Some(&TomlValue::String(
+                "query --where 'status = shipped'".to_string()
+            ))
+        );
+
+        state.unset_selected();
+        assert!(state.find_entry("aliases.ship").is_none());
+    }
+
+    #[test]
+    fn toggled_local_target_edits_local_working_copy() {
+        let mut state = sample_state();
+        let (category_index, entry_index) = state
+            .find_entry("periodic.daily.folder")
+            .expect("periodic entry should exist");
+        state.selected_category = category_index;
+        state.selected_entry = entry_index;
+
+        state.toggle_target();
+        assert_eq!(state.selected_target_label(), "local");
+        state
+            .apply_buffered_edit("\"Journal/Local\"")
+            .expect("local edit should apply");
+
+        let entry = state.selected_entry().clone();
+        assert_eq!(
+            state.local_value(&entry),
+            Some(&TomlValue::String("Journal/Local".to_string()))
+        );
+        assert_eq!(
+            state.shared_value(&entry),
+            Some(&TomlValue::String("Journal/Daily".to_string()))
+        );
+    }
+
+    #[test]
+    fn enum_editor_cycles_allowed_values_without_raw_toml() {
+        let mut state = sample_state();
+        let (category_index, entry_index) = state
+            .find_entry("web.search.backend")
+            .expect("web backend entry should exist");
+        state.selected_category = category_index;
+        state.selected_entry = entry_index;
+
+        state.open_edit();
+        match &state.input_mode {
+            ConfigInputMode::Edit {
+                editor: ValueEditorMode::Enum { selected, .. },
+                ..
+            } => assert_eq!(*selected, 0),
+            mode => panic!("expected enum editor, got {mode:?}"),
+        }
+
+        state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let entry = state.selected_entry().clone();
+        assert_eq!(
+            state.shared_value(&entry),
+            Some(&TomlValue::String("kagi".to_string()))
+        );
+    }
+
+    #[test]
+    fn string_list_editor_parses_comma_separated_items() {
+        let mut state = sample_state();
+        let (category_index, entry_index) = state
+            .find_entry("templates.web_allowlist")
+            .expect("web allowlist entry should exist");
+        state.selected_category = category_index;
+        state.selected_entry = entry_index;
+
+        state.open_edit();
+        match &state.input_mode {
+            ConfigInputMode::Edit {
+                editor: ValueEditorMode::StringList,
+                ..
+            } => {}
+            mode => panic!("expected string list editor, got {mode:?}"),
+        }
+
+        state
+            .apply_buffered_edit("docs.example.com, api.example.com")
+            .expect("string list edit should apply");
+
+        let entry = state.selected_entry().clone();
+        assert_eq!(
+            state.shared_value(&entry),
+            Some(&TomlValue::Array(vec![
+                TomlValue::String("docs.example.com".to_string()),
+                TomlValue::String("api.example.com".to_string()),
+            ]))
+        );
+    }
+
+    #[test]
+    fn scalar_map_editor_parses_key_value_pairs() {
+        let mut state = sample_state();
+        let (category_index, entry_index) = state
+            .find_entry("quickadd.global_variables")
+            .expect("quickadd global variables entry should exist");
+        state.selected_category = category_index;
+        state.selected_entry = entry_index;
+
+        state.open_edit();
+        match &state.input_mode {
+            ConfigInputMode::Edit {
+                editor: ValueEditorMode::ScalarMap,
+                ..
+            } => {}
+            mode => panic!("expected scalar map editor, got {mode:?}"),
+        }
+
+        state
+            .apply_buffered_edit("team=\"ops\", env=prod")
+            .expect("scalar map edit should apply");
+
+        let entry = state.selected_entry().clone();
+        assert_eq!(
+            state.shared_value(&entry),
+            Some(&TomlValue::Table(toml::map::Map::from_iter([
+                ("team".to_string(), TomlValue::String("ops".to_string())),
+                ("env".to_string(), TomlValue::String("prod".to_string())),
+            ])))
         );
     }
 

@@ -22,7 +22,7 @@ mod terminal_markdown;
 mod plugins {
     use crate::CliError;
     use serde_json::Value;
-    pub(crate) use vulcan_app::plugins::{list_plugins, PluginDescriptor, PluginToggleOutcome};
+    pub(crate) use vulcan_app::plugins::{list_plugins, PluginDescriptor};
     use vulcan_core::{DataviewJsResult, PluginEvent, VaultPaths};
 
     pub(crate) fn run_plugin(
@@ -49,14 +49,6 @@ mod plugins {
             quiet,
         )
         .map_err(CliError::operation)
-    }
-
-    pub(crate) fn set_plugin_enabled(
-        paths: &VaultPaths,
-        name: &str,
-        enabled: bool,
-    ) -> Result<PluginToggleOutcome, CliError> {
-        vulcan_app::plugins::set_plugin_enabled(paths, name, enabled).map_err(CliError::operation)
     }
 }
 
@@ -88,7 +80,10 @@ mod app_config {
     use vulcan_core::VaultPaths;
 
     pub(crate) use vulcan_app::config::{
-        ConfigDocumentSaveReport, ConfigGetReport, ConfigSetReport, ConfigShowReport,
+        ConfigBatchReport, ConfigDescriptor, ConfigDocumentSaveReport, ConfigGetReport,
+        ConfigListEntry, ConfigListReport, ConfigMutationOperation, ConfigSetReport,
+        ConfigShowReport, ConfigTarget, ConfigTargetSupport, ConfigUnsetReport, ConfigValueKind,
+        ConfigValueSource,
     };
 
     pub(crate) fn build_config_show_report(
@@ -107,6 +102,17 @@ mod app_config {
         vulcan_app::config::build_config_get_report(paths, key).map_err(CliError::operation)
     }
 
+    pub(crate) fn build_config_list_report(
+        paths: &VaultPaths,
+        section: Option<&str>,
+    ) -> Result<ConfigListReport, CliError> {
+        vulcan_app::config::build_config_list_report(paths, section).map_err(CliError::operation)
+    }
+
+    pub(crate) fn config_descriptor_catalog() -> Vec<ConfigDescriptor> {
+        vulcan_app::config::config_descriptor_catalog()
+    }
+
     pub(crate) fn plan_config_set_report(
         paths: &VaultPaths,
         key: &str,
@@ -117,6 +123,30 @@ mod app_config {
             .map_err(CliError::operation)
     }
 
+    pub(crate) fn plan_config_set_report_for_target(
+        paths: &VaultPaths,
+        key: &str,
+        raw_value: &str,
+        target: ConfigTarget,
+        dry_run: bool,
+    ) -> Result<ConfigSetReport, CliError> {
+        vulcan_app::config::plan_config_set_report_for_target(
+            paths, key, raw_value, target, dry_run,
+        )
+        .map_err(CliError::operation)
+    }
+
+    pub(crate) fn plan_config_set_report_to(
+        paths: &VaultPaths,
+        key: &str,
+        value: &TomlValue,
+        target: ConfigTarget,
+        dry_run: bool,
+    ) -> Result<ConfigSetReport, CliError> {
+        vulcan_app::config::plan_config_set_report_to(paths, key, value, target, dry_run)
+            .map_err(CliError::operation)
+    }
+
     pub(crate) fn apply_config_set_report(
         paths: &VaultPaths,
         report: ConfigSetReport,
@@ -124,11 +154,46 @@ mod app_config {
         vulcan_app::config::apply_config_set_report(paths, report).map_err(CliError::operation)
     }
 
-    pub(crate) fn plan_config_document_save(
+    pub(crate) fn plan_config_unset_report(
+        paths: &VaultPaths,
+        key: &str,
+        target: ConfigTarget,
+        dry_run: bool,
+    ) -> Result<ConfigUnsetReport, CliError> {
+        vulcan_app::config::plan_config_unset_report(paths, key, target, dry_run)
+            .map_err(CliError::operation)
+    }
+
+    pub(crate) fn apply_config_unset_report(
+        paths: &VaultPaths,
+        report: ConfigUnsetReport,
+    ) -> Result<ConfigUnsetReport, CliError> {
+        vulcan_app::config::apply_config_unset_report(paths, report).map_err(CliError::operation)
+    }
+
+    pub(crate) fn plan_config_batch_report(
+        paths: &VaultPaths,
+        operations: &[ConfigMutationOperation],
+        target: ConfigTarget,
+        dry_run: bool,
+    ) -> Result<ConfigBatchReport, CliError> {
+        vulcan_app::config::plan_config_batch_report(paths, operations, target, dry_run)
+            .map_err(CliError::operation)
+    }
+
+    pub(crate) fn apply_config_batch_report(
+        paths: &VaultPaths,
+        report: ConfigBatchReport,
+    ) -> Result<ConfigBatchReport, CliError> {
+        vulcan_app::config::apply_config_batch_report(paths, report).map_err(CliError::operation)
+    }
+
+    pub(crate) fn plan_config_document_save_for_target(
         paths: &VaultPaths,
         rendered_contents: &str,
+        target: ConfigTarget,
     ) -> Result<ConfigDocumentSaveReport, CliError> {
-        vulcan_app::config::plan_config_document_save(paths, rendered_contents)
+        vulcan_app::config::plan_config_document_save_for_target(paths, rendered_contents, target)
             .map_err(CliError::operation)
     }
 
@@ -161,19 +226,20 @@ mod app_config {
 
 pub use cli::{
     AgentCommand, AgentInstallArgs, AutomationCommand, BasesCommand, CacheCommand,
-    CheckpointCommand, Cli, ColorMode, Command, ConfigCommand, ConfigImportArgs,
-    ConfigImportCommand, ConfigImportSelection, ConfigImportTargetArg, DailyCommand,
-    DataviewCommand, DescribeFormatArg, EpubTocStyle, ExportArgs, ExportCommand, ExportFormat,
-    ExportProfileCommand, ExportProfileFormatArg, ExportProfileRuleCommand, ExportQueryArgs,
-    ExportTransformArgs, GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs,
-    KanbanCommand, McpToolPackArg, McpTransportArg, NoteAppendPeriodicArg, NoteCheckboxState,
-    NoteCommand, NoteGetMode, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand,
-    PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs,
-    RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg,
-    SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
-    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
-    TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand,
-    WebCommand, WebFetchMode,
+    CheckpointCommand, Cli, ColorMode, Command, ConfigAliasCommand, ConfigCommand,
+    ConfigImportArgs, ConfigImportCommand, ConfigImportSelection, ConfigPermissionsCommand,
+    ConfigPermissionsProfileCommand, ConfigTargetArg, DailyCommand, DataviewCommand,
+    DescribeFormatArg, EpubTocStyle, ExportArgs, ExportCommand, ExportFormat, ExportProfileCommand,
+    ExportProfileFormatArg, ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs,
+    GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs, KanbanCommand,
+    McpToolPackArg, McpTransportArg, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand,
+    NoteGetMode, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg,
+    PluginSandboxArg, PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand,
+    RefreshMode, RenderArgs, RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg,
+    SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg,
+    TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
+    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand,
+    VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -2250,6 +2316,16 @@ struct PluginToggleReport {
     path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct PluginConfigWriteReport {
+    name: String,
+    updated: bool,
+    dry_run: bool,
+    config_path: PathBuf,
+    operations: Vec<String>,
+}
+
+#[allow(clippy::too_many_lines)]
 fn handle_plugin_command(
     cli: &Cli,
     paths: &VaultPaths,
@@ -2269,17 +2345,107 @@ fn handle_plugin_command(
                 },
             )
         }
-        PluginCommand::Enable { name } => {
+        PluginCommand::Enable {
+            name,
+            target,
+            dry_run,
+            no_commit,
+        } => {
             selected_permission_guard(cli, paths)?
                 .check_config_write()
                 .map_err(CliError::operation)?;
-            run_plugin_toggle_command(paths, cli.output, name, true, cli.quiet)
+            run_plugin_toggle_command(
+                paths,
+                cli.output,
+                name,
+                true,
+                config_target(*target),
+                *dry_run,
+                *no_commit,
+                cli.quiet,
+            )
         }
-        PluginCommand::Disable { name } => {
+        PluginCommand::Disable {
+            name,
+            target,
+            dry_run,
+            no_commit,
+        } => {
             selected_permission_guard(cli, paths)?
                 .check_config_write()
                 .map_err(CliError::operation)?;
-            run_plugin_toggle_command(paths, cli.output, name, false, cli.quiet)
+            run_plugin_toggle_command(
+                paths,
+                cli.output,
+                name,
+                false,
+                config_target(*target),
+                *dry_run,
+                *no_commit,
+                cli.quiet,
+            )
+        }
+        PluginCommand::Set {
+            name,
+            path,
+            clear_path,
+            enable,
+            disable,
+            add_events,
+            remove_events,
+            sandbox,
+            clear_sandbox,
+            permission_profile,
+            clear_permission_profile,
+            description,
+            clear_description,
+            target,
+            dry_run,
+            no_commit,
+        } => {
+            selected_permission_guard(cli, paths)?
+                .check_config_write()
+                .map_err(CliError::operation)?;
+            run_plugin_set_command(
+                paths,
+                cli.output,
+                name,
+                path.as_deref(),
+                *clear_path,
+                *enable,
+                *disable,
+                add_events,
+                remove_events,
+                *sandbox,
+                *clear_sandbox,
+                permission_profile.as_deref(),
+                *clear_permission_profile,
+                description.as_deref(),
+                *clear_description,
+                config_target(*target),
+                *dry_run,
+                *no_commit,
+                cli.quiet,
+            )
+        }
+        PluginCommand::Delete {
+            name,
+            target,
+            dry_run,
+            no_commit,
+        } => {
+            selected_permission_guard(cli, paths)?
+                .check_config_write()
+                .map_err(CliError::operation)?;
+            run_plugin_delete_command(
+                paths,
+                cli.output,
+                name,
+                config_target(*target),
+                *dry_run,
+                *no_commit,
+                cli.quiet,
+            )
         }
         PluginCommand::Run { name } => {
             selected_permission_guard(cli, paths)?
@@ -2291,24 +2457,34 @@ fn handle_plugin_command(
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
 fn run_plugin_toggle_command(
     paths: &VaultPaths,
     output: OutputFormat,
     name: &str,
     enabled: bool,
+    target: app_config::ConfigTarget,
+    dry_run: bool,
+    no_commit: bool,
     quiet: bool,
 ) -> Result<(), CliError> {
     let had_gitignore = paths.gitignore_file().exists();
-    let outcome = plugins::set_plugin_enabled(paths, name, enabled)?;
+    let current = plugin_descriptor_for_name(paths, name);
+    let operations = vec![app_config::ConfigMutationOperation::Set {
+        key: format!("plugins.{name}.enabled"),
+        value: toml::Value::Boolean(enabled),
+    }];
+    let mut batch = app_config::plan_config_batch_report(paths, &operations, target, dry_run)?;
 
-    if outcome.updated {
-        let auto_commit = AutoCommitPolicy::for_mutation(paths, false);
+    if !dry_run && batch.updated {
+        let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
         warn_auto_commit_if_needed(&auto_commit, quiet);
+        batch = app_config::apply_config_batch_report(paths, batch)?;
         auto_commit
             .commit(
                 paths,
                 "plugin-config",
-                &config_set_changed_files(paths, had_gitignore),
+                &config_changed_files(paths, &batch.config_path, had_gitignore),
                 None,
                 quiet,
             )
@@ -2316,14 +2492,256 @@ fn run_plugin_toggle_command(
     }
 
     let report = PluginToggleReport {
-        name: outcome.name,
-        enabled: outcome.enabled,
-        updated: outcome.updated,
-        registered: outcome.registered,
-        config_path: relativize_config_import_path(paths, &outcome.config_path),
-        path: outcome.path,
+        name: name.to_string(),
+        enabled,
+        updated: batch.updated,
+        registered: current.registered || batch.updated,
+        config_path: batch.config_path,
+        path: current.path,
     };
     print_plugin_toggle_report(output, &report)
+}
+
+#[allow(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::fn_params_excessive_bools
+)]
+fn run_plugin_set_command(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    name: &str,
+    path: Option<&str>,
+    clear_path: bool,
+    enable: bool,
+    disable: bool,
+    add_events: &[PluginEventArg],
+    remove_events: &[PluginEventArg],
+    sandbox: Option<PluginSandboxArg>,
+    clear_sandbox: bool,
+    permission_profile: Option<&str>,
+    clear_permission_profile: bool,
+    description: Option<&str>,
+    clear_description: bool,
+    target: app_config::ConfigTarget,
+    dry_run: bool,
+    no_commit: bool,
+    quiet: bool,
+) -> Result<(), CliError> {
+    let mut operations = Vec::new();
+    let mut labels = Vec::new();
+    let current = plugin_descriptor_for_name(paths, name);
+
+    if let Some(path) = path {
+        operations.push(app_config::ConfigMutationOperation::Set {
+            key: format!("plugins.{name}.path"),
+            value: toml::Value::String(path.to_string()),
+        });
+        labels.push(format!("set path = {path}"));
+    }
+    if clear_path {
+        operations.push(app_config::ConfigMutationOperation::Unset {
+            key: format!("plugins.{name}.path"),
+        });
+        labels.push("clear path".to_string());
+    }
+    if enable {
+        operations.push(app_config::ConfigMutationOperation::Set {
+            key: format!("plugins.{name}.enabled"),
+            value: toml::Value::Boolean(true),
+        });
+        labels.push("enable".to_string());
+    }
+    if disable {
+        operations.push(app_config::ConfigMutationOperation::Set {
+            key: format!("plugins.{name}.enabled"),
+            value: toml::Value::Boolean(false),
+        });
+        labels.push("disable".to_string());
+    }
+    if !add_events.is_empty() || !remove_events.is_empty() {
+        let mut events = current.events;
+        for event in add_events.iter().copied().map(plugin_event) {
+            if !events.contains(&event) {
+                events.push(event);
+            }
+        }
+        events.retain(|event| {
+            !remove_events
+                .iter()
+                .copied()
+                .map(plugin_event)
+                .any(|candidate| candidate == *event)
+        });
+        events.sort();
+        if events.is_empty() {
+            operations.push(app_config::ConfigMutationOperation::Unset {
+                key: format!("plugins.{name}.events"),
+            });
+            labels.push("clear events".to_string());
+        } else {
+            operations.push(app_config::ConfigMutationOperation::Set {
+                key: format!("plugins.{name}.events"),
+                value: toml::Value::Array(
+                    events
+                        .iter()
+                        .map(|event| toml::Value::String(event.handler_name().to_string()))
+                        .collect(),
+                ),
+            });
+            labels.push("update events".to_string());
+        }
+    }
+    if let Some(sandbox) = sandbox {
+        operations.push(app_config::ConfigMutationOperation::Set {
+            key: format!("plugins.{name}.sandbox"),
+            value: toml::Value::String(plugin_sandbox(sandbox).to_string()),
+        });
+        labels.push("set sandbox".to_string());
+    }
+    if clear_sandbox {
+        operations.push(app_config::ConfigMutationOperation::Unset {
+            key: format!("plugins.{name}.sandbox"),
+        });
+        labels.push("clear sandbox".to_string());
+    }
+    if let Some(permission_profile) = permission_profile {
+        operations.push(app_config::ConfigMutationOperation::Set {
+            key: format!("plugins.{name}.permission_profile"),
+            value: toml::Value::String(permission_profile.to_string()),
+        });
+        labels.push(format!("set permission profile = {permission_profile}"));
+    }
+    if clear_permission_profile {
+        operations.push(app_config::ConfigMutationOperation::Unset {
+            key: format!("plugins.{name}.permission_profile"),
+        });
+        labels.push("clear permission profile".to_string());
+    }
+    if let Some(description) = description {
+        operations.push(app_config::ConfigMutationOperation::Set {
+            key: format!("plugins.{name}.description"),
+            value: toml::Value::String(description.to_string()),
+        });
+        labels.push("set description".to_string());
+    }
+    if clear_description {
+        operations.push(app_config::ConfigMutationOperation::Unset {
+            key: format!("plugins.{name}.description"),
+        });
+        labels.push("clear description".to_string());
+    }
+    if operations.is_empty() {
+        return Err(CliError::operation(
+            "plugin set requires at least one change flag",
+        ));
+    }
+
+    let had_gitignore = paths.gitignore_file().exists();
+    let mut batch = app_config::plan_config_batch_report(paths, &operations, target, dry_run)?;
+    if !dry_run && batch.updated {
+        let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
+        warn_auto_commit_if_needed(&auto_commit, quiet);
+        batch = app_config::apply_config_batch_report(paths, batch)?;
+        auto_commit
+            .commit(
+                paths,
+                "plugin-config",
+                &config_changed_files(paths, &batch.config_path, had_gitignore),
+                None,
+                quiet,
+            )
+            .map_err(CliError::operation)?;
+    }
+
+    print_plugin_config_write_report(
+        output,
+        &PluginConfigWriteReport {
+            name: name.to_string(),
+            updated: batch.updated,
+            dry_run,
+            config_path: batch.config_path,
+            operations: labels,
+        },
+    )
+}
+
+fn run_plugin_delete_command(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    name: &str,
+    target: app_config::ConfigTarget,
+    dry_run: bool,
+    no_commit: bool,
+    quiet: bool,
+) -> Result<(), CliError> {
+    let had_gitignore = paths.gitignore_file().exists();
+    let operations = vec![app_config::ConfigMutationOperation::Unset {
+        key: format!("plugins.{name}"),
+    }];
+    let mut batch = app_config::plan_config_batch_report(paths, &operations, target, dry_run)?;
+    if !dry_run && batch.updated {
+        let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
+        warn_auto_commit_if_needed(&auto_commit, quiet);
+        batch = app_config::apply_config_batch_report(paths, batch)?;
+        auto_commit
+            .commit(
+                paths,
+                "plugin-config",
+                &config_changed_files(paths, &batch.config_path, had_gitignore),
+                None,
+                quiet,
+            )
+            .map_err(CliError::operation)?;
+    }
+    print_plugin_config_write_report(
+        output,
+        &PluginConfigWriteReport {
+            name: name.to_string(),
+            updated: batch.updated,
+            dry_run,
+            config_path: batch.config_path,
+            operations: vec!["delete registration".to_string()],
+        },
+    )
+}
+
+fn plugin_descriptor_for_name(paths: &VaultPaths, name: &str) -> plugins::PluginDescriptor {
+    plugins::list_plugins(paths)
+        .into_iter()
+        .find(|plugin| plugin.name == name)
+        .unwrap_or_else(|| plugins::PluginDescriptor {
+            name: name.to_string(),
+            path: vulcan_app::plugins::plugin_default_config_path(name),
+            exists: false,
+            registered: false,
+            enabled: false,
+            events: Vec::new(),
+            sandbox: None,
+            permission_profile: None,
+            description: None,
+        })
+}
+
+fn plugin_event(event: PluginEventArg) -> PluginEvent {
+    match event {
+        PluginEventArg::OnNoteWrite => PluginEvent::OnNoteWrite,
+        PluginEventArg::OnNoteCreate => PluginEvent::OnNoteCreate,
+        PluginEventArg::OnNoteDelete => PluginEvent::OnNoteDelete,
+        PluginEventArg::OnPreCommit => PluginEvent::OnPreCommit,
+        PluginEventArg::OnPostCommit => PluginEvent::OnPostCommit,
+        PluginEventArg::OnScanComplete => PluginEvent::OnScanComplete,
+        PluginEventArg::OnRefactor => PluginEvent::OnRefactor,
+    }
+}
+
+fn plugin_sandbox(sandbox: PluginSandboxArg) -> &'static str {
+    match sandbox {
+        PluginSandboxArg::Strict => "strict",
+        PluginSandboxArg::Fs => "fs",
+        PluginSandboxArg::Net => "net",
+        PluginSandboxArg::None => "none",
+    }
 }
 
 fn print_plugin_list_report(
@@ -2402,6 +2820,48 @@ fn print_plugin_toggle_report(
                     report.name,
                     report.config_path.display()
                 );
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_plugin_config_write_report(
+    output: OutputFormat,
+    report: &PluginConfigWriteReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            if report.dry_run {
+                if report.updated {
+                    println!(
+                        "Would update plugin {} in {}",
+                        report.name,
+                        report.config_path.display()
+                    );
+                } else {
+                    println!(
+                        "No changes for plugin {} in {}",
+                        report.name,
+                        report.config_path.display()
+                    );
+                }
+            } else if report.updated {
+                println!(
+                    "Updated plugin {} in {}",
+                    report.name,
+                    report.config_path.display()
+                );
+            } else {
+                println!(
+                    "No changes for plugin {} in {}",
+                    report.name,
+                    report.config_path.display()
+                );
+            }
+            if !report.operations.is_empty() {
+                println!("  {}", report.operations.join(", "));
             }
             Ok(())
         }
@@ -10621,18 +11081,33 @@ fn print_export_profile_rule_write_report(
     }
 }
 
-fn config_set_changed_files(paths: &VaultPaths, had_gitignore: bool) -> Vec<String> {
-    let mut changed = vec![".vulcan/config.toml".to_string()];
+fn config_changed_files(
+    paths: &VaultPaths,
+    config_path: &Path,
+    had_gitignore: bool,
+) -> Vec<String> {
+    let mut changed = vec![config_path.to_string_lossy().replace('\\', "/")];
     if !had_gitignore && paths.gitignore_file().exists() {
         changed.push(".vulcan/.gitignore".to_string());
     }
     changed
 }
 
-fn config_import_target(target: ConfigImportTargetArg) -> ImportTarget {
+fn config_set_changed_files(paths: &VaultPaths, had_gitignore: bool) -> Vec<String> {
+    config_changed_files(paths, Path::new(".vulcan/config.toml"), had_gitignore)
+}
+
+fn config_import_target(target: ConfigTargetArg) -> ImportTarget {
     match target {
-        ConfigImportTargetArg::Shared => ImportTarget::Shared,
-        ConfigImportTargetArg::Local => ImportTarget::Local,
+        ConfigTargetArg::Shared => ImportTarget::Shared,
+        ConfigTargetArg::Local => ImportTarget::Local,
+    }
+}
+
+fn config_target(target: ConfigTargetArg) -> app_config::ConfigTarget {
+    match target {
+        ConfigTargetArg::Shared => app_config::ConfigTarget::Shared,
+        ConfigTargetArg::Local => app_config::ConfigTarget::Local,
     }
 }
 
@@ -15228,6 +15703,9 @@ fn help_topic_from_command(command: &clap::Command, path: &[String]) -> HelpTopi
     if let Some(command_tree) = command_tree_section("Subcommands", command, true) {
         sections.push(command_tree);
     }
+    if path == ["config"] {
+        sections.push(render_config_reference_markdown(true));
+    }
     let subcommands = command
         .get_subcommands()
         .filter(|subcommand| !subcommand.is_hide_set())
@@ -15252,6 +15730,144 @@ fn help_topic_from_command(command: &clap::Command, path: &[String]) -> HelpTopi
             .collect(),
         subcommands,
         related: Vec::new(),
+    }
+}
+
+fn render_config_reference_markdown(include_title: bool) -> String {
+    let descriptors = app_config::config_descriptor_catalog();
+    let mut grouped = BTreeMap::<String, Vec<app_config::ConfigDescriptor>>::new();
+    for descriptor in descriptors {
+        grouped
+            .entry(descriptor.section.clone())
+            .or_default()
+            .push(descriptor);
+    }
+
+    let mut lines = Vec::new();
+    if include_title {
+        lines.push("## Generated Config Reference".to_string());
+        lines.push(String::new());
+    }
+    lines.push(
+        "Derived from Vulcan's config descriptor registry. `config set`, `config unset`, `config list`, the settings TUI, and this help surface share the same supported key metadata.".to_string(),
+    );
+    lines.push(String::new());
+    lines.push("Precedence: `.vulcan/config.local.toml` > `.vulcan/config.toml` > `.obsidian/*` imports > built-in defaults.".to_string());
+    lines.push(String::new());
+    lines.push("Prefer dedicated commands when available: `config alias ...`, `config permissions profile ...`, `plugin set ...`, and `export profile ...`.".to_string());
+    lines.push(String::new());
+    lines.push("Manual editing is still supported. Use `.vulcan/config.toml` for shared defaults you want to sync, and `.vulcan/config.local.toml` for machine-local overrides such as developer-specific paths, API env-var names, or temporary experiments.".to_string());
+    lines.push(String::new());
+    lines.push("Typical TOML blocks:".to_string());
+    lines.push(String::new());
+    lines.push("```toml".to_string());
+    lines.push("[aliases]".to_string());
+    lines.push("ship = \"query --where 'status = shipped'\"".to_string());
+    lines.push(String::new());
+    lines.push("[permissions.profiles.agent]".to_string());
+    lines.push("read = \"all\"".to_string());
+    lines.push("network = { allow = true, domains = [\"docs.example.com\"] }".to_string());
+    lines.push(String::new());
+    lines.push("[plugins.lint]".to_string());
+    lines.push("enabled = true".to_string());
+    lines.push("path = \".vulcan/plugins/lint.js\"".to_string());
+    lines.push("events = [\"on_note_write\", \"on_pre_commit\"]".to_string());
+    lines.push("sandbox = \"strict\"".to_string());
+    lines.push("permission_profile = \"agent\"".to_string());
+    lines.push(String::new());
+    lines.push("[web.search]".to_string());
+    lines.push("backend = \"brave\"".to_string());
+    lines.push("api_key_env = \"BRAVE_API_KEY\"".to_string());
+    lines.push("```".to_string());
+    lines.push(String::new());
+
+    let mut sections = grouped.into_iter().collect::<Vec<_>>();
+    sections.sort_by(|(left, _), (right, _)| {
+        config_section_order(left)
+            .cmp(&config_section_order(right))
+            .then_with(|| left.cmp(right))
+    });
+
+    for (_section, mut descriptors) in sections {
+        descriptors.sort_by(|left, right| left.key.cmp(&right.key));
+        let Some(first) = descriptors.first() else {
+            continue;
+        };
+        lines.push(format!("### {}", first.section_title));
+        lines.push(String::new());
+        lines.push(first.section_description.clone());
+        lines.push(String::new());
+        for descriptor in descriptors {
+            let mut meta = vec![
+                format!("type: `{}`", config_value_kind_label(&descriptor.kind)),
+                format!(
+                    "target: `{}`",
+                    config_target_support_label(descriptor.target_support)
+                ),
+            ];
+            if let Some(default_display) = descriptor.default_display.as_deref() {
+                meta.push(format!("default: `{default_display}`"));
+            }
+            if !descriptor.enum_values.is_empty() {
+                meta.push(format!("values: `{}`", descriptor.enum_values.join("`, `")));
+            }
+            lines.push(format!("- `{}` — {}", descriptor.key, meta.join("; ")));
+            lines.push(format!("  {}", descriptor.description));
+            if let Some(command) = descriptor.preferred_command.as_deref() {
+                lines.push(format!("  Preferred command: `{command}`"));
+            }
+            if let Some(example) = descriptor.examples.first() {
+                lines.push(format!("  Example: `{example}`"));
+            }
+        }
+        lines.push(String::new());
+    }
+
+    while lines.last().is_some_and(String::is_empty) {
+        lines.pop();
+    }
+    lines.join("\n")
+}
+
+fn config_value_kind_label(kind: &app_config::ConfigValueKind) -> &'static str {
+    match kind {
+        app_config::ConfigValueKind::String => "string",
+        app_config::ConfigValueKind::Integer => "integer",
+        app_config::ConfigValueKind::Float => "float",
+        app_config::ConfigValueKind::Boolean => "boolean",
+        app_config::ConfigValueKind::Array => "array",
+        app_config::ConfigValueKind::Object => "object",
+        app_config::ConfigValueKind::Enum => "enum",
+        app_config::ConfigValueKind::Flexible => "flexible",
+    }
+}
+
+fn config_target_support_label(target_support: app_config::ConfigTargetSupport) -> &'static str {
+    match target_support {
+        app_config::ConfigTargetSupport::SharedOnly => "shared",
+        app_config::ConfigTargetSupport::LocalOnly => "local",
+        app_config::ConfigTargetSupport::SharedAndLocal => "shared|local",
+    }
+}
+
+fn config_section_order(section: &str) -> usize {
+    match section {
+        "general" => 0,
+        "links" => 1,
+        "properties" => 2,
+        "templates" => 3,
+        "periodic" => 4,
+        "tasks" => 5,
+        "tasknotes" => 6,
+        "kanban" => 7,
+        "dataview" => 8,
+        "js_runtime" => 9,
+        "web" => 10,
+        "plugins" => 11,
+        "permissions" => 12,
+        "aliases" => 13,
+        "export" => 14,
+        _ => 50,
     }
 }
 
@@ -18830,7 +19446,7 @@ mod tests {
                     args: ConfigImportArgs {
                         dry_run: false,
                         apply: false,
-                        target: ConfigImportTargetArg::Shared,
+                        target: ConfigTargetArg::Shared,
                         no_commit: false,
                     },
                 }),
@@ -18900,6 +19516,7 @@ mod tests {
                 command: ConfigCommand::Set {
                     key: "periodic.daily.template".to_string(),
                     value: "Templates/Daily".to_string(),
+                    target: ConfigTargetArg::Shared,
                     dry_run: true,
                     no_commit: true,
                 },
@@ -18967,7 +19584,7 @@ mod tests {
                     args: ConfigImportArgs {
                         dry_run: false,
                         apply: false,
-                        target: ConfigImportTargetArg::Shared,
+                        target: ConfigTargetArg::Shared,
                         no_commit: false,
                     },
                 }),
@@ -18990,7 +19607,7 @@ mod tests {
                     args: ConfigImportArgs {
                         dry_run: false,
                         apply: false,
-                        target: ConfigImportTargetArg::Shared,
+                        target: ConfigTargetArg::Shared,
                         no_commit: false,
                     },
                 }),
@@ -19013,7 +19630,7 @@ mod tests {
                     args: ConfigImportArgs {
                         dry_run: false,
                         apply: false,
-                        target: ConfigImportTargetArg::Shared,
+                        target: ConfigTargetArg::Shared,
                         no_commit: false,
                     },
                 }),
@@ -19036,7 +19653,7 @@ mod tests {
                     args: ConfigImportArgs {
                         dry_run: false,
                         apply: false,
-                        target: ConfigImportTargetArg::Shared,
+                        target: ConfigTargetArg::Shared,
                         no_commit: false,
                     },
                 }),
@@ -19098,7 +19715,7 @@ mod tests {
                     args: ConfigImportArgs {
                         dry_run: false,
                         apply: false,
-                        target: ConfigImportTargetArg::Shared,
+                        target: ConfigTargetArg::Shared,
                         no_commit: false,
                     },
                 }),
@@ -19130,7 +19747,7 @@ mod tests {
                     args: ConfigImportArgs {
                         dry_run: true,
                         apply: false,
-                        target: ConfigImportTargetArg::Local,
+                        target: ConfigTargetArg::Local,
                         no_commit: true,
                     },
                 }),
@@ -19153,7 +19770,7 @@ mod tests {
                     args: ConfigImportArgs {
                         dry_run: false,
                         apply: true,
-                        target: ConfigImportTargetArg::Shared,
+                        target: ConfigTargetArg::Shared,
                         no_commit: false,
                     },
                 }),
@@ -19176,7 +19793,7 @@ mod tests {
                     args: ConfigImportArgs {
                         dry_run: false,
                         apply: false,
-                        target: ConfigImportTargetArg::Shared,
+                        target: ConfigTargetArg::Shared,
                         no_commit: false,
                     },
                 }),
@@ -19207,7 +19824,7 @@ mod tests {
                     args: ConfigImportArgs {
                         dry_run: true,
                         apply: false,
-                        target: ConfigImportTargetArg::Local,
+                        target: ConfigTargetArg::Local,
                         no_commit: false,
                     },
                 }),

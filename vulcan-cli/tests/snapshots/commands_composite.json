@@ -5166,7 +5166,7 @@
       },
       {
         "about": "Inspect and import effective Vulcan configuration",
-        "after_help": "Subcommands:\n  show [section] print effective Vulcan config as TOML or JSON\n  get <key>      read a single effective config value\n  edit           open the interactive settings editor for .vulcan/config.toml\n  set <key> <value> write one shared config value with type validation\n  import core    import Obsidian core settings into Vulcan config\n  import dataview import Obsidian Dataview plugin settings into .vulcan/config.toml\n  import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml\n  import periodic-notes import Obsidian Daily Notes + Periodic Notes settings into .vulcan/config.toml\n  import quickadd import Obsidian QuickAdd plugin settings into .vulcan/config.toml\n  import tasknotes import Obsidian TaskNotes plugin settings into .vulcan/config.toml\n  import templater import Obsidian Templater plugin settings into .vulcan/config.toml\n  import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml\n\nNotes:\n  `config show` merges built-in defaults with `.vulcan/config.toml` and `.vulcan/config.local.toml` when present.\n  `config edit` requires an interactive terminal and writes `.vulcan/config.toml` on save.\n  `config set` writes `.vulcan/config.toml`; quote strings when the shell would otherwise strip them.\n  Import commands preserve unrelated config sections and overwrite the mapped target keys.\n  Import flags: --preview/--dry-run, --apply, --target <shared|local>, --no-commit\n  Use `config import --all` to apply every detected importer in registry order.\n  Use `config import --list` to inspect detectable sources without writing.\n  When git auto-commit is enabled for mutations, `config set` and config imports participate like other mutating commands.\n\nExamples:\n  vulcan config show\n  vulcan config show periodic.daily\n  vulcan config get periodic.daily.template\n  vulcan config edit\n  vulcan config set periodic.daily.template \"Templates/Daily\"\n  vulcan config set web.search.backend brave --dry-run\n  vulcan config import core --preview\n  vulcan config import core --apply\n  vulcan config import dataview\n  vulcan config import kanban\n  vulcan config import --all --preview\n  vulcan config import --list\n  vulcan config import periodic-notes\n  vulcan config import quickadd\n  vulcan config import tasknotes --preview\n  vulcan config import tasks --preview\n  vulcan config import templater --target local\n  vulcan --output json config get web.search.backend\n  vulcan --output json config show web.search\n  vulcan --output json config import tasks",
+        "after_help": "Subcommands:\n  show [section] print effective Vulcan config as TOML or JSON\n  list [section] list supported config keys from the schema registry\n  get <key>      read a single effective config value\n  edit           open the interactive settings editor for .vulcan/config.toml\n  set <key> <value> write one config value with type validation\n  unset <key>    remove one config override and prune empty tables\n  alias          manage command aliases under [aliases]\n  permissions    manage named permission profiles under [permissions.profiles]\n  import core    import Obsidian core settings into Vulcan config\n  import dataview import Obsidian Dataview plugin settings into .vulcan/config.toml\n  import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml\n  import periodic-notes import Obsidian Daily Notes + Periodic Notes settings into .vulcan/config.toml\n  import quickadd import Obsidian QuickAdd plugin settings into .vulcan/config.toml\n  import tasknotes import Obsidian TaskNotes plugin settings into .vulcan/config.toml\n  import templater import Obsidian Templater plugin settings into .vulcan/config.toml\n  import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml\n\nNotes:\n  `config show` merges built-in defaults with `.vulcan/config.toml` and `.vulcan/config.local.toml` when present.\n  `config list` is derived from the schema registry used by config mutation commands and the settings TUI.\n  `config edit` requires an interactive terminal, is schema-driven, and can edit shared or local overrides before saving.\n  `config set` and `config unset` accept `--target <shared|local>`; quote strings when the shell would otherwise strip them.\n  Use `config alias ...`, `config permissions profile ...`, `plugin set`, and `export profile ...` when a dedicated command is available.\n  Import commands preserve unrelated config sections and overwrite the mapped target keys.\n  Import flags: --preview/--dry-run, --apply, --target <shared|local>, --no-commit\n  Use `config import --all` to apply every detected importer in registry order.\n  Use `config import --list` to inspect detectable sources without writing.\n  When git auto-commit is enabled for mutations, config edits, config CRUD, plugin config changes, and config imports participate like other mutating commands.\n\nExamples:\n  vulcan config show\n  vulcan config list web\n  vulcan config show periodic.daily\n  vulcan config get periodic.daily.template\n  vulcan config edit\n  vulcan config set periodic.daily.template \"Templates/Daily\"\n  vulcan config set web.search.backend brave --target local\n  vulcan config unset web.search.backend --target local\n  vulcan config alias set ship \"query --where 'status = shipped'\"\n  vulcan config permissions profile create agent --clone readonly\n  vulcan config permissions profile set agent network '{ allow = true, domains = [\"example.com\"] }'\n  vulcan config import core --preview\n  vulcan config import core --apply\n  vulcan config import dataview\n  vulcan config import kanban\n  vulcan config import --all --preview\n  vulcan config import --list\n  vulcan config import periodic-notes\n  vulcan config import quickadd\n  vulcan config import tasknotes --preview\n  vulcan config import tasks --preview\n  vulcan config import templater --target local\n  vulcan --output json config get web.search.backend\n  vulcan --output json config list plugins\n  vulcan --output json config show web.search\n  vulcan --output json config import tasks",
         "name": "config",
         "options": [],
         "subcommands": [
@@ -5176,6 +5176,24 @@
             "options": [
               {
                 "help": "Optional section path such as `periodic.daily` or `web.search`",
+                "id": "section",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SECTION"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "List supported config keys from the schema registry",
+            "name": "list",
+            "options": [
+              {
+                "help": "Optional section or category such as `web`, `periodic.daily`, or `plugins`",
                 "id": "section",
                 "long": null,
                 "possible_values": [],
@@ -5207,7 +5225,7 @@
             "subcommands": []
           },
           {
-            "about": "Open the interactive settings editor for .vulcan/config.toml",
+            "about": "Open the interactive settings editor",
             "name": "edit",
             "options": [
               {
@@ -5228,7 +5246,7 @@
             "subcommands": []
           },
           {
-            "about": "Write a single shared config value",
+            "about": "Write a single config value with schema validation",
             "name": "set",
             "options": [
               {
@@ -5251,6 +5269,20 @@
                 "short": null,
                 "value_names": [
                   "VALUE"
+                ]
+              },
+              {
+                "help": null,
+                "id": "target",
+                "long": "target",
+                "possible_values": [
+                  "shared",
+                  "local"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TARGET"
                 ]
               },
               {
@@ -5283,6 +5315,461 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "Remove one config override and prune empty tables",
+            "name": "unset",
+            "options": [
+              {
+                "help": "Dot-notation config key such as `periodic.daily.template`",
+                "id": "key",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "KEY"
+                ]
+              },
+              {
+                "help": null,
+                "id": "target",
+                "long": "target",
+                "possible_values": [
+                  "shared",
+                  "local"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TARGET"
+                ]
+              },
+              {
+                "help": "Preview the config change without writing files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Manage command aliases under [aliases]",
+            "name": "alias",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "List effective command aliases",
+                "name": "list",
+                "options": [],
+                "subcommands": []
+              },
+              {
+                "about": "Create or update one command alias",
+                "name": "set",
+                "options": [
+                  {
+                    "help": "Alias name under [aliases]",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Expansion inserted before clap parsing",
+                    "id": "expansion",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "EXPANSION"
+                    ]
+                  },
+                  {
+                    "help": null,
+                    "id": "target",
+                    "long": "target",
+                    "possible_values": [
+                      "shared",
+                      "local"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "TARGET"
+                    ]
+                  },
+                  {
+                    "help": "Preview the config change without writing files",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Suppress auto-commit for this invocation",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Delete one command alias override",
+                "name": "delete",
+                "options": [
+                  {
+                    "help": "Alias name under [aliases]",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": null,
+                    "id": "target",
+                    "long": "target",
+                    "possible_values": [
+                      "shared",
+                      "local"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "TARGET"
+                    ]
+                  },
+                  {
+                    "help": "Preview the config change without writing files",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Suppress auto-commit for this invocation",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
+          },
+          {
+            "about": "Manage config-backed permission profiles",
+            "name": "permissions",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Run or manage named permission profiles",
+                "name": "profile",
+                "options": [],
+                "subcommands": [
+                  {
+                    "about": "List effective permission profiles",
+                    "name": "list",
+                    "options": [],
+                    "subcommands": []
+                  },
+                  {
+                    "about": "Show one effective permission profile",
+                    "name": "show",
+                    "options": [
+                      {
+                        "help": "Permission profile name",
+                        "id": "name",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "NAME"
+                        ]
+                      }
+                    ],
+                    "subcommands": []
+                  },
+                  {
+                    "about": "Create one permission profile",
+                    "name": "create",
+                    "options": [
+                      {
+                        "help": "Permission profile name",
+                        "id": "name",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "NAME"
+                        ]
+                      },
+                      {
+                        "help": "Optional base profile to clone before writing overrides",
+                        "id": "clone",
+                        "long": "clone",
+                        "possible_values": [],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "CLONE"
+                        ]
+                      },
+                      {
+                        "help": null,
+                        "id": "target",
+                        "long": "target",
+                        "possible_values": [
+                          "shared",
+                          "local"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "TARGET"
+                        ]
+                      },
+                      {
+                        "help": "Preview the config change without writing files",
+                        "id": "dry_run",
+                        "long": "dry-run",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "DRY_RUN"
+                        ]
+                      },
+                      {
+                        "help": "Suppress auto-commit for this invocation",
+                        "id": "no_commit",
+                        "long": "no-commit",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "NO_COMMIT"
+                        ]
+                      }
+                    ],
+                    "subcommands": []
+                  },
+                  {
+                    "about": "Set one permission profile field",
+                    "name": "set",
+                    "options": [
+                      {
+                        "help": "Permission profile name",
+                        "id": "name",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "NAME"
+                        ]
+                      },
+                      {
+                        "help": "Dimension such as read, write, network, config, or cpu_limit_ms",
+                        "id": "dimension",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "DIMENSION"
+                        ]
+                      },
+                      {
+                        "help": "TOML literal or bare string value to write",
+                        "id": "value",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "VALUE"
+                        ]
+                      },
+                      {
+                        "help": null,
+                        "id": "target",
+                        "long": "target",
+                        "possible_values": [
+                          "shared",
+                          "local"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "TARGET"
+                        ]
+                      },
+                      {
+                        "help": "Preview the config change without writing files",
+                        "id": "dry_run",
+                        "long": "dry-run",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "DRY_RUN"
+                        ]
+                      },
+                      {
+                        "help": "Suppress auto-commit for this invocation",
+                        "id": "no_commit",
+                        "long": "no-commit",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "NO_COMMIT"
+                        ]
+                      }
+                    ],
+                    "subcommands": []
+                  },
+                  {
+                    "about": "Delete one permission profile override",
+                    "name": "delete",
+                    "options": [
+                      {
+                        "help": "Permission profile name",
+                        "id": "name",
+                        "long": null,
+                        "possible_values": [],
+                        "required": true,
+                        "short": null,
+                        "value_names": [
+                          "NAME"
+                        ]
+                      },
+                      {
+                        "help": null,
+                        "id": "target",
+                        "long": "target",
+                        "possible_values": [
+                          "shared",
+                          "local"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "TARGET"
+                        ]
+                      },
+                      {
+                        "help": "Preview the config change without writing files",
+                        "id": "dry_run",
+                        "long": "dry-run",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "DRY_RUN"
+                        ]
+                      },
+                      {
+                        "help": "Suppress auto-commit for this invocation",
+                        "id": "no_commit",
+                        "long": "no-commit",
+                        "possible_values": [
+                          "true",
+                          "false"
+                        ],
+                        "required": false,
+                        "short": null,
+                        "value_names": [
+                          "NO_COMMIT"
+                        ]
+                      }
+                    ],
+                    "subcommands": []
+                  }
+                ]
+              }
+            ]
           },
           {
             "about": "Import compatible Obsidian plugin settings",
@@ -9384,7 +9871,7 @@
       },
       {
         "about": "Discover, register, and run JS lifecycle plugins",
-        "after_help": "Subcommands:\n  list            list discovered and registered JS plugins\n  enable <name>   enable one plugin in .vulcan/config.toml\n  disable <name>  disable one plugin in .vulcan/config.toml\n  run <name>      execute one plugin's `main(event, ctx)` entrypoint\n\nNotes:\n  Plugin files live under `.vulcan/plugins/` by default and are registered under `[plugins.<name>]`.\n  Event handlers are named after their subscription keys: `on_note_write`, `on_pre_commit`, etc.\n  `on_note_write` and `on_pre_commit` are blocking hooks; throw an error to abort the operation.\n  Other hooks are post-hooks: Vulcan logs failures as warnings but does not roll back the action.\n  Trusted vaults are required for plugin execution.\n\nExamples:\n  vulcan plugin list\n  vulcan plugin enable lint\n  vulcan plugin disable lint\n  vulcan plugin run lint\n  vulcan --output json plugin list",
+        "after_help": "Subcommands:\n  list            list discovered and registered JS plugins\n  enable <name>   enable one plugin in shared or local config\n  disable <name>  disable one plugin in shared or local config\n  set <name>      update plugin path, events, sandbox, permissions, and description\n  delete <name>   remove one plugin registration override\n  run <name>      execute one plugin's `main(event, ctx)` entrypoint\n\nNotes:\n  Plugin files live under `.vulcan/plugins/` by default and are registered under `[plugins.<name>]`.\n  `plugin set` can create registrations without editing TOML directly.\n  Mutating plugin commands accept `--target <shared|local>`, `--dry-run`, and `--no-commit`.\n  Event handlers are named after their subscription keys: `on_note_write`, `on_pre_commit`, etc.\n  `on_note_write` and `on_pre_commit` are blocking hooks; throw an error to abort the operation.\n  Other hooks are post-hooks: Vulcan logs failures as warnings but does not roll back the action.\n  Trusted vaults are required for plugin execution.\n\nExamples:\n  vulcan plugin list\n  vulcan plugin enable lint\n  vulcan plugin disable lint\n  vulcan plugin set lint --add-event on_pre_commit --sandbox strict\n  vulcan plugin delete lint --dry-run\n  vulcan plugin run lint\n  vulcan --output json plugin list",
         "name": "plugin",
         "options": [],
         "subcommands": [
@@ -9395,7 +9882,7 @@
             "subcommands": []
           },
           {
-            "about": "Enable one plugin in .vulcan/config.toml",
+            "about": "Enable one plugin in shared or local config",
             "name": "enable",
             "options": [
               {
@@ -9408,12 +9895,54 @@
                 "value_names": [
                   "NAME"
                 ]
+              },
+              {
+                "help": null,
+                "id": "target",
+                "long": "target",
+                "possible_values": [
+                  "shared",
+                  "local"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TARGET"
+                ]
+              },
+              {
+                "help": "Preview the config change without writing files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
               }
             ],
             "subcommands": []
           },
           {
-            "about": "Disable one plugin in .vulcan/config.toml",
+            "about": "Disable one plugin in shared or local config",
             "name": "disable",
             "options": [
               {
@@ -9425,6 +9954,339 @@
                 "short": null,
                 "value_names": [
                   "NAME"
+                ]
+              },
+              {
+                "help": null,
+                "id": "target",
+                "long": "target",
+                "possible_values": [
+                  "shared",
+                  "local"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TARGET"
+                ]
+              },
+              {
+                "help": "Preview the config change without writing files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Create or update one plugin registration",
+            "name": "set",
+            "options": [
+              {
+                "help": "Plugin name under [plugins.<name>]",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              },
+              {
+                "help": "Optional plugin path override",
+                "id": "path",
+                "long": "path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PATH"
+                ]
+              },
+              {
+                "help": "Remove any stored plugin path override",
+                "id": "clear_path",
+                "long": "clear-path",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CLEAR_PATH"
+                ]
+              },
+              {
+                "help": "Mark the plugin enabled",
+                "id": "enable",
+                "long": "enable",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ENABLE"
+                ]
+              },
+              {
+                "help": "Mark the plugin disabled",
+                "id": "disable",
+                "long": "disable",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DISABLE"
+                ]
+              },
+              {
+                "help": null,
+                "id": "add_events",
+                "long": "add-event",
+                "possible_values": [
+                  "on_note_write",
+                  "on_note_create",
+                  "on_note_delete",
+                  "on_pre_commit",
+                  "on_post_commit",
+                  "on_scan_complete",
+                  "on_refactor"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ADD_EVENTS"
+                ]
+              },
+              {
+                "help": null,
+                "id": "remove_events",
+                "long": "remove-event",
+                "possible_values": [
+                  "on_note_write",
+                  "on_note_create",
+                  "on_note_delete",
+                  "on_pre_commit",
+                  "on_post_commit",
+                  "on_scan_complete",
+                  "on_refactor"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOVE_EVENTS"
+                ]
+              },
+              {
+                "help": null,
+                "id": "sandbox",
+                "long": "sandbox",
+                "possible_values": [
+                  "strict",
+                  "fs",
+                  "net",
+                  "none"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SANDBOX"
+                ]
+              },
+              {
+                "help": "Remove any stored sandbox override",
+                "id": "clear_sandbox",
+                "long": "clear-sandbox",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CLEAR_SANDBOX"
+                ]
+              },
+              {
+                "help": null,
+                "id": "permission_profile",
+                "long": "permission-profile",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PERMISSION_PROFILE"
+                ]
+              },
+              {
+                "help": null,
+                "id": "clear_permission_profile",
+                "long": "clear-permission-profile",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CLEAR_PERMISSION_PROFILE"
+                ]
+              },
+              {
+                "help": null,
+                "id": "description",
+                "long": "description",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DESCRIPTION"
+                ]
+              },
+              {
+                "help": null,
+                "id": "clear_description",
+                "long": "clear-description",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CLEAR_DESCRIPTION"
+                ]
+              },
+              {
+                "help": null,
+                "id": "target",
+                "long": "target",
+                "possible_values": [
+                  "shared",
+                  "local"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TARGET"
+                ]
+              },
+              {
+                "help": "Preview the config change without writing files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Delete one plugin registration override",
+            "name": "delete",
+            "options": [
+              {
+                "help": "Plugin name under [plugins.<name>]",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              },
+              {
+                "help": null,
+                "id": "target",
+                "long": "target",
+                "possible_values": [
+                  "shared",
+                  "local"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TARGET"
+                ]
+              },
+              {
+                "help": "Preview the config change without writing files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
                 ]
               }
             ],
@@ -10018,8 +10880,8 @@
     }
   ],
   "vectors_index": {
-    "api_key_env": null,
-    "api_key_set": false,
+    "api_key_env": "VULCAN_TEST_OPENAI_API_KEY",
+    "api_key_set": true,
     "batch_size": 8,
     "batches": 1,
     "dimensions": 2,

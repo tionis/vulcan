@@ -167,9 +167,14 @@ Behavior:
 ### Config and import commands
 
 - `vulcan config show [section]`: show the effective merged config or one section such as `periodic` or `aliases`.
+- `vulcan config list [section]`: list schema-backed config keys together with type, default, provenance, and preferred dedicated commands.
 - `vulcan config get <key>`: read one config value.
 - `vulcan config edit [--no-commit]`: open the interactive `ratatui` settings editor for `.vulcan/config.toml`.
-- `vulcan config set <key> <value> [--dry-run] [--no-commit]`: validate and write one config value.
+- `vulcan config set <key> <value> [--target <shared|local>] [--dry-run] [--no-commit]`: validate and write one config value.
+- `vulcan config unset <key> [--target <shared|local>] [--dry-run] [--no-commit]`: remove one config override and prune empty tables.
+- `vulcan config alias list|set|delete ...`: manage `[aliases]` entries without editing raw TOML.
+- `vulcan config permissions profile list|show|create|set|delete ...`: manage `[permissions.profiles.<name>]` entries without hand-writing tables.
+- `vulcan plugin set|delete ...`: manage full plugin registration metadata under `[plugins.<name>]`, including path, events, sandbox, permission profile, and description.
 - `vulcan config import core [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian core settings from `.obsidian/app.json`, `.obsidian/templates.json`, and `.obsidian/types.json`.
 - `vulcan config import dataview [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian Dataview plugin settings.
 - `vulcan config import kanban [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian Kanban plugin settings.
@@ -181,12 +186,13 @@ Behavior:
 
 Shared behavior:
 
-- `config edit` groups settings by category, shows the effective value alongside shared/local overrides, validates each edit, and only writes the shared config file when you save.
+- `config edit` is backed by the same schema registry as `config list` and the non-interactive config mutation commands, exposes shared/local target switching, can create schema-defined dynamic entries such as aliases, permission profiles, and plugin registrations even when they are absent from both config files, and includes dedicated enum/list/map editors for common settings so plugin events, allowlists, and simple key-value maps do not require raw TOML typing.
 - `--preview` and `--dry-run` are equivalent: they print the mapping plus a diff of the target config file without writing either `.vulcan/config.toml` or `.vulcan/config.local.toml`.
 - `--apply` is the explicit write path; omitting both `--preview` and `--apply` still applies the import for backwards compatibility.
 - `--target local` writes to `.vulcan/config.local.toml`; the default target is the shared `.vulcan/config.toml`.
 - `--output json` returns the full import report, including target file, whether the run was a dry run, the mappings applied, and any detected conflicts.
 - When vault auto-commit is enabled for mutations, config imports participate unless `--no-commit` is passed.
+- The generated reference for every supported key path, plus manual-edit examples for aliases, permission profiles, plugin registrations, and imported sections, lives in [docs/reference/config.md](reference/config.md) and matches `vulcan help config --output markdown`.
 
 ### Query, graph, and reporting commands
 
