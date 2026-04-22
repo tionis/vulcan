@@ -1123,9 +1123,9 @@ Examples:
   vulcan status --output json";
 
 const MCP_COMMAND_AFTER_HELP: &str = "\
-Protocol:
-  Speaks JSON-RPC 2.0 over stdio (stdin → stdout).
-  Each request and response is a single UTF-8 JSON line.
+Protocols:
+  stdio reads JSON-RPC 2.0 messages from stdin and writes them to stdout.
+  http serves the same curated MCP registry over Streamable HTTP at one endpoint path.
 
 Supported methods:
   initialize               Negotiate protocol version and report server capabilities
@@ -1139,7 +1139,10 @@ Supported methods:
 Notes:
   Start with `--vault <path>` so all tool calls operate on the correct vault.
   `--permissions <profile>` filters the exposed tool set before requests are handled.
+  `--transport stdio|http` selects local subprocess stdio or networked Streamable HTTP.
   `--tool-pack <core|extended|admin>` selects how much of the headless tool surface to expose.
+  `--bind` and `--auth-token` are only used for HTTP transport.
+  Non-loopback HTTP binds require `--auth-token`.
   `core` is the default for generic MCP clients; `extended` adds network and heavier mutations; `admin` adds maintenance/config tools.
   Interactive commands such as browse, edit, open, TUI surfaces, and nested MCP helpers are never exposed.
   Tool output uses structured JSON reports that match the corresponding CLI `--output json` payloads.
@@ -1148,6 +1151,7 @@ Examples:
   vulcan mcp --vault ~/notes
   vulcan mcp --vault ~/notes --permissions readonly
   vulcan mcp --vault ~/notes --tool-pack extended
+  vulcan mcp --transport http --bind 127.0.0.1:8765
   vulcan mcp | jq .";
 
 const REFACTOR_COMMAND_AFTER_HELP: &str = "\
@@ -2566,6 +2570,13 @@ pub enum McpToolPackArg {
     Core,
     Extended,
     Admin,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum McpTransportArg {
+    #[default]
+    Stdio,
+    Http,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -4666,12 +4677,31 @@ Examples:
     )]
     Status,
     #[command(
-        about = "Start an MCP (Model Context Protocol) server over stdio",
+        about = "Start an MCP (Model Context Protocol) server over stdio or Streamable HTTP",
         after_help = MCP_COMMAND_AFTER_HELP
     )]
     Mcp {
         #[arg(long, value_enum, default_value_t = McpToolPackArg::Core)]
         tool_pack: McpToolPackArg,
+        #[arg(long, value_enum, default_value_t = McpTransportArg::Stdio)]
+        transport: McpTransportArg,
+        #[arg(
+            long,
+            default_value = "127.0.0.1:8765",
+            help = "Socket address for HTTP transport (ignored for stdio)"
+        )]
+        bind: String,
+        #[arg(
+            long,
+            default_value = "/mcp",
+            help = "HTTP endpoint path for Streamable HTTP transport (ignored for stdio)"
+        )]
+        endpoint: String,
+        #[arg(
+            long,
+            help = "Optional bearer/shared token required for HTTP transport requests"
+        )]
+        auth_token: Option<String>,
     },
 }
 

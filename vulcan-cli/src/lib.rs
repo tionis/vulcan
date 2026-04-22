@@ -166,8 +166,8 @@ pub use cli::{
     DataviewCommand, DescribeFormatArg, EpubTocStyle, ExportArgs, ExportCommand, ExportFormat,
     ExportProfileCommand, ExportProfileFormatArg, ExportProfileRuleCommand, ExportQueryArgs,
     ExportTransformArgs, GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs,
-    KanbanCommand, McpToolPackArg, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand,
-    NoteGetMode, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand,
+    KanbanCommand, McpToolPackArg, McpTransportArg, NoteAppendPeriodicArg, NoteCheckboxState,
+    NoteCommand, NoteGetMode, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand,
     PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs,
     RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg,
     SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
@@ -6282,9 +6282,23 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let report = run_status_command(&paths)?;
             print_status_report(cli.output, &report, use_stdout_color)
         }
-        Command::Mcp { tool_pack } => {
-            mcp::run_mcp_server(&paths, cli.permissions.as_deref(), tool_pack)
-        }
+        Command::Mcp {
+            tool_pack,
+            transport,
+            ref bind,
+            ref endpoint,
+            ref auth_token,
+        } => mcp::run_mcp(
+            &paths,
+            cli.permissions.as_deref(),
+            tool_pack,
+            transport,
+            &mcp::McpHttpOptions {
+                bind: bind.clone(),
+                endpoint: endpoint.clone(),
+                auth_token: auth_token.clone(),
+            },
+        ),
         Command::Trust { ref command } => handle_trust_command(cli, &paths, command.as_ref()),
         Command::Bases { ref command } => commands::bases::handle_bases_command(
             cli,
@@ -21134,6 +21148,14 @@ mod tests {
             "mcp",
             "--tool-pack",
             "admin",
+            "--transport",
+            "http",
+            "--bind",
+            "127.0.0.1:9123",
+            "--endpoint",
+            "/custom-mcp",
+            "--auth-token",
+            "secret-token",
         ])
         .expect("mcp should parse");
 
@@ -21155,6 +21177,10 @@ mod tests {
             mcp.command,
             Command::Mcp {
                 tool_pack: McpToolPackArg::Admin,
+                transport: McpTransportArg::Http,
+                bind: "127.0.0.1:9123".to_string(),
+                endpoint: "/custom-mcp".to_string(),
+                auth_token: Some("secret-token".to_string()),
             }
         );
         assert_eq!(mcp.permissions.as_deref(), Some("readonly"));

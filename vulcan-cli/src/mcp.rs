@@ -11,15 +11,21 @@ use crate::{
     run_note_get_command, run_note_info_command, run_note_outline_command, run_note_patch_command,
     run_note_set_with_content, run_status_command, run_web_fetch_command, run_web_search_command,
     CliError, McpToolAnnotations, McpToolDefinition, McpToolPackArg, McpToolsReport,
-    NoteAppendMode, NoteAppendOptions, NoteAppendPeriodicArg, NoteGetMode, NoteGetOptions,
-    NotePatchOptions, OutputFormat, SearchBackendArg, WebFetchMode,
+    McpTransportArg, NoteAppendMode, NoteAppendOptions, NoteAppendPeriodicArg, NoteGetMode,
+    NoteGetOptions, NotePatchOptions, OutputFormat, SearchBackendArg, WebFetchMode,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Read, Write};
+use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
+use std::time::Duration;
+use ulid::Ulid;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_core::properties::load_note_index;
 use vulcan_core::{
@@ -35,6 +41,15 @@ const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_INLINE_TEXT_LIMIT: usize = 4_096;
 const MCP_PAGE_SIZE: usize = 100;
 const MCP_RESOURCE_NOT_FOUND: i64 = -32002;
+const MCP_HTTP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
+const MCP_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(250);
+
+#[derive(Debug, Clone)]
+pub(crate) struct McpHttpOptions {
+    pub bind: String,
+    pub endpoint: String,
+    pub auth_token: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum McpToolPack {
@@ -350,6 +365,93 @@ struct McpServerCore {
     stored_resources: BTreeMap<String, McpStoredResource>,
     next_resource_id: u64,
     snapshot: McpServerSnapshot,
+}
+
+#[derive(Debug)]
+struct McpHttpSession {
+    core: Mutex<McpServerCore>,
+    subscribers: Mutex<Vec<mpsc::Sender<Value>>>,
+    closed: AtomicBool,
+}
+
+impl McpHttpSession {
+    fn new(core: McpServerCore) -> Self {
+        Self {
+            core: Mutex::new(core),
+            subscribers: Mutex::new(Vec::new()),
+            closed: AtomicBool::new(false),
+        }
+    }
+
+    fn register_subscriber(&self) -> mpsc::Receiver<Value> {
+        let (tx, rx) = mpsc::channel();
+        self.subscribers
+            .lock()
+            .expect("mcp subscribers lock should not be poisoned")
+            .push(tx);
+        rx
+    }
+
+    fn broadcast(&self, messages: &[Value]) {
+        if messages.is_empty() || self.closed.load(Ordering::SeqCst) {
+            return;
+        }
+        let mut subscribers = self
+            .subscribers
+            .lock()
+            .expect("mcp subscribers lock should not be poisoned");
+        subscribers.retain(|sender| {
+            messages
+                .iter()
+                .all(|message| sender.send(message.clone()).is_ok())
+        });
+    }
+
+    fn close(&self) {
+        self.closed.store(true, Ordering::SeqCst);
+        self.subscribers
+            .lock()
+            .expect("mcp subscribers lock should not be poisoned")
+            .clear();
+    }
+
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Debug)]
+struct McpHttpRequest {
+    method: String,
+    path: String,
+    headers: BTreeMap<String, String>,
+    body: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct McpHttpResponse {
+    status: u16,
+    content_type: Option<&'static str>,
+    body: Vec<u8>,
+    extra_headers: Vec<(String, String)>,
+}
+
+#[derive(Debug)]
+struct McpHttpProcessResult {
+    response: Option<Value>,
+    notifications: Vec<Value>,
+    accepted_notification: bool,
+}
+
+#[derive(Debug, Clone)]
+struct McpHttpServerContext {
+    paths: VaultPaths,
+    requested_profile: Option<String>,
+    tool_pack_arg: McpToolPackArg,
+    endpoint: String,
+    auth_token: Option<String>,
+    bind_addr: SocketAddr,
+    sessions: Arc<Mutex<BTreeMap<String, Arc<McpHttpSession>>>>,
 }
 
 #[derive(Debug)]
@@ -699,7 +801,22 @@ pub(crate) fn build_mcp_tool_definitions(
     })
 }
 
-pub(crate) fn run_mcp_server(
+pub(crate) fn run_mcp(
+    paths: &VaultPaths,
+    requested_profile: Option<&str>,
+    tool_pack_arg: McpToolPackArg,
+    transport_arg: McpTransportArg,
+    http_options: &McpHttpOptions,
+) -> Result<(), CliError> {
+    match transport_arg {
+        McpTransportArg::Stdio => run_mcp_stdio_server(paths, requested_profile, tool_pack_arg),
+        McpTransportArg::Http => {
+            run_mcp_http_server(paths, requested_profile, tool_pack_arg, http_options)
+        }
+    }
+}
+
+fn run_mcp_stdio_server(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
     tool_pack_arg: McpToolPackArg,
@@ -730,6 +847,369 @@ pub(crate) fn run_mcp_server(
     }
 
     Ok(())
+}
+
+fn run_mcp_http_server(
+    paths: &VaultPaths,
+    requested_profile: Option<&str>,
+    tool_pack_arg: McpToolPackArg,
+    options: &McpHttpOptions,
+) -> Result<(), CliError> {
+    let bind_addr = parse_mcp_http_bind_addr(&options.bind, options.auth_token.is_some())?;
+    let endpoint = normalize_mcp_http_endpoint(&options.endpoint);
+    let listener = TcpListener::bind(bind_addr).map_err(CliError::operation)?;
+    listener
+        .set_nonblocking(true)
+        .map_err(CliError::operation)?;
+    let addr = listener.local_addr().map_err(CliError::operation)?;
+    eprintln!("MCP HTTP server listening on http://{addr}{endpoint}");
+    let context = McpHttpServerContext {
+        paths: paths.clone(),
+        requested_profile: requested_profile.map(ToOwned::to_owned),
+        tool_pack_arg,
+        endpoint,
+        auth_token: options.auth_token.clone(),
+        bind_addr: addr,
+        sessions: Arc::new(Mutex::new(BTreeMap::new())),
+    };
+
+    loop {
+        match listener.accept() {
+            Ok((mut stream, _)) => {
+                let context = context.clone();
+                thread::spawn(move || {
+                    let _ = stream.set_nonblocking(false);
+                    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+                    if let Err(error) = handle_mcp_http_connection(&context, &mut stream) {
+                        let response =
+                            mcp_http_json_error_response(500, error.to_string(), Value::Null);
+                        let _ = write_mcp_http_response(&mut stream, &response);
+                    }
+                });
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                thread::sleep(Duration::from_millis(20));
+            }
+            Err(error) => return Err(CliError::operation(error)),
+        }
+    }
+}
+
+fn handle_mcp_http_connection(
+    context: &McpHttpServerContext,
+    stream: &mut TcpStream,
+) -> Result<(), CliError> {
+    let request = match read_mcp_http_request(stream) {
+        Ok(request) => request,
+        Err(error) => {
+            let response = mcp_http_json_error_response(400, error, Value::Null);
+            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+            return Ok(());
+        }
+    };
+
+    if request.path != context.endpoint {
+        let response = mcp_http_json_error_response(404, "Not Found", Value::Null);
+        write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+        return Ok(());
+    }
+    if let Some(response) = validate_mcp_http_security(context, &request) {
+        write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+        return Ok(());
+    }
+
+    match request.method.as_str() {
+        "POST" => {
+            let response = handle_mcp_http_post(context, &request);
+            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+        }
+        "GET" => handle_mcp_http_sse(context, &request, stream)?,
+        "DELETE" => {
+            let response = handle_mcp_http_delete(context, &request);
+            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+        }
+        _ => {
+            let response = mcp_http_json_error_response(405, "Method Not Allowed", Value::Null);
+            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_mcp_http_post(
+    context: &McpHttpServerContext,
+    request: &McpHttpRequest,
+) -> McpHttpResponse {
+    if let Some(response) = validate_mcp_http_post_headers(request) {
+        return response;
+    }
+    let payload = match parse_mcp_http_json_body(request) {
+        Ok(payload) => payload,
+        Err(response) => return response,
+    };
+    if let Some(response) = validate_mcp_protocol_version(request) {
+        return response;
+    }
+    let (session_id, session, created_session) =
+        match resolve_mcp_http_session(context, request, &payload) {
+            Ok(session) => session,
+            Err(response) => return response,
+        };
+
+    let result = {
+        let mut core = session
+            .core
+            .lock()
+            .expect("mcp core lock should not be poisoned");
+        match core.process_http_request(&payload) {
+            Ok(result) => result,
+            Err(error_response) => {
+                if created_session {
+                    context
+                        .sessions
+                        .lock()
+                        .expect("mcp sessions lock should not be poisoned")
+                        .remove(&session_id);
+                }
+                return McpHttpResponse {
+                    status: 400,
+                    content_type: Some("application/json"),
+                    body: serde_json::to_vec(&error_response).expect("json should serialize"),
+                    extra_headers: Vec::new(),
+                };
+            }
+        }
+    };
+
+    session.broadcast(&result.notifications);
+
+    if result.accepted_notification {
+        return McpHttpResponse {
+            status: 202,
+            content_type: None,
+            body: Vec::new(),
+            extra_headers: Vec::new(),
+        };
+    }
+
+    let response_body = result
+        .response
+        .expect("MCP HTTP requests should produce a JSON-RPC response");
+    let mut extra_headers = Vec::new();
+    if created_session {
+        extra_headers.push(("Mcp-Session-Id".to_string(), session_id));
+    }
+    McpHttpResponse {
+        status: 200,
+        content_type: Some("application/json"),
+        body: serde_json::to_vec(&response_body).expect("json should serialize"),
+        extra_headers,
+    }
+}
+
+fn validate_mcp_http_post_headers(request: &McpHttpRequest) -> Option<McpHttpResponse> {
+    if !request
+        .headers
+        .get("content-type")
+        .is_some_and(|value| value.contains("application/json"))
+    {
+        return Some(mcp_http_json_error_response(
+            400,
+            "MCP POST requests require Content-Type: application/json",
+            Value::Null,
+        ));
+    }
+    if !request.headers.get("accept").is_some_and(|value| {
+        value.contains("application/json") && value.contains("text/event-stream")
+    }) {
+        return Some(mcp_http_json_error_response(
+            400,
+            "MCP POST requests require Accept: application/json, text/event-stream",
+            Value::Null,
+        ));
+    }
+    None
+}
+
+fn parse_mcp_http_json_body(request: &McpHttpRequest) -> Result<Value, McpHttpResponse> {
+    serde_json::from_slice(&request.body).map_err(|error| {
+        mcp_http_json_error_response(400, format!("Parse error: {error}"), Value::Null)
+    })
+}
+
+fn resolve_mcp_http_session(
+    context: &McpHttpServerContext,
+    request: &McpHttpRequest,
+    payload: &Value,
+) -> Result<(String, Arc<McpHttpSession>, bool), McpHttpResponse> {
+    let is_initialize = payload
+        .as_object()
+        .and_then(|object| object.get("method"))
+        .and_then(Value::as_str)
+        == Some("initialize");
+
+    if is_initialize {
+        let session_id = Ulid::new().to_string();
+        let core = McpServerCore::new(
+            &context.paths,
+            context.requested_profile.as_deref(),
+            context.tool_pack_arg,
+        )
+        .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))?;
+        let session = Arc::new(McpHttpSession::new(core));
+        context
+            .sessions
+            .lock()
+            .expect("mcp sessions lock should not be poisoned")
+            .insert(session_id.clone(), Arc::clone(&session));
+        return Ok((session_id, session, true));
+    }
+
+    let Some(session_id) = request.headers.get("mcp-session-id").cloned() else {
+        return Err(mcp_http_json_error_response(
+            400,
+            "missing Mcp-Session-Id header",
+            Value::Null,
+        ));
+    };
+    let Some(session) = context
+        .sessions
+        .lock()
+        .expect("mcp sessions lock should not be poisoned")
+        .get(&session_id)
+        .cloned()
+    else {
+        return Err(mcp_http_json_error_response(
+            404,
+            "unknown Mcp-Session-Id",
+            Value::Null,
+        ));
+    };
+    Ok((session_id, session, false))
+}
+
+fn handle_mcp_http_delete(
+    context: &McpHttpServerContext,
+    request: &McpHttpRequest,
+) -> McpHttpResponse {
+    let Some(session_id) = request.headers.get("mcp-session-id") else {
+        return mcp_http_json_error_response(400, "missing Mcp-Session-Id header", Value::Null);
+    };
+    let session = context
+        .sessions
+        .lock()
+        .expect("mcp sessions lock should not be poisoned")
+        .remove(session_id);
+    let Some(session) = session else {
+        return mcp_http_json_error_response(404, "unknown Mcp-Session-Id", Value::Null);
+    };
+    session.close();
+    McpHttpResponse {
+        status: 204,
+        content_type: None,
+        body: Vec::new(),
+        extra_headers: Vec::new(),
+    }
+}
+
+fn handle_mcp_http_sse(
+    context: &McpHttpServerContext,
+    request: &McpHttpRequest,
+    stream: &mut TcpStream,
+) -> Result<(), CliError> {
+    if !request
+        .headers
+        .get("accept")
+        .is_some_and(|value| value.contains("text/event-stream"))
+    {
+        let response = mcp_http_json_error_response(
+            405,
+            "MCP GET requests require Accept: text/event-stream",
+            Value::Null,
+        );
+        write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+        return Ok(());
+    }
+    let Some(session_id) = request.headers.get("mcp-session-id") else {
+        let response =
+            mcp_http_json_error_response(400, "missing Mcp-Session-Id header", Value::Null);
+        write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+        return Ok(());
+    };
+    let Some(session) = context
+        .sessions
+        .lock()
+        .expect("mcp sessions lock should not be poisoned")
+        .get(session_id)
+        .cloned()
+    else {
+        let response = mcp_http_json_error_response(404, "unknown Mcp-Session-Id", Value::Null);
+        write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+        return Ok(());
+    };
+
+    write_mcp_http_sse_headers(stream).map_err(CliError::operation)?;
+    let receiver = session.register_subscriber();
+    let mut keepalive_elapsed = Duration::ZERO;
+
+    loop {
+        if session.is_closed() {
+            break;
+        }
+        match receiver.recv_timeout(MCP_HTTP_POLL_INTERVAL) {
+            Ok(message) => {
+                write_mcp_http_sse_event(stream, &message).map_err(CliError::operation)?;
+                keepalive_elapsed = Duration::ZERO;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let notifications = {
+                    let mut core = session
+                        .core
+                        .lock()
+                        .expect("mcp core lock should not be poisoned");
+                    core.list_changed_notifications()
+                };
+                for notification in notifications {
+                    write_mcp_http_sse_event(stream, &notification).map_err(CliError::operation)?;
+                }
+                keepalive_elapsed += MCP_HTTP_POLL_INTERVAL;
+                if keepalive_elapsed >= MCP_HTTP_KEEPALIVE_INTERVAL {
+                    write_mcp_http_sse_keepalive(stream).map_err(CliError::operation)?;
+                    keepalive_elapsed = Duration::ZERO;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_mcp_http_security(
+    context: &McpHttpServerContext,
+    request: &McpHttpRequest,
+) -> Option<McpHttpResponse> {
+    if let Some(expected_token) = context.auth_token.as_deref() {
+        let actual_token = bearer_or_shared_token(&request.headers);
+        if actual_token.as_deref() != Some(expected_token) {
+            return Some(mcp_http_json_error_response(
+                401,
+                "missing or invalid authentication token",
+                Value::Null,
+            ));
+        }
+    }
+    if let Some(origin) = request.headers.get("origin") {
+        if !origin_allowed(origin, context.bind_addr) {
+            return Some(mcp_http_json_error_response(
+                403,
+                "invalid Origin header",
+                Value::Null,
+            ));
+        }
+    }
+    None
 }
 
 impl McpServerCore {
@@ -830,6 +1310,92 @@ impl McpServerCore {
             messages.push(jsonrpc_result(id, response));
         }
         messages
+    }
+
+    fn process_http_request(&mut self, request: &Value) -> Result<McpHttpProcessResult, Value> {
+        let Some(request_object) = request.as_object() else {
+            return Err(jsonrpc_error(
+                Value::Null,
+                -32600,
+                "Invalid request".to_string(),
+                None,
+            ));
+        };
+        if request.is_array() {
+            return Err(jsonrpc_error(
+                Value::Null,
+                -32600,
+                "Batch requests are not supported by the 2025-06-18 MCP baseline".to_string(),
+                None,
+            ));
+        }
+        if request_object.contains_key("result") || request_object.contains_key("error") {
+            return Ok(McpHttpProcessResult {
+                response: None,
+                notifications: Vec::new(),
+                accepted_notification: true,
+            });
+        }
+
+        let id = request_object.get("id").cloned().unwrap_or(Value::Null);
+        let is_notification = !request_object.contains_key("id");
+        let Some(method) = request_object.get("method").and_then(Value::as_str) else {
+            return Err(jsonrpc_error(
+                if is_notification { Value::Null } else { id },
+                -32600,
+                "Invalid request".to_string(),
+                None,
+            ));
+        };
+
+        let outcome = match self.handle_method(method, request_object.get("params")) {
+            Ok(outcome) => outcome,
+            Err(McpMethodError::JsonRpc {
+                code,
+                message,
+                data,
+            }) => {
+                if is_notification {
+                    return Err(jsonrpc_error(Value::Null, code, message, data));
+                }
+                return Ok(McpHttpProcessResult {
+                    response: Some(jsonrpc_error(id, code, message, data)),
+                    notifications: Vec::new(),
+                    accepted_notification: false,
+                });
+            }
+            Err(McpMethodError::Tool {
+                message,
+                structured,
+            }) => {
+                if is_notification {
+                    return Err(jsonrpc_error(Value::Null, -32603, message, structured));
+                }
+                return Ok(McpHttpProcessResult {
+                    response: Some(tool_error_response(id, message, structured)),
+                    notifications: Vec::new(),
+                    accepted_notification: false,
+                });
+            }
+        };
+
+        let notifications = if outcome.emit_list_notifications {
+            self.list_changed_notifications()
+        } else {
+            Vec::new()
+        };
+
+        Ok(McpHttpProcessResult {
+            response: if is_notification {
+                None
+            } else {
+                outcome
+                    .response
+                    .map(|response| jsonrpc_result(id, response))
+            },
+            notifications,
+            accepted_notification: is_notification,
+        })
     }
 
     fn handle_method(
@@ -1992,6 +2558,218 @@ impl McpServerCore {
             .check_write_path(relative_path)
             .map_err(CliError::operation)
     }
+}
+
+fn parse_mcp_http_bind_addr(bind: &str, allow_remote: bool) -> Result<SocketAddr, CliError> {
+    let addr = bind.parse::<SocketAddr>().map_err(|_| {
+        CliError::operation("mcp bind address must be a socket address like 127.0.0.1:8765")
+    })?;
+    if !addr.ip().is_loopback() && !allow_remote {
+        return Err(CliError::operation(
+            "non-loopback MCP HTTP binds require --auth-token",
+        ));
+    }
+    Ok(addr)
+}
+
+fn normalize_mcp_http_endpoint(endpoint: &str) -> String {
+    if endpoint.is_empty() || endpoint == "/" {
+        "/mcp".to_string()
+    } else if endpoint.starts_with('/') {
+        endpoint.to_string()
+    } else {
+        format!("/{endpoint}")
+    }
+}
+
+fn validate_mcp_protocol_version(request: &McpHttpRequest) -> Option<McpHttpResponse> {
+    let version = request.headers.get("mcp-protocol-version")?;
+    if version == MCP_PROTOCOL_VERSION {
+        None
+    } else {
+        Some(mcp_http_json_error_response(
+            400,
+            format!("unsupported MCP-Protocol-Version `{version}`"),
+            Value::Null,
+        ))
+    }
+}
+
+fn bearer_or_shared_token(headers: &BTreeMap<String, String>) -> Option<String> {
+    if let Some(value) = headers.get("authorization") {
+        if let Some(token) = value.strip_prefix("Bearer ") {
+            return Some(token.to_string());
+        }
+    }
+    headers.get("x-vulcan-token").cloned()
+}
+
+fn origin_allowed(origin: &str, bind_addr: SocketAddr) -> bool {
+    let origin = origin
+        .strip_prefix("http://")
+        .or_else(|| origin.strip_prefix("https://"))
+        .unwrap_or(origin);
+    let host = origin.split('/').next().unwrap_or_default();
+    let host = host.trim_matches(|ch| ch == '[' || ch == ']');
+    let host = host.split(':').next().unwrap_or(host);
+    if bind_addr.ip().is_loopback() {
+        matches!(host, "127.0.0.1" | "localhost" | "::1")
+    } else {
+        host == bind_addr.ip().to_string()
+    }
+}
+
+fn read_mcp_http_request(stream: &mut TcpStream) -> Result<McpHttpRequest, String> {
+    let mut buffer = Vec::new();
+    let mut header_end = None;
+
+    loop {
+        let mut chunk = [0_u8; 1024];
+        let bytes_read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+        if bytes_read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..bytes_read]);
+        if let Some(position) = find_bytes(&buffer, b"\r\n\r\n") {
+            header_end = Some(position + 4);
+            break;
+        }
+        if buffer.len() > 64 * 1024 {
+            return Err("request headers exceed 64 KiB".to_string());
+        }
+    }
+
+    let header_end = header_end.ok_or_else(|| "incomplete HTTP request".to_string())?;
+    let header_text = String::from_utf8(buffer[..header_end].to_vec())
+        .map_err(|_| "request headers are not valid UTF-8".to_string())?;
+    let mut lines = header_text.lines();
+    let request_line = lines
+        .next()
+        .ok_or_else(|| "missing HTTP request line".to_string())?;
+    let mut request_parts = request_line.split_whitespace();
+    let method = request_parts
+        .next()
+        .ok_or_else(|| "missing HTTP method".to_string())?
+        .to_string();
+    let target = request_parts
+        .next()
+        .ok_or_else(|| "missing HTTP request target".to_string())?;
+    let path = target
+        .split_once('?')
+        .map_or(target, |(path, _)| path)
+        .to_string();
+
+    let headers = lines
+        .take_while(|line| !line.trim().is_empty())
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let content_length = headers
+        .get("content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+
+    let mut body = buffer[header_end..].to_vec();
+    while body.len() < content_length {
+        let mut chunk = vec![0_u8; content_length - body.len()];
+        let bytes_read = stream
+            .read(chunk.as_mut_slice())
+            .map_err(|error| error.to_string())?;
+        if bytes_read == 0 {
+            break;
+        }
+        body.extend_from_slice(&chunk[..bytes_read]);
+    }
+
+    if body.len() < content_length {
+        return Err("incomplete HTTP request body".to_string());
+    }
+
+    Ok(McpHttpRequest {
+        method,
+        path,
+        headers,
+        body,
+    })
+}
+
+fn write_mcp_http_response(
+    stream: &mut TcpStream,
+    response: &McpHttpResponse,
+) -> Result<(), io::Error> {
+    let status_text = match response.status {
+        200 => "OK",
+        202 => "Accepted",
+        204 => "No Content",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        _ => "Internal Server Error",
+    };
+    let mut headers = format!("HTTP/1.1 {} {}\r\n", response.status, status_text);
+    if let Some(content_type) = response.content_type {
+        headers.push_str("Content-Type: ");
+        headers.push_str(content_type);
+        headers.push_str("\r\n");
+    }
+    for (name, value) in &response.extra_headers {
+        headers.push_str(name);
+        headers.push_str(": ");
+        headers.push_str(value);
+        headers.push_str("\r\n");
+    }
+    headers.push_str("Content-Length: ");
+    headers.push_str(&response.body.len().to_string());
+    headers.push_str("\r\nConnection: close\r\n\r\n");
+    stream.write_all(headers.as_bytes())?;
+    if !response.body.is_empty() {
+        stream.write_all(&response.body)?;
+    }
+    stream.flush()
+}
+
+fn write_mcp_http_sse_headers(stream: &mut TcpStream) -> Result<(), io::Error> {
+    stream.write_all(
+        b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n",
+    )?;
+    stream.flush()
+}
+
+fn write_mcp_http_sse_event(stream: &mut TcpStream, message: &Value) -> Result<(), io::Error> {
+    let payload = serde_json::to_string(message).expect("sse payload should serialize");
+    let event_id = Ulid::new().to_string();
+    let frame = format!("id: {event_id}\nevent: message\ndata: {payload}\n\n");
+    stream.write_all(frame.as_bytes())?;
+    stream.flush()
+}
+
+fn write_mcp_http_sse_keepalive(stream: &mut TcpStream) -> Result<(), io::Error> {
+    stream.write_all(b": keepalive\n\n")?;
+    stream.flush()
+}
+
+fn mcp_http_json_error_response(
+    status: u16,
+    message: impl Into<String>,
+    id: Value,
+) -> McpHttpResponse {
+    let body = jsonrpc_error(id, -32600, message.into(), None);
+    McpHttpResponse {
+        status,
+        content_type: Some("application/json"),
+        body: serde_json::to_vec(&body).expect("json should serialize"),
+        extra_headers: Vec::new(),
+    }
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack
+        .windows(needle.len())
+        .position(|window| window == needle)
 }
 
 fn tool_by_name(name: &str) -> Option<&'static McpToolCatalogEntry> {

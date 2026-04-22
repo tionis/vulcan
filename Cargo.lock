@@ -2820,6 +2820,7 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "toml",
+ "ulid",
  "vulcan-app",
  "vulcan-core",
  "zip",
