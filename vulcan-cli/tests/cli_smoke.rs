@@ -795,6 +795,63 @@ fn plugin_list_and_enable_disable_round_trip() {
 }
 
 #[test]
+fn plugin_set_and_delete_manage_full_registration_surface() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    initialize_vulcan_dir(&vault_root);
+    let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "plugin",
+            "set",
+            "lint",
+            "--path",
+            ".vulcan/plugins/lint.js",
+            "--enable",
+            "--add-event",
+            "on_pre_commit",
+            "--add-event",
+            "on_note_write",
+            "--sandbox",
+            "strict",
+            "--permission-profile",
+            "readonly",
+            "--description",
+            "Lint staged note writes",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated plugin lint"));
+
+    let config_text = fs::read_to_string(vault_root.join(".vulcan/config.toml"))
+        .expect("config should be written");
+    assert!(config_text.contains("[plugins.lint]"));
+    assert!(config_text.contains("enabled = true"));
+    assert!(config_text.contains("events = ["));
+    assert!(config_text.contains("\"on_note_write\""));
+    assert!(config_text.contains("\"on_pre_commit\""));
+    assert!(config_text.contains("sandbox = \"strict\""));
+    assert!(config_text.contains("permission_profile = \"readonly\""));
+    assert!(config_text.contains("description = \"Lint staged note writes\""));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", &vault_root_str, "plugin", "delete", "lint"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Updated plugin lint"));
+
+    let config_text = fs::read_to_string(vault_root.join(".vulcan/config.toml"))
+        .expect("config should still be readable");
+    assert!(!config_text.contains("[plugins.lint]"));
+}
+
+#[test]
 fn trusted_plugin_run_and_note_write_hook_work() {
     let fixture = build_plugin_test_fixture();
 
@@ -1755,15 +1812,331 @@ template = "Daily Shared"
         ])
         .assert()
         .failure()
-        .stderr(predicate::str::contains(
-            "invalid type: string \"not-a-bool\"",
-        ));
+        .stderr(predicate::str::contains("expects a boolean value"));
 
     assert_eq!(
         fs::read_to_string(vault_root.join(".vulcan/config.toml"))
             .expect("shared config should still be readable"),
         "[periodic.daily]\ntemplate = \"Templates/Daily\"\n"
     );
+}
+
+#[test]
+fn config_list_includes_creatable_optional_and_dynamic_keys() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "config",
+            "list",
+            "plugins",
+        ])
+        .assert()
+        .success();
+    let report = parse_stdout_json(&assert);
+    let entries = report["entries"]
+        .as_array()
+        .expect("entries should be an array");
+    assert!(entries.iter().any(|entry| entry["key"] == "plugins.<name>"));
+    assert!(entries
+        .iter()
+        .any(|entry| entry["key"] == "plugins.<name>.events"));
+    assert!(entries
+        .iter()
+        .any(|entry| entry["preferred_command"] == "vulcan plugin set"));
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "config",
+            "list",
+            "embedding",
+        ])
+        .assert()
+        .success();
+    let report = parse_stdout_json(&assert);
+    let entries = report["entries"]
+        .as_array()
+        .expect("entries should be an array");
+    assert!(entries
+        .iter()
+        .any(|entry| entry["key"] == "embedding.provider"));
+    assert!(entries
+        .iter()
+        .any(|entry| entry["key"] == "embedding.model"));
+}
+
+#[test]
+fn help_config_json_matches_generated_snapshot() {
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["help", "config", "--output", "json"])
+        .assert()
+        .success();
+
+    assert_json_snapshot("help_config.json", &parse_stdout_json(&assert));
+}
+
+#[test]
+fn help_config_markdown_matches_reference_doc() {
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["help", "config", "--output", "markdown"])
+        .assert()
+        .success();
+    let actual = String::from_utf8(assert.get_output().stdout.clone())
+        .expect("help output should be valid utf-8")
+        .replace("\r\n", "\n");
+    let expected = fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../docs/reference/config.md"),
+    )
+    .expect("reference doc should be readable")
+    .replace("\r\n", "\n");
+
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn config_set_target_local_creates_absent_sections_and_unset_prunes_them() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[web.search]\nbackend = \"duckduckgo\"\n",
+    )
+    .expect("shared config should write");
+
+    let set_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "config",
+            "set",
+            "embedding.model",
+            "text-embedding-3-small",
+            "--target",
+            "local",
+        ])
+        .assert()
+        .success();
+    let set_json = parse_stdout_json(&set_assert);
+    assert_eq!(set_json["config_path"], ".vulcan/config.local.toml");
+    let local_config = fs::read_to_string(vault_root.join(".vulcan/config.local.toml"))
+        .expect("local config should exist");
+    assert!(local_config.contains("[embedding]"));
+    assert!(local_config.contains("model = \"text-embedding-3-small\""));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "config",
+            "set",
+            "web.search.backend",
+            "brave",
+            "--target",
+            "local",
+        ])
+        .assert()
+        .success();
+
+    let show_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "config",
+            "show",
+            "web.search",
+        ])
+        .assert()
+        .success();
+    let show_json = parse_stdout_json(&show_assert);
+    assert_eq!(show_json["config"]["backend"], "brave");
+
+    let unset_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "config",
+            "unset",
+            "embedding.model",
+            "--target",
+            "local",
+        ])
+        .assert()
+        .success();
+    let unset_json = parse_stdout_json(&unset_assert);
+    assert_eq!(unset_json["removed"], true);
+    let local_config = fs::read_to_string(vault_root.join(".vulcan/config.local.toml"))
+        .expect("local config should still exist");
+    assert!(!local_config.contains("[embedding]"));
+}
+
+#[test]
+fn config_alias_commands_manage_aliases_without_manual_toml() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "config",
+            "alias",
+            "set",
+            "ship",
+            "query --where 'status = shipped'",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Set aliases.ship"));
+
+    let list_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "config",
+            "alias",
+            "list",
+        ])
+        .assert()
+        .success();
+    let list_json = parse_stdout_json(&list_assert);
+    assert_eq!(
+        list_json["config"]["ship"],
+        "query --where 'status = shipped'"
+    );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "config",
+            "alias",
+            "delete",
+            "ship",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Removed aliases.ship"));
+}
+
+#[test]
+fn config_permission_profile_commands_create_update_and_delete_profiles() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    initialize_vulcan_dir(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "config",
+            "permissions",
+            "profile",
+            "create",
+            "agent",
+            "--clone",
+            "readonly",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "config",
+            "permissions",
+            "profile",
+            "set",
+            "agent",
+            "network",
+            "{ allow = true, domains = [\"example.com\"] }",
+        ])
+        .assert()
+        .success();
+
+    let show_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "config",
+            "permissions",
+            "profile",
+            "show",
+            "agent",
+        ])
+        .assert()
+        .success();
+    let show_json = parse_stdout_json(&show_assert);
+    assert_eq!(show_json["config"]["read"], "all");
+    assert_eq!(show_json["config"]["network"]["allow"], true);
+    assert_eq!(show_json["config"]["network"]["domains"][0], "example.com");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "config",
+            "permissions",
+            "profile",
+            "delete",
+            "agent",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "config",
+            "permissions",
+            "profile",
+            "show",
+            "agent",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown config section"));
 }
 
 #[test]
@@ -16082,6 +16455,17 @@ fn regenerate_saved_report_snapshot() {
     );
 }
 
+#[test]
+#[ignore = "regenerates the checked-in config help snapshot"]
+fn regenerate_help_config_snapshot() {
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["help", "config", "--output", "json"])
+        .assert()
+        .success();
+    write_json_snapshot("help_config.json", &parse_stdout_json(&assert));
+}
+
 fn parse_stdout_json(assert: &assert_cmd::assert::Assert) -> Value {
     serde_json::from_slice(&assert.get_output().stdout).expect("stdout should contain valid json")
 }
@@ -16934,11 +17318,12 @@ fn write_tasknotes_views_fixture(vault_root: &Path) {
 }
 
 fn write_embedding_config(vault_root: &Path, base_url: &str) {
+    std::env::set_var("VULCAN_TEST_OPENAI_API_KEY", "fixture-key");
     fs::create_dir_all(vault_root.join(".vulcan")).expect("config directory should exist");
     fs::write(
         vault_root.join(".vulcan/config.toml"),
         format!(
-            "[embedding]\nprovider = \"openai-compatible\"\nbase_url = \"{base_url}\"\nmodel = \"fixture\"\nmax_batch_size = 8\nmax_concurrency = 1\n"
+            "[embedding]\nprovider = \"openai-compatible\"\nbase_url = \"{base_url}\"\napi_key_env = \"VULCAN_TEST_OPENAI_API_KEY\"\nmodel = \"fixture\"\nmax_batch_size = 8\nmax_concurrency = 1\n"
         ),
     )
     .expect("embedding config should be written");

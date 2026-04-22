@@ -390,6 +390,22 @@ pub struct EmbeddingProviderConfig {
     pub cache_key: Option<String>,
 }
 
+impl Default for EmbeddingProviderConfig {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            base_url: "http://localhost:11434/v1".to_string(),
+            model: "text-embedding-3-small".to_string(),
+            api_key_env: Some("OPENAI_API_KEY".to_string()),
+            normalized: Some(true),
+            max_batch_size: Some(32),
+            max_input_tokens: Some(8192),
+            max_concurrency: Some(4),
+            cache_key: None,
+        }
+    }
+}
+
 impl EmbeddingProviderConfig {
     #[must_use]
     pub fn provider_name(&self) -> &str {
@@ -414,6 +430,23 @@ pub struct AttachmentExtractionConfig {
     #[serde(default = "default_attachment_extraction_extensions")]
     pub extensions: Vec<String>,
     pub max_output_bytes: Option<usize>,
+}
+
+impl Default for AttachmentExtractionConfig {
+    fn default() -> Self {
+        Self {
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "case \"$2\" in pdf) pdftotext \"$1\" - ;; png|jpg|jpeg|webp) tesseract \"$1\" stdout ;; *) exit 0 ;; esac".to_string(),
+                "sh".to_string(),
+                "{path}".to_string(),
+                "{extension}".to_string(),
+            ],
+            extensions: default_attachment_extraction_extensions(),
+            max_output_bytes: Some(262_144),
+        }
+    }
 }
 
 impl AttachmentExtractionConfig {
@@ -2540,8 +2573,8 @@ struct PartialVulcanConfig {
     scan: Option<PartialScanConfig>,
     chunking: Option<PartialChunkingConfig>,
     links: Option<PartialLinksConfig>,
-    embedding: Option<EmbeddingProviderConfig>,
-    extraction: Option<AttachmentExtractionConfig>,
+    embedding: Option<PartialEmbeddingProviderConfig>,
+    extraction: Option<PartialAttachmentExtractionConfig>,
     git: Option<PartialGitConfig>,
     inbox: Option<PartialInboxConfig>,
     tasks: Option<PartialTasksConfig>,
@@ -2578,6 +2611,27 @@ struct PartialLinksConfig {
     resolution: Option<LinkResolutionMode>,
     style: Option<LinkStylePreference>,
     attachment_folder: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialEmbeddingProviderConfig {
+    provider: Option<String>,
+    base_url: Option<String>,
+    model: Option<String>,
+    api_key_env: Option<String>,
+    normalized: Option<bool>,
+    max_batch_size: Option<usize>,
+    max_input_tokens: Option<usize>,
+    max_concurrency: Option<usize>,
+    cache_key: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialAttachmentExtractionConfig {
+    command: Option<String>,
+    args: Option<Vec<String>>,
+    extensions: Option<Vec<String>>,
+    max_output_bytes: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -7061,10 +7115,53 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
     }
 
     if let Some(embedding) = overrides.embedding {
-        config.embedding = Some(embedding);
+        let target = config
+            .embedding
+            .get_or_insert_with(EmbeddingProviderConfig::default);
+        if let Some(provider) = embedding.provider {
+            target.provider = Some(provider);
+        }
+        if let Some(base_url) = embedding.base_url {
+            target.base_url = base_url;
+        }
+        if let Some(model) = embedding.model {
+            target.model = model;
+        }
+        if let Some(api_key_env) = embedding.api_key_env {
+            target.api_key_env = Some(api_key_env);
+        }
+        if let Some(normalized) = embedding.normalized {
+            target.normalized = Some(normalized);
+        }
+        if let Some(max_batch_size) = embedding.max_batch_size {
+            target.max_batch_size = Some(max_batch_size);
+        }
+        if let Some(max_input_tokens) = embedding.max_input_tokens {
+            target.max_input_tokens = Some(max_input_tokens);
+        }
+        if let Some(max_concurrency) = embedding.max_concurrency {
+            target.max_concurrency = Some(max_concurrency);
+        }
+        if let Some(cache_key) = embedding.cache_key {
+            target.cache_key = Some(cache_key);
+        }
     }
     if let Some(extraction) = overrides.extraction {
-        config.extraction = Some(extraction);
+        let target = config
+            .extraction
+            .get_or_insert_with(AttachmentExtractionConfig::default);
+        if let Some(command) = extraction.command {
+            target.command = command;
+        }
+        if let Some(args) = extraction.args {
+            target.args = args;
+        }
+        if let Some(extensions) = extraction.extensions {
+            target.extensions = normalize_string_list(extensions);
+        }
+        if let Some(max_output_bytes) = extraction.max_output_bytes {
+            target.max_output_bytes = Some(max_output_bytes);
+        }
     }
     if let Some(git) = overrides.git {
         if let Some(auto_commit) = git.auto_commit {

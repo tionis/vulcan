@@ -1,14 +1,21 @@
-use crate::app_config::{self, ConfigGetReport, ConfigSetReport, ConfigShowReport};
+use crate::app_config::{
+    self, ConfigGetReport, ConfigListReport, ConfigSetReport, ConfigShowReport, ConfigTarget,
+    ConfigUnsetReport, ConfigValueKind,
+};
 use crate::commit::AutoCommitPolicy;
 use crate::config_tui;
 use crate::output::print_json;
 use crate::{
-    warn_auto_commit_if_needed, Cli, CliError, ConfigCommand, ConfigImportListReport, OutputFormat,
+    warn_auto_commit_if_needed, Cli, CliError, ConfigAliasCommand, ConfigCommand,
+    ConfigImportListReport, ConfigPermissionsCommand, ConfigPermissionsProfileCommand,
+    ConfigTargetArg, OutputFormat,
 };
 use serde_json::Value;
 use std::io::IsTerminal;
-use vulcan_core::{PermissionGuard, VaultPaths};
+use toml::Value as TomlValue;
+use vulcan_core::{load_permission_profiles, PermissionGuard, PermissionProfile, VaultPaths};
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn handle_config_command(
     cli: &Cli,
     paths: &VaultPaths,
@@ -26,6 +33,12 @@ pub(crate) fn handle_config_command(
                 section.as_deref(),
                 cli.permissions.as_deref(),
             )
+        }
+        ConfigCommand::List { section } => {
+            crate::selected_permission_guard(cli, paths)?
+                .check_config_read()
+                .map_err(CliError::operation)?;
+            run_config_list(paths, cli.output, section.as_deref())
         }
         ConfigCommand::Get { key } => {
             crate::selected_permission_guard(cli, paths)?
@@ -50,6 +63,7 @@ pub(crate) fn handle_config_command(
         ConfigCommand::Set {
             key,
             value,
+            target,
             dry_run,
             no_commit,
         } => {
@@ -57,9 +71,64 @@ pub(crate) fn handle_config_command(
                 .check_config_write()
                 .map_err(CliError::operation)?;
             run_config_set(
-                paths, cli.output, key, value, *dry_run, *no_commit, cli.quiet,
+                paths,
+                cli.output,
+                key,
+                value,
+                config_target(*target),
+                *dry_run,
+                *no_commit,
+                cli.quiet,
             )
         }
+        ConfigCommand::Unset {
+            key,
+            target,
+            dry_run,
+            no_commit,
+        } => {
+            crate::selected_permission_guard(cli, paths)?
+                .check_config_write()
+                .map_err(CliError::operation)?;
+            run_config_unset(
+                paths,
+                cli.output,
+                key,
+                config_target(*target),
+                *dry_run,
+                *no_commit,
+                cli.quiet,
+            )
+        }
+        ConfigCommand::Alias { command } => {
+            if command == &ConfigAliasCommand::List {
+                crate::selected_permission_guard(cli, paths)?
+                    .check_config_read()
+                    .map_err(CliError::operation)?;
+            } else {
+                crate::selected_permission_guard(cli, paths)?
+                    .check_config_write()
+                    .map_err(CliError::operation)?;
+            }
+            run_config_alias(paths, cli.output, command, cli.quiet)
+        }
+        ConfigCommand::Permissions { command } => match command {
+            ConfigPermissionsCommand::Profile { command } => match command {
+                ConfigPermissionsProfileCommand::List
+                | ConfigPermissionsProfileCommand::Show { .. } => {
+                    crate::selected_permission_guard(cli, paths)?
+                        .check_config_read()
+                        .map_err(CliError::operation)?;
+                    run_config_permissions_profile(paths, cli.output, command, cli.quiet)
+                }
+                _ => {
+                    crate::selected_permission_guard(cli, paths)?
+                        .check_config_write()
+                        .map_err(CliError::operation)?;
+                    run_config_permissions_profile(paths, cli.output, command, cli.quiet)
+                }
+            },
+        },
         ConfigCommand::Import(selection) => {
             crate::selected_permission_guard(cli, paths)?
                 .check_config_write()
@@ -113,22 +182,34 @@ fn run_config_show(
     print_config_show_report(output, &report)
 }
 
+fn run_config_list(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    section: Option<&str>,
+) -> Result<(), CliError> {
+    let report = app_config::build_config_list_report(paths, section)?;
+    print_config_list_report(output, &report)
+}
+
 fn run_config_get(paths: &VaultPaths, output: OutputFormat, key: &str) -> Result<(), CliError> {
     let report = app_config::build_config_get_report(paths, key)?;
     print_config_get_report(output, &report)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn run_config_set(
     paths: &VaultPaths,
     output: OutputFormat,
     key: &str,
     raw_value: &str,
+    target: ConfigTarget,
     dry_run: bool,
     no_commit: bool,
     quiet: bool,
 ) -> Result<(), CliError> {
     let had_gitignore = paths.gitignore_file().exists();
-    let mut report = app_config::plan_config_set_report(paths, key, raw_value, dry_run)?;
+    let mut report =
+        app_config::plan_config_set_report_for_target(paths, key, raw_value, target, dry_run)?;
 
     if !dry_run && report.updated {
         let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
@@ -138,7 +219,7 @@ fn run_config_set(
             .commit(
                 paths,
                 "config-set",
-                &crate::config_set_changed_files(paths, had_gitignore),
+                &crate::config_changed_files(paths, &report.config_path, had_gitignore),
                 None,
                 quiet,
             )
@@ -146,6 +227,186 @@ fn run_config_set(
     }
 
     print_config_set_report(output, &report)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_config_set_toml(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    key: &str,
+    value: &TomlValue,
+    target: ConfigTarget,
+    dry_run: bool,
+    no_commit: bool,
+    quiet: bool,
+) -> Result<(), CliError> {
+    let had_gitignore = paths.gitignore_file().exists();
+    let mut report = app_config::plan_config_set_report_to(paths, key, value, target, dry_run)?;
+
+    if !dry_run && report.updated {
+        let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
+        warn_auto_commit_if_needed(&auto_commit, quiet);
+        report = app_config::apply_config_set_report(paths, report)?;
+        auto_commit
+            .commit(
+                paths,
+                "config-set",
+                &crate::config_changed_files(paths, &report.config_path, had_gitignore),
+                None,
+                quiet,
+            )
+            .map_err(CliError::operation)?;
+    }
+
+    print_config_set_report(output, &report)
+}
+
+fn run_config_unset(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    key: &str,
+    target: ConfigTarget,
+    dry_run: bool,
+    no_commit: bool,
+    quiet: bool,
+) -> Result<(), CliError> {
+    let had_gitignore = paths.gitignore_file().exists();
+    let mut report = app_config::plan_config_unset_report(paths, key, target, dry_run)?;
+
+    if !dry_run && report.updated {
+        let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
+        warn_auto_commit_if_needed(&auto_commit, quiet);
+        report = app_config::apply_config_unset_report(paths, report)?;
+        auto_commit
+            .commit(
+                paths,
+                "config-unset",
+                &crate::config_changed_files(paths, &report.config_path, had_gitignore),
+                None,
+                quiet,
+            )
+            .map_err(CliError::operation)?;
+    }
+
+    print_config_unset_report(output, &report)
+}
+
+fn run_config_alias(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    command: &ConfigAliasCommand,
+    quiet: bool,
+) -> Result<(), CliError> {
+    match command {
+        ConfigAliasCommand::List => run_config_show(paths, output, Some("aliases"), None),
+        ConfigAliasCommand::Set {
+            name,
+            expansion,
+            target,
+            dry_run,
+            no_commit,
+        } => run_config_set(
+            paths,
+            output,
+            &format!("aliases.{name}"),
+            expansion,
+            config_target(*target),
+            *dry_run,
+            *no_commit,
+            quiet,
+        ),
+        ConfigAliasCommand::Delete {
+            name,
+            target,
+            dry_run,
+            no_commit,
+        } => run_config_unset(
+            paths,
+            output,
+            &format!("aliases.{name}"),
+            config_target(*target),
+            *dry_run,
+            *no_commit,
+            quiet,
+        ),
+    }
+}
+
+fn run_config_permissions_profile(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    command: &ConfigPermissionsProfileCommand,
+    quiet: bool,
+) -> Result<(), CliError> {
+    match command {
+        ConfigPermissionsProfileCommand::List => {
+            run_config_show(paths, output, Some("permissions"), None)
+        }
+        ConfigPermissionsProfileCommand::Show { name } => run_config_show(
+            paths,
+            output,
+            Some(&format!("permissions.profiles.{name}")),
+            Some(name),
+        ),
+        ConfigPermissionsProfileCommand::Create {
+            name,
+            clone,
+            target,
+            dry_run,
+            no_commit,
+        } => {
+            let available = load_permission_profiles(paths);
+            let base_profile = if let Some(base) = clone {
+                available.profiles.get(base).cloned().ok_or_else(|| {
+                    CliError::operation(format!("unknown permission profile `{base}`"))
+                })?
+            } else {
+                PermissionProfile::default()
+            };
+            let value = TomlValue::try_from(base_profile).map_err(CliError::operation)?;
+            run_config_set_toml(
+                paths,
+                output,
+                &format!("permissions.profiles.{name}"),
+                &value,
+                config_target(*target),
+                *dry_run,
+                *no_commit,
+                quiet,
+            )
+        }
+        ConfigPermissionsProfileCommand::Set {
+            name,
+            dimension,
+            value,
+            target,
+            dry_run,
+            no_commit,
+        } => run_config_set(
+            paths,
+            output,
+            &format!("permissions.profiles.{name}.{dimension}"),
+            value,
+            config_target(*target),
+            *dry_run,
+            *no_commit,
+            quiet,
+        ),
+        ConfigPermissionsProfileCommand::Delete {
+            name,
+            target,
+            dry_run,
+            no_commit,
+        } => run_config_unset(
+            paths,
+            output,
+            &format!("permissions.profiles.{name}"),
+            config_target(*target),
+            *dry_run,
+            *no_commit,
+            quiet,
+        ),
+    }
 }
 
 fn print_config_show_report(
@@ -186,6 +447,74 @@ fn print_config_show_report(
             Ok(())
         }
         OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_config_list_report(
+    output: OutputFormat,
+    report: &ConfigListReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            if report.entries.is_empty() {
+                println!("No config keys matched.");
+                return Ok(());
+            }
+            for entry in &report.entries {
+                let kind = match entry.kind {
+                    ConfigValueKind::String => "string",
+                    ConfigValueKind::Integer => "integer",
+                    ConfigValueKind::Float => "float",
+                    ConfigValueKind::Boolean => "boolean",
+                    ConfigValueKind::Array => "array",
+                    ConfigValueKind::Object => "object",
+                    ConfigValueKind::Enum => "enum",
+                    ConfigValueKind::Flexible => "flexible",
+                };
+                let target_support = match entry.target_support {
+                    app_config::ConfigTargetSupport::SharedOnly => "shared",
+                    app_config::ConfigTargetSupport::LocalOnly => "local",
+                    app_config::ConfigTargetSupport::SharedAndLocal => "shared|local",
+                };
+                let value_source = match entry.value_source {
+                    app_config::ConfigValueSource::Default => "default",
+                    app_config::ConfigValueSource::ObsidianImport => "obsidian_import",
+                    app_config::ConfigValueSource::SharedOverride => "shared_override",
+                    app_config::ConfigValueSource::LocalOverride => "local_override",
+                    app_config::ConfigValueSource::Unset => "unset",
+                };
+                println!(
+                    "{} [{}; source={}; target={}]",
+                    entry.key, kind, value_source, target_support
+                );
+                println!("  {}", entry.description);
+                if let Some(value) = &entry.effective_value {
+                    println!(
+                        "  effective: {}",
+                        serde_json::to_string(value).map_err(CliError::operation)?
+                    );
+                }
+                if let Some(default_display) = &entry.default_display {
+                    println!("  default: {default_display}");
+                } else if let Some(default_value) = &entry.default_value {
+                    println!(
+                        "  default: {}",
+                        serde_json::to_string(default_value).map_err(CliError::operation)?
+                    );
+                }
+                if !entry.enum_values.is_empty() {
+                    println!("  values: {}", entry.enum_values.join(", "));
+                }
+                if let Some(command) = &entry.preferred_command {
+                    println!("  preferred: {command}");
+                }
+                if let Some(example) = entry.examples.first() {
+                    println!("  example: {example}");
+                }
+            }
+            Ok(())
+        }
     }
 }
 
@@ -250,6 +579,52 @@ fn print_config_set_report(output: OutputFormat, report: &ConfigSetReport) -> Re
             Ok(())
         }
         OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_config_unset_report(
+    output: OutputFormat,
+    report: &ConfigUnsetReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            if report.dry_run {
+                if report.updated {
+                    println!(
+                        "Would remove {} from {}",
+                        report.key,
+                        report.config_path.display()
+                    );
+                } else {
+                    println!(
+                        "No changes for {} in {}",
+                        report.key,
+                        report.config_path.display()
+                    );
+                }
+            } else if report.updated {
+                println!(
+                    "Removed {} from {}",
+                    report.key,
+                    report.config_path.display()
+                );
+            } else {
+                println!(
+                    "No changes for {} in {}",
+                    report.key,
+                    report.config_path.display()
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+fn config_target(target: ConfigTargetArg) -> ConfigTarget {
+    match target {
+        ConfigTargetArg::Shared => ConfigTarget::Shared,
+        ConfigTargetArg::Local => ConfigTarget::Local,
     }
 }
 
