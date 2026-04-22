@@ -2887,6 +2887,7 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.19.14 (binary size)    ← standalone  │── anytime (research)
 9.19.17 (config surface) ← 9.17,9.19.11,9.19.12,9.19.13│── Wave 9+ (after import infra + initial settings TUI + plugins + permissions)
 9.19.15 (MCP rework)     ← 9.12.6,9.18.7,9.19.6,9.19.13│── Wave 9 (after vault-native prompts + permissions + basic MCP)
+9.23 (adaptive MCP packs)← 9.19.15,9.19.13,9.18.7     │── Wave 9+ (after protocol-native MCP, before broader MCP clients depend on it)
 9.19.16 (test hardening) ← 9.19.6,9.19.7,9.19.13,9.19.12│── final hardening wave before 9.20/10
 ```
 
@@ -2906,7 +2907,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 10. **9.17.7 (init integration)** can land anytime after 9.17.6.
 11. **9.18.1 (command tree reorg)** should land last within 9.18 — it renames everything, so it's easier to build the new commands first (9.18.2–9.18.9) under the old structure, then reorganize in one pass.
 
-**Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features. For the subprocess-runtime AI path, the critical chain is: 9.18.2/9.18.7/9.18.8 → 9.12.1–9.12.6 (`pi` integration). For the MCP-native AI path, the follow-on chain is: 9.12.6 (vault-native prompts/skills) → 9.19.6 (basic MCP server) → 9.19.13 (permissions) → 9.19.15 (protocol-native MCP rework). Native chat adapters are explicitly off the current critical path. For JS runtime: 9.8.8 → 9.18.5.
+**Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features. For the subprocess-runtime AI path, the critical chain is: 9.18.2/9.18.7/9.18.8 → 9.12.1–9.12.6 (`pi` integration). For the MCP-native AI path, the follow-on chain is: 9.12.6 (vault-native prompts/skills) → 9.19.6 (basic MCP server) → 9.19.13 (permissions) → 9.19.15 (protocol-native MCP rework) → 9.23 (adaptive MCP tool packs). Native chat adapters are explicitly off the current critical path. For JS runtime: 9.8.8 → 9.18.5.
 
 **Note on 9.8.3 and 9.16:** The `file.day` metadata field in 9.8.3 depends on periodic note configuration from 9.16. However, `file.day` can be stubbed initially (return null when no periodic config exists) and filled in when 9.16 lands. This avoids blocking all of 9.8 on 9.16.
 
@@ -2943,7 +2944,8 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 14. [ ] **9.19.17** (config surface completion) — close the remaining gap between the config model and the CLI/TUI/docs so users can manage aliases, permission profiles, plugin registrations, local overrides, and optional sections without manual TOML surgery
 15. [x] **9.19.14** (binary size) — informational, anytime
 16. [ ] **9.19.15** (MCP protocol-native rework) — promote MCP from "CLI-over-JSON-RPC" to a protocol-native surface with curated tools, vault-native prompts, resources, completion, and structured results
-17. [x] **9.19.16** (integration hardening) — thorough end-to-end coverage and fuzz/property testing before later platform work
+17. [ ] **9.23** (adaptive MCP tool packs) — replace the fixed exposure ladder with composable tool packs plus optional session-local pack negotiation for clients that can refresh tools on demand
+18. [x] **9.19.16** (integration hardening) — thorough end-to-end coverage and fuzz/property testing before later platform work
 
 #### 9.19.1 Bug fixes
 
@@ -5596,10 +5598,72 @@ Phase 9.15 (TaskNotes) is Vulcan's primary task management model. Builds on Phas
 Phase 9.16 (Periodic notes) builds on Phase 1 (document indexing) and Phase 9.7 (template variables). It provides shared infrastructure for `file.day` resolution (9.8.3), Kanban date linking (9.11), QuickAdd daily note capture (9.13), and TaskNotes pomodoro storage (9.15). Can start as early as Wave 2 but `file.day` can be stubbed pending its completion.
 Phase 9.17 (Unified settings import) infrastructure (9.17.1–9.17.3) depends only on 9.5 (config layering) and can start in Wave 2. Core importer (9.17.4) depends on 9.17.1. Dataview importer (9.17.5) depends on 9.17.1 and 9.8.9. Batch commands (9.17.6) depend on 9.17.1 and any two or more importers on the trait. Init integration (9.17.7) depends on 9.17.6. Individual plugin importers (9.9.4, 9.10.5, 9.11.4, 9.13.3, 9.15.11, 9.16.4) are refactored or implemented as `PluginImporter` (9.17.1) within their respective phases.
 Phase 9.20 (Static site builder) is the recommended bridge between CLI completion and daemon/WebUI work. It reuses the parser, graph, query, Dataview, Bases, and task foundations to produce a shared HTML renderer, route planner, and static search/graph/preview assets. Phase 10 does not technically depend on it, but Phase 13 and Phase 16 should.
+Phase 9.23 (adaptive MCP tool packs) builds on 9.19.15's protocol-native MCP surface and 9.19.13's permission layer. It keeps MCP tool exposure typed and permission-aware while replacing the fixed `core|extended|admin` ladder with composable packs and optional session-local tool refresh for clients that honor `notifications/tools/list_changed`.
 Phase 4.5.1 (Custom Bases source types) extends the Bases evaluator with pluggable data sources. The trait and `FileSource` extraction are part of Phase 4. The actual custom source registrations happen in Phase 9.15.8 (TaskNotes Bases views).
 Phase 18.8 (Excalidraw) is part of Phase 18 (Canvas) — both are visual JSON-based document types. Parsing/indexing (18.8.1–18.8.2) depends on Phase 7. WebUI rendering (18.8.3) depends on Phase 13. WebUI editing (18.8.4) depends on Phase 14.
 Phase 14.1 (Note editor) includes Advanced Tables-style table editing for the WebUI — tab navigation, column management, sorting, CSV paste, and formula support.
 See "Phase 9 implementation order" section (after 9.17) for the consolidated critical path and parallelization guide within Phase 9.
+
+---
+
+## Phase 9.23: Adaptive MCP tool packs and dynamic discovery
+
+**Goal:** Replace the current fixed MCP exposure ladder (`core`, `extended`, `admin`) with composable named tool packs and an optional adaptive mode where a client can request more packs during an MCP session without falling back to a generic "run arbitrary CLI commands" escape hatch.
+
+**Why this phase exists:** The current MCP surface is intentionally small, but its pack model is too rigid. Real clients often want combinations such as "read + search + web" or "notes + tasks, but no config/index". A single monotonic ladder makes those combinations awkward, and it forces the initial tool set to either be too broad for context efficiency or too narrow for serious use. Generic MCP clients also differ in how much they can preload from prompts/resources, so Vulcan needs a protocol-native way to keep the initial set small while still expanding the typed registry on demand.
+
+**Builds on:** 9.19.13 (permission layer), 9.19.15 (protocol-native MCP server), and 9.18.7 (stable `describe`/`help` docs). Any dynamic mode must preserve the same transport/session contract already used by stdio and Streamable HTTP so Phase 10 can reuse it unchanged.
+
+**Scope rule:** Keep the MCP surface typed, explicit, and permission-aware. Do **not** add a generic `run_cli_command`, `exec`, or shell passthrough tool as a substitute for proper MCP tool coverage. Permission profiles remain authoritative; enabling a pack must never reveal or authorize tools that the selected profile denies.
+
+### 9.23.1 Pack taxonomy and registry model
+
+- [ ] Replace the single `core|extended|admin` exposure ladder with a composable pack set model where one tool can belong to one or more named packs
+- [ ] Define an initial pack taxonomy that is capability-oriented rather than strictly tier-oriented, for example `notes-read`, `notes-write`, `search`, `tasks`, `web`, `git`, `config`, `index`, and similar narrowly scoped bundles
+- [ ] Preserve compatibility aliases or bundle shorthands for existing operators where practical so current `core`, `extended`, and `admin` users do not need an all-at-once migration
+- [ ] Keep `vulcan describe --format mcp` and the live MCP server on the same underlying registry so exported tool definitions and live exposure cannot drift
+
+### 9.23.2 CLI pack selection and reporting
+
+- [ ] Extend `vulcan mcp` and `vulcan describe --format mcp` to accept multiple selected packs rather than exactly one pack enum
+- [ ] Support ergonomic selection forms such as repeated `--tool-pack <name>` flags and comma-separated values where they do not conflict with existing CLI parsing expectations
+- [ ] Report the effective selected pack set in machine-readable MCP/describe output so hosts can debug why only a subset of tools is visible
+- [ ] Update help text and examples so users can discover pack composition without reading the source
+
+### 9.23.3 Protocol-native pack discovery
+
+- [ ] Expose the available MCP tool packs, their descriptions, and the tools they contribute through protocol-visible discovery surfaces rather than relying on out-of-band docs alone
+- [ ] Provide stable resource URIs and/or a small bootstrap MCP tool for inspecting the pack catalog from generic clients
+- [ ] Reuse completion support so pack names can be suggested in any prompt/resource/tool argument position that accepts them
+- [ ] Ensure pack discovery itself respects permission profiles by clearly distinguishing "pack exists" from "pack would currently expose tools under this profile"
+
+### 9.23.4 Adaptive session-local pack negotiation
+
+- [ ] Add an optional adaptive MCP mode where clients can request pack changes during an existing session instead of restarting the server with a different static selection
+- [ ] Provide a minimal bootstrap surface for pack mutation such as `tool_pack_list`, `tool_pack_enable`, `tool_pack_disable`, and/or `tool_pack_set`
+- [ ] Treat pack mutation as a session-local registry change that triggers `notifications/tools/list_changed` and is reflected by the next `tools/list`
+- [ ] Make stdio and Streamable HTTP sessions behave the same way for pack mutation, registry refresh, and notification delivery
+
+### 9.23.5 Client compatibility and fallback behavior
+
+- [ ] Keep a static mode for hosts that cannot or do not react to `notifications/tools/list_changed`
+- [ ] Make adaptive mode explicitly opt-in until client behavior is well understood across major MCP hosts
+- [ ] Define graceful degradation rules for clients that can discover packs but cannot refresh tools automatically: discovery should still help, but the server must not assume live tool replacement succeeded
+- [ ] Document the expected host behavior so users understand when adaptive packs work best and when they should prefer a broader static selection at session start
+
+### 9.23.6 Security and permission composition
+
+- [ ] Ensure pack selection composes cleanly with permission profiles rather than introducing a second authorization model
+- [ ] Continue to hide unauthorized tools, prompts, completions, and resources even if a client enables a broader pack set
+- [ ] Add explicit tests for "pack enabled but still denied by permissions" cases so adaptive exposure cannot accidentally bypass the profile guardrails
+- [ ] Keep the pack system implementation transport-agnostic so later daemon/user-level ACL work can layer on the same filtering logic
+
+### 9.23.7 Testing and rollout
+
+- [ ] Add registry tests covering pack union/intersection behavior, compatibility aliases, and stable ordering of exposed tools
+- [ ] Add end-to-end MCP tests for adaptive pack changes over both stdio and Streamable HTTP, including `notifications/tools/list_changed`
+- [ ] Add regression tests showing that `describe --format mcp` and live MCP exposure stay in sync for the same selected pack set
+- [ ] Update help snapshots and CLI/MCP fixtures to cover the new pack model and adaptive-mode documentation
 
 ---
 
