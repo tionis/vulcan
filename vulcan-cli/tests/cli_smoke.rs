@@ -6,7 +6,7 @@ use rusqlite::Connection;
 use serde_json::Value;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::TcpListener;
+use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command as ProcessCommand, Stdio};
 use std::thread;
@@ -134,6 +134,294 @@ impl McpSession {
             .map(|line| serde_json::from_str::<Value>(line).expect("mcp should emit valid JSON"))
             .collect()
     }
+}
+
+struct McpHttpSession {
+    child: Child,
+    bind_addr: String,
+    endpoint: String,
+    auth_token: Option<String>,
+}
+
+impl McpHttpSession {
+    fn start(
+        vault_root: &Path,
+        endpoint: &str,
+        auth_token: Option<&str>,
+        extra_args: &[&str],
+    ) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let bind_addr = listener
+            .local_addr()
+            .expect("listener should expose its local address")
+            .to_string();
+        drop(listener);
+
+        let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"));
+        command
+            .env("VULCAN_FIXED_NOW", FIXED_NOW)
+            .args(["--vault", vault_root.to_str().expect("utf-8"), "mcp"])
+            .args([
+                "--transport",
+                "http",
+                "--bind",
+                &bind_addr,
+                "--endpoint",
+                endpoint,
+            ])
+            .args(extra_args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        if let Some(token) = auth_token {
+            command.args(["--auth-token", token]);
+        }
+
+        let mut child = command.spawn().expect("MCP HTTP server should start");
+        wait_for_http_server_ready(&mut child, &bind_addr);
+
+        Self {
+            child,
+            bind_addr,
+            endpoint: endpoint.to_string(),
+            auth_token: auth_token.map(ToOwned::to_owned),
+        }
+    }
+
+    fn post(&self, payload: &Value, session_id: Option<&str>) -> HttpResponse {
+        self.post_with_auth(payload, session_id, true)
+    }
+
+    fn post_with_auth(
+        &self,
+        payload: &Value,
+        session_id: Option<&str>,
+        include_auth: bool,
+    ) -> HttpResponse {
+        let body = serde_json::to_vec(payload).expect("payload should serialize");
+        let mut headers = vec![
+            ("Content-Type".to_string(), "application/json".to_string()),
+            (
+                "Accept".to_string(),
+                "application/json, text/event-stream".to_string(),
+            ),
+            ("MCP-Protocol-Version".to_string(), "2025-06-18".to_string()),
+        ];
+        if let Some(session_id) = session_id {
+            headers.push(("Mcp-Session-Id".to_string(), session_id.to_string()));
+        }
+        if include_auth {
+            if let Some(token) = self.auth_token.as_deref() {
+                headers.push(("Authorization".to_string(), format!("Bearer {token}")));
+            }
+        }
+        self.request("POST", &headers, Some(&body))
+    }
+
+    fn delete(&self, session_id: &str) -> HttpResponse {
+        let mut headers = vec![("Mcp-Session-Id".to_string(), session_id.to_string())];
+        if let Some(token) = self.auth_token.as_deref() {
+            headers.push(("Authorization".to_string(), format!("Bearer {token}")));
+        }
+        self.request("DELETE", &headers, None)
+    }
+
+    fn open_sse(&self, session_id: &str) -> McpSseStream {
+        let mut headers = vec![
+            ("Accept".to_string(), "text/event-stream".to_string()),
+            ("Mcp-Session-Id".to_string(), session_id.to_string()),
+        ];
+        if let Some(token) = self.auth_token.as_deref() {
+            headers.push(("Authorization".to_string(), format!("Bearer {token}")));
+        }
+
+        let mut stream = TcpStream::connect(&self.bind_addr).expect("SSE connection should open");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("read timeout should be configurable");
+        let mut request = format!(
+            "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
+            self.endpoint, self.bind_addr
+        );
+        for (name, value) in &headers {
+            request.push_str(name);
+            request.push_str(": ");
+            request.push_str(value);
+            request.push_str("\r\n");
+        }
+        request.push_str("\r\n");
+        stream
+            .write_all(request.as_bytes())
+            .expect("SSE request should write");
+        stream.flush().expect("SSE request should flush");
+
+        let mut reader = BufReader::new(stream);
+        let (status_line, headers) = read_http_status_and_headers(&mut reader);
+        assert_eq!(status_line, "HTTP/1.1 200 OK");
+        assert_eq!(
+            headers.get("content-type").map(String::as_str),
+            Some("text/event-stream")
+        );
+        McpSseStream { reader }
+    }
+
+    fn request(
+        &self,
+        method: &str,
+        headers: &[(String, String)],
+        body: Option<&[u8]>,
+    ) -> HttpResponse {
+        let mut stream = TcpStream::connect(&self.bind_addr).expect("HTTP connection should open");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("read timeout should be configurable");
+        let mut request = format!(
+            "{method} {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n",
+            self.endpoint, self.bind_addr
+        );
+        for (name, value) in headers {
+            request.push_str(name);
+            request.push_str(": ");
+            request.push_str(value);
+            request.push_str("\r\n");
+        }
+        if let Some(body) = body {
+            request.push_str("Content-Length: ");
+            request.push_str(&body.len().to_string());
+            request.push_str("\r\n");
+        }
+        request.push_str("\r\n");
+        stream
+            .write_all(request.as_bytes())
+            .expect("request headers should write");
+        if let Some(body) = body {
+            stream.write_all(body).expect("request body should write");
+        }
+        stream.flush().expect("request should flush");
+        let _ = stream.shutdown(Shutdown::Write);
+        read_http_response(stream)
+    }
+}
+
+impl Drop for McpHttpSession {
+    fn drop(&mut self) {
+        if self.child.try_wait().ok().flatten().is_none() {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
+    }
+}
+
+struct McpSseStream {
+    reader: BufReader<TcpStream>,
+}
+
+impl McpSseStream {
+    fn read_event(&mut self) -> Value {
+        let mut payload_lines = Vec::new();
+        loop {
+            let mut line = String::new();
+            let bytes = self
+                .reader
+                .read_line(&mut line)
+                .expect("SSE stream should be readable");
+            assert!(bytes > 0, "SSE stream closed before an event arrived");
+            let line = line.trim_end_matches(&['\r', '\n'][..]);
+            if line.is_empty() {
+                if payload_lines.is_empty() {
+                    continue;
+                }
+                let payload = payload_lines.join("\n");
+                return serde_json::from_str(&payload).expect("SSE event payload should parse");
+            }
+            if let Some(payload) = line.strip_prefix("data: ") {
+                payload_lines.push(payload.to_string());
+            }
+        }
+    }
+}
+
+struct HttpResponse {
+    status_line: String,
+    headers: std::collections::BTreeMap<String, String>,
+    body: Vec<u8>,
+}
+
+impl HttpResponse {
+    fn json_body(&self) -> Value {
+        serde_json::from_slice(&self.body).expect("HTTP response body should contain valid JSON")
+    }
+}
+
+fn wait_for_http_server_ready(child: &mut Child, bind_addr: &str) {
+    for _ in 0..100 {
+        if TcpStream::connect(bind_addr).is_ok() {
+            return;
+        }
+        if let Some(status) = child.try_wait().expect("child status should be readable") {
+            panic!("MCP HTTP server exited before it started listening: {status}");
+        }
+        thread::sleep(std::time::Duration::from_millis(20));
+    }
+    panic!("MCP HTTP server did not start listening at {bind_addr}");
+}
+
+fn read_http_response(mut stream: TcpStream) -> HttpResponse {
+    let mut bytes = Vec::new();
+    stream
+        .read_to_end(&mut bytes)
+        .expect("HTTP response should be readable");
+    parse_http_response_bytes(&bytes)
+}
+
+fn parse_http_response_bytes(bytes: &[u8]) -> HttpResponse {
+    let header_end =
+        find_subslice(bytes, b"\r\n\r\n").expect("HTTP response should contain headers");
+    let header_text =
+        String::from_utf8(bytes[..header_end].to_vec()).expect("HTTP headers should be utf-8");
+    let mut lines = header_text.lines();
+    let status_line = lines
+        .next()
+        .expect("HTTP response should include a status line")
+        .to_string();
+    let headers = lines
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect();
+    HttpResponse {
+        status_line,
+        headers,
+        body: bytes[header_end + 4..].to_vec(),
+    }
+}
+
+fn read_http_status_and_headers(
+    reader: &mut BufReader<TcpStream>,
+) -> (String, std::collections::BTreeMap<String, String>) {
+    let mut status_line = String::new();
+    reader
+        .read_line(&mut status_line)
+        .expect("HTTP response should start with a status line");
+    let status_line = status_line.trim_end_matches(&['\r', '\n'][..]).to_string();
+
+    let mut headers = std::collections::BTreeMap::new();
+    loop {
+        let mut line = String::new();
+        let bytes = reader
+            .read_line(&mut line)
+            .expect("HTTP response headers should be readable");
+        assert!(bytes > 0, "HTTP response closed before header terminator");
+        let line = line.trim_end_matches(&['\r', '\n'][..]);
+        if line.is_empty() {
+            break;
+        }
+        if let Some((name, value)) = line.split_once(':') {
+            headers.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+        }
+    }
+    (status_line, headers)
 }
 
 fn cargo_vulcan_with_xdg_config(config_home: &str) -> Command {
@@ -17625,6 +17913,213 @@ fn mcp_server_negotiates_protocol_and_advertises_native_capabilities() {
     assert!(
         trailing.is_empty(),
         "initialized notification should not emit a response"
+    );
+}
+
+#[test]
+fn mcp_http_transport_negotiates_sessions_and_calls_tools() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let session = McpHttpSession::start(&vault_root, "/streamable-mcp", None, &[]);
+    let initialize = session.post(
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "test", "version": "0.0.1" }
+            }
+        }),
+        None,
+    );
+    assert_eq!(initialize.status_line, "HTTP/1.1 200 OK");
+    let session_id = initialize
+        .headers
+        .get("mcp-session-id")
+        .cloned()
+        .expect("initialize should return an MCP session id");
+    let initialize_json = initialize.json_body();
+    assert_eq!(
+        initialize_json["result"]["protocolVersion"].as_str(),
+        Some("2025-06-18")
+    );
+
+    let tools = session.post(
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list"
+        }),
+        Some(&session_id),
+    );
+    assert_eq!(tools.status_line, "HTTP/1.1 200 OK");
+    let tools_json = tools.json_body();
+    let tools = tools_json["result"]["tools"]
+        .as_array()
+        .expect("tools/list should return a tool array");
+    assert!(tools.iter().any(|tool| tool["name"] == "note_get"));
+
+    let note_get = session.post(
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "note_get",
+                "arguments": { "note": "Projects/Alpha.md" }
+            }
+        }),
+        Some(&session_id),
+    );
+    assert_eq!(note_get.status_line, "HTTP/1.1 200 OK");
+    let note_get_json = note_get.json_body();
+    assert_eq!(
+        note_get_json["result"]["structuredContent"]["path"].as_str(),
+        Some("Projects/Alpha.md")
+    );
+
+    let delete = session.delete(&session_id);
+    assert_eq!(delete.status_line, "HTTP/1.1 204 No Content");
+
+    let after_delete = session.post(
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/list"
+        }),
+        Some(&session_id),
+    );
+    assert_eq!(after_delete.status_line, "HTTP/1.1 404 Not Found");
+    assert!(
+        after_delete.json_body()["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("unknown Mcp-Session-Id")),
+        "deleted sessions should no longer accept follow-up requests"
+    );
+}
+
+#[test]
+fn mcp_http_transport_streams_list_changed_notifications_over_sse() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    fs::write(vault_root.join("AGENTS.md"), "# Initial\n").expect("agents file should write");
+    fs::create_dir_all(vault_root.join("AI/Prompts")).expect("prompts dir");
+    let prompt_path = vault_root.join("AI/Prompts/summarize-note.md");
+    fs::write(
+        &prompt_path,
+        r"---
+name: summarize-note
+---
+Summarize {{note}}.
+",
+    )
+    .expect("prompt file should write");
+
+    let session = McpHttpSession::start(&vault_root, "/mcp", None, &[]);
+    let initialize = session.post(
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "test", "version": "0.0.1" }
+            }
+        }),
+        None,
+    );
+    let session_id = initialize
+        .headers
+        .get("mcp-session-id")
+        .cloned()
+        .expect("initialize should return a session id");
+
+    let mut sse = session.open_sse(&session_id);
+    fs::write(
+        &prompt_path,
+        r"---
+name: summarize-note
+description: updated
+---
+Summarize {{note}} with updated instructions.
+",
+    )
+    .expect("prompt file should update");
+    fs::write(vault_root.join("AGENTS.md"), "# Updated\n").expect("agents file should update");
+
+    let first = sse.read_event();
+    let second = sse.read_event();
+    let methods = [first["method"].clone(), second["method"].clone()];
+    assert!(
+        methods
+            .iter()
+            .any(|method| method == "notifications/prompts/list_changed"),
+        "SSE stream should include a prompts/list_changed notification"
+    );
+    assert!(
+        methods
+            .iter()
+            .any(|method| method == "notifications/resources/list_changed"),
+        "SSE stream should include a resources/list_changed notification"
+    );
+}
+
+#[test]
+fn mcp_http_transport_enforces_auth_tokens() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let session = McpHttpSession::start(&vault_root, "/secure-mcp", Some("secret-token"), &[]);
+    let unauthorized = session.post_with_auth(
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "test", "version": "0.0.1" }
+            }
+        }),
+        None,
+        false,
+    );
+    assert_eq!(unauthorized.status_line, "HTTP/1.1 401 Unauthorized");
+    assert!(
+        unauthorized.json_body()["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("missing or invalid authentication token")),
+        "requests without the configured token should be rejected"
+    );
+
+    let authorized = session.post(
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "test", "version": "0.0.1" }
+            }
+        }),
+        None,
+    );
+    assert_eq!(authorized.status_line, "HTTP/1.1 200 OK");
+    assert!(
+        authorized.headers.contains_key("mcp-session-id"),
+        "authorized initialize should succeed and return a session id"
     );
 }
 

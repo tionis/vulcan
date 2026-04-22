@@ -1098,13 +1098,13 @@ The CLI/harness pattern above does **not** map 1:1 onto generic MCP clients.
 
 That means Vulcan should treat MCP as a **server-native discovery surface**, not just as "the CLI tool list over JSON-RPC". In practice:
 
-- The Phase 9 MCP baseline should speak **protocolVersion `2025-06-18`** and advertise `tools`, `resources`, `prompts`, and `completions`, with stdio remaining the default local transport until the daemon exposes the same registry over Streamable HTTP later.
+- The Phase 9 MCP baseline should speak **protocolVersion `2025-06-18`** and advertise `tools`, `resources`, `prompts`, and `completions`, with stdio remaining the default local transport and `vulcan mcp --transport http` exposing the same registry over Streamable HTTP for networked clients.
 - MCP `tools` should come from an explicit, permission-filtered registry with curated packs such as `core`, `extended`, and `admin`. Interactive/TUI/editor/desktop-launch commands are CLI affordances, not MCP tools, and `vulcan describe --format mcp` should reuse the same registry so export and live exposure do not drift.
 - Tool calls should return `structuredContent` plus a text fallback, with JSON-RPC protocol failures kept separate from `isError` tool failures. Large payloads should be referenceable via stable `vulcan://...` resource URIs instead of being forced into one opaque text blob.
 - Command help, `AGENTS.md`, assistant config summaries, skill indexes/content, and similar reference material should be exposed over MCP `resources`, because generic MCP clients cannot rely on injected skills or out-of-band files.
 - Reusable workflow starters should be stored as prompt files in the vault's configured prompts folder and exposed through MCP `prompts`, not hidden in a server-only prompt catalog. Prompt and resource list changes should surface through the corresponding MCP notifications.
 - Progressive disclosure for MCP should come from protocol-visible discovery primitives (`resources`, `prompts`, targeted help, and permission-filtered completion), not from assuming the host preloads a curated system prompt.
-- HTTP-based MCP transport should be implemented on the future axum daemon/router layer rather than extending the current minimal stdio server into a second ad hoc HTTP stack.
+- The current Phase 9 implementation may expose the MCP registry over a minimal single-vault Streamable HTTP listener, but the future axum daemon/router should reuse the same registry, auth constraints, and session semantics rather than redefining the MCP contract.
 
 This keeps the subprocess harness story and the MCP story aligned in spirit while acknowledging that they have different discovery constraints.
 

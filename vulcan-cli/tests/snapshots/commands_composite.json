@@ -9484,8 +9484,8 @@
         "subcommands": []
       },
       {
-        "about": "Start an MCP (Model Context Protocol) server over stdio",
-        "after_help": "Protocol:\n  Speaks JSON-RPC 2.0 over stdio (stdin → stdout).\n  Each request and response is a single UTF-8 JSON line.\n\nSupported methods:\n  initialize               Negotiate protocol version and report server capabilities\n  tools/list               Return the curated headless MCP tool registry\n  tools/call               Execute one MCP tool and return structuredContent + text fallback\n  prompts/list|get         Discover and render vault prompt files\n  resources/list|read      Read help docs, AGENTS.md, assistant summaries, and skill content\n  resources/templates/list Enumerate parameterized help and skill resource URIs\n  completion/complete      Return prompt-argument and resource-template completions\n\nNotes:\n  Start with `--vault <path>` so all tool calls operate on the correct vault.\n  `--permissions <profile>` filters the exposed tool set before requests are handled.\n  `--tool-pack <core|extended|admin>` selects how much of the headless tool surface to expose.\n  `core` is the default for generic MCP clients; `extended` adds network and heavier mutations; `admin` adds maintenance/config tools.\n  Interactive commands such as browse, edit, open, TUI surfaces, and nested MCP helpers are never exposed.\n  Tool output uses structured JSON reports that match the corresponding CLI `--output json` payloads.\n\nExamples:\n  vulcan mcp --vault ~/notes\n  vulcan mcp --vault ~/notes --permissions readonly\n  vulcan mcp --vault ~/notes --tool-pack extended\n  vulcan mcp | jq .",
+        "about": "Start an MCP (Model Context Protocol) server over stdio or Streamable HTTP",
+        "after_help": "Protocols:\n  stdio reads JSON-RPC 2.0 messages from stdin and writes them to stdout.\n  http serves the same curated MCP registry over Streamable HTTP at one endpoint path.\n\nSupported methods:\n  initialize               Negotiate protocol version and report server capabilities\n  tools/list               Return the curated headless MCP tool registry\n  tools/call               Execute one MCP tool and return structuredContent + text fallback\n  prompts/list|get         Discover and render vault prompt files\n  resources/list|read      Read help docs, AGENTS.md, assistant summaries, and skill content\n  resources/templates/list Enumerate parameterized help and skill resource URIs\n  completion/complete      Return prompt-argument and resource-template completions\n\nNotes:\n  Start with `--vault <path>` so all tool calls operate on the correct vault.\n  `--permissions <profile>` filters the exposed tool set before requests are handled.\n  `--transport stdio|http` selects local subprocess stdio or networked Streamable HTTP.\n  `--tool-pack <core|extended|admin>` selects how much of the headless tool surface to expose.\n  `--bind` and `--auth-token` are only used for HTTP transport.\n  Non-loopback HTTP binds require `--auth-token`.\n  `core` is the default for generic MCP clients; `extended` adds network and heavier mutations; `admin` adds maintenance/config tools.\n  Interactive commands such as browse, edit, open, TUI surfaces, and nested MCP helpers are never exposed.\n  Tool output uses structured JSON reports that match the corresponding CLI `--output json` payloads.\n\nExamples:\n  vulcan mcp --vault ~/notes\n  vulcan mcp --vault ~/notes --permissions readonly\n  vulcan mcp --vault ~/notes --tool-pack extended\n  vulcan mcp --transport http --bind 127.0.0.1:8765\n  vulcan mcp | jq .",
         "name": "mcp",
         "options": [
           {
@@ -9501,6 +9501,53 @@
             "short": null,
             "value_names": [
               "TOOL_PACK"
+            ]
+          },
+          {
+            "help": null,
+            "id": "transport",
+            "long": "transport",
+            "possible_values": [
+              "stdio",
+              "http"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "TRANSPORT"
+            ]
+          },
+          {
+            "help": "Socket address for HTTP transport (ignored for stdio)",
+            "id": "bind",
+            "long": "bind",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "BIND"
+            ]
+          },
+          {
+            "help": "HTTP endpoint path for Streamable HTTP transport (ignored for stdio)",
+            "id": "endpoint",
+            "long": "endpoint",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "ENDPOINT"
+            ]
+          },
+          {
+            "help": "Optional bearer/shared token required for HTTP transport requests",
+            "id": "auth_token",
+            "long": "auth-token",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "AUTH_TOKEN"
             ]
           }
         ],

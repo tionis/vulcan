@@ -3178,9 +3178,9 @@ The `config` group currently only has `import`. Users need to inspect and modify
 
 **MCP server mode**
 
-`index serve` exposes HTTP but only 8 read-only endpoints. There is no MCP transport for direct LLM harness integration. The HTTP API expansion to cover the full CLI surface (note CRUD, tasks, refactor, git, etc.) is deferred to **Phase 10.3** where it ships properly with axum, middleware, and multi-vault support — expanding the hand-rolled TCP server here would be throwaway work.
+`index serve` exposes HTTP but only 8 read-only endpoints. Full HTTP API expansion to cover the broader CLI surface (note CRUD, tasks, refactor, git, etc.) is still deferred to **Phase 10.3** where it ships properly with axum, middleware, and multi-vault support. MCP now has its own dedicated transport path via `vulcan mcp`, so LLM harness integration no longer depends on `index serve`.
 
-- [x] **`vulcan mcp`** — start an MCP server over stdio (JSON-RPC). Exposes the full tool surface from `describe --format mcp` as a live server. Stdio-based, no HTTP server changes needed.
+- [x] **`vulcan mcp`** — start an MCP server over stdio or Streamable HTTP. Exposes the full tool surface from `describe --format mcp` as a live server.
 - [x] Reuse the `describe --format mcp` tool definitions as the MCP tool manifest
 - [x] Support MCP tool calls by dispatching to the same command handlers used by the CLI
 - [x] MCP server should respect the permission layer (9.19.13) via `--permissions <profile>`
@@ -3613,11 +3613,11 @@ The current Linux x86\_64 release binary is about 31.3MB unstripped and 26.0MB s
 
 **Goal:** Turn the initial `vulcan mcp` stdio wrapper into a protocol-native MCP server that works well for generic MCP clients, not only subprocess-style harnesses that already know Vulcan's tool and skill layout.
 
-**Depends on:** 9.12.6 (vault-native prompts and skills), 9.18.7 (stable `describe`/`help` docs), 9.19.6 (basic stdio MCP server), and 9.19.13 (permission layer). The HTTP transport portion shares contracts with Phase 10's axum daemon/router work rather than inventing a separate server stack.
+**Depends on:** 9.12.6 (vault-native prompts and skills), 9.18.7 (stable `describe`/`help` docs), 9.19.6 (basic stdio MCP server), and 9.19.13 (permission layer). The Streamable HTTP transport should share contracts with Phase 10's eventual axum daemon/router work rather than forcing a second MCP redesign later.
 
 **Design principle:** MCP is not just "the CLI schema over JSON-RPC". In the subprocess/CLI case the host can preload `AGENTS.md`, prompt files, and skill summaries. Generic MCP clients usually cannot. Vulcan therefore needs its own protocol-native discovery and progressive-disclosure surface.
 
-**Status:** Implemented in `vulcan-cli/src/mcp.rs` with a native `2025-06-18` stdio server, curated headless tool packs, structured tool results, vault-native prompts/resources/completions, change notifications, and shared registry/export plumbing via `describe --format mcp`. Remaining work in this sub-phase is limited to cancellation/timeout handling; HTTP transport follow-through stays deferred to Phase 10.
+**Status:** Implemented in `vulcan-cli/src/mcp.rs` with a native `2025-06-18` MCP server over stdio and Streamable HTTP, curated headless tool packs, structured tool results, vault-native prompts/resources/completions, change notifications, and shared registry/export plumbing via `describe --format mcp`. Remaining work in this sub-phase is limited to cancellation/timeout handling and later daemon-side transport reuse.
 
 **Protocol baseline**
 
@@ -3677,9 +3677,10 @@ The current Linux x86\_64 release binary is about 31.3MB unstripped and 26.0MB s
 **HTTP transport follow-through**
 
 - [x] Prepare the MCP core so that Phase 10's axum daemon can expose the same registry over **Streamable HTTP** without redesigning the feature surface
-- [-] Actual Streamable HTTP transport implementation lands with the Phase 10 daemon/router work, not on the current hand-rolled single-vault server
-- [-] When the HTTP transport lands, reuse daemon authentication and permission enforcement rather than inventing MCP-specific auth semantics
-- [-] Reuse the shared note outline/read/patch/search-hit contracts for daemon HTTP APIs instead of inventing a separate paging or chunk-follow-up model
+- [x] Implement Streamable HTTP transport on `vulcan mcp --transport http` with MCP sessions, SSE notifications, and the same protocol-native registry exposed over stdio
+- [x] Keep HTTP transport bound to loopback by default; require `--auth-token` for non-loopback binds while still enforcing the selected Vulcan permission profile on every request
+- [x] Reuse the shared note outline/read/patch/search-hit contracts for MCP HTTP responses instead of inventing a separate paging or chunk-follow-up model
+- [-] When Phase 10 replaces the current single-vault listener with daemon routing/middleware, preserve this MCP contract instead of redefining transport semantics again
 
 **Explicit deferrals**
 
@@ -3693,6 +3694,7 @@ The current Linux x86\_64 release binary is about 31.3MB unstripped and 26.0MB s
 - [x] Add fixture-driven tests for vault prompt loading from `assistant.prompts_folder` and prompt change notifications
 - [x] Add parity tests asserting that structured MCP outputs match the corresponding CLI `--output json` report shapes
 - [x] Add tests covering curated tool exposure so interactive-only commands cannot accidentally leak back into the MCP surface
+- [x] Add end-to-end Streamable HTTP tests for session bootstrap, SSE list-change notifications, and auth-token enforcement
 
 #### 9.19.16 Integration hardening and fuzzing
 
