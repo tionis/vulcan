@@ -443,70 +443,106 @@ struct BundledTextFile {
     kind: &'static str,
     relative_path: &'static str,
     contents: &'static str,
+    target: BundledFileTarget,
+}
+
+#[derive(Clone, Copy)]
+enum BundledFileTarget {
+    VaultRoot,
+    SkillsFolder,
+    PromptsFolder,
 }
 
 const BUNDLED_AGENT_TEMPLATE: BundledTextFile = BundledTextFile {
     kind: "agents_template",
     relative_path: "AGENTS.md",
     contents: include_str!("../../docs/assistant/AGENTS.template.md"),
+    target: BundledFileTarget::VaultRoot,
 };
 
 const BUNDLED_SKILL_FILES: &[BundledTextFile] = &[
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agents/skills/note-operations/SKILL.md",
+        relative_path: "note-operations/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/note-operations.md"),
+        target: BundledFileTarget::SkillsFolder,
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agents/skills/vault-query/SKILL.md",
+        relative_path: "vault-query/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/vault-query.md"),
+        target: BundledFileTarget::SkillsFolder,
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agents/skills/js-api-guide/SKILL.md",
+        relative_path: "js-api-guide/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/js-api-guide.md"),
+        target: BundledFileTarget::SkillsFolder,
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agents/skills/graph-exploration/SKILL.md",
+        relative_path: "graph-exploration/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/graph-exploration.md"),
+        target: BundledFileTarget::SkillsFolder,
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agents/skills/daily-notes/SKILL.md",
+        relative_path: "daily-notes/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/daily-notes.md"),
+        target: BundledFileTarget::SkillsFolder,
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agents/skills/properties-and-tags/SKILL.md",
+        relative_path: "properties-and-tags/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/properties-and-tags.md"),
+        target: BundledFileTarget::SkillsFolder,
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agents/skills/refactoring/SKILL.md",
+        relative_path: "refactoring/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/refactoring.md"),
+        target: BundledFileTarget::SkillsFolder,
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agents/skills/web-research/SKILL.md",
+        relative_path: "web-research/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/web-research.md"),
+        target: BundledFileTarget::SkillsFolder,
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agents/skills/git-workflow/SKILL.md",
+        relative_path: "git-workflow/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/git-workflow.md"),
+        target: BundledFileTarget::SkillsFolder,
     },
     BundledTextFile {
         kind: "skill",
-        relative_path: ".agents/skills/task-management/SKILL.md",
+        relative_path: "task-management/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/task-management.md"),
+        target: BundledFileTarget::SkillsFolder,
     },
 ];
 
-pub(crate) fn bundled_support_relative_paths() -> Vec<&'static str> {
-    std::iter::once(BUNDLED_AGENT_TEMPLATE.relative_path)
-        .chain(BUNDLED_SKILL_FILES.iter().map(|file| file.relative_path))
+const BUNDLED_PROMPT_FILES: &[BundledTextFile] = &[
+    BundledTextFile {
+        kind: "prompt",
+        relative_path: "summarize-note.md",
+        contents: include_str!("../../docs/assistant/prompts/summarize-note.md"),
+        target: BundledFileTarget::PromptsFolder,
+    },
+    BundledTextFile {
+        kind: "prompt",
+        relative_path: "daily-review.md",
+        contents: include_str!("../../docs/assistant/prompts/daily-review.md"),
+        target: BundledFileTarget::PromptsFolder,
+    },
+];
+
+pub(crate) fn bundled_support_relative_paths(paths: &VaultPaths) -> Vec<String> {
+    std::iter::once(&BUNDLED_AGENT_TEMPLATE)
+        .chain(BUNDLED_SKILL_FILES.iter())
+        .chain(BUNDLED_PROMPT_FILES.iter())
+        .map(|file| bundled_text_file_display_path(paths, file))
         .collect()
 }
 
@@ -9649,6 +9685,9 @@ fn write_bundled_support_files(
     for file in BUNDLED_SKILL_FILES {
         reports.push(write_bundled_text_file(paths, file, overwrite)?);
     }
+    for file in BUNDLED_PROMPT_FILES {
+        reports.push(write_bundled_text_file(paths, file, overwrite)?);
+    }
     Ok(reports)
 }
 
@@ -9657,13 +9696,37 @@ fn write_bundled_text_file(
     file: &BundledTextFile,
     overwrite: bool,
 ) -> Result<SupportFileReport, CliError> {
-    let destination = paths.vault_root().join(file.relative_path);
+    let destination = bundled_text_file_destination(paths, file);
     let status = write_bundled_text_contents(&destination, file.contents, overwrite)?;
     Ok(SupportFileReport {
-        path: file.relative_path.to_string(),
+        path: bundled_text_file_display_path(paths, file),
         kind: file.kind.to_string(),
         status,
     })
+}
+
+fn bundled_text_file_destination(paths: &VaultPaths, file: &BundledTextFile) -> PathBuf {
+    let config = load_vault_config(paths).config.assistant;
+    match file.target {
+        BundledFileTarget::VaultRoot => paths.vault_root().join(file.relative_path),
+        BundledFileTarget::SkillsFolder => paths
+            .vault_root()
+            .join(config.skills_folder)
+            .join(file.relative_path),
+        BundledFileTarget::PromptsFolder => paths
+            .vault_root()
+            .join(config.prompts_folder)
+            .join(file.relative_path),
+    }
+}
+
+fn bundled_text_file_display_path(paths: &VaultPaths, file: &BundledTextFile) -> String {
+    let destination = bundled_text_file_destination(paths, file);
+    destination
+        .strip_prefix(paths.vault_root())
+        .unwrap_or(&destination)
+        .to_string_lossy()
+        .replace('\\', "/")
 }
 
 fn write_bundled_text_contents(

@@ -230,6 +230,10 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # template_path = "Templates/Project Template.md"
 # file_name_format = "{{VALUE:title|case:slug}}"
 
+# [assistant]
+# prompts_folder = "AI/Prompts"
+# skills_folder = ".agents/skills"
+
 # [export.profiles.team-book]
 # format = "epub"  # markdown | json | csv | graph | epub | zip | sqlite | search-index
 # query = 'from notes where file.path matches "^(People|Projects)/"'
@@ -701,6 +705,31 @@ pub struct QuickAddConfig {
     pub template_choices: Vec<QuickAddTemplateChoiceConfig>,
     #[serde(default)]
     pub ai: Option<QuickAddAiConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssistantConfig {
+    #[serde(default = "default_assistant_prompts_folder")]
+    pub prompts_folder: PathBuf,
+    #[serde(default = "default_assistant_skills_folder")]
+    pub skills_folder: PathBuf,
+}
+
+impl Default for AssistantConfig {
+    fn default() -> Self {
+        Self {
+            prompts_folder: default_assistant_prompts_folder(),
+            skills_folder: default_assistant_skills_folder(),
+        }
+    }
+}
+
+fn default_assistant_prompts_folder() -> PathBuf {
+    PathBuf::from("AI/Prompts")
+}
+
+fn default_assistant_skills_folder() -> PathBuf {
+    PathBuf::from(".agents/skills")
 }
 
 /// Which HTTP-based search provider to use.
@@ -2261,6 +2290,8 @@ pub struct VaultConfig {
     pub js_runtime: JsRuntimeConfig,
     pub templates: TemplatesConfig,
     pub quickadd: QuickAddConfig,
+    #[serde(default)]
+    pub assistant: AssistantConfig,
     pub web: WebConfig,
     pub periodic: PeriodicConfig,
     pub export: ExportConfig,
@@ -2291,6 +2322,7 @@ impl Default for VaultConfig {
             js_runtime: JsRuntimeConfig::default(),
             templates: TemplatesConfig::default(),
             quickadd: QuickAddConfig::default(),
+            assistant: AssistantConfig::default(),
             web: WebConfig::default(),
             periodic: PeriodicConfig::default(),
             export: ExportConfig::default(),
@@ -2519,6 +2551,7 @@ struct PartialVulcanConfig {
     js_runtime: Option<PartialJsRuntimeConfig>,
     templates: Option<PartialTemplatesConfig>,
     quickadd: Option<PartialQuickAddConfig>,
+    assistant: Option<PartialAssistantConfig>,
     web: Option<PartialWebConfig>,
     periodic: Option<PartialPeriodicConfig>,
     export: Option<PartialExportConfig>,
@@ -2642,6 +2675,12 @@ struct PartialQuickAddAiConfig {
     prompt_templates_folder: Option<PathBuf>,
     show_assistant: Option<bool>,
     providers: Option<Vec<QuickAddAiProviderConfig>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialAssistantConfig {
+    prompts_folder: Option<PathBuf>,
+    skills_folder: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -7499,6 +7538,17 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
     }
 
+    if let Some(assistant) = overrides.assistant {
+        if let Some(prompts_folder) = assistant.prompts_folder {
+            config.assistant.prompts_folder =
+                normalize_template_pathbuf(&prompts_folder).unwrap_or_default();
+        }
+        if let Some(skills_folder) = assistant.skills_folder {
+            config.assistant.skills_folder =
+                normalize_template_pathbuf(&skills_folder).unwrap_or_default();
+        }
+    }
+
     if let Some(web) = overrides.web {
         if let Some(user_agent) = web.user_agent {
             config.web.user_agent = user_agent;
@@ -9200,6 +9250,43 @@ intellisense_render = 2
     }
 
     #[test]
+    fn builtin_defaults_include_assistant_paths() {
+        let defaults = VaultConfig::default();
+
+        assert_eq!(
+            defaults.assistant.prompts_folder,
+            PathBuf::from("AI/Prompts")
+        );
+        assert_eq!(
+            defaults.assistant.skills_folder,
+            PathBuf::from(".agents/skills")
+        );
+    }
+
+    #[test]
+    fn vulcan_config_can_override_assistant_paths() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[assistant]\nprompts_folder = \"Shared/Prompts\"\nskills_folder = \"Shared/Skills\"\n",
+        )
+        .expect("config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+        assert_eq!(
+            loaded.config.assistant.prompts_folder,
+            PathBuf::from("Shared/Prompts")
+        );
+        assert_eq!(
+            loaded.config.assistant.skills_folder,
+            PathBuf::from("Shared/Skills")
+        );
+    }
+
+    #[test]
     fn vulcan_config_aliases_override_builtin_defaults() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path();
@@ -10696,6 +10783,15 @@ default_mode = "off"
         assert!(template.contains("write = { allow = [\"folder:Projects/**\""));
         assert!(template.contains("network = { allow = true, domains = ["));
         assert!(template.contains("policy_hook = \".vulcan/plugins/agent-policy.js\""));
+    }
+
+    #[test]
+    fn default_config_template_documents_assistant_folders() {
+        let template = default_config_template();
+
+        assert!(template.contains("[assistant]"));
+        assert!(template.contains("prompts_folder = \"AI/Prompts\""));
+        assert!(template.contains("skills_folder = \".agents/skills\""));
     }
 
     #[test]
