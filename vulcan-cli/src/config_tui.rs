@@ -2266,7 +2266,7 @@ mod tests {
             ConfigInputMode::Edit {
                 editor: ValueEditorMode::Enum { selected, .. },
                 ..
-            } => assert_eq!(*selected, 0),
+            } => assert_eq!(*selected, 1),
             mode => panic!("expected enum editor, got {mode:?}"),
         }
 

@@ -2019,12 +2019,14 @@ fn run_git_blame_command(paths: &VaultPaths, path: &str) -> Result<GitBlameRepor
 
 fn search_backend_kind_from_arg(arg: SearchBackendArg) -> SearchBackendKind {
     match arg {
+        SearchBackendArg::Disabled => SearchBackendKind::Disabled,
         SearchBackendArg::Auto => SearchBackendKind::Auto,
         SearchBackendArg::Duckduckgo => SearchBackendKind::Duckduckgo,
         SearchBackendArg::Kagi => SearchBackendKind::Kagi,
         SearchBackendArg::Exa => SearchBackendKind::Exa,
         SearchBackendArg::Tavily => SearchBackendKind::Tavily,
         SearchBackendArg::Brave => SearchBackendKind::Brave,
+        SearchBackendArg::Ollama => SearchBackendKind::Ollama,
     }
 }
 
@@ -19310,15 +19312,24 @@ mod tests {
 
     #[test]
     fn parses_web_search_command() {
-        let cli = Cli::try_parse_from(["vulcan", "web", "search", "release notes", "--limit", "5"])
-            .expect("cli should parse");
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "web",
+            "search",
+            "release notes",
+            "--backend",
+            "ollama",
+            "--limit",
+            "5",
+        ])
+        .expect("cli should parse");
 
         assert_eq!(
             cli.command,
             Command::Web {
                 command: WebCommand::Search {
                     query: "release notes".to_string(),
-                    backend: None,
+                    backend: Some(SearchBackendArg::Ollama),
                     limit: 5,
                 },
             }

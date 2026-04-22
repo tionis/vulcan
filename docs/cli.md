@@ -300,7 +300,7 @@ Behavior:
 
 Behavior:
 
-- `web search` reads `[web.search]` from `.vulcan/config.toml`. The default backend is `duckduckgo` (no API key required). Setting `backend = "auto"` auto-selects the first available keyed backend (Kagi → Exa → Tavily → Brave) and falls back to DuckDuckGo. Supported backends: `duckduckgo`, `kagi` (`KAGI_API_KEY`), `exa` (`EXA_API_KEY`), `tavily` (`TAVILY_API_KEY`), `brave` (`BRAVE_API_KEY`).
+- `web search` reads `[web.search]` from `.vulcan/config.toml`. The default backend is `duckduckgo` (no API key required). Setting `backend = "auto"` auto-selects the first available keyed backend (Kagi → Exa → Tavily → Brave → Ollama) and falls back to DuckDuckGo. Setting `backend = "disabled"` makes `web search` and `web.search()` fail intentionally while leaving `web fetch` available. Supported backends: `disabled`, `duckduckgo`, `kagi` (`KAGI_API_KEY`), `exa` (`EXA_API_KEY`), `tavily` (`TAVILY_API_KEY`), `brave` (`BRAVE_API_KEY`), `ollama` (`OLLAMA_API_KEY`).
 - `web fetch` uses the configured Vulcan user-agent and performs a best-effort `robots.txt` check before requesting the target URL.
 - `web fetch --mode markdown` converts HTML with `rs-trafilatura` main-content extraction.
 - If no readable main content can be extracted, retry with `--mode html` or `--mode raw`.

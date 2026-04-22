@@ -467,8 +467,9 @@ Subcommands:
 
 Notes:
   `web search` reads backend settings from `[web.search]` in `.vulcan/config.toml`.
+  `disabled` intentionally turns off `web search` and `web.search()` while leaving `web fetch` available.
   `duckduckgo` is the default backend and works without an API key.
-  `auto` prefers Kagi, Exa, Tavily, then Brave when their API key env vars are set, and falls back to DuckDuckGo.
+  `auto` prefers Kagi, Exa, Tavily, Brave, then Ollama when their API key env vars are set, and falls back to DuckDuckGo.
   `web fetch --mode markdown` uses `rs-trafilatura` main-content extraction.
   If no readable main content can be extracted, retry with `--mode html` or `--mode raw`.
   `web fetch` uses a Vulcan user-agent and performs a best-effort robots.txt check before fetching.
@@ -476,6 +477,7 @@ Notes:
 Examples:
   vulcan web search \"release notes\" --limit 5
   vulcan web search \"release notes\" --backend duckduckgo
+  vulcan web search \"release notes\" --backend ollama
   vulcan web fetch https://example.com --mode markdown
   vulcan web fetch https://example.com --mode raw --save page.bin";
 
@@ -2770,6 +2772,8 @@ pub struct RenderArgs {
 /// CLI-level search backend selector (mirrors `SearchBackendKind` from config).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SearchBackendArg {
+    /// Disable `web search` and `web.search()` entirely.
+    Disabled,
     /// Auto-detect: use the first backend whose API key env var is set.
     Auto,
     /// `DuckDuckGo` HTML search.
@@ -2782,6 +2786,8 @@ pub enum SearchBackendArg {
     Tavily,
     /// Brave Search.
     Brave,
+    /// Ollama Web Search.
+    Ollama,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
