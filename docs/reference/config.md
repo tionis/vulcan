@@ -832,7 +832,7 @@ Sandbox defaults, runtime memory limits, and script locations.
 
 Web search backend selection and API endpoint configuration.
 
-- `web.search.backend` — type: `enum`; target: `shared|local`; default: `duckduckgo`; values: `duckduckgo`, `auto`, `kagi`, `exa`, `tavily`, `brave`
+- `web.search.backend` — type: `enum`; target: `shared|local`; default: `duckduckgo`; values: `disabled`, `duckduckgo`, `auto`, `kagi`, `exa`, `tavily`, `brave`, `ollama`
   Configure the preferred web search provider, API key env var, and base URL.
   Example: `vulcan config set web.search.backend <value>`
 - `web.user_agent` — type: `string`; target: `shared|local`; default: `Vulcan/0.1 (+https://github.com/tionis/vulcan)`

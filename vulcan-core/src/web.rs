@@ -53,12 +53,19 @@ pub fn prepare_search_backend(
     backend_override: Option<SearchBackendKind>,
 ) -> Result<PreparedWebSearchBackend, String> {
     let effective_kind = backend_override.unwrap_or(config.search.backend);
+    if effective_kind == SearchBackendKind::Disabled {
+        return Err(
+            "web search is disabled; set `[web.search].backend` to another provider or pass `--backend <name>`"
+                .to_string(),
+        );
+    }
     if effective_kind == SearchBackendKind::Auto {
         for kind in [
             SearchBackendKind::Kagi,
             SearchBackendKind::Exa,
             SearchBackendKind::Tavily,
             SearchBackendKind::Brave,
+            SearchBackendKind::Ollama,
         ] {
             let Some(api_key_env) = kind.default_api_key_env() else {
                 continue;
@@ -116,6 +123,9 @@ pub fn search_web(
 ) -> Result<WebSearchReport, String> {
     let client = build_web_client(user_agent)?;
     let results = match backend.kind {
+        SearchBackendKind::Disabled => {
+            return Err("web search is disabled".to_string());
+        }
         SearchBackendKind::Duckduckgo | SearchBackendKind::Auto => {
             let response = client
                 .get(&backend.base_url)
@@ -293,6 +303,52 @@ pub fn search_web(
                 })
                 .collect()
         }
+        SearchBackendKind::Ollama => {
+            let response = client
+                .post(&backend.base_url)
+                .header(
+                    AUTHORIZATION,
+                    format!("Bearer {}", required_api_key(backend, "Ollama")?),
+                )
+                .header(reqwest::header::CONTENT_TYPE, "application/json")
+                .json(&serde_json::json!({
+                    "query": query,
+                    "max_results": limit.clamp(1, 10),
+                }))
+                .send()
+                .map_err(|error| error.to_string())?;
+            if !response.status().is_success() {
+                return Err(format!(
+                    "Ollama search failed with status {}",
+                    response.status()
+                ));
+            }
+            let payload = response
+                .json::<serde_json::Value>()
+                .map_err(|error| error.to_string())?;
+            payload
+                .get("results")
+                .and_then(serde_json::Value::as_array)
+                .ok_or_else(|| "unexpected Ollama response shape".to_string())?
+                .iter()
+                .filter_map(|item| {
+                    let title = item
+                        .get("title")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or("");
+                    let url = item.get("url").and_then(serde_json::Value::as_str)?;
+                    let snippet = item
+                        .get("content")
+                        .and_then(serde_json::Value::as_str)
+                        .unwrap_or_default();
+                    Some(WebSearchResult {
+                        title: title.to_string(),
+                        url: url.to_string(),
+                        snippet: snippet.to_string(),
+                    })
+                })
+                .collect()
+        }
     };
 
     Ok(WebSearchReport {
@@ -396,12 +452,14 @@ fn required_api_key<'a>(
 
 fn search_backend_name(kind: SearchBackendKind) -> &'static str {
     match kind {
+        SearchBackendKind::Disabled => "disabled",
         SearchBackendKind::Auto => "auto",
         SearchBackendKind::Duckduckgo => "duckduckgo",
         SearchBackendKind::Kagi => "kagi",
         SearchBackendKind::Exa => "exa",
         SearchBackendKind::Tavily => "tavily",
         SearchBackendKind::Brave => "brave",
+        SearchBackendKind::Ollama => "ollama",
     }
 }
 
@@ -606,6 +664,7 @@ mod tests {
             "EXA_API_KEY",
             "TAVILY_API_KEY",
             "BRAVE_API_KEY",
+            "OLLAMA_API_KEY",
         ];
         let saved = vars
             .into_iter()
@@ -685,6 +744,42 @@ mod tests {
             assert_eq!(prepared.backend, "duckduckgo");
             assert_eq!(prepared.base_url, "http://127.0.0.1:3456/search");
         });
+    }
+
+    #[test]
+    fn auto_search_backend_prefers_ollama_when_api_key_is_available() {
+        with_search_backend_env_cleared(|| {
+            std::env::set_var("OLLAMA_API_KEY", "test-ollama-key");
+            let config = WebConfig {
+                user_agent: "Vulcan Test".to_string(),
+                search: WebSearchConfig {
+                    backend: SearchBackendKind::Auto,
+                    api_key_env: None,
+                    base_url: None,
+                },
+            };
+
+            let prepared = prepare_search_backend(&config, None).expect("backend should prepare");
+            assert_eq!(prepared.kind, SearchBackendKind::Ollama);
+            assert_eq!(prepared.backend, "ollama");
+            assert_eq!(prepared.base_url, "https://ollama.com/api/web_search");
+        });
+    }
+
+    #[test]
+    fn disabled_search_backend_rejects_prepare() {
+        let config = WebConfig {
+            user_agent: "Vulcan Test".to_string(),
+            search: WebSearchConfig {
+                backend: SearchBackendKind::Disabled,
+                api_key_env: None,
+                base_url: None,
+            },
+        };
+
+        let error =
+            prepare_search_backend(&config, None).expect_err("disabled backend should fail");
+        assert!(error.contains("web search is disabled"));
     }
 
     #[test]

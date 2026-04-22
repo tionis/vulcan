@@ -266,8 +266,9 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # user_agent = "Vulcan/0.1 (+https://github.com/tionis/vulcan)"
 #
 # [web.search]
-# backend = "duckduckgo"  # duckduckgo | auto | kagi | exa | tavily | brave
+# backend = "duckduckgo"  # disabled | duckduckgo | auto | kagi | exa | tavily | brave | ollama
 # # api_key_env is optional and only needed for authenticated backends.
+# # backend = "disabled"
 # # backend = "kagi"
 # # api_key_env = "KAGI_API_KEY"
 # # base_url = "https://kagi.com/api/v0/search"
@@ -280,6 +281,9 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # # backend = "brave"
 # # api_key_env = "BRAVE_API_KEY"
 # # base_url = "https://api.search.brave.com/res/v1/web/search"
+# # backend = "ollama"
+# # api_key_env = "OLLAMA_API_KEY"
+# # base_url = "https://ollama.com/api/web_search"
 # # backend = "duckduckgo"
 # # base_url = "https://html.duckduckgo.com/html/"
 
@@ -769,8 +773,10 @@ fn default_assistant_skills_folder() -> PathBuf {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SearchBackendKind {
+    /// Disable `web search` and `web.search()` entirely.
+    Disabled,
     /// Auto-detect: try `Kagi` → `Exa` → `Tavily` → `Brave` based on available env vars, then
-    /// fall back to `DuckDuckGo`.
+    /// `Ollama`, then fall back to `DuckDuckGo`.
     Auto,
     /// `DuckDuckGo` HTML search — works without an API key.
     #[default]
@@ -783,6 +789,8 @@ pub enum SearchBackendKind {
     Tavily,
     /// Brave Search — requires `BRAVE_API_KEY`.
     Brave,
+    /// Ollama Web Search — requires `OLLAMA_API_KEY`.
+    Ollama,
 }
 
 impl SearchBackendKind {
@@ -790,11 +798,14 @@ impl SearchBackendKind {
     #[must_use]
     pub fn default_api_key_env(self) -> Option<&'static str> {
         match self {
-            SearchBackendKind::Auto | SearchBackendKind::Duckduckgo => None,
+            SearchBackendKind::Disabled
+            | SearchBackendKind::Auto
+            | SearchBackendKind::Duckduckgo => None,
             SearchBackendKind::Kagi => Some("KAGI_API_KEY"),
             SearchBackendKind::Exa => Some("EXA_API_KEY"),
             SearchBackendKind::Tavily => Some("TAVILY_API_KEY"),
             SearchBackendKind::Brave => Some("BRAVE_API_KEY"),
+            SearchBackendKind::Ollama => Some("OLLAMA_API_KEY"),
         }
     }
 
@@ -802,6 +813,7 @@ impl SearchBackendKind {
     #[must_use]
     pub fn default_base_url(self) -> &'static str {
         match self {
+            SearchBackendKind::Disabled => "",
             SearchBackendKind::Auto | SearchBackendKind::Duckduckgo => {
                 "https://html.duckduckgo.com/html/"
             }
@@ -809,13 +821,15 @@ impl SearchBackendKind {
             SearchBackendKind::Exa => "https://api.exa.ai/search",
             SearchBackendKind::Tavily => "https://api.tavily.com/search",
             SearchBackendKind::Brave => "https://api.search.brave.com/res/v1/web/search",
+            SearchBackendKind::Ollama => "https://ollama.com/api/web_search",
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebSearchConfig {
-    /// Which backend to use. Defaults to `kagi`; set to `auto` for env-var detection.
+    /// Which backend to use. Defaults to `duckduckgo`; set to `auto` for env-var detection or
+    /// `disabled` to turn off web search entirely.
     #[serde(default)]
     pub backend: SearchBackendKind,
     /// Override the env var name that holds the API key (defaults to backend's `default_api_key_env`).
@@ -10867,7 +10881,9 @@ default_mode = "off"
 
         assert!(template.contains("[web.search]"));
         assert!(template.contains("backend = \"duckduckgo\""));
+        assert!(template.contains("backend = \"disabled\""));
         assert!(template.contains("KAGI_API_KEY"));
+        assert!(template.contains("OLLAMA_API_KEY"));
         assert!(template.contains("https://html.duckduckgo.com/html/"));
     }
 

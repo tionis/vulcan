@@ -4116,6 +4116,72 @@ fn web_search_brave_backend_uses_subscription_token_header_and_parses_descriptio
 }
 
 #[test]
+fn web_search_ollama_backend_uses_bearer_auth_and_parses_content_field() {
+    let server = MockWebServer::spawn();
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        format!(
+            "[web.search]\nbackend = \"ollama\"\napi_key_env = \"TEST_OLLAMA_KEY\"\nbase_url = \"{}\"\n",
+            server.url("/api/web_search")
+        ),
+    )
+    .expect("config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("TEST_OLLAMA_KEY", "test-ollama-key")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "--output",
+            "json",
+            "web",
+            "search",
+            "release notes",
+            "--limit",
+            "2",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    server.shutdown();
+
+    assert_eq!(json["backend"], "ollama");
+    assert_eq!(json["query"], "release notes");
+    assert_eq!(json["results"][0]["title"], "Release Notes");
+    assert_eq!(json["results"][0]["url"], "https://example.com/release");
+    assert_eq!(json["results"][1]["snippet"], "Current project status.");
+}
+
+#[test]
+fn web_search_disabled_backend_fails_cleanly() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[web.search]\nbackend = \"disabled\"\n",
+    )
+    .expect("config should be written");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "web",
+            "search",
+            "release notes",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("web search is disabled"));
+}
+
+#[test]
 fn web_search_auto_prefers_api_key_backends_over_duckduckgo() {
     // With EXA_API_KEY set, auto mode should prefer Exa over DuckDuckGo.
     let server = MockWebServer::spawn();
@@ -17467,6 +17533,43 @@ impl MockWebServer {
                             .to_string()
                         } else {
                             serde_json::json!({ "error": "unauthorized" }).to_string()
+                        };
+                        write_http_response(
+                            &mut stream,
+                            status_line,
+                            "application/json",
+                            body.as_bytes(),
+                        );
+                    } else if request.path.starts_with("/api/web_search") {
+                        let auth = request
+                            .headers
+                            .get("authorization")
+                            .cloned()
+                            .unwrap_or_default();
+                        let (status_line, body) = if auth == "Bearer test-ollama-key" {
+                            (
+                                "HTTP/1.1 200 OK",
+                                serde_json::json!({
+                                    "results": [
+                                        {
+                                            "title": "Release Notes",
+                                            "url": "https://example.com/release",
+                                            "content": "Everything that shipped this week."
+                                        },
+                                        {
+                                            "title": "Status Update",
+                                            "url": "https://example.com/status",
+                                            "content": "Current project status."
+                                        }
+                                    ]
+                                })
+                                .to_string(),
+                            )
+                        } else {
+                            (
+                                "HTTP/1.1 401 Unauthorized",
+                                serde_json::json!({ "error": "unauthorized" }).to_string(),
+                            )
                         };
                         write_http_response(
                             &mut stream,

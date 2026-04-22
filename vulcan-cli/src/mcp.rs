@@ -3204,12 +3204,14 @@ fn parse_search_backend(
         return Ok(None);
     };
     let parsed = match backend.as_str() {
+        "disabled" => SearchBackendArg::Disabled,
         "auto" => SearchBackendArg::Auto,
         "duckduckgo" => SearchBackendArg::Duckduckgo,
         "kagi" => SearchBackendArg::Kagi,
         "exa" => SearchBackendArg::Exa,
         "tavily" => SearchBackendArg::Tavily,
         "brave" => SearchBackendArg::Brave,
+        "ollama" => SearchBackendArg::Ollama,
         other => {
             return Err(McpMethodError::invalid_params(format!(
                 "unsupported `web_search.backend`: {other}"
@@ -3885,7 +3887,16 @@ fn web_search_input_schema() -> Value {
                 "backend",
                 schema_string_enum(
                     "Optional search backend override.",
-                    &["auto", "duckduckgo", "kagi", "exa", "tavily", "brave"],
+                    &[
+                        "disabled",
+                        "auto",
+                        "duckduckgo",
+                        "kagi",
+                        "exa",
+                        "tavily",
+                        "brave",
+                        "ollama",
+                    ],
                 ),
             ),
             (
