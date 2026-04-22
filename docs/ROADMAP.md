@@ -3770,93 +3770,93 @@ The current Linux x86\_64 release binary is about 31.3MB unstripped and 26.0MB s
 
 **1. Shared config schema / descriptor layer**
 
-- [ ] Add a reusable config-descriptor registry in `vulcan-app` that is the single source of truth for editable config surface area. It should not live in `vulcan-cli`.
-- [ ] Each descriptor should define at least: logical path, storage path, section/category, value kind (scalar / enum / array / object / named map entry), target-file support (`shared`, `local`, or both), description/help text, examples, default behavior, validation hook, and whether the path is creatable when absent.
-- [ ] Cover every stable `VaultConfig` leaf plus dynamic config families that are user-facing and intended to be managed without raw TOML editing:
+- [x] Add a reusable config-descriptor registry in `vulcan-app` that is the single source of truth for editable config surface area. It should not live in `vulcan-cli`.
+- [x] Each descriptor should define at least: logical path, storage path, section/category, value kind (scalar / enum / array / object / named map entry), target-file support (`shared`, `local`, or both), description/help text, examples, default behavior, validation hook, and whether the path is creatable when absent.
+- [x] Cover every stable `VaultConfig` leaf plus dynamic config families that are user-facing and intended to be managed without raw TOML editing:
   - `aliases.*`
   - `plugins.*`
   - `permissions.profiles.*`
   - `export.profiles.*` for discovery/docs/TUI parity, while keeping the dedicated export-profile commands as the preferred mutation surface
-- [ ] Add a descriptor-completeness test so new config fields cannot land without metadata for CLI/TUI/docs.
+- [x] Add a descriptor-completeness test so new config fields cannot land without metadata for CLI/TUI/docs.
 
 **2. Generic non-interactive config CRUD**
 
-- [ ] Extend `vulcan config set` to support `--target shared|local` so generic mutations can write either `.vulcan/config.toml` or `.vulcan/config.local.toml`, matching import behavior.
-- [ ] Add `vulcan config unset <key> [--target ...]` to remove one override and prune empty tables safely.
-- [ ] Make `config set` capable of creating absent-but-supported optional sections and leaves when the descriptor marks them as creatable, for example:
+- [x] Extend `vulcan config set` to support `--target shared|local` so generic mutations can write either `.vulcan/config.toml` or `.vulcan/config.local.toml`, matching import behavior.
+- [x] Add `vulcan config unset <key> [--target ...]` to remove one override and prune empty tables safely.
+- [x] Make `config set` capable of creating absent-but-supported optional sections and leaves when the descriptor marks them as creatable, for example:
   - `embedding.*`
   - `extraction.*`
   - `quickadd.template_folder`
   - `web.search.*`
-- [ ] Keep rejecting unknown or schema-less keys so the command remains a supported config contract rather than a raw TOML writer with dotted paths.
-- [ ] Add a discovery command such as `vulcan config list [section]` that shows known keys with type, description, mutability, default, and whether the effective value comes from defaults, Obsidian import, shared config, or local config.
+- [x] Keep rejecting unknown or schema-less keys so the command remains a supported config contract rather than a raw TOML writer with dotted paths.
+- [x] Add a discovery command such as `vulcan config list [section]` that shows known keys with type, description, mutability, default, and whether the effective value comes from defaults, Obsidian import, shared config, or local config.
 
 **3. Dedicated commands for named config collections**
 
-- [ ] Add first-class CLI commands for aliases rather than requiring users to know raw map keys:
+- [x] Add first-class CLI commands for aliases rather than requiring users to know raw map keys:
   - `vulcan config alias list`
   - `vulcan config alias set <name> <expansion> [--target ...]`
   - `vulcan config alias delete <name> [--target ...]`
-- [ ] Add first-class CLI commands for permission profiles rather than requiring manual creation of `[permissions.profiles.<name>]`:
+- [x] Add first-class CLI commands for permission profiles rather than requiring manual creation of `[permissions.profiles.<name>]`:
   - `vulcan config permissions profile list`
   - `vulcan config permissions profile show <name>`
   - `vulcan config permissions profile create <name> [--clone <base>] [--target ...]`
   - `vulcan config permissions profile set <name> <dimension> <value> [--target ...]`
   - `vulcan config permissions profile delete <name> [--target ...]`
-- [ ] Expand the plugin config surface so users can manage the full registration without hand-editing TOML:
+- [x] Expand the plugin config surface so users can manage the full registration without hand-editing TOML:
   - register/set path
   - enable/disable
   - add/remove subscribed events
   - set sandbox
   - set permission profile
   - set description
-- [ ] Route these dedicated commands through the same shared config-mutation layer as generic `config set/unset` so behavior, validation, target handling, and docs stay consistent.
+- [x] Route these dedicated commands through the same shared config-mutation layer as generic `config set/unset` so behavior, validation, target handling, and docs stay consistent.
 
 **4. Settings TUI v2 on top of the same schema**
 
-- [ ] Rework `vulcan config edit` so it is schema-driven rather than leaf-discovery-driven. Every supported category should appear even when unset.
-- [ ] Add an explicit target toggle (`shared` vs `local`) in the TUI and make the precedence model visible in the detail pane.
-- [ ] Add create/remove flows for dynamic collections:
+- [x] Rework `vulcan config edit` so it is schema-driven rather than leaf-discovery-driven. Every supported category should appear even when unset.
+- [x] Add an explicit target toggle (`shared` vs `local`) in the TUI and make the precedence model visible in the detail pane.
+- [x] Add create/remove flows for dynamic collections:
   - new alias
   - new permission profile
   - new plugin registration
   - existing export profile discovery/edit handoff
-- [ ] Add richer editors for arrays/maps/enum values so users do not need to type raw TOML literals for common operations such as adding an event hook or appending an allowlist domain.
-- [ ] Show value provenance in the UI (`default`, `Obsidian import`, `shared override`, `local override`) so users understand why an effective value looks the way it does.
-- [ ] Reuse the same descriptors, validators, and examples as the non-interactive CLI and help system. The TUI must not grow its own private config schema.
+- [x] Add richer editors for arrays/maps/enum values so users do not need to type raw TOML literals for common operations such as adding an event hook or appending an allowlist domain.
+- [x] Show value provenance in the UI (`default`, `Obsidian import`, `shared override`, `local override`) so users understand why an effective value looks the way it does.
+- [x] Reuse the same descriptors, validators, and examples as the non-interactive CLI and help system. The TUI must not grow its own private config schema.
 
 **5. Documentation and help as a first-class config surface**
 
-- [ ] Generate or derive config reference docs from the descriptor registry so `help config` and the docs stop drifting from the actual supported mutation surface.
-- [ ] Expand `vulcan help config` and related docs to include:
+- [x] Generate or derive config reference docs from the descriptor registry so `help config` and the docs stop drifting from the actual supported mutation surface.
+- [x] Expand `vulcan help config` and related docs to include:
   - key path
   - type / enum values
   - default
   - shared vs local guidance
   - examples
   - whether the setting is better handled by a dedicated command
-- [ ] Add explicit manual-editing guidance for power users: precedence rules, when to prefer `.vulcan/config.local.toml`, and example TOML blocks for aliases, permission profiles, plugin registrations, and imported plugin sections.
-- [ ] Keep the default config template, but treat it as a convenience sample rather than the sole exhaustive reference.
+- [x] Add explicit manual-editing guidance for power users: precedence rules, when to prefer `.vulcan/config.local.toml`, and example TOML blocks for aliases, permission profiles, plugin registrations, and imported plugin sections.
+- [x] Keep the default config template, but treat it as a convenience sample rather than the sole exhaustive reference.
 
 **6. Tests**
 
-- [ ] Unit tests for descriptor parsing, validation hooks, default rendering, and target-file eligibility.
-- [ ] Integration tests for generic `config set/unset` covering creation of previously-absent optional sections and leaves.
-- [ ] Integration tests for named collection workflows:
+- [x] Unit tests for descriptor parsing, validation hooks, default rendering, and target-file eligibility.
+- [x] Integration tests for generic `config set/unset` covering creation of previously-absent optional sections and leaves.
+- [x] Integration tests for named collection workflows:
   - creating `aliases.ship`
   - creating and mutating `permissions.profiles.agent`
   - registering/configuring `plugins.lint`
   - editing shared vs local overrides and verifying precedence
-- [ ] TUI state-machine tests for creation, deletion, and editing of schema-defined entries that were previously absent from the config file.
-- [ ] Snapshot tests for generated config help/reference output so docs and CLI descriptors stay aligned.
-- [ ] Regression tests asserting that dedicated commands (`plugin ...`, permission-profile commands, export profile commands) round-trip through the same config mutation layer instead of reimplementing divergent TOML edits.
+- [x] TUI state-machine tests for creation, deletion, and editing of schema-defined entries that were previously absent from the config file.
+- [x] Snapshot tests for generated config help/reference output so docs and CLI descriptors stay aligned.
+- [x] Regression tests asserting that dedicated commands (`plugin ...`, permission-profile commands, export profile commands) round-trip through the same config mutation layer instead of reimplementing divergent TOML edits.
 
 **Exit criteria**
 
-- [ ] Every supported user-facing config family is manageable via either generic `config` CRUD or a dedicated command that uses the same underlying descriptor/mutation layer.
-- [ ] Creating a new alias, permission profile, plugin registration, local override, or optional config section no longer requires manual TOML editing.
-- [ ] The TUI can discover and create supported settings even when the relevant section is absent from both shared and local config files.
-- [ ] `help config` and the docs reflect the actual supported config surface from generated metadata, not hand-maintained lists.
+- [x] Every supported user-facing config family is manageable via either generic `config` CRUD or a dedicated command that uses the same underlying descriptor/mutation layer.
+- [x] Creating a new alias, permission profile, plugin registration, local override, or optional config section no longer requires manual TOML editing.
+- [x] The TUI can discover and create supported settings even when the relevant section is absent from both shared and local config files.
+- [x] `help config` and the docs reflect the actual supported config surface from generated metadata, not hand-maintained lists.
 
 ---
 
