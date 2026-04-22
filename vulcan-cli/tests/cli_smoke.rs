@@ -8619,6 +8619,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(vault_root
         .join(".agents/skills/js-api-guide/SKILL.md")
         .exists());
+    assert!(vault_root.join("AI/Prompts/summarize-note.md").exists());
+    assert!(vault_root.join("AI/Prompts/daily-review.md").exists());
     assert!(fs::read_to_string(vault_root.join("AGENTS.md"))
         .expect("agents template should be readable")
         .contains("Use Vulcan as the primary automation surface"));
@@ -8627,7 +8629,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .any(|item| item["path"] == "AGENTS.md")
         && items
             .iter()
-            .any(|item| item["path"] == ".agents/skills/js-api-guide/SKILL.md")));
+            .any(|item| item["path"] == ".agents/skills/js-api-guide/SKILL.md")
+        && items
+            .iter()
+            .any(|item| item["path"] == "AI/Prompts/summarize-note.md")));
 }
 
 #[test]
@@ -8656,6 +8661,12 @@ fn agent_install_overwrite_refreshes_bundled_skill_contents() {
         .is_some_and(|items| items.iter().any(|item| item["path"]
             == ".agents/skills/note-operations/SKILL.md"
             && item["status"] == "created")));
+    assert!(initial_json["support_files"]
+        .as_array()
+        .is_some_and(|items| items
+            .iter()
+            .any(|item| item["path"] == "AI/Prompts/summarize-note.md"
+                && item["status"] == "created")));
 
     let skill_path = vault_root.join(".agents/skills/note-operations/SKILL.md");
     fs::write(&skill_path, "customized\n").expect("skill should be editable");
@@ -8709,6 +8720,47 @@ fn agent_install_overwrite_refreshes_bundled_skill_contents() {
         .is_some_and(|items| items.iter().any(|item| item["path"]
             == ".agents/skills/note-operations/SKILL.md"
             && item["status"] == "updated")));
+}
+
+#[test]
+fn agent_install_uses_configured_assistant_folders() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vault dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[assistant]\nprompts_folder = \"Support/Prompts\"\nskills_folder = \"Support/Skills\"\n",
+    )
+    .expect("config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "agent",
+            "install",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert!(vault_root
+        .join("Support/Skills/note-operations/SKILL.md")
+        .exists());
+    assert!(vault_root
+        .join("Support/Prompts/summarize-note.md")
+        .exists());
+    assert!(json["support_files"].as_array().is_some_and(|items| items
+        .iter()
+        .any(|item| item["path"] == "Support/Skills/note-operations/SKILL.md")
+        && items
+            .iter()
+            .any(|item| item["path"] == "Support/Prompts/summarize-note.md")));
 }
 
 #[test]

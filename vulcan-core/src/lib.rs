@@ -4,6 +4,7 @@
 //! query/evaluation logic, and reusable domain types that can be shared across
 //! CLI, daemon, assistant, and other entrypoints.
 
+pub mod assistant;
 pub mod bases;
 pub mod cache;
 pub mod chunking;
@@ -43,6 +44,13 @@ pub mod watch;
 pub mod web;
 pub mod write_lock;
 
+pub use assistant::{
+    assistant_config_summary, assistant_prompts_root, assistant_skills_root,
+    list_assistant_prompts, list_assistant_skills, load_assistant_prompt, load_assistant_skill,
+    read_vault_agents_file, render_assistant_prompt, AssistantConfigSummary, AssistantError,
+    AssistantPrompt, AssistantPromptArgument, AssistantPromptSummary, AssistantSkill,
+    AssistantSkillSummary,
+};
 pub use bases::{
     bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, evaluate_base_file,
     inspect_base_file, plan_base_note_create, BaseViewGroupBy, BaseViewPatch, BaseViewSpec,
@@ -56,26 +64,26 @@ pub use config::{
     import_core_plugin_config, import_dataview_plugin_config, import_kanban_plugin_config,
     import_periodic_notes_plugin_config, import_tasknotes_plugin_config,
     import_tasks_plugin_config, import_templater_plugin_config, load_permission_profiles,
-    load_vault_config, validate_vulcan_overrides_toml, AttachmentExtractionConfig, AutoScanMode,
-    ChunkingConfig, ChunkingStrategy, ConfigDiagnostic, ConfigImportError, ConfigImportMapping,
-    ConfigImportReport, ConfigLoadResult, ConfigPermissionMode, ContentTransformConfig,
-    ContentTransformRuleConfig, CoreImporter, DataviewConfig, DataviewImporter,
-    EmbeddingProviderConfig, GitConfig, GitScope, GitTrigger, ImportConflict, ImportMigratedFile,
-    ImportMigratedFileAction, ImportSkippedSetting, ImportTarget, InboxConfig, JsRuntimeConfig,
-    JsRuntimeSandbox, KanbanConfig, KanbanImporter, LinkResolutionMode, LinkStylePreference,
-    NetworkPermissionConfig, PathPermissionConfig, PathPermissionKeyword, PathPermissionRules,
-    PeriodicCadenceUnit, PeriodicConfig, PeriodicNoteConfig, PeriodicNotesImporter,
-    PeriodicStartOfWeek, PermissionLimit, PermissionLimitKeyword, PermissionMode,
-    PermissionProfile, PermissionProfilesLoadResult, PermissionsConfig, PluginEvent,
-    PluginImporter, PluginRegistration, ScanConfig, SearchBackendKind, TaskNotesConfig,
-    TaskNotesDateDefault, TaskNotesFieldMapping, TaskNotesIdentificationMethod, TaskNotesImporter,
-    TaskNotesNlpTriggerConfig, TaskNotesPriorityConfig, TaskNotesRecurrenceDefault,
-    TaskNotesSavedViewCondition, TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue,
-    TaskNotesSavedViewGroup, TaskNotesSavedViewNode, TaskNotesSavedViewOptionValue,
-    TaskNotesSavedViewQuery, TaskNotesStatusConfig, TaskNotesTaskCreationDefaults,
-    TaskNotesUserFieldConfig, TaskNotesUserFieldType, TasksImporter, TemplaterCommandPairConfig,
-    TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig, TemplaterImporter, TemplatesConfig,
-    VaultConfig,
+    load_vault_config, validate_vulcan_overrides_toml, AssistantConfig, AttachmentExtractionConfig,
+    AutoScanMode, ChunkingConfig, ChunkingStrategy, ConfigDiagnostic, ConfigImportError,
+    ConfigImportMapping, ConfigImportReport, ConfigLoadResult, ConfigPermissionMode,
+    ContentTransformConfig, ContentTransformRuleConfig, CoreImporter, DataviewConfig,
+    DataviewImporter, EmbeddingProviderConfig, GitConfig, GitScope, GitTrigger, ImportConflict,
+    ImportMigratedFile, ImportMigratedFileAction, ImportSkippedSetting, ImportTarget, InboxConfig,
+    JsRuntimeConfig, JsRuntimeSandbox, KanbanConfig, KanbanImporter, LinkResolutionMode,
+    LinkStylePreference, NetworkPermissionConfig, PathPermissionConfig, PathPermissionKeyword,
+    PathPermissionRules, PeriodicCadenceUnit, PeriodicConfig, PeriodicNoteConfig,
+    PeriodicNotesImporter, PeriodicStartOfWeek, PermissionLimit, PermissionLimitKeyword,
+    PermissionMode, PermissionProfile, PermissionProfilesLoadResult, PermissionsConfig,
+    PluginEvent, PluginImporter, PluginRegistration, ScanConfig, SearchBackendKind,
+    TaskNotesConfig, TaskNotesDateDefault, TaskNotesFieldMapping, TaskNotesIdentificationMethod,
+    TaskNotesImporter, TaskNotesNlpTriggerConfig, TaskNotesPriorityConfig,
+    TaskNotesRecurrenceDefault, TaskNotesSavedViewCondition, TaskNotesSavedViewConfig,
+    TaskNotesSavedViewFilterValue, TaskNotesSavedViewGroup, TaskNotesSavedViewNode,
+    TaskNotesSavedViewOptionValue, TaskNotesSavedViewQuery, TaskNotesStatusConfig,
+    TaskNotesTaskCreationDefaults, TaskNotesUserFieldConfig, TaskNotesUserFieldType, TasksImporter,
+    TemplaterCommandPairConfig, TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig,
+    TemplaterImporter, TemplatesConfig, VaultConfig,
 };
 pub use content_transforms::apply_content_transforms;
 pub use dataview_js::{

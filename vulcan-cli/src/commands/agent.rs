@@ -9,8 +9,8 @@ pub(crate) fn handle_agent_command(
     match command {
         AgentCommand::Install(args) => {
             let guard = selected_permission_guard(cli, paths)?;
-            for path in crate::bundled_support_relative_paths() {
-                guard.check_write_path(path).map_err(CliError::operation)?;
+            for path in crate::bundled_support_relative_paths(paths) {
+                guard.check_write_path(&path).map_err(CliError::operation)?;
             }
             let report = crate::run_agent_install_command(paths, args)?;
             crate::print_agent_install_summary(cli.output, paths, &report)
