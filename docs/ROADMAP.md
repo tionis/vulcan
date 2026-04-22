@@ -5620,7 +5620,7 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 
 - [ ] Replace the single `core|extended|admin` exposure ladder with a composable pack set model where one tool can belong to one or more named packs
 - [ ] Define an initial pack taxonomy that is capability-oriented rather than strictly tier-oriented, for example `notes-read`, `notes-write`, `search`, `tasks`, `web`, `git`, `config`, `index`, and similar narrowly scoped bundles
-- [ ] Preserve compatibility aliases or bundle shorthands for existing operators where practical so current `core`, `extended`, and `admin` users do not need an all-at-once migration
+- [ ] Make canonical pack names the only supported selectors instead of carrying forward legacy tier aliases or bundle shorthands
 - [ ] Keep `vulcan describe --format mcp` and the live MCP server on the same underlying registry so exported tool definitions and live exposure cannot drift
 
 ### 9.23.2 CLI pack selection and reporting
@@ -5660,7 +5660,7 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 
 ### 9.23.7 Testing and rollout
 
-- [ ] Add registry tests covering pack union/intersection behavior, compatibility aliases, and stable ordering of exposed tools
+- [ ] Add registry tests covering pack union/intersection behavior and stable ordering of exposed tools
 - [ ] Add end-to-end MCP tests for adaptive pack changes over both stdio and Streamable HTTP, including `notifications/tools/list_changed`
 - [ ] Add regression tests showing that `describe --format mcp` and live MCP exposure stay in sync for the same selected pack set
 - [ ] Update help snapshots and CLI/MCP fixtures to cover the new pack model and adaptive-mode documentation

@@ -10,9 +10,9 @@ use crate::{
     run_note_append_command, run_note_create_with_body, run_note_delete_command,
     run_note_get_command, run_note_info_command, run_note_outline_command, run_note_patch_command,
     run_note_set_with_content, run_status_command, run_web_fetch_command, run_web_search_command,
-    CliError, McpToolAnnotations, McpToolDefinition, McpToolPackArg, McpToolsReport,
-    McpTransportArg, NoteAppendMode, NoteAppendOptions, NoteAppendPeriodicArg, NoteGetMode,
-    NoteGetOptions, NotePatchOptions, OutputFormat, SearchBackendArg, WebFetchMode,
+    CliError, McpToolAnnotations, McpToolDefinition, McpToolPackArg, McpToolPackModeArg,
+    McpToolsReport, McpTransportArg, NoteAppendMode, NoteAppendOptions, NoteAppendPeriodicArg,
+    NoteGetMode, NoteGetOptions, NotePatchOptions, OutputFormat, SearchBackendArg, WebFetchMode,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -51,38 +51,73 @@ pub(crate) struct McpHttpOptions {
     pub auth_token: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum McpToolPackMode {
+    Static,
+    Adaptive,
+}
+
+impl McpToolPackMode {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Static => "static",
+            Self::Adaptive => "adaptive",
+        }
+    }
+}
+
+impl From<McpToolPackModeArg> for McpToolPackMode {
+    fn from(value: McpToolPackModeArg) -> Self {
+        match value {
+            McpToolPackModeArg::Static => Self::Static,
+            McpToolPackModeArg::Adaptive => Self::Adaptive,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum McpToolPack {
-    Core,
-    Extended,
-    Admin,
+    NotesRead,
+    Search,
+    Status,
+    NotesWrite,
+    NotesManage,
+    Web,
+    Config,
+    Index,
+    ToolPacks,
 }
 
 impl McpToolPack {
     const fn as_str(self) -> &'static str {
         match self {
-            Self::Core => "core",
-            Self::Extended => "extended",
-            Self::Admin => "admin",
+            Self::NotesRead => "notes-read",
+            Self::Search => "search",
+            Self::Status => "status",
+            Self::NotesWrite => "notes-write",
+            Self::NotesManage => "notes-manage",
+            Self::Web => "web",
+            Self::Config => "config",
+            Self::Index => "index",
+            Self::ToolPacks => "tool-packs",
         }
     }
 
-    const fn includes(self, required: Self) -> bool {
-        matches!(
-            (self, required),
-            (Self::Admin, _)
-                | (Self::Extended, Self::Core | Self::Extended)
-                | (Self::Core, Self::Core)
-        )
-    }
-}
-
-impl From<McpToolPackArg> for McpToolPack {
-    fn from(value: McpToolPackArg) -> Self {
-        match value {
-            McpToolPackArg::Core => Self::Core,
-            McpToolPackArg::Extended => Self::Extended,
-            McpToolPackArg::Admin => Self::Admin,
+    const fn description(self) -> &'static str {
+        match self {
+            Self::NotesRead => "Read note content and outlines for scoped follow-up work.",
+            Self::Search => "Search the vault with structured hits and snippets.",
+            Self::Status => "Inspect vault status, cache metadata, and git summary.",
+            Self::NotesWrite => "Create notes and apply targeted append/patch mutations.",
+            Self::NotesManage => {
+                "Read advanced note metadata and perform replace/delete mutations."
+            }
+            Self::Web => "Use the configured web search and fetch backends.",
+            Self::Config => "Read and write effective Vulcan configuration.",
+            Self::Index => "Run explicit vault index scans and maintenance refreshes.",
+            Self::ToolPacks => {
+                "Inspect and mutate the MCP tool-pack selection for the current session."
+            }
         }
     }
 }
@@ -104,10 +139,15 @@ enum McpToolId {
     ConfigShow,
     ConfigSet,
     IndexScan,
+    ToolPackList,
+    ToolPackEnable,
+    ToolPackDisable,
+    ToolPackSet,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum McpVisibilityRequirement {
+    None,
     Read,
     Write,
     Network,
@@ -122,7 +162,7 @@ struct McpToolCatalogEntry {
     name: &'static str,
     title: &'static str,
     description: &'static str,
-    pack: McpToolPack,
+    packs: &'static [McpToolPack],
     visibility: McpVisibilityRequirement,
     annotations: McpToolAnnotations,
     input_schema: fn() -> Value,
@@ -145,13 +185,23 @@ const fn mcp_annotations(
     }
 }
 
+const PACK_NOTES_READ: &[McpToolPack] = &[McpToolPack::NotesRead];
+const PACK_SEARCH: &[McpToolPack] = &[McpToolPack::Search];
+const PACK_STATUS: &[McpToolPack] = &[McpToolPack::Status];
+const PACK_NOTES_WRITE: &[McpToolPack] = &[McpToolPack::NotesWrite];
+const PACK_NOTES_MANAGE: &[McpToolPack] = &[McpToolPack::NotesManage];
+const PACK_WEB: &[McpToolPack] = &[McpToolPack::Web];
+const PACK_CONFIG: &[McpToolPack] = &[McpToolPack::Config];
+const PACK_INDEX: &[McpToolPack] = &[McpToolPack::Index];
+const PACK_TOOL_PACKS: &[McpToolPack] = &[McpToolPack::ToolPacks];
+
 const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
     McpToolCatalogEntry {
         id: McpToolId::NoteGet,
         name: "note_get",
         title: "Read Note Content",
         description: "Read one note or markdown file, optionally selecting a section, heading, block, or line range.",
-        pack: McpToolPack::Core,
+        packs: PACK_NOTES_READ,
         visibility: McpVisibilityRequirement::Read,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: note_get_input_schema,
@@ -166,7 +216,7 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "note_outline",
         title: "Inspect Note Outline",
         description: "Inspect a note's semantic sections and block references for scoped follow-up reads and patches.",
-        pack: McpToolPack::Core,
+        packs: PACK_NOTES_READ,
         visibility: McpVisibilityRequirement::Read,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: note_outline_input_schema,
@@ -181,7 +231,7 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "search",
         title: "Search Vault",
         description: "Run full-text or hybrid search across the vault and return structured hits with snippets and section metadata.",
-        pack: McpToolPack::Core,
+        packs: PACK_SEARCH,
         visibility: McpVisibilityRequirement::Read,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: search_input_schema,
@@ -196,7 +246,7 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "status",
         title: "Read Vault Status",
         description: "Return a vault overview with note counts, cache size, last scan time, and git status.",
-        pack: McpToolPack::Core,
+        packs: PACK_STATUS,
         visibility: McpVisibilityRequirement::Read,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: empty_object_schema,
@@ -208,7 +258,7 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "note_create",
         title: "Create Note",
         description: "Create a new note from explicit body text, optional template, and optional frontmatter properties.",
-        pack: McpToolPack::Core,
+        packs: PACK_NOTES_WRITE,
         visibility: McpVisibilityRequirement::Write,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: note_create_input_schema,
@@ -222,7 +272,7 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "note_append",
         title: "Append To Note",
         description: "Append text to a note, prepend it, or insert it below a heading; periodic targets are also supported.",
-        pack: McpToolPack::Core,
+        packs: PACK_NOTES_WRITE,
         visibility: McpVisibilityRequirement::Write,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: note_append_input_schema,
@@ -237,7 +287,7 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "note_patch",
         title: "Patch Note Text",
         description: "Perform a guarded find-and-replace inside one note or one selected note scope.",
-        pack: McpToolPack::Core,
+        packs: PACK_NOTES_WRITE,
         visibility: McpVisibilityRequirement::Write,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: note_patch_input_schema,
@@ -249,7 +299,7 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "note_info",
         title: "Read Note Metadata",
         description: "Return summary metadata and graph counts for one resolved note.",
-        pack: McpToolPack::Extended,
+        packs: PACK_NOTES_MANAGE,
         visibility: McpVisibilityRequirement::Read,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: note_info_input_schema,
@@ -261,7 +311,7 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "note_set",
         title: "Replace Note Content",
         description: "Replace one note's body content with supplied text, optionally preserving the existing frontmatter block.",
-        pack: McpToolPack::Extended,
+        packs: PACK_NOTES_MANAGE,
         visibility: McpVisibilityRequirement::Write,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: note_set_input_schema,
@@ -273,7 +323,7 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "note_delete",
         title: "Delete Note",
         description: "Delete one note and report the backlinks that would become unresolved.",
-        pack: McpToolPack::Extended,
+        packs: PACK_NOTES_MANAGE,
         visibility: McpVisibilityRequirement::Write,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: note_delete_input_schema,
@@ -285,7 +335,7 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "web_search",
         title: "Search The Web",
         description: "Query the configured web search backend and return structured result rows.",
-        pack: McpToolPack::Extended,
+        packs: PACK_WEB,
         visibility: McpVisibilityRequirement::Network,
         annotations: mcp_annotations(true, false, false, true),
         input_schema: web_search_input_schema,
@@ -297,7 +347,7 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "web_fetch",
         title: "Fetch URL",
         description: "Fetch one URL as markdown, html, or raw content.",
-        pack: McpToolPack::Extended,
+        packs: PACK_WEB,
         visibility: McpVisibilityRequirement::Network,
         annotations: mcp_annotations(true, false, false, true),
         input_schema: web_fetch_input_schema,
@@ -309,7 +359,7 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "config_show",
         title: "Read Effective Config",
         description: "Read the effective Vulcan config, optionally narrowed to one section.",
-        pack: McpToolPack::Admin,
+        packs: PACK_CONFIG,
         visibility: McpVisibilityRequirement::ConfigRead,
         annotations: mcp_annotations(true, false, true, false),
         input_schema: config_show_input_schema,
@@ -321,7 +371,7 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "config_set",
         title: "Set Config Value",
         description: "Write one shared config value to `.vulcan/config.toml` using the same parser and auto-commit behavior as the CLI.",
-        pack: McpToolPack::Admin,
+        packs: PACK_CONFIG,
         visibility: McpVisibilityRequirement::ConfigWrite,
         annotations: mcp_annotations(false, true, false, false),
         input_schema: config_set_input_schema,
@@ -333,12 +383,60 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         name: "index_scan",
         title: "Scan Vault Index",
         description: "Run an incremental or full vault scan and return the resulting scan summary.",
-        pack: McpToolPack::Admin,
+        packs: PACK_INDEX,
         visibility: McpVisibilityRequirement::Index,
         annotations: mcp_annotations(false, false, false, false),
         input_schema: index_scan_input_schema,
         output_schema: Some(index_scan_output_schema),
         examples: &["vulcan index scan --full"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::ToolPackList,
+        name: "tool_pack_list",
+        title: "List MCP Tool Packs",
+        description: "Inspect the available MCP tool packs and the current session's selected pack set.",
+        packs: PACK_TOOL_PACKS,
+        visibility: McpVisibilityRequirement::None,
+        annotations: mcp_annotations(true, false, true, false),
+        input_schema: empty_object_schema,
+        output_schema: Some(tool_pack_state_output_schema),
+        examples: &["tool_pack_list"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::ToolPackEnable,
+        name: "tool_pack_enable",
+        title: "Enable MCP Tool Packs",
+        description: "Enable one or more MCP tool packs for the current session and refresh the visible tool list.",
+        packs: PACK_TOOL_PACKS,
+        visibility: McpVisibilityRequirement::None,
+        annotations: mcp_annotations(false, false, true, false),
+        input_schema: tool_pack_mutation_input_schema,
+        output_schema: Some(tool_pack_state_output_schema),
+        examples: &["tool_pack_enable {\"packs\":[\"web\",\"notes-manage\"]}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::ToolPackDisable,
+        name: "tool_pack_disable",
+        title: "Disable MCP Tool Packs",
+        description: "Disable one or more MCP tool packs for the current session and refresh the visible tool list.",
+        packs: PACK_TOOL_PACKS,
+        visibility: McpVisibilityRequirement::None,
+        annotations: mcp_annotations(false, false, true, false),
+        input_schema: tool_pack_mutation_input_schema,
+        output_schema: Some(tool_pack_state_output_schema),
+        examples: &["tool_pack_disable {\"packs\":[\"web\"]}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::ToolPackSet,
+        name: "tool_pack_set",
+        title: "Set MCP Tool Packs",
+        description: "Replace the current session's selected MCP tool packs in one call and refresh the visible tool list.",
+        packs: PACK_TOOL_PACKS,
+        visibility: McpVisibilityRequirement::None,
+        annotations: mcp_annotations(false, false, true, false),
+        input_schema: tool_pack_mutation_input_schema,
+        output_schema: Some(tool_pack_state_output_schema),
+        examples: &["tool_pack_set {\"packs\":[\"notes-read\",\"search\"]}"],
     },
 ];
 
@@ -361,7 +459,8 @@ struct McpServerCore {
     paths: VaultPaths,
     selection: vulcan_core::ResolvedPermissionProfile,
     guard: ProfilePermissionGuard,
-    tool_pack: McpToolPack,
+    tool_pack_mode: McpToolPackMode,
+    selected_tool_packs: BTreeSet<McpToolPack>,
     stored_resources: BTreeMap<String, McpStoredResource>,
     next_resource_id: u64,
     snapshot: McpServerSnapshot,
@@ -447,7 +546,8 @@ struct McpHttpProcessResult {
 struct McpHttpServerContext {
     paths: VaultPaths,
     requested_profile: Option<String>,
-    tool_pack_arg: McpToolPackArg,
+    tool_pack_args: Vec<McpToolPackArg>,
+    tool_pack_mode_arg: McpToolPackModeArg,
     endpoint: String,
     auth_token: Option<String>,
     bind_addr: SocketAddr,
@@ -768,15 +868,23 @@ struct McpIndexScanArgs {
     no_commit: bool,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpToolPackMutationArgs {
+    packs: Vec<String>,
+}
+
 pub(crate) fn build_mcp_tool_definitions(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
-    tool_pack_arg: McpToolPackArg,
+    tool_pack_args: &[McpToolPackArg],
+    tool_pack_mode_arg: McpToolPackModeArg,
 ) -> Result<McpToolsReport, CliError> {
     let selection =
         resolve_permission_profile(paths, requested_profile).map_err(permission_error_to_cli)?;
-    let tool_pack = McpToolPack::from(tool_pack_arg);
-    let tools = visible_tool_catalog(tool_pack, &selection.profile)
+    let tool_pack_mode = McpToolPackMode::from(tool_pack_mode_arg);
+    let selected_tool_packs = resolve_selected_tool_packs(tool_pack_args, tool_pack_mode);
+    let tools = visible_tool_catalog(&selected_tool_packs, &selection.profile)
         .into_iter()
         .map(|tool| McpToolDefinition {
             name: tool.name.to_string(),
@@ -785,7 +893,11 @@ pub(crate) fn build_mcp_tool_definitions(
             input_schema: (tool.input_schema)(),
             output_schema: tool.output_schema.map(|schema| schema()),
             annotations: tool.annotations,
-            tool_pack: tool.pack.as_str().to_string(),
+            tool_packs: tool
+                .packs
+                .iter()
+                .map(|pack| pack.as_str().to_string())
+                .collect(),
             examples: tool
                 .examples
                 .iter()
@@ -796,7 +908,8 @@ pub(crate) fn build_mcp_tool_definitions(
 
     Ok(McpToolsReport {
         protocol_version: MCP_PROTOCOL_VERSION.to_string(),
-        tool_pack: tool_pack.as_str().to_string(),
+        tool_pack_mode: tool_pack_mode.as_str().to_string(),
+        selected_tool_packs: pack_name_list(&selected_tool_packs),
         tools,
     })
 }
@@ -804,24 +917,33 @@ pub(crate) fn build_mcp_tool_definitions(
 pub(crate) fn run_mcp(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
-    tool_pack_arg: McpToolPackArg,
+    tool_pack_args: &[McpToolPackArg],
+    tool_pack_mode_arg: McpToolPackModeArg,
     transport_arg: McpTransportArg,
     http_options: &McpHttpOptions,
 ) -> Result<(), CliError> {
     match transport_arg {
-        McpTransportArg::Stdio => run_mcp_stdio_server(paths, requested_profile, tool_pack_arg),
-        McpTransportArg::Http => {
-            run_mcp_http_server(paths, requested_profile, tool_pack_arg, http_options)
+        McpTransportArg::Stdio => {
+            run_mcp_stdio_server(paths, requested_profile, tool_pack_args, tool_pack_mode_arg)
         }
+        McpTransportArg::Http => run_mcp_http_server(
+            paths,
+            requested_profile,
+            tool_pack_args,
+            tool_pack_mode_arg,
+            http_options,
+        ),
     }
 }
 
 fn run_mcp_stdio_server(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
-    tool_pack_arg: McpToolPackArg,
+    tool_pack_args: &[McpToolPackArg],
+    tool_pack_mode_arg: McpToolPackModeArg,
 ) -> Result<(), CliError> {
-    let mut server = McpServerCore::new(paths, requested_profile, tool_pack_arg)?;
+    let mut server =
+        McpServerCore::new(paths, requested_profile, tool_pack_args, tool_pack_mode_arg)?;
     let stdin = io::stdin();
 
     for line in stdin.lock().lines() {
@@ -852,7 +974,8 @@ fn run_mcp_stdio_server(
 fn run_mcp_http_server(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
-    tool_pack_arg: McpToolPackArg,
+    tool_pack_args: &[McpToolPackArg],
+    tool_pack_mode_arg: McpToolPackModeArg,
     options: &McpHttpOptions,
 ) -> Result<(), CliError> {
     let bind_addr = parse_mcp_http_bind_addr(&options.bind, options.auth_token.is_some())?;
@@ -866,7 +989,8 @@ fn run_mcp_http_server(
     let context = McpHttpServerContext {
         paths: paths.clone(),
         requested_profile: requested_profile.map(ToOwned::to_owned),
-        tool_pack_arg,
+        tool_pack_args: tool_pack_args.to_vec(),
+        tool_pack_mode_arg,
         endpoint,
         auth_token: options.auth_token.clone(),
         bind_addr: addr,
@@ -1054,7 +1178,8 @@ fn resolve_mcp_http_session(
         let core = McpServerCore::new(
             &context.paths,
             context.requested_profile.as_deref(),
-            context.tool_pack_arg,
+            &context.tool_pack_args,
+            context.tool_pack_mode_arg,
         )
         .map_err(|error| mcp_http_json_error_response(500, error.to_string(), Value::Null))?;
         let session = Arc::new(McpHttpSession::new(core));
@@ -1216,14 +1341,16 @@ impl McpServerCore {
     fn new(
         paths: &VaultPaths,
         requested_profile: Option<&str>,
-        tool_pack_arg: McpToolPackArg,
+        tool_pack_args: &[McpToolPackArg],
+        tool_pack_mode_arg: McpToolPackModeArg,
     ) -> Result<Self, CliError> {
         let selection = resolve_permission_profile(paths, requested_profile)
             .map_err(permission_error_to_cli)?;
-        let tool_pack = McpToolPack::from(tool_pack_arg);
+        let tool_pack_mode = McpToolPackMode::from(tool_pack_mode_arg);
+        let selected_tool_packs = resolve_selected_tool_packs(tool_pack_args, tool_pack_mode);
         let guard = ProfilePermissionGuard::new(paths, selection.clone());
         let snapshot = McpServerSnapshot {
-            tools: tool_fingerprint(tool_pack, &selection.profile),
+            tools: tool_fingerprint(&selected_tool_packs, &selection.profile),
             prompts: prompt_files_fingerprint(paths),
             resources: resource_files_fingerprint(paths),
         };
@@ -1232,7 +1359,8 @@ impl McpServerCore {
             paths: paths.clone(),
             selection,
             guard,
-            tool_pack,
+            tool_pack_mode,
+            selected_tool_packs,
             stored_resources: BTreeMap::new(),
             next_resource_id: 1,
             snapshot,
@@ -1517,7 +1645,7 @@ impl McpServerCore {
     }
 
     fn visible_tools(&self) -> Vec<&'static McpToolCatalogEntry> {
-        visible_tool_catalog(self.tool_pack, &self.selection.profile)
+        visible_tool_catalog(&self.selected_tool_packs, &self.selection.profile)
     }
 
     fn visible_prompts(&self) -> Result<Vec<vulcan_core::AssistantPromptSummary>, McpMethodError> {
@@ -1903,12 +2031,16 @@ impl McpServerCore {
                 "Unknown tool: {name}"
             )));
         };
-        if !self.tool_pack.includes(tool.pack) {
+        if !tool
+            .packs
+            .iter()
+            .any(|pack| self.selected_tool_packs.contains(pack))
+        {
             return Err(McpMethodError::invalid_params(format!(
                 "Unknown tool: {name}"
             )));
         }
-        if !tool_visible(tool, &self.selection.profile, self.tool_pack) {
+        if !tool_visible(tool, &self.selection.profile, &self.selected_tool_packs) {
             return Err(McpMethodError::tool(format!(
                 "permission denied: tool `{}` requires {} under profile `{}`",
                 tool.name,
@@ -2244,6 +2376,41 @@ impl McpServerCore {
                 let summary = self.run_index_scan(args.full, args.no_commit)?;
                 self.serialize_tool_report(tool.name, &summary)
             }
+            McpToolId::ToolPackList => {
+                let structured = self.current_tool_pack_state();
+                Ok(self.tool_success_response(tool.name, structured))
+            }
+            McpToolId::ToolPackEnable => {
+                self.ensure_adaptive_tool_pack_mode()?;
+                let args: McpToolPackMutationArgs = parse_tool_arguments(arguments)?;
+                let requested = parse_tool_pack_selection_args(&args.packs)?;
+                for pack in resolve_selected_tool_packs(&requested, McpToolPackMode::Static) {
+                    self.selected_tool_packs.insert(pack);
+                }
+                let structured = self.current_tool_pack_state();
+                Ok(self.tool_success_response(tool.name, structured))
+            }
+            McpToolId::ToolPackDisable => {
+                self.ensure_adaptive_tool_pack_mode()?;
+                let args: McpToolPackMutationArgs = parse_tool_arguments(arguments)?;
+                let requested = parse_tool_pack_selection_args(&args.packs)?;
+                for pack in resolve_selected_tool_packs(&requested, McpToolPackMode::Static) {
+                    if pack != McpToolPack::ToolPacks {
+                        self.selected_tool_packs.remove(&pack);
+                    }
+                }
+                let structured = self.current_tool_pack_state();
+                Ok(self.tool_success_response(tool.name, structured))
+            }
+            McpToolId::ToolPackSet => {
+                self.ensure_adaptive_tool_pack_mode()?;
+                let args: McpToolPackMutationArgs = parse_tool_arguments(arguments)?;
+                let requested = parse_tool_pack_selection_args(&args.packs)?;
+                self.selected_tool_packs =
+                    resolve_selected_tool_packs(&requested, McpToolPackMode::Adaptive);
+                let structured = self.current_tool_pack_state();
+                Ok(self.tool_success_response(tool.name, structured))
+            }
         }
     }
 
@@ -2282,6 +2449,38 @@ impl McpServerCore {
             true,
         );
         Ok(summary)
+    }
+
+    fn ensure_adaptive_tool_pack_mode(&self) -> Result<(), McpMethodError> {
+        if matches!(self.tool_pack_mode, McpToolPackMode::Adaptive) {
+            Ok(())
+        } else {
+            Err(McpMethodError::tool(
+                "tool-pack mutation requires `--tool-pack-mode adaptive` for this MCP session",
+            ))
+        }
+    }
+
+    fn current_tool_pack_state(&self) -> Value {
+        let available = ALL_MCP_TOOL_PACKS
+            .iter()
+            .copied()
+            .map(|pack| {
+                let tools = tool_names_for_pack(pack, &self.selection.profile);
+                serde_json::json!({
+                    "name": pack.as_str(),
+                    "description": pack.description(),
+                    "selected": self.selected_tool_packs.contains(&pack),
+                    "adaptiveOnly": pack == McpToolPack::ToolPacks,
+                    "visibleTools": tools,
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "mode": self.tool_pack_mode.as_str(),
+            "selectedToolPacks": pack_name_list(&self.selected_tool_packs),
+            "availableToolPacks": available,
+        })
     }
 
     fn serialize_tool_report<T: serde::Serialize>(
@@ -2360,7 +2559,7 @@ impl McpServerCore {
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {
         let current = McpServerSnapshot {
-            tools: tool_fingerprint(self.tool_pack, &self.selection.profile),
+            tools: tool_fingerprint(&self.selected_tool_packs, &self.selection.profile),
             prompts: prompt_files_fingerprint(&self.paths),
             resources: resource_files_fingerprint(&self.paths),
         };
@@ -2776,25 +2975,122 @@ fn tool_by_name(name: &str) -> Option<&'static McpToolCatalogEntry> {
     MCP_TOOL_CATALOG.iter().find(|tool| tool.name == name)
 }
 
+const ALL_MCP_TOOL_PACKS: &[McpToolPack] = &[
+    McpToolPack::NotesRead,
+    McpToolPack::Search,
+    McpToolPack::Status,
+    McpToolPack::NotesWrite,
+    McpToolPack::NotesManage,
+    McpToolPack::Web,
+    McpToolPack::Config,
+    McpToolPack::Index,
+    McpToolPack::ToolPacks,
+];
+
+fn expand_tool_pack_arg(value: McpToolPackArg) -> &'static [McpToolPack] {
+    match value {
+        McpToolPackArg::NotesRead => PACK_NOTES_READ,
+        McpToolPackArg::Search => PACK_SEARCH,
+        McpToolPackArg::Status => PACK_STATUS,
+        McpToolPackArg::NotesWrite => PACK_NOTES_WRITE,
+        McpToolPackArg::NotesManage => PACK_NOTES_MANAGE,
+        McpToolPackArg::Web => PACK_WEB,
+        McpToolPackArg::Config => PACK_CONFIG,
+        McpToolPackArg::Index => PACK_INDEX,
+    }
+}
+
+fn resolve_selected_tool_packs(
+    tool_pack_args: &[McpToolPackArg],
+    tool_pack_mode: McpToolPackMode,
+) -> BTreeSet<McpToolPack> {
+    let mut selected = BTreeSet::new();
+    let default_selection = [
+        McpToolPackArg::NotesRead,
+        McpToolPackArg::Search,
+        McpToolPackArg::Status,
+    ];
+    let source = if tool_pack_args.is_empty() {
+        default_selection.as_slice()
+    } else {
+        tool_pack_args
+    };
+    for value in source {
+        selected.extend(expand_tool_pack_arg(*value).iter().copied());
+    }
+    if matches!(tool_pack_mode, McpToolPackMode::Adaptive) {
+        selected.insert(McpToolPack::ToolPacks);
+    }
+    selected
+}
+
+fn pack_name_list(selected_tool_packs: &BTreeSet<McpToolPack>) -> Vec<String> {
+    ALL_MCP_TOOL_PACKS
+        .iter()
+        .copied()
+        .filter(|pack| selected_tool_packs.contains(pack))
+        .map(|pack| pack.as_str().to_string())
+        .collect()
+}
+
+fn parse_tool_pack_selector(value: &str) -> Option<McpToolPackArg> {
+    match value {
+        "notes-read" => Some(McpToolPackArg::NotesRead),
+        "search" => Some(McpToolPackArg::Search),
+        "status" => Some(McpToolPackArg::Status),
+        "notes-write" => Some(McpToolPackArg::NotesWrite),
+        "notes-manage" => Some(McpToolPackArg::NotesManage),
+        "web" => Some(McpToolPackArg::Web),
+        "config" => Some(McpToolPackArg::Config),
+        "index" => Some(McpToolPackArg::Index),
+        _ => None,
+    }
+}
+
+fn parse_tool_pack_selection_args(names: &[String]) -> Result<Vec<McpToolPackArg>, McpMethodError> {
+    if names.is_empty() {
+        return Err(McpMethodError::invalid_params(
+            "`packs` must include at least one tool-pack name",
+        ));
+    }
+    names
+        .iter()
+        .map(|name| {
+            parse_tool_pack_selector(name).ok_or_else(|| {
+                McpMethodError::invalid_params(format!("unknown tool pack `{name}`"))
+            })
+        })
+        .collect()
+}
+
 fn visible_tool_catalog(
-    tool_pack: McpToolPack,
+    selected_tool_packs: &BTreeSet<McpToolPack>,
     profile: &PermissionProfile,
 ) -> Vec<&'static McpToolCatalogEntry> {
     MCP_TOOL_CATALOG
         .iter()
-        .filter(|tool| tool_visible(tool, profile, tool_pack))
+        .filter(|tool| tool_visible(tool, profile, selected_tool_packs))
         .collect()
 }
 
 fn tool_visible(
     tool: &McpToolCatalogEntry,
     profile: &PermissionProfile,
-    tool_pack: McpToolPack,
+    selected_tool_packs: &BTreeSet<McpToolPack>,
 ) -> bool {
-    if !tool_pack.includes(tool.pack) {
+    if !tool
+        .packs
+        .iter()
+        .any(|pack| selected_tool_packs.contains(pack))
+    {
         return false;
     }
+    tool_allowed_by_profile(tool, profile)
+}
+
+fn tool_allowed_by_profile(tool: &McpToolCatalogEntry, profile: &PermissionProfile) -> bool {
     match tool.visibility {
+        McpVisibilityRequirement::None => true,
         McpVisibilityRequirement::Read => !profile.read.is_none(),
         McpVisibilityRequirement::Write => !profile.write.is_none(),
         McpVisibilityRequirement::Network => profile.network.is_allowed(),
@@ -2808,6 +3104,15 @@ fn tool_visible(
     }
 }
 
+fn tool_names_for_pack(pack: McpToolPack, profile: &PermissionProfile) -> Vec<String> {
+    MCP_TOOL_CATALOG
+        .iter()
+        .filter(|tool| tool.packs.contains(&pack))
+        .filter(|tool| tool_allowed_by_profile(tool, profile))
+        .map(|tool| tool.name.to_string())
+        .collect()
+}
+
 fn tool_list_item(tool: &McpToolCatalogEntry) -> Value {
     serde_json::json!({
         "name": tool.name,
@@ -2816,6 +3121,7 @@ fn tool_list_item(tool: &McpToolCatalogEntry) -> Value {
         "inputSchema": (tool.input_schema)(),
         "outputSchema": tool.output_schema.map(|schema| schema()),
         "annotations": tool.annotations,
+        "toolPacks": tool.packs.iter().map(|pack| pack.as_str()).collect::<Vec<_>>(),
     })
 }
 
@@ -2831,8 +3137,16 @@ fn prompt_list_item(prompt: vulcan_core::AssistantPromptSummary) -> Value {
 fn parse_method_params<T: for<'de> Deserialize<'de>>(
     params: Option<&Value>,
 ) -> Result<T, McpMethodError> {
-    serde_json::from_value(params.cloned().unwrap_or_else(|| Value::Object(Map::new())))
+    let mut params = params.cloned().unwrap_or_else(|| Value::Object(Map::new()));
+    strip_reserved_method_params(&mut params);
+    serde_json::from_value(params)
         .map_err(|error| McpMethodError::invalid_params(error.to_string()))
+}
+
+fn strip_reserved_method_params(params: &mut Value) {
+    if let Value::Object(object) = params {
+        object.remove("_meta");
+    }
 }
 
 fn parse_tool_arguments<T: for<'de> Deserialize<'de>>(
@@ -3093,6 +3407,7 @@ fn tool_summary_text(tool_name: &str, structured: &Value) -> String {
 
 fn visibility_requirement_name(requirement: McpVisibilityRequirement) -> &'static str {
     match requirement {
+        McpVisibilityRequirement::None => "session access",
         McpVisibilityRequirement::Read => "read access",
         McpVisibilityRequirement::Write => "write access",
         McpVisibilityRequirement::Network => "network access",
@@ -3102,8 +3417,11 @@ fn visibility_requirement_name(requirement: McpVisibilityRequirement) -> &'stati
     }
 }
 
-fn tool_fingerprint(tool_pack: McpToolPack, profile: &PermissionProfile) -> String {
-    visible_tool_catalog(tool_pack, profile)
+fn tool_fingerprint(
+    selected_tool_packs: &BTreeSet<McpToolPack>,
+    profile: &PermissionProfile,
+) -> String {
+    visible_tool_catalog(selected_tool_packs, profile)
         .into_iter()
         .map(|tool| tool.name)
         .collect::<Vec<_>>()
@@ -3634,6 +3952,55 @@ fn index_scan_input_schema() -> Value {
         ],
         &[],
     )
+}
+
+fn tool_pack_mutation_input_schema() -> Value {
+    schema_object(
+        vec![(
+            "packs",
+            serde_json::json!({
+                "type": "array",
+                "description": "One or more tool-pack selectors to enable, disable, or set.",
+                "items": {
+                    "type": "string",
+                    "enum": [
+                        "notes-read",
+                        "search",
+                        "status",
+                        "notes-write",
+                        "notes-manage",
+                        "web",
+                        "config",
+                        "index",
+                    ],
+                },
+            }),
+        )],
+        &["packs"],
+    )
+}
+
+fn tool_pack_state_output_schema() -> Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "mode": {
+                "type": "string",
+                "enum": ["static", "adaptive"],
+                "description": "Current MCP tool-pack session mode.",
+            },
+            "selectedToolPacks": {
+                "type": "array",
+                "items": { "type": "string" },
+                "description": "Canonical tool packs currently selected for this session.",
+            },
+            "availableToolPacks": {
+                "type": "array",
+                "description": "Available canonical packs with visibility information under the current permission profile.",
+            },
+        },
+        "required": ["mode", "selectedToolPacks", "availableToolPacks"],
+    })
 }
 
 fn note_get_output_schema() -> Value {

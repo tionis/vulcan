@@ -232,14 +232,14 @@ pub use cli::{
     DescribeFormatArg, EpubTocStyle, ExportArgs, ExportCommand, ExportFormat, ExportProfileCommand,
     ExportProfileFormatArg, ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs,
     GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs, KanbanCommand,
-    McpToolPackArg, McpTransportArg, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand,
-    NoteGetMode, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg,
-    PluginSandboxArg, PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand,
-    RefreshMode, RenderArgs, RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg,
-    SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg,
-    TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
-    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand,
-    VectorsCommand, WebCommand, WebFetchMode,
+    McpToolPackArg, McpToolPackModeArg, McpTransportArg, NoteAppendPeriodicArg, NoteCheckboxState,
+    NoteCommand, NoteGetMode, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand,
+    PluginEventArg, PluginSandboxArg, PropertySortArg, QueryEngineArg, QueryFormatArg,
+    RefactorCommand, RefreshMode, RenderArgs, RepairCommand, SavedCommand, SavedCreateCommand,
+    SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand,
+    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
+    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TrustCommand,
+    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -6743,7 +6743,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_status_report(cli.output, &report, use_stdout_color)
         }
         Command::Mcp {
-            tool_pack,
+            ref tool_pack,
+            tool_pack_mode,
             transport,
             ref bind,
             ref endpoint,
@@ -6752,6 +6753,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             &paths,
             cli.permissions.as_deref(),
             tool_pack,
+            tool_pack_mode,
             transport,
             &mcp::McpHttpOptions {
                 bind: bind.clone(),
@@ -6806,11 +6808,16 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             stdout_is_tty,
             use_stdout_color,
         ),
-        Command::Describe { format, tool_pack } => commands::docs::handle_describe_command(
+        Command::Describe {
+            format,
+            ref tool_pack,
+            tool_pack_mode,
+        } => commands::docs::handle_describe_command(
             &paths,
             cli.output,
             format,
             tool_pack,
+            tool_pack_mode,
             cli.permissions.as_deref(),
         ),
         Command::Doctor {
@@ -8725,7 +8732,8 @@ fn print_describe_report(
     paths: &VaultPaths,
     output: OutputFormat,
     format: DescribeFormatArg,
-    tool_pack: McpToolPackArg,
+    tool_pack: &[McpToolPackArg],
+    tool_pack_mode: McpToolPackModeArg,
     requested_profile: Option<&str>,
 ) -> Result<(), CliError> {
     match format {
@@ -8753,7 +8761,12 @@ fn print_describe_report(
             }
         }
         DescribeFormatArg::Mcp => {
-            let tools = mcp::build_mcp_tool_definitions(paths, requested_profile, tool_pack)?;
+            let tools = mcp::build_mcp_tool_definitions(
+                paths,
+                requested_profile,
+                tool_pack,
+                tool_pack_mode,
+            )?;
             match output {
                 OutputFormat::Human | OutputFormat::Markdown => {
                     println!(
@@ -15115,8 +15128,10 @@ struct OpenAiFunctionDefinition {
 struct McpToolsReport {
     #[serde(rename = "protocolVersion")]
     protocol_version: String,
-    #[serde(rename = "toolPack")]
-    tool_pack: String,
+    #[serde(rename = "toolPackMode")]
+    tool_pack_mode: String,
+    #[serde(rename = "selectedToolPacks")]
+    selected_tool_packs: Vec<String>,
     tools: Vec<McpToolDefinition>,
 }
 
@@ -15130,8 +15145,8 @@ struct McpToolDefinition {
     #[serde(rename = "outputSchema", skip_serializing_if = "Option::is_none")]
     output_schema: Option<Value>,
     annotations: McpToolAnnotations,
-    #[serde(rename = "toolPack")]
-    tool_pack: String,
+    #[serde(rename = "toolPacks")]
+    tool_packs: Vec<String>,
     examples: Vec<String>,
 }
 
@@ -21755,7 +21770,11 @@ mod tests {
             "--format",
             "openai-tools",
             "--tool-pack",
-            "extended",
+            "notes-read,search",
+            "--tool-pack",
+            "web",
+            "--tool-pack-mode",
+            "adaptive",
         ])
         .expect("describe should parse");
         let mcp = Cli::try_parse_from([
@@ -21764,7 +21783,11 @@ mod tests {
             "readonly",
             "mcp",
             "--tool-pack",
-            "admin",
+            "notes-read,notes-manage",
+            "--tool-pack",
+            "index",
+            "--tool-pack-mode",
+            "adaptive",
             "--transport",
             "http",
             "--bind",
@@ -21787,13 +21810,23 @@ mod tests {
             describe.command,
             Command::Describe {
                 format: DescribeFormatArg::OpenaiTools,
-                tool_pack: McpToolPackArg::Extended,
+                tool_pack: vec![
+                    McpToolPackArg::NotesRead,
+                    McpToolPackArg::Search,
+                    McpToolPackArg::Web,
+                ],
+                tool_pack_mode: McpToolPackModeArg::Adaptive,
             }
         );
         assert_eq!(
             mcp.command,
             Command::Mcp {
-                tool_pack: McpToolPackArg::Admin,
+                tool_pack: vec![
+                    McpToolPackArg::NotesRead,
+                    McpToolPackArg::NotesManage,
+                    McpToolPackArg::Index,
+                ],
+                tool_pack_mode: McpToolPackModeArg::Adaptive,
                 transport: McpTransportArg::Http,
                 bind: "127.0.0.1:9123".to_string(),
                 endpoint: "/custom-mcp".to_string(),

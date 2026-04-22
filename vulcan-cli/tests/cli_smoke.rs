@@ -18509,7 +18509,7 @@ fn mcp_http_transport_enforces_auth_tokens() {
 }
 
 #[test]
-fn mcp_server_exposes_curated_headless_core_tools_and_structured_results() {
+fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     copy_fixture_vault("basic", &vault_root);
@@ -18533,21 +18533,17 @@ fn mcp_server_exposes_curated_headless_core_tools_and_structured_results() {
         .and_then(|response| response["result"]["tools"].as_array())
         .expect("tools/list should return a tool array");
 
-    for expected in [
-        "note_get",
-        "note_outline",
-        "search",
-        "status",
-        "note_create",
-        "note_append",
-        "note_patch",
-    ] {
+    for expected in ["note_get", "note_outline", "search", "status"] {
         assert!(
             tools.iter().any(|tool| tool["name"] == expected),
-            "core pack should expose `{expected}`"
+            "default pack selection should expose `{expected}`"
         );
     }
     for hidden in [
+        "note_create",
+        "note_append",
+        "note_patch",
+        "note_info",
         "note_set",
         "note_delete",
         "web_search",
@@ -18562,7 +18558,7 @@ fn mcp_server_exposes_curated_headless_core_tools_and_structured_results() {
     ] {
         assert!(
             !tools.iter().any(|tool| tool["name"] == hidden),
-            "core pack should not expose `{hidden}`"
+            "default pack selection should not expose `{hidden}`"
         );
     }
 
@@ -18571,6 +18567,7 @@ fn mcp_server_exposes_curated_headless_core_tools_and_structured_results() {
         .find(|tool| tool["name"] == "note_get")
         .expect("note_get tool should exist");
     assert_eq!(note_get["title"].as_str(), Some("Read Note Content"));
+    assert_eq!(note_get["toolPacks"], serde_json::json!(["notes-read"]));
     assert_eq!(
         note_get["annotations"]["readOnlyHint"].as_bool(),
         Some(true)
@@ -18596,6 +18593,188 @@ fn mcp_server_exposes_curated_headless_core_tools_and_structured_results() {
         Some("Projects/Alpha.md")
     );
     assert_eq!(result["content"][0]["type"].as_str(), Some("text"));
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_server_composes_requested_canonical_tool_packs() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let mut session = McpSession::start(
+        &vault_root,
+        &[
+            "--tool-pack",
+            "notes-read,notes-manage",
+            "--tool-pack",
+            "web",
+        ],
+    );
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+
+    let tools = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list"
+    }));
+    let tools = tools
+        .last()
+        .and_then(|response| response["result"]["tools"].as_array())
+        .expect("tools/list should return a tool array");
+
+    for expected in [
+        "note_get",
+        "note_outline",
+        "note_info",
+        "note_set",
+        "note_delete",
+        "web_search",
+        "web_fetch",
+    ] {
+        assert!(
+            tools.iter().any(|tool| tool["name"] == expected),
+            "composed tool packs should expose `{expected}`"
+        );
+    }
+    for hidden in [
+        "search",
+        "status",
+        "note_create",
+        "config_show",
+        "index_scan",
+    ] {
+        assert!(
+            !tools.iter().any(|tool| tool["name"] == hidden),
+            "unselected packs should keep `{hidden}` hidden"
+        );
+    }
+
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_adaptive_tool_pack_tools_expand_visible_registry() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let mut session = McpSession::start(&vault_root, &["--tool-pack-mode", "adaptive"]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+
+    let tools = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list"
+    }));
+    let tools = tools
+        .last()
+        .and_then(|response| response["result"]["tools"].as_array())
+        .expect("tools/list should return a tool array");
+    for expected in [
+        "note_get",
+        "note_outline",
+        "search",
+        "status",
+        "tool_pack_list",
+        "tool_pack_enable",
+        "tool_pack_disable",
+        "tool_pack_set",
+    ] {
+        assert!(
+            tools.iter().any(|tool| tool["name"] == expected),
+            "adaptive mode should expose `{expected}`"
+        );
+    }
+    for hidden in ["web_search", "note_create", "config_show", "index_scan"] {
+        assert!(
+            !tools.iter().any(|tool| tool["name"] == hidden),
+            "adaptive mode should not expose `{hidden}` before enabling its pack"
+        );
+    }
+
+    let state = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "tool_pack_list",
+            "arguments": {}
+        }
+    }));
+    let state = &state.last().expect("tool_pack_list response")["result"]["structuredContent"];
+    assert_eq!(state["mode"].as_str(), Some("adaptive"));
+    assert_eq!(
+        state["selectedToolPacks"],
+        serde_json::json!(["notes-read", "search", "status", "tool-packs"])
+    );
+
+    let enable = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "tool_pack_enable",
+            "arguments": { "packs": ["web", "notes-write"] }
+        }
+    }));
+    assert!(
+        enable
+            .iter()
+            .any(|message| message["method"] == "notifications/tools/list_changed"),
+        "enabling new tool packs should emit tools/list_changed"
+    );
+    let state = &enable.last().expect("tool_pack_enable response")["result"]["structuredContent"];
+    assert_eq!(
+        state["selectedToolPacks"],
+        serde_json::json!([
+            "notes-read",
+            "search",
+            "status",
+            "notes-write",
+            "web",
+            "tool-packs",
+        ])
+    );
+
+    let tools = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/list"
+    }));
+    let tools = tools
+        .last()
+        .and_then(|response| response["result"]["tools"].as_array())
+        .expect("tools/list should return a tool array");
+    for expected in [
+        "tool_pack_list",
+        "tool_pack_enable",
+        "tool_pack_disable",
+        "tool_pack_set",
+        "note_create",
+        "note_append",
+        "note_patch",
+        "web_search",
+        "web_fetch",
+    ] {
+        assert!(
+            tools.iter().any(|tool| tool["name"] == expected),
+            "enabled packs should expose `{expected}`"
+        );
+    }
+
     assert!(session.finish().is_empty());
 }
 
@@ -18827,7 +19006,12 @@ Summarize {{note}}.
 
     let mut session = McpSession::start(
         &vault_root,
-        &["--permissions", "blind", "--tool-pack", "admin"],
+        &[
+            "--permissions",
+            "blind",
+            "--tool-pack",
+            "notes-read,notes-write,web,config",
+        ],
     );
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0",
@@ -18940,6 +19124,54 @@ Summarize {{note}}.
             .is_some_and(|message| message.contains("permission denied")),
         "hidden resources should reject direct access"
     );
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_server_accepts_reserved_meta_on_list_requests() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let mut session = McpSession::start(&vault_root, &[]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+
+    let tools = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list",
+        "params": {
+            "_meta": { "progressToken": 1 }
+        }
+    }));
+    let tools = tools
+        .last()
+        .and_then(|response| response["result"]["tools"].as_array())
+        .expect("tools/list should accept reserved _meta params");
+    assert!(tools.iter().any(|tool| tool["name"] == "note_get"));
+
+    let resources = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "resources/list",
+        "params": {
+            "_meta": { "progressToken": 2 }
+        }
+    }));
+    let resources = resources
+        .last()
+        .and_then(|response| response["result"]["resources"].as_array())
+        .expect("resources/list should accept reserved _meta params");
+    assert!(resources
+        .iter()
+        .any(|resource| resource["uri"] == "vulcan://help/overview"));
+
     assert!(session.finish().is_empty());
 }
 
@@ -19091,7 +19323,12 @@ fn mcp_server_filters_and_rejects_tools_under_readonly_permissions() {
 
     let mut session = McpSession::start(
         &vault_root,
-        &["--permissions", "readonly", "--tool-pack", "extended"],
+        &[
+            "--permissions",
+            "readonly",
+            "--tool-pack",
+            "notes-read,notes-manage,web,index",
+        ],
     );
     let _ = session.send(serde_json::json!({
         "jsonrpc": "2.0",
