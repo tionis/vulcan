@@ -122,6 +122,7 @@ struct SkillFrontmatter {
     output_file: Option<String>,
 }
 
+#[must_use]
 pub fn assistant_config_summary(paths: &VaultPaths) -> AssistantConfigSummary {
     let config = load_vault_config(paths).config.assistant;
     let prompts_path = paths.vault_root().join(&config.prompts_folder);
@@ -135,12 +136,14 @@ pub fn assistant_config_summary(paths: &VaultPaths) -> AssistantConfigSummary {
     }
 }
 
+#[must_use]
 pub fn assistant_prompts_root(paths: &VaultPaths) -> PathBuf {
     paths
         .vault_root()
         .join(load_vault_config(paths).config.assistant.prompts_folder)
 }
 
+#[must_use]
 pub fn assistant_skills_root(paths: &VaultPaths) -> PathBuf {
     paths
         .vault_root()
@@ -517,7 +520,7 @@ mod tests {
         fs::create_dir_all(&prompts_root).expect("prompts dir");
         fs::write(
             prompts_root.join("summarize.md"),
-            r#"---
+            r"---
 name: summarize
 title: Summarize Note
 description: Summarize one note
@@ -531,7 +534,7 @@ arguments:
     completion: note
 ---
 Summarize {{note}}.
-"#,
+",
         )
         .expect("prompt file");
 
@@ -555,7 +558,7 @@ Summarize {{note}}.
         fs::create_dir_all(&skill_root).expect("skill dir");
         fs::write(
             skill_root.join("SKILL.md"),
-            r#"---
+            r"---
 name: daily-review
 description: Review the day
 tools:
@@ -564,7 +567,7 @@ tools:
 output_file: Reviews/{{date}}.md
 ---
 Use this skill for a daily summary.
-"#,
+",
         )
         .expect("skill file");
 

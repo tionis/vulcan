@@ -1,12 +1,14 @@
+#![allow(clippy::needless_pass_by_value, clippy::too_many_lines)]
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use rusqlite::Connection;
 use serde_json::Value;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
+use std::process::{Child, ChildStdin, ChildStdout, Command as ProcessCommand, Stdio};
 use std::thread;
 use tempfile::TempDir;
 use vulcan_core::{CacheDatabase, VaultPaths};
@@ -58,6 +60,80 @@ fn write_plugin_file(vault_root: &Path, name: &str, source: &str) {
     let plugin_dir = vault_root.join(".vulcan/plugins");
     fs::create_dir_all(&plugin_dir).expect("plugin dir should be created");
     fs::write(plugin_dir.join(format!("{name}.js")), source).expect("plugin file should write");
+}
+
+struct McpSession {
+    child: Child,
+    stdin: ChildStdin,
+    stdout: BufReader<ChildStdout>,
+}
+
+impl McpSession {
+    fn start(vault_root: &Path, extra_args: &[&str]) -> Self {
+        let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"));
+        command
+            .env("VULCAN_FIXED_NOW", FIXED_NOW)
+            .args(["--vault", vault_root.to_str().expect("utf-8"), "mcp"])
+            .args(extra_args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = command.spawn().expect("mcp server should start");
+        let stdin = child.stdin.take().expect("stdin should be piped");
+        let stdout = BufReader::new(child.stdout.take().expect("stdout should be piped"));
+        Self {
+            child,
+            stdin,
+            stdout,
+        }
+    }
+
+    fn send(&mut self, request: Value) -> Vec<Value> {
+        let id = request.get("id").cloned();
+        writeln!(self.stdin, "{request}").expect("request should write");
+        self.stdin.flush().expect("request should flush");
+
+        let mut messages = Vec::new();
+        loop {
+            let mut line = String::new();
+            let bytes = self
+                .stdout
+                .read_line(&mut line)
+                .expect("mcp server should respond");
+            assert!(bytes > 0, "mcp server closed stdout unexpectedly");
+            let message: Value =
+                serde_json::from_str(line.trim_end()).expect("mcp should emit valid JSON");
+            let matches_id = id
+                .as_ref()
+                .is_some_and(|expected| message.get("id") == Some(expected));
+            messages.push(message);
+            if matches_id {
+                return messages;
+            }
+        }
+    }
+
+    fn send_notification(&mut self, notification: Value) {
+        writeln!(self.stdin, "{notification}").expect("notification should write");
+        self.stdin.flush().expect("notification should flush");
+    }
+
+    fn finish(mut self) -> Vec<Value> {
+        drop(self.stdin);
+        let mut output = String::new();
+        self.stdout
+            .read_to_string(&mut output)
+            .expect("mcp stdout should read");
+        let status = self.child.wait().expect("mcp server should exit");
+        assert!(
+            status.success(),
+            "mcp server exited unsuccessfully: {status}"
+        );
+        output
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).expect("mcp should emit valid JSON"))
+            .collect()
+    }
 }
 
 fn cargo_vulcan_with_xdg_config(config_home: &str) -> Command {
@@ -17497,158 +17573,699 @@ fn periodic_append_subcommand_delegates_to_daily_append() {
 }
 
 #[test]
-fn mcp_server_responds_to_initialize_request() {
-    use std::io::Write;
-
+fn mcp_server_negotiates_protocol_and_advertises_native_capabilities() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     copy_fixture_vault("basic", &vault_root);
     run_scan(&vault_root);
 
-    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("vulcan"))
-        .args(["--vault", vault_root.to_str().expect("utf-8"), "mcp"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("mcp server should start");
-
-    let init_request = serde_json::json!({
+    let mut session = McpSession::start(&vault_root, &[]);
+    let messages = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
         "method": "initialize",
         "params": {
-            "protocolVersion": "2024-11-05",
+            "protocolVersion": "2025-06-18",
             "capabilities": {},
             "clientInfo": { "name": "test", "version": "0.0.1" }
         }
-    });
-    let msg = format!("{init_request}\n");
+    }));
+    let response = messages.last().expect("initialize response");
 
-    let stdin = child.stdin.as_mut().expect("stdin should be piped");
-    stdin.write_all(msg.as_bytes()).expect("write to mcp stdin");
-    stdin.flush().expect("flush mcp stdin");
-    drop(child.stdin.take());
-
-    let output = child.wait_with_output().expect("mcp server should exit");
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let first_line = stdout.lines().next().unwrap_or("");
-    let response: Value =
-        serde_json::from_str(first_line).expect("mcp should emit valid JSON-RPC response");
+    assert_eq!(response["jsonrpc"].as_str(), Some("2.0"));
+    assert_eq!(response["id"].as_u64(), Some(1));
     assert_eq!(
-        response["jsonrpc"].as_str(),
-        Some("2.0"),
-        "response must be JSON-RPC 2.0"
+        response["result"]["protocolVersion"].as_str(),
+        Some("2025-06-18")
     );
     assert_eq!(
-        response["id"].as_u64(),
-        Some(1),
-        "response id must match request id"
+        response["result"]["capabilities"]["tools"]["listChanged"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        response["result"]["capabilities"]["prompts"]["listChanged"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        response["result"]["capabilities"]["resources"]["listChanged"].as_bool(),
+        Some(true)
     );
     assert!(
-        response.get("result").is_some(),
-        "initialize should return a result, got: {stdout}"
+        response["result"]["capabilities"]
+            .get("completions")
+            .is_some(),
+        "completions capability should be advertised"
+    );
+
+    session.send_notification(serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    }));
+    let trailing = session.finish();
+    assert!(
+        trailing.is_empty(),
+        "initialized notification should not emit a response"
     );
 }
 
 #[test]
-fn mcp_server_filters_and_rejects_tools_under_readonly_permissions() {
-    use std::io::Write;
-
+fn mcp_server_exposes_curated_headless_core_tools_and_structured_results() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     copy_fixture_vault("basic", &vault_root);
     run_scan(&vault_root);
 
-    let mut child = std::process::Command::new(assert_cmd::cargo::cargo_bin("vulcan"))
-        .args([
-            "--vault",
-            vault_root.to_str().expect("utf-8"),
-            "mcp",
-            "--permissions",
-            "readonly",
-        ])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("mcp server should start");
+    let mut session = McpSession::start(&vault_root, &[]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
 
-    let requests = [
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 1,
-            "method": "tools/list"
-        }),
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {
-                "name": "note_get",
-                "arguments": { "note": "Projects/Alpha.md" }
-            }
-        }),
-        serde_json::json!({
-            "jsonrpc": "2.0",
-            "id": 3,
-            "method": "tools/call",
-            "params": {
-                "name": "note_set",
-                "arguments": { "note": "Projects/Alpha.md" }
-            }
-        }),
-    ];
-    let mut payload = String::new();
-    for request in &requests {
-        payload.push_str(&request.to_string());
-        payload.push('\n');
+    let messages = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list"
+    }));
+    let tools = messages
+        .last()
+        .and_then(|response| response["result"]["tools"].as_array())
+        .expect("tools/list should return a tool array");
+
+    for expected in [
+        "note_get",
+        "note_outline",
+        "search",
+        "status",
+        "note_create",
+        "note_append",
+        "note_patch",
+    ] {
+        assert!(
+            tools.iter().any(|tool| tool["name"] == expected),
+            "core pack should expose `{expected}`"
+        );
+    }
+    for hidden in [
+        "note_set",
+        "note_delete",
+        "web_search",
+        "web_fetch",
+        "config_show",
+        "index_scan",
+        "browse",
+        "edit",
+        "open",
+        "bases_tui",
+        "mcp",
+    ] {
+        assert!(
+            !tools.iter().any(|tool| tool["name"] == hidden),
+            "core pack should not expose `{hidden}`"
+        );
     }
 
-    let stdin = child.stdin.as_mut().expect("stdin should be piped");
-    stdin
-        .write_all(payload.as_bytes())
-        .expect("write to mcp stdin");
-    stdin.flush().expect("flush mcp stdin");
-    drop(child.stdin.take());
+    let note_get = tools
+        .iter()
+        .find(|tool| tool["name"] == "note_get")
+        .expect("note_get tool should exist");
+    assert_eq!(note_get["title"].as_str(), Some("Read Note Content"));
+    assert_eq!(
+        note_get["annotations"]["readOnlyHint"].as_bool(),
+        Some(true)
+    );
+    assert!(
+        note_get.get("outputSchema").is_some(),
+        "note_get should advertise an output schema"
+    );
 
-    let output = child.wait_with_output().expect("mcp server should exit");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let responses = stdout
-        .lines()
-        .map(|line| serde_json::from_str::<Value>(line).expect("mcp should emit valid JSON"))
+    let messages = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "note_get",
+            "arguments": { "note": "Projects/Alpha.md" }
+        }
+    }));
+    let result = &messages.last().expect("tools/call response")["result"];
+    assert_eq!(result["isError"].as_bool(), Some(false));
+    assert_eq!(
+        result["structuredContent"]["path"].as_str(),
+        Some("Projects/Alpha.md")
+    );
+    assert_eq!(result["content"][0]["type"].as_str(), Some("text"));
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_server_surfaces_prompts_resources_and_completions() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    fs::write(
+        vault_root.join("AGENTS.md"),
+        "# Vault instructions\n\nBe precise.\n",
+    )
+    .expect("agents file should write");
+    fs::create_dir_all(vault_root.join("AI/Prompts")).expect("prompts dir");
+    fs::write(
+        vault_root.join("AI/Prompts/summarize-note.md"),
+        r"---
+name: summarize-note
+title: Summarize Note
+description: Summarize one note
+arguments:
+  - name: note
+    description: Note to summarize
+    required: true
+    completion: note
+---
+Summarize {{note}}.
+",
+    )
+    .expect("prompt file should write");
+    fs::create_dir_all(vault_root.join(".agents/skills/daily-review")).expect("skills dir");
+    fs::write(
+        vault_root.join(".agents/skills/daily-review/SKILL.md"),
+        r"---
+name: daily-review
+description: Review the day
+tools:
+  - note_get
+---
+Use this skill to review the day.
+",
+    )
+    .expect("skill file should write");
+
+    let mut session = McpSession::start(&vault_root, &[]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+
+    let prompts = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "prompts/list"
+    }));
+    let prompts = prompts
+        .last()
+        .and_then(|response| response["result"]["prompts"].as_array())
+        .expect("prompts/list should return prompt definitions");
+    assert!(prompts
+        .iter()
+        .any(|prompt| prompt["name"] == "summarize-note"));
+
+    let prompt = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "prompts/get",
+        "params": {
+            "name": "summarize-note",
+            "arguments": { "note": "Projects/Alpha.md" }
+        }
+    }));
+    let prompt_text = prompt
+        .last()
+        .and_then(|response| response["result"]["messages"][0]["content"]["text"].as_str())
+        .expect("prompts/get should return text content");
+    assert!(
+        prompt_text.contains("Projects/Alpha.md"),
+        "rendered prompt should include the provided note argument"
+    );
+
+    let resources = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "resources/list"
+    }));
+    let resources = resources
+        .last()
+        .and_then(|response| response["result"]["resources"].as_array())
+        .expect("resources/list should return resources");
+    let resource_uris = resources
+        .iter()
+        .filter_map(|resource| resource["uri"].as_str())
         .collect::<Vec<_>>();
-    assert_eq!(responses.len(), 3, "expected three JSON-RPC responses");
+    for uri in [
+        "vulcan://help/overview",
+        "vulcan://assistant/prompts/index",
+        "vulcan://assistant/skills/index",
+        "vulcan://assistant/agents",
+        "vulcan://assistant/config",
+    ] {
+        assert!(
+            resource_uris.contains(&uri),
+            "resources/list should expose `{uri}`"
+        );
+    }
 
-    let list_tools = responses[0]["result"]["tools"]
-        .as_array()
+    let templates = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "resources/templates/list"
+    }));
+    let templates = templates
+        .last()
+        .and_then(|response| response["result"]["resourceTemplates"].as_array())
+        .expect("resources/templates/list should return templates");
+    assert!(templates
+        .iter()
+        .any(|template| template["uriTemplate"] == "vulcan://help/{topic}"));
+    assert!(templates
+        .iter()
+        .any(|template| template["uriTemplate"] == "vulcan://assistant/skills/{name}"));
+
+    let help = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "resources/read",
+        "params": { "uri": "vulcan://help/overview" }
+    }));
+    let help_text = help
+        .last()
+        .and_then(|response| response["result"]["contents"][0]["text"].as_str())
+        .expect("resources/read should return help JSON text");
+    let help_json: Value = serde_json::from_str(help_text).expect("help resource should be JSON");
+    assert_eq!(help_json["name"].as_str(), Some("help"));
+
+    let note_completion = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "completion/complete",
+        "params": {
+            "ref": { "type": "ref/prompt", "name": "summarize-note" },
+            "argument": { "name": "note", "value": "Pro" }
+        }
+    }));
+    let note_values = note_completion
+        .last()
+        .and_then(|response| response["result"]["completion"]["values"].as_array())
+        .expect("prompt completion should return values");
+    assert!(
+        note_values.iter().any(|value| {
+            value
+                .as_str()
+                .is_some_and(|value| value.contains("Projects/Alpha"))
+        }),
+        "prompt completion should include note suggestions"
+    );
+
+    let help_completion = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 8,
+        "method": "completion/complete",
+        "params": {
+            "ref": { "type": "ref/resource", "uri": "vulcan://help/{topic}" },
+            "argument": { "name": "topic", "value": "note/" }
+        }
+    }));
+    let help_values = help_completion
+        .last()
+        .and_then(|response| response["result"]["completion"]["values"].as_array())
+        .expect("resource completion should return values");
+    assert!(
+        help_values
+            .iter()
+            .any(|value| value.as_str() == Some("note/get")),
+        "resource completion should include command-topic help entries"
+    );
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_server_permission_filters_resources_prompts_and_hidden_tools() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[permissions.profiles.blind]
+read = "none"
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "none"
+execute = "deny"
+shell = "deny"
+"#,
+    )
+    .expect("config should be written");
+    fs::write(vault_root.join("AGENTS.md"), "# Hidden\n").expect("agents file should write");
+    fs::create_dir_all(vault_root.join("AI/Prompts")).expect("prompts dir");
+    fs::write(
+        vault_root.join("AI/Prompts/summarize-note.md"),
+        r"---
+name: summarize-note
+arguments:
+  - name: note
+    required: true
+    completion: note
+---
+Summarize {{note}}.
+",
+    )
+    .expect("prompt file should write");
+    fs::create_dir_all(vault_root.join(".agents/skills/daily-review")).expect("skills dir");
+    fs::write(
+        vault_root.join(".agents/skills/daily-review/SKILL.md"),
+        "Use this skill.\n",
+    )
+    .expect("skill file should write");
+
+    let mut session = McpSession::start(
+        &vault_root,
+        &["--permissions", "blind", "--tool-pack", "admin"],
+    );
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+
+    let tools = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list"
+    }));
+    let tools = tools
+        .last()
+        .and_then(|response| response["result"]["tools"].as_array())
+        .expect("tools/list should return tools");
+    for hidden in ["note_get", "note_create", "web_search", "config_show"] {
+        assert!(
+            !tools.iter().any(|tool| tool["name"] == hidden),
+            "blind profile should hide `{hidden}`"
+        );
+    }
+
+    let prompts = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "prompts/list"
+    }));
+    let prompts = prompts
+        .last()
+        .and_then(|response| response["result"]["prompts"].as_array())
+        .expect("prompts/list should return a prompt array");
+    assert!(prompts.is_empty(), "blind profile should hide prompts");
+
+    let resources = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "resources/list"
+    }));
+    let resources = resources
+        .last()
+        .and_then(|response| response["result"]["resources"].as_array())
+        .expect("resources/list should return resources");
+    let resource_uris = resources
+        .iter()
+        .filter_map(|resource| resource["uri"].as_str())
+        .collect::<Vec<_>>();
+    assert!(resource_uris.contains(&"vulcan://help/overview"));
+    for hidden in [
+        "vulcan://assistant/agents",
+        "vulcan://assistant/prompts/index",
+        "vulcan://assistant/skills/index",
+        "vulcan://assistant/config",
+    ] {
+        assert!(
+            !resource_uris.contains(&hidden),
+            "blind profile should hide `{hidden}`"
+        );
+    }
+
+    let note_get = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": {
+            "name": "note_get",
+            "arguments": { "note": "Projects/Alpha.md" }
+        }
+    }));
+    let note_get = note_get.last().expect("note_get response");
+    assert_eq!(note_get["result"]["isError"].as_bool(), Some(true));
+    assert!(
+        note_get["result"]["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains(
+                "permission denied: tool `note_get` requires read access under profile `blind`"
+            )),
+        "hidden tool calls should fail with a permission error"
+    );
+
+    let prompt = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "prompts/get",
+        "params": {
+            "name": "summarize-note",
+            "arguments": { "note": "Projects/Alpha.md" }
+        }
+    }));
+    assert!(
+        prompt
+            .last()
+            .and_then(|response| response["error"]["message"].as_str())
+            .is_some_and(|message| message.contains("not available under profile `blind`")),
+        "hidden prompts should reject direct access"
+    );
+
+    let agents = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 7,
+        "method": "resources/read",
+        "params": { "uri": "vulcan://assistant/agents" }
+    }));
+    let agents = agents.last().expect("agents response");
+    assert_eq!(agents["error"]["code"].as_i64(), Some(-32002));
+    assert!(
+        agents["error"]["message"]
+            .as_str()
+            .is_some_and(|message| message.contains("permission denied")),
+        "hidden resources should reject direct access"
+    );
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_server_emits_prompt_and_resource_list_changed_notifications() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    fs::write(vault_root.join("AGENTS.md"), "# Initial\n").expect("agents file should write");
+    fs::create_dir_all(vault_root.join("AI/Prompts")).expect("prompts dir");
+    let prompt_path = vault_root.join("AI/Prompts/summarize-note.md");
+    fs::write(
+        &prompt_path,
+        r"---
+name: summarize-note
+---
+Summarize {{note}}.
+",
+    )
+    .expect("prompt file should write");
+
+    let mut session = McpSession::start(&vault_root, &[]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "prompts/list"
+    }));
+
+    fs::write(
+        &prompt_path,
+        r"---
+name: summarize-note
+description: updated
+---
+Summarize {{note}} with new instructions.
+",
+    )
+    .expect("updated prompt should write");
+    fs::write(vault_root.join("AGENTS.md"), "# Updated\n").expect("agents file should update");
+
+    let messages = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "prompts/list"
+    }));
+    assert!(
+        messages
+            .iter()
+            .any(|message| message["method"] == "notifications/prompts/list_changed"),
+        "prompt changes should emit a prompts/list_changed notification"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message["method"] == "notifications/resources/list_changed"),
+        "assistant file changes should emit a resources/list_changed notification"
+    );
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_structured_outputs_match_cli_json_reports() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let mut session = McpSession::start(&vault_root, &[]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+
+    let note_get = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "note_get",
+            "arguments": { "note": "Projects/Alpha.md" }
+        }
+    }));
+    let mcp_note_get =
+        note_get.last().expect("note_get response")["result"]["structuredContent"].clone();
+    let cli_note_get: Value = serde_json::from_slice(
+        &cargo_vulcan_fixed_now()
+            .args([
+                "--vault",
+                vault_root.to_str().expect("utf-8"),
+                "--output",
+                "json",
+                "note",
+                "get",
+                "Projects/Alpha.md",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .expect("cli note get json should parse");
+    assert_eq!(mcp_note_get, cli_note_get);
+
+    let status = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "status",
+            "arguments": {}
+        }
+    }));
+    let mcp_status = status.last().expect("status response")["result"]["structuredContent"].clone();
+    let cli_status: Value = serde_json::from_slice(
+        &cargo_vulcan_fixed_now()
+            .args([
+                "--vault",
+                vault_root.to_str().expect("utf-8"),
+                "--output",
+                "json",
+                "status",
+            ])
+            .assert()
+            .success()
+            .get_output()
+            .stdout,
+    )
+    .expect("cli status json should parse");
+    assert_eq!(mcp_status, cli_status);
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_server_filters_and_rejects_tools_under_readonly_permissions() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let mut session = McpSession::start(
+        &vault_root,
+        &["--permissions", "readonly", "--tool-pack", "extended"],
+    );
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+
+    let tools = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list"
+    }));
+    let tools = tools
+        .last()
+        .and_then(|response| response["result"]["tools"].as_array())
         .expect("tools/list should return a tool array");
-    assert!(
-        list_tools.iter().any(|tool| tool["name"] == "note_get"),
-        "readonly profile should keep read tools visible"
-    );
-    assert!(
-        !list_tools.iter().any(|tool| tool["name"] == "note_set"),
-        "readonly profile should hide mutating note tools"
-    );
-    assert!(
-        !list_tools.iter().any(|tool| tool["name"] == "web_search"),
-        "readonly profile should hide network tools"
-    );
-    assert!(
-        !list_tools.iter().any(|tool| tool["name"] == "index_scan"),
-        "readonly profile should hide index tools"
-    );
+    assert!(tools.iter().any(|tool| tool["name"] == "note_get"));
+    assert!(!tools.iter().any(|tool| tool["name"] == "note_set"));
+    assert!(!tools.iter().any(|tool| tool["name"] == "web_search"));
+    assert!(!tools.iter().any(|tool| tool["name"] == "index_scan"));
 
+    let note_get = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "note_get",
+            "arguments": { "note": "Projects/Alpha.md" }
+        }
+    }));
     assert!(
-        responses[1].get("result").is_some(),
+        note_get
+            .last()
+            .is_some_and(|response| response.get("result").is_some()),
         "note_get should remain callable under readonly permissions"
     );
+
+    let note_set = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "note_set",
+            "arguments": { "note": "Projects/Alpha.md", "content": "updated" }
+        }
+    }));
+    let note_set = note_set.last().expect("note_set response");
+    assert_eq!(note_set["result"]["isError"].as_bool(), Some(true));
     assert_eq!(
-        responses[2]["error"]["message"].as_str(),
+        note_set["result"]["content"][0]["text"].as_str(),
         Some("permission denied: tool `note_set` requires write access under profile `readonly`")
     );
+    assert!(session.finish().is_empty());
 }
 
 #[test]

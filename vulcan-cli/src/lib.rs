@@ -12,6 +12,7 @@ mod commit;
 mod config_tui;
 mod editor;
 mod js_repl;
+mod mcp;
 mod note_picker;
 mod output;
 mod resolve;
@@ -165,13 +166,14 @@ pub use cli::{
     DataviewCommand, DescribeFormatArg, EpubTocStyle, ExportArgs, ExportCommand, ExportFormat,
     ExportProfileCommand, ExportProfileFormatArg, ExportProfileRuleCommand, ExportQueryArgs,
     ExportTransformArgs, GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs,
-    KanbanCommand, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
-    OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PropertySortArg,
-    QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RepairCommand,
-    SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand,
-    TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
-    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
-    TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    KanbanCommand, McpToolPackArg, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand,
+    NoteGetMode, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand,
+    PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs,
+    RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg,
+    SuggestCommand, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
+    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
+    TemplateRenderArgs, TemplateSubcommand, TrustCommand, VectorQueueCommand, VectorsCommand,
+    WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -308,26 +310,26 @@ use vulcan_core::{
     watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext,
     BasesEvalReport, BasesViewEditReport, BulkMutationReport, CacheInspectReport, CacheVacuumQuery,
     CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, ClusterReport, ConfigImportReport, ConfigPermissionMode, CoreImporter,
-    DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
-    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
-    DuplicateSuggestionsReport, GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport,
-    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
-    GraphPathReport, GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary,
-    JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary,
-    KanbanImporter, KanbanMoveReport, KanbanTaskStatus, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
-    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig,
-    PeriodicNotesImporter, PermissionFilter, PermissionGuard, PermissionMode, PermissionProfile,
-    PluginEvent, PluginImporter, ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport,
-    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, ResolvedPermissionProfile, SavedExport, SavedExportFormat,
-    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
-    ScanPhase, ScanProgress, ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport,
-    SearchSort, StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult,
-    TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase,
-    VectorIndexProgress, VectorIndexReport, VectorNeighborHit, VectorNeighborsReport,
-    VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
+    CheckpointRecord, ClusterReport, ConfigImportReport, CoreImporter, DataviewImporter,
+    DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue,
+    DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
+    GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport,
+    GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport,
+    GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox,
+    KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter,
+    KanbanMoveReport, KanbanTaskStatus, MentionSuggestion, MentionSuggestionsReport,
+    MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport,
+    OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter,
+    PermissionFilter, PermissionGuard, PluginEvent, PluginImporter, ProfilePermissionGuard,
+    QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit,
+    RelatedNotesReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchBackendKind,
+    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
+    TasksImporter, TasksQueryResult, TemplaterImporter, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
+    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
+    WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -4634,12 +4636,37 @@ fn run_note_set_command(
     quiet: bool,
 ) -> Result<NoteSetReport, CliError> {
     let replacement = note_set_input_text(file)?;
+    run_note_set_with_content(
+        paths,
+        note,
+        &replacement,
+        no_frontmatter,
+        check,
+        permission_profile,
+        output,
+        use_stderr_color,
+        quiet,
+    )
+}
+
+#[allow(clippy::fn_params_excessive_bools, clippy::too_many_arguments)]
+fn run_note_set_with_content(
+    paths: &VaultPaths,
+    note: &str,
+    replacement: &str,
+    preserve_frontmatter: bool,
+    check: bool,
+    permission_profile: Option<&str>,
+    output: OutputFormat,
+    use_stderr_color: bool,
+    quiet: bool,
+) -> Result<NoteSetReport, CliError> {
     let report = apply_note_set(
         paths,
         &AppNoteSetRequest {
             note: note.to_string(),
-            replacement,
-            preserve_frontmatter: no_frontmatter,
+            replacement: replacement.to_string(),
+            preserve_frontmatter,
         },
         permission_profile,
         quiet,
@@ -4667,13 +4694,41 @@ fn run_note_create_command(
     use_stderr_color: bool,
     quiet: bool,
 ) -> Result<NoteCreateReport, CliError> {
+    let body = read_optional_stdin_text().map_err(CliError::operation)?;
+    run_note_create_with_body(
+        paths,
+        path,
+        template,
+        frontmatter,
+        &body,
+        check,
+        permission_profile,
+        output,
+        use_stderr_color,
+        quiet,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_note_create_with_body(
+    paths: &VaultPaths,
+    path: &str,
+    template: Option<&str>,
+    frontmatter: &[String],
+    body: &str,
+    check: bool,
+    permission_profile: Option<&str>,
+    output: OutputFormat,
+    use_stderr_color: bool,
+    quiet: bool,
+) -> Result<NoteCreateReport, CliError> {
     let report = apply_note_create(
         paths,
         &AppNoteCreateRequest {
             path: path.to_string(),
             template: template.map(ToOwned::to_owned),
             frontmatter: parse_frontmatter_bindings(frontmatter)?,
-            body: read_optional_stdin_text().map_err(CliError::operation)?,
+            body: body.to_string(),
         },
         permission_profile,
         quiet,
@@ -6227,7 +6282,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let report = run_status_command(&paths)?;
             print_status_report(cli.output, &report, use_stdout_color)
         }
-        Command::Mcp => run_mcp_server(&paths, cli.permissions.as_deref()),
+        Command::Mcp { tool_pack } => {
+            mcp::run_mcp_server(&paths, cli.permissions.as_deref(), tool_pack)
+        }
         Command::Trust { ref command } => handle_trust_command(cli, &paths, command.as_ref()),
         Command::Bases { ref command } => commands::bases::handle_bases_command(
             cli,
@@ -6275,7 +6332,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             stdout_is_tty,
             use_stdout_color,
         ),
-        Command::Describe { format } => commands::docs::handle_describe_command(cli.output, format),
+        Command::Describe { format, tool_pack } => commands::docs::handle_describe_command(
+            &paths,
+            cli.output,
+            format,
+            tool_pack,
+            cli.permissions.as_deref(),
+        ),
         Command::Doctor {
             fix,
             dry_run,
@@ -8184,7 +8247,13 @@ fn render_help_topic_markdown(report: &HelpTopicReport) -> String {
     markdown
 }
 
-fn print_describe_report(output: OutputFormat, format: DescribeFormatArg) -> Result<(), CliError> {
+fn print_describe_report(
+    paths: &VaultPaths,
+    output: OutputFormat,
+    format: DescribeFormatArg,
+    tool_pack: McpToolPackArg,
+    requested_profile: Option<&str>,
+) -> Result<(), CliError> {
     match format {
         DescribeFormatArg::JsonSchema => {
             let report = describe_cli();
@@ -8210,7 +8279,7 @@ fn print_describe_report(output: OutputFormat, format: DescribeFormatArg) -> Res
             }
         }
         DescribeFormatArg::Mcp => {
-            let tools = build_mcp_tool_definitions();
+            let tools = mcp::build_mcp_tool_definitions(paths, requested_profile, tool_pack)?;
             match output {
                 OutputFormat::Human | OutputFormat::Markdown => {
                     println!(
@@ -14555,16 +14624,39 @@ struct OpenAiFunctionDefinition {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct McpToolsReport {
+    #[serde(rename = "protocolVersion")]
+    protocol_version: String,
+    #[serde(rename = "toolPack")]
+    tool_pack: String,
     tools: Vec<McpToolDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct McpToolDefinition {
     name: String,
+    title: String,
     description: String,
     #[serde(rename = "inputSchema")]
     input_schema: Value,
+    #[serde(rename = "outputSchema", skip_serializing_if = "Option::is_none")]
+    output_schema: Option<Value>,
+    annotations: McpToolAnnotations,
+    #[serde(rename = "toolPack")]
+    tool_pack: String,
     examples: Vec<String>,
+}
+
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+struct McpToolAnnotations {
+    #[serde(rename = "readOnlyHint")]
+    read_only_hint: bool,
+    #[serde(rename = "destructiveHint")]
+    destructive_hint: bool,
+    #[serde(rename = "idempotentHint")]
+    idempotent_hint: bool,
+    #[serde(rename = "openWorldHint")]
+    open_world_hint: bool,
 }
 
 fn cli_command_tree() -> clap::Command {
@@ -15254,20 +15346,6 @@ fn build_openai_tool_definitions() -> OpenAiToolsReport {
                     parameters: tool.input_schema,
                     examples: tool.examples,
                 },
-            })
-            .collect(),
-    }
-}
-
-fn build_mcp_tool_definitions() -> McpToolsReport {
-    McpToolsReport {
-        tools: collect_leaf_commands(&cli_command_tree())
-            .into_iter()
-            .map(|tool| McpToolDefinition {
-                name: tool.name,
-                description: tool.description,
-                input_schema: tool.input_schema,
-                examples: tool.examples,
             })
             .collect(),
     }
@@ -16759,662 +16837,6 @@ fn run_template_show_command(
             print!("{}", report.content);
             Ok(())
         }
-    }
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// MCP server
-// ────────────────────────────────────────────────────────────────────────────
-
-#[derive(Debug, Clone)]
-struct McpPermissionSelection {
-    name: String,
-    profile: PermissionProfile,
-}
-
-#[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, Default)]
-struct McpToolPermissionRequirement {
-    read: bool,
-    write: bool,
-    refactor: bool,
-    git: bool,
-    network: bool,
-    index: bool,
-    execute: bool,
-    config: Option<ConfigPermissionMode>,
-}
-
-impl McpToolPermissionRequirement {
-    const fn read() -> Self {
-        Self {
-            read: true,
-            ..Self::empty()
-        }
-    }
-
-    const fn write() -> Self {
-        Self {
-            write: true,
-            ..Self::empty()
-        }
-    }
-
-    const fn refactor() -> Self {
-        Self {
-            refactor: true,
-            ..Self::empty()
-        }
-    }
-
-    const fn git() -> Self {
-        Self {
-            git: true,
-            ..Self::empty()
-        }
-    }
-
-    const fn network() -> Self {
-        Self {
-            network: true,
-            ..Self::empty()
-        }
-    }
-
-    const fn index() -> Self {
-        Self {
-            index: true,
-            ..Self::empty()
-        }
-    }
-
-    const fn execute() -> Self {
-        Self {
-            execute: true,
-            ..Self::empty()
-        }
-    }
-
-    const fn config_read() -> Self {
-        Self {
-            config: Some(ConfigPermissionMode::Read),
-            ..Self::empty()
-        }
-    }
-
-    const fn config_write() -> Self {
-        Self {
-            config: Some(ConfigPermissionMode::Write),
-            ..Self::empty()
-        }
-    }
-
-    const fn execute_write() -> Self {
-        Self {
-            execute: true,
-            write: true,
-            ..Self::empty()
-        }
-    }
-
-    const fn empty() -> Self {
-        Self {
-            read: false,
-            write: false,
-            refactor: false,
-            git: false,
-            network: false,
-            index: false,
-            execute: false,
-            config: None,
-        }
-    }
-}
-
-fn run_mcp_server(paths: &VaultPaths, requested_profile: Option<&str>) -> Result<(), CliError> {
-    use std::io::BufRead;
-
-    let exe = std::env::current_exe().map_err(CliError::operation)?;
-    let vault_str = paths.vault_root().to_string_lossy().into_owned();
-    let permissions = resolve_mcp_permission_selection(paths, requested_profile)?;
-    let tools = build_mcp_tool_definitions_with_paths();
-
-    let stdin = io::stdin();
-    for line in stdin.lock().lines() {
-        let line = line.map_err(CliError::operation)?;
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let request: Value = match serde_json::from_str(line) {
-            Ok(v) => v,
-            Err(e) => {
-                let response = serde_json::json!({
-                    "jsonrpc": "2.0",
-                    "id": null,
-                    "error": { "code": -32700, "message": format!("Parse error: {e}") }
-                });
-                println!("{}", serde_json::to_string(&response).unwrap_or_default());
-                continue;
-            }
-        };
-
-        let id = request.get("id").cloned().unwrap_or(Value::Null);
-        let method = request.get("method").and_then(Value::as_str).unwrap_or("");
-        let params = request.get("params");
-
-        let result: Result<Value, (i64, String)> = match method {
-            "initialize" => Ok(serde_json::json!({
-                "protocolVersion": "2024-11-05",
-                "capabilities": { "tools": {} },
-                "serverInfo": { "name": "vulcan", "version": env!("CARGO_PKG_VERSION") }
-            })),
-            "notifications/initialized" => {
-                // No response needed for notifications
-                continue;
-            }
-            "tools/list" => {
-                let list: Vec<Value> = tools
-                    .iter()
-                    .filter(|tool| mcp_tool_visible(tool, &permissions.profile))
-                    .map(|t| {
-                        serde_json::json!({
-                            "name": t.name,
-                            "description": t.description,
-                            "inputSchema": t.input_schema
-                        })
-                    })
-                    .collect();
-                Ok(serde_json::json!({ "tools": list }))
-            }
-            "tools/call" => {
-                let tool_name = params
-                    .and_then(|p| p.get("name"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("");
-                let arguments = params
-                    .and_then(|p| p.get("arguments"))
-                    .and_then(Value::as_object)
-                    .cloned()
-                    .unwrap_or_default();
-
-                match mcp_dispatch_tool(
-                    &exe,
-                    &vault_str,
-                    tool_name,
-                    &arguments,
-                    &tools,
-                    &permissions,
-                ) {
-                    Ok(text) => Ok(serde_json::json!({
-                        "content": [{ "type": "text", "text": text }]
-                    })),
-                    Err(e) => Err((-32000, e)),
-                }
-            }
-            _ => Err((-32601, format!("Method not found: {method}"))),
-        };
-
-        let response = match result {
-            Ok(value) => serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": value
-            }),
-            Err((code, message)) => serde_json::json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "error": { "code": code, "message": message }
-            }),
-        };
-        println!("{}", serde_json::to_string(&response).unwrap_or_default());
-    }
-    Ok(())
-}
-
-struct McpToolWithPath {
-    name: String,
-    description: String,
-    input_schema: Value,
-    /// Command path segments, e.g. `["note", "get"]`
-    command_path: Vec<String>,
-    /// Which argument IDs are positional (not flags)
-    positional_ids: Vec<String>,
-}
-
-fn build_mcp_tool_definitions_with_paths() -> Vec<McpToolWithPath> {
-    let tree = cli_command_tree();
-    let mut tools = Vec::new();
-    for subcommand in tree.get_subcommands().filter(|s| !s.is_hide_set()) {
-        collect_mcp_tools_inner(subcommand, Vec::new(), &mut tools);
-    }
-    tools
-}
-
-fn collect_mcp_tools_inner(
-    command: &clap::Command,
-    mut prefix: Vec<String>,
-    tools: &mut Vec<McpToolWithPath>,
-) {
-    prefix.push(command.get_name().to_string());
-    let subs: Vec<_> = command
-        .get_subcommands()
-        .filter(|s| !s.is_hide_set())
-        .collect();
-    if subs.is_empty() {
-        let positional_ids: Vec<String> = command
-            .get_arguments()
-            .filter(|a| a.is_positional() && !a.is_global_set())
-            .map(|a| a.get_id().to_string())
-            .collect();
-        tools.push(McpToolWithPath {
-            name: tool_name_from_path(&prefix),
-            description: command
-                .get_about()
-                .map_or_else(|| prefix.join(" "), ToString::to_string),
-            input_schema: command_input_schema(command),
-            command_path: prefix,
-            positional_ids,
-        });
-        return;
-    }
-    for sub in subs {
-        collect_mcp_tools_inner(sub, prefix.clone(), tools);
-    }
-}
-
-fn mcp_dispatch_tool(
-    exe: &Path,
-    vault: &str,
-    tool_name: &str,
-    arguments: &serde_json::Map<String, Value>,
-    tools: &[McpToolWithPath],
-    permissions: &McpPermissionSelection,
-) -> Result<String, String> {
-    let tool = tools
-        .iter()
-        .find(|t| t.name == tool_name)
-        .ok_or_else(|| format!("unknown tool: {tool_name}"))?;
-
-    if let Some(message) = mcp_tool_permission_denial(tool, arguments, permissions) {
-        return Err(message);
-    }
-
-    let mut args: Vec<OsString> = vec![
-        "--vault".into(),
-        vault.into(),
-        "--output".into(),
-        "json".into(),
-    ];
-
-    // Add command path segments
-    for segment in &tool.command_path {
-        args.push(segment.into());
-    }
-
-    // Positional args first (in order they appear in positional_ids)
-    for pos_id in &tool.positional_ids {
-        if let Some(val) = arguments.get(pos_id) {
-            let s = mcp_value_to_string(val);
-            if !s.is_empty() {
-                args.push(s.into());
-            }
-        }
-    }
-
-    // Then flag args
-    for (key, val) in arguments {
-        if tool.positional_ids.contains(key) {
-            continue; // already handled
-        }
-        // Skip null/false optional flags
-        match val {
-            Value::Null | Value::Bool(false) => continue,
-            Value::Bool(true) => {
-                let flag = format!("--{}", key.replace('_', "-"));
-                args.push(flag.into());
-                continue;
-            }
-            _ => {}
-        }
-        let flag = format!("--{}", key.replace('_', "-"));
-        args.push(flag.into());
-        args.push(mcp_value_to_string(val).into());
-    }
-
-    let output = ProcessCommand::new(exe)
-        .args(&args)
-        .output()
-        .map_err(|e| format!("failed to run tool: {e}"))?;
-
-    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
-    let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-
-    if !output.status.success() && stdout.trim().is_empty() {
-        return Err(if stderr.trim().is_empty() {
-            format!("tool exited with status {}", output.status)
-        } else {
-            stderr.trim().to_string()
-        });
-    }
-
-    Ok(stdout)
-}
-
-fn resolve_mcp_permission_selection(
-    paths: &VaultPaths,
-    requested_profile: Option<&str>,
-) -> Result<McpPermissionSelection, CliError> {
-    let resolved =
-        resolve_permission_profile(paths, requested_profile).map_err(permission_error_to_cli)?;
-    ensure_mcp_permission_profile_supported(&resolved.name, &resolved.profile)?;
-
-    Ok(McpPermissionSelection {
-        name: resolved.name,
-        profile: resolved.profile,
-    })
-}
-
-fn ensure_mcp_permission_profile_supported(
-    name: &str,
-    profile: &PermissionProfile,
-) -> Result<(), CliError> {
-    if profile.read.is_scoped() || profile.write.is_scoped() || profile.refactor.is_scoped() {
-        return Err(CliError::operation(format!(
-            "permission profile `{name}` uses scoped path rules; `vulcan mcp` currently supports only `all` or `none` for read/write/refactor"
-        )));
-    }
-
-    if !profile.network.domain_allowlist().is_empty() {
-        return Err(CliError::operation(format!(
-            "permission profile `{name}` uses a network domain allowlist; `vulcan mcp` does not enforce domain-scoped network access yet"
-        )));
-    }
-
-    if matches!(profile.execute, PermissionMode::Allow) && !profile.is_unrestricted() {
-        return Err(CliError::operation(format!(
-            "permission profile `{name}` enables execute; `vulcan mcp` currently supports execute only under the unrestricted profile"
-        )));
-    }
-
-    Ok(())
-}
-
-fn mcp_tool_visible(tool: &McpToolWithPath, profile: &PermissionProfile) -> bool {
-    if profile.is_unrestricted() {
-        return true;
-    }
-    mcp_profile_allows(profile, &mcp_tool_list_requirement(tool)).is_ok()
-}
-
-fn mcp_tool_permission_denial(
-    tool: &McpToolWithPath,
-    arguments: &serde_json::Map<String, Value>,
-    permissions: &McpPermissionSelection,
-) -> Option<String> {
-    if permissions.profile.is_unrestricted() {
-        return None;
-    }
-
-    mcp_profile_allows(
-        &permissions.profile,
-        &mcp_tool_call_requirement(tool, arguments),
-    )
-    .err()
-    .map(|reason| {
-        format!(
-            "permission denied: tool `{}` requires {reason} under profile `{}`",
-            tool.name, permissions.name
-        )
-    })
-}
-
-fn mcp_profile_allows(
-    profile: &PermissionProfile,
-    requirement: &McpToolPermissionRequirement,
-) -> Result<(), &'static str> {
-    if requirement.read && !profile.read.is_all() {
-        return Err("read access");
-    }
-    if requirement.write && !profile.write.is_all() {
-        return Err("write access");
-    }
-    if requirement.refactor && !profile.refactor.is_all() {
-        return Err("refactor access");
-    }
-    if requirement.git && !matches!(profile.git, PermissionMode::Allow) {
-        return Err("git access");
-    }
-    if requirement.network && !profile.network.is_allowed() {
-        return Err("network access");
-    }
-    if requirement.index && !matches!(profile.index, PermissionMode::Allow) {
-        return Err("index access");
-    }
-    if requirement.execute && !matches!(profile.execute, PermissionMode::Allow) {
-        return Err("execute access");
-    }
-    match requirement.config {
-        Some(ConfigPermissionMode::Read)
-            if matches!(profile.config, ConfigPermissionMode::None) =>
-        {
-            Err("config read access")
-        }
-        Some(ConfigPermissionMode::Write)
-            if !matches!(profile.config, ConfigPermissionMode::Write) =>
-        {
-            Err("config write access")
-        }
-        _ => Ok(()),
-    }
-}
-
-#[allow(clippy::too_many_lines)]
-fn mcp_tool_list_requirement(tool: &McpToolWithPath) -> McpToolPermissionRequirement {
-    match tool.name.as_str() {
-        "index_init"
-        | "index_scan"
-        | "index_rebuild"
-        | "index_repair_fts"
-        | "index_watch"
-        | "index_serve"
-        | "checkpoint_create"
-        | "export_search_index"
-        | "cluster"
-        | "vectors_index"
-        | "vectors_repair"
-        | "vectors_rebuild"
-        | "vectors_queue_run"
-        | "vectors_drop_model" => McpToolPermissionRequirement::index(),
-        "graph_path"
-        | "graph_hubs"
-        | "graph_moc"
-        | "graph_dead_ends"
-        | "graph_components"
-        | "graph_stats"
-        | "graph_trends"
-        | "graph_export"
-        | "search"
-        | "tags"
-        | "properties"
-        | "dataview_inline"
-        | "dataview_query"
-        | "dataview_eval"
-        | "tasks_show"
-        | "tasks_query"
-        | "tasks_eval"
-        | "tasks_list"
-        | "tasks_next"
-        | "tasks_blocked"
-        | "tasks_graph"
-        | "tasks_track_status"
-        | "tasks_track_log"
-        | "tasks_track_summary"
-        | "tasks_pomodoro_status"
-        | "tasks_reminders"
-        | "tasks_due"
-        | "tasks_view_show"
-        | "tasks_view_list"
-        | "kanban_list"
-        | "kanban_show"
-        | "kanban_cards"
-        | "bases_eval"
-        | "saved_list"
-        | "saved_show"
-        | "saved_search"
-        | "saved_notes"
-        | "saved_bases"
-        | "saved_run"
-        | "checkpoint_list"
-        | "daily_show"
-        | "daily_list"
-        | "changes"
-        | "diff"
-        | "status"
-        | "note_get"
-        | "note_info"
-        | "note_links"
-        | "note_backlinks"
-        | "note_doctor"
-        | "note_diff"
-        | "vectors_queue_status"
-        | "vectors_neighbors"
-        | "vectors_related"
-        | "vectors_duplicates"
-        | "vectors_models"
-        | "doctor"
-        | "cache_inspect"
-        | "cache_verify"
-        | "query"
-        | "ls"
-        | "periodic_list"
-        | "periodic_gaps"
-        | "periodic_show"
-        | "automation_run" => McpToolPermissionRequirement::read(),
-        "dataview_query_js" | "run" | "browse" | "edit" | "open" | "mcp" | "bases_tui"
-        | "template_preview" => McpToolPermissionRequirement::execute(),
-        "batch"
-        | "inbox"
-        | "daily_today"
-        | "daily_append"
-        | "today"
-        | "weekly"
-        | "monthly"
-        | "periodic_append"
-        | "daily_export_ics"
-        | "periodic_export_ics"
-        | "tasks_add"
-        | "tasks_edit"
-        | "tasks_set"
-        | "tasks_complete"
-        | "tasks_archive"
-        | "tasks_convert"
-        | "tasks_create"
-        | "tasks_reschedule"
-        | "tasks_track_start"
-        | "tasks_track_stop"
-        | "tasks_pomodoro_start"
-        | "tasks_pomodoro_stop"
-        | "kanban_archive"
-        | "kanban_move"
-        | "kanban_add"
-        | "bases_create"
-        | "bases_view_add"
-        | "bases_view_delete"
-        | "bases_view_rename"
-        | "bases_view_edit"
-        | "note_set"
-        | "note_create"
-        | "note_append"
-        | "note_update"
-        | "note_unset"
-        | "note_patch"
-        | "note_delete"
-        | "update"
-        | "unset"
-        | "cache_vacuum" => McpToolPermissionRequirement::write(),
-        "template_insert" => McpToolPermissionRequirement::execute_write(),
-        "refactor_rename_alias"
-        | "refactor_rename_heading"
-        | "refactor_rename_block_ref"
-        | "refactor_rename_property"
-        | "refactor_merge_tags"
-        | "refactor_rewrite"
-        | "refactor_move"
-        | "refactor_link_mentions"
-        | "note_rename" => McpToolPermissionRequirement::refactor(),
-        "git_status" | "git_log" | "git_diff" | "git_commit" | "git_blame" | "note_history" => {
-            McpToolPermissionRequirement::git()
-        }
-        "web_search" | "web_fetch" => McpToolPermissionRequirement::network(),
-        "config_show" | "config_get" => McpToolPermissionRequirement::config_read(),
-        "config_set"
-        | "config_import_core"
-        | "config_import_dataview"
-        | "config_import_templater"
-        | "config_import_quickadd"
-        | "config_import_kanban"
-        | "config_import_periodic_notes"
-        | "config_import_tasknotes"
-        | "config_import_tasks" => McpToolPermissionRequirement::config_write(),
-        _ => McpToolPermissionRequirement::empty(),
-    }
-}
-
-fn mcp_tool_call_requirement(
-    tool: &McpToolWithPath,
-    arguments: &serde_json::Map<String, Value>,
-) -> McpToolPermissionRequirement {
-    if tool.name == "doctor" && json_bool(arguments, "fix") {
-        return McpToolPermissionRequirement::write();
-    }
-
-    if tool.name == "automation_run" {
-        let mut requirement = McpToolPermissionRequirement::empty();
-        if json_bool(arguments, "doctor") {
-            requirement.read = true;
-        }
-        if json_bool(arguments, "doctor_fix") {
-            requirement.write = true;
-        }
-        if json_bool(arguments, "scan")
-            || json_bool(arguments, "verify_cache")
-            || json_bool(arguments, "repair_fts")
-        {
-            requirement.index = true;
-        }
-        if json_bool(arguments, "all_reports") || json_nonempty_array(arguments, "reports") {
-            requirement.write = true;
-        }
-        return requirement;
-    }
-
-    mcp_tool_list_requirement(tool)
-}
-
-fn json_bool(arguments: &serde_json::Map<String, Value>, key: &str) -> bool {
-    arguments.get(key).and_then(Value::as_bool).unwrap_or(false)
-}
-
-fn json_nonempty_array(arguments: &serde_json::Map<String, Value>, key: &str) -> bool {
-    arguments
-        .get(key)
-        .and_then(Value::as_array)
-        .is_some_and(|values| !values.is_empty())
-}
-
-fn mcp_value_to_string(val: &Value) -> String {
-    match val {
-        Value::String(s) => s.clone(),
-        Value::Number(n) => n.to_string(),
-        Value::Bool(b) => b.to_string(),
-        Value::Array(arr) => arr
-            .iter()
-            .map(mcp_value_to_string)
-            .collect::<Vec<_>>()
-            .join(","),
-        Value::Null => String::new(),
-        Value::Object(_) => serde_json::to_string(val).unwrap_or_default(),
     }
 }
 
@@ -21696,10 +21118,24 @@ mod tests {
     fn parses_help_and_describe_format_commands() {
         let help = Cli::try_parse_from(["vulcan", "help", "note", "get", "--output", "json"])
             .expect("help should parse");
-        let describe = Cli::try_parse_from(["vulcan", "describe", "--format", "openai-tools"])
-            .expect("describe should parse");
-        let mcp = Cli::try_parse_from(["vulcan", "--permissions", "readonly", "mcp"])
-            .expect("mcp should parse");
+        let describe = Cli::try_parse_from([
+            "vulcan",
+            "describe",
+            "--format",
+            "openai-tools",
+            "--tool-pack",
+            "extended",
+        ])
+        .expect("describe should parse");
+        let mcp = Cli::try_parse_from([
+            "vulcan",
+            "--permissions",
+            "readonly",
+            "mcp",
+            "--tool-pack",
+            "admin",
+        ])
+        .expect("mcp should parse");
 
         assert_eq!(
             help.command,
@@ -21712,9 +21148,15 @@ mod tests {
             describe.command,
             Command::Describe {
                 format: DescribeFormatArg::OpenaiTools,
+                tool_pack: McpToolPackArg::Extended,
             }
         );
-        assert_eq!(mcp.command, Command::Mcp);
+        assert_eq!(
+            mcp.command,
+            Command::Mcp {
+                tool_pack: McpToolPackArg::Admin,
+            }
+        );
         assert_eq!(mcp.permissions.as_deref(), Some("readonly"));
     }
 

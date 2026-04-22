@@ -601,12 +601,13 @@ const DESCRIBE_COMMAND_AFTER_HELP: &str = "\
 Output:
   json-schema    runtime CLI schema with commands, options, defaults, and after-help text
   openai-tools   OpenAI function-calling tool definitions
-  mcp            MCP-style tool definitions
+  mcp            Curated MCP protocol-native tool definitions
 
 Examples:
   vulcan describe
   vulcan describe --format openai-tools
   vulcan describe --format mcp
+  vulcan describe --format mcp --tool-pack extended
   vulcan --output json describe > vulcan-schema.json";
 
 const HELP_COMMAND_AFTER_HELP: &str = "\
@@ -1127,20 +1128,26 @@ Protocol:
   Each request and response is a single UTF-8 JSON line.
 
 Supported methods:
-  initialize      Negotiate protocol version and report server capabilities
-  tools/list      Return all tool definitions (mirrors `vulcan describe --format mcp`)
-  tools/call      Execute a Vulcan command and return its JSON output as content
+  initialize               Negotiate protocol version and report server capabilities
+  tools/list               Return the curated headless MCP tool registry
+  tools/call               Execute one MCP tool and return structuredContent + text fallback
+  prompts/list|get         Discover and render vault prompt files
+  resources/list|read      Read help docs, AGENTS.md, assistant summaries, and skill content
+  resources/templates/list Enumerate parameterized help and skill resource URIs
+  completion/complete      Return prompt-argument and resource-template completions
 
 Notes:
   Start with `--vault <path>` so all tool calls operate on the correct vault.
   `--permissions <profile>` filters the exposed tool set before requests are handled.
-  Tool names use underscore-joined command paths: note_get, graph_stats, etc.
-  Each tools/call runs synchronously; long operations block until complete.
-  All tool output is returned as JSON (--output json is applied automatically).
+  `--tool-pack <core|extended|admin>` selects how much of the headless tool surface to expose.
+  `core` is the default for generic MCP clients; `extended` adds network and heavier mutations; `admin` adds maintenance/config tools.
+  Interactive commands such as browse, edit, open, TUI surfaces, and nested MCP helpers are never exposed.
+  Tool output uses structured JSON reports that match the corresponding CLI `--output json` payloads.
 
 Examples:
   vulcan mcp --vault ~/notes
   vulcan mcp --vault ~/notes --permissions readonly
+  vulcan mcp --vault ~/notes --tool-pack extended
   vulcan mcp | jq .";
 
 const REFACTOR_COMMAND_AFTER_HELP: &str = "\
@@ -2551,6 +2558,14 @@ pub enum DescribeFormatArg {
     JsonSchema,
     OpenaiTools,
     Mcp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum McpToolPackArg {
+    #[default]
+    Core,
+    Extended,
+    Admin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -4608,6 +4623,8 @@ Examples:
     Describe {
         #[arg(long, value_enum, default_value_t = DescribeFormatArg::JsonSchema)]
         format: DescribeFormatArg,
+        #[arg(long, value_enum, default_value_t = McpToolPackArg::Core)]
+        tool_pack: McpToolPackArg,
     },
     #[command(
         about = "Generate shell completion scripts",
@@ -4652,7 +4669,10 @@ Examples:
         about = "Start an MCP (Model Context Protocol) server over stdio",
         after_help = MCP_COMMAND_AFTER_HELP
     )]
-    Mcp,
+    Mcp {
+        #[arg(long, value_enum, default_value_t = McpToolPackArg::Core)]
+        tool_pack: McpToolPackArg,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

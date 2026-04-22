@@ -1,4 +1,5 @@
-use crate::{CliError, DescribeFormatArg, OutputFormat};
+use crate::{CliError, DescribeFormatArg, McpToolPackArg, OutputFormat};
+use vulcan_core::VaultPaths;
 
 pub(crate) fn handle_help_command(
     output: OutputFormat,
@@ -11,8 +12,11 @@ pub(crate) fn handle_help_command(
 }
 
 pub(crate) fn handle_describe_command(
+    paths: &VaultPaths,
     output: OutputFormat,
     format: DescribeFormatArg,
+    tool_pack: McpToolPackArg,
+    requested_profile: Option<&str>,
 ) -> Result<(), CliError> {
-    crate::print_describe_report(output, format)
+    crate::print_describe_report(paths, output, format, tool_pack, requested_profile)
 }
