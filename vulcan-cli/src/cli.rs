@@ -613,7 +613,8 @@ Examples:
   vulcan describe
   vulcan describe --format openai-tools
   vulcan describe --format mcp
-  vulcan describe --format mcp --tool-pack extended
+  vulcan describe --format mcp --tool-pack notes-read,search,web
+  vulcan describe --format mcp --tool-pack-mode adaptive
   vulcan --output json describe > vulcan-schema.json";
 
 const HELP_COMMAND_AFTER_HELP: &str = "\
@@ -1158,17 +1159,20 @@ Notes:
   Start with `--vault <path>` so all tool calls operate on the correct vault.
   `--permissions <profile>` filters the exposed tool set before requests are handled.
   `--transport stdio|http` selects local subprocess stdio or networked Streamable HTTP.
-  `--tool-pack <core|extended|admin>` selects how much of the headless tool surface to expose.
+  `--tool-pack <name>` may be repeated or comma-separated to compose the exposed tool surface.
+  `--tool-pack-mode static|adaptive` keeps packs fixed for the session or exposes bootstrap tools that can expand packs later.
   `--bind` and `--auth-token` are only used for HTTP transport.
   Non-loopback HTTP binds require `--auth-token`.
-  `core` is the default for generic MCP clients; `extended` adds network and heavier mutations; `admin` adds maintenance/config tools.
+  Available packs include `notes-read`, `search`, `status`, `notes-write`, `notes-manage`, `web`, `config`, and `index`.
+  `adaptive` mode auto-exposes MCP tool-pack bootstrap tools and relies on `notifications/tools/list_changed` for clients that refresh tools dynamically.
   Interactive commands such as browse, edit, open, TUI surfaces, and nested MCP helpers are never exposed.
   Tool output uses structured JSON reports that match the corresponding CLI `--output json` payloads.
 
 Examples:
   vulcan mcp --vault ~/notes
   vulcan mcp --vault ~/notes --permissions readonly
-  vulcan mcp --vault ~/notes --tool-pack extended
+  vulcan mcp --vault ~/notes --tool-pack notes-read,search,web
+  vulcan mcp --vault ~/notes --tool-pack-mode adaptive
   vulcan mcp --transport http --bind 127.0.0.1:8765
   vulcan mcp | jq .";
 
@@ -2787,12 +2791,23 @@ pub enum DescribeFormatArg {
     Mcp,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum McpToolPackArg {
+    NotesRead,
+    Search,
+    Status,
+    NotesWrite,
+    NotesManage,
+    Web,
+    Config,
+    Index,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum McpToolPackModeArg {
     #[default]
-    Core,
-    Extended,
-    Admin,
+    Static,
+    Adaptive,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
@@ -4857,8 +4872,15 @@ Examples:
     Describe {
         #[arg(long, value_enum, default_value_t = DescribeFormatArg::JsonSchema)]
         format: DescribeFormatArg,
-        #[arg(long, value_enum, default_value_t = McpToolPackArg::Core)]
-        tool_pack: McpToolPackArg,
+        #[arg(
+            long,
+            value_enum,
+            value_delimiter = ',',
+            default_value = "notes-read,search,status"
+        )]
+        tool_pack: Vec<McpToolPackArg>,
+        #[arg(long, value_enum, default_value_t = McpToolPackModeArg::Static)]
+        tool_pack_mode: McpToolPackModeArg,
     },
     #[command(
         about = "Generate shell completion scripts",
@@ -4904,8 +4926,15 @@ Examples:
         after_help = MCP_COMMAND_AFTER_HELP
     )]
     Mcp {
-        #[arg(long, value_enum, default_value_t = McpToolPackArg::Core)]
-        tool_pack: McpToolPackArg,
+        #[arg(
+            long,
+            value_enum,
+            value_delimiter = ',',
+            default_value = "notes-read,search,status"
+        )]
+        tool_pack: Vec<McpToolPackArg>,
+        #[arg(long, value_enum, default_value_t = McpToolPackModeArg::Static)]
+        tool_pack_mode: McpToolPackModeArg,
         #[arg(long, value_enum, default_value_t = McpTransportArg::Stdio)]
         transport: McpTransportArg,
         #[arg(
