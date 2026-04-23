@@ -1,10 +1,13 @@
 use crate::config::load_vault_config;
 use crate::paths::VaultPaths;
+use crate::JsRuntimeSandbox;
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use serde_yaml::Value as YamlValue;
+use std::collections::BTreeSet;
 use std::fmt::{Display, Formatter};
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AssistantError {
@@ -89,12 +92,65 @@ pub struct AssistantSkill {
     pub body: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantToolRuntime {
+    #[default]
+    Quickjs,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AssistantToolValidationOptions {
+    pub reserved_names: Vec<String>,
+    pub allowed_pack_names: Vec<String>,
+}
+
+impl Default for AssistantToolValidationOptions {
+    fn default() -> Self {
+        Self {
+            reserved_names: default_assistant_tool_reserved_names(),
+            allowed_pack_names: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AssistantToolSummary {
+    pub name: String,
+    pub title: Option<String>,
+    pub description: String,
+    pub version: Option<String>,
+    pub runtime: AssistantToolRuntime,
+    pub entrypoint: String,
+    pub entrypoint_path: String,
+    pub tags: Vec<String>,
+    pub sandbox: JsRuntimeSandbox,
+    pub permission_profile: Option<String>,
+    pub timeout_ms: Option<usize>,
+    pub packs: Vec<String>,
+    pub read_only: bool,
+    pub destructive: bool,
+    pub input_schema: JsonValue,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<JsonValue>,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct AssistantTool {
+    #[serde(flatten)]
+    pub summary: AssistantToolSummary,
+    pub body: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct AssistantConfigSummary {
     pub prompts_folder: String,
     pub prompts_path: String,
     pub skills_folder: String,
     pub skills_path: String,
+    pub tools_folder: String,
+    pub tools_path: String,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -122,17 +178,44 @@ struct SkillFrontmatter {
     output_file: Option<String>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct ToolFrontmatter {
+    name: Option<String>,
+    title: Option<String>,
+    description: Option<String>,
+    version: Option<YamlValue>,
+    entrypoint: Option<String>,
+    runtime: Option<AssistantToolRuntime>,
+    #[serde(default)]
+    tags: Vec<String>,
+    sandbox: Option<JsRuntimeSandbox>,
+    permission_profile: Option<String>,
+    timeout_ms: Option<usize>,
+    #[serde(default)]
+    packs: Vec<String>,
+    #[serde(default)]
+    read_only: bool,
+    #[serde(default)]
+    destructive: bool,
+    input_schema: Option<JsonValue>,
+    output_schema: Option<JsonValue>,
+}
+
 #[must_use]
 pub fn assistant_config_summary(paths: &VaultPaths) -> AssistantConfigSummary {
     let config = load_vault_config(paths).config.assistant;
     let prompts_path = paths.vault_root().join(&config.prompts_folder);
     let skills_path = paths.vault_root().join(&config.skills_folder);
+    let tools_path = paths.vault_root().join(&config.tools_folder);
 
     AssistantConfigSummary {
         prompts_folder: config.prompts_folder.to_string_lossy().replace('\\', "/"),
         prompts_path: prompts_path.display().to_string(),
         skills_folder: config.skills_folder.to_string_lossy().replace('\\', "/"),
         skills_path: skills_path.display().to_string(),
+        tools_folder: config.tools_folder.to_string_lossy().replace('\\', "/"),
+        tools_path: tools_path.display().to_string(),
     }
 }
 
@@ -148,6 +231,13 @@ pub fn assistant_skills_root(paths: &VaultPaths) -> PathBuf {
     paths
         .vault_root()
         .join(load_vault_config(paths).config.assistant.skills_folder)
+}
+
+#[must_use]
+pub fn assistant_tools_root(paths: &VaultPaths) -> PathBuf {
+    paths
+        .vault_root()
+        .join(load_vault_config(paths).config.assistant.tools_folder)
 }
 
 pub fn list_assistant_prompts(
@@ -218,6 +308,44 @@ pub fn load_assistant_skill(
         .ok_or_else(|| AssistantError::message(format!("unknown skill `{identifier}`")))
 }
 
+#[must_use]
+pub fn default_assistant_tool_reserved_names() -> Vec<String> {
+    vec![
+        "tool_init".to_string(),
+        "tool_list".to_string(),
+        "tool_run".to_string(),
+        "tool_set".to_string(),
+        "tool_show".to_string(),
+        "tool_validate".to_string(),
+    ]
+}
+
+pub fn list_assistant_tools(
+    paths: &VaultPaths,
+    options: &AssistantToolValidationOptions,
+) -> Result<Vec<AssistantToolSummary>, AssistantError> {
+    let tools = collect_assistant_tools(&assistant_tools_root(paths), options)?;
+    Ok(tools.into_iter().map(|tool| tool.summary).collect())
+}
+
+pub fn load_assistant_tool(
+    paths: &VaultPaths,
+    identifier: &str,
+    options: &AssistantToolValidationOptions,
+) -> Result<AssistantTool, AssistantError> {
+    let root = assistant_tools_root(paths);
+    let tools = collect_assistant_tools(&root, options)?;
+    let normalized = normalize_identifier(identifier);
+    tools
+        .into_iter()
+        .find(|tool| {
+            tool.summary.name == normalized
+                || normalize_identifier(&tool.summary.path) == normalized
+                || normalize_identifier(directory_name(&tool.summary.path)) == normalized
+        })
+        .ok_or_else(|| AssistantError::message(format!("unknown tool `{identifier}`")))
+}
+
 pub fn read_vault_agents_file(paths: &VaultPaths) -> Result<Option<String>, AssistantError> {
     let path = paths.vault_root().join("AGENTS.md");
     if !path.is_file() {
@@ -262,6 +390,19 @@ fn find_skill_by_identifier(
         }
     }
     Ok(None)
+}
+
+fn collect_assistant_tools(
+    root: &Path,
+    options: &AssistantToolValidationOptions,
+) -> Result<Vec<AssistantTool>, AssistantError> {
+    let mut tools = collect_tool_files(root)?
+        .into_iter()
+        .map(|path| parse_tool_file(root, &path, options))
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_tool_name_collisions(&tools, options)?;
+    tools.sort_by(|left, right| left.summary.name.cmp(&right.summary.name));
+    Ok(tools)
 }
 
 fn parse_prompt_file(root: &Path, path: &Path) -> Result<AssistantPrompt, AssistantError> {
@@ -311,6 +452,93 @@ fn parse_skill_file(root: &Path, path: &Path) -> Result<AssistantSkill, Assistan
         body: body.trim().to_string(),
     };
     Ok(skill)
+}
+
+fn parse_tool_file(
+    root: &Path,
+    path: &Path,
+    options: &AssistantToolValidationOptions,
+) -> Result<AssistantTool, AssistantError> {
+    let relative = relative_display(root, path)?;
+    let source = fs::read_to_string(path).map_err(|error| AssistantError::io(path, error))?;
+    let (frontmatter, body) = split_markdown_frontmatter(&source, path)?;
+    let frontmatter = frontmatter
+        .map(parse_yaml_frontmatter::<ToolFrontmatter>)
+        .transpose()?
+        .unwrap_or_default();
+
+    let name = normalize_optional(frontmatter.name).ok_or_else(|| {
+        AssistantError::parse(format!(
+            "{} must set a non-empty `name` in frontmatter",
+            path.display()
+        ))
+    })?;
+    validate_tool_name(&name, path)?;
+
+    let description = normalize_optional(frontmatter.description).ok_or_else(|| {
+        AssistantError::parse(format!(
+            "{} must set a non-empty `description` in frontmatter",
+            path.display()
+        ))
+    })?;
+
+    let input_schema = normalize_schema_value(frontmatter.input_schema, path, "input_schema")?;
+    let output_schema =
+        normalize_optional_schema_value(frontmatter.output_schema, path, "output_schema")?;
+    let runtime = frontmatter.runtime.unwrap_or_default();
+    if runtime != AssistantToolRuntime::Quickjs {
+        return Err(AssistantError::parse(format!(
+            "{} uses unsupported runtime `{:?}`; only `quickjs` is currently supported",
+            path.display(),
+            runtime
+        )));
+    }
+
+    let sandbox = frontmatter.sandbox.unwrap_or(JsRuntimeSandbox::Strict);
+    if sandbox == JsRuntimeSandbox::None {
+        return Err(AssistantError::parse(format!(
+            "{} cannot set `sandbox = none` for a custom tool",
+            path.display()
+        )));
+    }
+
+    let tool_dir = path.parent().ok_or_else(|| {
+        AssistantError::message(format!("{} has no parent directory", path.display()))
+    })?;
+    let entrypoint = normalize_tool_entrypoint(frontmatter.entrypoint, path)?;
+    let absolute_entrypoint = tool_dir.join(&entrypoint);
+    if !absolute_entrypoint.is_file() {
+        return Err(AssistantError::parse(format!(
+            "{} entrypoint `{}` was not found",
+            path.display(),
+            absolute_entrypoint.display()
+        )));
+    }
+
+    let packs = normalize_tool_packs(frontmatter.packs, path, options)?;
+
+    Ok(AssistantTool {
+        summary: AssistantToolSummary {
+            name,
+            title: normalize_optional(frontmatter.title),
+            description,
+            version: frontmatter.version.as_ref().and_then(yaml_scalar_to_string),
+            runtime,
+            entrypoint,
+            entrypoint_path: relative_display(root, &absolute_entrypoint)?,
+            tags: normalize_list(frontmatter.tags),
+            sandbox,
+            permission_profile: normalize_optional(frontmatter.permission_profile),
+            timeout_ms: frontmatter.timeout_ms,
+            packs,
+            read_only: frontmatter.read_only,
+            destructive: frontmatter.destructive,
+            input_schema,
+            output_schema,
+            path: relative,
+        },
+        body: body.trim().to_string(),
+    })
 }
 
 fn parse_yaml_frontmatter<T: for<'de> Deserialize<'de>>(
@@ -372,6 +600,17 @@ fn collect_skill_files(root: &Path) -> Result<Vec<PathBuf>, AssistantError> {
     Ok(files)
 }
 
+fn collect_tool_files(root: &Path) -> Result<Vec<PathBuf>, AssistantError> {
+    let mut files = Vec::new();
+    collect_matching_files(root, &mut files, |path| {
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case("TOOL.md"))
+    })?;
+    files.sort();
+    Ok(files)
+}
+
 fn collect_matching_files(
     root: &Path,
     files: &mut Vec<PathBuf>,
@@ -391,6 +630,33 @@ fn collect_matching_files(
             collect_matching_files(&path, files, include)?;
         } else if include(&path) {
             files.push(path);
+        }
+    }
+    Ok(())
+}
+
+fn validate_tool_name_collisions(
+    tools: &[AssistantTool],
+    options: &AssistantToolValidationOptions,
+) -> Result<(), AssistantError> {
+    let mut seen = BTreeSet::new();
+    let reserved = options
+        .reserved_names
+        .iter()
+        .map(normalize_identifier)
+        .collect::<BTreeSet<_>>();
+    for tool in tools {
+        if reserved.contains(&tool.summary.name) {
+            return Err(AssistantError::parse(format!(
+                "custom tool `{}` collides with a reserved or built-in tool name",
+                tool.summary.name
+            )));
+        }
+        if !seen.insert(tool.summary.name.clone()) {
+            return Err(AssistantError::parse(format!(
+                "duplicate custom tool name `{}`",
+                tool.summary.name
+            )));
         }
     }
     Ok(())
@@ -455,6 +721,122 @@ fn normalize_prompt_role(role: Option<String>) -> String {
     }
 }
 
+fn validate_tool_name(name: &str, path: &Path) -> Result<(), AssistantError> {
+    if !name.chars().all(|character| {
+        character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+    }) {
+        return Err(AssistantError::parse(format!(
+            "{} has invalid tool name `{name}`; custom tool names must be `snake_case`",
+            path.display()
+        )));
+    }
+    if !name
+        .chars()
+        .any(|character| character.is_ascii_alphabetic())
+    {
+        return Err(AssistantError::parse(format!(
+            "{} has invalid tool name `{name}`; custom tool names must include at least one ASCII letter",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn normalize_schema_value(
+    value: Option<JsonValue>,
+    path: &Path,
+    field_name: &str,
+) -> Result<JsonValue, AssistantError> {
+    let value = value.ok_or_else(|| {
+        AssistantError::parse(format!(
+            "{} must set `{field_name}` to a JSON Schema object",
+            path.display()
+        ))
+    })?;
+    if !value.is_object() {
+        return Err(AssistantError::parse(format!(
+            "{} field `{field_name}` must be a JSON Schema object",
+            path.display()
+        )));
+    }
+    Ok(value)
+}
+
+fn normalize_optional_schema_value(
+    value: Option<JsonValue>,
+    path: &Path,
+    field_name: &str,
+) -> Result<Option<JsonValue>, AssistantError> {
+    value
+        .map(|value| {
+            if value.is_object() {
+                Ok(value)
+            } else {
+                Err(AssistantError::parse(format!(
+                    "{} field `{field_name}` must be a JSON Schema object",
+                    path.display()
+                )))
+            }
+        })
+        .transpose()
+}
+
+fn normalize_tool_entrypoint(
+    entrypoint: Option<String>,
+    path: &Path,
+) -> Result<String, AssistantError> {
+    let entrypoint = normalize_optional(entrypoint).unwrap_or_else(|| "main.js".to_string());
+    let entrypoint_path = Path::new(&entrypoint);
+    if entrypoint_path.is_absolute() {
+        return Err(AssistantError::parse(format!(
+            "{} entrypoint `{entrypoint}` must be a relative path",
+            path.display()
+        )));
+    }
+    if entrypoint.contains(':') {
+        return Err(AssistantError::parse(format!(
+            "{} entrypoint `{entrypoint}` must not contain a drive or URI prefix",
+            path.display()
+        )));
+    }
+    for component in entrypoint_path.components() {
+        if matches!(component, Component::ParentDir | Component::RootDir) {
+            return Err(AssistantError::parse(format!(
+                "{} entrypoint `{entrypoint}` must stay within the tool directory",
+                path.display()
+            )));
+        }
+    }
+    Ok(entrypoint_path.to_string_lossy().replace('\\', "/"))
+}
+
+fn normalize_tool_packs(
+    packs: Vec<String>,
+    path: &Path,
+    options: &AssistantToolValidationOptions,
+) -> Result<Vec<String>, AssistantError> {
+    let packs = if packs.is_empty() {
+        vec!["custom".to_string()]
+    } else {
+        normalize_list(packs)
+    };
+    let mut allowed = options
+        .allowed_pack_names
+        .iter()
+        .map(normalize_identifier)
+        .collect::<BTreeSet<_>>();
+    allowed.insert("custom".to_string());
+    for pack in &packs {
+        if !allowed.contains(pack) {
+            return Err(AssistantError::parse(format!(
+                "{} uses unknown tool pack `{pack}`",
+                path.display()
+            )));
+        }
+    }
+    Ok(packs)
+}
+
 fn yaml_scalar_to_string(value: &YamlValue) -> Option<String> {
     match value {
         YamlValue::Bool(value) => Some(value.to_string()),
@@ -487,10 +869,12 @@ fn directory_name(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        assistant_config_summary, list_assistant_prompts, list_assistant_skills,
-        load_assistant_prompt, load_assistant_skill, read_vault_agents_file,
-        render_assistant_prompt,
+        assistant_config_summary, default_assistant_tool_reserved_names, list_assistant_prompts,
+        list_assistant_skills, list_assistant_tools, load_assistant_prompt, load_assistant_skill,
+        load_assistant_tool, read_vault_agents_file, render_assistant_prompt,
+        AssistantToolValidationOptions,
     };
+    use crate::config::JsRuntimeSandbox;
     use crate::paths::{initialize_vulcan_dir, VaultPaths};
     use std::collections::BTreeMap;
     use std::fs;
@@ -511,6 +895,7 @@ mod tests {
 
         assert_eq!(summary.prompts_folder, "AI/Prompts");
         assert_eq!(summary.skills_folder, ".agents/skills");
+        assert_eq!(summary.tools_folder, ".agents/tools");
     }
 
     #[test]
@@ -589,5 +974,173 @@ Use this skill for a daily summary.
         assert!(read_vault_agents_file(&paths)
             .expect("agents file read should succeed")
             .is_none());
+    }
+
+    #[test]
+    fn tool_loader_reads_frontmatter_and_entrypoint() {
+        let (_dir, paths) = test_paths();
+        let tool_root = paths.vault_root().join(".agents/tools/summarize-meeting");
+        fs::create_dir_all(&tool_root).expect("tool dir");
+        fs::write(
+            tool_root.join("TOOL.md"),
+            r"---
+name: summarize_meeting
+title: Summarize Meeting
+description: Summarize one note into decisions and actions.
+version: 1
+runtime: quickjs
+entrypoint: main.js
+tags:
+  - meetings
+sandbox: fs
+permission_profile: readonly
+timeout_ms: 5000
+packs:
+  - custom
+read_only: true
+input_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    note:
+      type: string
+  required:
+    - note
+output_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    title:
+      type: string
+---
+Use this when the caller already knows the note to summarize.
+",
+        )
+        .expect("tool manifest");
+        fs::write(
+            tool_root.join("main.js"),
+            "function main(input) { return { title: input.note }; }\n",
+        )
+        .expect("tool entrypoint");
+
+        let tools = list_assistant_tools(
+            &paths,
+            &AssistantToolValidationOptions {
+                allowed_pack_names: vec!["custom".to_string()],
+                ..AssistantToolValidationOptions::default()
+            },
+        )
+        .expect("tools should load");
+        assert_eq!(tools.len(), 1);
+        assert_eq!(tools[0].name, "summarize_meeting");
+        assert_eq!(tools[0].sandbox, JsRuntimeSandbox::Fs);
+        assert_eq!(tools[0].entrypoint_path, "summarize-meeting/main.js");
+
+        let tool = load_assistant_tool(
+            &paths,
+            "summarize_meeting",
+            &AssistantToolValidationOptions {
+                allowed_pack_names: vec!["custom".to_string()],
+                ..AssistantToolValidationOptions::default()
+            },
+        )
+        .expect("tool should load");
+        assert!(tool.body.contains("already knows the note"));
+        assert_eq!(tool.summary.permission_profile.as_deref(), Some("readonly"));
+        assert_eq!(tool.summary.timeout_ms, Some(5000));
+    }
+
+    #[test]
+    fn tool_loader_rejects_reserved_names() {
+        let (_dir, paths) = test_paths();
+        let tool_root = paths.vault_root().join(".agents/tools/meta");
+        fs::create_dir_all(&tool_root).expect("tool dir");
+        fs::write(
+            tool_root.join("TOOL.md"),
+            r"---
+name: tool_run
+description: Shadow a reserved tool name.
+input_schema:
+  type: object
+---
+",
+        )
+        .expect("tool manifest");
+        fs::write(tool_root.join("main.js"), "function main() {}\n").expect("tool entrypoint");
+
+        let error = list_assistant_tools(
+            &paths,
+            &AssistantToolValidationOptions {
+                reserved_names: default_assistant_tool_reserved_names(),
+                allowed_pack_names: vec!["custom".to_string()],
+            },
+        )
+        .expect_err("reserved name should fail");
+        assert!(error
+            .to_string()
+            .contains("collides with a reserved or built-in tool name"));
+    }
+
+    #[test]
+    fn tool_loader_rejects_invalid_sandbox_and_pack_names() {
+        let (_dir, paths) = test_paths();
+        let invalid_sandbox_root = paths.vault_root().join(".agents/tools/unsafe");
+        fs::create_dir_all(&invalid_sandbox_root).expect("tool dir");
+        fs::write(
+            invalid_sandbox_root.join("TOOL.md"),
+            r"---
+name: unsafe_tool
+description: Too much authority.
+sandbox: none
+input_schema:
+  type: object
+---
+",
+        )
+        .expect("tool manifest");
+        fs::write(invalid_sandbox_root.join("main.js"), "function main() {}\n")
+            .expect("tool entrypoint");
+
+        let error = list_assistant_tools(
+            &paths,
+            &AssistantToolValidationOptions {
+                allowed_pack_names: vec!["custom".to_string()],
+                ..AssistantToolValidationOptions::default()
+            },
+        )
+        .expect_err("sandbox none should fail");
+        assert!(error.to_string().contains("cannot set `sandbox = none`"));
+
+        fs::remove_dir_all(&invalid_sandbox_root).expect("cleanup invalid tool");
+
+        let invalid_pack_root = paths.vault_root().join(".agents/tools/wrong-pack");
+        fs::create_dir_all(&invalid_pack_root).expect("tool dir");
+        fs::write(
+            invalid_pack_root.join("TOOL.md"),
+            r"---
+name: wrong_pack
+description: Uses an unknown pack.
+packs:
+  - wildcard
+input_schema:
+  type: object
+---
+",
+        )
+        .expect("tool manifest");
+        fs::write(invalid_pack_root.join("main.js"), "function main() {}\n")
+            .expect("tool entrypoint");
+
+        let error = list_assistant_tools(
+            &paths,
+            &AssistantToolValidationOptions {
+                allowed_pack_names: vec!["custom".to_string(), "notes_read".to_string()],
+                ..AssistantToolValidationOptions::default()
+            },
+        )
+        .expect_err("unknown pack should fail");
+        assert!(error
+            .to_string()
+            .contains("uses unknown tool pack `wildcard`"));
     }
 }

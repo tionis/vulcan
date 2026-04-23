@@ -233,6 +233,7 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # [assistant]
 # prompts_folder = "AI/Prompts"
 # skills_folder = ".agents/skills"
+# tools_folder = ".agents/tools"
 
 # [export.profiles.team-book]
 # format = "epub"  # markdown | json | csv | graph | epub | zip | sqlite | search-index
@@ -750,6 +751,8 @@ pub struct AssistantConfig {
     pub prompts_folder: PathBuf,
     #[serde(default = "default_assistant_skills_folder")]
     pub skills_folder: PathBuf,
+    #[serde(default = "default_assistant_tools_folder")]
+    pub tools_folder: PathBuf,
 }
 
 impl Default for AssistantConfig {
@@ -757,6 +760,7 @@ impl Default for AssistantConfig {
         Self {
             prompts_folder: default_assistant_prompts_folder(),
             skills_folder: default_assistant_skills_folder(),
+            tools_folder: default_assistant_tools_folder(),
         }
     }
 }
@@ -767,6 +771,10 @@ fn default_assistant_prompts_folder() -> PathBuf {
 
 fn default_assistant_skills_folder() -> PathBuf {
     PathBuf::from(".agents/skills")
+}
+
+fn default_assistant_tools_folder() -> PathBuf {
+    PathBuf::from(".agents/tools")
 }
 
 /// Which HTTP-based search provider to use.
@@ -2746,9 +2754,11 @@ struct PartialQuickAddAiConfig {
 }
 
 #[derive(Debug, Deserialize, Default)]
+#[allow(clippy::struct_field_names)]
 struct PartialAssistantConfig {
     prompts_folder: Option<PathBuf>,
     skills_folder: Option<PathBuf>,
+    tools_folder: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -7658,6 +7668,10 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
             config.assistant.skills_folder =
                 normalize_template_pathbuf(&skills_folder).unwrap_or_default();
         }
+        if let Some(tools_folder) = assistant.tools_folder {
+            config.assistant.tools_folder =
+                normalize_template_pathbuf(&tools_folder).unwrap_or_default();
+        }
     }
 
     if let Some(web) = overrides.web {
@@ -9372,6 +9386,10 @@ intellisense_render = 2
             defaults.assistant.skills_folder,
             PathBuf::from(".agents/skills")
         );
+        assert_eq!(
+            defaults.assistant.tools_folder,
+            PathBuf::from(".agents/tools")
+        );
     }
 
     #[test]
@@ -9381,7 +9399,7 @@ intellisense_render = 2
         fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
         fs::write(
             vault_root.join(".vulcan/config.toml"),
-            "[assistant]\nprompts_folder = \"Shared/Prompts\"\nskills_folder = \"Shared/Skills\"\n",
+            "[assistant]\nprompts_folder = \"Shared/Prompts\"\nskills_folder = \"Shared/Skills\"\ntools_folder = \"Shared/Tools\"\n",
         )
         .expect("config should be written");
 
@@ -9394,6 +9412,10 @@ intellisense_render = 2
         assert_eq!(
             loaded.config.assistant.skills_folder,
             PathBuf::from("Shared/Skills")
+        );
+        assert_eq!(
+            loaded.config.assistant.tools_folder,
+            PathBuf::from("Shared/Tools")
         );
     }
 
@@ -10905,6 +10927,7 @@ default_mode = "off"
         assert!(template.contains("[assistant]"));
         assert!(template.contains("prompts_folder = \"AI/Prompts\""));
         assert!(template.contains("skills_folder = \".agents/skills\""));
+        assert!(template.contains("tools_folder = \".agents/tools\""));
     }
 
     #[test]

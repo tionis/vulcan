@@ -5686,17 +5686,17 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 
 ### 9.24.1 Asset model and manifest loader
 
-- [ ] Add `assistant.tools_folder` config (default `.agents/tools`)
-- [ ] Define tool asset layout: one directory per tool with `TOOL.md` manifest/docs plus `main.js` entrypoint by default
-- [ ] Implement shared discovery/loader code in `vulcan-core` for parsing `TOOL.md` frontmatter, validating names, resolving entrypoints, and reading the doc body
-- [ ] Enforce static discovery: tool schemas, descriptions, pack membership, and permission hints must load without executing user JS
+- [x] Add `assistant.tools_folder` config (default `.agents/tools`)
+- [x] Define tool asset layout: one directory per tool with `TOOL.md` manifest/docs plus `main.js` entrypoint by default
+- [x] Implement shared discovery/loader code in `vulcan-core` for parsing `TOOL.md` frontmatter, validating names, resolving entrypoints, and reading the doc body
+- [x] Enforce static discovery: tool schemas, descriptions, pack membership, and permission hints must load without executing user JS
 - [ ] Reject collisions with built-in tools, other custom tools, and reserved meta-tool names
 
 ### 9.24.2 Manifest schema and runtime contract
 
-- [ ] Define manifest fields such as `name`, `description`, `input_schema`, optional `output_schema`, `runtime`, `entrypoint`, `tags`, `sandbox`, `permission_profile`, `timeout_ms`, `packs`, and UX hints like `read_only` / `destructive`
-- [ ] Restrict the initial runtime set to `runtime = quickjs`; keep the manifest shape extensible enough for a later WASM backend
-- [ ] Disallow `sandbox = none` for custom tools so resource limits remain active
+- [x] Define manifest fields such as `name`, `description`, `input_schema`, optional `output_schema`, `runtime`, `entrypoint`, `tags`, `sandbox`, `permission_profile`, `timeout_ms`, `packs`, and UX hints like `read_only` / `destructive`
+- [x] Restrict the initial runtime set to `runtime = quickjs`; keep the manifest shape extensible enough for a later WASM backend
+- [x] Disallow `sandbox = none` for custom tools so resource limits remain active
 - [ ] Define the JS entrypoint contract: `main(input, ctx)` returns JSON-serializable output or `{ result, text }`
 - [ ] Validate tool input against `input_schema` before execution and validate returned `result` against `output_schema` after execution when present
 
