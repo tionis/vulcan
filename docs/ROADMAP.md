@@ -1800,6 +1800,8 @@ console.log(JSON.stringify({ npcs: npcs.map(n => n.name), locations: locations.m
 
 This makes skill scripts runnable by external agent harnesses (Claude Code, Codex, Gemini CLI) as plain executables — the harness does not need to know about Vulcan's JS runtime. The same shebang pattern works for user scripts in `.vulcan/scripts/` and general CLI integration.
 
+If a reusable script should become a typed direct-call tool across CLI, MCP, assistant integrations, and the internal JS API rather than remain a harness-local helper, promote it into the custom tool registry planned in Phase 9.24 instead of burying it inside a skill directory.
+
 #### 9.12.8 Deferred native chat integrations
 
 **Status:** `[-]` Deferred under the `pi`-first strategy. Native Telegram/Signal/Matrix/Discord adapters are no longer on the immediate critical path.
@@ -2888,6 +2890,7 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.19.17 (config surface) ← 9.17,9.19.11,9.19.12,9.19.13│── Wave 9+ (after import infra + initial settings TUI + plugins + permissions)
 9.19.15 (MCP rework)     ← 9.12.6,9.18.7,9.19.6,9.19.13│── Wave 9 (after vault-native prompts + permissions + basic MCP)
 9.23 (adaptive MCP packs)← 9.19.15,9.19.13,9.18.7     │── Wave 9+ (after protocol-native MCP, before broader MCP clients depend on it)
+9.24 (custom tools)      ← 9.18.5,9.19.12,9.19.13,9.19.15,9.23│── Wave 9+ (after JS runtime + plugins + permissions + protocol-native tool registry)
 9.19.16 (test hardening) ← 9.19.6,9.19.7,9.19.13,9.19.12│── final hardening wave before 9.20/10
 ```
 
@@ -2904,10 +2907,11 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 7. **Wave 6+ (sequential after prerequisites):** **9.18.5 (JS runtime/REPL)** ← requires 9.8.8; **9.18.9 (task mutations)** ← requires 9.10; **9.18.4 (refactor group)** ← with 9.18.1.
 8. **Wave 7 — Optional embedded host mode:** revisit **9.21** only if external runtimes cannot cover the workflow and after permissions + daemon foundations are mature. Treat 9.12.8 as the deferral gate and 9.21 as the implementation bucket.
 9. **Wave 8:** 9.13 (QuickAdd) — capture format compatibility and settings import. Benefits from 9.7 (template variables) and 9.16 (periodic notes) being in place. QuickAdd importer (9.13.2) uses `PluginImporter`.
-10. **9.17.7 (init integration)** can land anytime after 9.17.6.
-11. **9.18.1 (command tree reorg)** should land last within 9.18 — it renames everything, so it's easier to build the new commands first (9.18.2–9.18.9) under the old structure, then reorganize in one pass.
+10. **Wave 9+:** 9.19.15 → 9.23 → 9.24 for the protocol-native programmable tool surface. Build the MCP-native registry first, then pack negotiation, then vault-defined custom tools on top of that shared registry.
+11. **9.17.7 (init integration)** can land anytime after 9.17.6.
+12. **9.18.1 (command tree reorg)** should land last within 9.18 — it renames everything, so it's easier to build the new commands first (9.18.2–9.18.9) under the old structure, then reorganize in one pass.
 
-**Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features. For the subprocess-runtime AI path, the critical chain is: 9.18.2/9.18.7/9.18.8 → 9.12.1–9.12.6 (`pi` integration). For the MCP-native AI path, the follow-on chain is: 9.12.6 (vault-native prompts/skills) → 9.19.6 (basic MCP server) → 9.19.13 (permissions) → 9.19.15 (protocol-native MCP rework) → 9.23 (adaptive MCP tool packs). Native chat adapters are explicitly off the current critical path. For JS runtime: 9.8.8 → 9.18.5.
+**Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features. For the subprocess-runtime AI path, the critical chain is: 9.18.2/9.18.7/9.18.8 → 9.12.1–9.12.6 (`pi` integration). For the MCP-native AI path, the follow-on chain is: 9.12.6 (vault-native prompts/skills) → 9.19.6 (basic MCP server) → 9.19.13 (permissions) → 9.19.15 (protocol-native MCP rework) → 9.23 (adaptive MCP tool packs) → 9.24 (vault-native custom tools). Native chat adapters are explicitly off the current critical path. For JS/runtime-backed programmability: 9.8.8 → 9.18.5 → 9.19.12/9.19.13 → 9.24.
 
 **Note on 9.8.3 and 9.16:** The `file.day` metadata field in 9.8.3 depends on periodic note configuration from 9.16. However, `file.day` can be stubbed initially (return null when no periodic config exists) and filled in when 9.16 lands. This avoids blocking all of 9.8 on 9.16.
 
@@ -5601,6 +5605,7 @@ Phase 9.16 (Periodic notes) builds on Phase 1 (document indexing) and Phase 9.7 
 Phase 9.17 (Unified settings import) infrastructure (9.17.1–9.17.3) depends only on 9.5 (config layering) and can start in Wave 2. Core importer (9.17.4) depends on 9.17.1. Dataview importer (9.17.5) depends on 9.17.1 and 9.8.9. Batch commands (9.17.6) depend on 9.17.1 and any two or more importers on the trait. Init integration (9.17.7) depends on 9.17.6. Individual plugin importers (9.9.4, 9.10.5, 9.11.4, 9.13.3, 9.15.11, 9.16.4) are refactored or implemented as `PluginImporter` (9.17.1) within their respective phases.
 Phase 9.20 (Static site builder) is the recommended bridge between CLI completion and daemon/WebUI work. It reuses the parser, graph, query, Dataview, Bases, and task foundations to produce a shared HTML renderer, route planner, and static search/graph/preview assets. Phase 10 does not technically depend on it, but Phase 13 and Phase 16 should.
 Phase 9.23 (adaptive MCP tool packs) builds on 9.19.15's protocol-native MCP surface and 9.19.13's permission layer. It keeps MCP tool exposure typed and permission-aware while replacing the fixed `core|extended|admin` ladder with composable packs and optional session-local tool refresh for clients that honor `notifications/tools/list_changed`.
+Phase 9.24 (vault-native custom tools) builds on 9.18.5 (JS runtime), 9.19.12 (plugin/runtime execution substrate), 9.19.13 (permission layer), 9.19.15 (protocol-native MCP registry), and 9.23 (pack-aware MCP exposure). It introduces a shared programmable tool registry for vault-defined callable tools, with static manifest-based discovery and QuickJS as the initial runtime backend. Skills remain instructional assets; plugins remain event hooks; custom tools are direct request/response callables exposed consistently through CLI, `describe`, MCP, and the internal JS API.
 Phase 4.5.1 (Custom Bases source types) extends the Bases evaluator with pluggable data sources. The trait and `FileSource` extraction are part of Phase 4. The actual custom source registrations happen in Phase 9.15.8 (TaskNotes Bases views).
 Phase 18.8 (Excalidraw) is part of Phase 18 (Canvas) — both are visual JSON-based document types. Parsing/indexing (18.8.1–18.8.2) depends on Phase 7. WebUI rendering (18.8.3) depends on Phase 13. WebUI editing (18.8.4) depends on Phase 14.
 Phase 14.1 (Note editor) includes Advanced Tables-style table editing for the WebUI — tab navigation, column management, sorting, CSV paste, and formula support.
@@ -5666,6 +5671,84 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 - [ ] Add end-to-end MCP tests for adaptive pack changes over both stdio and Streamable HTTP, including `notifications/tools/list_changed`
 - [ ] Add regression tests showing that `describe --format mcp` and live MCP exposure stay in sync for the same selected pack set
 - [ ] Update help snapshots and CLI/MCP fixtures to cover the new pack model and adaptive-mode documentation
+
+---
+
+## Phase 9.24: Vault-native custom tools
+
+**Goal:** Add a first-class programmable tool registry for vault-defined callable tools written in JavaScript, exposed consistently through CLI, `describe`, MCP, and the internal JS API. This should let a vault define reusable tools for humans and LLMs without creating a second extension/runtime model beside skills, plugins, and `vulcan run`.
+
+**Why this phase exists:** Today Vulcan has three related but distinct programmable surfaces: Markdown skills (instructional), JS scripts via `vulcan run` (callable but not registry-backed), and JS plugins (event hooks). That leaves a gap for reusable request/response tools that can be discovered statically, called directly, permission-filtered, and exported into MCP/OpenAI-style tool schemas. Hiding that behavior inside skill-local scripts or shell wrappers would fragment discovery, permissions, and documentation.
+
+**Builds on:** 9.18.5 (QuickJS runtime), 9.19.12 (plugin/runtime execution substrate), 9.19.13 (permission layer), 9.19.15 (protocol-native MCP registry), and 9.23 (pack-aware MCP exposure). The concrete design reference lives in `docs/assistant/custom_tools.md`.
+
+**Scope rule:** Reuse the existing QuickJS runtime, vault trust model, and permission profiles. Do **not** add a generic "run arbitrary JS from MCP" or "shell passthrough tool" as a substitute for a typed registry. Skills remain guidance files; plugins remain lifecycle hooks; custom tools are structured request/response callables.
+
+### 9.24.1 Asset model and manifest loader
+
+- [ ] Add `assistant.tools_folder` config (default `.agents/tools`)
+- [ ] Define tool asset layout: one directory per tool with `TOOL.md` manifest/docs plus `main.js` entrypoint by default
+- [ ] Implement shared discovery/loader code in `vulcan-core` for parsing `TOOL.md` frontmatter, validating names, resolving entrypoints, and reading the doc body
+- [ ] Enforce static discovery: tool schemas, descriptions, pack membership, and permission hints must load without executing user JS
+- [ ] Reject collisions with built-in tools, other custom tools, and reserved meta-tool names
+
+### 9.24.2 Manifest schema and runtime contract
+
+- [ ] Define manifest fields such as `name`, `description`, `input_schema`, optional `output_schema`, `runtime`, `entrypoint`, `tags`, `sandbox`, `permission_profile`, `timeout_ms`, `packs`, and UX hints like `read_only` / `destructive`
+- [ ] Restrict the initial runtime set to `runtime = quickjs`; keep the manifest shape extensible enough for a later WASM backend
+- [ ] Disallow `sandbox = none` for custom tools so resource limits remain active
+- [ ] Define the JS entrypoint contract: `main(input, ctx)` returns JSON-serializable output or `{ result, text }`
+- [ ] Validate tool input against `input_schema` before execution and validate returned `result` against `output_schema` after execution when present
+
+### 9.24.3 Shared tool registry and CLI surface
+
+- [ ] Introduce an internal tool registry abstraction that can hold both built-in tools and custom tool definitions without duplicating schema/export logic
+- [ ] Add `vulcan tool list`, `vulcan tool show <name>`, and `vulcan tool run <name> --input-json ...`
+- [ ] Add authoring helpers: `vulcan tool init <name>`, `vulcan tool set <name> ...`, and `vulcan tool validate [<name>]`
+- [ ] Ensure `tool show` exposes parsed metadata plus the Markdown body so humans and agents can read usage notes without opening files manually
+- [ ] Make `vulcan describe --format openai-tools|mcp|json-schema` include visible custom tools from the shared registry
+- [ ] Keep CLI JSON output stable and machine-readable; no ad hoc stdout parsing from the JS script body
+
+### 9.24.4 Internal JS API integration
+
+- [ ] Add a `tools` namespace to the JS runtime with `tools.list()`, `tools.get(name)`, and `tools.call(name, input, opts?)`
+- [ ] Make the same registry available to custom tools, general `vulcan run` scripts, and future assistant-internal JS helpers
+- [ ] Add recursion/cycle protection and a clear maximum call depth for tool-to-tool composition
+- [ ] Ensure nested calls preserve the effective permission ceiling rather than recomputing broader access
+
+### 9.24.5 Trust, permissions, and host execution
+
+- [ ] Require a trusted vault for custom tool execution, matching plugin execution rules
+- [ ] Define the effective authority as the intersection of the active caller profile, the tool's optional `permission_profile`, the declared sandbox ceiling, and normal Vulcan path/network/git/config/execute checks
+- [ ] Keep `read_only` / `destructive` manifest fields as annotations only; authorization continues to come from the permission layer
+- [ ] Add `host.exec(argv, opts?)` behind `execute` permission and `host.shell(command, opts?)` behind `shell` permission
+- [ ] Prefer `host.exec()` in all docs/examples and keep `host.shell()` explicitly higher-risk
+- [ ] Add tests for "tool visible but not callable" cases: untrusted vaults, missing permission profile, denied write/network/execute/shell, and pack-enabled-but-profile-denied combinations
+
+### 9.24.6 MCP exposure, resources, and pack integration
+
+- [ ] Expose custom tools as first-class MCP tools from the same live registry used by built-ins; do not add a generic `run_custom_tool` fallback
+- [ ] Add a dedicated pack such as `custom` for user-defined tools, with optional additional pack membership from the manifest once validated against canonical pack names
+- [ ] Add tool documentation resources such as `vulcan://assistant/tools/index` and `vulcan://assistant/tools/{name}`
+- [ ] Emit `notifications/tools/list_changed` and `notifications/resources/list_changed` when the custom tools folder changes
+- [ ] Keep `describe --format mcp` and live MCP exposure on the same registry so exported schemas and live tool lists stay in sync
+
+### 9.24.7 Skills, scaffolding, and authoring guidance
+
+- [ ] Document the recommended split: skills teach workflows; custom tools perform callable request/response work; plugins react to events
+- [ ] Ship integrated help topics for `tool`, `tool init`, `tool set`, `tool validate`, `js.tools`, `js.host`, and the plugin/tool/skill comparison surface
+- [ ] Add in-repo docs that compare scripts, skills, tools, and plugins with concrete examples instead of only field-by-field schema reference
+- [ ] Update bundled/default skill guidance so reusable executable behavior is promoted into `.agents/tools` instead of being buried in skill-local scripts when cross-surface discoverability matters
+- [ ] Extend `vulcan init --agent-files` / `vulcan agent install` to scaffold the tools folder and optionally write an example tool template
+- [ ] Add help topics and authoring docs that explain manifest fields, permission ceilings, return envelopes, and host execution risks
+
+### 9.24.8 Testing and rollout
+
+- [ ] Add unit tests for manifest parsing, name collision detection, schema validation, permission intersection, and trust gating
+- [ ] Add integration tests with fixture vault tools covering CLI `tool run`, `describe --format openai-tools`, `describe --format mcp`, MCP live exposure, and JS `tools.call()`
+- [ ] Add regression tests for invalid tool manifests, missing entrypoints, failing scripts, output-schema mismatches, and recursive tool-call loops
+- [ ] Add end-to-end tests for `host.exec()` / `host.shell()` permission enforcement and timeout/output capture behavior
+- [ ] Roll out with QuickJS only; treat WASM and finer-grained command allowlists as follow-up work once the registry contract is stable
 
 ---
 

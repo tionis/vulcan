@@ -1181,6 +1181,29 @@ Platform adapters may still vary substantially in complexity. Telegram is mostly
 
 The current boundary is documented in [`docs/assistant/pi_integration.md`](./assistant/pi_integration.md) and the re-scoped Phase 9.12 roadmap entries. The preserved native-runtime steering that was cut from the active roadmap now lives in [`docs/assistant/native_runtime_deferred.md`](./assistant/native_runtime_deferred.md), and the optional embedded-host follow-on is tracked separately in Roadmap Phase 9.21. Native chat adapters should only be reconsidered after the permission layer and daemon/service infrastructure are mature enough to support them safely.
 
+## 17f. Vault-native custom tools
+
+Custom tools should extend the existing assistant/tooling architecture rather than creating a second
+extension system. The right model is a shared typed tool registry containing both built-in Vulcan
+tools and vault-defined callable tools, with one execution substrate and one permission model.
+
+Key design decisions:
+
+- Custom tools are callable request/response assets, distinct from skill files (instructional) and
+  plugins (event-driven hooks).
+- Discovery must be static: tool metadata, schemas, and pack membership come from a manifest file
+  such as `TOOL.md`; Vulcan must not execute user code merely to describe a tool.
+- JavaScript-backed tools should reuse the same QuickJS runtime, trust gate, and permission profiles
+  already used by `vulcan run` and plugins.
+- CLI `tool` commands, `describe --format ...`, MCP live exposure, prompts/resources, and the
+  internal JS `tools.*` API should all read from the same registry so the exported schema and live
+  callable surface cannot drift.
+- Host process execution should be explicit via dedicated `execute` vs `shell` permissions, not
+  implied by `sandbox = none`.
+
+The concrete manifest and rollout spec for this is tracked in
+[`docs/assistant/custom_tools.md`](./assistant/custom_tools.md) and Roadmap Phase 9.24.
+
 ## 18. Recommended phased delivery plan
 
 Phases are listed in recommended order. Dependency edges are noted explicitly so that parallelizable work is visible.
@@ -1223,7 +1246,7 @@ Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 
 - **Phase 7:** Post-v1 workflow features (move/rename variants, suggest, saved reports, link-mentions, automation)
 - **Phase 8:** Performance optimizations
-- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), external agent integration with `pi` first plus vault-native prompts/skills and deferred native chat-runtime notes (9.12), QuickAdd automation (9.13), plugin compatibility notes (9.14), TaskNotes full integration with Bases views (9.15), periodic notes with daily events (9.16), unified plugin settings import (9.17), **CLI redesign — two-level command hierarchy, note CRUD, query enhancements, JS runtime/REPL, web tools, git ops, integrated docs, task mutations (9.18)**
+- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), external agent integration with `pi` first plus vault-native prompts/skills and deferred native chat-runtime notes (9.12), QuickAdd automation (9.13), plugin compatibility notes (9.14), TaskNotes full integration with Bases views (9.15), periodic notes with daily events (9.16), unified plugin settings import (9.17), **CLI redesign — two-level command hierarchy, note CRUD, query enhancements, JS runtime/REPL, web tools, git ops, integrated docs, task mutations (9.18)**, MCP/tooling hardening (9.19, 9.23), and vault-native programmable custom tools (9.24)
 - **Phase 10:** Multi-vault daemon with REST API (depends on Phase 9 foundation work being well-advanced)
 - **Phase 11:** Git auto-versioning at the daemon level
 - **Phase 12:** Sync integration

@@ -4,6 +4,10 @@ Vulcan has three JavaScript-oriented surfaces today:
 - DataviewJS evaluation for indexed `dataviewjs` blocks.
 - Templater-compatible JavaScript execution for template rendering.
 
+A fourth programmable surface, vault-native custom tools, is planned as a registry-backed direct-call
+layer on top of the same runtime. Use `vulcan run` for ad hoc scripts; use custom tools when the
+behavior should become discoverable and callable by name across CLI, MCP, and assistant workflows.
+
 These run inside a restricted QuickJS sandbox. They are suitable for note-local automation and computed views, not arbitrary shell access.
 
 External harnesses can also treat the CLI itself as a tool surface:
@@ -25,4 +29,4 @@ Current `vulcan run` highlights:
 - Write-capable helpers such as `vault.transaction()` require `--sandbox fs` or higher.
 - Web helpers such as `web.search()` and `web.fetch()` require `--sandbox net` or higher.
 
-See also: `help sandbox`, `help js`, `help describe`.
+See also: `help sandbox`, `help js`, `help describe`, and [automation-surfaces.md](./automation-surfaces.md).
