@@ -167,6 +167,30 @@ impl McpSession {
     }
 }
 
+fn start_mcp_session_with_xdg(
+    vault_root: &Path,
+    config_home: &str,
+    extra_args: &[&str],
+) -> McpSession {
+    let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"));
+    command
+        .env("VULCAN_FIXED_NOW", FIXED_NOW)
+        .env("XDG_CONFIG_HOME", config_home)
+        .args(["--vault", vault_root.to_str().expect("utf-8"), "mcp"])
+        .args(extra_args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().expect("mcp server should start");
+    let stdin = child.stdin.take().expect("stdin should be piped");
+    let stdout = BufReader::new(child.stdout.take().expect("stdout should be piped"));
+    McpSession {
+        child,
+        stdin,
+        stdout,
+    }
+}
+
 struct McpHttpSession {
     child: Child,
     bind_addr: String,
@@ -15695,9 +15719,48 @@ fn web_cli_and_js_entrypoints_share_normalized_reports() {
 
 #[test]
 fn describe_openai_and_mcp_formats_export_tool_definitions() {
-    let openai_assert = Command::cargo_bin("vulcan")
-        .expect("binary should build")
-        .args(["--output", "json", "describe", "--format", "openai-tools"])
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".agents/tools/summarize")).expect("tool dir should exist");
+    initialize_vulcan_dir(&vault_root);
+    fs::write(
+        vault_root.join(".agents/tools/summarize/TOOL.md"),
+        r"---
+name: summarize_tool
+description: Summarize one note.
+input_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    note:
+      type: string
+  required:
+    - note
+---
+",
+    )
+    .expect("manifest should write");
+    fs::write(
+        vault_root.join(".agents/tools/summarize/main.js"),
+        "function main(input) {\n  return { note: input.note };\n}\n",
+    )
+    .expect("entrypoint should write");
+    let config_home = temp_dir.path().join("config");
+    fs::create_dir_all(&config_home).expect("config home should exist");
+    let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
+    let config_home_str = config_home.to_str().expect("utf-8").to_string();
+    trust_and_scan_vault(&config_home_str, &vault_root_str);
+
+    let openai_assert = cargo_vulcan_with_xdg_config(&config_home_str)
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "describe",
+            "--format",
+            "openai-tools",
+        ])
         .assert()
         .success();
     let openai_json = parse_stdout_json(&openai_assert);
@@ -15710,10 +15773,22 @@ fn describe_openai_and_mcp_formats_export_tool_definitions() {
     assert!(openai_tools
         .iter()
         .any(|tool| tool["function"]["name"] == "note_get"));
+    assert!(openai_tools
+        .iter()
+        .any(|tool| tool["function"]["name"] == "summarize_tool"));
 
-    let mcp_assert = Command::cargo_bin("vulcan")
-        .expect("binary should build")
-        .args(["--output", "json", "describe", "--format", "mcp"])
+    let mcp_assert = cargo_vulcan_with_xdg_config(&config_home_str)
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "describe",
+            "--format",
+            "mcp",
+            "--tool-pack",
+            "search,custom",
+        ])
         .assert()
         .success();
     let mcp_json = parse_stdout_json(&mcp_assert);
@@ -15724,6 +15799,8 @@ fn describe_openai_and_mcp_formats_export_tool_definitions() {
     assert!(mcp_tools
         .iter()
         .any(|tool| tool["inputSchema"]["type"] == "object"));
+    assert!(mcp_tools.iter().any(|tool| tool["name"] == "summarize_tool"
+        && tool["toolPacks"] == serde_json::json!(["custom"])));
 }
 
 #[test]
@@ -19102,6 +19179,121 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
 }
 
 #[test]
+fn mcp_server_exposes_custom_tools_and_tool_resources_when_custom_pack_selected() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::create_dir_all(vault_root.join(".agents/tools/summarize")).expect("tool dir should exist");
+    fs::write(
+        vault_root.join(".agents/tools/summarize/TOOL.md"),
+        r"---
+name: summarize_tool
+title: Summarize Tool
+description: Summarize one note.
+input_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    note:
+      type: string
+  required:
+    - note
+---
+
+Summarize tool documentation.
+",
+    )
+    .expect("manifest should write");
+    fs::write(
+        vault_root.join(".agents/tools/summarize/main.js"),
+        "function main(input) {\n  return { result: { note: input.note, upper: String(input.note).toUpperCase() }, text: `summarized ${input.note}` };\n}\n",
+    )
+    .expect("entrypoint should write");
+
+    let config_home = temp_dir.path().join("config");
+    fs::create_dir_all(&config_home).expect("config home should exist");
+    let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
+    let config_home_str = config_home.to_str().expect("utf-8").to_string();
+    trust_and_scan_vault(&config_home_str, &vault_root_str);
+
+    let mut session =
+        start_mcp_session_with_xdg(&vault_root, &config_home_str, &["--tool-pack", "custom"]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+
+    let tools = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list"
+    }));
+    let tools = tools
+        .last()
+        .and_then(|response| response["result"]["tools"].as_array())
+        .expect("tools/list should return a tool array");
+    assert!(tools.iter().any(|tool| tool["name"] == "summarize_tool"));
+
+    let resources = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "resources/list"
+    }));
+    let resources = resources
+        .last()
+        .and_then(|response| response["result"]["resources"].as_array())
+        .expect("resources/list should return resources");
+    assert!(resources
+        .iter()
+        .any(|resource| resource["uri"] == "vulcan://assistant/tools/index"));
+
+    let index = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "resources/read",
+        "params": { "uri": "vulcan://assistant/tools/index" }
+    }));
+    assert!(index
+        .last()
+        .and_then(|response| response["result"]["contents"][0]["text"].as_str())
+        .is_some_and(|text| text.contains("summarize_tool")));
+
+    let detail = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "resources/read",
+        "params": { "uri": "vulcan://assistant/tools/summarize_tool" }
+    }));
+    assert!(detail
+        .last()
+        .and_then(|response| response["result"]["contents"][0]["text"].as_str())
+        .is_some_and(|text| text.contains("Summarize tool documentation.")));
+
+    let result = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "tools/call",
+        "params": {
+            "name": "summarize_tool",
+            "arguments": { "note": "Projects/Alpha.md" }
+        }
+    }));
+    let result = &result.last().expect("tools/call response")["result"];
+    assert_eq!(result["isError"].as_bool(), Some(false));
+    assert_eq!(
+        result["structuredContent"]["note"].as_str(),
+        Some("Projects/Alpha.md")
+    );
+    assert_eq!(
+        result["content"][0]["text"].as_str(),
+        Some("summarized Projects/Alpha.md")
+    );
+    assert!(session.finish().is_empty());
+}
+
+#[test]
 fn mcp_server_composes_requested_canonical_tool_packs() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -19741,6 +19933,82 @@ Summarize {{note}} with new instructions.
             .iter()
             .any(|message| message["method"] == "notifications/resources/list_changed"),
         "assistant file changes should emit a resources/list_changed notification"
+    );
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_server_emits_tool_and_resource_list_changed_notifications_for_custom_tools() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::create_dir_all(vault_root.join(".agents/tools/summarize")).expect("tool dir should exist");
+    let manifest_path = vault_root.join(".agents/tools/summarize/TOOL.md");
+    fs::write(
+        &manifest_path,
+        r"---
+name: summarize_tool
+description: Summarize one note.
+input_schema:
+  type: object
+---
+",
+    )
+    .expect("manifest should write");
+    fs::write(
+        vault_root.join(".agents/tools/summarize/main.js"),
+        "function main() { return { ok: true }; }\n",
+    )
+    .expect("entrypoint should write");
+
+    let config_home = temp_dir.path().join("config");
+    fs::create_dir_all(&config_home).expect("config home should exist");
+    let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
+    let config_home_str = config_home.to_str().expect("utf-8").to_string();
+    trust_and_scan_vault(&config_home_str, &vault_root_str);
+
+    let mut session =
+        start_mcp_session_with_xdg(&vault_root, &config_home_str, &["--tool-pack", "custom"]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list"
+    }));
+
+    fs::write(
+        &manifest_path,
+        r"---
+name: summarize_tool
+description: Updated summary tool.
+input_schema:
+  type: object
+---
+",
+    )
+    .expect("updated manifest should write");
+
+    let messages = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/list"
+    }));
+    assert!(
+        messages
+            .iter()
+            .any(|message| message["method"] == "notifications/tools/list_changed"),
+        "custom tool changes should emit a tools/list_changed notification"
+    );
+    assert!(
+        messages
+            .iter()
+            .any(|message| message["method"] == "notifications/resources/list_changed"),
+        "custom tool documentation changes should emit a resources/list_changed notification"
     );
     assert!(session.finish().is_empty());
 }

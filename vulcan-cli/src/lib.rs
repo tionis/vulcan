@@ -66,17 +66,21 @@ mod tools {
 
     pub(crate) fn list_custom_tools(
         paths: &VaultPaths,
+        active_permission_profile: Option<&str>,
         options: &CustomToolRegistryOptions,
     ) -> Result<Vec<CustomToolDescriptor>, CliError> {
-        vulcan_app::tools::list_custom_tools(paths, options).map_err(CliError::operation)
+        vulcan_app::tools::list_custom_tools(paths, active_permission_profile, options)
+            .map_err(CliError::operation)
     }
 
     pub(crate) fn show_custom_tool(
         paths: &VaultPaths,
+        active_permission_profile: Option<&str>,
         name: &str,
         options: &CustomToolRegistryOptions,
     ) -> Result<CustomToolShowReport, CliError> {
-        vulcan_app::tools::show_custom_tool(paths, name, options).map_err(CliError::operation)
+        vulcan_app::tools::show_custom_tool(paths, active_permission_profile, name, options)
+            .map_err(CliError::operation)
     }
 
     pub(crate) fn run_custom_tool(
@@ -2570,11 +2574,20 @@ fn handle_tool_command(
         ToolCommand::List => print_tool_list_report(
             cli.output,
             &ToolListReport {
-                tools: tools::list_custom_tools(paths, &registry_options)?,
+                tools: tools::list_custom_tools(
+                    paths,
+                    cli.permissions.as_deref(),
+                    &registry_options,
+                )?,
             },
         ),
         ToolCommand::Show { name } => {
-            let report = tools::show_custom_tool(paths, name, &registry_options)?;
+            let report = tools::show_custom_tool(
+                paths,
+                cli.permissions.as_deref(),
+                name,
+                &registry_options,
+            )?;
             print_tool_show_report(cli.output, &report)
         }
         ToolCommand::Run {
@@ -9287,7 +9300,7 @@ fn print_describe_report(
             }
         }
         DescribeFormatArg::OpenaiTools => {
-            let tools = build_openai_tool_definitions();
+            let tools = build_openai_tool_definitions(paths, requested_profile)?;
             match output {
                 OutputFormat::Human | OutputFormat::Markdown => {
                     println!(
@@ -16548,21 +16561,41 @@ fn find_command<'a>(command: &'a clap::Command, path: &[&str]) -> Option<&'a cla
     Some(current)
 }
 
-fn build_openai_tool_definitions() -> OpenAiToolsReport {
-    OpenAiToolsReport {
-        tools: collect_leaf_commands(&cli_command_tree())
-            .into_iter()
-            .map(|tool| OpenAiToolDefinition {
-                kind: "function".to_string(),
-                function: OpenAiFunctionDefinition {
-                    name: tool.name,
-                    description: tool.description,
-                    parameters: tool.input_schema,
-                    examples: tool.examples,
-                },
-            })
-            .collect(),
-    }
+fn build_openai_tool_definitions(
+    paths: &VaultPaths,
+    requested_profile: Option<&str>,
+) -> Result<OpenAiToolsReport, CliError> {
+    let mut tools = collect_leaf_commands(&cli_command_tree())
+        .into_iter()
+        .map(|tool| OpenAiToolDefinition {
+            kind: "function".to_string(),
+            function: OpenAiFunctionDefinition {
+                name: tool.name,
+                description: tool.description,
+                parameters: tool.input_schema,
+                examples: tool.examples,
+            },
+        })
+        .collect::<Vec<_>>();
+    tools.extend(
+        tools::list_custom_tools(
+            paths,
+            requested_profile,
+            &tools::CustomToolRegistryOptions::default(),
+        )?
+        .into_iter()
+        .filter(|tool| tool.callable)
+        .map(|tool| OpenAiToolDefinition {
+            kind: "function".to_string(),
+            function: OpenAiFunctionDefinition {
+                name: tool.summary.name,
+                description: tool.summary.description,
+                parameters: tool.summary.input_schema,
+                examples: Vec::new(),
+            },
+        }),
+    );
+    Ok(OpenAiToolsReport { tools })
 }
 
 #[derive(Debug, Clone)]
