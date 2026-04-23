@@ -3066,6 +3066,7 @@ The current `vulcan help` is a flat list of ~130 subcommand paths without descri
 - [x] Colorize group headers, command names, and descriptions differently (headings bold-cyan, inline code bold-cyan in help; help now passes `--color` setting through instead of `is_terminal()`)
 - [x] `vulcan help <group>` (e.g., `vulcan help note`) shows all subcommands in that group with descriptions and usage examples
 - [x] `vulcan --help` (clap) should match the grouped layout — currently lists 37 commands in alphabetical order with no visual hierarchy
+- [x] Keep `vulcan help` overview grouped; avoid repeating the same raw command tree below the curated category index
 
 **Examples in `--help`**
 
@@ -3090,6 +3091,7 @@ Evaluate whether `describe` is still needed as a user-facing command or should b
 
 - [x] If `describe` is only useful for LLM harness integration, move it to `vulcan describe` (keep it but remove from the main help listing, mark as `hide = true` in clap)
 - [x] Ensure `help` covers all use cases that a human user would have used `describe` for
+- [x] Make bare `vulcan describe` explicitly point to machine-readable export modes instead of dumping another human command list
 
 #### 9.19.5 DQL completeness
 
