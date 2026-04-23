@@ -10315,6 +10315,517 @@
         ]
       },
       {
+        "about": "List, validate, scaffold, and run vault-native custom tools",
+        "after_help": "Subcommands:\n  list       inspect discovered custom tools\n  show       read one tool manifest plus its Markdown docs\n  run        validate JSON input and invoke one tool\n  validate   check one tool or the whole tools folder\n  init       scaffold `.agents/tools/<name>/TOOL.md` plus `main.js`\n  set        update common manifest fields without hand-editing YAML\n\nNotes:\n  Tool execution requires a trusted vault: `vulcan trust add`.\n  `tool run` defaults to `{}` input when no `--input-json` or `--input-file` is provided.\n  `tool set --secret name=ENV` replaces the full secret list for the tool.\n  `tool set --pack <name>` replaces the full pack list for the tool.\n\nExamples:\n  vulcan tool list\n  vulcan tool show summarize_meeting\n  vulcan tool run summarize_meeting --input-json '{\"note\":\"Meetings/Weekly.md\"}'\n  vulcan tool init summarize_meeting --description \"Summarize one meeting note\"\n  vulcan tool set summarize_meeting --sandbox fs --read-only --timeout-ms 5000\n  vulcan tool validate",
+        "name": "tool",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "List discovered custom tools",
+            "name": "list",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Show one tool manifest plus its Markdown documentation",
+            "name": "show",
+            "options": [
+              {
+                "help": "Tool name, directory name, or manifest path",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Run one custom tool with validated JSON input",
+            "name": "run",
+            "options": [
+              {
+                "help": "Tool name to execute",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              },
+              {
+                "help": null,
+                "id": "input_json",
+                "long": "input-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "INPUT_JSON"
+                ]
+              },
+              {
+                "help": null,
+                "id": "input_file",
+                "long": "input-file",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "INPUT_FILE"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Validate one tool or every tool manifest",
+            "name": "validate",
+            "options": [
+              {
+                "help": "Optional tool name, directory name, or manifest path",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Scaffold a new custom tool",
+            "name": "init",
+            "options": [
+              {
+                "help": "Tool name and default directory name",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              },
+              {
+                "help": "Optional human-readable title",
+                "id": "title",
+                "long": "title",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TITLE"
+                ]
+              },
+              {
+                "help": "One-line tool description",
+                "id": "description",
+                "long": "description",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DESCRIPTION"
+                ]
+              },
+              {
+                "help": null,
+                "id": "sandbox",
+                "long": "sandbox",
+                "possible_values": [
+                  "strict",
+                  "fs",
+                  "net"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SANDBOX"
+                ]
+              },
+              {
+                "help": null,
+                "id": "permission_profile",
+                "long": "permission-profile",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PERMISSION_PROFILE"
+                ]
+              },
+              {
+                "help": null,
+                "id": "timeout_ms",
+                "long": "timeout-ms",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TIMEOUT_MS"
+                ]
+              },
+              {
+                "help": null,
+                "id": "example",
+                "long": "example",
+                "possible_values": [
+                  "minimal"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXAMPLE"
+                ]
+              },
+              {
+                "help": "Replace an existing scaffold if the tool already exists",
+                "id": "overwrite",
+                "long": "overwrite",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "OVERWRITE"
+                ]
+              },
+              {
+                "help": "Preview the scaffold without writing files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Update common custom-tool manifest fields",
+            "name": "set",
+            "options": [
+              {
+                "help": "Tool name, directory name, or manifest path",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              },
+              {
+                "help": "Replace the title field",
+                "id": "title",
+                "long": "title",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TITLE"
+                ]
+              },
+              {
+                "help": "Remove the title field",
+                "id": "clear_title",
+                "long": "clear-title",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CLEAR_TITLE"
+                ]
+              },
+              {
+                "help": "Replace the description field",
+                "id": "description",
+                "long": "description",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DESCRIPTION"
+                ]
+              },
+              {
+                "help": null,
+                "id": "sandbox",
+                "long": "sandbox",
+                "possible_values": [
+                  "strict",
+                  "fs",
+                  "net"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SANDBOX"
+                ]
+              },
+              {
+                "help": null,
+                "id": "permission_profile",
+                "long": "permission-profile",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PERMISSION_PROFILE"
+                ]
+              },
+              {
+                "help": null,
+                "id": "clear_permission_profile",
+                "long": "clear-permission-profile",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CLEAR_PERMISSION_PROFILE"
+                ]
+              },
+              {
+                "help": null,
+                "id": "timeout_ms",
+                "long": "timeout-ms",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "TIMEOUT_MS"
+                ]
+              },
+              {
+                "help": null,
+                "id": "clear_timeout",
+                "long": "clear-timeout",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CLEAR_TIMEOUT"
+                ]
+              },
+              {
+                "help": "Replace the pack list; repeatable",
+                "id": "pack",
+                "long": "pack",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PACK"
+                ]
+              },
+              {
+                "help": null,
+                "id": "clear_packs",
+                "long": "clear-packs",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CLEAR_PACKS"
+                ]
+              },
+              {
+                "help": "Replace the secret list with name=ENV bindings; repeatable",
+                "id": "secret",
+                "long": "secret",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SECRET"
+                ]
+              },
+              {
+                "help": null,
+                "id": "clear_secrets",
+                "long": "clear-secrets",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CLEAR_SECRETS"
+                ]
+              },
+              {
+                "help": null,
+                "id": "read_only",
+                "long": "read-only",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "READ_ONLY"
+                ]
+              },
+              {
+                "help": null,
+                "id": "writable",
+                "long": "writable",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WRITABLE"
+                ]
+              },
+              {
+                "help": null,
+                "id": "destructive",
+                "long": "destructive",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DESTRUCTIVE"
+                ]
+              },
+              {
+                "help": null,
+                "id": "non_destructive",
+                "long": "non-destructive",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NON_DESTRUCTIVE"
+                ]
+              },
+              {
+                "help": null,
+                "id": "input_schema_file",
+                "long": "input-schema-file",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "INPUT_SCHEMA_FILE"
+                ]
+              },
+              {
+                "help": null,
+                "id": "output_schema_file",
+                "long": "output-schema-file",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "OUTPUT_SCHEMA_FILE"
+                ]
+              },
+              {
+                "help": null,
+                "id": "clear_output_schema",
+                "long": "clear-output-schema",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CLEAR_OUTPUT_SCHEMA"
+                ]
+              },
+              {
+                "help": "Preview manifest changes without writing files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
         "about": "Manage vault trust for startup scripts and plugin execution",
         "after_help": "Subcommands:\n  add     Mark the current vault as trusted\n  revoke  Remove trust from the current vault\n  list    List all currently trusted vault paths\n\nNotes:\n  Trusted vaults may auto-load .vulcan/scripts/startup.js on CLI invocation.\n  Plugin execution (Templater, QuickAdd) also checks vault trust.\n  Trust is stored per vault root path in Vulcan's global config.\n\nExamples:\n  vulcan trust\n  vulcan trust add\n  vulcan trust revoke\n  vulcan trust list",
         "name": "trust",

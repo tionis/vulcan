@@ -241,16 +241,24 @@ Add a stable `tool` command group:
 
 `tool show` returns parsed manifest metadata plus the documentation body. `tool run --output json`
 returns a stable envelope containing the canonical tool name, validated input summary, result, and
-optional text fallback.
+optional text fallback. When no explicit input is provided, `tool run` uses `{}`.
 
 Authoring helpers:
 
 - `tool init` scaffolds a new tool directory with `TOOL.md` and `main.js`, plus optional starter
-  examples such as read-only note analysis, vault mutation, or external command execution.
+  examples. Phase 1 ships a minimal starter that already demonstrates `main(input, ctx)`,
+  structured `{ result, text }` returns, and the `ctx.secrets.*` runtime helpers.
 - `tool set` performs structured manifest edits so users do not need to hand-edit YAML frontmatter
-  for common changes like description, sandbox, permission profile, packs, or schema file paths.
+  for common changes like description, sandbox, permission profile, packs, secret bindings, or
+  schema file paths.
 - `tool validate` checks manifest shape, schema validity, pack names, entrypoint existence, and
   permission-profile references for one tool or the whole tools folder.
+
+Current `tool set` conventions:
+
+- `--pack <name>` replaces the full pack list for the tool.
+- `--secret name=ENV` replaces the full secret list for the tool.
+- `--input-schema-file` and `--output-schema-file` read JSON schema objects from files.
 
 Design rule: prefer deterministic scaffold/update commands over editor-launching commands. A future
 interactive TUI/editor helper is acceptable, but non-interactive authoring commands should remain the

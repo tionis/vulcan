@@ -5703,11 +5703,11 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 ### 9.24.3 Shared tool registry and CLI surface
 
 - [ ] Introduce an internal tool registry abstraction that can hold both built-in tools and custom tool definitions without duplicating schema/export logic
-- [ ] Add `vulcan tool list`, `vulcan tool show <name>`, and `vulcan tool run <name> --input-json ...`
-- [ ] Add authoring helpers: `vulcan tool init <name>`, `vulcan tool set <name> ...`, and `vulcan tool validate [<name>]`
-- [ ] Ensure `tool show` exposes parsed metadata plus the Markdown body so humans and agents can read usage notes without opening files manually
+- [x] Add `vulcan tool list`, `vulcan tool show <name>`, and `vulcan tool run <name> --input-json ...`
+- [x] Add authoring helpers: `vulcan tool init <name>`, `vulcan tool set <name> ...`, and `vulcan tool validate [<name>]`
+- [x] Ensure `tool show` exposes parsed metadata plus the Markdown body so humans and agents can read usage notes without opening files manually
 - [ ] Make `vulcan describe --format openai-tools|mcp|json-schema` include visible custom tools from the shared registry
-- [ ] Keep CLI JSON output stable and machine-readable; no ad hoc stdout parsing from the JS script body
+- [x] Keep CLI JSON output stable and machine-readable; no ad hoc stdout parsing from the JS script body
 
 ### 9.24.4 Internal JS API integration
 
@@ -5735,12 +5735,12 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 
 ### 9.24.7 Skills, scaffolding, and authoring guidance
 
-- [ ] Document the recommended split: skills teach workflows; custom tools perform callable request/response work; plugins react to events
-- [ ] Ship integrated help topics for `tool`, `tool init`, `tool set`, `tool validate`, `js.tools`, `js.host`, and the plugin/tool/skill comparison surface
-- [ ] Add in-repo docs that compare scripts, skills, tools, and plugins with concrete examples instead of only field-by-field schema reference
+- [x] Document the recommended split: skills teach workflows; custom tools perform callable request/response work; plugins react to events
+- [x] Ship integrated help topics for `tool`, `tool init`, `tool set`, `tool validate`, `js.tools`, `js.host`, and the plugin/tool/skill comparison surface
+- [x] Add in-repo docs that compare scripts, skills, tools, and plugins with concrete examples instead of only field-by-field schema reference
 - [ ] Update bundled/default skill guidance so reusable executable behavior is promoted into `.agents/tools` instead of being buried in skill-local scripts when cross-surface discoverability matters
 - [ ] Extend `vulcan init --agent-files` / `vulcan agent install` to scaffold the tools folder and optionally write an example tool template
-- [ ] Add help topics and authoring docs that explain manifest fields, permission ceilings, return envelopes, and host execution risks
+- [x] Add help topics and authoring docs that explain manifest fields, permission ceilings, return envelopes, and host execution risks
 
 ### 9.24.8 Testing and rollout
 

@@ -52,6 +52,29 @@ Examples:
   vulcan agent install --overwrite
   vulcan init --agent-files";
 
+const TOOL_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  list       inspect discovered custom tools
+  show       read one tool manifest plus its Markdown docs
+  run        validate JSON input and invoke one tool
+  validate   check one tool or the whole tools folder
+  init       scaffold `.agents/tools/<name>/TOOL.md` plus `main.js`
+  set        update common manifest fields without hand-editing YAML
+
+Notes:
+  Tool execution requires a trusted vault: `vulcan trust add`.
+  `tool run` defaults to `{}` input when no `--input-json` or `--input-file` is provided.
+  `tool set --secret name=ENV` replaces the full secret list for the tool.
+  `tool set --pack <name>` replaces the full pack list for the tool.
+
+Examples:
+  vulcan tool list
+  vulcan tool show summarize_meeting
+  vulcan tool run summarize_meeting --input-json '{\"note\":\"Meetings/Weekly.md\"}'
+  vulcan tool init summarize_meeting --description \"Summarize one meeting note\"
+  vulcan tool set summarize_meeting --sandbox fs --read-only --timeout-ms 5000
+  vulcan tool validate";
+
 const RENDER_COMMAND_AFTER_HELP: &str = "\
 Notes:
   Human output uses Vulcan's terminal markdown renderer.
@@ -2574,6 +2597,120 @@ pub enum PluginCommand {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ToolSandboxArg {
+    #[value(name = "strict")]
+    Strict,
+    #[value(name = "fs")]
+    Fs,
+    #[value(name = "net")]
+    Net,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ToolInitExampleArg {
+    #[value(name = "minimal")]
+    Minimal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ToolCommand {
+    #[command(about = "List discovered custom tools")]
+    List,
+    #[command(about = "Show one tool manifest plus its Markdown documentation")]
+    Show {
+        #[arg(help = "Tool name, directory name, or manifest path")]
+        name: String,
+    },
+    #[command(about = "Run one custom tool with validated JSON input")]
+    Run {
+        #[arg(help = "Tool name to execute")]
+        name: String,
+        #[arg(long = "input-json", conflicts_with = "input_file")]
+        input_json: Option<String>,
+        #[arg(long = "input-file", conflicts_with = "input_json")]
+        input_file: Option<PathBuf>,
+    },
+    #[command(about = "Validate one tool or every tool manifest")]
+    Validate {
+        #[arg(help = "Optional tool name, directory name, or manifest path")]
+        name: Option<String>,
+    },
+    #[command(about = "Scaffold a new custom tool")]
+    Init {
+        #[arg(help = "Tool name and default directory name")]
+        name: String,
+        #[arg(long, help = "Optional human-readable title")]
+        title: Option<String>,
+        #[arg(long, help = "One-line tool description")]
+        description: Option<String>,
+        #[arg(long, value_enum, default_value_t = ToolSandboxArg::Strict)]
+        sandbox: ToolSandboxArg,
+        #[arg(long = "permission-profile")]
+        permission_profile: Option<String>,
+        #[arg(long = "timeout-ms")]
+        timeout_ms: Option<usize>,
+        #[arg(long, value_enum, default_value_t = ToolInitExampleArg::Minimal)]
+        example: ToolInitExampleArg,
+        #[arg(long, help = "Replace an existing scaffold if the tool already exists")]
+        overwrite: bool,
+        #[arg(long, help = "Preview the scaffold without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Update common custom-tool manifest fields")]
+    Set {
+        #[arg(help = "Tool name, directory name, or manifest path")]
+        name: String,
+        #[arg(long, help = "Replace the title field")]
+        title: Option<String>,
+        #[arg(long, help = "Remove the title field")]
+        clear_title: bool,
+        #[arg(long, help = "Replace the description field")]
+        description: Option<String>,
+        #[arg(long, value_enum)]
+        sandbox: Option<ToolSandboxArg>,
+        #[arg(long = "permission-profile")]
+        permission_profile: Option<String>,
+        #[arg(long = "clear-permission-profile")]
+        clear_permission_profile: bool,
+        #[arg(long = "timeout-ms")]
+        timeout_ms: Option<usize>,
+        #[arg(long = "clear-timeout")]
+        clear_timeout: bool,
+        #[arg(long = "pack", help = "Replace the pack list; repeatable")]
+        pack: Vec<String>,
+        #[arg(long = "clear-packs")]
+        clear_packs: bool,
+        #[arg(
+            long = "secret",
+            help = "Replace the secret list with name=ENV bindings; repeatable"
+        )]
+        secret: Vec<String>,
+        #[arg(long = "clear-secrets")]
+        clear_secrets: bool,
+        #[arg(long, conflicts_with = "writable")]
+        read_only: bool,
+        #[arg(long, conflicts_with = "read_only")]
+        writable: bool,
+        #[arg(long, conflicts_with = "non_destructive")]
+        destructive: bool,
+        #[arg(long, conflicts_with = "destructive")]
+        non_destructive: bool,
+        #[arg(long = "input-schema-file")]
+        input_schema_file: Option<PathBuf>,
+        #[arg(long = "output-schema-file", conflicts_with = "clear_output_schema")]
+        output_schema_file: Option<PathBuf>,
+        #[arg(long = "clear-output-schema", conflicts_with = "output_schema_file")]
+        clear_output_schema: bool,
+        #[arg(long, help = "Preview manifest changes without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum PluginEventArg {
     #[value(name = "on_note_write")]
     OnNoteWrite,
@@ -4919,6 +5056,14 @@ Examples:
     Plugin {
         #[command(subcommand)]
         command: PluginCommand,
+    },
+    #[command(
+        about = "List, validate, scaffold, and run vault-native custom tools",
+        after_help = TOOL_COMMAND_AFTER_HELP
+    )]
+    Tool {
+        #[command(subcommand)]
+        command: ToolCommand,
     },
     #[command(
         about = "Manage vault trust for startup scripts and plugin execution",
