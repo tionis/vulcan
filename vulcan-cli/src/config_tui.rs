@@ -86,8 +86,11 @@ fn draw(frame: &mut Frame<'_>, state: &ConfigTuiState) {
     draw_body(frame, state, layout[1]);
     draw_footer(frame, state, layout[2]);
 
-    if let ConfigInputMode::Edit { .. } = state.input_mode {
-        draw_edit_overlay(frame, state);
+    if matches!(
+        state.input_mode,
+        ConfigInputMode::Edit { .. } | ConfigInputMode::CreateDynamic { .. }
+    ) {
+        draw_input_overlay(frame, state);
     }
 }
 
@@ -335,7 +338,7 @@ fn draw_footer(frame: &mut Frame<'_>, state: &ConfigTuiState, area: Rect) {
     frame.render_widget(footer, area);
 }
 
-fn draw_edit_overlay(frame: &mut Frame<'_>, state: &ConfigTuiState) {
+fn draw_input_overlay(frame: &mut Frame<'_>, state: &ConfigTuiState) {
     let area = centered_rect(70, 35, frame.area());
     frame.render_widget(Clear, area);
     let entry = state.selected_entry();
@@ -497,6 +500,7 @@ impl ConfigTuiState {
         self.confirm_discard = false;
         let mut apply_buffer = None;
         let mut apply_create = None;
+        let mut create_focus = None;
         let mut cancel_edit = false;
         match &mut self.input_mode {
             ConfigInputMode::Edit {
@@ -569,7 +573,10 @@ impl ConfigTuiState {
                 error,
             } => match key.code {
                 KeyCode::Esc => cancel_edit = true,
-                KeyCode::Enter if !*editing_value => *editing_value = true,
+                KeyCode::Enter if !*editing_value => {
+                    *editing_value = true;
+                    create_focus = Some((name.clone(), *editing_value));
+                }
                 KeyCode::Enter => apply_create = Some((name.clone(), value.clone())),
                 KeyCode::Backspace => {
                     if *editing_value {
@@ -582,6 +589,7 @@ impl ConfigTuiState {
                 KeyCode::Tab => {
                     *editing_value = !*editing_value;
                     *error = None;
+                    create_focus = Some((name.clone(), *editing_value));
                 }
                 KeyCode::Char(character)
                     if !key.modifiers.contains(KeyModifiers::CONTROL)
@@ -620,6 +628,11 @@ impl ConfigTuiState {
                     *error = Some(message);
                 }
             }
+        }
+
+        if let Some((name, editing_value)) = create_focus {
+            let entry = self.selected_entry().clone();
+            self.status = self.create_dynamic_status(&entry, &name, editing_value);
         }
 
         ConfigTuiAction::Continue
@@ -755,11 +768,7 @@ impl ConfigTuiState {
             editing_value: false,
             error: None,
         };
-        self.status = format!(
-            "Creating {} in {}.",
-            entry.display_path,
-            self.selected_target_label()
-        );
+        self.status = self.create_dynamic_status(&entry, "", false);
     }
 
     fn apply_buffered_edit(&mut self, buffer: &str) -> Result<(), String> {
@@ -1128,13 +1137,35 @@ impl ConfigTuiState {
             },
             ConfigInputMode::CreateDynamic { editing_value, .. } => {
                 if *editing_value {
-                    "Creating a concrete entry. Enter applies the value, Tab returns to the name field."
+                    "Creating a concrete entry. The popup shows the exact key that will be written; Enter applies the value, Tab returns to the name field."
                         .to_string()
                 } else {
-                    "Creating a concrete entry. Type the name to replace `<name>`, then press Enter."
+                    "Creating a concrete entry. Type the name to replace `<name>`, then press Enter to move to the value field."
                         .to_string()
                 }
             }
+        }
+    }
+
+    fn create_dynamic_status(
+        &self,
+        entry: &ConfigEntry,
+        name: &str,
+        editing_value: bool,
+    ) -> String {
+        let preview = preview_dynamic_key(&entry.display_path, name);
+        if editing_value {
+            format!(
+                "Creating {} in {}. Enter the TOML value to write, then press Enter again to apply.",
+                preview,
+                self.selected_target_label()
+            )
+        } else {
+            format!(
+                "Creating {} in {}. Type the concrete name, then press Enter to move to the value field.",
+                preview,
+                self.selected_target_label()
+            )
         }
     }
 
@@ -1412,15 +1443,19 @@ impl ConfigTuiState {
                 editing_value,
                 error,
             } => {
+                let preview = preview_dynamic_key(&entry.display_path, name);
                 let mut lines = vec![
                     Line::from(format!(
                         "Create {} in {}",
                         entry.display_path,
                         self.selected_target_label()
                     )),
-                    Line::from(
-                        "Replace `<name>` with a concrete entry name, then enter a TOML literal.",
-                    ),
+                    Line::from(if *editing_value {
+                        "Step 2 of 2: enter the value to write."
+                    } else {
+                        "Step 1 of 2: choose the concrete name."
+                    }),
+                    Line::from(format!("Will create: {preview}")),
                     Line::from(""),
                     Line::from(format!(
                         "{}Name: {}",
@@ -1594,6 +1629,15 @@ fn rebuild_schema_state(
 
 fn storage_segments_for_key(key: &str) -> Vec<String> {
     display_path_to_storage_path(&parse_key_segments(key))
+}
+
+fn preview_dynamic_key(template_key: &str, name: &str) -> String {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        template_key.to_string()
+    } else {
+        template_key.replace("<name>", trimmed)
+    }
 }
 
 fn get_toml_value<'a>(value: &'a TomlValue, path: &[String]) -> Option<&'a TomlValue> {
@@ -2055,6 +2099,7 @@ fn wrap_index(current: usize, len: usize, delta: isize) -> usize {
 mod tests {
     use super::*;
     use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
     use ratatui::Terminal;
     use tempfile::TempDir;
 
@@ -2085,6 +2130,29 @@ mod tests {
             state.selected_entry = entry_index;
         }
         state
+    }
+
+    fn render_text(state: &ConfigTuiState, width: u16, height: u16) -> String {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal should build");
+        terminal
+            .draw(|frame| draw(frame, state))
+            .expect("config tui should render");
+        buffer_text(terminal.backend().buffer())
+    }
+
+    fn buffer_text(buffer: &Buffer) -> String {
+        let area = *buffer.area();
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 
     #[test]
@@ -2220,6 +2288,36 @@ mod tests {
             .find_entry("permissions.profiles.agent.read")
             .is_some());
         assert!(state.dirty);
+    }
+
+    #[test]
+    fn create_dynamic_overlay_is_rendered_and_previews_concrete_key() {
+        let mut state = sample_state();
+        let (category_index, entry_index) = state
+            .find_entry("permissions.profiles.<name>")
+            .expect("profile placeholder should exist");
+        state.selected_category = category_index;
+        state.selected_entry = entry_index;
+
+        state.open_create();
+        let initial = render_text(&state, 90, 24);
+        assert!(initial.contains("Create Entry"));
+        assert!(initial.contains("Step 1 of 2: choose the concrete name."));
+        assert!(initial.contains("Will create: permissions.profiles.<name>"));
+        assert!(initial.contains("> Name:"));
+
+        for character in "agent".chars() {
+            state.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let value_step = render_text(&state, 90, 24);
+        assert!(value_step.contains("Step 2 of 2: enter the value to write."));
+        assert!(value_step.contains("Will create: permissions.profiles.agent"));
+        assert!(value_step.contains("> Value: {}"));
+        assert!(state
+            .status
+            .contains("Creating permissions.profiles.agent in shared."));
     }
 
     #[test]
