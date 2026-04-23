@@ -5,13 +5,15 @@ use serde_yaml::Value as YamlValue;
 use std::fs;
 use std::path::Component;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use vulcan_core::{
     assistant_tools_root, default_assistant_tool_reserved_names, evaluate_dataview_js_with_options,
     list_assistant_tool_manifest_paths, list_assistant_tools, load_assistant_tool,
     load_assistant_tool_manifest, resolve_permission_profile, validate_json_value_against_schema,
     AssistantTool, AssistantToolRuntime, AssistantToolSecretSpec, AssistantToolSummary,
-    AssistantToolValidationOptions, DataviewJsEvalOptions, JsRuntimeSandbox, VaultPaths,
+    AssistantToolValidationOptions, DataviewJsEvalOptions, DataviewJsToolDefinition,
+    DataviewJsToolDescriptor, DataviewJsToolRegistry, JsRuntimeSandbox, VaultPaths,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,6 +42,53 @@ impl Default for CustomToolRunOptions {
             surface: "cli".to_string(),
         }
     }
+}
+
+const DEFAULT_CUSTOM_TOOL_MAX_CALL_DEPTH: usize = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CustomToolJsRegistryContext {
+    surface: String,
+    active_permission_profile: Option<String>,
+    call_stack: Vec<String>,
+    max_call_depth: usize,
+}
+
+impl CustomToolJsRegistryContext {
+    fn root(surface: &str, active_permission_profile: Option<&str>) -> Self {
+        Self {
+            surface: surface.to_string(),
+            active_permission_profile: active_permission_profile.map(ToOwned::to_owned),
+            call_stack: Vec::new(),
+            max_call_depth: DEFAULT_CUSTOM_TOOL_MAX_CALL_DEPTH,
+        }
+    }
+
+    fn runtime_scope(&self, tool_name: &str, active_permission_profile: Option<String>) -> Self {
+        let mut call_stack = self.call_stack.clone();
+        call_stack.push(tool_name.to_string());
+        Self {
+            surface: self.surface.clone(),
+            active_permission_profile,
+            call_stack,
+            max_call_depth: self.max_call_depth,
+        }
+    }
+
+    fn nested_call_surface(&self) -> String {
+        if self.surface.ends_with(".tools.call") {
+            self.surface.clone()
+        } else {
+            format!("{}.tools.call", self.surface)
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct JsCustomToolRegistry {
+    paths: VaultPaths,
+    registry_options: CustomToolRegistryOptions,
+    context: CustomToolJsRegistryContext,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -226,6 +275,32 @@ pub fn show_custom_tool(
     })
 }
 
+#[must_use]
+pub fn build_custom_tool_js_registry(
+    paths: &VaultPaths,
+    active_permission_profile: Option<&str>,
+    surface: &str,
+    options: &CustomToolRegistryOptions,
+) -> Arc<dyn DataviewJsToolRegistry> {
+    build_custom_tool_js_registry_with_context(
+        paths,
+        options,
+        CustomToolJsRegistryContext::root(surface, active_permission_profile),
+    )
+}
+
+fn build_custom_tool_js_registry_with_context(
+    paths: &VaultPaths,
+    options: &CustomToolRegistryOptions,
+    context: CustomToolJsRegistryContext,
+) -> Arc<dyn DataviewJsToolRegistry> {
+    Arc::new(JsCustomToolRegistry {
+        paths: paths.clone(),
+        registry_options: options.clone(),
+        context,
+    })
+}
+
 pub fn require_trusted_tool_execution(
     paths: &VaultPaths,
     tool_name: Option<&str>,
@@ -248,6 +323,19 @@ pub fn run_custom_tool(
     registry_options: &CustomToolRegistryOptions,
     run_options: &CustomToolRunOptions,
 ) -> Result<CustomToolRunReport, AppError> {
+    let context =
+        CustomToolJsRegistryContext::root(&run_options.surface, active_permission_profile);
+    run_custom_tool_with_context(paths, &context, name, input, registry_options, run_options)
+}
+
+fn run_custom_tool_with_context(
+    paths: &VaultPaths,
+    context: &CustomToolJsRegistryContext,
+    name: &str,
+    input: &Value,
+    registry_options: &CustomToolRegistryOptions,
+    run_options: &CustomToolRunOptions,
+) -> Result<CustomToolRunReport, AppError> {
     require_trusted_tool_execution(paths, Some(name))?;
     let tool = load_assistant_tool(
         paths,
@@ -261,10 +349,12 @@ pub fn run_custom_tool(
 
     let effective_permission_profile = effective_tool_permission_profile(
         paths,
-        active_permission_profile,
+        context.active_permission_profile.as_deref(),
         &tool.summary.name,
         tool.summary.permission_profile.as_deref(),
     )?;
+    let runtime_context =
+        context.runtime_scope(&tool.summary.name, effective_permission_profile.clone());
     let source =
         fs::read_to_string(tool_entrypoint_path(paths, &tool)).map_err(AppError::operation)?;
     let current_file = current_file_for_tool(paths, &tool);
@@ -285,6 +375,11 @@ pub fn run_custom_tool(
             }),
             sandbox: Some(tool.summary.sandbox),
             permission_profile: effective_permission_profile,
+            tool_registry: Some(build_custom_tool_js_registry_with_context(
+                paths,
+                registry_options,
+                runtime_context,
+            )),
             ..DataviewJsEvalOptions::default()
         },
     )
@@ -313,6 +408,70 @@ pub fn run_custom_tool(
         result,
         text,
     })
+}
+
+impl DataviewJsToolRegistry for JsCustomToolRegistry {
+    fn list(&self) -> Result<Vec<DataviewJsToolDescriptor>, String> {
+        list_custom_tools(&self.paths, &self.registry_options)
+            .map(|tools| {
+                tools
+                    .into_iter()
+                    .map(|tool| DataviewJsToolDescriptor {
+                        summary: tool.summary,
+                        callable: tool.callable,
+                    })
+                    .collect()
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    fn get(&self, name: &str) -> Result<DataviewJsToolDefinition, String> {
+        show_custom_tool(&self.paths, name, &self.registry_options)
+            .map(|tool| DataviewJsToolDefinition {
+                tool: tool.tool,
+                callable: tool.callable,
+            })
+            .map_err(|error| error.to_string())
+    }
+
+    fn call(&self, name: &str, input: &Value, _options: Option<&Value>) -> Result<Value, String> {
+        if self.context.call_stack.iter().any(|entry| entry == name) {
+            let mut chain = self.context.call_stack.clone();
+            chain.push(name.to_string());
+            return Err(format!(
+                "recursive custom tool call detected: {}",
+                chain.join(" -> ")
+            ));
+        }
+        if self.context.call_stack.len() >= self.context.max_call_depth {
+            return Err(format!(
+                "custom tool call depth exceeded maximum of {} while calling `{name}`",
+                self.context.max_call_depth
+            ));
+        }
+
+        let report = run_custom_tool_with_context(
+            &self.paths,
+            &CustomToolJsRegistryContext {
+                surface: self.context.nested_call_surface(),
+                active_permission_profile: self.context.active_permission_profile.clone(),
+                call_stack: self.context.call_stack.clone(),
+                max_call_depth: self.context.max_call_depth,
+            },
+            name,
+            input,
+            &self.registry_options,
+            &CustomToolRunOptions {
+                surface: self.context.nested_call_surface(),
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        let CustomToolRunReport { result, text, .. } = report;
+        Ok(match text {
+            Some(text) => json!({ "result": result, "text": text }),
+            None => result,
+        })
+    }
 }
 
 pub fn validate_custom_tools(
@@ -1466,5 +1625,208 @@ input_schema:
         assert!(manifest.contains("timeout_ms: 2500"));
         assert!(manifest.contains("read_only: true"));
         assert!(manifest.contains("env: MEETING_API_KEY"));
+    }
+
+    #[test]
+    fn custom_tools_can_list_get_and_call_other_tools_from_js() {
+        let _lock = test_env_lock_guard();
+        let (_dir, paths) = test_paths();
+        let config_home = TempDir::new().expect("config home should be created");
+        let previous_xdg = env::var_os("XDG_CONFIG_HOME");
+        env::set_var("XDG_CONFIG_HOME", config_home.path());
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+        with_trusted_vault(&paths);
+        write_tool(
+            &paths,
+            "inner",
+            r"---
+name: inner_tool
+description: Inner helper.
+input_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    note:
+      type: string
+  required:
+    - note
+---
+
+Inner tool documentation.
+",
+            "function main(input) {\n  return { echoed: String(input.note).toUpperCase() };\n}\n",
+        );
+        write_tool(
+            &paths,
+            "outer",
+            r"---
+name: outer_tool
+description: Outer helper.
+input_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    note:
+      type: string
+  required:
+    - note
+---
+
+Outer tool documentation.
+",
+            "function main(input) {\n  const listed = tools.list();\n  const described = tools.get('inner_tool');\n  const called = tools.call('inner_tool', { note: input.note });\n  return {\n    listed: listed.map((tool) => tool.name),\n    callable: listed.every((tool) => tool.callable === true),\n    body_has_doc: described.body.includes('Inner tool documentation.'),\n    echoed: called.echoed,\n  };\n}\n",
+        );
+
+        let report = run_custom_tool(
+            &paths,
+            None,
+            "outer_tool",
+            &json!({ "note": "alpha" }),
+            &CustomToolRegistryOptions::default(),
+            &CustomToolRunOptions {
+                surface: "cli".to_string(),
+            },
+        )
+        .expect("nested tool calls should succeed");
+
+        assert_eq!(report.result["listed"], json!(["inner_tool", "outer_tool"]));
+        assert_eq!(report.result["callable"], json!(true));
+        assert_eq!(report.result["body_has_doc"], json!(true));
+        assert_eq!(report.result["echoed"], json!("ALPHA"));
+
+        trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
+        match previous_xdg {
+            Some(value) => env::set_var("XDG_CONFIG_HOME", value),
+            None => env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
+    fn tools_namespace_preserves_nested_permission_ceiling() {
+        let _lock = test_env_lock_guard();
+        let (_dir, paths) = test_paths();
+        let config_home = TempDir::new().expect("config home should be created");
+        let previous_xdg = env::var_os("XDG_CONFIG_HOME");
+        env::set_var("XDG_CONFIG_HOME", config_home.path());
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+        fs::write(
+            paths.vault_root().join(".vulcan/config.toml"),
+            r#"
+[permissions.profiles.agent]
+read = "all"
+write = { allow = ["folder:Projects/**"] }
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "read"
+execute = "allow"
+shell = "deny"
+
+[permissions.profiles.readonly]
+read = "all"
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "read"
+execute = "allow"
+shell = "deny"
+"#,
+        )
+        .expect("config should write");
+        with_trusted_vault(&paths);
+        write_tool(
+            &paths,
+            "inner",
+            r"---
+name: privileged_inner
+description: Needs agent profile.
+permission_profile: agent
+input_schema:
+  type: object
+---
+",
+            "function main() { return { ok: true }; }\n",
+        );
+        write_tool(
+            &paths,
+            "outer",
+            r"---
+name: readonly_outer
+description: Calls another tool.
+permission_profile: readonly
+input_schema:
+  type: object
+---
+",
+            "function main() { return tools.call('privileged_inner', {}); }\n",
+        );
+
+        let error = run_custom_tool(
+            &paths,
+            None,
+            "readonly_outer",
+            &json!({}),
+            &CustomToolRegistryOptions::default(),
+            &CustomToolRunOptions {
+                surface: "cli".to_string(),
+            },
+        )
+        .expect_err("nested broader tool should fail");
+        assert!(error.to_string().contains(
+            "tool `privileged_inner` requires permission profile `agent`, which is broader than active profile `readonly`"
+        ));
+
+        trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
+        match previous_xdg {
+            Some(value) => env::set_var("XDG_CONFIG_HOME", value),
+            None => env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
+    fn tools_namespace_rejects_recursive_tool_loops() {
+        let _lock = test_env_lock_guard();
+        let (_dir, paths) = test_paths();
+        let config_home = TempDir::new().expect("config home should be created");
+        let previous_xdg = env::var_os("XDG_CONFIG_HOME");
+        env::set_var("XDG_CONFIG_HOME", config_home.path());
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+        with_trusted_vault(&paths);
+        write_tool(
+            &paths,
+            "loop",
+            r"---
+name: loop_tool
+description: Calls itself.
+input_schema:
+  type: object
+---
+",
+            "function main() { return tools.call('loop_tool', {}); }\n",
+        );
+
+        let error = run_custom_tool(
+            &paths,
+            None,
+            "loop_tool",
+            &json!({}),
+            &CustomToolRegistryOptions::default(),
+            &CustomToolRunOptions {
+                surface: "cli".to_string(),
+            },
+        )
+        .expect_err("recursive tool call should fail");
+        assert!(error
+            .to_string()
+            .contains("recursive custom tool call detected: loop_tool -> loop_tool"));
+
+        trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
+        match previous_xdg {
+            Some(value) => env::set_var("XDG_CONFIG_HOME", value),
+            None => env::remove_var("XDG_CONFIG_HOME"),
+        }
     }
 }

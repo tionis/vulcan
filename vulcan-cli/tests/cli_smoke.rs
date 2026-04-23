@@ -1001,6 +1001,71 @@ fn custom_tool_commands_round_trip() {
 }
 
 #[test]
+fn run_js_runtime_can_list_get_and_call_custom_tools() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".agents/tools/echo")).expect("tool dir should exist");
+    initialize_vulcan_dir(&vault_root);
+    fs::write(
+        vault_root.join(".agents/tools/echo/TOOL.md"),
+        r"---
+name: echo_tool
+description: Echo one value.
+input_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    value:
+      type: string
+  required:
+    - value
+---
+
+Echo docs for the JS runtime test.
+",
+    )
+    .expect("manifest should write");
+    fs::write(
+        vault_root.join(".agents/tools/echo/main.js"),
+        "function main(input) {\n  return { echoed: input.value, upper: String(input.value).toUpperCase() };\n}\n",
+    )
+    .expect("entrypoint should write");
+
+    let config_home = temp_dir.path().join("config");
+    fs::create_dir_all(&config_home).expect("config home should exist");
+    let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
+    let config_home_str = config_home.to_str().expect("utf-8").to_string();
+
+    trust_and_scan_vault(&config_home_str, &vault_root_str);
+
+    let assert = cargo_vulcan_with_xdg_config(&config_home_str)
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "run",
+            "-e",
+            r#"({
+                listed: tools.list().map((tool) => ({ name: tool.name, callable: tool.callable })),
+                described: tools.get("echo_tool").body.includes("Echo docs"),
+                called: tools.call("echo_tool", { value: "alpha" })
+            })"#,
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(
+        json["value"]["listed"],
+        serde_json::json!([{ "name": "echo_tool", "callable": true }])
+    );
+    assert_eq!(json["value"]["described"], true);
+    assert_eq!(json["value"]["called"]["echoed"], "alpha");
+    assert_eq!(json["value"]["called"]["upper"], "ALPHA");
+}
+
+#[test]
 fn plugin_set_and_delete_manage_full_registration_surface() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

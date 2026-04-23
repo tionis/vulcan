@@ -1,4 +1,5 @@
 use crate::config::{load_config_file_toml, set_config_toml_value};
+use crate::tools::{build_custom_tool_js_registry, CustomToolRegistryOptions};
 use crate::{trust, AppError};
 use serde::Serialize;
 use serde_json::{json, Value};
@@ -242,6 +243,7 @@ fn invoke_plugin(
     let source = fs::read_to_string(&plugin.absolute_path).map_err(AppError::operation)?;
     let effective_permission_profile =
         effective_plugin_permission_profile(paths, active_permission_profile, &plugin.descriptor)?;
+    let runtime_permission_profile = effective_permission_profile.clone();
     let source = build_plugin_invocation_source(
         strip_shebang_line(&source),
         handler_name,
@@ -256,6 +258,12 @@ fn invoke_plugin(
             timeout: None,
             sandbox: plugin.descriptor.sandbox,
             permission_profile: effective_permission_profile,
+            tool_registry: Some(build_custom_tool_js_registry(
+                paths,
+                runtime_permission_profile.as_deref(),
+                &format!("plugin.{}.{}", plugin.descriptor.name, handler_name),
+                &CustomToolRegistryOptions::default(),
+            )),
             ..DataviewJsEvalOptions::default()
         },
     )
