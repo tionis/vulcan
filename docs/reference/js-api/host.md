@@ -1,36 +1,92 @@
 # JS Host Execution
 
-Host execution is intentionally separate from normal vault reads and writes.
+The `host` namespace exposes permission-gated local process execution inside the shared Vulcan JS
+runtime.
 
-Use host execution only when a custom tool or script must call an external program on the local
-machine and there is no safer built-in Vulcan API for the job.
+Use it when a script, plugin, or custom tool must call a local program and there is no safer
+built-in `vault.*`, `web.*`, or `tools.*` API for the job.
 
-Planned APIs:
+Available entrypoints:
 
 - `host.exec(argv, opts?)`
   - requires `execute`
   - takes an explicit argument vector
-  - does not invoke a shell
+  - does not invoke a shell parser
 - `host.shell(command, opts?)`
   - requires `shell`
+  - runs through the configured shell
   - higher risk because shell parsing and expansion are involved
 
-Security rules:
+Current runtime surfaces:
 
-- execution still requires the current permission profile to allow it
-- custom tools remain limited by trusted-vault gating, sandbox ceilings, and normal timeout and
-  output limits
-- `host.exec()` is the recommended default in examples and bundled docs
-- `host.shell()` should stay opt-in for higher-trust profiles only
+- `vulcan run`
+- the JS REPL (`vulcan run`)
+- `vulcan dataview query-js`
+- custom tool entrypoints
+- plugin hooks executed through the shared JS runtime
 
-Practical guidance:
+`opts` shape for both calls:
 
-- prefer built-in `vault.*`, `web.*`, and `tools.*` APIs when they exist
-- use `host.exec()` for deterministic wrappers like `git`, formatters, or local converters
-- avoid `host.shell()` unless argument-vector execution is genuinely insufficient
+- `cwd?: string`
+  - working directory relative to the current script file when one exists, otherwise the vault root
+- `env?: object`
+  - environment overrides for the child process
+  - `null` removes one inherited variable
+- `timeout_ms?: number`
+  - tighter subprocess timeout cap
+- `max_output_bytes?: number`
+  - tighter per-stream stdout/stderr capture cap
+
+Return shape:
+
+- `success: boolean`
+- `exit_code: number | null`
+- `stdout: string`
+- `stderr: string`
+- `truncated_stdout: boolean`
+- `truncated_stderr: boolean`
+- `timed_out: boolean`
+- `duration_ms: number`
+- `invocation`
+  - `{ kind: "exec", argv: [...] }`
+  - or `{ kind: "shell", command: "...", shell: "..." }`
+
+Execution rules:
+
+- non-zero exit codes are returned in the report; they do not throw by themselves
+- spawn failures, invalid arguments, permission denials, and invalid `cwd` values throw
+- subprocess timeouts inherit the surrounding JS runtime timeout unless `timeout_ms` asks for a
+  tighter limit
+- output capture defaults to bounded stdout/stderr buffers and can be tightened per call
+
+Preferred pattern:
+
+```js
+function main(_input, ctx) {
+  return host.exec(
+    ["git", "status", "--short"],
+    {
+      cwd: ".",
+      env: {
+        GIT_ASKPASS: null,
+        API_TOKEN: ctx.secrets?.get?.("git_token") ?? null,
+      },
+    }
+  );
+}
+```
+
+Why `host.exec()` is preferred:
+
+- argument vectors avoid quoting bugs
+- logs and audits are easier to reason about
+- permissioned tools should minimize shell expansion and injection surface
+
+Use `host.shell()` only when shell syntax is genuinely required, for example pipelines or compound
+shell conditionals that would otherwise need a wrapper script.
 
 See also:
 
-- `help tool`
 - `help js.tools`
-- `help sandbox`
+- `help tool`
+- `help automation-surfaces`

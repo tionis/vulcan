@@ -62,6 +62,37 @@ fn write_plugin_file(vault_root: &Path, name: &str, source: &str) {
     fs::write(plugin_dir.join(format!("{name}.js")), source).expect("plugin file should write");
 }
 
+fn test_host_exec_argv(command: &str) -> Vec<String> {
+    #[cfg(target_os = "windows")]
+    {
+        vec![
+            "powershell".to_string(),
+            "-NoProfile".to_string(),
+            "-Command".to_string(),
+            command.to_string(),
+        ]
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        vec![
+            "/bin/sh".to_string(),
+            "-lc".to_string(),
+            command.to_string(),
+        ]
+    }
+}
+
+fn test_host_output_command(text: &str) -> String {
+    #[cfg(target_os = "windows")]
+    {
+        format!("[Console]::Out.Write('{text}')")
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        format!("printf %s {text}")
+    }
+}
+
 struct McpSession {
     child: Child,
     stdin: ChildStdin,
@@ -1063,6 +1094,77 @@ Echo docs for the JS runtime test.
     assert_eq!(json["value"]["described"], true);
     assert_eq!(json["value"]["called"]["echoed"], "alpha");
     assert_eq!(json["value"]["called"]["upper"], "ALPHA");
+}
+
+#[test]
+fn tool_run_can_use_host_exec_with_permissions() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".agents/tools/env_echo")).expect("tool dir should exist");
+    initialize_vulcan_dir(&vault_root);
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[permissions.profiles.exec_only]
+read = "all"
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "read"
+execute = "allow"
+shell = "deny"
+"#,
+    )
+    .expect("config should write");
+    fs::write(
+        vault_root.join(".agents/tools/env_echo/TOOL.md"),
+        r"---
+name: env_echo_tool
+description: Echo one env var through host.exec.
+permission_profile: exec_only
+input_schema:
+  type: object
+---
+",
+    )
+    .expect("manifest should write");
+    let argv = serde_json::to_string(&test_host_exec_argv(&test_host_output_command("alpha")))
+        .expect("argv json should serialize");
+    fs::write(
+        vault_root.join(".agents/tools/env_echo/main.js"),
+        format!("function main() {{\n  return host.exec({argv});\n}}\n"),
+    )
+    .expect("entrypoint should write");
+
+    let config_home = temp_dir.path().join("config");
+    fs::create_dir_all(&config_home).expect("config home should exist");
+    let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
+    let config_home_str = config_home.to_str().expect("utf-8").to_string();
+
+    trust_and_scan_vault(&config_home_str, &vault_root_str);
+
+    let run_assert = cargo_vulcan_with_xdg_config(&config_home_str)
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "tool",
+            "run",
+            "env_echo_tool",
+            "--input-json",
+            "{}",
+        ])
+        .assert()
+        .success();
+    let run_json = parse_stdout_json(&run_assert);
+    assert_eq!(run_json["name"], "env_echo_tool");
+    assert_eq!(run_json["result"]["success"], true);
+    assert_eq!(run_json["result"]["stdout"], "alpha");
+    assert_eq!(run_json["result"]["timed_out"], false);
+    assert_eq!(run_json["result"]["invocation"]["kind"], "exec");
 }
 
 #[test]

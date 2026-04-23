@@ -392,6 +392,22 @@ Defaults:
 - both APIs inherit timeout and output capture limits from the tool invocation unless a tighter limit
   is provided
 
+Example:
+
+```js
+function main(_input, ctx) {
+  return host.exec(
+    ["curl", "-fsS", "https://api.example.test/health"],
+    {
+      env: {
+        API_TOKEN: ctx.secrets.require("api_token"),
+      },
+      timeout_ms: 2_000,
+    }
+  );
+}
+```
+
 Phase 1 can rely on the existing `execute`/`shell` grants plus trusted-vault gating. If Vulcan
 starts exposing these tools broadly in daemon or multi-user contexts, command allowlists should be
 added before widening the default profiles.
