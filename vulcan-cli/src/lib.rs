@@ -15780,7 +15780,7 @@ struct McpToolDefinition {
 }
 
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
 struct McpToolAnnotations {
     #[serde(rename = "readOnlyHint")]
     read_only_hint: bool,
@@ -15790,6 +15790,58 @@ struct McpToolAnnotations {
     idempotent_hint: bool,
     #[serde(rename = "openWorldHint")]
     open_world_hint: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ToolRegistryEntry {
+    pub(crate) name: String,
+    pub(crate) title: String,
+    pub(crate) description: String,
+    pub(crate) input_schema: Value,
+    pub(crate) output_schema: Option<Value>,
+    pub(crate) annotations: McpToolAnnotations,
+    pub(crate) tool_packs: Vec<String>,
+    pub(crate) examples: Vec<String>,
+}
+
+impl ToolRegistryEntry {
+    fn into_openai_definition(self) -> OpenAiToolDefinition {
+        OpenAiToolDefinition {
+            kind: "function".to_string(),
+            function: OpenAiFunctionDefinition {
+                name: self.name,
+                description: self.description,
+                parameters: self.input_schema,
+                examples: self.examples,
+            },
+        }
+    }
+
+    pub(crate) fn to_mcp_definition(&self) -> McpToolDefinition {
+        McpToolDefinition {
+            name: self.name.clone(),
+            title: self.title.clone(),
+            description: self.description.clone(),
+            input_schema: self.input_schema.clone(),
+            output_schema: self.output_schema.clone(),
+            annotations: self.annotations,
+            tool_packs: self.tool_packs.clone(),
+            examples: self.examples.clone(),
+        }
+    }
+
+    pub(crate) fn to_mcp_list_item(&self) -> Value {
+        let definition = self.to_mcp_definition();
+        serde_json::json!({
+            "name": definition.name,
+            "title": definition.title,
+            "description": definition.description,
+            "inputSchema": definition.input_schema,
+            "outputSchema": definition.output_schema,
+            "annotations": definition.annotations,
+            "toolPacks": definition.tool_packs,
+        })
+    }
 }
 
 fn cli_command_tree() -> clap::Command {
@@ -16638,31 +16690,15 @@ fn build_openai_tool_definitions(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
 ) -> Result<OpenAiToolsReport, CliError> {
-    let mut tools = collect_leaf_commands(&cli_command_tree())
+    let mut tools = cli_leaf_tool_registry_entries()
         .into_iter()
-        .map(|tool| OpenAiToolDefinition {
-            kind: "function".to_string(),
-            function: OpenAiFunctionDefinition {
-                name: tool.name,
-                description: tool.description,
-                parameters: tool.input_schema,
-                examples: tool.examples,
-            },
-        })
+        .map(ToolRegistryEntry::into_openai_definition)
         .collect::<Vec<_>>();
     tools.extend(
         tools::list_custom_tools(paths, requested_profile, &custom_tool_registry_options())?
             .into_iter()
             .filter(|tool| tool.callable)
-            .map(|tool| OpenAiToolDefinition {
-                kind: "function".to_string(),
-                function: OpenAiFunctionDefinition {
-                    name: tool.summary.name,
-                    description: tool.summary.description,
-                    parameters: tool.summary.input_schema,
-                    examples: Vec::new(),
-                },
-            }),
+            .map(|tool| custom_tool_registry_entry(&tool).into_openai_definition()),
     );
     Ok(OpenAiToolsReport { tools })
 }
@@ -16673,6 +16709,44 @@ struct ToolCommandDescribe {
     description: String,
     input_schema: Value,
     examples: Vec<String>,
+}
+
+fn cli_leaf_tool_registry_entries() -> Vec<ToolRegistryEntry> {
+    collect_leaf_commands(&cli_command_tree())
+        .into_iter()
+        .map(|tool| ToolRegistryEntry {
+            title: tool.name.clone(),
+            name: tool.name,
+            description: tool.description,
+            input_schema: tool.input_schema,
+            output_schema: None,
+            annotations: McpToolAnnotations::default(),
+            tool_packs: Vec::new(),
+            examples: tool.examples,
+        })
+        .collect()
+}
+
+pub(crate) fn custom_tool_registry_entry(tool: &tools::CustomToolDescriptor) -> ToolRegistryEntry {
+    ToolRegistryEntry {
+        name: tool.summary.name.clone(),
+        title: tool
+            .summary
+            .title
+            .clone()
+            .unwrap_or_else(|| tool.summary.name.clone()),
+        description: tool.summary.description.clone(),
+        input_schema: tool.summary.input_schema.clone(),
+        output_schema: tool.summary.output_schema.clone(),
+        annotations: McpToolAnnotations {
+            read_only_hint: tool.summary.read_only,
+            destructive_hint: tool.summary.destructive,
+            idempotent_hint: tool.summary.read_only && !tool.summary.destructive,
+            open_world_hint: matches!(tool.summary.sandbox, vulcan_core::JsRuntimeSandbox::Net),
+        },
+        tool_packs: tool.summary.packs.clone(),
+        examples: Vec::new(),
+    }
 }
 
 fn collect_leaf_commands(command: &clap::Command) -> Vec<ToolCommandDescribe> {
@@ -22606,6 +22680,65 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn tool_registry_entry_converts_to_openai_and_mcp_shapes() {
+        let entry = ToolRegistryEntry {
+            name: "demo_tool".to_string(),
+            title: "Demo Tool".to_string(),
+            description: "Run a demo operation.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "note": { "type": "string" }
+                },
+                "required": ["note"],
+                "additionalProperties": false,
+            }),
+            output_schema: Some(serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "ok": { "type": "boolean" }
+                },
+                "required": ["ok"],
+                "additionalProperties": false,
+            })),
+            annotations: McpToolAnnotations {
+                read_only_hint: true,
+                destructive_hint: false,
+                idempotent_hint: true,
+                open_world_hint: false,
+            },
+            tool_packs: vec!["custom".to_string()],
+            examples: vec!["demo_tool {\"note\":\"Projects/Alpha.md\"}".to_string()],
+        };
+
+        let openai = entry.clone().into_openai_definition();
+        assert_eq!(openai.function.name, "demo_tool");
+        assert_eq!(openai.function.description, "Run a demo operation.");
+        assert_eq!(openai.function.parameters["type"], "object");
+        assert_eq!(
+            openai.function.examples,
+            vec!["demo_tool {\"note\":\"Projects/Alpha.md\"}".to_string()]
+        );
+
+        let mcp = entry.to_mcp_definition();
+        assert_eq!(mcp.name, "demo_tool");
+        assert_eq!(mcp.title, "Demo Tool");
+        assert!(mcp.annotations.read_only_hint);
+        assert_eq!(mcp.tool_packs, vec!["custom".to_string()]);
+        assert_eq!(
+            mcp.output_schema.as_ref().expect("output schema")["type"],
+            "object"
+        );
+
+        let item = entry.to_mcp_list_item();
+        assert_eq!(item["name"], "demo_tool");
+        assert_eq!(item["title"], "Demo Tool");
+        assert_eq!(item["annotations"]["readOnlyHint"], true);
+        assert_eq!(item["toolPacks"], serde_json::json!(["custom"]));
+        assert!(item.get("examples").is_none());
     }
 
     #[test]

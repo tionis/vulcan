@@ -5,14 +5,15 @@ use crate::commit::AutoCommitPolicy;
 use crate::plugins;
 use crate::{
     cli_command_tree, collect_complete_candidates, collect_help_command_topics,
-    config_set_changed_files, normalize_note_path, permission_error_to_cli,
-    resolve_existing_markdown_target, resolve_existing_note_path, resolve_help_topic,
-    run_note_append_command, run_note_create_with_body, run_note_delete_command,
-    run_note_get_command, run_note_info_command, run_note_outline_command, run_note_patch_command,
-    run_note_set_with_content, run_status_command, run_web_fetch_command, run_web_search_command,
-    CliError, McpToolAnnotations, McpToolDefinition, McpToolPackArg, McpToolPackModeArg,
+    config_set_changed_files, custom_tool_registry_entry, normalize_note_path,
+    permission_error_to_cli, resolve_existing_markdown_target, resolve_existing_note_path,
+    resolve_help_topic, run_note_append_command, run_note_create_with_body,
+    run_note_delete_command, run_note_get_command, run_note_info_command, run_note_outline_command,
+    run_note_patch_command, run_note_set_with_content, run_status_command, run_web_fetch_command,
+    run_web_search_command, CliError, McpToolAnnotations, McpToolPackArg, McpToolPackModeArg,
     McpToolsReport, McpTransportArg, NoteAppendMode, NoteAppendOptions, NoteAppendPeriodicArg,
-    NoteGetMode, NoteGetOptions, NotePatchOptions, OutputFormat, SearchBackendArg, WebFetchMode,
+    NoteGetMode, NoteGetOptions, NotePatchOptions, OutputFormat, SearchBackendArg,
+    ToolRegistryEntry, WebFetchMode,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -890,29 +891,14 @@ pub(crate) fn build_mcp_tool_definitions(
     let selected_tool_packs = resolve_selected_tool_packs(tool_pack_args, tool_pack_mode);
     let mut tools = visible_tool_catalog(&selected_tool_packs, &selection.profile)
         .into_iter()
-        .map(|tool| McpToolDefinition {
-            name: tool.name.to_string(),
-            title: tool.title.to_string(),
-            description: tool.description.to_string(),
-            input_schema: (tool.input_schema)(),
-            output_schema: tool.output_schema.map(|schema| schema()),
-            annotations: tool.annotations,
-            tool_packs: tool
-                .packs
-                .iter()
-                .map(|pack| pack.as_str().to_string())
-                .collect(),
-            examples: tool
-                .examples
-                .iter()
-                .map(|item| (*item).to_string())
-                .collect(),
-        })
+        .map(mcp_tool_registry_entry)
+        .map(|tool| tool.to_mcp_definition())
         .collect::<Vec<_>>();
     tools.extend(
         visible_custom_tools(paths, requested_profile, &selected_tool_packs)?
             .iter()
-            .map(custom_tool_definition),
+            .map(custom_tool_registry_entry)
+            .map(|tool| tool.to_mcp_definition()),
     );
 
     Ok(McpToolsReport {
@@ -3328,55 +3314,33 @@ fn tool_names_for_pack(pack: McpToolPack, profile: &PermissionProfile) -> Vec<St
         .collect()
 }
 
-fn tool_list_item(tool: &McpToolCatalogEntry) -> Value {
-    serde_json::json!({
-        "name": tool.name,
-        "title": tool.title,
-        "description": tool.description,
-        "inputSchema": (tool.input_schema)(),
-        "outputSchema": tool.output_schema.map(|schema| schema()),
-        "annotations": tool.annotations,
-        "toolPacks": tool.packs.iter().map(|pack| pack.as_str()).collect::<Vec<_>>(),
-    })
-}
-
-fn custom_tool_definition(tool: &crate::tools::CustomToolDescriptor) -> McpToolDefinition {
-    McpToolDefinition {
-        name: tool.summary.name.clone(),
-        title: tool
-            .summary
-            .title
-            .clone()
-            .unwrap_or_else(|| tool.summary.name.clone()),
-        description: tool.summary.description.clone(),
-        input_schema: tool.summary.input_schema.clone(),
-        output_schema: tool.summary.output_schema.clone(),
-        annotations: custom_tool_annotations(tool),
-        tool_packs: tool.summary.packs.clone(),
-        examples: Vec::new(),
+fn mcp_tool_registry_entry(tool: &McpToolCatalogEntry) -> ToolRegistryEntry {
+    ToolRegistryEntry {
+        name: tool.name.to_string(),
+        title: tool.title.to_string(),
+        description: tool.description.to_string(),
+        input_schema: (tool.input_schema)(),
+        output_schema: tool.output_schema.map(|schema| schema()),
+        annotations: tool.annotations,
+        tool_packs: tool
+            .packs
+            .iter()
+            .map(|pack| pack.as_str().to_string())
+            .collect(),
+        examples: tool
+            .examples
+            .iter()
+            .map(|item| (*item).to_string())
+            .collect(),
     }
 }
 
-fn custom_tool_list_item(tool: &crate::tools::CustomToolDescriptor) -> Value {
-    let definition = custom_tool_definition(tool);
-    serde_json::json!({
-        "name": definition.name,
-        "title": definition.title,
-        "description": definition.description,
-        "inputSchema": definition.input_schema,
-        "outputSchema": definition.output_schema,
-        "annotations": definition.annotations,
-        "toolPacks": definition.tool_packs,
-    })
+fn tool_list_item(tool: &McpToolCatalogEntry) -> Value {
+    mcp_tool_registry_entry(tool).to_mcp_list_item()
 }
 
-fn custom_tool_annotations(tool: &crate::tools::CustomToolDescriptor) -> McpToolAnnotations {
-    mcp_annotations(
-        tool.summary.read_only,
-        tool.summary.destructive,
-        tool.summary.read_only && !tool.summary.destructive,
-        matches!(tool.summary.sandbox, vulcan_core::JsRuntimeSandbox::Net),
-    )
+fn custom_tool_list_item(tool: &crate::tools::CustomToolDescriptor) -> Value {
+    custom_tool_registry_entry(tool).to_mcp_list_item()
 }
 
 fn prompt_list_item(prompt: vulcan_core::AssistantPromptSummary) -> Value {
