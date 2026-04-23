@@ -6,7 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use toml::Value as TomlValue;
 use vulcan_core::{
-    default_config_template, ensure_vulcan_dir, load_permission_profiles, load_vault_config,
+    default_config_template, ensure_vulcan_dir, load_permission_profiles,
+    load_permission_profiles_with_overrides, load_vault_config, load_vault_config_with_overrides,
     validate_vulcan_overrides_toml, ConfigDiagnostic, PermissionProfile, VaultConfig, VaultPaths,
 };
 
@@ -360,6 +361,32 @@ pub fn build_config_show_report(
     })
 }
 
+pub fn build_config_show_report_from_overrides(
+    paths: &VaultPaths,
+    shared_toml: &TomlValue,
+    local_toml: &TomlValue,
+    section: Option<&str>,
+    selected_permission_profile: Option<&str>,
+) -> Result<ConfigShowReport, AppError> {
+    let display_config = load_display_config_state_from_overrides(paths, shared_toml, local_toml)?;
+    let selected_json = select_config_json_section(&display_config.json, section)?;
+    let selected_toml = select_config_toml_section(&display_config.toml, section)?;
+    let permission_metadata =
+        config_permission_metadata(section, selected_permission_profile, &display_config);
+
+    Ok(ConfigShowReport {
+        section: section.map(ToOwned::to_owned),
+        config: selected_json,
+        diagnostics: display_config.diagnostics,
+        active_permission_profile: permission_metadata
+            .as_ref()
+            .map(|metadata| metadata.active_profile.clone()),
+        available_permission_profiles: permission_metadata
+            .map_or_else(Vec::new, |metadata| metadata.available_profiles),
+        rendered_toml: selected_toml,
+    })
+}
+
 pub fn build_config_get_report(paths: &VaultPaths, key: &str) -> Result<ConfigGetReport, AppError> {
     let display_config = load_display_config_state(paths)?;
     let value = select_config_json_value(&display_config.json, key)?;
@@ -561,6 +588,29 @@ pub fn apply_config_document_save(
 fn load_display_config_state(paths: &VaultPaths) -> Result<DisplayConfigState, AppError> {
     let loaded = load_vault_config(paths);
     let permission_profiles = load_permission_profiles(paths);
+    let json = display_config_json(&loaded.config, &permission_profiles.profiles)?;
+    let toml = display_config_toml(&loaded.config, &permission_profiles.profiles)?;
+
+    Ok(DisplayConfigState {
+        json,
+        toml,
+        diagnostics: merge_config_diagnostics(
+            paths,
+            &loaded.diagnostics,
+            &permission_profiles.diagnostics,
+        ),
+        permission_profiles: permission_profiles.profiles.keys().cloned().collect(),
+    })
+}
+
+fn load_display_config_state_from_overrides(
+    paths: &VaultPaths,
+    shared_toml: &TomlValue,
+    local_toml: &TomlValue,
+) -> Result<DisplayConfigState, AppError> {
+    let loaded = load_vault_config_with_overrides(paths, Some(shared_toml), Some(local_toml));
+    let permission_profiles =
+        load_permission_profiles_with_overrides(paths, Some(shared_toml), Some(local_toml));
     let json = display_config_json(&loaded.config, &permission_profiles.profiles)?;
     let toml = display_config_toml(&loaded.config, &permission_profiles.profiles)?;
 
@@ -1644,6 +1694,52 @@ pub fn build_config_list_report(
     })
 }
 
+pub fn build_config_list_report_from_overrides(
+    paths: &VaultPaths,
+    shared_toml: &TomlValue,
+    local_toml: &TomlValue,
+    section: Option<&str>,
+) -> Result<ConfigListReport, AppError> {
+    let display = load_display_config_state_from_overrides(paths, shared_toml, local_toml)?;
+    let mut descriptors = BTreeMap::<String, ConfigDescriptor>::new();
+    let catalog = config_descriptor_catalog();
+
+    for descriptor in &catalog {
+        descriptors.insert(descriptor.key.clone(), descriptor.clone());
+    }
+
+    let known_paths = collect_known_display_paths(&display.toml, shared_toml, local_toml);
+    for path in known_paths {
+        for descriptor in catalog
+            .iter()
+            .filter(|descriptor| descriptor.key.contains('<'))
+        {
+            if let Some(concrete) = instantiate_descriptor(descriptor, &path) {
+                descriptors.insert(concrete.key.clone(), concrete);
+            }
+        }
+    }
+
+    let mut entries = descriptors
+        .into_values()
+        .filter(|descriptor| {
+            section.map_or(true, |filter| {
+                config_key_matches_filter(&descriptor.key, filter)
+            })
+        })
+        .map(|descriptor| {
+            build_config_list_entry(&descriptor, &display.toml, shared_toml, local_toml)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by(|left, right| left.key.cmp(&right.key));
+
+    Ok(ConfigListReport {
+        section: section.map(ToOwned::to_owned),
+        entries,
+        diagnostics: display.diagnostics,
+    })
+}
+
 fn collect_known_display_paths(
     effective_toml: &TomlValue,
     shared_toml: &TomlValue,
@@ -2040,10 +2136,11 @@ fn relativize_config_path(paths: &VaultPaths, path: &Path) -> PathBuf {
 mod tests {
     use super::{
         apply_config_document_save, apply_config_set_report, build_config_get_report,
-        build_config_list_report, build_config_show_report, config_descriptor_catalog,
-        config_toml_path_exists, default_config_value_map, load_config_file_toml,
-        plan_config_document_save, plan_config_set_report, remove_config_toml_value,
-        set_config_toml_value, ConfigValueKind,
+        build_config_list_report, build_config_list_report_from_overrides,
+        build_config_show_report, build_config_show_report_from_overrides,
+        config_descriptor_catalog, config_toml_path_exists, default_config_value_map,
+        load_config_file_toml, plan_config_document_save, plan_config_set_report,
+        remove_config_toml_value, set_config_toml_value, ConfigValueKind,
     };
     use std::collections::BTreeSet;
     use std::fs;
@@ -2322,5 +2419,59 @@ read = { allow = ["folder:Projects/**"] }
             placeholder.preferred_command.as_deref(),
             Some("vulcan plugin set --sandbox")
         );
+    }
+
+    #[test]
+    fn override_reports_reflect_in_memory_permission_profile_edits() {
+        let (_dir, paths) = test_paths();
+        let shared_toml = r#"
+[permissions.profiles.agent]
+git = "allow"
+"#
+        .parse::<TomlValue>()
+        .expect("shared override should parse");
+        let local_toml = r#"
+[permissions.profiles.agent]
+write = "all"
+"#
+        .parse::<TomlValue>()
+        .expect("local override should parse");
+
+        let show = build_config_show_report_from_overrides(
+            &paths,
+            &shared_toml,
+            &local_toml,
+            Some("permissions"),
+            Some("agent"),
+        )
+        .expect("override show report should build");
+        let list = build_config_list_report_from_overrides(
+            &paths,
+            &shared_toml,
+            &local_toml,
+            Some("permissions"),
+        )
+        .expect("override list report should build");
+
+        assert_eq!(show.active_permission_profile.as_deref(), Some("agent"));
+        assert!(show
+            .rendered_toml
+            .as_table()
+            .and_then(|table| table.get("profiles"))
+            .and_then(TomlValue::as_table)
+            .and_then(|profiles| profiles.get("agent"))
+            .is_some());
+        assert!(list
+            .entries
+            .iter()
+            .any(|entry| entry.key == "permissions.profiles.agent"));
+        assert!(list
+            .entries
+            .iter()
+            .any(|entry| entry.key == "permissions.profiles.agent.git"));
+        assert!(list
+            .entries
+            .iter()
+            .any(|entry| entry.key == "permissions.profiles.agent.write"));
     }
 }

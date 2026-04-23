@@ -203,6 +203,23 @@ mod app_config {
             .map_err(CliError::operation)
     }
 
+    pub(crate) fn build_config_show_report_from_overrides(
+        paths: &VaultPaths,
+        shared_toml: &TomlValue,
+        local_toml: &TomlValue,
+        section: Option<&str>,
+        selected_permission_profile: Option<&str>,
+    ) -> Result<ConfigShowReport, CliError> {
+        vulcan_app::config::build_config_show_report_from_overrides(
+            paths,
+            shared_toml,
+            local_toml,
+            section,
+            selected_permission_profile,
+        )
+        .map_err(CliError::operation)
+    }
+
     pub(crate) fn build_config_get_report(
         paths: &VaultPaths,
         key: &str,
@@ -215,6 +232,21 @@ mod app_config {
         section: Option<&str>,
     ) -> Result<ConfigListReport, CliError> {
         vulcan_app::config::build_config_list_report(paths, section).map_err(CliError::operation)
+    }
+
+    pub(crate) fn build_config_list_report_from_overrides(
+        paths: &VaultPaths,
+        shared_toml: &TomlValue,
+        local_toml: &TomlValue,
+        section: Option<&str>,
+    ) -> Result<ConfigListReport, CliError> {
+        vulcan_app::config::build_config_list_report_from_overrides(
+            paths,
+            shared_toml,
+            local_toml,
+            section,
+        )
+        .map_err(CliError::operation)
     }
 
     pub(crate) fn config_descriptor_catalog() -> Vec<ConfigDescriptor> {
