@@ -20,6 +20,7 @@ pub mod git;
 pub mod graph;
 pub mod history;
 pub mod init;
+pub mod json_schema;
 pub mod kanban;
 pub mod maintenance;
 pub mod move_rewrite;
@@ -50,8 +51,8 @@ pub use assistant::{
     list_assistant_tools, load_assistant_prompt, load_assistant_skill, load_assistant_tool,
     read_vault_agents_file, render_assistant_prompt, AssistantConfigSummary, AssistantError,
     AssistantPrompt, AssistantPromptArgument, AssistantPromptSummary, AssistantSkill,
-    AssistantSkillSummary, AssistantTool, AssistantToolRuntime, AssistantToolSummary,
-    AssistantToolValidationOptions,
+    AssistantSkillSummary, AssistantTool, AssistantToolRuntime, AssistantToolSecretSpec,
+    AssistantToolSummary, AssistantToolValidationOptions,
 };
 pub use bases::{
     bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, evaluate_base_file,
@@ -126,6 +127,7 @@ pub use history::{
     GraphTrendPoint, GraphTrendsReport,
 };
 pub use init::{initialize_vault, InitError, InitSummary};
+pub use json_schema::{validate_json_value_against_schema, JsonSchemaValidationError};
 pub use kanban::{
     add_kanban_card, archive_kanban_card, list_kanban_boards, load_kanban_board, move_kanban_card,
     KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanCardRecord,
