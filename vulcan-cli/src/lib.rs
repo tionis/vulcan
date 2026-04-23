@@ -15170,27 +15170,30 @@ fn cli_command_tree() -> clap::Command {
 }
 
 fn print_describe_human(report: &CliDescribeReport) {
-    if let Some(about) = report.about.as_deref() {
-        println!("{about}");
-        println!();
-    }
-    println!("Commands:");
-    print_describe_command_list(&report.commands, "");
+    let command_count = count_described_commands(&report.commands);
+    println!("Machine-readable Vulcan tool schema");
+    println!();
+    println!(
+        "`describe` is intended for harnesses and tool integrations, not interactive browsing."
+    );
+    println!("For human-oriented documentation, use `vulcan help` or `vulcan help <command>`.");
+    println!();
+    println!(
+        "Available exports: {command_count} commands, {} global options.",
+        report.global_options.len()
+    );
+    println!();
+    println!("Use one of:");
+    println!("- `vulcan --output json describe` for the recursive CLI schema");
+    println!("- `vulcan describe --format openai-tools` for OpenAI tool definitions");
+    println!("- `vulcan describe --format mcp` for MCP tool definitions");
 }
 
-fn print_describe_command_list(commands: &[CliCommandDescribe], prefix: &str) {
-    for command in commands {
-        let name = if prefix.is_empty() {
-            command.name.clone()
-        } else {
-            format!("{prefix} {}", command.name)
-        };
-        let about = command.about.as_deref().unwrap_or("undocumented");
-        println!("- {name}: {about}");
-        if !command.subcommands.is_empty() {
-            print_describe_command_list(&command.subcommands, &name);
-        }
-    }
+fn count_described_commands(commands: &[CliCommandDescribe]) -> usize {
+    commands
+        .iter()
+        .map(|command| 1 + count_described_commands(&command.subcommands))
+        .sum()
 }
 
 fn resolve_help_topic(topic: &[String]) -> Result<HelpTopicReport, CliError> {
@@ -15462,7 +15465,10 @@ fn help_overview() -> HelpTopicReport {
         Concept guides: ",
     );
     body.push_str(&concept_names.join(", "));
-    body.push_str("\n\n---\n");
+    body.push_str(
+        "\n\nFor external runtimes and tool integrations, `vulcan describe` exports the same \
+command surface as machine-readable `json-schema`, `openai-tools`, or `mcp` definitions.\n\n---\n",
+    );
 
     for (group, commands) in groups {
         let _ = writeln!(body, "\n## {group}\n");
@@ -15470,11 +15476,6 @@ fn help_overview() -> HelpTopicReport {
             let _ = writeln!(body, "- `{cmd}` — {desc}");
         }
     }
-    if let Some(command_tree) = command_tree_section("Command Tree", &cli_command_tree(), false) {
-        body.push('\n');
-        body.push_str(&command_tree);
-    }
-
     HelpTopicReport {
         name: "help".to_string(),
         kind: HelpTopicKind::Overview,

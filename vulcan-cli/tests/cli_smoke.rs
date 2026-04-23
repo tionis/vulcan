@@ -14838,23 +14838,37 @@ fn help_json_output_returns_structured_topic_docs() {
         .as_str()
         .expect("body should be present")
         .contains("e.g. vulcan note get Dashboard"));
+
+    let overview_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--output", "json", "help"])
+        .assert()
+        .success();
+    let overview_json = parse_stdout_json(&overview_assert);
+    let overview_body = overview_json["body"]
+        .as_str()
+        .expect("body should be present");
+    assert!(overview_body.contains("## Notes"));
+    assert!(overview_body.contains("`vulcan describe` exports the same command surface"));
+    assert!(!overview_body.contains("## Command Tree"));
 }
 
 #[test]
-fn help_human_output_includes_command_tree_and_parent_subcommand_examples() {
+fn help_human_output_uses_grouped_overview_and_parent_subcommand_examples() {
     Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args(["help"])
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("Command Tree")
+            predicate::str::contains("Notes")
                 .and(predicate::str::contains(
-                    "  note             Read and mutate one note with selector-aware CRUD commands",
+                    "- `note get` — Open a note, resolve its path, or print frontmatter",
                 ))
                 .and(predicate::str::contains(
-                    "    get              Read one note, optionally narrowed by selectors",
-                )),
+                    "`vulcan describe` exports the same command surface",
+                ))
+                .and(predicate::str::contains("Command Tree").not()),
         );
 
     Command::cargo_bin("vulcan")
@@ -14887,6 +14901,21 @@ fn describe_is_hidden_from_root_help_but_still_has_direct_help() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Machine-readable command schema").not());
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["describe"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Machine-readable Vulcan tool schema")
+                .and(predicate::str::contains("`vulcan --output json describe`"))
+                .and(predicate::str::contains(
+                    "`vulcan help` or `vulcan help <command>`",
+                ))
+                .and(predicate::str::contains("Commands:").not())
+                .and(predicate::str::contains("- index:").not()),
+        );
 
     Command::cargo_bin("vulcan")
         .expect("binary should build")

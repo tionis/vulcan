@@ -606,6 +606,11 @@ Examples:
   vulcan --output json plugin list";
 
 const DESCRIBE_COMMAND_AFTER_HELP: &str = "\
+Notes:
+  Bare `vulcan describe` prints a short guide to the machine-readable export modes.
+  Use `--output json` for the recursive CLI schema, or `--format openai-tools|mcp`
+  for protocol/tool-calling definitions.
+
 Output:
   json-schema    runtime CLI schema with commands, options, defaults, and after-help text
   openai-tools   OpenAI function-calling tool definitions
@@ -613,6 +618,7 @@ Output:
 
 Examples:
   vulcan describe
+  vulcan --output json describe
   vulcan describe --format openai-tools
   vulcan describe --format mcp
   vulcan describe --format mcp --tool-pack notes-read,search,web
