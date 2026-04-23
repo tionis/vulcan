@@ -22,6 +22,11 @@ The external runtime remains responsible for:
 - runtime orchestration
 - any non-vault-native conversation state
 
+Integrated help for this contract is available inside the CLI:
+
+- `vulcan help assistant-integration`
+- `vulcan --output json help assistant-integration`
+
 ## Why this boundary
 
 The expensive part to get right is not chat UX. It is note semantics, safe mutations, deterministic query behavior, and a tool surface that an LLM can use without bypassing vault rules.
@@ -55,7 +60,7 @@ At session start, the runtime should load:
 
 - vault `AGENTS.md` if present
 - the compact command map from `vulcan describe`
-- the default skill directory summary
+- the default skill directory summary from `vulcan skill list`
 
 It should not preload every tool schema or every skill body. Discovery stays on demand.
 
@@ -66,7 +71,7 @@ Recommended sequence:
 1. Call `vulcan describe --format openai-tools`
 2. Register the core tools directly
 3. Use `vulcan help --output json <command>` only when the model needs an unfamiliar command
-4. Read `.agents/skills/*/SKILL.md` or use `skill_get(name)` when a workflow-specific guide is needed
+4. Call `vulcan skill list` up front, then `vulcan skill get <name>` only when a workflow-specific guide is needed
 
 This keeps context small while preserving full surface area.
 
@@ -88,9 +93,29 @@ Wrapper behavior:
 1. validate arguments
 2. spawn `vulcan`
 3. parse JSON or line-delimited JSON output
-4. normalize non-zero exits into structured tool errors
+4. treat stdout as the machine-readable success payload, stderr as diagnostic text, and non-zero exits as structured tool failures
+5. surface timeout failures distinctly from normal non-zero command exits
 
 The wrapper must not inspect SQLite directly or rewrite notes itself.
+
+Every invocation should include an explicit permission profile:
+
+```text
+vulcan --vault /path/to/vault --permissions agent --output json <command...>
+```
+
+Recommended defaults:
+
+- write-capable sessions: `--permissions agent`
+- browse-only sessions: `--permissions readonly`
+
+Vulcan exposes a helper to print the current vault's contract and ready-to-paste wrapper examples:
+
+```text
+vulcan agent print-config --runtime generic
+vulcan agent print-config --runtime pi
+vulcan agent print-config --runtime codex
+```
 
 ## Recommended Tool Shape In A Reference Integration
 
@@ -145,6 +170,12 @@ Rules:
 - preserve `--dry-run` for high-impact operations
 - prefer explicit git commits or batched auto-commit over silent edits
 - never let the runtime bypass note safety checks such as `note patch` single-match semantics
+
+Recommended profiles:
+
+- `readonly`: exploration, search, graph inspection, skills, and help only
+- `agent`: normal note editing and property mutation through Vulcan
+- higher-trust custom profiles: bulk refactors, git mutation, host execution, or network-heavy flows
 
 ## Session and persistence boundary
 
@@ -206,6 +237,26 @@ The critical point is ownership:
 
 - tighten permission profiles
 - decide whether generated runtime-specific config helpers from Vulcan are worth adding
+
+That helper now exists as `vulcan agent print-config --runtime <name>`.
+
+## Asset import helper
+
+Vulcan can preview or import common external-harness layouts into its own vault-native structure:
+
+```text
+vulcan agent import
+vulcan agent import --apply
+vulcan agent import --apply --symlink
+```
+
+Detected sources currently include:
+
+- `CLAUDE.md`, `CODEX.md`, `GEMINI.md` -> `AGENTS.md`
+- `.claude/commands/*.md`, `.codex/prompts/*.md`, `.gemini/prompts/*.md` -> configured prompts folder
+- `.claude/skills/*/SKILL.md`, `.codex/skills/*/SKILL.md`, `.gemini/skills/*/SKILL.md` -> configured skills folder
+
+The default mode is preview-only. Conflicting source files that would target the same Vulcan path are reported and must be resolved before `--apply`.
 
 ## Revisit Criteria For A Native Runtime
 

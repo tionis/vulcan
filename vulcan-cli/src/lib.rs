@@ -365,18 +365,19 @@ mod app_config {
 }
 
 pub use cli::{
-    AgentCommand, AgentInstallArgs, AutomationCommand, BasesCommand, CacheCommand,
-    CheckpointCommand, Cli, ColorMode, Command, ConfigAliasCommand, ConfigCommand,
-    ConfigImportArgs, ConfigImportCommand, ConfigImportSelection, ConfigPermissionsCommand,
-    ConfigPermissionsProfileCommand, ConfigTargetArg, DailyCommand, DataviewCommand,
-    DescribeFormatArg, EpubTocStyle, ExportArgs, ExportCommand, ExportFormat, ExportProfileCommand,
-    ExportProfileFormatArg, ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs,
-    GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs, KanbanCommand,
-    McpToolPackArg, McpToolPackModeArg, McpTransportArg, NoteAppendPeriodicArg, NoteCheckboxState,
-    NoteCommand, NoteGetMode, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand,
-    PluginEventArg, PluginSandboxArg, PropertySortArg, QueryEngineArg, QueryFormatArg,
-    RefactorCommand, RefreshMode, RenderArgs, RepairCommand, SavedCommand, SavedCreateCommand,
-    SearchBackendArg, SearchMode, SearchSortArg, SuggestCommand, TagSortArg, TasksCommand,
+    AgentCommand, AgentImportArgs, AgentInstallArgs, AgentPrintConfigArgs, AgentRuntimeArg,
+    AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, ColorMode, Command,
+    ConfigAliasCommand, ConfigCommand, ConfigImportArgs, ConfigImportCommand,
+    ConfigImportSelection, ConfigPermissionsCommand, ConfigPermissionsProfileCommand,
+    ConfigTargetArg, DailyCommand, DataviewCommand, DescribeFormatArg, EpubTocStyle, ExportArgs,
+    ExportCommand, ExportFormat, ExportProfileCommand, ExportProfileFormatArg,
+    ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs, GitCommand, GraphCommand,
+    GraphExportFormat, IndexCommand, InitArgs, KanbanCommand, McpToolPackArg, McpToolPackModeArg,
+    McpTransportArg, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
+    OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg,
+    PluginSandboxArg, PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand,
+    RefreshMode, RenderArgs, RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg,
+    SearchMode, SearchSortArg, SkillCommand, SuggestCommand, TagSortArg, TasksCommand,
     TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
     TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, ToolCommand,
     ToolInitExampleArg, ToolSandboxArg, TrustCommand, VectorQueueCommand, VectorsCommand,
@@ -7352,6 +7353,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Tool { ref command } => handle_tool_command(cli, &paths, command),
         Command::Agent { ref command } => {
             commands::agent::handle_agent_command(cli, &paths, command)
+        }
+        Command::Skill { ref command } => {
+            commands::skill::handle_skill_command(cli, &paths, command)
         }
         Command::Status => {
             let report = run_status_command(&paths)?;
@@ -16086,6 +16090,10 @@ fn help_overview() -> HelpTopicReport {
                     "tool",
                     "List, validate, scaffold, and run vault-native custom tools",
                 ),
+                (
+                    "skill",
+                    "List and read bundled or vault-defined assistant skills on demand",
+                ),
             ],
         ),
         (
@@ -16113,6 +16121,10 @@ fn help_overview() -> HelpTopicReport {
                 (
                     "config",
                     "Import Obsidian plugin settings into .vulcan/config.toml",
+                ),
+                (
+                    "agent",
+                    "Install harness files, print runtime snippets, and import external agent assets",
                 ),
                 (
                     "trust",
@@ -16191,6 +16203,13 @@ fn static_help_topic(
 #[allow(clippy::too_many_lines)]
 fn builtin_help_topics() -> Vec<HelpTopicReport> {
     vec![
+        static_help_topic(
+            "assistant-integration",
+            HelpTopicKind::Guide,
+            "External runtime contract for AGENTS.md, skill discovery, permissions, and wrappers.",
+            include_str!("../../docs/assistant/pi_integration.md"),
+            &["agent", "skill", "describe", "help"],
+        ),
         static_help_topic(
             "getting-started",
             HelpTopicKind::Guide,
@@ -20676,6 +20695,74 @@ mod tests {
                     overwrite: false,
                     example_tool: true,
                 })
+            }
+        );
+    }
+
+    #[test]
+    fn parses_agent_print_config_runtime_flag() {
+        let cli = Cli::try_parse_from(["vulcan", "agent", "print-config", "--runtime", "codex"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Agent {
+                command: AgentCommand::PrintConfig(AgentPrintConfigArgs {
+                    runtime: AgentRuntimeArg::Codex,
+                })
+            }
+        );
+    }
+
+    #[test]
+    fn parses_agent_import_flags() {
+        let cli = Cli::try_parse_from([
+            "vulcan",
+            "agent",
+            "import",
+            "--apply",
+            "--symlink",
+            "--overwrite",
+            "--no-commit",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Agent {
+                command: AgentCommand::Import(AgentImportArgs {
+                    apply: true,
+                    symlink: true,
+                    overwrite: true,
+                    no_commit: true,
+                })
+            }
+        );
+    }
+
+    #[test]
+    fn parses_skill_list_command() {
+        let cli = Cli::try_parse_from(["vulcan", "skill", "list"]).expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Skill {
+                command: SkillCommand::List,
+            }
+        );
+    }
+
+    #[test]
+    fn parses_skill_get_command() {
+        let cli =
+            Cli::try_parse_from(["vulcan", "skill", "get", "note-operations"]).expect("parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Skill {
+                command: SkillCommand::Get {
+                    name: "note-operations".to_string(),
+                },
             }
         );
     }
