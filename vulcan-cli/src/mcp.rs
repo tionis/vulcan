@@ -1967,7 +1967,7 @@ impl McpServerCore {
                 &self.paths,
                 Some(self.selection.name.as_str()),
                 name,
-                &crate::tools::CustomToolRegistryOptions::default(),
+                &crate::custom_tool_registry_options(),
             )
             .map_err(|error| resource_not_found_error(uri, error.to_string()))?;
             let selected_pack_names = pack_name_list(&self.selected_tool_packs)
@@ -2519,7 +2519,7 @@ impl McpServerCore {
             &self.paths,
             Some(self.selection.name.as_str()),
             name,
-            &crate::tools::CustomToolRegistryOptions::default(),
+            &crate::custom_tool_registry_options(),
         )
         .map_err(|_| McpMethodError::invalid_params(format!("Unknown tool: {name}")))?;
         let selected_pack_names = pack_name_list(&self.selected_tool_packs)
@@ -2541,7 +2541,7 @@ impl McpServerCore {
             Some(self.selection.name.as_str()),
             name,
             &Value::Object(arguments.clone()),
-            &crate::tools::CustomToolRegistryOptions::default(),
+            &crate::custom_tool_registry_options(),
             &crate::tools::CustomToolRunOptions {
                 surface: "mcp".to_string(),
             },
@@ -3273,7 +3273,7 @@ fn visible_custom_tools(
     Ok(crate::tools::list_custom_tools(
         paths,
         active_permission_profile,
-        &crate::tools::CustomToolRegistryOptions::default(),
+        &crate::custom_tool_registry_options(),
     )?
     .into_iter()
     .filter(|tool| tool.callable)

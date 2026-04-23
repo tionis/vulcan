@@ -111,7 +111,7 @@ mod tools {
             paths,
             active_permission_profile,
             surface,
-            &CustomToolRegistryOptions::default(),
+            &crate::custom_tool_registry_options(),
         )
     }
 
@@ -142,6 +142,21 @@ mod tools {
             JsRuntimeSandbox::Net => "net",
             JsRuntimeSandbox::None => "none",
         }
+    }
+}
+
+pub(crate) fn custom_tool_registry_options() -> tools::CustomToolRegistryOptions {
+    let mut reserved_names = default_assistant_tool_reserved_names()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    reserved_names.extend(
+        collect_leaf_commands(&cli_command_tree())
+            .into_iter()
+            .map(|tool| tool.name),
+    );
+    tools::CustomToolRegistryOptions {
+        reserved_names: reserved_names.into_iter().collect(),
+        ..tools::CustomToolRegistryOptions::default()
     }
 }
 
@@ -456,41 +471,41 @@ use vulcan_core::expression::functions::{
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{
     add_kanban_card, all_importers, annotate_import_conflicts, archive_kanban_card,
-    assistant_tools_root, bulk_replace, cache_vacuum, create_checkpoint, delete_saved_report,
-    doctor_fix, doctor_vault, evaluate_base_file, evaluate_dataview_js_with_options,
-    evaluate_dql_with_filter, expected_periodic_note_path, export_daily_events_to_ics,
-    export_static_search_index, git_blame, git_diff, git_log, git_recent_log, git_status,
-    initialize_vault, inspect_cache, link_mentions, list_checkpoints, list_daily_note_events,
-    list_saved_reports, load_events_for_periodic_note, load_kanban_board, load_saved_report,
-    load_vault_config, merge_tags, move_kanban_card, move_note, period_range_for_date,
-    plan_base_note_create, query_backlinks, query_change_report, query_links, query_notes,
-    rebuild_vault_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
-    render_markdown_fragment_html, render_markdown_html, repair_fts, resolve_note_reference,
-    resolve_periodic_note, resolve_permission_profile, save_saved_report, scan_vault_with_progress,
-    search_vault, step_period_start, verify_cache, watch_vault, AssistantToolSecretSpec,
-    AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport,
-    BasesViewEditReport, BulkMutationReport, CacheInspectReport, CacheVacuumQuery,
-    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, ClusterReport, ConfigImportReport, CoreImporter, DataviewImporter,
-    DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue,
-    DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
-    GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphComponentsReport,
-    GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport,
-    GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary, JsRuntimeSandbox,
-    KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter,
-    KanbanMoveReport, KanbanTaskStatus, MentionSuggestion, MentionSuggestionsReport,
-    MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport,
-    OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter,
-    PermissionFilter, PermissionGuard, PluginEvent, PluginImporter, ProfilePermissionGuard,
-    QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit,
-    RelatedNotesReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport,
-    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchBackendKind,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
-    TasksImporter, TasksQueryResult, TemplaterImporter, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
-    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
-    WatchReport,
+    assistant_tools_root, bulk_replace, cache_vacuum, create_checkpoint,
+    default_assistant_tool_reserved_names, delete_saved_report, doctor_fix, doctor_vault,
+    evaluate_base_file, evaluate_dataview_js_with_options, evaluate_dql_with_filter,
+    expected_periodic_note_path, export_daily_events_to_ics, export_static_search_index, git_blame,
+    git_diff, git_log, git_recent_log, git_status, initialize_vault, inspect_cache, link_mentions,
+    list_checkpoints, list_daily_note_events, list_saved_reports, load_events_for_periodic_note,
+    load_kanban_board, load_saved_report, load_vault_config, merge_tags, move_kanban_card,
+    move_note, period_range_for_date, plan_base_note_create, query_backlinks, query_change_report,
+    query_links, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
+    rename_heading, rename_property, render_markdown_fragment_html, render_markdown_html,
+    repair_fts, resolve_note_reference, resolve_periodic_note, resolve_permission_profile,
+    save_saved_report, scan_vault_with_progress, search_vault, step_period_start, verify_cache,
+    watch_vault, AssistantToolSecretSpec, AutoScanMode, BacklinkRecord, BacklinksReport,
+    BasesCreateContext, BasesEvalReport, BasesViewEditReport, BulkMutationReport,
+    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
+    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterReport, ConfigImportReport,
+    CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
+    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
+    DuplicateSuggestionsReport, GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport,
+    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
+    GraphPathReport, GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary,
+    JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary,
+    KanbanImporter, KanbanMoveReport, KanbanTaskStatus, MentionSuggestion,
+    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
+    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig,
+    PeriodicNotesImporter, PermissionFilter, PermissionGuard, PluginEvent, PluginImporter,
+    ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport, RefactorChange,
+    RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport,
+    ResolvedPermissionProfile, SavedExport, SavedExportFormat, SavedReportDefinition,
+    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
+    ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport, SearchSort,
+    StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult, TemplaterImporter,
+    VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
+    VectorIndexReport, VectorNeighborHit, VectorNeighborsReport, VectorQueueReport,
+    VectorRepairReport, WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -614,6 +629,7 @@ enum BundledFileTarget {
     VaultRoot,
     SkillsFolder,
     PromptsFolder,
+    ToolsFolder,
 }
 
 const BUNDLED_AGENT_TEMPLATE: BundledTextFile = BundledTextFile {
@@ -698,6 +714,21 @@ const BUNDLED_PROMPT_FILES: &[BundledTextFile] = &[
         relative_path: "daily-review.md",
         contents: include_str!("../../docs/assistant/prompts/daily-review.md"),
         target: BundledFileTarget::PromptsFolder,
+    },
+];
+
+const BUNDLED_TOOL_FILES: &[BundledTextFile] = &[
+    BundledTextFile {
+        kind: "tool",
+        relative_path: "summarize_note/TOOL.md",
+        contents: include_str!("../../docs/assistant/tools/summarize_note/TOOL.md"),
+        target: BundledFileTarget::ToolsFolder,
+    },
+    BundledTextFile {
+        kind: "tool",
+        relative_path: "summarize_note/main.js",
+        contents: include_str!("../../docs/assistant/tools/summarize_note/main.js"),
+        target: BundledFileTarget::ToolsFolder,
     },
 ];
 
@@ -2569,7 +2600,7 @@ fn handle_tool_command(
     paths: &VaultPaths,
     command: &ToolCommand,
 ) -> Result<(), CliError> {
-    let registry_options = tools::CustomToolRegistryOptions::default();
+    let registry_options = custom_tool_registry_options();
     match command {
         ToolCommand::List => print_tool_list_report(
             cli.output,
@@ -10625,7 +10656,7 @@ fn print_backlinks_report(
 fn run_init_command(paths: &VaultPaths, args: &InitArgs) -> Result<InitReport, CliError> {
     let summary = initialize_vault(paths).map_err(CliError::operation)?;
     let support_files = if args.agent_files {
-        write_bundled_support_files(paths, false)?
+        write_bundled_support_files(paths, false, args.example_tool)?
     } else {
         Vec::new()
     };
@@ -10676,7 +10707,7 @@ pub(crate) fn run_agent_install_command(
     args: &AgentInstallArgs,
 ) -> Result<AgentInstallReport, CliError> {
     Ok(AgentInstallReport {
-        support_files: write_bundled_support_files(paths, args.overwrite)?,
+        support_files: write_bundled_support_files(paths, args.overwrite, args.example_tool)?,
     })
 }
 
@@ -10783,6 +10814,7 @@ fn print_support_file_reports(files: &[SupportFileReport]) {
 fn write_bundled_support_files(
     paths: &VaultPaths,
     overwrite: bool,
+    include_example_tool: bool,
 ) -> Result<Vec<SupportFileReport>, CliError> {
     let mut reports = Vec::new();
     reports.push(write_bundled_text_file(
@@ -10795,6 +10827,11 @@ fn write_bundled_support_files(
     }
     for file in BUNDLED_PROMPT_FILES {
         reports.push(write_bundled_text_file(paths, file, overwrite)?);
+    }
+    if include_example_tool {
+        for file in BUNDLED_TOOL_FILES {
+            reports.push(write_bundled_text_file(paths, file, overwrite)?);
+        }
     }
     Ok(reports)
 }
@@ -10824,6 +10861,10 @@ fn bundled_text_file_destination(paths: &VaultPaths, file: &BundledTextFile) -> 
         BundledFileTarget::PromptsFolder => paths
             .vault_root()
             .join(config.prompts_folder)
+            .join(file.relative_path),
+        BundledFileTarget::ToolsFolder => paths
+            .vault_root()
+            .join(config.tools_folder)
             .join(file.relative_path),
     }
 }
@@ -16578,22 +16619,18 @@ fn build_openai_tool_definitions(
         })
         .collect::<Vec<_>>();
     tools.extend(
-        tools::list_custom_tools(
-            paths,
-            requested_profile,
-            &tools::CustomToolRegistryOptions::default(),
-        )?
-        .into_iter()
-        .filter(|tool| tool.callable)
-        .map(|tool| OpenAiToolDefinition {
-            kind: "function".to_string(),
-            function: OpenAiFunctionDefinition {
-                name: tool.summary.name,
-                description: tool.summary.description,
-                parameters: tool.summary.input_schema,
-                examples: Vec::new(),
-            },
-        }),
+        tools::list_custom_tools(paths, requested_profile, &custom_tool_registry_options())?
+            .into_iter()
+            .filter(|tool| tool.callable)
+            .map(|tool| OpenAiToolDefinition {
+                kind: "function".to_string(),
+                function: OpenAiFunctionDefinition {
+                    name: tool.summary.name,
+                    description: tool.summary.description,
+                    parameters: tool.summary.input_schema,
+                    examples: Vec::new(),
+                },
+            }),
     );
     Ok(OpenAiToolsReport { tools })
 }
@@ -20468,6 +20505,7 @@ mod tests {
                 import: true,
                 no_import: false,
                 agent_files: false,
+                example_tool: false,
             })
         );
     }
@@ -20483,6 +20521,23 @@ mod tests {
                 import: false,
                 no_import: false,
                 agent_files: true,
+                example_tool: false,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_init_agent_files_with_example_tool_flag() {
+        let cli = Cli::try_parse_from(["vulcan", "init", "--agent-files", "--example-tool"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Init(InitArgs {
+                import: false,
+                no_import: false,
+                agent_files: true,
+                example_tool: true,
             })
         );
     }
@@ -20495,7 +20550,26 @@ mod tests {
         assert_eq!(
             cli.command,
             Command::Agent {
-                command: AgentCommand::Install(AgentInstallArgs { overwrite: true })
+                command: AgentCommand::Install(AgentInstallArgs {
+                    overwrite: true,
+                    example_tool: false,
+                })
+            }
+        );
+    }
+
+    #[test]
+    fn parses_agent_install_example_tool_flag() {
+        let cli = Cli::try_parse_from(["vulcan", "agent", "install", "--example-tool"])
+            .expect("cli should parse");
+
+        assert_eq!(
+            cli.command,
+            Command::Agent {
+                command: AgentCommand::Install(AgentInstallArgs {
+                    overwrite: false,
+                    example_tool: true,
+                })
             }
         );
     }

@@ -20,6 +20,7 @@ Useful command groups:
 Documentation workflow:
 
 - Read `.agents/skills/*/SKILL.md` for task-specific usage patterns.
+- Read `.agents/tools/*/TOOL.md` when a vault-native custom tool exists for the workflow.
 - Use `vulcan help <topic>` for integrated documentation.
 - Use `vulcan describe --format openai-tools` or `--format mcp` to export machine-readable tool schemas.
 - Run `vulcan agent install --overwrite` after upgrading Vulcan if the bundled harness files need a refresh.
@@ -27,6 +28,7 @@ Documentation workflow:
 Common pitfalls:
 
 - Search is for note text. Query is for structured metadata.
+- Skills teach workflows. Tools perform callable request/response work. Plugins react to events.
 - Search JSON hits include `section_id` and `line_spans`; use them to follow a search hit with `note get` or `note patch` instead of reopening the full note.
 - Property typing is lenient and may need validation through `doctor`.
 - Some runtime-oriented JS APIs are still rolling out; prefer stable CLI commands when available.

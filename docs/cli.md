@@ -91,7 +91,7 @@ Precedence is:
 3. `.obsidian/app.json`
 4. Built-in defaults
 
-`vulcan index init` creates `.vulcan/config.toml`, `cache.db`, and a default `.vulcan/.gitignore` that keeps `config.toml` tracked while ignoring `config.local.toml`. It also detects importable Obsidian settings and reports them; use `vulcan index init --import` to apply every detected importer immediately. Use `vulcan index init --agent-files` to write the bundled `AGENTS.md` template and default `.agents/skills/<name>/SKILL.md` reference files into the vault.
+`vulcan index init` creates `.vulcan/config.toml`, `cache.db`, and a default `.vulcan/.gitignore` that keeps `config.toml` tracked while ignoring `config.local.toml`. It also detects importable Obsidian settings and reports them; use `vulcan index init --import` to apply every detected importer immediately. Use `vulcan index init --agent-files` to write the bundled `AGENTS.md` template, default `.agents/skills/<name>/SKILL.md` reference files, and prompt examples into the vault. Add `--example-tool` to also scaffold a starter custom tool under the configured `assistant.tools_folder`.
 
 Automatic cache refresh is configured under `[scan]`:
 
@@ -147,8 +147,8 @@ Behavior:
 
 ### Indexing, cache, and local service commands
 
-- `vulcan index init [--import|--no-import] [--agent-files]`: create `.vulcan/`, `cache.db`, `config.toml`, and the local ignore rules; optionally import all detected Obsidian settings immediately and optionally write the bundled AGENTS/skills files.
-- `vulcan agent install [--overwrite]`: install or refresh the bundled `AGENTS.md` template and default `.agents/skills/<name>/SKILL.md` files for external agent harnesses.
+- `vulcan index init [--import|--no-import] [--agent-files] [--example-tool]`: create `.vulcan/`, `cache.db`, `config.toml`, and the local ignore rules; optionally import all detected Obsidian settings immediately and optionally write the bundled AGENTS/skills/prompt files plus a starter custom tool.
+- `vulcan agent install [--overwrite] [--example-tool]`: install or refresh the bundled `AGENTS.md` template, default `.agents/skills/<name>/SKILL.md` files, prompt files, and an optional starter custom tool for external agent harnesses.
 - `vulcan index scan [--full] [--no-commit]`: perform an incremental or full scan and refresh the cache.
 - `vulcan index rebuild [--dry-run]`: rebuild the cache from disk.
 - `vulcan index repair fts [--dry-run]`: rebuild the full-text search index from cached chunks.

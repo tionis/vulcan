@@ -253,6 +253,9 @@ Authoring helpers:
   schema file paths.
 - `tool validate` checks manifest shape, schema validity, pack names, entrypoint existence, and
   permission-profile references for one tool or the whole tools folder.
+- `vulcan agent install --example-tool` and `vulcan init --agent-files --example-tool` scaffold a
+  bundled `summarize_note` example into the configured tools folder for vaults that want a
+  discoverable starter tool immediately.
 
 Current `tool set` conventions:
 

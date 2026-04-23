@@ -1462,6 +1462,145 @@ input_schema:
     }
 
     #[test]
+    fn list_custom_tools_marks_missing_and_broader_profiles_as_not_callable() {
+        let _lock = test_env_lock_guard();
+        let (_dir, paths) = test_paths();
+        let config_home = TempDir::new().expect("config home should be created");
+        let previous_xdg = env::var_os("XDG_CONFIG_HOME");
+        env::set_var("XDG_CONFIG_HOME", config_home.path());
+        fs::write(
+            paths.vault_root().join(".vulcan/config.toml"),
+            r#"
+[permissions.profiles.readonly]
+read = "all"
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "read"
+execute = "allow"
+shell = "deny"
+
+[permissions.profiles.writer]
+read = "all"
+write = { allow = ["folder:Projects/**"] }
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "read"
+execute = "allow"
+shell = "deny"
+
+[permissions.profiles.networker]
+read = "all"
+write = "none"
+refactor = "none"
+git = "deny"
+network = { allow = true, domains = ["example.com"] }
+index = "deny"
+config = "read"
+execute = "allow"
+shell = "deny"
+
+[permissions.profiles.sheller]
+read = "all"
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "read"
+execute = "allow"
+shell = "allow"
+"#,
+        )
+        .expect("config should write");
+        with_trusted_vault(&paths);
+        write_tool(
+            &paths,
+            "writer",
+            r"---
+name: writer_tool
+description: Needs write access.
+permission_profile: writer
+input_schema:
+  type: object
+---
+",
+            "function main() { return null; }\n",
+        );
+        write_tool(
+            &paths,
+            "networker",
+            r"---
+name: networker_tool
+description: Needs network access.
+permission_profile: networker
+input_schema:
+  type: object
+---
+",
+            "function main() { return null; }\n",
+        );
+        write_tool(
+            &paths,
+            "sheller",
+            r"---
+name: sheller_tool
+description: Needs shell access.
+permission_profile: sheller
+input_schema:
+  type: object
+---
+",
+            "function main() { return null; }\n",
+        );
+        write_tool(
+            &paths,
+            "missing",
+            r"---
+name: missing_profile_tool
+description: References a missing profile.
+permission_profile: missing_profile
+input_schema:
+  type: object
+---
+",
+            "function main() { return null; }\n",
+        );
+
+        let tools = list_custom_tools(
+            &paths,
+            Some("readonly"),
+            &CustomToolRegistryOptions::default(),
+        )
+        .expect("tools should load");
+        assert_eq!(tools.len(), 4);
+        for name in [
+            "writer_tool",
+            "networker_tool",
+            "sheller_tool",
+            "missing_profile_tool",
+        ] {
+            assert!(
+                tools
+                    .iter()
+                    .find(|tool| tool.summary.name == name)
+                    .is_some_and(|tool| !tool.callable),
+                "tool `{name}` should stay visible but not callable"
+            );
+        }
+
+        trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
+        match previous_xdg {
+            Some(value) => env::set_var("XDG_CONFIG_HOME", value),
+            None => env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
     fn run_custom_tool_validates_input_secrets_and_output() {
         let _lock = test_env_lock_guard();
         let (_dir, paths) = test_paths();
@@ -1534,6 +1673,139 @@ output_schema:
             Some(value) => env::set_var(&env_name, value),
             None => env::remove_var(&env_name),
         }
+        trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
+        match previous_xdg {
+            Some(value) => env::set_var("XDG_CONFIG_HOME", value),
+            None => env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
+    fn run_custom_tool_rejects_missing_permission_profiles() {
+        let _lock = test_env_lock_guard();
+        let (_dir, paths) = test_paths();
+        let config_home = TempDir::new().expect("config home should be created");
+        let previous_xdg = env::var_os("XDG_CONFIG_HOME");
+        env::set_var("XDG_CONFIG_HOME", config_home.path());
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+        with_trusted_vault(&paths);
+        write_tool(
+            &paths,
+            "missing-profile",
+            r"---
+name: missing_profile_tool
+description: References a profile that does not exist.
+permission_profile: missing_profile
+input_schema:
+  type: object
+---
+",
+            "function main() { return null; }\n",
+        );
+
+        let error = run_custom_tool(
+            &paths,
+            None,
+            "missing_profile_tool",
+            &json!({}),
+            &CustomToolRegistryOptions::default(),
+            &CustomToolRunOptions::default(),
+        )
+        .expect_err("missing tool profile should fail");
+        assert!(error
+            .to_string()
+            .contains("unknown permission profile `missing_profile`"));
+
+        trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
+        match previous_xdg {
+            Some(value) => env::set_var("XDG_CONFIG_HOME", value),
+            None => env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
+    fn run_custom_tool_surfaces_runtime_script_errors() {
+        let _lock = test_env_lock_guard();
+        let (_dir, paths) = test_paths();
+        let config_home = TempDir::new().expect("config home should be created");
+        let previous_xdg = env::var_os("XDG_CONFIG_HOME");
+        env::set_var("XDG_CONFIG_HOME", config_home.path());
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+        with_trusted_vault(&paths);
+        write_tool(
+            &paths,
+            "broken",
+            r"---
+name: broken_tool
+description: Throws from JS.
+input_schema:
+  type: object
+---
+",
+            "function main() { throw new Error('boom'); }\n",
+        );
+
+        let error = run_custom_tool(
+            &paths,
+            None,
+            "broken_tool",
+            &json!({}),
+            &CustomToolRegistryOptions::default(),
+            &CustomToolRunOptions::default(),
+        )
+        .expect_err("runtime failure should surface");
+        assert!(error.to_string().contains("boom"));
+
+        trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
+        match previous_xdg {
+            Some(value) => env::set_var("XDG_CONFIG_HOME", value),
+            None => env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
+    fn run_custom_tool_rejects_output_schema_mismatches() {
+        let _lock = test_env_lock_guard();
+        let (_dir, paths) = test_paths();
+        let config_home = TempDir::new().expect("config home should be created");
+        let previous_xdg = env::var_os("XDG_CONFIG_HOME");
+        env::set_var("XDG_CONFIG_HOME", config_home.path());
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+        with_trusted_vault(&paths);
+        write_tool(
+            &paths,
+            "mismatch",
+            r"---
+name: mismatch_tool
+description: Returns the wrong shape.
+input_schema:
+  type: object
+output_schema:
+  type: object
+  additionalProperties: false
+  properties:
+    ok:
+      type: boolean
+  required:
+    - ok
+---
+",
+            "function main() { return { ok: 'nope' }; }\n",
+        );
+
+        let error = run_custom_tool(
+            &paths,
+            None,
+            "mismatch_tool",
+            &json!({}),
+            &CustomToolRegistryOptions::default(),
+            &CustomToolRunOptions::default(),
+        )
+        .expect_err("output schema mismatch should fail");
+        assert!(error
+            .to_string()
+            .contains("tool `mismatch_tool` output validation failed"));
+
         trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
         match previous_xdg {
             Some(value) => env::set_var("XDG_CONFIG_HOME", value),

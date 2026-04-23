@@ -5690,7 +5690,7 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 - [x] Define tool asset layout: one directory per tool with `TOOL.md` manifest/docs plus `main.js` entrypoint by default
 - [x] Implement shared discovery/loader code in `vulcan-core` for parsing `TOOL.md` frontmatter, validating names, resolving entrypoints, and reading the doc body
 - [x] Enforce static discovery: tool schemas, descriptions, pack membership, and permission hints must load without executing user JS
-- [ ] Reject collisions with built-in tools, other custom tools, and reserved meta-tool names
+- [x] Reject collisions with built-in tools, other custom tools, and reserved meta-tool names
 
 ### 9.24.2 Manifest schema and runtime contract
 
@@ -5723,7 +5723,7 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 - [x] Keep `read_only` / `destructive` manifest fields as annotations only; authorization continues to come from the permission layer
 - [x] Add `host.exec(argv, opts?)` behind `execute` permission and `host.shell(command, opts?)` behind `shell` permission
 - [x] Prefer `host.exec()` in all docs/examples and keep `host.shell()` explicitly higher-risk
-- [ ] Add tests for "tool visible but not callable" cases: untrusted vaults, missing permission profile, denied write/network/execute/shell, and pack-enabled-but-profile-denied combinations
+- [x] Add tests for "tool visible but not callable" cases: untrusted vaults, missing permission profile, denied write/network/execute/shell, and pack-enabled-but-profile-denied combinations
 
 ### 9.24.6 MCP exposure, resources, and pack integration
 
@@ -5738,17 +5738,17 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 - [x] Document the recommended split: skills teach workflows; custom tools perform callable request/response work; plugins react to events
 - [x] Ship integrated help topics for `tool`, `tool init`, `tool set`, `tool validate`, `js.tools`, `js.host`, and the plugin/tool/skill comparison surface
 - [x] Add in-repo docs that compare scripts, skills, tools, and plugins with concrete examples instead of only field-by-field schema reference
-- [ ] Update bundled/default skill guidance so reusable executable behavior is promoted into `.agents/tools` instead of being buried in skill-local scripts when cross-surface discoverability matters
-- [ ] Extend `vulcan init --agent-files` / `vulcan agent install` to scaffold the tools folder and optionally write an example tool template
+- [x] Update bundled/default skill guidance so reusable executable behavior is promoted into `.agents/tools` instead of being buried in skill-local scripts when cross-surface discoverability matters
+- [x] Extend `vulcan init --agent-files` / `vulcan agent install` to scaffold the tools folder and optionally write an example tool template
 - [x] Add help topics and authoring docs that explain manifest fields, permission ceilings, return envelopes, and host execution risks
 
 ### 9.24.8 Testing and rollout
 
-- [ ] Add unit tests for manifest parsing, name collision detection, schema validation, permission intersection, and trust gating
+- [x] Add unit tests for manifest parsing, name collision detection, schema validation, permission intersection, and trust gating
 - [x] Add integration tests with fixture vault tools covering CLI `tool run`, `describe --format openai-tools`, `describe --format mcp`, MCP live exposure, and JS `tools.call()`
-- [ ] Add regression tests for invalid tool manifests, missing entrypoints, failing scripts, output-schema mismatches, and recursive tool-call loops
+- [x] Add regression tests for invalid tool manifests, missing entrypoints, failing scripts, output-schema mismatches, and recursive tool-call loops
 - [x] Add end-to-end tests for `host.exec()` / `host.shell()` permission enforcement and timeout/output capture behavior
-- [ ] Roll out with QuickJS only; treat WASM and finer-grained command allowlists as follow-up work once the registry contract is stable
+- [x] Roll out with QuickJS only; treat WASM and finer-grained command allowlists as follow-up work once the registry contract is stable
 
 ---
 

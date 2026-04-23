@@ -43,14 +43,17 @@ Color:
 
 const AGENT_COMMAND_AFTER_HELP: &str = "\
 Notes:
-  `agent install` writes the bundled `AGENTS.md` template and default Vulcan skills.
+  `agent install` writes the bundled `AGENTS.md` template, default Vulcan skills, and prompt files.
   Skills are installed in the harness-friendly layout `.agents/skills/<name>/SKILL.md`.
+  Use `--example-tool` to also scaffold a starter custom tool under `.agents/tools/`.
   Existing files are kept by default; use `--overwrite` to refresh them from the current Vulcan build.
 
 Examples:
   vulcan agent install
+  vulcan agent install --example-tool
   vulcan agent install --overwrite
-  vulcan init --agent-files";
+  vulcan init --agent-files
+  vulcan init --agent-files --example-tool";
 
 const TOOL_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
@@ -2749,6 +2752,11 @@ pub struct AgentInstallArgs {
         help = "Overwrite existing bundled AGENTS.md and skill files when contents differ"
     )]
     pub overwrite: bool,
+    #[arg(
+        long,
+        help = "Also scaffold an example custom tool into the configured assistant tools folder"
+    )]
+    pub example_tool: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -2757,6 +2765,7 @@ pub enum AgentCommand {
     Install(AgentInstallArgs),
 }
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct InitArgs {
     #[arg(
@@ -2773,9 +2782,15 @@ pub struct InitArgs {
     pub no_import: bool,
     #[arg(
         long,
-        help = "Write AGENTS.md plus bundled harness skills into .agents/skills/"
+        help = "Write AGENTS.md plus bundled harness skills and prompt files"
     )]
     pub agent_files: bool,
+    #[arg(
+        long,
+        requires = "agent_files",
+        help = "Also scaffold an example custom tool into the configured assistant tools folder"
+    )]
+    pub example_tool: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
