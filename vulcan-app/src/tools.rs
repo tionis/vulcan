@@ -251,27 +251,41 @@ struct EditableToolDocument {
 
 pub fn list_custom_tools(
     paths: &VaultPaths,
+    active_permission_profile: Option<&str>,
     options: &CustomToolRegistryOptions,
 ) -> Result<Vec<CustomToolDescriptor>, AppError> {
-    let callable = trust::is_trusted(paths.vault_root());
     let tools = list_assistant_tools(paths, &assistant_tool_validation_options(options))
         .map_err(AppError::operation)?;
     Ok(tools
         .into_iter()
-        .map(|summary| CustomToolDescriptor { summary, callable })
+        .map(|summary| CustomToolDescriptor {
+            callable: custom_tool_is_callable(
+                paths,
+                active_permission_profile,
+                &summary.name,
+                summary.permission_profile.as_deref(),
+            ),
+            summary,
+        })
         .collect())
 }
 
 pub fn show_custom_tool(
     paths: &VaultPaths,
+    active_permission_profile: Option<&str>,
     name: &str,
     options: &CustomToolRegistryOptions,
 ) -> Result<CustomToolShowReport, AppError> {
     let tool = load_assistant_tool(paths, name, &assistant_tool_validation_options(options))
         .map_err(AppError::operation)?;
     Ok(CustomToolShowReport {
+        callable: custom_tool_is_callable(
+            paths,
+            active_permission_profile,
+            &tool.summary.name,
+            tool.summary.permission_profile.as_deref(),
+        ),
         tool,
-        callable: trust::is_trusted(paths.vault_root()),
     })
 }
 
@@ -412,26 +426,35 @@ fn run_custom_tool_with_context(
 
 impl DataviewJsToolRegistry for JsCustomToolRegistry {
     fn list(&self) -> Result<Vec<DataviewJsToolDescriptor>, String> {
-        list_custom_tools(&self.paths, &self.registry_options)
-            .map(|tools| {
-                tools
-                    .into_iter()
-                    .map(|tool| DataviewJsToolDescriptor {
-                        summary: tool.summary,
-                        callable: tool.callable,
-                    })
-                    .collect()
-            })
-            .map_err(|error| error.to_string())
+        list_custom_tools(
+            &self.paths,
+            self.context.active_permission_profile.as_deref(),
+            &self.registry_options,
+        )
+        .map(|tools| {
+            tools
+                .into_iter()
+                .map(|tool| DataviewJsToolDescriptor {
+                    summary: tool.summary,
+                    callable: tool.callable,
+                })
+                .collect()
+        })
+        .map_err(|error| error.to_string())
     }
 
     fn get(&self, name: &str) -> Result<DataviewJsToolDefinition, String> {
-        show_custom_tool(&self.paths, name, &self.registry_options)
-            .map(|tool| DataviewJsToolDefinition {
-                tool: tool.tool,
-                callable: tool.callable,
-            })
-            .map_err(|error| error.to_string())
+        show_custom_tool(
+            &self.paths,
+            self.context.active_permission_profile.as_deref(),
+            name,
+            &self.registry_options,
+        )
+        .map(|tool| DataviewJsToolDefinition {
+            tool: tool.tool,
+            callable: tool.callable,
+        })
+        .map_err(|error| error.to_string())
     }
 
     fn call(&self, name: &str, input: &Value, _options: Option<&Value>) -> Result<Value, String> {
@@ -887,6 +910,31 @@ fn effective_tool_permission_profile(
                 )))
             }
         }
+    }
+}
+
+fn custom_tool_is_callable(
+    paths: &VaultPaths,
+    active_permission_profile: Option<&str>,
+    tool_name: &str,
+    requested_permission_profile: Option<&str>,
+) -> bool {
+    if !trust::is_trusted(paths.vault_root()) {
+        return false;
+    }
+    let Ok(effective_permission_profile) = effective_tool_permission_profile(
+        paths,
+        active_permission_profile,
+        tool_name,
+        requested_permission_profile,
+    ) else {
+        return false;
+    };
+    match effective_permission_profile.as_deref() {
+        Some(profile) => resolve_permission_profile(paths, Some(profile))
+            .map(|selection| selection.grant.execute)
+            .unwrap_or(false),
+        None => true,
     }
 }
 
@@ -1354,10 +1402,63 @@ input_schema:
             "function main() { return null; }\n",
         );
 
-        let tools = list_custom_tools(&paths, &CustomToolRegistryOptions::default())
+        let tools = list_custom_tools(&paths, None, &CustomToolRegistryOptions::default())
             .expect("tools should load");
         assert_eq!(tools.len(), 1);
         assert!(!tools[0].callable);
+    }
+
+    #[test]
+    fn list_custom_tools_marks_execute_denied_profiles_as_not_callable() {
+        let _lock = test_env_lock_guard();
+        let (_dir, paths) = test_paths();
+        let config_home = TempDir::new().expect("config home should be created");
+        let previous_xdg = env::var_os("XDG_CONFIG_HOME");
+        env::set_var("XDG_CONFIG_HOME", config_home.path());
+        fs::write(
+            paths.vault_root().join(".vulcan/config.toml"),
+            r#"
+[permissions.profiles.blocked]
+read = "all"
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "read"
+execute = "deny"
+shell = "deny"
+"#,
+        )
+        .expect("config should write");
+        with_trusted_vault(&paths);
+        write_tool(
+            &paths,
+            "summary",
+            r"---
+name: summary_tool
+description: Summarize one note.
+input_schema:
+  type: object
+---
+",
+            "function main() { return null; }\n",
+        );
+
+        let tools = list_custom_tools(
+            &paths,
+            Some("blocked"),
+            &CustomToolRegistryOptions::default(),
+        )
+        .expect("tools should load");
+        assert_eq!(tools.len(), 1);
+        assert!(!tools[0].callable);
+
+        trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
+        match previous_xdg {
+            Some(value) => env::set_var("XDG_CONFIG_HOME", value),
+            None => env::remove_var("XDG_CONFIG_HOME"),
+        }
     }
 
     #[test]
@@ -1502,6 +1603,14 @@ input_schema:
         assert!(error
             .to_string()
             .contains("tool `restricted_tool` requires permission profile `agent`"));
+        let listed = list_custom_tools(
+            &paths,
+            Some("readonly"),
+            &CustomToolRegistryOptions::default(),
+        )
+        .expect("tools should list");
+        assert_eq!(listed.len(), 1);
+        assert!(!listed[0].callable);
         trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
         match previous_xdg {
             Some(value) => env::set_var("XDG_CONFIG_HOME", value),

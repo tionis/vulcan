@@ -5706,7 +5706,7 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 - [x] Add `vulcan tool list`, `vulcan tool show <name>`, and `vulcan tool run <name> --input-json ...`
 - [x] Add authoring helpers: `vulcan tool init <name>`, `vulcan tool set <name> ...`, and `vulcan tool validate [<name>]`
 - [x] Ensure `tool show` exposes parsed metadata plus the Markdown body so humans and agents can read usage notes without opening files manually
-- [ ] Make `vulcan describe --format openai-tools|mcp|json-schema` include visible custom tools from the shared registry
+- [x] Make `vulcan describe --format openai-tools|mcp|json-schema` include visible custom tools from the shared registry
 - [x] Keep CLI JSON output stable and machine-readable; no ad hoc stdout parsing from the JS script body
 
 ### 9.24.4 Internal JS API integration
@@ -5727,11 +5727,11 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 
 ### 9.24.6 MCP exposure, resources, and pack integration
 
-- [ ] Expose custom tools as first-class MCP tools from the same live registry used by built-ins; do not add a generic `run_custom_tool` fallback
-- [ ] Add a dedicated pack such as `custom` for user-defined tools, with optional additional pack membership from the manifest once validated against canonical pack names
-- [ ] Add tool documentation resources such as `vulcan://assistant/tools/index` and `vulcan://assistant/tools/{name}`
-- [ ] Emit `notifications/tools/list_changed` and `notifications/resources/list_changed` when the custom tools folder changes
-- [ ] Keep `describe --format mcp` and live MCP exposure on the same registry so exported schemas and live tool lists stay in sync
+- [x] Expose custom tools as first-class MCP tools from the same live registry used by built-ins; do not add a generic `run_custom_tool` fallback
+- [x] Add a dedicated pack such as `custom` for user-defined tools, with optional additional pack membership from the manifest once validated against canonical pack names
+- [x] Add tool documentation resources such as `vulcan://assistant/tools/index` and `vulcan://assistant/tools/{name}`
+- [x] Emit `notifications/tools/list_changed` and `notifications/resources/list_changed` when the custom tools folder changes
+- [x] Keep `describe --format mcp` and live MCP exposure on the same registry so exported schemas and live tool lists stay in sync
 
 ### 9.24.7 Skills, scaffolding, and authoring guidance
 
@@ -5745,7 +5745,7 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 ### 9.24.8 Testing and rollout
 
 - [ ] Add unit tests for manifest parsing, name collision detection, schema validation, permission intersection, and trust gating
-- [ ] Add integration tests with fixture vault tools covering CLI `tool run`, `describe --format openai-tools`, `describe --format mcp`, MCP live exposure, and JS `tools.call()`
+- [x] Add integration tests with fixture vault tools covering CLI `tool run`, `describe --format openai-tools`, `describe --format mcp`, MCP live exposure, and JS `tools.call()`
 - [ ] Add regression tests for invalid tool manifests, missing entrypoints, failing scripts, output-schema mismatches, and recursive tool-call loops
 - [x] Add end-to-end tests for `host.exec()` / `host.shell()` permission enforcement and timeout/output capture behavior
 - [ ] Roll out with QuickJS only; treat WASM and finer-grained command allowlists as follow-up work once the registry contract is stable

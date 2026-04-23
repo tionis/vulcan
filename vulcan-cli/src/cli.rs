@@ -645,6 +645,7 @@ Examples:
   vulcan describe --format openai-tools
   vulcan describe --format mcp
   vulcan describe --format mcp --tool-pack notes-read,search,web
+  vulcan describe --format mcp --tool-pack search,custom
   vulcan describe --format mcp --tool-pack-mode adaptive
   vulcan --output json describe > vulcan-schema.json";
 
@@ -1194,7 +1195,7 @@ Notes:
   `--tool-pack-mode static|adaptive` keeps packs fixed for the session or exposes bootstrap tools that can expand packs later.
   `--bind` and `--auth-token` are only used for HTTP transport.
   Non-loopback HTTP binds require `--auth-token`.
-  Available packs include `notes-read`, `search`, `status`, `notes-write`, `notes-manage`, `web`, `config`, and `index`.
+  Available packs include `notes-read`, `search`, `status`, `custom`, `notes-write`, `notes-manage`, `web`, `config`, and `index`.
   `adaptive` mode auto-exposes MCP tool-pack bootstrap tools and relies on `notifications/tools/list_changed` for clients that refresh tools dynamically.
   Interactive commands such as browse, edit, open, TUI surfaces, and nested MCP helpers are never exposed.
   Tool output uses structured JSON reports that match the corresponding CLI `--output json` payloads.
@@ -1203,6 +1204,7 @@ Examples:
   vulcan mcp --vault ~/notes
   vulcan mcp --vault ~/notes --permissions readonly
   vulcan mcp --vault ~/notes --tool-pack notes-read,search,web
+  vulcan mcp --vault ~/notes --tool-pack custom
   vulcan mcp --vault ~/notes --tool-pack-mode adaptive
   vulcan mcp --transport http --bind 127.0.0.1:8765
   vulcan mcp | jq .";
@@ -2945,6 +2947,7 @@ pub enum McpToolPackArg {
     NotesRead,
     Search,
     Status,
+    Custom,
     NotesWrite,
     NotesManage,
     Web,

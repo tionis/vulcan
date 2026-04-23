@@ -29,7 +29,7 @@ use ulid::Ulid;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_core::properties::load_note_index;
 use vulcan_core::{
-    assistant_config_summary, assistant_prompts_root, assistant_skills_root,
+    assistant_config_summary, assistant_prompts_root, assistant_skills_root, assistant_tools_root,
     list_assistant_prompts, list_assistant_skills, load_assistant_prompt, load_assistant_skill,
     load_vault_config, read_vault_agents_file, render_assistant_prompt, resolve_permission_profile,
     scan_vault_with_progress, search_vault_with_filter, ConfigPermissionMode, PermissionGuard,
@@ -80,6 +80,7 @@ enum McpToolPack {
     NotesRead,
     Search,
     Status,
+    Custom,
     NotesWrite,
     NotesManage,
     Web,
@@ -94,6 +95,7 @@ impl McpToolPack {
             Self::NotesRead => "notes-read",
             Self::Search => "search",
             Self::Status => "status",
+            Self::Custom => "custom",
             Self::NotesWrite => "notes-write",
             Self::NotesManage => "notes-manage",
             Self::Web => "web",
@@ -108,6 +110,7 @@ impl McpToolPack {
             Self::NotesRead => "Read note content and outlines for scoped follow-up work.",
             Self::Search => "Search the vault with structured hits and snippets.",
             Self::Status => "Inspect vault status, cache metadata, and git summary.",
+            Self::Custom => "Expose callable vault-native custom tools.",
             Self::NotesWrite => "Create notes and apply targeted append/patch mutations.",
             Self::NotesManage => {
                 "Read advanced note metadata and perform replace/delete mutations."
@@ -188,6 +191,7 @@ const fn mcp_annotations(
 const PACK_NOTES_READ: &[McpToolPack] = &[McpToolPack::NotesRead];
 const PACK_SEARCH: &[McpToolPack] = &[McpToolPack::Search];
 const PACK_STATUS: &[McpToolPack] = &[McpToolPack::Status];
+const PACK_CUSTOM: &[McpToolPack] = &[McpToolPack::Custom];
 const PACK_NOTES_WRITE: &[McpToolPack] = &[McpToolPack::NotesWrite];
 const PACK_NOTES_MANAGE: &[McpToolPack] = &[McpToolPack::NotesManage];
 const PACK_WEB: &[McpToolPack] = &[McpToolPack::Web];
@@ -884,7 +888,7 @@ pub(crate) fn build_mcp_tool_definitions(
         resolve_permission_profile(paths, requested_profile).map_err(permission_error_to_cli)?;
     let tool_pack_mode = McpToolPackMode::from(tool_pack_mode_arg);
     let selected_tool_packs = resolve_selected_tool_packs(tool_pack_args, tool_pack_mode);
-    let tools = visible_tool_catalog(&selected_tool_packs, &selection.profile)
+    let mut tools = visible_tool_catalog(&selected_tool_packs, &selection.profile)
         .into_iter()
         .map(|tool| McpToolDefinition {
             name: tool.name.to_string(),
@@ -904,7 +908,12 @@ pub(crate) fn build_mcp_tool_definitions(
                 .map(|item| (*item).to_string())
                 .collect(),
         })
-        .collect();
+        .collect::<Vec<_>>();
+    tools.extend(
+        visible_custom_tools(paths, requested_profile, &selected_tool_packs)?
+            .iter()
+            .map(custom_tool_definition),
+    );
 
     Ok(McpToolsReport {
         protocol_version: MCP_PROTOCOL_VERSION.to_string(),
@@ -1350,7 +1359,12 @@ impl McpServerCore {
         let selected_tool_packs = resolve_selected_tool_packs(tool_pack_args, tool_pack_mode);
         let guard = ProfilePermissionGuard::new(paths, selection.clone());
         let snapshot = McpServerSnapshot {
-            tools: tool_fingerprint(&selected_tool_packs, &selection.profile),
+            tools: tool_fingerprint(
+                paths,
+                Some(selection.name.as_str()),
+                &selected_tool_packs,
+                &selection.profile,
+            ),
             prompts: prompt_files_fingerprint(paths),
             resources: resource_files_fingerprint(paths),
         };
@@ -1549,10 +1563,7 @@ impl McpServerCore {
                 Ok(McpMethodOutcome {
                     response: Some(paginated_result(
                         "tools",
-                        self.visible_tools()
-                            .into_iter()
-                            .map(tool_list_item)
-                            .collect::<Vec<_>>(),
+                        self.visible_tool_items()?,
                         params.cursor,
                     )?),
                     emit_list_notifications: true,
@@ -1648,6 +1659,31 @@ impl McpServerCore {
         visible_tool_catalog(&self.selected_tool_packs, &self.selection.profile)
     }
 
+    fn visible_custom_tools(
+        &self,
+    ) -> Result<Vec<crate::tools::CustomToolDescriptor>, McpMethodError> {
+        visible_custom_tools(
+            &self.paths,
+            Some(self.selection.name.as_str()),
+            &self.selected_tool_packs,
+        )
+        .map_err(cli_tool_error)
+    }
+
+    fn visible_tool_items(&self) -> Result<Vec<Value>, McpMethodError> {
+        let mut tools = self
+            .visible_tools()
+            .into_iter()
+            .map(tool_list_item)
+            .collect::<Vec<_>>();
+        tools.extend(
+            self.visible_custom_tools()?
+                .iter()
+                .map(custom_tool_list_item),
+        );
+        Ok(tools)
+    }
+
     fn visible_prompts(&self) -> Result<Vec<vulcan_core::AssistantPromptSummary>, McpMethodError> {
         if self.selection.profile.read.is_none() {
             return Ok(Vec::new());
@@ -1738,6 +1774,15 @@ impl McpServerCore {
                 "description": "Visible skills loaded from the configured assistant skills folder.",
                 "mimeType": "application/json",
             }));
+            if !self.visible_custom_tools()?.is_empty() {
+                resources.push(serde_json::json!({
+                    "uri": "vulcan://assistant/tools/index",
+                    "name": "Assistant Tool Index",
+                    "title": "Vault Custom Tool Index",
+                    "description": "Visible callable custom tools loaded from the configured assistant tools folder.",
+                    "mimeType": "application/json",
+                }));
+            }
             if read_vault_agents_file(&self.paths)
                 .map_err(|error| McpMethodError::internal(error.to_string()))?
                 .is_some()
@@ -1783,6 +1828,15 @@ impl McpServerCore {
                 "description": "Read one visible assistant skill as structured JSON.",
                 "mimeType": "application/json",
             }));
+            if self.selected_tool_packs.contains(&McpToolPack::Custom) {
+                templates.push(serde_json::json!({
+                    "uriTemplate": "vulcan://assistant/tools/{name}",
+                    "name": "Assistant Tools",
+                    "title": "Assistant Tool Resource",
+                    "description": "Read one visible callable custom tool as structured JSON.",
+                    "mimeType": "application/json",
+                }));
+            }
         }
 
         templates
@@ -1817,6 +1871,7 @@ impl McpServerCore {
         }))
     }
 
+    #[allow(clippy::too_many_lines)]
     fn read_resource(&self, uri: &str) -> Result<Value, McpMethodError> {
         if let Some(stored) = self.stored_resources.get(uri) {
             return Ok(serde_json::json!({
@@ -1838,6 +1893,16 @@ impl McpServerCore {
             }
             "vulcan://assistant/skills/index" => {
                 return Self::json_resource(uri, &self.visible_skills()?);
+            }
+            "vulcan://assistant/tools/index" => {
+                let tools = self.visible_custom_tools()?;
+                if tools.is_empty() {
+                    return Err(resource_not_found_error(
+                        uri,
+                        "Resource not found".to_string(),
+                    ));
+                }
+                return Self::json_resource(uri, &tools);
             }
             "vulcan://assistant/config" => {
                 self.guard
@@ -1895,6 +1960,34 @@ impl McpServerCore {
                 ));
             }
             return Self::json_resource(uri, &skill);
+        }
+
+        if let Some(name) = uri.strip_prefix("vulcan://assistant/tools/") {
+            let report = crate::tools::show_custom_tool(
+                &self.paths,
+                Some(self.selection.name.as_str()),
+                name,
+                &crate::tools::CustomToolRegistryOptions::default(),
+            )
+            .map_err(|error| resource_not_found_error(uri, error.to_string()))?;
+            let selected_pack_names = pack_name_list(&self.selected_tool_packs)
+                .into_iter()
+                .collect::<BTreeSet<_>>();
+            if !report.callable
+                || !custom_tool_matches_selected_packs(
+                    &report.tool.summary.packs,
+                    &selected_pack_names,
+                )
+            {
+                return Err(resource_not_found_error(
+                    uri,
+                    format!(
+                        "permission denied: resource `{uri}` is not available under profile `{}`",
+                        self.selection.name
+                    ),
+                ));
+            }
+            return Self::json_resource(uri, &report);
         }
 
         Err(resource_not_found_error(
@@ -2027,9 +2120,7 @@ impl McpServerCore {
         arguments: &Map<String, Value>,
     ) -> Result<Value, McpMethodError> {
         let Some(tool) = tool_by_name(name) else {
-            return Err(McpMethodError::invalid_params(format!(
-                "Unknown tool: {name}"
-            )));
+            return self.call_custom_tool(name, arguments);
         };
         if !tool
             .packs
@@ -2414,6 +2505,51 @@ impl McpServerCore {
         }
     }
 
+    fn call_custom_tool(
+        &mut self,
+        name: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Value, McpMethodError> {
+        if !self.selected_tool_packs.contains(&McpToolPack::Custom) {
+            return Err(McpMethodError::invalid_params(format!(
+                "Unknown tool: {name}"
+            )));
+        }
+        let report = crate::tools::show_custom_tool(
+            &self.paths,
+            Some(self.selection.name.as_str()),
+            name,
+            &crate::tools::CustomToolRegistryOptions::default(),
+        )
+        .map_err(|_| McpMethodError::invalid_params(format!("Unknown tool: {name}")))?;
+        let selected_pack_names = pack_name_list(&self.selected_tool_packs)
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        if !custom_tool_matches_selected_packs(&report.tool.summary.packs, &selected_pack_names) {
+            return Err(McpMethodError::invalid_params(format!(
+                "Unknown tool: {name}"
+            )));
+        }
+        if !report.callable {
+            return Err(McpMethodError::tool(format!(
+                "permission denied: tool `{name}` is not available under profile `{}`",
+                self.selection.name
+            )));
+        }
+        let report = crate::tools::run_custom_tool(
+            &self.paths,
+            Some(self.selection.name.as_str()),
+            name,
+            &Value::Object(arguments.clone()),
+            &crate::tools::CustomToolRegistryOptions::default(),
+            &crate::tools::CustomToolRunOptions {
+                surface: "mcp".to_string(),
+            },
+        )
+        .map_err(cli_tool_error)?;
+        Ok(self.custom_tool_success_response(&report.name, report.result, report.text.as_deref()))
+    }
+
     fn run_index_scan(&self, full: bool, no_commit: bool) -> Result<ScanSummary, McpMethodError> {
         let auto_commit = AutoCommitPolicy::for_scan(&self.paths, no_commit);
         let summary = scan_vault_with_progress(
@@ -2523,6 +2659,48 @@ impl McpServerCore {
         })
     }
 
+    fn custom_tool_success_response(
+        &mut self,
+        tool_name: &str,
+        structured: Value,
+        text: Option<&str>,
+    ) -> Value {
+        let structured = if structured.is_object() {
+            structured
+        } else {
+            serde_json::json!({ "result": structured })
+        };
+        let serialized = serde_json::to_string_pretty(&structured).unwrap_or_default();
+        let mut content = Vec::new();
+        if let Some(text) = text {
+            content.push(serde_json::json!({
+                "type": "text",
+                "text": text,
+            }));
+        }
+        if serialized.len() <= MCP_INLINE_TEXT_LIMIT {
+            if text.is_none() {
+                content.push(serde_json::json!({
+                    "type": "text",
+                    "text": serialized,
+                }));
+            }
+        } else {
+            if text.is_none() {
+                content.push(serde_json::json!({
+                    "type": "text",
+                    "text": tool_summary_text(tool_name, &structured),
+                }));
+            }
+            content.push(self.store_tool_result_resource(tool_name, &serialized));
+        }
+        serde_json::json!({
+            "content": content,
+            "structuredContent": structured,
+            "isError": false,
+        })
+    }
+
     fn store_tool_result_resource(&mut self, tool_name: &str, serialized: &str) -> Value {
         let uri = format!("vulcan://tool-results/{}.json", self.next_resource_id);
         self.next_resource_id += 1;
@@ -2559,7 +2737,12 @@ impl McpServerCore {
 
     fn list_changed_notifications(&mut self) -> Vec<Value> {
         let current = McpServerSnapshot {
-            tools: tool_fingerprint(&self.selected_tool_packs, &self.selection.profile),
+            tools: tool_fingerprint(
+                &self.paths,
+                Some(self.selection.name.as_str()),
+                &self.selected_tool_packs,
+                &self.selection.profile,
+            ),
             prompts: prompt_files_fingerprint(&self.paths),
             resources: resource_files_fingerprint(&self.paths),
         };
@@ -2979,6 +3162,7 @@ const ALL_MCP_TOOL_PACKS: &[McpToolPack] = &[
     McpToolPack::NotesRead,
     McpToolPack::Search,
     McpToolPack::Status,
+    McpToolPack::Custom,
     McpToolPack::NotesWrite,
     McpToolPack::NotesManage,
     McpToolPack::Web,
@@ -2992,6 +3176,7 @@ fn expand_tool_pack_arg(value: McpToolPackArg) -> &'static [McpToolPack] {
         McpToolPackArg::NotesRead => PACK_NOTES_READ,
         McpToolPackArg::Search => PACK_SEARCH,
         McpToolPackArg::Status => PACK_STATUS,
+        McpToolPackArg::Custom => PACK_CUSTOM,
         McpToolPackArg::NotesWrite => PACK_NOTES_WRITE,
         McpToolPackArg::NotesManage => PACK_NOTES_MANAGE,
         McpToolPackArg::Web => PACK_WEB,
@@ -3038,6 +3223,7 @@ fn parse_tool_pack_selector(value: &str) -> Option<McpToolPackArg> {
         "notes-read" => Some(McpToolPackArg::NotesRead),
         "search" => Some(McpToolPackArg::Search),
         "status" => Some(McpToolPackArg::Status),
+        "custom" => Some(McpToolPackArg::Custom),
         "notes-write" => Some(McpToolPackArg::NotesWrite),
         "notes-manage" => Some(McpToolPackArg::NotesManage),
         "web" => Some(McpToolPackArg::Web),
@@ -3071,6 +3257,35 @@ fn visible_tool_catalog(
         .iter()
         .filter(|tool| tool_visible(tool, profile, selected_tool_packs))
         .collect()
+}
+
+fn visible_custom_tools(
+    paths: &VaultPaths,
+    active_permission_profile: Option<&str>,
+    selected_tool_packs: &BTreeSet<McpToolPack>,
+) -> Result<Vec<crate::tools::CustomToolDescriptor>, CliError> {
+    if !selected_tool_packs.contains(&McpToolPack::Custom) {
+        return Ok(Vec::new());
+    }
+    let selected_pack_names = pack_name_list(selected_tool_packs)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    Ok(crate::tools::list_custom_tools(
+        paths,
+        active_permission_profile,
+        &crate::tools::CustomToolRegistryOptions::default(),
+    )?
+    .into_iter()
+    .filter(|tool| tool.callable)
+    .filter(|tool| custom_tool_matches_selected_packs(&tool.summary.packs, &selected_pack_names))
+    .collect())
+}
+
+fn custom_tool_matches_selected_packs(
+    packs: &[String],
+    selected_pack_names: &BTreeSet<String>,
+) -> bool {
+    packs.iter().any(|pack| selected_pack_names.contains(pack))
 }
 
 fn tool_visible(
@@ -3123,6 +3338,45 @@ fn tool_list_item(tool: &McpToolCatalogEntry) -> Value {
         "annotations": tool.annotations,
         "toolPacks": tool.packs.iter().map(|pack| pack.as_str()).collect::<Vec<_>>(),
     })
+}
+
+fn custom_tool_definition(tool: &crate::tools::CustomToolDescriptor) -> McpToolDefinition {
+    McpToolDefinition {
+        name: tool.summary.name.clone(),
+        title: tool
+            .summary
+            .title
+            .clone()
+            .unwrap_or_else(|| tool.summary.name.clone()),
+        description: tool.summary.description.clone(),
+        input_schema: tool.summary.input_schema.clone(),
+        output_schema: tool.summary.output_schema.clone(),
+        annotations: custom_tool_annotations(tool),
+        tool_packs: tool.summary.packs.clone(),
+        examples: Vec::new(),
+    }
+}
+
+fn custom_tool_list_item(tool: &crate::tools::CustomToolDescriptor) -> Value {
+    let definition = custom_tool_definition(tool);
+    serde_json::json!({
+        "name": definition.name,
+        "title": definition.title,
+        "description": definition.description,
+        "inputSchema": definition.input_schema,
+        "outputSchema": definition.output_schema,
+        "annotations": definition.annotations,
+        "toolPacks": definition.tool_packs,
+    })
+}
+
+fn custom_tool_annotations(tool: &crate::tools::CustomToolDescriptor) -> McpToolAnnotations {
+    mcp_annotations(
+        tool.summary.read_only,
+        tool.summary.destructive,
+        tool.summary.read_only && !tool.summary.destructive,
+        matches!(tool.summary.sandbox, vulcan_core::JsRuntimeSandbox::Net),
+    )
 }
 
 fn prompt_list_item(prompt: vulcan_core::AssistantPromptSummary) -> Value {
@@ -3420,14 +3674,31 @@ fn visibility_requirement_name(requirement: McpVisibilityRequirement) -> &'stati
 }
 
 fn tool_fingerprint(
+    paths: &VaultPaths,
+    active_permission_profile: Option<&str>,
     selected_tool_packs: &BTreeSet<McpToolPack>,
     profile: &PermissionProfile,
 ) -> String {
-    visible_tool_catalog(selected_tool_packs, profile)
+    let mut parts = visible_tool_catalog(selected_tool_packs, profile)
         .into_iter()
         .map(|tool| tool.name)
         .collect::<Vec<_>>()
-        .join("\n")
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if let Ok(custom_tools) =
+        visible_custom_tools(paths, active_permission_profile, selected_tool_packs)
+    {
+        if !custom_tools.is_empty() {
+            parts.extend(
+                custom_tools
+                    .into_iter()
+                    .map(|tool| format!("custom:{}", tool.summary.name)),
+            );
+            parts.push(path_tree_fingerprint(&assistant_tools_root(paths)));
+        }
+    }
+    parts.join("\n")
 }
 
 fn prompt_files_fingerprint(paths: &VaultPaths) -> String {
@@ -3438,6 +3709,7 @@ fn resource_files_fingerprint(paths: &VaultPaths) -> String {
     let mut parts = vec![
         path_tree_fingerprint(&assistant_prompts_root(paths)),
         path_tree_fingerprint(&assistant_skills_root(paths)),
+        path_tree_fingerprint(&assistant_tools_root(paths)),
         path_tree_fingerprint(&paths.vault_root().join("AGENTS.md")),
         path_tree_fingerprint(paths.config_file()),
         path_tree_fingerprint(&paths.vulcan_dir().join("config.local.toml")),
