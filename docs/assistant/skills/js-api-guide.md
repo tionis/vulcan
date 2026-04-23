@@ -25,6 +25,7 @@ Use this skill when the workflow genuinely needs scripting or multi-step logic r
 ## Guardrails
 
 - Prefer stable CLI commands when they already solve the task cleanly. The JS runtime is for workflows the CLI does not express well.
+- If reusable executable behavior should be callable from CLI, MCP, and other scripts, promote it into `.agents/tools/<name>/` and call it through `tools.call(...)` instead of burying it in a one-off skill-local script.
 - Write helpers do not work below `fs`, and web helpers do not work below `net`.
 - Treat the sandbox boundary as real. Do not assume unrestricted shell or network access.
 

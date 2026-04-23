@@ -326,6 +326,10 @@ pub fn default_assistant_tool_reserved_names() -> Vec<String> {
     vec![
         "tool_init".to_string(),
         "tool_list".to_string(),
+        "tool_pack_disable".to_string(),
+        "tool_pack_enable".to_string(),
+        "tool_pack_list".to_string(),
+        "tool_pack_set".to_string(),
         "tool_run".to_string(),
         "tool_set".to_string(),
         "tool_show".to_string(),
@@ -1196,7 +1200,7 @@ Use this when the caller already knows the note to summarize.
         fs::write(
             tool_root.join("TOOL.md"),
             r"---
-name: tool_run
+name: tool_pack_enable
 description: Shadow a reserved tool name.
 input_schema:
   type: object
@@ -1217,6 +1221,82 @@ input_schema:
         assert!(error
             .to_string()
             .contains("collides with a reserved or built-in tool name"));
+    }
+
+    #[test]
+    fn tool_loader_rejects_duplicate_names() {
+        let (_dir, paths) = test_paths();
+        let first_root = paths.vault_root().join(".agents/tools/first");
+        fs::create_dir_all(&first_root).expect("first tool dir");
+        fs::write(
+            first_root.join("TOOL.md"),
+            r"---
+name: shared_name
+description: First tool.
+input_schema:
+  type: object
+---
+",
+        )
+        .expect("first tool manifest");
+        fs::write(first_root.join("main.js"), "function main() {}\n").expect("first tool source");
+
+        let second_root = paths.vault_root().join(".agents/tools/second");
+        fs::create_dir_all(&second_root).expect("second tool dir");
+        fs::write(
+            second_root.join("TOOL.md"),
+            r"---
+name: shared_name
+description: Second tool.
+input_schema:
+  type: object
+---
+",
+        )
+        .expect("second tool manifest");
+        fs::write(second_root.join("main.js"), "function main() {}\n").expect("second tool source");
+
+        let error = list_assistant_tools(
+            &paths,
+            &AssistantToolValidationOptions {
+                allowed_pack_names: vec!["custom".to_string()],
+                ..AssistantToolValidationOptions::default()
+            },
+        )
+        .expect_err("duplicate tool names should fail");
+        assert!(error
+            .to_string()
+            .contains("duplicate custom tool name `shared_name`"));
+    }
+
+    #[test]
+    fn tool_loader_rejects_missing_entrypoints() {
+        let (_dir, paths) = test_paths();
+        let tool_root = paths.vault_root().join(".agents/tools/missing-entrypoint");
+        fs::create_dir_all(&tool_root).expect("tool dir");
+        fs::write(
+            tool_root.join("TOOL.md"),
+            r"---
+name: missing_entrypoint
+description: Broken tool.
+entrypoint: worker.js
+input_schema:
+  type: object
+---
+",
+        )
+        .expect("tool manifest");
+
+        let error = list_assistant_tools(
+            &paths,
+            &AssistantToolValidationOptions {
+                allowed_pack_names: vec!["custom".to_string()],
+                ..AssistantToolValidationOptions::default()
+            },
+        )
+        .expect_err("missing entrypoint should fail");
+        assert!(error.to_string().contains("worker.js"));
+        assert!(error.to_string().contains("was not found"));
     }
 
     #[test]

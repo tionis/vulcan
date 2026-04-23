@@ -1056,6 +1056,37 @@ fn custom_tool_commands_round_trip() {
 }
 
 #[test]
+fn custom_tool_init_rejects_builtin_and_reserved_meta_names() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    initialize_vulcan_dir(&vault_root);
+    let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
+
+    for blocked_name in ["search", "tool_pack_enable"] {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                &vault_root_str,
+                "tool",
+                "init",
+                blocked_name,
+                "--description",
+                "Should fail.",
+            ])
+            .assert()
+            .failure();
+        let stderr = String::from_utf8(assert.get_output().stderr.clone())
+            .expect("stderr should be valid utf-8");
+        assert!(
+            stderr.contains("collides with a reserved or built-in tool name"),
+            "tool init should reject `{blocked_name}`, got: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn run_js_runtime_can_list_get_and_call_custom_tools() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -9836,6 +9867,47 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
 }
 
 #[test]
+fn init_agent_files_optionally_scaffolds_example_tool() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "init",
+            "--agent-files",
+            "--example-tool",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    let manifest_path = vault_root.join(".agents/tools/summarize_note/TOOL.md");
+    let entrypoint_path = vault_root.join(".agents/tools/summarize_note/main.js");
+    assert!(manifest_path.exists());
+    assert!(entrypoint_path.exists());
+    assert!(fs::read_to_string(&manifest_path)
+        .expect("example tool manifest should be readable")
+        .contains("name: summarize_note"));
+    assert!(fs::read_to_string(&entrypoint_path)
+        .expect("example tool entrypoint should be readable")
+        .contains("vault.note"));
+    assert!(json["support_files"].as_array().is_some_and(|items| items
+        .iter()
+        .any(|item| item["path"] == ".agents/tools/summarize_note/TOOL.md")
+        && items
+            .iter()
+            .any(|item| item["path"] == ".agents/tools/summarize_note/main.js")));
+}
+
+#[test]
 fn agent_install_overwrite_refreshes_bundled_skill_contents() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -9961,6 +10033,48 @@ fn agent_install_uses_configured_assistant_folders() {
         && items
             .iter()
             .any(|item| item["path"] == "Support/Prompts/summarize-note.md")));
+}
+
+#[test]
+fn agent_install_example_tool_uses_configured_tools_folder() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vault dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[assistant]\nprompts_folder = \"Support/Prompts\"\nskills_folder = \"Support/Skills\"\ntools_folder = \"Support/Tools\"\n",
+    )
+    .expect("config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "agent",
+            "install",
+            "--example-tool",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert!(vault_root
+        .join("Support/Tools/summarize_note/TOOL.md")
+        .exists());
+    assert!(vault_root
+        .join("Support/Tools/summarize_note/main.js")
+        .exists());
+    assert!(json["support_files"].as_array().is_some_and(|items| items
+        .iter()
+        .any(|item| item["path"] == "Support/Tools/summarize_note/TOOL.md")
+        && items
+            .iter()
+            .any(|item| item["path"] == "Support/Tools/summarize_note/main.js")));
 }
 
 #[test]
@@ -19289,6 +19403,130 @@ Summarize tool documentation.
     assert_eq!(
         result["content"][0]["text"].as_str(),
         Some("summarized Projects/Alpha.md")
+    );
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_custom_pack_hides_profile_denied_custom_tools() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::create_dir_all(vault_root.join(".agents/tools/shell")).expect("tool dir should exist");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[permissions.profiles.readonly]
+read = "all"
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "read"
+execute = "allow"
+shell = "deny"
+
+[permissions.profiles.sheller]
+read = "all"
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "read"
+execute = "allow"
+shell = "allow"
+"#,
+    )
+    .expect("config should write");
+    fs::write(
+        vault_root.join(".agents/tools/shell/TOOL.md"),
+        r"---
+name: shell_tool
+description: Requires shell permission.
+permission_profile: sheller
+input_schema:
+  type: object
+---
+
+Shell tool documentation.
+",
+    )
+    .expect("manifest should write");
+    fs::write(
+        vault_root.join(".agents/tools/shell/main.js"),
+        "function main() { return { ok: true }; }\n",
+    )
+    .expect("entrypoint should write");
+
+    let config_home = temp_dir.path().join("config");
+    fs::create_dir_all(&config_home).expect("config home should exist");
+    let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
+    let config_home_str = config_home.to_str().expect("utf-8").to_string();
+    trust_and_scan_vault(&config_home_str, &vault_root_str);
+
+    let mut session = start_mcp_session_with_xdg(
+        &vault_root,
+        &config_home_str,
+        &["--permissions", "readonly", "--tool-pack", "custom"],
+    );
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+
+    let tools = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list"
+    }));
+    let tools = tools
+        .last()
+        .and_then(|response| response["result"]["tools"].as_array())
+        .expect("tools/list should return a tool array");
+    assert!(
+        !tools.iter().any(|tool| tool["name"] == "shell_tool"),
+        "custom pack should hide tools whose declared profile is broader than the active profile"
+    );
+
+    let resources = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "resources/list"
+    }));
+    let resources = resources
+        .last()
+        .and_then(|response| response["result"]["resources"].as_array())
+        .expect("resources/list should return resources");
+    assert!(
+        !resources
+            .iter()
+            .any(|resource| resource["uri"] == "vulcan://assistant/tools/index"),
+        "hidden custom tools should not expose the custom-tool index resource"
+    );
+
+    let result = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "shell_tool",
+            "arguments": {}
+        }
+    }));
+    let result = &result.last().expect("tools/call response")["result"];
+    assert_eq!(result["isError"].as_bool(), Some(true));
+    assert!(
+        result["content"][0]["text"]
+            .as_str()
+            .is_some_and(|text| text.contains(
+                "permission denied: tool `shell_tool` is not available under profile `readonly`"
+            )),
+        "profile-denied custom tools should stay unavailable even when the custom pack is enabled"
     );
     assert!(session.finish().is_empty());
 }
