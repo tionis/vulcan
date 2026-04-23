@@ -19155,6 +19155,100 @@ Summarize {{note}} with updated instructions.
 }
 
 #[test]
+fn mcp_http_transport_adaptive_pack_mutation_refreshes_visible_tools() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let session =
+        McpHttpSession::start(&vault_root, "/mcp", None, &["--tool-pack-mode", "adaptive"]);
+    let initialize = session.post(
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": { "name": "test", "version": "0.0.1" }
+            }
+        }),
+        None,
+    );
+    let session_id = initialize
+        .headers
+        .get("mcp-session-id")
+        .cloned()
+        .expect("initialize should return a session id");
+
+    let before = session.post(
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/list"
+        }),
+        Some(&session_id),
+    );
+    let before_tools = before.json_body()["result"]["tools"]
+        .as_array()
+        .expect("tools/list should return a tool array")
+        .clone();
+    assert!(
+        before_tools
+            .iter()
+            .any(|tool| tool["name"] == "tool_pack_enable"),
+        "adaptive mode should expose the bootstrap tool-pack mutators"
+    );
+    assert!(
+        !before_tools.iter().any(|tool| tool["name"] == "web_search"),
+        "adaptive mode should keep web tools hidden before their pack is enabled"
+    );
+
+    let mut sse = session.open_sse(&session_id);
+    let enable = session.post(
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "tool_pack_enable",
+                "arguments": { "packs": ["web"] }
+            }
+        }),
+        Some(&session_id),
+    );
+    let enable_json = enable.json_body();
+    assert_eq!(
+        enable_json["result"]["structuredContent"]["selectedToolPacks"],
+        serde_json::json!(["notes-read", "search", "status", "web", "tool-packs"])
+    );
+
+    let notification = sse.read_event();
+    assert_eq!(
+        notification["method"].as_str(),
+        Some("notifications/tools/list_changed")
+    );
+
+    let after = session.post(
+        &serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/list"
+        }),
+        Some(&session_id),
+    );
+    let after_tools = after.json_body()["result"]["tools"]
+        .as_array()
+        .expect("tools/list should return a tool array")
+        .clone();
+    assert!(
+        after_tools.iter().any(|tool| tool["name"] == "web_search"),
+        "enabled packs should become visible over HTTP without restarting the session"
+    );
+}
+
+#[test]
 fn mcp_http_transport_enforces_auth_tokens() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -19710,6 +19804,76 @@ fn mcp_adaptive_tool_pack_tools_expand_visible_registry() {
         );
     }
 
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_adaptive_pack_schema_includes_custom_selector() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let describe_assert = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "describe",
+            "--format",
+            "mcp",
+            "--tool-pack-mode",
+            "adaptive",
+        ])
+        .assert()
+        .success();
+    let describe_tool = parse_stdout_json(&describe_assert)["tools"]
+        .as_array()
+        .expect("describe should return tool definitions")
+        .iter()
+        .find(|tool| tool["name"] == "tool_pack_enable")
+        .cloned()
+        .expect("tool_pack_enable should be exported");
+    let describe_enum = describe_tool["inputSchema"]["properties"]["packs"]["items"]["enum"]
+        .as_array()
+        .expect("describe input schema should expose an enum");
+    assert!(
+        describe_enum
+            .iter()
+            .any(|value| value.as_str() == Some("custom")),
+        "describe --format mcp should advertise the custom tool pack as a valid selector"
+    );
+
+    let mut session = McpSession::start(&vault_root, &["--tool-pack-mode", "adaptive"]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let tools = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list"
+    }));
+    let live_tool = tools
+        .last()
+        .and_then(|response| response["result"]["tools"].as_array())
+        .expect("tools/list should return a tool array")
+        .iter()
+        .find(|tool| tool["name"] == "tool_pack_enable")
+        .cloned()
+        .expect("tool_pack_enable should be visible in adaptive mode");
+    let live_enum = live_tool["inputSchema"]["properties"]["packs"]["items"]["enum"]
+        .as_array()
+        .expect("live input schema should expose an enum");
+    assert!(
+        live_enum
+            .iter()
+            .any(|value| value.as_str() == Some("custom")),
+        "live MCP tool definitions should advertise the custom pack selector too"
+    );
     assert!(session.finish().is_empty());
 }
 
@@ -20322,6 +20486,71 @@ fn mcp_structured_outputs_match_cli_json_reports() {
     )
     .expect("cli status json should parse");
     assert_eq!(mcp_status, cli_status);
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn describe_mcp_matches_live_registry_for_same_pack_selection() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let describe_assert = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "describe",
+            "--format",
+            "mcp",
+            "--tool-pack",
+            "notes-read,search,web",
+        ])
+        .assert()
+        .success();
+    let mut describe_tools = parse_stdout_json(&describe_assert)["tools"]
+        .as_array()
+        .expect("describe should return a tool array")
+        .iter()
+        .map(|tool| {
+            serde_json::json!({
+                "name": tool["name"],
+                "title": tool["title"],
+                "description": tool["description"],
+                "inputSchema": tool["inputSchema"],
+                "outputSchema": tool["outputSchema"],
+                "annotations": tool["annotations"],
+                "toolPacks": tool["toolPacks"],
+            })
+        })
+        .collect::<Vec<_>>();
+    describe_tools.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+
+    let mut session = McpSession::start(&vault_root, &["--tool-pack", "notes-read,search,web"]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+    let tools = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list"
+    }));
+    let mut live_tools = tools
+        .last()
+        .and_then(|response| response["result"]["tools"].as_array())
+        .expect("tools/list should return a tool array")
+        .clone();
+    live_tools.sort_by(|left, right| left["name"].as_str().cmp(&right["name"].as_str()));
+
+    assert_eq!(
+        describe_tools, live_tools,
+        "describe --format mcp and live MCP exposure should stay in sync for the same tool-pack selection"
+    );
     assert!(session.finish().is_empty());
 }
 

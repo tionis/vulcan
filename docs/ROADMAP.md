@@ -2948,7 +2948,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 14. [ ] **9.19.17** (config surface completion) — close the remaining gap between the config model and the CLI/TUI/docs so users can manage aliases, permission profiles, plugin registrations, local overrides, and optional sections without manual TOML surgery
 15. [x] **9.19.14** (binary size) — informational, anytime
 16. [ ] **9.19.15** (MCP protocol-native rework) — promote MCP from "CLI-over-JSON-RPC" to a protocol-native surface with curated tools, vault-native prompts, resources, completion, and structured results
-17. [ ] **9.23** (adaptive MCP tool packs) — replace the fixed exposure ladder with composable tool packs plus optional session-local pack negotiation for clients that can refresh tools on demand
+17. [x] **9.23** (adaptive MCP tool packs) — replace the fixed exposure ladder with composable tool packs plus optional session-local pack negotiation for clients that can refresh tools on demand
 18. [x] **9.19.16** (integration hardening) — thorough end-to-end coverage and fuzz/property testing before later platform work
 
 #### 9.19.1 Bug fixes
@@ -5625,52 +5625,52 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 
 ### 9.23.1 Pack taxonomy and registry model
 
-- [ ] Replace the single `core|extended|admin` exposure ladder with a composable pack set model where one tool can belong to one or more named packs
-- [ ] Define an initial pack taxonomy that is capability-oriented rather than strictly tier-oriented, for example `notes-read`, `notes-write`, `search`, `tasks`, `web`, `git`, `config`, `index`, and similar narrowly scoped bundles
-- [ ] Make canonical pack names the only supported selectors instead of carrying forward legacy tier aliases or bundle shorthands
-- [ ] Keep `vulcan describe --format mcp` and the live MCP server on the same underlying registry so exported tool definitions and live exposure cannot drift
+- [x] Replace the single `core|extended|admin` exposure ladder with a composable pack set model where one tool can belong to one or more named packs
+- [x] Define an initial pack taxonomy that is capability-oriented rather than strictly tier-oriented, for example `notes-read`, `notes-write`, `search`, `tasks`, `web`, `git`, `config`, `index`, and similar narrowly scoped bundles
+- [x] Make canonical pack names the only supported selectors instead of carrying forward legacy tier aliases or bundle shorthands
+- [x] Keep `vulcan describe --format mcp` and the live MCP server on the same underlying registry so exported tool definitions and live exposure cannot drift
 
 ### 9.23.2 CLI pack selection and reporting
 
-- [ ] Extend `vulcan mcp` and `vulcan describe --format mcp` to accept multiple selected packs rather than exactly one pack enum
-- [ ] Support ergonomic selection forms such as repeated `--tool-pack <name>` flags and comma-separated values where they do not conflict with existing CLI parsing expectations
-- [ ] Report the effective selected pack set in machine-readable MCP/describe output so hosts can debug why only a subset of tools is visible
-- [ ] Update help text and examples so users can discover pack composition without reading the source
+- [x] Extend `vulcan mcp` and `vulcan describe --format mcp` to accept multiple selected packs rather than exactly one pack enum
+- [x] Support ergonomic selection forms such as repeated `--tool-pack <name>` flags and comma-separated values where they do not conflict with existing CLI parsing expectations
+- [x] Report the effective selected pack set in machine-readable MCP/describe output so hosts can debug why only a subset of tools is visible
+- [x] Update help text and examples so users can discover pack composition without reading the source
 
 ### 9.23.3 Protocol-native pack discovery
 
-- [ ] Expose the available MCP tool packs, their descriptions, and the tools they contribute through protocol-visible discovery surfaces rather than relying on out-of-band docs alone
-- [ ] Provide stable resource URIs and/or a small bootstrap MCP tool for inspecting the pack catalog from generic clients
-- [ ] Reuse completion support so pack names can be suggested in any prompt/resource/tool argument position that accepts them
-- [ ] Ensure pack discovery itself respects permission profiles by clearly distinguishing "pack exists" from "pack would currently expose tools under this profile"
+- [x] Expose the available MCP tool packs, their descriptions, and the tools they contribute through protocol-visible discovery surfaces rather than relying on out-of-band docs alone
+- [x] Provide stable resource URIs and/or a small bootstrap MCP tool for inspecting the pack catalog from generic clients
+- [x] Reuse completion support so pack names can be suggested in any prompt/resource/tool argument position that accepts them
+- [x] Ensure pack discovery itself respects permission profiles by clearly distinguishing "pack exists" from "pack would currently expose tools under this profile"
 
 ### 9.23.4 Adaptive session-local pack negotiation
 
-- [ ] Add an optional adaptive MCP mode where clients can request pack changes during an existing session instead of restarting the server with a different static selection
-- [ ] Provide a minimal bootstrap surface for pack mutation such as `tool_pack_list`, `tool_pack_enable`, `tool_pack_disable`, and/or `tool_pack_set`
-- [ ] Treat pack mutation as a session-local registry change that triggers `notifications/tools/list_changed` and is reflected by the next `tools/list`
-- [ ] Make stdio and Streamable HTTP sessions behave the same way for pack mutation, registry refresh, and notification delivery
+- [x] Add an optional adaptive MCP mode where clients can request pack changes during an existing session instead of restarting the server with a different static selection
+- [x] Provide a minimal bootstrap surface for pack mutation such as `tool_pack_list`, `tool_pack_enable`, `tool_pack_disable`, and/or `tool_pack_set`
+- [x] Treat pack mutation as a session-local registry change that triggers `notifications/tools/list_changed` and is reflected by the next `tools/list`
+- [x] Make stdio and Streamable HTTP sessions behave the same way for pack mutation, registry refresh, and notification delivery
 
 ### 9.23.5 Client compatibility and fallback behavior
 
-- [ ] Keep a static mode for hosts that cannot or do not react to `notifications/tools/list_changed`
-- [ ] Make adaptive mode explicitly opt-in until client behavior is well understood across major MCP hosts
-- [ ] Define graceful degradation rules for clients that can discover packs but cannot refresh tools automatically: discovery should still help, but the server must not assume live tool replacement succeeded
-- [ ] Document the expected host behavior so users understand when adaptive packs work best and when they should prefer a broader static selection at session start
+- [x] Keep a static mode for hosts that cannot or do not react to `notifications/tools/list_changed`
+- [x] Make adaptive mode explicitly opt-in until client behavior is well understood across major MCP hosts
+- [x] Define graceful degradation rules for clients that can discover packs but cannot refresh tools automatically: discovery should still help, but the server must not assume live tool replacement succeeded
+- [x] Document the expected host behavior so users understand when adaptive packs work best and when they should prefer a broader static selection at session start
 
 ### 9.23.6 Security and permission composition
 
-- [ ] Ensure pack selection composes cleanly with permission profiles rather than introducing a second authorization model
-- [ ] Continue to hide unauthorized tools, prompts, completions, and resources even if a client enables a broader pack set
-- [ ] Add explicit tests for "pack enabled but still denied by permissions" cases so adaptive exposure cannot accidentally bypass the profile guardrails
-- [ ] Keep the pack system implementation transport-agnostic so later daemon/user-level ACL work can layer on the same filtering logic
+- [x] Ensure pack selection composes cleanly with permission profiles rather than introducing a second authorization model
+- [x] Continue to hide unauthorized tools, prompts, completions, and resources even if a client enables a broader pack set
+- [x] Add explicit tests for "pack enabled but still denied by permissions" cases so adaptive exposure cannot accidentally bypass the profile guardrails
+- [x] Keep the pack system implementation transport-agnostic so later daemon/user-level ACL work can layer on the same filtering logic
 
 ### 9.23.7 Testing and rollout
 
-- [ ] Add registry tests covering pack union/intersection behavior and stable ordering of exposed tools
-- [ ] Add end-to-end MCP tests for adaptive pack changes over both stdio and Streamable HTTP, including `notifications/tools/list_changed`
-- [ ] Add regression tests showing that `describe --format mcp` and live MCP exposure stay in sync for the same selected pack set
-- [ ] Update help snapshots and CLI/MCP fixtures to cover the new pack model and adaptive-mode documentation
+- [x] Add registry tests covering pack union/intersection behavior and stable ordering of exposed tools
+- [x] Add end-to-end MCP tests for adaptive pack changes over both stdio and Streamable HTTP, including `notifications/tools/list_changed`
+- [x] Add regression tests showing that `describe --format mcp` and live MCP exposure stay in sync for the same selected pack set
+- [x] Update help snapshots and CLI/MCP fixtures to cover the new pack model and adaptive-mode documentation
 
 ---
 

@@ -4250,6 +4250,7 @@ fn tool_pack_mutation_input_schema() -> Value {
                         "notes-read",
                         "search",
                         "status",
+                        "custom",
                         "notes-write",
                         "notes-manage",
                         "web",
