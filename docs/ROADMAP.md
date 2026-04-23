@@ -1667,7 +1667,7 @@ The Tasks plugin query commands are part of the unified `vulcan tasks` CLI (see 
 
 ### 9.12 External agent integration
 
-**Status:** Re-scoped from an in-process Rust assistant to an external-runtime integration layer. Vulcan remains the source of truth for vault semantics, tools, prompts, and skills; an external runtime owns inference, session state, and chat UX.
+**Status:** Completed as an external-runtime integration layer. Vulcan remains the source of truth for vault semantics, tools, prompts, and skills; an external runtime owns inference, session state, and chat UX.
 
 **Goal:** Make Vulcan feel native inside external agent runtimes. The model should read vault `AGENTS.md`, discover commands through `describe` and `help`, load `.agents/skills/*/SKILL.md` on demand, and perform all vault reads and writes through Vulcan's JSON CLI instead of direct filesystem edits.
 
@@ -1675,45 +1675,45 @@ The Tasks plugin query commands are part of the unified `vulcan tasks` CLI (see 
 
 #### 9.12.1 External runtime contract
 
-- [ ] Define the integration contract in `docs/assistant/pi_integration.md`
-- [ ] Document a reference runtime adapter that shells out to `vulcan` in `--output json` mode; no direct SQLite access, parser duplication, or note mutation outside Vulcan
-- [ ] Startup flow: locate vault root, load `AGENTS.md`, enumerate bundled/user skills, and call `vulcan describe --format openai-tools`
-- [ ] Tool registration modes:
+- [x] Define the integration contract in `docs/assistant/pi_integration.md`
+- [x] Document a reference runtime adapter that shells out to `vulcan` in `--output json` mode; no direct SQLite access, parser duplication, or note mutation outside Vulcan
+- [x] Startup flow: locate vault root, load `AGENTS.md`, enumerate bundled/user skills, and call `vulcan describe --format openai-tools`
+- [x] Tool registration modes:
   - static wrappers for the core note/search/query/property/inbox tools
   - dynamic discovery for the rest of the command surface via `help --output json`
-- [ ] Normalize stdout/stderr parsing, exit-code handling, and timeout errors so external runtimes see stable tool failures
-- [ ] Support both read-only and write-enabled profiles
-- [ ] External-runtime launch contract includes `--permissions <profile>` on every `vulcan` invocation, with `agent` as the default write-capable profile and `readonly` as the default browse-only profile
+- [x] Normalize stdout/stderr parsing, exit-code handling, and timeout errors so external runtimes see stable tool failures
+- [x] Support both read-only and write-enabled profiles
+- [x] External-runtime launch contract includes `--permissions <profile>` on every `vulcan` invocation, with `agent` as the default write-capable profile and `readonly` as the default browse-only profile
 
 #### 9.12.2 Tool boundary and trust model
 
-- [ ] Default recommendation: run external runtimes without generic file-edit and shell-write tools for vault operations; all vault mutations should go through Vulcan commands
-- [ ] All note mutations flow through `vulcan note *`, `update`, `unset`, `inbox`, and `refactor *`
-- [ ] All vault reads flow through `note get`, `search`, `query`, graph tools, daily tools, git tools, and web tools as appropriate
-- [ ] Preserve CLI-to-tool 1:1 mapping; runtime adapters must not invent a second vault API
-- [ ] Document how `--dry-run`, `--check`, and git auto-commit fit into the agent workflow
-- [ ] Document a recommended least-privilege profile for read-only browsing, note editing, and high-trust refactoring
-- [ ] Tool wrappers and any future native assistant dispatch must treat Vulcan permission profiles as the authorization boundary: select a profile per session/tool call, pass it through unchanged, and rely on Vulcan-side denials instead of reimplementing policy in the runtime
+- [x] Default recommendation: run external runtimes without generic file-edit and shell-write tools for vault operations; all vault mutations should go through Vulcan commands
+- [x] All note mutations flow through `vulcan note *`, `update`, `unset`, `inbox`, and `refactor *`
+- [x] All vault reads flow through `note get`, `search`, `query`, graph tools, daily tools, git tools, and web tools as appropriate
+- [x] Preserve CLI-to-tool 1:1 mapping; runtime adapters must not invent a second vault API
+- [x] Document how `--dry-run`, `--check`, and git auto-commit fit into the agent workflow
+- [x] Document a recommended least-privilege profile for read-only browsing, note editing, and high-trust refactoring
+- [x] Tool wrappers and any future native assistant dispatch must treat Vulcan permission profiles as the authorization boundary: select a profile per session/tool call, pass it through unchanged, and rely on Vulcan-side denials instead of reimplementing policy in the runtime
 
 #### 9.12.3 Prompts, skills, and vault context
 
-- [ ] Treat vault `AGENTS.md`, the configured prompts folder, and `.agents/skills/*/SKILL.md` as the primary durable prompt surface
-- [ ] Keep bundled default skills written by `vulcan init --agent-files` or `vulcan agent install`; user-defined skills remain plain vault files
-- [ ] Runtime integrations inject only a compact tool summary up front; detailed schemas and skill content stay on-demand through `describe`, `help`, and skill files
-- [ ] Publish a runtime-integration usage guide with recommended permission profiles and common pitfalls
-- [ ] Optional follow-up wrapper command: `vulcan agent print-config --runtime <name>` or similar to emit ready-to-paste setup snippets once the contract is stable
+- [x] Treat vault `AGENTS.md`, the configured prompts folder, and `.agents/skills/*/SKILL.md` as the primary durable prompt surface
+- [x] Keep bundled default skills written by `vulcan init --agent-files` or `vulcan agent install`; user-defined skills remain plain vault files
+- [x] Runtime integrations inject only a compact tool summary up front; detailed schemas and skill content stay on-demand through `describe`, `help`, and skill files
+- [x] Publish a runtime-integration usage guide with recommended permission profiles and common pitfalls
+- [x] Optional follow-up wrapper command: `vulcan agent print-config --runtime <name>` or similar to emit ready-to-paste setup snippets once the contract is stable
 
 #### 9.12.4 Sessions and persistence boundary
 
-- [ ] The external runtime owns live chat/session state, compaction, and transcript storage by default
-- [ ] Vulcan does not initially implement gemini-scribe conversation files, assistant-specific memory notes, or a built-in `vulcan assistant --chat` runtime
-- [ ] Durable artifacts that matter to the user should be written as normal vault notes through the existing tool surface
-- [ ] Revisit session export/import only if external runtime session models prove insufficient for vault workflows
+- [x] The external runtime owns live chat/session state, compaction, and transcript storage by default
+- [x] Vulcan does not initially implement gemini-scribe conversation files, assistant-specific memory notes, or a built-in `vulcan assistant --chat` runtime
+- [x] Durable artifacts that matter to the user should be written as normal vault notes through the existing tool surface
+- [x] Revisit session export/import only if external runtime session models prove insufficient for vault workflows
 
 #### 9.12.5 Exit criteria and revisit triggers
 
-- [ ] Daily-driver workflows succeed in at least one external runtime without direct file editing: read note, patch note, search/query vault, run refactors, inspect git state, and consult skills
-- [ ] Reassess a native embedded runtime only if one of these remains unsolved:
+- [x] Daily-driver workflows succeed in at least one external runtime without direct file editing: read note, patch note, search/query vault, run refactors, inspect git state, and consult skills
+- [x] Reassess a native embedded runtime only if one of these remains unsolved:
   - vault-native session transcripts become essential
   - confirmation and permission UX must be enforced inside Vulcan itself
   - mobile/chat transports need tight in-process control
@@ -1725,11 +1725,11 @@ Preserved native-runtime steering lives in `docs/assistant/native_runtime_deferr
 
 Prompts and skills stay as Markdown files in the vault. External runtimes consume them as reference material; MCP should expose the same prompt files through protocol-native prompt discovery, and any later integrated `vulcan assistant` should reuse the same loader rather than inventing a second prompt store.
 
-- [ ] Configurable prompts folder: `assistant.prompts_folder` in `.vulcan/config.toml` (default: `AI/Prompts/`)
-- [ ] Configurable skills folder: `assistant.skills_folder` in `.vulcan/config.toml` (default: `.agents/skills/`)
-- [ ] Shared prompt loader/discovery API in Vulcan: enumerate prompt files from `assistant.prompts_folder`, parse metadata, and load/render prompt bodies for reuse by external-runtime helpers, MCP `prompts/*`, and later 9.21 integrated-assistant flows
-- [ ] `vulcan init --agent-files` / `vulcan agent install` should be able to scaffold example prompt files into the configured prompts folder without making them special runtime-only assets
-- [ ] Prompt file format — Markdown with YAML frontmatter:
+- [x] Configurable prompts folder: `assistant.prompts_folder` in `.vulcan/config.toml` (default: `AI/Prompts/`)
+- [x] Configurable skills folder: `assistant.skills_folder` in `.vulcan/config.toml` (default: `.agents/skills/`)
+- [x] Shared prompt loader/discovery API in Vulcan: enumerate prompt files from `assistant.prompts_folder`, parse metadata, and load/render prompt bodies for reuse by external-runtime helpers, MCP `prompts/*`, and later 9.21 integrated-assistant flows
+- [x] `vulcan init --agent-files` / `vulcan agent install` should be able to scaffold example prompt files into the configured prompts folder without making them special runtime-only assets
+- [x] Prompt file format — Markdown with YAML frontmatter:
   ```yaml
   ---
   name: summarize-meeting
@@ -1745,7 +1745,7 @@ Prompts and skills stay as Markdown files in the vault. External runtimes consum
   2. Action items with owners
   3. Follow-up questions
   ```
-- [ ] Skill file format — one directory per skill under `.agents/skills/<name>/SKILL.md`, with Markdown plus YAML frontmatter:
+- [x] Skill file format — one directory per skill under `.agents/skills/<name>/SKILL.md`, with Markdown plus YAML frontmatter:
   ```text
   .agents/skills/daily-review/SKILL.md
   ```
@@ -1765,22 +1765,22 @@ Prompts and skills stay as Markdown files in the vault. External runtimes consum
   ## When to use
   Use this skill to review and summarize the day's work...
   ```
-- [ ] `skill_list()` and `skill_get(name)` remain part of the discoverable tool surface for external runtimes
+- [x] `skill_list()` and `skill_get(name)` remain part of the discoverable tool surface for external runtimes
 
 **Default skills (shipped with Vulcan):**
 
 Vulcan ships a standard library of skills that teach any external runtime how to use the tool surface effectively. These are bundled in the binary (via `include_str!`) and written to the vault on `vulcan init`.
 
-- [ ] **note-operations** — reading, creating, editing notes. Covers `note outline`, semantic `note get` selectors (section, heading, block-ref, lines, match), `note append` under headings, `note patch` find/replace safety (fails on multiple matches), frontmatter conventions. Common mistake: using `note set` when `note patch` or `note append` is safer.
-- [ ] **vault-query** — query DSL usage, filter expressions, property operators, sorting, `search` vs `query` guidance (search for content, query for metadata). Common mistake: using search when a property query is more precise.
-- [ ] **js-api-guide** — vault JS API patterns. `vault.note()`, `vault.notes().where().sortBy()`, `vault.query()`, `vault.graph`, `vault.transaction()` for atomic batch mutations. Examples for common operations: bulk property updates, cross-note analysis, generating summary tables.
-- [ ] **graph-exploration** — links, backlinks, shortest paths, hubs, dead ends, connected components. When to use graph traversal vs search. Common mistake: traversing large graphs without limiting depth.
-- [ ] **daily-notes** — periodic note workflow: appending entries, reviewing date ranges, event syntax (`- [time] title [@key(value)] [#tag]`), querying events. Common mistake: creating duplicate daily notes instead of appending.
-- [ ] **properties-and-tags** — metadata management with `update_property`/`unset_property`. Property types, tag conventions, querying by metadata via `query where`. Common mistake: setting properties on the wrong note when names are ambiguous.
-- [ ] **refactoring** — rename aliases/headings/properties, merge tags, rewrite content, move notes. Always `--dry-run` first. Safety patterns for bulk operations. Common mistake: not checking backlinks before renaming.
-- [ ] **web-research** — `web search` for finding information, `web fetch` for extracting article content. Combining web content with vault notes. Output modes (markdown vs raw).
-- [ ] **git-workflow** — checking changes with `git status`/`git diff`, committing with descriptive messages, reviewing history with `git log`/`git blame`. Auto-commit behavior and `--no-commit` flag.
-- [ ] **task-management** — task syntax in notes, querying tasks by status/priority/due date, creating and completing tasks. Task dependencies and recurring tasks.
+- [x] **note-operations** — reading, creating, editing notes. Covers `note outline`, semantic `note get` selectors (section, heading, block-ref, lines, match), `note append` under headings, `note patch` find/replace safety (fails on multiple matches), frontmatter conventions. Common mistake: using `note set` when `note patch` or `note append` is safer.
+- [x] **vault-query** — query DSL usage, filter expressions, property operators, sorting, `search` vs `query` guidance (search for content, query for metadata). Common mistake: using search when a property query is more precise.
+- [x] **js-api-guide** — vault JS API patterns. `vault.note()`, `vault.notes().where().sortBy()`, `vault.query()`, `vault.graph`, `vault.transaction()` for atomic batch mutations. Examples for common operations: bulk property updates, cross-note analysis, generating summary tables.
+- [x] **graph-exploration** — links, backlinks, shortest paths, hubs, dead ends, connected components. When to use graph traversal vs search. Common mistake: traversing large graphs without limiting depth.
+- [x] **daily-notes** — periodic note workflow: appending entries, reviewing date ranges, event syntax (`- [time] title [@key(value)] [#tag]`), querying events. Common mistake: creating duplicate daily notes instead of appending.
+- [x] **properties-and-tags** — metadata management with `update_property`/`unset_property`. Property types, tag conventions, querying by metadata via `query where`. Common mistake: setting properties on the wrong note when names are ambiguous.
+- [x] **refactoring** — rename aliases/headings/properties, merge tags, rewrite content, move notes. Always `--dry-run` first. Safety patterns for bulk operations. Common mistake: not checking backlinks before renaming.
+- [x] **web-research** — `web search` for finding information, `web fetch` for extracting article content. Combining web content with vault notes. Output modes (markdown vs raw).
+- [x] **git-workflow** — checking changes with `git status`/`git diff`, committing with descriptive messages, reviewing history with `git log`/`git blame`. Auto-commit behavior and `--no-commit` flag.
+- [x] **task-management** — task syntax in notes, querying tasks by status/priority/due date, creating and completing tasks. Task dependencies and recurring tasks.
 
 **User-defined skills:**
 
@@ -1817,9 +1817,9 @@ Detailed native assistant and chat-runtime ideas from the previous roadmap are p
 
 #### 9.12.9 Agent asset import
 
-- [ ] No direct plugin equivalent to import — this is Vulcan-native scaffolding for external runtimes
-- [ ] Migration helper: if `AGENTS.md`, prompt files, or skill-like files are detected in common locations for external harnesses, offer to import or symlink them into Vulcan's configured folders
-- [ ] Do not import session histories by default; session storage belongs to the external runtime unless explicitly exported as vault notes
+- [x] No direct plugin equivalent to import — this is Vulcan-native scaffolding for external runtimes
+- [x] Migration helper: if `AGENTS.md`, prompt files, or skill-like files are detected in common locations for external harnesses, offer to import or symlink them into Vulcan's configured folders
+- [x] Do not import session histories by default; session storage belongs to the external runtime unless explicitly exported as vault notes
 
 ### 9.13 QuickAdd compatibility
 

@@ -22,7 +22,7 @@ Command groups (run `vulcan help` for the full grouped reference):
   Analysis:    graph, suggest, doctor
   Index:       index, vectors, cache, repair
   Interactive: browse, edit, open
-  Scripting:   run, web, render
+  Scripting:   run, web, render, tool, skill
   Git:         git, changes
   Automation:  saved, automation, export, checkpoint
   Setup:       init, agent, config, trust, plugin
@@ -44,6 +44,9 @@ Color:
 const AGENT_COMMAND_AFTER_HELP: &str = "\
 Notes:
   `agent install` writes the bundled `AGENTS.md` template, default Vulcan skills, and prompt files.
+  `agent print-config` emits runtime-oriented wrapper snippets, command examples, and folder paths.
+  `agent import` previews or applies imports from common external harness layouts such as `CLAUDE.md`,
+  `.claude/commands/`, `.codex/prompts/`, and `.gemini/skills/`.
   Skills are installed in the harness-friendly layout `.agents/skills/<name>/SKILL.md`.
   Use `--example-tool` to also scaffold a starter custom tool under `.agents/tools/`.
   Existing files are kept by default; use `--overwrite` to refresh them from the current Vulcan build.
@@ -52,8 +55,29 @@ Examples:
   vulcan agent install
   vulcan agent install --example-tool
   vulcan agent install --overwrite
+  vulcan agent print-config --runtime pi
+  vulcan agent print-config --runtime codex
+  vulcan agent import
+  vulcan agent import --apply
+  vulcan agent import --apply --symlink
   vulcan init --agent-files
   vulcan init --agent-files --example-tool";
+
+const SKILL_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  list       enumerate visible bundled and vault-defined skills
+  get        read one skill's metadata plus Markdown body
+
+Notes:
+  Skill visibility follows the active permission profile's read filter.
+  External runtimes should call `skill list` up front and `skill get <name>` on demand.
+  Skill names are normalized from folder names, but `skill get` also accepts the relative path.
+
+Examples:
+  vulcan skill list
+  vulcan --output json skill list
+  vulcan skill get note-operations
+  vulcan skill get weekly-review";
 
 const TOOL_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
@@ -2759,10 +2783,69 @@ pub struct AgentInstallArgs {
     pub example_tool: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AgentRuntimeArg {
+    #[value(name = "generic")]
+    Generic,
+    #[value(name = "pi")]
+    Pi,
+    #[value(name = "codex")]
+    Codex,
+    #[value(name = "claude-code")]
+    ClaudeCode,
+    #[value(name = "gemini-cli")]
+    GeminiCli,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct AgentPrintConfigArgs {
+    #[arg(long, value_enum, default_value_t = AgentRuntimeArg::Generic)]
+    pub runtime: AgentRuntimeArg,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+#[allow(clippy::struct_excessive_bools)]
+pub struct AgentImportArgs {
+    #[arg(
+        long,
+        help = "Write detected files into Vulcan's AGENTS/prompts/skills layout"
+    )]
+    pub apply: bool,
+    #[arg(
+        long,
+        requires = "apply",
+        help = "Create symlinks instead of copying file contents"
+    )]
+    pub symlink: bool,
+    #[arg(long, help = "Replace existing destination files when contents differ")]
+    pub overwrite: bool,
+    #[arg(
+        long,
+        requires = "apply",
+        help = "Suppress auto-commit for this invocation"
+    )]
+    pub no_commit: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum AgentCommand {
     #[command(about = "Install bundled AGENTS.md and harness skill files into the vault")]
     Install(AgentInstallArgs),
+    #[command(about = "Print runtime-integration snippets and command contracts for this vault")]
+    PrintConfig(AgentPrintConfigArgs),
+    #[command(about = "Preview or import common external harness files into Vulcan's layout")]
+    Import(AgentImportArgs),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum SkillCommand {
+    #[command(about = "List visible bundled and user-defined skills")]
+    List,
+    #[command(about = "Read one skill's metadata and Markdown body")]
+    Get {
+        #[arg(help = "Skill name or relative path")]
+        name: String,
+    },
 }
 
 #[allow(clippy::struct_excessive_bools)]
@@ -4449,6 +4532,14 @@ pub enum Command {
     Agent {
         #[command(subcommand)]
         command: AgentCommand,
+    },
+    #[command(
+        about = "List and read bundled or vault-defined assistant skills",
+        after_help = SKILL_COMMAND_AFTER_HELP
+    )]
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
     },
     #[command(
         about = "Open, inspect, and append to daily notes",

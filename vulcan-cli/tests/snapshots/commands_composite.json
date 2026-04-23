@@ -96,7 +96,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan render README.md                              Render markdown in the terminal\n  vulcan plugin list                                   Inspect registered JS plugins\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox, template\n  Query:       query, search, ls, backlinks, links\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, periodic\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, doctor\n  Index:       index, vectors, cache, repair\n  Interactive: browse, edit, open\n  Scripting:   run, web, render\n  Git:         git, changes\n  Automation:  saved, automation, export, checkpoint\n  Setup:       init, agent, config, trust, plugin\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
+    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan render README.md                              Render markdown in the terminal\n  vulcan plugin list                                   Inspect registered JS plugins\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox, template\n  Query:       query, search, ls, backlinks, links\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, periodic\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, doctor\n  Index:       index, vectors, cache, repair\n  Interactive: browse, edit, open\n  Scripting:   run, web, render, tool, skill\n  Git:         git, changes\n  Automation:  saved, automation, export, checkpoint\n  Setup:       init, agent, config, trust, plugin\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
     "commands": [
       {
         "about": "Initialize, scan, rebuild, repair, watch, and serve index state",
@@ -5873,7 +5873,7 @@
       },
       {
         "about": "Install bundled files for external agent harnesses",
-        "after_help": "Notes:\n  `agent install` writes the bundled `AGENTS.md` template, default Vulcan skills, and prompt files.\n  Skills are installed in the harness-friendly layout `.agents/skills/<name>/SKILL.md`.\n  Use `--example-tool` to also scaffold a starter custom tool under `.agents/tools/`.\n  Existing files are kept by default; use `--overwrite` to refresh them from the current Vulcan build.\n\nExamples:\n  vulcan agent install\n  vulcan agent install --example-tool\n  vulcan agent install --overwrite\n  vulcan init --agent-files\n  vulcan init --agent-files --example-tool",
+        "after_help": "Notes:\n  `agent install` writes the bundled `AGENTS.md` template, default Vulcan skills, and prompt files.\n  `agent print-config` emits runtime-oriented wrapper snippets, command examples, and folder paths.\n  `agent import` previews or applies imports from common external harness layouts such as `CLAUDE.md`,\n  `.claude/commands/`, `.codex/prompts/`, and `.gemini/skills/`.\n  Skills are installed in the harness-friendly layout `.agents/skills/<name>/SKILL.md`.\n  Use `--example-tool` to also scaffold a starter custom tool under `.agents/tools/`.\n  Existing files are kept by default; use `--overwrite` to refresh them from the current Vulcan build.\n\nExamples:\n  vulcan agent install\n  vulcan agent install --example-tool\n  vulcan agent install --overwrite\n  vulcan agent print-config --runtime pi\n  vulcan agent print-config --runtime codex\n  vulcan agent import\n  vulcan agent import --apply\n  vulcan agent import --apply --symlink\n  vulcan init --agent-files\n  vulcan init --agent-files --example-tool",
         "name": "agent",
         "options": [],
         "subcommands": [
@@ -5907,6 +5907,125 @@
                 "short": null,
                 "value_names": [
                   "EXAMPLE_TOOL"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Print runtime-integration snippets and command contracts for this vault",
+            "name": "print-config",
+            "options": [
+              {
+                "help": null,
+                "id": "runtime",
+                "long": "runtime",
+                "possible_values": [
+                  "generic",
+                  "pi",
+                  "codex",
+                  "claude-code",
+                  "gemini-cli"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "RUNTIME"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Preview or import common external harness files into Vulcan's layout",
+            "name": "import",
+            "options": [
+              {
+                "help": "Write detected files into Vulcan's AGENTS/prompts/skills layout",
+                "id": "apply",
+                "long": "apply",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "APPLY"
+                ]
+              },
+              {
+                "help": "Create symlinks instead of copying file contents",
+                "id": "symlink",
+                "long": "symlink",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SYMLINK"
+                ]
+              },
+              {
+                "help": "Replace existing destination files when contents differ",
+                "id": "overwrite",
+                "long": "overwrite",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "OVERWRITE"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": "List and read bundled or vault-defined assistant skills",
+        "after_help": "Subcommands:\n  list       enumerate visible bundled and vault-defined skills\n  get        read one skill's metadata plus Markdown body\n\nNotes:\n  Skill visibility follows the active permission profile's read filter.\n  External runtimes should call `skill list` up front and `skill get <name>` on demand.\n  Skill names are normalized from folder names, but `skill get` also accepts the relative path.\n\nExamples:\n  vulcan skill list\n  vulcan --output json skill list\n  vulcan skill get note-operations\n  vulcan skill get weekly-review",
+        "name": "skill",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "List visible bundled and user-defined skills",
+            "name": "list",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Read one skill's metadata and Markdown body",
+            "name": "get",
+            "options": [
+              {
+                "help": "Skill name or relative path",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
                 ]
               }
             ],

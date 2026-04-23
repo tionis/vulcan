@@ -20,8 +20,10 @@ Useful command groups:
 Documentation workflow:
 
 - Read `.agents/skills/*/SKILL.md` for task-specific usage patterns.
+- Use `vulcan skill list` to discover bundled and vault-defined skills, and `vulcan skill get <name>` to load one on demand.
 - Read `.agents/tools/*/TOOL.md` when a vault-native custom tool exists for the workflow.
 - Use `vulcan help <topic>` for integrated documentation.
+- Use `vulcan help assistant-integration` for the external-runtime contract and `vulcan agent print-config --runtime <name>` for wrapper snippets.
 - Use `vulcan describe --format openai-tools` or `--format mcp` to export machine-readable tool schemas.
 - Run `vulcan agent install --overwrite` after upgrading Vulcan if the bundled harness files need a refresh.
 

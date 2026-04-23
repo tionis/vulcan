@@ -12,5 +12,6 @@ pub(crate) mod periodic;
 pub(crate) mod query;
 pub(crate) mod refactor;
 pub(crate) mod runtime;
+pub(crate) mod skill;
 pub(crate) mod tasks;
 pub(crate) mod vectors;

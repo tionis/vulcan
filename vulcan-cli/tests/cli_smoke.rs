@@ -9908,6 +9908,329 @@ fn init_agent_files_optionally_scaffolds_example_tool() {
 }
 
 #[test]
+fn skill_list_and_get_surface_bundled_skills() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "agent",
+            "install",
+        ])
+        .assert()
+        .success();
+
+    let list_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "skill",
+            "list",
+        ])
+        .assert()
+        .success();
+    let list_json = parse_stdout_json(&list_assert);
+    assert!(list_json["skills"].as_array().is_some_and(|skills| skills
+        .iter()
+        .any(|skill| skill["name"] == "note-operations")));
+
+    let get_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "skill",
+            "get",
+            "note-operations",
+        ])
+        .assert()
+        .success();
+    let get_json = parse_stdout_json(&get_assert);
+    assert_eq!(get_json["name"].as_str(), Some("note-operations"));
+    assert_eq!(get_json["path"].as_str(), Some("note-operations/SKILL.md"));
+    assert!(get_json["body"]
+        .as_str()
+        .is_some_and(|body| body.contains("note outline")));
+}
+
+#[test]
+fn skill_commands_respect_read_permissions() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "agent",
+            "install",
+        ])
+        .assert()
+        .success();
+
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[permissions.profiles.blind]
+read = "none"
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "none"
+execute = "deny"
+shell = "deny"
+"#,
+    )
+    .expect("config should be written");
+
+    let list_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--permissions",
+            "blind",
+            "--output",
+            "json",
+            "skill",
+            "list",
+        ])
+        .assert()
+        .success();
+    let list_json = parse_stdout_json(&list_assert);
+    assert_eq!(list_json["skills"].as_array().map(Vec::len), Some(0));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--permissions",
+            "blind",
+            "skill",
+            "get",
+            "note-operations",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "permission denied: profile `blind` does not allow read `.agents/skills/note-operations/SKILL.md`",
+        ));
+}
+
+#[test]
+fn agent_print_config_reports_runtime_contract() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "agent",
+            "install",
+        ])
+        .assert()
+        .success();
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "agent",
+            "print-config",
+            "--runtime",
+            "pi",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["runtime"].as_str(), Some("pi"));
+    assert_eq!(json["profiles"]["write"].as_str(), Some("agent"));
+    assert_eq!(json["profiles"]["readonly"].as_str(), Some("readonly"));
+    assert!(json["commands"]["describe_openai_tools"]
+        .as_str()
+        .is_some_and(|value| value.contains("--permissions agent")));
+    assert!(json["commands"]["skill_list"]
+        .as_str()
+        .is_some_and(|value| value.ends_with("skill list")));
+    assert!(json["commands"]["help_json"]
+        .as_str()
+        .is_some_and(|value| value.ends_with("help assistant-integration")));
+    assert!(json["snippets"]["write_enabled"]
+        .as_str()
+        .is_some_and(|value| value.contains("describe --format openai-tools")));
+}
+
+#[test]
+fn agent_import_previews_and_copies_external_harness_assets() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".claude/commands")).expect("claude prompt dir");
+    fs::create_dir_all(vault_root.join(".codex/skills/review")).expect("codex skill dir");
+    fs::write(vault_root.join("CLAUDE.md"), "# Claude\n").expect("instructions");
+    fs::write(vault_root.join(".claude/commands/triage.md"), "# Triage\n").expect("prompt");
+    fs::write(
+        vault_root.join(".codex/skills/review/SKILL.md"),
+        "---\nname: review\n---\nReview the change.\n",
+    )
+    .expect("skill");
+
+    let preview_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "agent",
+            "import",
+        ])
+        .assert()
+        .success();
+    let preview_json = parse_stdout_json(&preview_assert);
+    assert_eq!(preview_json["detected_count"].as_u64(), Some(3));
+    assert!(preview_json["items"].as_array().is_some_and(|items| items
+        .iter()
+        .any(|item| item["destination_path"] == "AGENTS.md" && item["status"] == "would_create")
+        && items
+            .iter()
+            .any(|item| item["destination_path"] == "AI/Prompts/triage.md"
+                && item["status"] == "would_create")
+        && items.iter().any(
+            |item| item["destination_path"] == ".agents/skills/review/SKILL.md"
+                && item["status"] == "would_create"
+        )));
+
+    let apply_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "agent",
+            "import",
+            "--apply",
+        ])
+        .assert()
+        .success();
+    let apply_json = parse_stdout_json(&apply_assert);
+    assert_eq!(apply_json["imported_count"].as_u64(), Some(3));
+    assert!(vault_root.join("AGENTS.md").exists());
+    assert!(vault_root.join("AI/Prompts/triage.md").exists());
+    assert!(vault_root.join(".agents/skills/review/SKILL.md").exists());
+    assert_eq!(
+        fs::read_to_string(vault_root.join("AGENTS.md")).expect("agents file"),
+        "# Claude\n"
+    );
+}
+
+#[test]
+fn agent_import_can_symlink_external_assets() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".claude/commands")).expect("claude prompt dir");
+    fs::write(vault_root.join(".claude/commands/triage.md"), "# Triage\n").expect("prompt");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "agent",
+            "import",
+            "--apply",
+            "--symlink",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    assert_eq!(json["imported_count"].as_u64(), Some(1));
+    let destination = vault_root.join("AI/Prompts/triage.md");
+    let metadata = fs::symlink_metadata(&destination).expect("symlink metadata");
+    assert!(metadata.file_type().is_symlink());
+}
+
+#[test]
+fn describe_openai_tools_includes_skill_helpers() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "describe",
+            "--format",
+            "openai-tools",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let tools = json["tools"].as_array().expect("tool list");
+    assert!(tools
+        .iter()
+        .any(|tool| tool["function"]["name"] == "skill_list"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["function"]["name"] == "skill_get"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["function"]["name"] == "agent_print_config"));
+}
+
+#[test]
+fn help_assistant_integration_topic_is_available() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "help",
+            "assistant-integration",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    assert_eq!(json["name"].as_str(), Some("assistant-integration"));
+    assert!(json["body"]
+        .as_str()
+        .is_some_and(|body| body.contains("--permissions agent")));
+}
+
+#[test]
 fn agent_install_overwrite_refreshes_bundled_skill_contents() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
