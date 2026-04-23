@@ -48,7 +48,8 @@ pub mod write_lock;
 pub use assistant::{
     assistant_config_summary, assistant_prompts_root, assistant_skills_root, assistant_tools_root,
     default_assistant_tool_reserved_names, list_assistant_prompts, list_assistant_skills,
-    list_assistant_tools, load_assistant_prompt, load_assistant_skill, load_assistant_tool,
+    list_assistant_tool_manifest_paths, list_assistant_tools, load_assistant_prompt,
+    load_assistant_skill, load_assistant_tool, load_assistant_tool_manifest,
     read_vault_agents_file, render_assistant_prompt, AssistantConfigSummary, AssistantError,
     AssistantPrompt, AssistantPromptArgument, AssistantPromptSummary, AssistantSkill,
     AssistantSkillSummary, AssistantTool, AssistantToolRuntime, AssistantToolSecretSpec,

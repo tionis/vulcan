@@ -1,14 +1,17 @@
 use crate::{trust, AppError};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use serde_yaml::Value as YamlValue;
 use std::fs;
+use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use vulcan_core::{
     assistant_tools_root, default_assistant_tool_reserved_names, evaluate_dataview_js_with_options,
-    list_assistant_tools, load_assistant_tool, resolve_permission_profile,
-    validate_json_value_against_schema, AssistantTool, AssistantToolSummary,
-    AssistantToolValidationOptions, DataviewJsEvalOptions, VaultPaths,
+    list_assistant_tool_manifest_paths, list_assistant_tools, load_assistant_tool,
+    load_assistant_tool_manifest, resolve_permission_profile, validate_json_value_against_schema,
+    AssistantTool, AssistantToolRuntime, AssistantToolSecretSpec, AssistantToolSummary,
+    AssistantToolValidationOptions, DataviewJsEvalOptions, JsRuntimeSandbox, VaultPaths,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +65,139 @@ pub struct CustomToolRunReport {
     pub result: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CustomToolInitExample {
+    #[default]
+    Minimal,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CustomToolInitOptions {
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub sandbox: JsRuntimeSandbox,
+    pub permission_profile: Option<String>,
+    pub timeout_ms: Option<usize>,
+    pub example: CustomToolInitExample,
+    pub overwrite: bool,
+    pub dry_run: bool,
+}
+
+impl Default for CustomToolInitOptions {
+    fn default() -> Self {
+        Self {
+            title: None,
+            description: None,
+            sandbox: JsRuntimeSandbox::Strict,
+            permission_profile: None,
+            timeout_ms: None,
+            example: CustomToolInitExample::Minimal,
+            overwrite: false,
+            dry_run: false,
+        }
+    }
+}
+
+#[allow(clippy::struct_excessive_bools)]
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct CustomToolSetOptions {
+    pub title: Option<String>,
+    pub clear_title: bool,
+    pub description: Option<String>,
+    pub sandbox: Option<JsRuntimeSandbox>,
+    pub permission_profile: Option<String>,
+    pub clear_permission_profile: bool,
+    pub timeout_ms: Option<usize>,
+    pub clear_timeout_ms: bool,
+    pub packs: Option<Vec<String>>,
+    pub clear_packs: bool,
+    pub secrets: Option<Vec<AssistantToolSecretSpec>>,
+    pub clear_secrets: bool,
+    pub read_only: Option<bool>,
+    pub destructive: Option<bool>,
+    pub input_schema: Option<Value>,
+    pub output_schema: Option<Value>,
+    pub clear_output_schema: bool,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CustomToolWriteReport {
+    pub name: String,
+    pub updated: bool,
+    pub dry_run: bool,
+    pub tool_root: String,
+    pub manifest_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entrypoint_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub operations: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CustomToolValidationItem {
+    pub identifier: String,
+    pub manifest_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    pub valid: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CustomToolValidationReport {
+    pub checked: usize,
+    pub valid: bool,
+    pub tools: Vec<CustomToolValidationItem>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registry_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+struct EditableToolFrontmatter {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    version: Option<YamlValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    entrypoint: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    runtime: Option<AssistantToolRuntime>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sandbox: Option<JsRuntimeSandbox>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    permission_profile: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    timeout_ms: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    packs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    secrets: Vec<AssistantToolSecretSpec>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    read_only: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    destructive: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_schema: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_schema: Option<Value>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct EditableToolDocument {
+    frontmatter: EditableToolFrontmatter,
+    body: String,
 }
 
 pub fn list_custom_tools(
@@ -176,6 +312,245 @@ pub fn run_custom_tool(
         input: input.clone(),
         result,
         text,
+    })
+}
+
+pub fn validate_custom_tools(
+    paths: &VaultPaths,
+    identifier: Option<&str>,
+    options: &CustomToolRegistryOptions,
+) -> Result<CustomToolValidationReport, AppError> {
+    let validation_options = assistant_tool_validation_options(options);
+    let manifest_paths = list_assistant_tool_manifest_paths(paths).map_err(AppError::operation)?;
+    let selected_paths = if let Some(identifier) = identifier {
+        vec![resolve_tool_manifest_path(
+            paths,
+            identifier,
+            &validation_options,
+            &manifest_paths,
+        )?]
+    } else {
+        manifest_paths.clone()
+    };
+
+    let mut tools = Vec::new();
+    for manifest_path in &selected_paths {
+        match load_assistant_tool_manifest(paths, manifest_path, &validation_options) {
+            Ok(tool) => tools.push(CustomToolValidationItem {
+                identifier: tool_directory_name(manifest_path),
+                manifest_path: manifest_path.clone(),
+                name: Some(tool.summary.name),
+                valid: true,
+                errors: Vec::new(),
+            }),
+            Err(error) => tools.push(CustomToolValidationItem {
+                identifier: tool_directory_name(manifest_path),
+                manifest_path: manifest_path.clone(),
+                name: None,
+                valid: false,
+                errors: vec![error.to_string()],
+            }),
+        }
+    }
+
+    let registry_error = if tools.iter().all(|tool| tool.valid) {
+        list_assistant_tools(paths, &validation_options)
+            .err()
+            .map(|error| error.to_string())
+    } else {
+        None
+    };
+    Ok(CustomToolValidationReport {
+        checked: tools.len(),
+        valid: tools.iter().all(|tool| tool.valid) && registry_error.is_none(),
+        tools,
+        registry_error,
+    })
+}
+
+pub fn init_custom_tool(
+    paths: &VaultPaths,
+    name: &str,
+    registry_options: &CustomToolRegistryOptions,
+    options: &CustomToolInitOptions,
+) -> Result<CustomToolWriteReport, AppError> {
+    let validation_options = assistant_tool_validation_options(registry_options);
+    let tool_name = validate_tool_name_candidate(name)?;
+
+    let tool_root = assistant_tools_root(paths).join(&tool_name);
+    let manifest_path = tool_root.join("TOOL.md");
+    let entrypoint_path = tool_root.join("main.js");
+    let existed_before = manifest_path.exists() || entrypoint_path.exists();
+    if existed_before && !options.overwrite {
+        return Err(AppError::operation(format!(
+            "tool `{tool_name}` already exists; rerun with overwrite enabled to replace the scaffold"
+        )));
+    }
+
+    let description = options
+        .description
+        .clone()
+        .unwrap_or_else(|| format!("TODO: describe `{tool_name}`."));
+    let (frontmatter, body, source) = scaffold_tool_template(&tool_name, &description, options);
+    validate_editable_frontmatter(paths, &frontmatter, registry_options)?;
+    let manifest_contents = render_tool_document(&frontmatter, &body)?;
+    let manifest_relative = relative_to_vault(paths, &manifest_path)?;
+    let manifest_relative_to_tools = relative_to_tools_root(paths, &manifest_path)?;
+    let entrypoint_relative = relative_to_vault(paths, &entrypoint_path)?;
+    if !options.dry_run {
+        fs::create_dir_all(&tool_root).map_err(AppError::operation)?;
+        fs::write(&manifest_path, manifest_contents).map_err(AppError::operation)?;
+        fs::write(&entrypoint_path, ensure_trailing_newline(&source))
+            .map_err(AppError::operation)?;
+        load_assistant_tool_manifest(paths, &manifest_relative_to_tools, &validation_options)
+            .map_err(AppError::operation)?;
+    }
+
+    Ok(CustomToolWriteReport {
+        name: tool_name,
+        updated: true,
+        dry_run: options.dry_run,
+        tool_root: relative_to_vault(paths, &tool_root)?,
+        manifest_path: manifest_relative,
+        entrypoint_path: Some(entrypoint_relative),
+        operations: if existed_before {
+            vec!["replace scaffold".to_string()]
+        } else {
+            vec!["create scaffold".to_string()]
+        },
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn set_custom_tool(
+    paths: &VaultPaths,
+    identifier: &str,
+    registry_options: &CustomToolRegistryOptions,
+    options: &CustomToolSetOptions,
+) -> Result<CustomToolWriteReport, AppError> {
+    let validation_options = assistant_tool_validation_options(registry_options);
+    let manifest_paths = list_assistant_tool_manifest_paths(paths).map_err(AppError::operation)?;
+    let manifest_relative_to_tools =
+        resolve_tool_manifest_path(paths, identifier, &validation_options, &manifest_paths)?;
+    let manifest_path = assistant_tools_root(paths).join(&manifest_relative_to_tools);
+    let mut document = read_tool_document(&manifest_path)?;
+    let mut operations = Vec::new();
+
+    if let Some(title) = &options.title {
+        document.frontmatter.title = normalize_string_field(title);
+        operations.push("set title".to_string());
+    }
+    if options.clear_title {
+        document.frontmatter.title = None;
+        operations.push("clear title".to_string());
+    }
+    if let Some(description) = &options.description {
+        document.frontmatter.description = normalize_string_field(description);
+        operations.push("set description".to_string());
+    }
+    if let Some(sandbox) = options.sandbox {
+        document.frontmatter.sandbox = Some(sandbox);
+        operations.push("set sandbox".to_string());
+    }
+    if let Some(permission_profile) = &options.permission_profile {
+        document.frontmatter.permission_profile = normalize_string_field(permission_profile);
+        operations.push("set permission profile".to_string());
+    }
+    if options.clear_permission_profile {
+        document.frontmatter.permission_profile = None;
+        operations.push("clear permission profile".to_string());
+    }
+    if let Some(timeout_ms) = options.timeout_ms {
+        document.frontmatter.timeout_ms = Some(timeout_ms);
+        operations.push("set timeout".to_string());
+    }
+    if options.clear_timeout_ms {
+        document.frontmatter.timeout_ms = None;
+        operations.push("clear timeout".to_string());
+    }
+    if let Some(packs) = &options.packs {
+        document.frontmatter.packs = normalize_unique_strings(packs);
+        operations.push("set packs".to_string());
+    }
+    if options.clear_packs {
+        document.frontmatter.packs.clear();
+        operations.push("clear packs".to_string());
+    }
+    if let Some(secrets) = &options.secrets {
+        document.frontmatter.secrets = normalize_secret_specs(secrets);
+        operations.push("set secrets".to_string());
+    }
+    if options.clear_secrets {
+        document.frontmatter.secrets.clear();
+        operations.push("clear secrets".to_string());
+    }
+    if let Some(read_only) = options.read_only {
+        document.frontmatter.read_only = read_only;
+        operations.push(if read_only {
+            "mark read-only".to_string()
+        } else {
+            "mark writable".to_string()
+        });
+    }
+    if let Some(destructive) = options.destructive {
+        document.frontmatter.destructive = destructive;
+        operations.push(if destructive {
+            "mark destructive".to_string()
+        } else {
+            "mark non-destructive".to_string()
+        });
+    }
+    if let Some(input_schema) = &options.input_schema {
+        document.frontmatter.input_schema = Some(input_schema.clone());
+        operations.push("set input schema".to_string());
+    }
+    if let Some(output_schema) = &options.output_schema {
+        document.frontmatter.output_schema = Some(output_schema.clone());
+        operations.push("set output schema".to_string());
+    }
+    if options.clear_output_schema {
+        document.frontmatter.output_schema = None;
+        operations.push("clear output schema".to_string());
+    }
+    if operations.is_empty() {
+        return Err(AppError::operation(
+            "tool set requires at least one change flag",
+        ));
+    }
+
+    validate_editable_frontmatter(paths, &document.frontmatter, registry_options)?;
+
+    let current_contents = fs::read_to_string(&manifest_path).map_err(AppError::operation)?;
+    let rendered = render_tool_document(&document.frontmatter, &document.body)?;
+    let updated = current_contents != rendered;
+    if updated && !options.dry_run {
+        fs::write(&manifest_path, rendered).map_err(AppError::operation)?;
+        load_assistant_tool_manifest(paths, &manifest_relative_to_tools, &validation_options)
+            .map_err(AppError::operation)?;
+    }
+
+    let tool_root = manifest_path
+        .parent()
+        .ok_or_else(|| AppError::operation("tool manifest has no parent directory"))?;
+    let entrypoint_relative = document
+        .frontmatter
+        .entrypoint
+        .clone()
+        .unwrap_or_else(|| "main.js".to_string());
+    let entrypoint_path = tool_root.join(&entrypoint_relative);
+
+    Ok(CustomToolWriteReport {
+        name: document
+            .frontmatter
+            .name
+            .clone()
+            .unwrap_or_else(|| tool_directory_name(&manifest_relative_to_tools)),
+        updated,
+        dry_run: options.dry_run,
+        tool_root: relative_to_vault(paths, tool_root)?,
+        manifest_path: relative_to_vault(paths, &manifest_path)?,
+        entrypoint_path: Some(relative_to_vault(paths, &entrypoint_path)?),
+        operations,
     })
 }
 
@@ -374,6 +749,400 @@ fn strip_shebang_line(source: &str) -> &str {
 
 fn path_to_forward_string(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
+}
+
+fn validate_editable_frontmatter(
+    paths: &VaultPaths,
+    frontmatter: &EditableToolFrontmatter,
+    registry_options: &CustomToolRegistryOptions,
+) -> Result<(), AppError> {
+    let name = frontmatter
+        .name
+        .as_deref()
+        .ok_or_else(|| AppError::operation("tool manifest must set `name`"))?;
+    validate_tool_name_candidate(name)?;
+    if normalize_string_field(frontmatter.description.as_deref().unwrap_or_default()).is_none() {
+        return Err(AppError::operation(
+            "tool manifest must set a non-empty `description`",
+        ));
+    }
+    if frontmatter.runtime.unwrap_or_default() != AssistantToolRuntime::Quickjs {
+        return Err(AppError::operation(
+            "custom tools currently only support `runtime = quickjs`",
+        ));
+    }
+    validate_entrypoint_candidate(frontmatter.entrypoint.as_deref().unwrap_or("main.js"))?;
+    if frontmatter.sandbox.unwrap_or(JsRuntimeSandbox::Strict) == JsRuntimeSandbox::None {
+        return Err(AppError::operation(
+            "custom tools cannot set `sandbox = none`",
+        ));
+    }
+    if let Some(permission_profile) = frontmatter.permission_profile.as_deref() {
+        resolve_permission_profile(paths, Some(permission_profile)).map_err(AppError::operation)?;
+    }
+    if frontmatter.timeout_ms == Some(0) {
+        return Err(AppError::operation(
+            "tool manifest `timeout_ms` must be greater than 0",
+        ));
+    }
+    validate_schema_object(frontmatter.input_schema.as_ref(), "input_schema", true)?;
+    validate_schema_object(frontmatter.output_schema.as_ref(), "output_schema", false)?;
+    validate_pack_names(&frontmatter.packs, registry_options)?;
+    validate_secret_specs(&frontmatter.secrets)?;
+    Ok(())
+}
+
+fn validate_tool_name_candidate(value: &str) -> Result<String, AppError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(AppError::operation(
+            "custom tool names must be non-empty `snake_case` identifiers",
+        ));
+    }
+    if !value.chars().all(|character| {
+        character.is_ascii_lowercase() || character.is_ascii_digit() || character == '_'
+    }) {
+        return Err(AppError::operation(format!(
+            "invalid custom tool name `{value}`; expected `snake_case`"
+        )));
+    }
+    if !value
+        .chars()
+        .any(|character| character.is_ascii_alphabetic())
+    {
+        return Err(AppError::operation(format!(
+            "invalid custom tool name `{value}`; expected at least one ASCII letter"
+        )));
+    }
+    Ok(value.to_string())
+}
+
+fn validate_entrypoint_candidate(value: &str) -> Result<(), AppError> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(AppError::operation(
+            "custom tool entrypoints must be non-empty relative paths",
+        ));
+    }
+    if value.contains(':') {
+        return Err(AppError::operation(format!(
+            "invalid custom tool entrypoint `{value}`; drive and URI prefixes are not allowed"
+        )));
+    }
+    let path = Path::new(value);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        })
+    {
+        return Err(AppError::operation(format!(
+            "invalid custom tool entrypoint `{value}`; entrypoints must stay within the tool directory"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_schema_object(
+    value: Option<&Value>,
+    field: &str,
+    required: bool,
+) -> Result<(), AppError> {
+    match value {
+        Some(Value::Object(_)) => Ok(()),
+        Some(_) => Err(AppError::operation(format!(
+            "tool manifest field `{field}` must be a JSON object"
+        ))),
+        None if required => Err(AppError::operation(format!(
+            "tool manifest must set `{field}`"
+        ))),
+        None => Ok(()),
+    }
+}
+
+fn validate_pack_names(
+    packs: &[String],
+    registry_options: &CustomToolRegistryOptions,
+) -> Result<(), AppError> {
+    let mut allowed = registry_options.allowed_pack_names.clone();
+    if !allowed.iter().any(|pack| pack == "custom") {
+        allowed.push("custom".to_string());
+    }
+    for pack in packs {
+        if pack.trim().is_empty() {
+            return Err(AppError::operation(
+                "tool manifest pack names must be non-empty",
+            ));
+        }
+        if !allowed.iter().any(|allowed_pack| allowed_pack == pack) {
+            return Err(AppError::operation(format!(
+                "tool manifest uses unknown tool pack `{pack}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn validate_secret_specs(secrets: &[AssistantToolSecretSpec]) -> Result<(), AppError> {
+    let mut seen = Vec::new();
+    for secret in secrets {
+        let name = validate_tool_name_candidate(&secret.name)?;
+        if seen.contains(&name) {
+            return Err(AppError::operation(format!(
+                "duplicate custom tool secret `{name}`"
+            )));
+        }
+        seen.push(name);
+        validate_secret_env_name(&secret.env)?;
+    }
+    Ok(())
+}
+
+fn validate_secret_env_name(value: &str) -> Result<(), AppError> {
+    let value = value.trim();
+    let mut characters = value.chars();
+    let Some(first) = characters.next() else {
+        return Err(AppError::operation(
+            "custom tool secret env var names must be non-empty",
+        ));
+    };
+    if !(first.is_ascii_alphabetic() || first == '_')
+        || !characters.all(|character| character.is_ascii_alphanumeric() || character == '_')
+    {
+        return Err(AppError::operation(format!(
+            "invalid custom tool secret env var `{value}`"
+        )));
+    }
+    Ok(())
+}
+
+fn resolve_tool_manifest_path(
+    paths: &VaultPaths,
+    identifier: &str,
+    validation_options: &AssistantToolValidationOptions,
+    manifest_paths: &[String],
+) -> Result<String, AppError> {
+    let identifier = identifier.trim().replace('\\', "/");
+    if identifier.is_empty() {
+        return Err(AppError::operation(
+            "custom tool identifier must be non-empty",
+        ));
+    }
+
+    let mut matches = manifest_paths
+        .iter()
+        .filter(|manifest_path| manifest_path_matches_identifier(manifest_path, &identifier))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    if matches.is_empty() {
+        for manifest_path in manifest_paths {
+            if let Ok(tool) = load_assistant_tool_manifest(paths, manifest_path, validation_options)
+            {
+                if tool.summary.name == identifier {
+                    matches.push(manifest_path.clone());
+                }
+            }
+        }
+    }
+
+    matches.sort();
+    matches.dedup();
+    match matches.as_slice() {
+        [] => Err(AppError::operation(format!(
+            "unknown custom tool `{identifier}`"
+        ))),
+        [manifest_path] => Ok(manifest_path.clone()),
+        _ => Err(AppError::operation(format!(
+            "custom tool `{identifier}` is ambiguous; use a manifest path such as `{}`",
+            matches[0]
+        ))),
+    }
+}
+
+fn manifest_path_matches_identifier(manifest_path: &str, identifier: &str) -> bool {
+    manifest_path == identifier
+        || manifest_path
+            .strip_suffix("/TOOL.md")
+            .is_some_and(|prefix| prefix == identifier)
+        || tool_directory_name(manifest_path) == identifier
+}
+
+fn tool_directory_name(manifest_path: &str) -> String {
+    Path::new(manifest_path)
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        .unwrap_or(manifest_path)
+        .to_string()
+}
+
+fn scaffold_tool_template(
+    tool_name: &str,
+    description: &str,
+    options: &CustomToolInitOptions,
+) -> (EditableToolFrontmatter, String, String) {
+    let frontmatter = EditableToolFrontmatter {
+        name: Some(tool_name.to_string()),
+        title: options.title.clone(),
+        description: Some(description.to_string()),
+        entrypoint: Some("main.js".to_string()),
+        runtime: Some(AssistantToolRuntime::Quickjs),
+        sandbox: Some(options.sandbox),
+        permission_profile: options.permission_profile.clone(),
+        timeout_ms: options.timeout_ms,
+        packs: vec!["custom".to_string()],
+        input_schema: Some(json!({
+            "type": "object",
+            "additionalProperties": false,
+        })),
+        output_schema: Some(json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "ok": { "type": "boolean" },
+                "tool": { "type": "string" },
+                "received": {}
+            },
+            "required": ["ok", "tool", "received"]
+        })),
+        ..EditableToolFrontmatter::default()
+    };
+    let body = match options.example {
+        CustomToolInitExample::Minimal => format!(
+            "## When to use\n\nDescribe when `{tool_name}` should run and what contract it provides.\n\n## Input\n\nKeep this section aligned with `input_schema`.\n\n## Secrets\n\nDeclare secret bindings in frontmatter `secrets:` and access them at runtime with `ctx.secrets.get()` or `ctx.secrets.require()`.\n\n## Output\n\nReturn JSON directly or return `{{ result, text }}` when you want both machine-readable output and a short human fallback."
+        ),
+    };
+    let source = "function main(input, ctx) {\n  return {\n    result: {\n      ok: true,\n      tool: ctx.tool.name,\n      received: input,\n    },\n    text: `ran ${ctx.tool.name}`,\n  };\n}\n"
+        .to_string();
+    (frontmatter, body, source)
+}
+
+fn read_tool_document(manifest_path: &Path) -> Result<EditableToolDocument, AppError> {
+    let source = fs::read_to_string(manifest_path).map_err(AppError::operation)?;
+    let (frontmatter, body) = split_tool_frontmatter(&source, manifest_path)?;
+    let frontmatter = frontmatter
+        .map(|frontmatter| serde_yaml::from_str(frontmatter).map_err(AppError::operation))
+        .transpose()?
+        .unwrap_or_default();
+    Ok(EditableToolDocument {
+        frontmatter,
+        body: body.trim().to_string(),
+    })
+}
+
+fn render_tool_document(
+    frontmatter: &EditableToolFrontmatter,
+    body: &str,
+) -> Result<String, AppError> {
+    let yaml = serde_yaml::to_string(frontmatter).map_err(AppError::operation)?;
+    let mut rendered = String::from("---\n");
+    rendered.push_str(&yaml);
+    rendered.push_str("---\n");
+    let body = body.trim();
+    if !body.is_empty() {
+        rendered.push('\n');
+        rendered.push_str(body);
+        rendered.push('\n');
+    }
+    Ok(rendered)
+}
+
+fn split_tool_frontmatter<'a>(
+    source: &'a str,
+    path: &Path,
+) -> Result<(Option<&'a str>, &'a str), AppError> {
+    let source = source.strip_prefix('\u{feff}').unwrap_or(source);
+    let mut lines = source.split_inclusive('\n');
+    let Some(first_line) = lines.next() else {
+        return Ok((None, source));
+    };
+    if first_line.trim_end_matches(['\r', '\n']) != "---" {
+        return Ok((None, source));
+    }
+
+    let mut offset = first_line.len();
+    for line in lines {
+        if line.trim_end_matches(['\r', '\n']) == "---" {
+            let frontmatter = &source[first_line.len()..offset];
+            let body = &source[offset + line.len()..];
+            return Ok((Some(frontmatter), body));
+        }
+        offset += line.len();
+    }
+
+    Err(AppError::operation(format!(
+        "{} has an unterminated frontmatter block",
+        path.display()
+    )))
+}
+
+fn relative_to_vault(paths: &VaultPaths, path: &Path) -> Result<String, AppError> {
+    path.strip_prefix(paths.vault_root())
+        .map(path_to_forward_string)
+        .map_err(|_| AppError::operation(format!("{} is outside the vault", path.display())))
+}
+
+fn relative_to_tools_root(paths: &VaultPaths, path: &Path) -> Result<String, AppError> {
+    path.strip_prefix(assistant_tools_root(paths))
+        .map(path_to_forward_string)
+        .map_err(|_| AppError::operation(format!("{} is outside the tools folder", path.display())))
+}
+
+fn normalize_string_field(value: &str) -> Option<String> {
+    let value = value.trim();
+    (!value.is_empty()).then(|| value.to_string())
+}
+
+fn normalize_unique_strings(values: &[String]) -> Vec<String> {
+    let mut normalized = Vec::new();
+    for value in values {
+        let Some(value) = normalize_string_field(value) else {
+            continue;
+        };
+        if !normalized.contains(&value) {
+            normalized.push(value);
+        }
+    }
+    normalized
+}
+
+fn normalize_secret_specs(secrets: &[AssistantToolSecretSpec]) -> Vec<AssistantToolSecretSpec> {
+    let mut normalized = Vec::new();
+    for secret in secrets {
+        let Some(name) = normalize_string_field(&secret.name) else {
+            continue;
+        };
+        let Some(env) = normalize_string_field(&secret.env) else {
+            continue;
+        };
+        if normalized
+            .iter()
+            .any(|existing: &AssistantToolSecretSpec| existing.name == name)
+        {
+            continue;
+        }
+        normalized.push(AssistantToolSecretSpec {
+            name,
+            env,
+            required: secret.required,
+            description: secret
+                .description
+                .as_deref()
+                .and_then(normalize_string_field),
+        });
+    }
+    normalized
+}
+
+fn ensure_trailing_newline(value: &str) -> String {
+    if value.ends_with('\n') {
+        value.to_string()
+    } else {
+        format!("{value}\n")
+    }
 }
 
 #[cfg(test)]
@@ -579,5 +1348,123 @@ input_schema:
             Some(value) => env::set_var("XDG_CONFIG_HOME", value),
             None => env::remove_var("XDG_CONFIG_HOME"),
         }
+    }
+
+    #[test]
+    fn validate_custom_tools_reports_invalid_manifests_per_file() {
+        let (_dir, paths) = test_paths();
+        write_tool(
+            &paths,
+            "valid",
+            r"---
+name: valid_tool
+description: Valid tool.
+input_schema:
+  type: object
+---
+",
+            "function main() { return null; }\n",
+        );
+        write_tool(
+            &paths,
+            "invalid",
+            r"---
+name: invalid_tool
+description:
+input_schema:
+  type: object
+---
+",
+            "function main() { return null; }\n",
+        );
+
+        let report = validate_custom_tools(&paths, None, &CustomToolRegistryOptions::default())
+            .expect("validation should succeed");
+        assert_eq!(report.checked, 2);
+        assert!(!report.valid);
+        assert!(report
+            .tools
+            .iter()
+            .any(|tool| tool.name.as_deref() == Some("valid_tool") && tool.valid));
+        assert!(report
+            .tools
+            .iter()
+            .any(|tool| tool.identifier == "invalid" && !tool.valid));
+    }
+
+    #[test]
+    fn init_custom_tool_scaffolds_manifest_and_entrypoint() {
+        let (_dir, paths) = test_paths();
+
+        let report = init_custom_tool(
+            &paths,
+            "meeting_summary",
+            &CustomToolRegistryOptions::default(),
+            &CustomToolInitOptions {
+                description: Some("Summarize one meeting note.".to_string()),
+                ..CustomToolInitOptions::default()
+            },
+        )
+        .expect("tool init should succeed");
+
+        assert!(report.updated);
+        assert_eq!(report.name, "meeting_summary");
+        assert_eq!(
+            report.manifest_path,
+            ".agents/tools/meeting_summary/TOOL.md"
+        );
+        let manifest = fs::read_to_string(paths.vault_root().join(&report.manifest_path))
+            .expect("manifest should exist");
+        assert!(manifest.contains("name: meeting_summary"));
+        assert!(manifest.contains("description: Summarize one meeting note."));
+        let source = fs::read_to_string(
+            paths
+                .vault_root()
+                .join(report.entrypoint_path.as_deref().expect("entrypoint path")),
+        )
+        .expect("entrypoint should exist");
+        assert!(source.contains("function main(input, ctx)"));
+    }
+
+    #[test]
+    fn set_custom_tool_updates_manifest_fields() {
+        let (_dir, paths) = test_paths();
+        init_custom_tool(
+            &paths,
+            "meeting_summary",
+            &CustomToolRegistryOptions::default(),
+            &CustomToolInitOptions {
+                description: Some("Summarize one meeting note.".to_string()),
+                ..CustomToolInitOptions::default()
+            },
+        )
+        .expect("tool init should succeed");
+
+        let report = set_custom_tool(
+            &paths,
+            "meeting_summary",
+            &CustomToolRegistryOptions::default(),
+            &CustomToolSetOptions {
+                description: Some("Summarize one meeting note into JSON.".to_string()),
+                timeout_ms: Some(2500),
+                read_only: Some(true),
+                secrets: Some(vec![AssistantToolSecretSpec {
+                    name: "api".to_string(),
+                    env: "MEETING_API_KEY".to_string(),
+                    required: true,
+                    description: Some("API key".to_string()),
+                }]),
+                ..CustomToolSetOptions::default()
+            },
+        )
+        .expect("tool set should succeed");
+
+        assert!(report.updated);
+        let manifest = fs::read_to_string(paths.vault_root().join(&report.manifest_path))
+            .expect("manifest should exist");
+        assert!(manifest.contains("description: Summarize one meeting note into JSON."));
+        assert!(manifest.contains("timeout_ms: 2500"));
+        assert!(manifest.contains("read_only: true"));
+        assert!(manifest.contains("env: MEETING_API_KEY"));
     }
 }

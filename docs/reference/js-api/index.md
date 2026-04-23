@@ -12,6 +12,8 @@ Current top-level namespaces:
 
 - `vault` for note lookup, queries, graph access, periodic note helpers, and vault mutations.
 - `web` for network-gated search and fetch helpers.
+- `tools` for registry-backed custom tool discovery and invocation.
+- `host` for permission-gated local process execution.
 - `help(obj)` for runtime introspection
 
 Current write/network surface:
@@ -20,4 +22,4 @@ Current write/network surface:
 - `vault.update()`, `vault.unset()`, `vault.transaction()`, `vault.refactor.*`
 - `web.search()` and `web.fetch()` when the sandbox is `net` or `none`
 
-See also: `help js.vault`, `help js.vault.graph`, `help js.vault.note`.
+See also: `help js.vault`, `help js.tools`, `help js.host`, `help js.vault.graph`, `help js.vault.note`.

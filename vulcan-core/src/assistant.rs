@@ -341,6 +341,16 @@ pub fn list_assistant_tools(
     Ok(tools.into_iter().map(|tool| tool.summary).collect())
 }
 
+pub fn list_assistant_tool_manifest_paths(
+    paths: &VaultPaths,
+) -> Result<Vec<String>, AssistantError> {
+    let root = assistant_tools_root(paths);
+    collect_tool_files(&root)?
+        .into_iter()
+        .map(|path| relative_display(&root, &path))
+        .collect()
+}
+
 pub fn load_assistant_tool(
     paths: &VaultPaths,
     identifier: &str,
@@ -357,6 +367,18 @@ pub fn load_assistant_tool(
                 || normalize_identifier(directory_name(&tool.summary.path)) == normalized
         })
         .ok_or_else(|| AssistantError::message(format!("unknown tool `{identifier}`")))
+}
+
+pub fn load_assistant_tool_manifest(
+    paths: &VaultPaths,
+    manifest_path: &str,
+    options: &AssistantToolValidationOptions,
+) -> Result<AssistantTool, AssistantError> {
+    let root = assistant_tools_root(paths);
+    let path = resolve_assistant_relative_path(&root, manifest_path, "tool manifest")?;
+    let tool = parse_tool_file(&root, &path, options)?;
+    validate_tool_name_collisions(std::slice::from_ref(&tool), options)?;
+    Ok(tool)
 }
 
 pub fn read_vault_agents_file(paths: &VaultPaths) -> Result<Option<String>, AssistantError> {
@@ -654,6 +676,33 @@ fn collect_matching_files(
         }
     }
     Ok(())
+}
+
+fn resolve_assistant_relative_path(
+    root: &Path,
+    relative: &str,
+    kind: &str,
+) -> Result<PathBuf, AssistantError> {
+    let candidate = Path::new(relative);
+    if candidate.as_os_str().is_empty()
+        || candidate.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::Prefix(_) | Component::RootDir
+            )
+        })
+    {
+        return Err(AssistantError::message(format!(
+            "invalid {kind} path `{relative}`"
+        )));
+    }
+    let resolved = root.join(candidate);
+    if !resolved.is_file() {
+        return Err(AssistantError::message(format!(
+            "unknown {kind} `{relative}`"
+        )));
+    }
+    Ok(resolved)
 }
 
 fn validate_tool_name_collisions(

@@ -727,6 +727,42 @@ fn help_topic_js_plugins_describes_hook_api() {
 }
 
 #[test]
+fn help_topics_cover_custom_tools_host_execution_and_surface_comparison() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["help", "js.tools"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("tools.list()")
+                .and(predicate::str::contains("ctx.secrets.require(name)"))
+                .and(predicate::str::contains("result, text")),
+        );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["help", "js.host"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("host.exec(argv, opts?)")
+                .and(predicate::str::contains("host.shell(command, opts?)"))
+                .and(predicate::str::contains("requires `execute`")),
+        );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["help", "automation-surfaces"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Use a skill to teach a workflow.")
+                .and(predicate::str::contains("Use a custom tool"))
+                .and(predicate::str::contains("Use a plugin")),
+        );
+}
+
+#[test]
 fn plugin_list_and_enable_disable_round_trip() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -792,6 +828,176 @@ fn plugin_list_and_enable_disable_round_trip() {
     assert_eq!(disable_json["name"], "lint");
     assert_eq!(disable_json["enabled"], false);
     assert_eq!(disable_json["updated"], true);
+}
+
+#[test]
+fn custom_tool_commands_round_trip() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root should exist");
+    initialize_vulcan_dir(&vault_root);
+    let config_home = temp_dir.path().join("config");
+    fs::create_dir_all(&config_home).expect("config home should exist");
+    let schema_path = temp_dir.path().join("tool-input-schema.json");
+    fs::write(
+        &schema_path,
+        r#"{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "note": { "type": "string" }
+  },
+  "required": ["note"]
+}"#,
+    )
+    .expect("schema should be written");
+    let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
+
+    let init_assert = cargo_vulcan_fixed_now()
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "tool",
+            "init",
+            "summarize_meeting",
+            "--description",
+            "Summarize one meeting note.",
+        ])
+        .assert()
+        .success();
+    let init_json = parse_stdout_json(&init_assert);
+    assert_eq!(
+        init_json["manifest_path"],
+        ".agents/tools/summarize_meeting/TOOL.md"
+    );
+
+    let list_before_assert = cargo_vulcan_fixed_now()
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "tool",
+            "list",
+        ])
+        .assert()
+        .success();
+    let list_before_json = parse_stdout_json(&list_before_assert);
+    let tools = list_before_json["tools"]
+        .as_array()
+        .expect("tools should be an array");
+    assert_eq!(tools.len(), 1);
+    assert_eq!(tools[0]["name"], "summarize_meeting");
+    assert_eq!(tools[0]["callable"], false);
+
+    let show_assert = cargo_vulcan_fixed_now()
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "tool",
+            "show",
+            "summarize_meeting",
+        ])
+        .assert()
+        .success();
+    let show_json = parse_stdout_json(&show_assert);
+    assert_eq!(show_json["name"], "summarize_meeting");
+    assert!(show_json["body"]
+        .as_str()
+        .expect("body should be a string")
+        .contains("When to use"));
+
+    let set_assert = cargo_vulcan_fixed_now()
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "tool",
+            "set",
+            "summarize_meeting",
+            "--description",
+            "Summarize meeting notes into JSON.",
+            "--timeout-ms",
+            "2500",
+            "--read-only",
+            "--secret",
+            "api=MEETING_API_KEY",
+            "--input-schema-file",
+            schema_path.to_str().expect("schema path should be utf-8"),
+        ])
+        .assert()
+        .success();
+    let set_json = parse_stdout_json(&set_assert);
+    assert_eq!(set_json["updated"], true);
+
+    let validate_assert = cargo_vulcan_fixed_now()
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "tool",
+            "validate",
+        ])
+        .assert()
+        .success();
+    let validate_json = parse_stdout_json(&validate_assert);
+    assert_eq!(validate_json["valid"], true);
+
+    run_scan(&vault_root);
+
+    cargo_vulcan_fixed_now()
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args(["--vault", &vault_root_str, "trust", "add"])
+        .assert()
+        .success();
+
+    let list_after_assert = cargo_vulcan_fixed_now()
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "tool",
+            "list",
+        ])
+        .assert()
+        .success();
+    let list_after_json = parse_stdout_json(&list_after_assert);
+    assert_eq!(list_after_json["tools"][0]["callable"], true);
+
+    let run_assert = cargo_vulcan_fixed_now()
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("MEETING_API_KEY", "secret-token")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "tool",
+            "run",
+            "summarize_meeting",
+            "--input-json",
+            r#"{"note":"Meetings/Weekly.md"}"#,
+        ])
+        .assert()
+        .success();
+    let run_json = parse_stdout_json(&run_assert);
+    assert_eq!(run_json["name"], "summarize_meeting");
+    assert_eq!(run_json["result"]["ok"], true);
+    assert_eq!(run_json["result"]["tool"], "summarize_meeting");
+    assert_eq!(run_json["result"]["received"]["note"], "Meetings/Weekly.md");
 }
 
 #[test]
