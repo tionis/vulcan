@@ -12,6 +12,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
+use toml::Value as TomlValue;
 
 const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # Settings in this file override compatible values from `.obsidian/app.json`.
@@ -4556,6 +4557,52 @@ fn core_import_settings(paths: &VaultPaths) -> Result<Vec<ImportSetting>, Config
 
 #[must_use]
 pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
+    let mut loaded = load_vault_config_base(paths);
+
+    if let Some(vulcan_config) = load_vulcan_overrides(
+        paths.config_file(),
+        "Vulcan config",
+        &mut loaded.diagnostics,
+    ) {
+        apply_vulcan_overrides(&mut loaded.config, vulcan_config);
+    }
+
+    if let Some(local_config) = load_vulcan_overrides(
+        paths.local_config_file(),
+        "local Vulcan config",
+        &mut loaded.diagnostics,
+    ) {
+        apply_vulcan_overrides(&mut loaded.config, local_config);
+    }
+
+    loaded
+}
+
+#[must_use]
+pub fn load_vault_config_with_overrides(
+    paths: &VaultPaths,
+    shared_override: Option<&TomlValue>,
+    local_override: Option<&TomlValue>,
+) -> ConfigLoadResult {
+    let mut loaded = load_vault_config_base(paths);
+    apply_vulcan_override_value(
+        &mut loaded.config,
+        shared_override,
+        "Vulcan config",
+        paths.config_file(),
+        &mut loaded.diagnostics,
+    );
+    apply_vulcan_override_value(
+        &mut loaded.config,
+        local_override,
+        "local Vulcan config",
+        paths.local_config_file(),
+        &mut loaded.diagnostics,
+    );
+    loaded
+}
+
+fn load_vault_config_base(paths: &VaultPaths) -> ConfigLoadResult {
     let mut config = VaultConfig::default();
     let mut diagnostics = Vec::new();
 
@@ -4603,20 +4650,6 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
 
     config.property_types = load_obsidian_property_types(paths, &mut diagnostics);
 
-    if let Some(vulcan_config) =
-        load_vulcan_overrides(paths.config_file(), "Vulcan config", &mut diagnostics)
-    {
-        apply_vulcan_overrides(&mut config, vulcan_config);
-    }
-
-    if let Some(local_config) = load_vulcan_overrides(
-        paths.local_config_file(),
-        "local Vulcan config",
-        &mut diagnostics,
-    ) {
-        apply_vulcan_overrides(&mut config, local_config);
-    }
-
     ConfigLoadResult {
         config,
         diagnostics,
@@ -4636,26 +4669,117 @@ pub fn builtin_permission_profiles() -> BTreeMap<String, PermissionProfile> {
 
 #[must_use]
 pub fn load_permission_profiles(paths: &VaultPaths) -> PermissionProfilesLoadResult {
-    let mut profiles = builtin_permission_profiles();
-    let mut diagnostics = Vec::new();
+    let mut loaded = load_permission_profiles_base();
 
-    if let Some(vulcan_config) =
-        load_vulcan_overrides(paths.config_file(), "Vulcan config", &mut diagnostics)
-    {
-        apply_permission_profile_overrides(&mut profiles, vulcan_config.permissions);
+    if let Some(vulcan_config) = load_vulcan_overrides(
+        paths.config_file(),
+        "Vulcan config",
+        &mut loaded.diagnostics,
+    ) {
+        apply_permission_profile_overrides(&mut loaded.profiles, vulcan_config.permissions);
     }
 
     if let Some(local_config) = load_vulcan_overrides(
         paths.local_config_file(),
         "local Vulcan config",
-        &mut diagnostics,
+        &mut loaded.diagnostics,
     ) {
-        apply_permission_profile_overrides(&mut profiles, local_config.permissions);
+        apply_permission_profile_overrides(&mut loaded.profiles, local_config.permissions);
     }
+
+    loaded
+}
+
+#[must_use]
+pub fn load_permission_profiles_with_overrides(
+    paths: &VaultPaths,
+    shared_override: Option<&TomlValue>,
+    local_override: Option<&TomlValue>,
+) -> PermissionProfilesLoadResult {
+    let mut loaded = load_permission_profiles_base();
+    apply_permission_profile_override_value(
+        &mut loaded.profiles,
+        shared_override,
+        "Vulcan config",
+        paths.config_file(),
+        &mut loaded.diagnostics,
+    );
+    apply_permission_profile_override_value(
+        &mut loaded.profiles,
+        local_override,
+        "local Vulcan config",
+        paths.local_config_file(),
+        &mut loaded.diagnostics,
+    );
+    loaded
+}
+
+fn load_permission_profiles_base() -> PermissionProfilesLoadResult {
+    let profiles = builtin_permission_profiles();
+    let diagnostics = Vec::new();
 
     PermissionProfilesLoadResult {
         profiles,
         diagnostics,
+    }
+}
+
+fn apply_vulcan_override_value(
+    config: &mut VaultConfig,
+    override_value: Option<&TomlValue>,
+    description: &str,
+    path: &Path,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) {
+    let Some(parsed) =
+        parse_in_memory_vulcan_override(override_value, description, path, diagnostics)
+    else {
+        return;
+    };
+    apply_vulcan_overrides(config, parsed);
+}
+
+fn apply_permission_profile_override_value(
+    profiles: &mut BTreeMap<String, PermissionProfile>,
+    override_value: Option<&TomlValue>,
+    description: &str,
+    path: &Path,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) {
+    let Some(parsed) =
+        parse_in_memory_vulcan_override(override_value, description, path, diagnostics)
+    else {
+        return;
+    };
+    apply_permission_profile_overrides(profiles, parsed.permissions);
+}
+
+fn parse_in_memory_vulcan_override(
+    override_value: Option<&TomlValue>,
+    description: &str,
+    path: &Path,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) -> Option<PartialVulcanConfig> {
+    let override_value = override_value?;
+
+    match toml::to_string(override_value) {
+        Ok(rendered) => match toml::from_str::<PartialVulcanConfig>(&rendered) {
+            Ok(config) => Some(config),
+            Err(error) => {
+                diagnostics.push(ConfigDiagnostic {
+                    path: path.to_path_buf(),
+                    message: format!("failed to parse {description}: {error}"),
+                });
+                None
+            }
+        },
+        Err(error) => {
+            diagnostics.push(ConfigDiagnostic {
+                path: path.to_path_buf(),
+                message: format!("failed to serialize {description}: {error}"),
+            });
+            None
+        }
     }
 }
 
@@ -9791,6 +9915,74 @@ git = "allow"
             NetworkPermissionConfig::Mode(PermissionMode::Allow)
         );
         assert_eq!(agent.git, PermissionMode::Allow);
+    }
+
+    #[test]
+    fn load_vault_config_with_overrides_merges_obsidian_defaults_and_in_memory_overrides() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        write_test_file(&vault_root.join(".obsidian/app.json"), OBSIDIAN_APP_JSON);
+        let paths = VaultPaths::new(vault_root);
+        let shared_override = r#"
+[periodic.daily]
+folder = "Journal/Working"
+"#
+        .parse::<TomlValue>()
+        .expect("shared override should parse");
+        let local_override = r#"
+[periodic.daily]
+template = "Templates/Local"
+"#
+        .parse::<TomlValue>()
+        .expect("local override should parse");
+
+        let loaded =
+            load_vault_config_with_overrides(&paths, Some(&shared_override), Some(&local_override));
+        let daily = loaded
+            .config
+            .periodic
+            .note("daily")
+            .expect("daily periodic config should exist");
+
+        assert!(loaded.diagnostics.is_empty());
+        assert_eq!(loaded.config.link_style, LinkStylePreference::Markdown);
+        assert_eq!(daily.folder, PathBuf::from("Journal/Working"));
+        assert_eq!(daily.template.as_deref(), Some("Templates/Local"));
+    }
+
+    #[test]
+    fn load_permission_profiles_with_overrides_reads_in_memory_profile_tables() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        let shared_override = r#"
+[permissions.profiles.agent]
+git = "allow"
+"#
+        .parse::<TomlValue>()
+        .expect("shared override should parse");
+        let local_override = r#"
+[permissions.profiles.agent]
+write = "all"
+"#
+        .parse::<TomlValue>()
+        .expect("local override should parse");
+
+        let loaded = load_permission_profiles_with_overrides(
+            &paths,
+            Some(&shared_override),
+            Some(&local_override),
+        );
+
+        assert!(loaded.diagnostics.is_empty());
+        let agent = loaded
+            .profiles
+            .get("agent")
+            .expect("custom profile should be available");
+        assert_eq!(agent.git, PermissionMode::Allow);
+        assert_eq!(
+            agent.write,
+            PathPermissionConfig::Keyword(PathPermissionKeyword::All)
+        );
     }
 
     #[test]

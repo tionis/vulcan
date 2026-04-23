@@ -10,12 +10,9 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::io;
-use std::path::Path;
 use std::time::Duration;
 use toml::Value as TomlValue;
-use ulid::Ulid;
 use vulcan_core::{ConfigDiagnostic, VaultPaths};
 
 const FOOTER_HEIGHT: u16 = 7;
@@ -1573,58 +1570,26 @@ fn rebuild_schema_state(
     shared_toml: &TomlValue,
     local_toml: &TomlValue,
 ) -> Result<(TomlValue, Vec<ConfigDiagnostic>, Vec<ConfigCategory>), String> {
-    let temp_root = create_temp_config_root();
-    fs::create_dir_all(temp_root.join(".vulcan")).map_err(|error| error.to_string())?;
-    write_temp_config_file(temp_root.join(".vulcan/config.toml"), shared_toml)?;
-    write_temp_config_file(temp_root.join(".vulcan/config.local.toml"), local_toml)?;
-    let real_obsidian = paths.vault_root().join(".obsidian");
-    if real_obsidian.exists() {
-        copy_dir_recursive(&real_obsidian, &temp_root.join(".obsidian"))?;
-    }
-
-    let temp_paths = VaultPaths::new(&temp_root);
-    let result = (|| {
-        let display = crate::app_config::build_config_show_report(&temp_paths, None, None)
-            .map_err(|error| error.to_string())?;
-        let list = crate::app_config::build_config_list_report(&temp_paths, None)
-            .map_err(|error| error.to_string())?;
-        Ok((
-            display.rendered_toml,
-            display.diagnostics,
-            build_categories(&list.entries),
-        ))
-    })();
-    remove_dir_all_best_effort(&temp_root);
-    result
-}
-
-fn create_temp_config_root() -> std::path::PathBuf {
-    std::env::temp_dir().join(format!("vulcan-config-tui-{}", Ulid::new()))
-}
-
-fn write_temp_config_file(path: impl AsRef<Path>, value: &TomlValue) -> Result<(), String> {
-    let path = path.as_ref();
-    let rendered = toml::to_string_pretty(value).map_err(|error| error.to_string())?;
-    fs::write(path, rendered).map_err(|error| error.to_string())
-}
-
-fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), String> {
-    fs::create_dir_all(destination).map_err(|error| error.to_string())?;
-    for entry in fs::read_dir(source).map_err(|error| error.to_string())? {
-        let entry = entry.map_err(|error| error.to_string())?;
-        let file_type = entry.file_type().map_err(|error| error.to_string())?;
-        let destination_path = destination.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_dir_recursive(&entry.path(), &destination_path)?;
-        } else if file_type.is_file() {
-            fs::copy(entry.path(), destination_path).map_err(|error| error.to_string())?;
-        }
-    }
-    Ok(())
-}
-
-fn remove_dir_all_best_effort(path: &Path) {
-    let _ = fs::remove_dir_all(path);
+    let display = crate::app_config::build_config_show_report_from_overrides(
+        paths,
+        shared_toml,
+        local_toml,
+        None,
+        None,
+    )
+    .map_err(|error| error.to_string())?;
+    let list = crate::app_config::build_config_list_report_from_overrides(
+        paths,
+        shared_toml,
+        local_toml,
+        None,
+    )
+    .map_err(|error| error.to_string())?;
+    Ok((
+        display.rendered_toml,
+        display.diagnostics,
+        build_categories(&list.entries),
+    ))
 }
 
 fn storage_segments_for_key(key: &str) -> Vec<String> {
@@ -2096,8 +2061,8 @@ mod tests {
     fn sample_state() -> ConfigTuiState {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
-        fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
-        fs::write(
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+        std::fs::write(
             vault_root.join(".vulcan/config.toml"),
             concat!(
                 "[periodic.daily]\n",
@@ -2108,7 +2073,7 @@ mod tests {
             ),
         )
         .expect("config should write");
-        fs::write(
+        std::fs::write(
             vault_root.join(".vulcan/config.local.toml"),
             "[periodic.daily]\ntemplate = \"Templates/Local\"\n",
         )
@@ -2224,6 +2189,37 @@ mod tests {
 
         state.unset_selected();
         assert!(state.find_entry("aliases.ship").is_none());
+    }
+
+    #[test]
+    fn create_dynamic_permission_profile_rebuilds_state_in_place() {
+        let mut state = sample_state();
+        let (category_index, entry_index) = state
+            .find_entry("permissions.profiles.<name>")
+            .expect("profile placeholder should exist");
+        state.selected_category = category_index;
+        state.selected_entry = entry_index;
+
+        state
+            .apply_create_dynamic_entry("agent", "{}")
+            .expect("permission profile should be created");
+
+        let (category_index, entry_index) = state
+            .find_entry("permissions.profiles.agent")
+            .expect("concrete profile should exist after creation");
+        state.selected_category = category_index;
+        state.selected_entry = entry_index;
+
+        let entry = state.selected_entry().clone();
+        assert!(matches!(
+            state.shared_value(&entry),
+            Some(TomlValue::Table(table)) if table.is_empty()
+        ));
+        assert!(state.find_entry("permissions.profiles.agent.git").is_some());
+        assert!(state
+            .find_entry("permissions.profiles.agent.read")
+            .is_some());
+        assert!(state.dirty);
     }
 
     #[test]
