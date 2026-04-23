@@ -9,6 +9,8 @@ use crate::AppError;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::{Mutex, OnceLock};
 
 /// The file where trusted vault paths are stored.
 fn trusted_vaults_file() -> Result<PathBuf, AppError> {
@@ -18,6 +20,12 @@ fn trusted_vaults_file() -> Result<PathBuf, AppError> {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .ok_or_else(|| AppError::operation("could not determine user config directory"))?;
     Ok(config_dir.join("vulcan").join("trusted_vaults.json"))
+}
+
+#[cfg(test)]
+pub(crate) fn test_env_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -82,13 +90,15 @@ pub fn list_trusted() -> Result<Vec<PathBuf>, AppError> {
 
 #[cfg(test)]
 mod tests {
-    use super::{add_trust, is_trusted, list_trusted, revoke_trust};
+    use super::{add_trust, is_trusted, list_trusted, revoke_trust, test_env_lock};
     use tempfile::tempdir;
 
     #[test]
     fn trust_roundtrip_marks_and_unmarks_vaults() {
+        let _lock = test_env_lock().lock().expect("test env lock");
         let config_home = tempdir().expect("config home");
         let vault = tempdir().expect("vault");
+        let previous_xdg = std::env::var_os("XDG_CONFIG_HOME");
         std::env::set_var("XDG_CONFIG_HOME", config_home.path());
 
         assert!(!is_trusted(vault.path()));
@@ -97,5 +107,9 @@ mod tests {
         assert_eq!(list_trusted().expect("trusts should load").len(), 1);
         assert!(revoke_trust(vault.path()).expect("trust should be removed"));
         assert!(!is_trusted(vault.path()));
+        match previous_xdg {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
     }
 }

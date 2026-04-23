@@ -91,6 +91,7 @@ Optional fields:
 - `permission_profile` — optional named profile that acts as a ceiling, never an escalation
 - `timeout_ms` — optional tighter execution timeout than the active session/profile limit
 - `packs` — optional MCP/describe pack membership; default `["custom"]`
+- `secrets` — optional list of named secret bindings exposed through `ctx.secrets`
 - `read_only` — hint for UX/annotations only
 - `destructive` — hint for UX/annotations only
 - `output_schema` — JSON Schema object for the tool result payload
@@ -104,6 +105,7 @@ Initial validation rules:
   tool execution.
 - Pack names must be canonical registered pack names plus `custom`; unknown pack names make the tool
   invalid.
+- Secret declarations must use unique `snake_case` names and valid environment variable names.
 
 Example:
 
@@ -120,6 +122,11 @@ sandbox: fs
 permission_profile: readonly
 timeout_ms: 5000
 packs: [custom]
+secrets:
+  - name: openai_api_key
+    env: OPENAI_API_KEY
+    required: true
+    description: API key used for the remote summarization call
 read_only: true
 input_schema:
   type: object
@@ -173,6 +180,9 @@ Available values inside the runtime:
 - `input`: validated JSON object/value matching `input_schema`
 - `ctx.tool`: manifest metadata plus resolved paths
 - `ctx.call`: invocation metadata such as tool name, timestamp, and caller surface
+- `ctx.secrets.list()`: list declared secret names
+- `ctx.secrets.get(name)`: resolve a declared secret or return `null`
+- `ctx.secrets.require(name)`: resolve a declared secret or throw if unavailable
 - `vault`, `web`, and `help()` exactly as permitted by the effective sandbox/profile
 - `tools.*` for calling other tools from JS
 - `host.*` only when the effective profile allows execution
@@ -190,6 +200,29 @@ Operational rules:
 - `console.log()` is diagnostic only; tools should communicate through return values.
 - Each invocation is isolated. No persistent JS heap or module cache is shared across calls.
 - Recursive tool calls are allowed only with an explicit depth cap and cycle detection.
+
+## Secret integration
+
+Phase 1 uses manifest-declared secret bindings backed by environment variables. `TOOL.md` declares
+the secret name, the environment variable to read, whether it is required, and optional
+documentation for humans:
+
+```yaml
+secrets:
+  - name: github_token
+    env: GITHUB_TOKEN
+    required: true
+    description: Token used for authenticated GitHub API calls
+```
+
+Rules:
+
+- Secret values never live in `TOOL.md`; the manifest contains references only.
+- Discovery exposes the binding metadata, not the secret values.
+- Missing required secrets fail at invocation time with a structured error.
+- Optional secrets resolve to `null` from `ctx.secrets.get(name)` when absent.
+- The Phase 1 abstraction is `ctx.secrets.*`; backing storage can evolve later without changing tool
+  source code.
 
 ## Shared registry and surface exposure
 

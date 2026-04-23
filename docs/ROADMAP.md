@@ -5697,8 +5697,8 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 - [x] Define manifest fields such as `name`, `description`, `input_schema`, optional `output_schema`, `runtime`, `entrypoint`, `tags`, `sandbox`, `permission_profile`, `timeout_ms`, `packs`, and UX hints like `read_only` / `destructive`
 - [x] Restrict the initial runtime set to `runtime = quickjs`; keep the manifest shape extensible enough for a later WASM backend
 - [x] Disallow `sandbox = none` for custom tools so resource limits remain active
-- [ ] Define the JS entrypoint contract: `main(input, ctx)` returns JSON-serializable output or `{ result, text }`
-- [ ] Validate tool input against `input_schema` before execution and validate returned `result` against `output_schema` after execution when present
+- [x] Define the JS entrypoint contract: `main(input, ctx)` returns JSON-serializable output or `{ result, text }`
+- [x] Validate tool input against `input_schema` before execution and validate returned `result` against `output_schema` after execution when present
 
 ### 9.24.3 Shared tool registry and CLI surface
 
@@ -5718,9 +5718,9 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 
 ### 9.24.5 Trust, permissions, and host execution
 
-- [ ] Require a trusted vault for custom tool execution, matching plugin execution rules
-- [ ] Define the effective authority as the intersection of the active caller profile, the tool's optional `permission_profile`, the declared sandbox ceiling, and normal Vulcan path/network/git/config/execute checks
-- [ ] Keep `read_only` / `destructive` manifest fields as annotations only; authorization continues to come from the permission layer
+- [x] Require a trusted vault for custom tool execution, matching plugin execution rules
+- [x] Define the effective authority as the intersection of the active caller profile, the tool's optional `permission_profile`, the declared sandbox ceiling, and normal Vulcan path/network/git/config/execute checks
+- [x] Keep `read_only` / `destructive` manifest fields as annotations only; authorization continues to come from the permission layer
 - [ ] Add `host.exec(argv, opts?)` behind `execute` permission and `host.shell(command, opts?)` behind `shell` permission
 - [ ] Prefer `host.exec()` in all docs/examples and keep `host.shell()` explicitly higher-risk
 - [ ] Add tests for "tool visible but not callable" cases: untrusted vaults, missing permission profile, denied write/network/execute/shell, and pack-enabled-but-profile-denied combinations

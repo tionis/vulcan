@@ -16,6 +16,7 @@ pub mod scan;
 pub mod serve;
 pub mod tasks;
 pub mod templates;
+pub mod tools;
 pub mod trust;
 pub mod web;
 

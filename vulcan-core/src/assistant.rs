@@ -128,6 +128,7 @@ pub struct AssistantToolSummary {
     pub permission_profile: Option<String>,
     pub timeout_ms: Option<usize>,
     pub packs: Vec<String>,
+    pub secrets: Vec<AssistantToolSecretSpec>,
     pub read_only: bool,
     pub destructive: bool,
     pub input_schema: JsonValue,
@@ -141,6 +142,16 @@ pub struct AssistantTool {
     #[serde(flatten)]
     pub summary: AssistantToolSummary,
     pub body: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssistantToolSecretSpec {
+    pub name: String,
+    pub env: String,
+    #[serde(default)]
+    pub required: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -194,6 +205,8 @@ struct ToolFrontmatter {
     timeout_ms: Option<usize>,
     #[serde(default)]
     packs: Vec<String>,
+    #[serde(default)]
+    secrets: Vec<AssistantToolSecretSpec>,
     #[serde(default)]
     read_only: bool,
     #[serde(default)]
@@ -501,6 +514,12 @@ fn parse_tool_file(
             path.display()
         )));
     }
+    if frontmatter.timeout_ms == Some(0) {
+        return Err(AssistantError::parse(format!(
+            "{} has invalid `timeout_ms`; expected a value greater than 0",
+            path.display()
+        )));
+    }
 
     let tool_dir = path.parent().ok_or_else(|| {
         AssistantError::message(format!("{} has no parent directory", path.display()))
@@ -516,6 +535,7 @@ fn parse_tool_file(
     }
 
     let packs = normalize_tool_packs(frontmatter.packs, path, options)?;
+    let secrets = normalize_tool_secrets(frontmatter.secrets, path)?;
 
     Ok(AssistantTool {
         summary: AssistantToolSummary {
@@ -531,6 +551,7 @@ fn parse_tool_file(
             permission_profile: normalize_optional(frontmatter.permission_profile),
             timeout_ms: frontmatter.timeout_ms,
             packs,
+            secrets,
             read_only: frontmatter.read_only,
             destructive: frontmatter.destructive,
             input_schema,
@@ -837,6 +858,67 @@ fn normalize_tool_packs(
     Ok(packs)
 }
 
+fn normalize_tool_secrets(
+    secrets: Vec<AssistantToolSecretSpec>,
+    path: &Path,
+) -> Result<Vec<AssistantToolSecretSpec>, AssistantError> {
+    let mut normalized = Vec::new();
+    for secret in secrets {
+        let Some(name) = normalize_optional(Some(secret.name)) else {
+            return Err(AssistantError::parse(format!(
+                "{} has a secret declaration with an empty `name`",
+                path.display()
+            )));
+        };
+        validate_tool_name(&name, path)?;
+        let Some(env) = normalize_optional(Some(secret.env)) else {
+            return Err(AssistantError::parse(format!(
+                "{} secret `{name}` must set a non-empty `env`",
+                path.display()
+            )));
+        };
+        validate_secret_env_name(&env, path, &name)?;
+        if normalized
+            .iter()
+            .any(|existing: &AssistantToolSecretSpec| existing.name == name)
+        {
+            return Err(AssistantError::parse(format!(
+                "{} declares duplicate secret `{name}`",
+                path.display()
+            )));
+        }
+        normalized.push(AssistantToolSecretSpec {
+            name,
+            env,
+            required: secret.required,
+            description: normalize_optional(secret.description),
+        });
+    }
+    Ok(normalized)
+}
+
+fn validate_secret_env_name(
+    env: &str,
+    path: &Path,
+    secret_name: &str,
+) -> Result<(), AssistantError> {
+    let valid = env
+        .chars()
+        .enumerate()
+        .all(|(index, character)| match index {
+            0 => character.is_ascii_alphabetic() || character == '_',
+            _ => character.is_ascii_alphanumeric() || character == '_',
+        });
+    if valid {
+        Ok(())
+    } else {
+        Err(AssistantError::parse(format!(
+            "{} secret `{secret_name}` has invalid env var name `{env}`",
+            path.display()
+        )))
+    }
+}
+
 fn yaml_scalar_to_string(value: &YamlValue) -> Option<String> {
     match value {
         YamlValue::Bool(value) => Some(value.to_string()),
@@ -997,6 +1079,11 @@ permission_profile: readonly
 timeout_ms: 5000
 packs:
   - custom
+secrets:
+  - name: openai
+    env: OPENAI_API_KEY
+    required: true
+    description: API key for remote summaries
 read_only: true
 input_schema:
   type: object
@@ -1048,6 +1135,8 @@ Use this when the caller already knows the note to summarize.
         assert!(tool.body.contains("already knows the note"));
         assert_eq!(tool.summary.permission_profile.as_deref(), Some("readonly"));
         assert_eq!(tool.summary.timeout_ms, Some(5000));
+        assert_eq!(tool.summary.secrets.len(), 1);
+        assert_eq!(tool.summary.secrets[0].env, "OPENAI_API_KEY");
     }
 
     #[test]
@@ -1142,5 +1231,39 @@ input_schema:
         assert!(error
             .to_string()
             .contains("uses unknown tool pack `wildcard`"));
+    }
+
+    #[test]
+    fn tool_loader_rejects_invalid_secret_env_names() {
+        let (_dir, paths) = test_paths();
+        let tool_root = paths.vault_root().join(".agents/tools/remote");
+        fs::create_dir_all(&tool_root).expect("tool dir");
+        fs::write(
+            tool_root.join("TOOL.md"),
+            r"---
+name: remote_tool
+description: Calls a remote API.
+secrets:
+  - name: api
+    env: not-valid-env
+input_schema:
+  type: object
+---
+",
+        )
+        .expect("tool manifest");
+        fs::write(tool_root.join("main.js"), "function main() {}\n").expect("tool entrypoint");
+
+        let error = list_assistant_tools(
+            &paths,
+            &AssistantToolValidationOptions {
+                allowed_pack_names: vec!["custom".to_string()],
+                ..AssistantToolValidationOptions::default()
+            },
+        )
+        .expect_err("invalid secret env should fail");
+        assert!(error
+            .to_string()
+            .contains("secret `api` has invalid env var name `not-valid-env`"));
     }
 }
