@@ -113,6 +113,9 @@ Top-level vault configuration not covered by a more specific section.
 - `assistant.skills_folder` — type: `string`; target: `shared|local`; default: `.agents/skills`
   Edit `assistant.skills_folder` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set assistant.skills_folder <value>`
+- `assistant.tools_folder` — type: `string`; target: `shared|local`; default: `.agents/tools`
+  Edit `assistant.tools_folder` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set assistant.tools_folder <value>`
 - `chunking.overlap` — type: `integer`; target: `shared|local`; default: `0`
   Edit `chunking.overlap` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set chunking.overlap <value>`
