@@ -5702,7 +5702,7 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 
 ### 9.24.3 Shared tool registry and CLI surface
 
-- [ ] Introduce an internal tool registry abstraction that can hold both built-in tools and custom tool definitions without duplicating schema/export logic
+- [x] Introduce an internal tool registry abstraction that can hold both built-in tools and custom tool definitions without duplicating schema/export logic
 - [x] Add `vulcan tool list`, `vulcan tool show <name>`, and `vulcan tool run <name> --input-json ...`
 - [x] Add authoring helpers: `vulcan tool init <name>`, `vulcan tool set <name> ...`, and `vulcan tool validate [<name>]`
 - [x] Ensure `tool show` exposes parsed metadata plus the Markdown body so humans and agents can read usage notes without opening files manually
