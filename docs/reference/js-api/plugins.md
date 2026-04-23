@@ -18,6 +18,29 @@ Default file resolution:
 - `plugins.lint` without an explicit `path` resolves to `.vulcan/plugins/lint.js`
 - `vulcan plugin list` also discovers unregistered `*.js` files in `.vulcan/plugins/`
 
+## When a plugin is the right tool
+
+Plugins are not the same thing as skills or custom tools.
+
+- A **plugin** reacts to a Vulcan lifecycle event such as note write, pre-commit, scan completion,
+  or refactor.
+- A **custom tool** is a directly callable request/response function that a human, LLM, CLI command,
+  MCP client, or JS script invokes by name.
+- A **skill** is Markdown guidance that teaches a workflow; it is not an event hook and not a typed
+  callable function.
+
+Use a plugin when the behavior should happen because an event occurred. Use a custom tool when the
+behavior should happen because someone explicitly asked for it. Use a skill when the asset is
+guidance rather than code.
+
+Examples:
+
+- "Reject writes that do not end in a newline" is a plugin.
+- "Summarize a meeting note into structured JSON" is a custom tool.
+- "Teach the agent how to do a daily review" is a skill.
+
+See also: [automation-surfaces.md](../../guide/automation-surfaces.md)
+
 ## Entrypoints
 
 Plugins expose global functions. Vulcan looks up handlers by name:
