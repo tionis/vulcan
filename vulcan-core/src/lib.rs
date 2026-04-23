@@ -93,6 +93,7 @@ pub use content_transforms::apply_content_transforms;
 pub use dataview_js::{
     evaluate_dataview_js, evaluate_dataview_js_query, evaluate_dataview_js_with_options,
     DataviewJsError, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DataviewJsSession,
+    DataviewJsToolDefinition, DataviewJsToolDescriptor, DataviewJsToolRegistry,
 };
 pub use doctor::{
     doctor_fix, doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorFixAction,

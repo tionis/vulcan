@@ -441,6 +441,7 @@ __vulcanPolicyHandler(__vulcanPolicyInput);\n",
                     profile,
                 }),
                 disable_policy_hooks: true,
+                tool_registry: None,
             },
         )
         .map_err(|error| PermissionError::PolicyHookDenied {

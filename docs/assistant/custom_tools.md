@@ -291,7 +291,8 @@ Required MCP behavior:
 
 ### Internal JS API
 
-Expose a `tools` namespace:
+Expose a `tools` namespace in the shared JS runtime used by `vulcan run`, `dataview query-js`,
+custom tools, and plugin hooks:
 
 - `tools.list()`
 - `tools.get(name)`
@@ -299,6 +300,15 @@ Expose a `tools` namespace:
 
 This lets scripts, plugins, and future built-in assistant flows compose reusable tool logic instead
 of duplicating it.
+
+Runtime behavior:
+
+- `tools.list()` returns visible custom tools with static metadata and `callable`.
+- `tools.get(name)` returns one tool definition plus its Markdown body.
+- `tools.call(name, input, opts?)` validates input, runs the target tool, and returns either the
+  plain JSON result or `{ result, text }` when the callee provided a human fallback.
+- Nested calls preserve the current effective permission ceiling.
+- Recursive call loops are rejected and nested tool composition is capped at depth 8.
 
 ## Embedded help and in-repo docs
 

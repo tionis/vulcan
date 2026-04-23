@@ -1,5 +1,5 @@
 use crate::output::{markdown_table_column_count, markdown_table_header_lines, markdown_table_row};
-use crate::{render_dataview_inline_value, trust, CliError, OutputFormat};
+use crate::{render_dataview_inline_value, tools, trust, CliError, OutputFormat};
 use rustyline::completion::{Completer, Pair};
 use rustyline::config::{CompletionType, Config, EditMode};
 use rustyline::error::ReadlineError;
@@ -40,6 +40,7 @@ const REPL_COMPLETIONS: &[&str] = &[
     "help(",
     "help(vault)",
     "help(dv)",
+    "help(tools)",
     "help(web)",
     "help(console)",
     "help(app)",
@@ -96,6 +97,11 @@ const REPL_COMPLETIONS: &[&str] = &[
     "dv.io.csv(",
     "dv.io.normalize(",
     "dv.func.",
+    // tools
+    "tools.",
+    "tools.list(",
+    "tools.get(",
+    "tools.call(",
     // web
     "web.search(",
     "web.fetch(",
@@ -117,6 +123,7 @@ pub(crate) fn run_js_repl(
     permission_profile: Option<&str>,
     no_startup: bool,
 ) -> Result<(), CliError> {
+    let tool_registry = tools::runtime_tool_registry(paths, permission_profile, "repl");
     let session = DataviewJsSession::new(
         paths,
         None,
@@ -124,6 +131,7 @@ pub(crate) fn run_js_repl(
             timeout,
             sandbox,
             permission_profile: permission_profile.map(ToOwned::to_owned),
+            tool_registry: Some(tool_registry),
             ..DataviewJsEvalOptions::default()
         },
     )
@@ -170,6 +178,7 @@ pub(crate) fn run_js_repl_with_preload(
     permission_profile: Option<&str>,
     preload_path: &str,
 ) -> Result<(), CliError> {
+    let tool_registry = tools::runtime_tool_registry(paths, permission_profile, "repl");
     let session = DataviewJsSession::new(
         paths,
         None,
@@ -177,6 +186,7 @@ pub(crate) fn run_js_repl_with_preload(
             timeout,
             sandbox,
             permission_profile: permission_profile.map(ToOwned::to_owned),
+            tool_registry: Some(tool_registry),
             ..DataviewJsEvalOptions::default()
         },
     )
@@ -1094,7 +1104,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_includes_dv_and_app_prefixes() {
+    fn completion_includes_dv_tools_and_app_prefixes() {
         let helper = ReplHelper::new(REPL_COMPLETIONS);
 
         let (_, dv_matches) = helper
@@ -1103,6 +1113,14 @@ mod tests {
         assert!(
             dv_matches.iter().any(|m| m.starts_with("dv.pages")),
             "dv. completions should include dv.pages(, got: {dv_matches:?}"
+        );
+
+        let (_, tool_matches) = helper
+            .completion_candidates("tools.", "tools.".len())
+            .expect("tools. should have completions");
+        assert!(
+            tool_matches.iter().any(|m| m.starts_with("tools.call")),
+            "tools. completions should include tools.call(, got: {tool_matches:?}"
         );
 
         let (_, app_matches) = helper

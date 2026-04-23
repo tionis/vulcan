@@ -1,7 +1,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::sync::Arc;
 use std::time::Duration;
 
+use crate::assistant::{AssistantTool, AssistantToolSummary};
 use crate::config::JsRuntimeSandbox;
 use crate::dql::DqlQueryResult;
 use crate::ResolvedPermissionProfile;
@@ -34,13 +36,51 @@ pub struct DataviewJsResult {
     pub value: Option<Value>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DataviewJsToolDescriptor {
+    #[serde(flatten)]
+    pub summary: AssistantToolSummary,
+    pub callable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DataviewJsToolDefinition {
+    #[serde(flatten)]
+    pub tool: AssistantTool,
+    pub callable: bool,
+}
+
+pub trait DataviewJsToolRegistry: Send + Sync {
+    fn list(&self) -> Result<Vec<DataviewJsToolDescriptor>, String>;
+    fn get(&self, name: &str) -> Result<DataviewJsToolDefinition, String>;
+    fn call(&self, name: &str, input: &Value, options: Option<&Value>) -> Result<Value, String>;
+}
+
+#[derive(Clone, Default)]
 pub struct DataviewJsEvalOptions {
     pub timeout: Option<Duration>,
     pub sandbox: Option<JsRuntimeSandbox>,
     pub permission_profile: Option<String>,
     pub resolved_permissions: Option<ResolvedPermissionProfile>,
     pub disable_policy_hooks: bool,
+    pub tool_registry: Option<Arc<dyn DataviewJsToolRegistry>>,
+}
+
+impl std::fmt::Debug for DataviewJsEvalOptions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("DataviewJsEvalOptions")
+            .field("timeout", &self.timeout)
+            .field("sandbox", &self.sandbox)
+            .field("permission_profile", &self.permission_profile)
+            .field("resolved_permissions", &self.resolved_permissions)
+            .field("disable_policy_hooks", &self.disable_policy_hooks)
+            .field(
+                "tool_registry",
+                &self.tool_registry.as_ref().map(|_| "<registered>"),
+            )
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -202,7 +242,10 @@ mod runtime {
     use serde::de::DeserializeOwned;
     use serde::Serialize;
 
-    use super::{DataviewJsError, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult};
+    use super::{
+        DataviewJsError, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
+        DataviewJsToolDescriptor, DataviewJsToolRegistry,
+    };
     use crate::config::{
         load_vault_config, JsRuntimeConfig, JsRuntimeSandbox, VaultConfig, WebConfig,
     };
@@ -240,7 +283,6 @@ mod runtime {
     use serde_json::{Map, Value};
     use std::cmp::Ordering;
 
-    #[derive(Debug)]
     struct JsEvalState {
         paths: VaultPaths,
         current_file: Option<String>,
@@ -251,6 +293,7 @@ mod runtime {
         sandbox: JsRuntimeSandbox,
         permissions: Option<ProfilePermissionGuard>,
         transaction: Mutex<Option<JsTransactionState>>,
+        tool_registry: Option<Arc<dyn DataviewJsToolRegistry>>,
     }
 
     #[derive(Debug, Default)]
@@ -2167,12 +2210,31 @@ const console = {
   },
 };
 
+const tools = {
+  list() {
+    return JSON.parse(__vulcan_tools_list_json());
+  },
+  get(name) {
+    return JSON.parse(__vulcan_tools_get_json(String(name)));
+  },
+  call(name, input = {}, opts = undefined) {
+    return JSON.parse(
+      __vulcan_tools_call_json(
+        String(name),
+        JSON.stringify(input),
+        JSON.stringify(opts ?? null)
+      )
+    );
+  },
+};
+
 function help(obj) {
   if (obj === undefined) {
     return [
       "Vulcan JS Runtime — available globals:",
       "  vault    — note reading, writing, search, graph, daily notes",
       "  dv       — Dataview-compatible query API (dv.pages, dv.table, etc.)",
+      "  tools    — registry-backed custom tools (tools.list, tools.get, tools.call)",
       "  web      — external web search and fetch (requires --sandbox net)",
       "  console  — console.log() for output",
       "  app      — Obsidian API compatibility stub (app.vault.*)",
@@ -2449,6 +2511,55 @@ See also: web.search(), vault.transaction()`
 );
 
 __vulcanRegisterHelp(
+  tools.list,
+  `tools.list(): Array<CustomTool>
+
+List visible vault-native custom tools with metadata such as description, sandbox, packs, and
+callability.
+
+Example:
+  tools.list().map((tool) => tool.name)
+
+See also: tools.get(), tools.call()`
+);
+__vulcanRegisterHelp(
+  tools.get,
+  `tools.get(name: string): CustomTool
+
+Read one custom tool definition, including static metadata and the Markdown documentation body.
+
+Parameters:
+  name - Tool name, directory name, or manifest path.
+
+Example:
+  tools.get("summarize_meeting").body
+
+See also: tools.list(), tools.call()`
+);
+__vulcanRegisterHelp(
+  tools.call,
+  `tools.call(name: string, input?: object, opts?: object): unknown
+
+Invoke one custom tool with validated JSON input.
+
+Parameters:
+  name  - Tool name to execute.
+  input - Optional JSON-serializable input object; defaults to {}.
+  opts  - Reserved for future call options.
+
+Returns:
+  The tool's JSON result, or { result, text } when the called tool provided a human fallback.
+
+Notes:
+  Nested tool calls preserve the current permission ceiling.
+  Recursive tool-call loops are rejected, with a maximum nested depth of 8.
+
+Example:
+  tools.call("summarize_meeting", { note: "Meetings/Weekly.md" })
+
+See also: tools.list(), tools.get()`
+);
+__vulcanRegisterHelp(
   vault,
   `vault — Vulcan vault API
 
@@ -2492,6 +2603,17 @@ __vulcanRegisterHelp(
   dv.luxon.*               — Luxon DateTime and Duration classes
 
 Use dv.pages('#tag') or dv.pages('"Folder"') to filter.`
+);
+
+__vulcanRegisterHelp(
+  tools,
+  `tools — Vault-native custom tool registry
+
+  tools.list()             — list visible custom tools
+  tools.get(name)          — read one tool manifest plus documentation body
+  tools.call(name, input?) — invoke one custom tool with validated JSON input
+
+Use help(tools.call) for execution details and nested-call limits.`
 );
 
 __vulcanRegisterHelp(
@@ -2578,6 +2700,7 @@ Prefer vault.* over app.vault.* for full Vulcan-native functionality.`
 
 globalThis.dv = dv;
 globalThis.vault = vault;
+globalThis.tools = tools;
 globalThis.web = web;
 globalThis.console = console;
 globalThis.help = help;
@@ -2673,6 +2796,7 @@ globalThis.Function = undefined;
                 sandbox,
                 permissions,
                 transaction: Mutex::new(None),
+                tool_registry: options.tool_registry,
             });
             let outputs = Arc::new(Mutex::new(Vec::new()));
             let runtime =
@@ -3367,6 +3491,70 @@ globalThis.Function = undefined;
                         .unwrap_or("")
                         .to_string()
                 }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let tools_list_registry = state.tool_registry.clone();
+        globals
+            .set(
+                "__vulcan_tools_list_json",
+                Func::from(move |ctx: Ctx<'_>| {
+                    let Some(registry) = tools_list_registry.as_ref() else {
+                        return to_json_string(&ctx, Vec::<DataviewJsToolDescriptor>::new());
+                    };
+                    to_json_string(
+                        &ctx,
+                        registry
+                            .list()
+                            .map_err(|error| Exception::throw_message(&ctx, &error))?,
+                    )
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let tools_get_registry = state.tool_registry.clone();
+        globals
+            .set(
+                "__vulcan_tools_get_json",
+                Func::from(move |ctx: Ctx<'_>, name: String| {
+                    let Some(registry) = tools_get_registry.as_ref() else {
+                        return Err(Exception::throw_message(
+                            &ctx,
+                            "custom tool registry is not available in this runtime",
+                        ));
+                    };
+                    to_json_string(
+                        &ctx,
+                        registry
+                            .get(&name)
+                            .map_err(|error| Exception::throw_message(&ctx, &error))?,
+                    )
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let tools_call_registry = state.tool_registry.clone();
+        globals
+            .set(
+                "__vulcan_tools_call_json",
+                Func::from(
+                    move |ctx: Ctx<'_>, name: String, input_json: String, options_json: String| {
+                        let Some(registry) = tools_call_registry.as_ref() else {
+                            return Err(Exception::throw_message(
+                                &ctx,
+                                "custom tool registry is not available in this runtime",
+                            ));
+                        };
+                        let input = parse_json_string::<Value>(&ctx, &input_json)?;
+                        let options = parse_json_string::<Option<Value>>(&ctx, &options_json)?;
+                        to_json_string(
+                            &ctx,
+                            registry
+                                .call(&name, &input, options.as_ref())
+                                .map_err(|error| Exception::throw_message(&ctx, &error))?,
+                        )
+                    },
+                ),
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 

@@ -55,12 +55,14 @@ mod plugins {
 mod tools {
     use crate::CliError;
     use serde_json::Value;
+    use std::sync::Arc;
     pub(crate) use vulcan_app::tools::{
-        validate_custom_tools, CustomToolDescriptor, CustomToolInitExample, CustomToolInitOptions,
-        CustomToolRegistryOptions, CustomToolRunOptions, CustomToolRunReport, CustomToolSetOptions,
-        CustomToolShowReport, CustomToolValidationReport, CustomToolWriteReport,
+        build_custom_tool_js_registry, validate_custom_tools, CustomToolDescriptor,
+        CustomToolInitExample, CustomToolInitOptions, CustomToolRegistryOptions,
+        CustomToolRunOptions, CustomToolRunReport, CustomToolSetOptions, CustomToolShowReport,
+        CustomToolValidationReport, CustomToolWriteReport,
     };
-    use vulcan_core::{JsRuntimeSandbox, VaultPaths};
+    use vulcan_core::{DataviewJsToolRegistry, JsRuntimeSandbox, VaultPaths};
 
     pub(crate) fn list_custom_tools(
         paths: &VaultPaths,
@@ -94,6 +96,19 @@ mod tools {
             run_options,
         )
         .map_err(CliError::operation)
+    }
+
+    pub(crate) fn runtime_tool_registry(
+        paths: &VaultPaths,
+        active_permission_profile: Option<&str>,
+        surface: &str,
+    ) -> Arc<dyn DataviewJsToolRegistry> {
+        build_custom_tool_js_registry(
+            paths,
+            active_permission_profile,
+            surface,
+            &CustomToolRegistryOptions::default(),
+        )
     }
 
     pub(crate) fn init_custom_tool(
@@ -2286,6 +2301,7 @@ fn run_js_command(
     permission_profile: Option<&str>,
 ) -> Result<DataviewJsResult, CliError> {
     let source = load_run_script_source(paths, script, script_mode)?;
+    let tool_registry = tools::runtime_tool_registry(paths, permission_profile, "run");
     evaluate_dataview_js_with_options(
         paths,
         strip_shebang_line(&source),
@@ -2294,6 +2310,7 @@ fn run_js_command(
             timeout,
             sandbox,
             permission_profile: permission_profile.map(ToOwned::to_owned),
+            tool_registry: Some(tool_registry),
             ..DataviewJsEvalOptions::default()
         },
     )
@@ -2307,6 +2324,7 @@ fn run_js_eval(
     sandbox: Option<JsRuntimeSandbox>,
     permission_profile: Option<&str>,
 ) -> Result<DataviewJsResult, CliError> {
+    let tool_registry = tools::runtime_tool_registry(paths, permission_profile, "run");
     evaluate_dataview_js_with_options(
         paths,
         code,
@@ -2315,6 +2333,7 @@ fn run_js_eval(
             timeout,
             sandbox,
             permission_profile: permission_profile.map(ToOwned::to_owned),
+            tool_registry: Some(tool_registry),
             ..DataviewJsEvalOptions::default()
         },
     )

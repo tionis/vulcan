@@ -5711,10 +5711,10 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 
 ### 9.24.4 Internal JS API integration
 
-- [ ] Add a `tools` namespace to the JS runtime with `tools.list()`, `tools.get(name)`, and `tools.call(name, input, opts?)`
-- [ ] Make the same registry available to custom tools, general `vulcan run` scripts, and future assistant-internal JS helpers
-- [ ] Add recursion/cycle protection and a clear maximum call depth for tool-to-tool composition
-- [ ] Ensure nested calls preserve the effective permission ceiling rather than recomputing broader access
+- [x] Add a `tools` namespace to the JS runtime with `tools.list()`, `tools.get(name)`, and `tools.call(name, input, opts?)`
+- [x] Make the same registry available to custom tools, general `vulcan run` scripts, and future assistant-internal JS helpers
+- [x] Add recursion/cycle protection and a clear maximum call depth for tool-to-tool composition
+- [x] Ensure nested calls preserve the effective permission ceiling rather than recomputing broader access
 
 ### 9.24.5 Trust, permissions, and host execution
 
