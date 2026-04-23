@@ -229,8 +229,11 @@ mod disabled_tests {
 mod runtime {
     use std::collections::{HashMap, HashSet, VecDeque};
     use std::fs;
+    use std::io::Read;
     use std::path::{Component, Path, PathBuf};
+    use std::process::{Command as ProcessCommand, Stdio};
     use std::sync::{Arc, Mutex};
+    use std::thread;
     use std::time::{Duration, Instant};
 
     use csv::ReaderBuilder;
@@ -240,7 +243,7 @@ mod runtime {
         CatchResultExt, CaughtError, Context, Ctx, Exception, Runtime, Value as JsValue,
     };
     use serde::de::DeserializeOwned;
-    use serde::Serialize;
+    use serde::{Deserialize, Serialize};
 
     use super::{
         DataviewJsError, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
@@ -290,8 +293,10 @@ mod runtime {
         periodic_config: crate::PeriodicConfig,
         inbox_config: crate::InboxConfig,
         web_config: WebConfig,
+        shell_path: Option<PathBuf>,
         sandbox: JsRuntimeSandbox,
         permissions: Option<ProfilePermissionGuard>,
+        runtime_timeout: Option<Duration>,
         transaction: Mutex<Option<JsTransactionState>>,
         tool_registry: Option<Arc<dyn DataviewJsToolRegistry>>,
     }
@@ -301,6 +306,10 @@ mod runtime {
         originals: HashMap<String, Option<String>>,
     }
 
+    const DEFAULT_HOST_TIMEOUT: Duration = Duration::from_secs(30);
+    const DEFAULT_HOST_MAX_OUTPUT_BYTES: usize = 64 * 1024;
+    const MAX_HOST_MAX_OUTPUT_BYTES: usize = 1024 * 1024;
+
     #[derive(Debug, Clone, Serialize)]
     struct QueryResponse {
         successful: bool,
@@ -308,6 +317,44 @@ mod runtime {
         value: Option<DqlQueryResult>,
         #[serde(skip_serializing_if = "Option::is_none")]
         error: Option<String>,
+    }
+
+    #[derive(Debug, Clone, Deserialize, Default)]
+    #[serde(default, deny_unknown_fields)]
+    struct HostCommandOptions {
+        cwd: Option<String>,
+        env: Option<Map<String, Value>>,
+        timeout_ms: Option<u64>,
+        max_output_bytes: Option<usize>,
+    }
+
+    #[derive(Debug, Clone, Serialize)]
+    #[serde(tag = "kind", rename_all = "snake_case")]
+    enum HostInvocation {
+        Exec { argv: Vec<String> },
+        Shell { command: String, shell: String },
+    }
+
+    #[allow(clippy::struct_excessive_bools)]
+    #[derive(Debug, Clone, Serialize)]
+    struct HostProcessReport {
+        invocation: HostInvocation,
+        cwd: String,
+        success: bool,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        exit_code: Option<i32>,
+        stdout: String,
+        stderr: String,
+        truncated_stdout: bool,
+        truncated_stderr: bool,
+        timed_out: bool,
+        duration_ms: u128,
+    }
+
+    #[derive(Debug)]
+    struct CapturedProcessOutput {
+        text: String,
+        truncated: bool,
     }
 
     pub struct DataviewJsSession {
@@ -2228,6 +2275,19 @@ const tools = {
   },
 };
 
+const host = {
+  exec(argv, opts = {}) {
+    return JSON.parse(
+      __vulcan_host_exec_json(JSON.stringify(argv), JSON.stringify(opts ?? null))
+    );
+  },
+  shell(command, opts = {}) {
+    return JSON.parse(
+      __vulcan_host_shell_json(String(command), JSON.stringify(opts ?? null))
+    );
+  },
+};
+
 function help(obj) {
   if (obj === undefined) {
     return [
@@ -2235,6 +2295,7 @@ function help(obj) {
       "  vault    — note reading, writing, search, graph, daily notes",
       "  dv       — Dataview-compatible query API (dv.pages, dv.table, etc.)",
       "  tools    — registry-backed custom tools (tools.list, tools.get, tools.call)",
+      "  host     — permission-gated host process execution (host.exec, host.shell)",
       "  web      — external web search and fetch (requires --sandbox net)",
       "  console  — console.log() for output",
       "  app      — Obsidian API compatibility stub (app.vault.*)",
@@ -2617,6 +2678,65 @@ Use help(tools.call) for execution details and nested-call limits.`
 );
 
 __vulcanRegisterHelp(
+  host.exec,
+  `host.exec(argv: string[], opts?: { cwd?: string, env?: object, timeout_ms?: number, max_output_bytes?: number }): HostProcessReport
+
+Run one local command without shell parsing.
+
+Parameters:
+  argv             - Explicit argument vector. argv[0] is the program to execute.
+  opts.cwd         - Optional working directory relative to the current script file or vault root.
+  opts.env         - Optional environment overrides. null removes one inherited variable.
+  opts.timeout_ms  - Optional tighter timeout cap for this subprocess.
+  opts.max_output_bytes - Optional per-stream stdout/stderr capture cap.
+
+Returns:
+  A structured process report with success, exit_code, stdout, stderr, truncation flags, and
+  duration_ms.
+
+Permissions:
+  Requires execute access under the active permission profile.
+  The effective timeout is capped by the surrounding JS runtime timeout.
+
+Example:
+  host.exec(["git", "status", "--short"], { cwd: "." })
+
+See also: host.shell(), tools.call()`
+);
+__vulcanRegisterHelp(
+  host.shell,
+  `host.shell(command: string, opts?: { cwd?: string, env?: object, timeout_ms?: number, max_output_bytes?: number }): HostProcessReport
+
+Run one local command string through the configured shell.
+
+Parameters:
+  command          - Shell command string.
+  opts.cwd         - Optional working directory relative to the current script file or vault root.
+  opts.env         - Optional environment overrides. null removes one inherited variable.
+  opts.timeout_ms  - Optional tighter timeout cap for this subprocess.
+  opts.max_output_bytes - Optional per-stream stdout/stderr capture cap.
+
+Permissions:
+  Requires shell access under the active permission profile.
+  This is higher risk than host.exec() because shell parsing and expansion are involved.
+
+Example:
+  host.shell("git status --short", { cwd: "." })
+
+See also: host.exec(), help(host)`
+);
+__vulcanRegisterHelp(
+  host,
+  `host — Permission-gated host process execution
+
+  host.exec(argv, opts?)     — execute one argument vector without a shell
+  host.shell(command, opts?) — execute one shell command string
+
+Prefer host.exec() whenever argument-vector execution is sufficient.
+Use help(host.exec) or help(host.shell) for timeout, cwd, and output details.`
+);
+
+__vulcanRegisterHelp(
   web,
   `web — External web access (requires --sandbox net)
 
@@ -2701,6 +2821,7 @@ Prefer vault.* over app.vault.* for full Vulcan-native functionality.`
 globalThis.dv = dv;
 globalThis.vault = vault;
 globalThis.tools = tools;
+globalThis.host = host;
 globalThis.web = web;
 globalThis.console = console;
 globalThis.help = help;
@@ -2786,6 +2907,17 @@ globalThis.Function = undefined;
             let sandbox = options
                 .sandbox
                 .unwrap_or(loaded_config.js_runtime.default_sandbox);
+            let timeout = effective_timeout(
+                &loaded_config,
+                sandbox,
+                options.timeout,
+                permissions.as_ref(),
+            )?;
+            if timeout.is_some_and(|timeout| timeout.is_zero()) {
+                return Err(DataviewJsError::Message(
+                    "DataviewJS timeout must be greater than 0ms".to_string(),
+                ));
+            }
             let state = Arc::new(JsEvalState {
                 paths: paths.clone(),
                 current_file: current_file.map(ToOwned::to_owned),
@@ -2793,8 +2925,10 @@ globalThis.Function = undefined;
                 periodic_config: loaded_config.periodic.clone(),
                 inbox_config: loaded_config.inbox.clone(),
                 web_config: loaded_config.web.clone(),
+                shell_path: loaded_config.templates.shell_path.clone(),
                 sandbox,
                 permissions,
+                runtime_timeout: timeout,
                 transaction: Mutex::new(None),
                 tool_registry: options.tool_registry,
             });
@@ -2809,18 +2943,6 @@ globalThis.Function = undefined;
                 runtime.set_max_stack_size(runtime_stack_limit_bytes(
                     &loaded_config.js_runtime,
                     state.permissions.as_ref(),
-                ));
-            }
-
-            let timeout = effective_timeout(
-                &loaded_config,
-                sandbox,
-                options.timeout,
-                state.permissions.as_ref(),
-            )?;
-            if timeout.is_some_and(|timeout| timeout.is_zero()) {
-                return Err(DataviewJsError::Message(
-                    "DataviewJS timeout must be greater than 0ms".to_string(),
                 ));
             }
             let timeout_description =
@@ -3558,6 +3680,44 @@ globalThis.Function = undefined;
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
+        let host_exec_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_host_exec_json",
+                Func::from(
+                    move |ctx: Ctx<'_>, argv_json: String, options_json: String| {
+                        let argv = parse_json_string::<Value>(&ctx, &argv_json)?;
+                        let options =
+                            parse_json_string::<Option<HostCommandOptions>>(&ctx, &options_json)?
+                                .unwrap_or_default();
+                        to_json_string(
+                            &ctx,
+                            run_host_exec(&host_exec_state, &argv, &options).map_err(|error| {
+                                Exception::throw_message(&ctx, &error.to_string())
+                            })?,
+                        )
+                    },
+                ),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let host_shell_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_host_shell_json",
+                Func::from(move |ctx: Ctx<'_>, command: String, options_json: String| {
+                    let options =
+                        parse_json_string::<Option<HostCommandOptions>>(&ctx, &options_json)?
+                            .unwrap_or_default();
+                    to_json_string(
+                        &ctx,
+                        run_host_shell(&host_shell_state, &command, &options)
+                            .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
+                    )
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
         Ok(())
     }
 
@@ -4143,6 +4303,27 @@ globalThis.Function = undefined;
         Ok(())
     }
 
+    fn ensure_execute_access(state: &JsEvalState, _operation: &str) -> Result<(), DataviewJsError> {
+        if let Some(permissions) = state.permissions.as_ref() {
+            permissions
+                .check_execute()
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn ensure_shell_access(state: &JsEvalState, _operation: &str) -> Result<(), DataviewJsError> {
+        if let Some(permissions) = state.permissions.as_ref() {
+            permissions
+                .check_shell()
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+            permissions
+                .check_execute()
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        }
+        Ok(())
+    }
+
     fn ensure_write_access(
         state: &JsEvalState,
         path: &str,
@@ -4226,6 +4407,306 @@ globalThis.Function = undefined;
         scan_vault(&state.paths, ScanMode::Incremental)
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
         reload_note_index(state)
+    }
+
+    fn run_host_exec(
+        state: &JsEvalState,
+        argv: &Value,
+        options: &HostCommandOptions,
+    ) -> Result<HostProcessReport, DataviewJsError> {
+        ensure_execute_access(state, "host.exec()")?;
+        let argv = parse_host_argv(argv)?;
+        let cwd = resolve_host_cwd(state, options.cwd.as_deref())?;
+        let timeout = effective_host_timeout(options.timeout_ms, state.runtime_timeout)?;
+        let max_output_bytes = effective_host_max_output_bytes(options.max_output_bytes)?;
+        let mut process = ProcessCommand::new(&argv[0]);
+        process
+            .args(&argv[1..])
+            .current_dir(&cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        apply_host_env_overrides(&mut process, options.env.as_ref());
+        run_host_process(
+            process,
+            HostInvocation::Exec { argv },
+            &cwd,
+            timeout,
+            max_output_bytes,
+        )
+    }
+
+    fn run_host_shell(
+        state: &JsEvalState,
+        command: &str,
+        options: &HostCommandOptions,
+    ) -> Result<HostProcessReport, DataviewJsError> {
+        ensure_shell_access(state, "host.shell()")?;
+        let command = command.trim();
+        if command.is_empty() {
+            return Err(DataviewJsError::Message(
+                "host.shell() requires a non-empty command".to_string(),
+            ));
+        }
+        let cwd = resolve_host_cwd(state, options.cwd.as_deref())?;
+        let timeout = effective_host_timeout(options.timeout_ms, state.runtime_timeout)?;
+        let max_output_bytes = effective_host_max_output_bytes(options.max_output_bytes)?;
+        let shell = state
+            .shell_path
+            .as_deref()
+            .unwrap_or(default_system_shell());
+        let mut process = ProcessCommand::new(shell);
+        configure_host_shell_command(&mut process, state.shell_path.as_deref(), command);
+        process
+            .current_dir(&cwd)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        apply_host_env_overrides(&mut process, options.env.as_ref());
+        run_host_process(
+            process,
+            HostInvocation::Shell {
+                command: command.to_string(),
+                shell: shell.display().to_string(),
+            },
+            &cwd,
+            timeout,
+            max_output_bytes,
+        )
+    }
+
+    fn parse_host_argv(argv: &Value) -> Result<Vec<String>, DataviewJsError> {
+        let Value::Array(items) = argv else {
+            return Err(DataviewJsError::Message(
+                "host.exec() requires argv to be a JSON array of strings".to_string(),
+            ));
+        };
+        if items.is_empty() {
+            return Err(DataviewJsError::Message(
+                "host.exec() requires argv[0] to name a program".to_string(),
+            ));
+        }
+        items
+            .iter()
+            .map(|item| match item {
+                Value::String(value) => Ok(value.clone()),
+                _ => Err(DataviewJsError::Message(
+                    "host.exec() requires argv to be a JSON array of strings".to_string(),
+                )),
+            })
+            .collect()
+    }
+
+    fn resolve_host_cwd(
+        state: &JsEvalState,
+        cwd: Option<&str>,
+    ) -> Result<PathBuf, DataviewJsError> {
+        let Some(cwd) = cwd.filter(|value| !value.trim().is_empty()) else {
+            return Ok(state.paths.vault_root().to_path_buf());
+        };
+        let normalized = normalize_vault_path(
+            state.paths.vault_root(),
+            cwd,
+            state.current_file.as_deref(),
+            false,
+        )?;
+        let absolute = state.paths.vault_root().join(&normalized);
+        if !absolute.is_dir() {
+            return Err(DataviewJsError::Message(format!(
+                "host execution cwd `{normalized}` is not a directory"
+            )));
+        }
+        Ok(absolute)
+    }
+
+    fn effective_host_timeout(
+        requested_timeout_ms: Option<u64>,
+        runtime_timeout: Option<Duration>,
+    ) -> Result<Duration, DataviewJsError> {
+        let inherited_timeout = runtime_timeout.unwrap_or(DEFAULT_HOST_TIMEOUT);
+        match requested_timeout_ms {
+            Some(0) => Err(DataviewJsError::Message(
+                "host execution timeout must be greater than 0ms".to_string(),
+            )),
+            Some(timeout_ms) => Ok(inherited_timeout.min(Duration::from_millis(timeout_ms))),
+            None => Ok(inherited_timeout),
+        }
+    }
+
+    fn effective_host_max_output_bytes(
+        requested_max_output_bytes: Option<usize>,
+    ) -> Result<usize, DataviewJsError> {
+        match requested_max_output_bytes {
+            Some(0) => Err(DataviewJsError::Message(
+                "host execution max_output_bytes must be greater than 0".to_string(),
+            )),
+            Some(max_output_bytes) => Ok(max_output_bytes.min(MAX_HOST_MAX_OUTPUT_BYTES)),
+            None => Ok(DEFAULT_HOST_MAX_OUTPUT_BYTES),
+        }
+    }
+
+    fn apply_host_env_overrides(process: &mut ProcessCommand, env: Option<&Map<String, Value>>) {
+        let Some(env) = env else {
+            return;
+        };
+        for (key, value) in env {
+            match value {
+                Value::Null => {
+                    process.env_remove(key);
+                }
+                other => {
+                    process.env(key, json_value_to_host_env_string(other));
+                }
+            }
+        }
+    }
+
+    fn json_value_to_host_env_string(value: &Value) -> String {
+        match value {
+            Value::Null => String::new(),
+            Value::Bool(value) => value.to_string(),
+            Value::Number(value) => value.to_string(),
+            Value::String(value) => value.clone(),
+            Value::Array(items) => items
+                .iter()
+                .map(json_value_to_host_env_string)
+                .collect::<Vec<_>>()
+                .join(","),
+            Value::Object(object) => Value::Object(object.clone()).to_string(),
+        }
+    }
+
+    fn run_host_process(
+        mut process: ProcessCommand,
+        invocation: HostInvocation,
+        cwd: &Path,
+        timeout: Duration,
+        max_output_bytes: usize,
+    ) -> Result<HostProcessReport, DataviewJsError> {
+        let mut child = process
+            .spawn()
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| DataviewJsError::Message("failed to capture stdout".to_string()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| DataviewJsError::Message("failed to capture stderr".to_string()))?;
+        let stdout_handle =
+            thread::spawn(move || read_captured_process_output(stdout, max_output_bytes));
+        let stderr_handle =
+            thread::spawn(move || read_captured_process_output(stderr, max_output_bytes));
+        let started = Instant::now();
+        let mut timed_out = false;
+        let status = loop {
+            if let Some(status) = child
+                .try_wait()
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?
+            {
+                break status;
+            }
+            if started.elapsed() >= timeout {
+                timed_out = true;
+                let _ = child.kill();
+                break child
+                    .wait()
+                    .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        let stdout = stdout_handle
+            .join()
+            .map_err(|_| DataviewJsError::Message("stdout capture thread panicked".to_string()))?
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        let stderr = stderr_handle
+            .join()
+            .map_err(|_| DataviewJsError::Message("stderr capture thread panicked".to_string()))?
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        Ok(HostProcessReport {
+            invocation,
+            cwd: cwd.display().to_string(),
+            success: status.success() && !timed_out,
+            exit_code: status.code(),
+            stdout: stdout.text,
+            stderr: stderr.text,
+            truncated_stdout: stdout.truncated,
+            truncated_stderr: stderr.truncated,
+            timed_out,
+            duration_ms: started.elapsed().as_millis(),
+        })
+    }
+
+    fn read_captured_process_output(
+        mut reader: impl Read,
+        max_output_bytes: usize,
+    ) -> std::io::Result<CapturedProcessOutput> {
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 8192];
+        let mut truncated = false;
+        loop {
+            let read = reader.read(&mut chunk)?;
+            if read == 0 {
+                break;
+            }
+            if buffer.len() < max_output_bytes {
+                let remaining = max_output_bytes - buffer.len();
+                let take = remaining.min(read);
+                buffer.extend_from_slice(&chunk[..take]);
+                if take < read {
+                    truncated = true;
+                }
+            } else {
+                truncated = true;
+            }
+        }
+        Ok(CapturedProcessOutput {
+            text: String::from_utf8_lossy(&buffer).into_owned(),
+            truncated,
+        })
+    }
+
+    fn default_system_shell() -> &'static Path {
+        #[cfg(target_os = "windows")]
+        {
+            Path::new("powershell")
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            Path::new("/bin/sh")
+        }
+    }
+
+    fn configure_host_shell_command(
+        process: &mut ProcessCommand,
+        shell: Option<&Path>,
+        command: &str,
+    ) {
+        #[cfg(target_os = "windows")]
+        {
+            let shell_name = shell
+                .and_then(|value| value.file_name())
+                .and_then(|value| value.to_str())
+                .unwrap_or("powershell")
+                .to_ascii_lowercase();
+            if shell_name == "cmd" || shell_name == "cmd.exe" {
+                process.arg("/C").arg(command);
+            } else if shell_name.contains("powershell")
+                || shell_name == "pwsh"
+                || shell_name == "pwsh.exe"
+            {
+                process.arg("-NoProfile").arg("-Command").arg(command);
+            } else {
+                process.arg("-lc").arg(command);
+            }
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = shell;
+            process.arg("-lc").arg(command);
+        }
     }
 
     fn mutation_note_response(state: &JsEvalState, path: &str) -> Result<Value, DataviewJsError> {
@@ -6083,6 +6564,219 @@ cpu_limit_ms = 25
                 err.to_string().contains("not supported"),
                 "error should explain why workspace is unavailable, got: {err}"
             );
+        }
+
+        #[test]
+        fn dataviewjs_host_exec_and_shell_respect_permissions() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
+            copy_fixture_vault("dataview", &vault_root);
+            write_host_permissions_config(&vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let exec_argv =
+                serde_json::to_string(&test_host_exec_argv(&test_host_output_command("alpha")))
+                    .expect("argv json should serialize");
+            let exec_result = evaluate_dataview_js_with_options(
+                &paths,
+                &format!("host.exec({exec_argv})"),
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    timeout: Some(Duration::from_secs(1)),
+                    sandbox: Some(JsRuntimeSandbox::Strict),
+                    permission_profile: Some("exec_only".to_string()),
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect("host.exec should succeed under execute access");
+            let exec_value = exec_result.value.expect("host.exec should return a value");
+            assert_eq!(exec_value["success"], Value::Bool(true));
+            assert_eq!(exec_value["stdout"], Value::String("alpha".to_string()));
+            assert_eq!(exec_value["timed_out"], Value::Bool(false));
+            assert_eq!(
+                exec_value["invocation"]["kind"],
+                Value::String("exec".to_string())
+            );
+
+            let shell_command =
+                serde_json::to_string(&test_host_output_command("alpha")).expect("shell string");
+            let shell_error = evaluate_dataview_js_with_options(
+                &paths,
+                &format!("host.shell({shell_command})"),
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    timeout: Some(Duration::from_secs(1)),
+                    sandbox: Some(JsRuntimeSandbox::Strict),
+                    permission_profile: Some("exec_only".to_string()),
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect_err("shell access should be denied without shell permission");
+            assert!(shell_error
+                .to_string()
+                .contains("does not allow shell access"));
+
+            let shell_result = evaluate_dataview_js_with_options(
+                &paths,
+                &format!("host.shell({shell_command})"),
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    timeout: Some(Duration::from_secs(1)),
+                    sandbox: Some(JsRuntimeSandbox::Strict),
+                    permission_profile: Some("shell_runner".to_string()),
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect("host.shell should succeed with shell access");
+            let shell_value = shell_result
+                .value
+                .expect("host.shell should return a value");
+            assert_eq!(shell_value["success"], Value::Bool(true));
+            assert_eq!(shell_value["stdout"], Value::String("alpha".to_string()));
+            assert_eq!(
+                shell_value["invocation"]["kind"],
+                Value::String("shell".to_string())
+            );
+        }
+
+        #[test]
+        fn dataviewjs_host_exec_inherits_runtime_timeout_and_truncates_output() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
+            copy_fixture_vault("dataview", &vault_root);
+            write_host_permissions_config(&vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let timeout_argv =
+                serde_json::to_string(&test_host_exec_argv(&test_host_sleep_command(1_000)))
+                    .expect("argv json should serialize");
+            let started = Instant::now();
+            let timeout_result = evaluate_dataview_js_with_options(
+                &paths,
+                &format!("host.exec({timeout_argv}, {{ timeout_ms: 5000 }})"),
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    timeout: Some(Duration::from_millis(75)),
+                    sandbox: Some(JsRuntimeSandbox::Strict),
+                    permission_profile: Some("exec_only".to_string()),
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect("timed-out host.exec should still return a report");
+            assert!(started.elapsed() < Duration::from_secs(1));
+            let timeout_value = timeout_result
+                .value
+                .expect("timed-out host.exec should return a value");
+            assert_eq!(timeout_value["success"], Value::Bool(false));
+            assert_eq!(timeout_value["timed_out"], Value::Bool(true));
+
+            let noisy_argv = serde_json::to_string(&test_host_exec_argv(
+                &test_host_output_command(&"a".repeat(256)),
+            ))
+            .expect("argv json should serialize");
+            let noisy_result = evaluate_dataview_js_with_options(
+                &paths,
+                &format!("host.exec({noisy_argv}, {{ max_output_bytes: 32 }})"),
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    timeout: Some(Duration::from_secs(1)),
+                    sandbox: Some(JsRuntimeSandbox::Strict),
+                    permission_profile: Some("exec_only".to_string()),
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect("host.exec should capture truncated output");
+            let noisy_value = noisy_result
+                .value
+                .expect("host.exec should return a truncation report");
+            assert_eq!(noisy_value["success"], Value::Bool(true));
+            assert_eq!(noisy_value["truncated_stdout"], Value::Bool(true));
+            assert_eq!(
+                noisy_value["stdout"]
+                    .as_str()
+                    .expect("stdout should be a string")
+                    .len(),
+                32
+            );
+        }
+
+        fn write_host_permissions_config(vault_root: &Path) {
+            fs::write(
+                vault_root.join(".vulcan/config.toml"),
+                r#"
+[permissions.profiles.exec_only]
+read = "all"
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "read"
+execute = "allow"
+shell = "deny"
+
+[permissions.profiles.shell_runner]
+read = "all"
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "deny"
+config = "read"
+execute = "allow"
+shell = "allow"
+"#,
+            )
+            .expect("host permission config should be written");
+        }
+
+        fn test_host_exec_argv(command: &str) -> Vec<String> {
+            #[cfg(target_os = "windows")]
+            {
+                vec![
+                    default_system_shell().display().to_string(),
+                    "-NoProfile".to_string(),
+                    "-Command".to_string(),
+                    command.to_string(),
+                ]
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                vec![
+                    default_system_shell().display().to_string(),
+                    "-lc".to_string(),
+                    command.to_string(),
+                ]
+            }
+        }
+
+        fn test_host_output_command(text: &str) -> String {
+            #[cfg(target_os = "windows")]
+            {
+                format!("[Console]::Out.Write('{text}')")
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                format!("printf %s {text}")
+            }
+        }
+
+        fn test_host_sleep_command(milliseconds: u64) -> String {
+            #[cfg(target_os = "windows")]
+            {
+                format!("while ($true) {{ Start-Sleep -Milliseconds {milliseconds} }}")
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let _ = milliseconds;
+                "while :; do :; done".to_string()
+            }
         }
 
         fn copy_fixture_vault(name: &str, destination: &Path) {

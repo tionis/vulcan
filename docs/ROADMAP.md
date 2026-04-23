@@ -5721,8 +5721,8 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 - [x] Require a trusted vault for custom tool execution, matching plugin execution rules
 - [x] Define the effective authority as the intersection of the active caller profile, the tool's optional `permission_profile`, the declared sandbox ceiling, and normal Vulcan path/network/git/config/execute checks
 - [x] Keep `read_only` / `destructive` manifest fields as annotations only; authorization continues to come from the permission layer
-- [ ] Add `host.exec(argv, opts?)` behind `execute` permission and `host.shell(command, opts?)` behind `shell` permission
-- [ ] Prefer `host.exec()` in all docs/examples and keep `host.shell()` explicitly higher-risk
+- [x] Add `host.exec(argv, opts?)` behind `execute` permission and `host.shell(command, opts?)` behind `shell` permission
+- [x] Prefer `host.exec()` in all docs/examples and keep `host.shell()` explicitly higher-risk
 - [ ] Add tests for "tool visible but not callable" cases: untrusted vaults, missing permission profile, denied write/network/execute/shell, and pack-enabled-but-profile-denied combinations
 
 ### 9.24.6 MCP exposure, resources, and pack integration
@@ -5747,7 +5747,7 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 - [ ] Add unit tests for manifest parsing, name collision detection, schema validation, permission intersection, and trust gating
 - [ ] Add integration tests with fixture vault tools covering CLI `tool run`, `describe --format openai-tools`, `describe --format mcp`, MCP live exposure, and JS `tools.call()`
 - [ ] Add regression tests for invalid tool manifests, missing entrypoints, failing scripts, output-schema mismatches, and recursive tool-call loops
-- [ ] Add end-to-end tests for `host.exec()` / `host.shell()` permission enforcement and timeout/output capture behavior
+- [x] Add end-to-end tests for `host.exec()` / `host.shell()` permission enforcement and timeout/output capture behavior
 - [ ] Roll out with QuickJS only; treat WASM and finer-grained command allowlists as follow-up work once the registry contract is stable
 
 ---

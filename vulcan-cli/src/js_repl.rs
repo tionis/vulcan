@@ -41,6 +41,7 @@ const REPL_COMPLETIONS: &[&str] = &[
     "help(vault)",
     "help(dv)",
     "help(tools)",
+    "help(host)",
     "help(web)",
     "help(console)",
     "help(app)",
@@ -102,6 +103,10 @@ const REPL_COMPLETIONS: &[&str] = &[
     "tools.list(",
     "tools.get(",
     "tools.call(",
+    // host
+    "host.",
+    "host.exec(",
+    "host.shell(",
     // web
     "web.search(",
     "web.fetch(",
@@ -1104,7 +1109,7 @@ mod tests {
     }
 
     #[test]
-    fn completion_includes_dv_tools_and_app_prefixes() {
+    fn completion_includes_dv_tools_host_and_app_prefixes() {
         let helper = ReplHelper::new(REPL_COMPLETIONS);
 
         let (_, dv_matches) = helper
@@ -1121,6 +1126,14 @@ mod tests {
         assert!(
             tool_matches.iter().any(|m| m.starts_with("tools.call")),
             "tools. completions should include tools.call(, got: {tool_matches:?}"
+        );
+
+        let (_, host_matches) = helper
+            .completion_candidates("host.", "host.".len())
+            .expect("host. should have completions");
+        assert!(
+            host_matches.iter().any(|m| m.starts_with("host.exec")),
+            "host. completions should include host.exec(, got: {host_matches:?}"
         );
 
         let (_, app_matches) = helper
