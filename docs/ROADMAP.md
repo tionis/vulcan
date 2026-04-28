@@ -3922,7 +3922,7 @@ graph = false
 
 #### Current implementation status (2026-04-29)
 
-- `site build|serve|profiles|doctor` are in-tree with JSON output, deterministic route planning, folder/tag/recent/home/search/graph pages, route/search/graph/hover manifests, RSS/sitemap emission, and publish-filter diagnostics.
+- `site build|serve|profiles|doctor` are in-tree with JSON output, deterministic route planning, folder/tag/recent/home/search/graph pages, route/search/graph/hover/recent/related manifests, RSS/sitemap emission, and publish-filter diagnostics.
 - The builder reuses the same shared HTML renderer already used by `note get --mode html` and `render --mode html`; this currently covers inline Dataview expressions, `dataview` query blocks, `tasks` query blocks, `.base` embeds, note embeds, callouts, attachment rewriting, and DataviewJS off/static fallback behavior.
 - The preview loop currently uses a lightweight loopback server plus browser polling at `/__vulcan_site/live-reload.json`; SSE/WebSocket transport and true affected-page incremental rebuilds are still pending.
 - Remaining gaps for this phase are primarily broader fixture snapshot coverage, raw-HTML policy controls, richer graph/search UX, per-page local graph/search enhancements, preview-diagnostics polish, and broader read-only fixture coverage for TaskNotes/periodic/Kanban-style surfaces.
@@ -3998,7 +3998,7 @@ These features differentiate the site from a plain markdown-to-HTML export and d
 - [x] Add a global graph page using the same JSON asset schema later reusable by WebUI
 - [ ] Add a per-page local graph component using the same JSON asset schema later reusable by WebUI
 - [x] Generate a hover-preview/popover manifest with title, excerpt, URL, and optional heading outline so links can show Wikipedia-style previews
-- [ ] Generate recent-notes and related-notes manifests from existing metadata/graph data where useful
+- [x] Generate recent-notes and related-notes manifests from existing metadata/graph data where useful
 - [x] Ensure publish filters apply uniformly: excluded notes must not appear in search indexes, graph JSON, preview manifests, feeds, or copied assets
 - [x] Add regression tests proving excluded/draft/private notes cannot leak through any generated static asset
 

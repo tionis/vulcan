@@ -120,6 +120,8 @@ The builder currently emits a profile-scoped site with:
 - `assets/search-index.json`
 - `assets/graph.json`
 - `assets/hover-previews.json`
+- `assets/recent-notes.json`
+- `assets/related-notes.json`
 - `sitemap.xml` when `base_url` is set
 - `rss.xml` when RSS is enabled and `base_url` is set
 
