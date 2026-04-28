@@ -730,8 +730,9 @@ Strict preview should block this. See [[Private]].
         )
         .expect("updated note should be written");
 
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
         let mut observed_error = None;
-        for _ in 0..120 {
+        while std::time::Instant::now() < deadline {
             let live = get_json(handle.addr(), "/__vulcan_site/live-reload.json");
             if live["last_error"].as_str().is_some() {
                 observed_error = Some(live);

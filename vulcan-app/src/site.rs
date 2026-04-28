@@ -326,6 +326,25 @@ struct SearchIndexEntry {
     tags: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct RecentNoteManifestEntry {
+    source_path: String,
+    title: String,
+    url: String,
+    excerpt: String,
+    file_mtime: i64,
+    tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct RelatedNoteManifestEntry {
+    source_path: String,
+    title: String,
+    url: String,
+    excerpt: String,
+    shared_tags: Vec<String>,
+}
+
 pub fn build_site_profiles_report(
     paths: &VaultPaths,
 ) -> Result<Vec<SiteProfileListEntry>, AppError> {
@@ -528,6 +547,24 @@ pub fn build_site(
     }
     files.insert("assets/hover-previews.json".to_string());
 
+    let recent_manifest = build_recent_manifest(&rendered_notes);
+    let recent_manifest_json =
+        serde_json::to_string_pretty(&recent_manifest).map_err(AppError::operation)?;
+    let recent_manifest_path = output_dir.join("assets/recent-notes.json");
+    if !request.dry_run {
+        write_output_file(&recent_manifest_path, &recent_manifest_json)?;
+    }
+    files.insert("assets/recent-notes.json".to_string());
+
+    let related_manifest = build_related_manifest(&rendered_notes, &tag_index);
+    let related_manifest_json =
+        serde_json::to_string_pretty(&related_manifest).map_err(AppError::operation)?;
+    let related_manifest_path = output_dir.join("assets/related-notes.json");
+    if !request.dry_run {
+        write_output_file(&related_manifest_path, &related_manifest_json)?;
+    }
+    files.insert("assets/related-notes.json".to_string());
+
     if plan.profile.search {
         let search_index = build_search_index(paths, &plan.notes, &routes_by_path)?;
         let search_json =
@@ -620,14 +657,7 @@ pub fn build_site(
     files.insert("recent/index.html".to_string());
 
     if let Some(home) = home_note.as_ref() {
-        let home_html = render_home_page(
-            &context,
-            home,
-            &plan.profile,
-            &route_urls,
-            &tag_index,
-            &folder_index,
-        );
+        let home_html = render_home_page(&context, home, &plan.profile, &tag_index, &folder_index);
         if !request.dry_run {
             write_output_file(&output_dir.join("index.html"), &home_html)?;
         }
@@ -1231,7 +1261,7 @@ fn render_note_document(
             String::new()
         },
         render_folder_summary(note, folder_index),
-        render_related_tags(note, route_urls, tag_index),
+        render_related_tags(note, tag_index),
     );
     let canonical_url = note
         .canonical_url
@@ -1260,7 +1290,6 @@ fn render_home_page(
     context: &RenderContext,
     note: &RenderedNote,
     profile: &ResolvedSiteProfile,
-    route_urls: &HashMap<String, String>,
     tag_index: &BTreeMap<String, Vec<&RenderedNote>>,
     folder_index: &BTreeMap<String, Vec<&RenderedNote>>,
 ) -> String {
@@ -1269,7 +1298,7 @@ fn render_home_page(
         render_note_tags(&note.tags),
         note.html,
         render_folder_summary(note, folder_index),
-        render_related_tags(note, route_urls, tag_index),
+        render_related_tags(note, tag_index),
     );
     let canonical_url = note
         .canonical_url
@@ -1299,16 +1328,9 @@ fn render_recent_page(
     notes: &[RenderedNote],
     profile: &ResolvedSiteProfile,
 ) -> String {
-    let mut notes = notes.iter().collect::<Vec<_>>();
-    notes.sort_by(|left, right| {
-        right
-            .file_mtime
-            .cmp(&left.file_mtime)
-            .then(left.title.cmp(&right.title))
-    });
-    let cards = notes
+    let cards = build_recent_manifest(notes)
         .into_iter()
-        .map(|note| render_card(&note.title, &note.route.url_path, &note.excerpt))
+        .map(|note| render_card(&note.title, &note.url, &note.excerpt))
         .collect::<String>();
     render_generic_page(
         context,
@@ -1759,34 +1781,20 @@ fn render_folder_summary(
 
 fn render_related_tags(
     note: &RenderedNote,
-    route_urls: &HashMap<String, String>,
     tag_index: &BTreeMap<String, Vec<&RenderedNote>>,
 ) -> String {
-    let mut related = BTreeSet::<String>::new();
-    for tag in &note.tags {
-        let normalized = normalize_tag(tag);
-        if let Some(notes) = tag_index.get(&normalized) {
-            for related_note in notes {
-                if related_note.source_path != note.source_path {
-                    related.insert(related_note.source_path.clone());
-                }
-            }
-        }
-    }
+    let related = collect_related_note_entries(note, tag_index);
     if related.is_empty() {
         return String::new();
     }
     let items = related
         .into_iter()
         .take(6)
-        .map(|path| {
-            let href = route_urls.get(&path).cloned().unwrap_or_else(|| {
-                format!("/notes/{}/", slugify_path(trim_markdown_extension(&path)))
-            });
+        .map(|entry| {
             format!(
                 "<li><a href=\"{}\">{}</a></li>",
-                escape_html(&href),
-                escape_html(&path)
+                escape_html(&entry.url),
+                escape_html(&entry.source_path)
             )
         })
         .collect::<String>();
@@ -1807,6 +1815,91 @@ fn build_hover_manifest(notes: &[RenderedNote]) -> BTreeMap<String, Value> {
                     "url": note.route.url_path,
                     "headings": note.headings,
                 }),
+            )
+        })
+        .collect()
+}
+
+fn build_recent_manifest(notes: &[RenderedNote]) -> Vec<RecentNoteManifestEntry> {
+    let mut notes = notes.iter().collect::<Vec<_>>();
+    notes.sort_by(|left, right| {
+        right
+            .file_mtime
+            .cmp(&left.file_mtime)
+            .then(left.title.cmp(&right.title))
+    });
+    notes
+        .into_iter()
+        .map(|note| RecentNoteManifestEntry {
+            source_path: note.source_path.clone(),
+            title: note.title.clone(),
+            url: note.route.url_path.clone(),
+            excerpt: note.excerpt.clone(),
+            file_mtime: note.file_mtime,
+            tags: note.tags.clone(),
+        })
+        .collect()
+}
+
+fn collect_related_note_entries(
+    note: &RenderedNote,
+    tag_index: &BTreeMap<String, Vec<&RenderedNote>>,
+) -> Vec<RelatedNoteManifestEntry> {
+    let mut related = BTreeMap::<String, (String, String, String, BTreeSet<String>)>::new();
+    for tag in &note.tags {
+        let normalized = normalize_tag(tag);
+        if let Some(notes) = tag_index.get(&normalized) {
+            for related_note in notes {
+                if related_note.source_path == note.source_path {
+                    continue;
+                }
+                let entry = related
+                    .entry(related_note.source_path.clone())
+                    .or_insert_with(|| {
+                        (
+                            related_note.title.clone(),
+                            related_note.route.url_path.clone(),
+                            related_note.excerpt.clone(),
+                            BTreeSet::new(),
+                        )
+                    });
+                entry.3.insert(normalized.clone());
+            }
+        }
+    }
+    let mut entries = related
+        .into_iter()
+        .map(
+            |(source_path, (title, url, excerpt, shared_tags))| RelatedNoteManifestEntry {
+                source_path,
+                title,
+                url,
+                excerpt,
+                shared_tags: shared_tags.into_iter().collect(),
+            },
+        )
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        right
+            .shared_tags
+            .len()
+            .cmp(&left.shared_tags.len())
+            .then(left.title.cmp(&right.title))
+            .then(left.source_path.cmp(&right.source_path))
+    });
+    entries
+}
+
+fn build_related_manifest(
+    notes: &[RenderedNote],
+    tag_index: &BTreeMap<String, Vec<&RenderedNote>>,
+) -> BTreeMap<String, Vec<RelatedNoteManifestEntry>> {
+    notes
+        .iter()
+        .map(|note| {
+            (
+                note.route.url_path.clone(),
+                collect_related_note_entries(note, tag_index),
             )
         })
         .collect()
@@ -2640,6 +2733,12 @@ include_paths = ["Home", "Notes/Embed Note.md"]
         assert!(vault_root
             .join(".vulcan/site/public/assets/graph.json")
             .exists());
+        assert!(vault_root
+            .join(".vulcan/site/public/assets/recent-notes.json")
+            .exists());
+        assert!(vault_root
+            .join(".vulcan/site/public/assets/related-notes.json")
+            .exists());
         assert!(vault_root.join(".vulcan/site/public/rss.xml").exists());
         let home_html = fs::read_to_string(vault_root.join(".vulcan/site/public/index.html"))
             .expect("home page should read");
@@ -2659,6 +2758,140 @@ include_paths = ["Home", "Notes/Embed Note.md"]
             .expect("note page should read");
         assert!(note_html.contains("Embed Note"));
         assert!(note_html.contains("/notes/home/"));
+    }
+
+    #[test]
+    fn site_build_writes_recent_and_related_manifests() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join("Alpha.md"),
+            r"---
+tags:
+  - shared
+  - alpha
+---
+
+# Alpha
+
+Alpha body.
+",
+        )
+        .expect("alpha note should write");
+        fs::write(
+            vault_root.join("Beta.md"),
+            r"---
+tags:
+  - shared
+  - beta
+---
+
+# Beta
+
+Beta body.
+",
+        )
+        .expect("beta note should write");
+        fs::write(
+            vault_root.join("Gamma.md"),
+            r"---
+tags:
+  - beta
+---
+
+# Gamma
+
+Gamma body.
+",
+        )
+        .expect("gamma note should write");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Related Demo"
+output_dir = ".vulcan/site/public"
+include_paths = ["Alpha.md", "Beta.md", "Gamma.md"]
+search = false
+graph = false
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let report = build_site(
+            &VaultPaths::new(&vault_root),
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("site build should succeed");
+        let output_root = vault_root.join(".vulcan/site/public");
+        let recent_manifest = read_site_json(&output_root, "assets/recent-notes.json");
+        let related_manifest = read_site_json(&output_root, "assets/related-notes.json");
+
+        let recent_entries = recent_manifest
+            .as_array()
+            .expect("recent manifest should be an array");
+        assert_eq!(recent_entries.len(), 3);
+        let mut recent_titles = recent_entries
+            .iter()
+            .map(|entry| {
+                entry["title"]
+                    .as_str()
+                    .expect("recent entry title should be a string")
+                    .to_string()
+            })
+            .collect::<Vec<_>>();
+        recent_titles.sort();
+        assert_eq!(recent_titles, vec!["Alpha", "Beta", "Gamma"]);
+        assert!(recent_entries.iter().all(|entry| {
+            entry["file_mtime"].as_i64().is_some()
+                && entry["excerpt"]
+                    .as_str()
+                    .is_some_and(|value| !value.trim().is_empty())
+        }));
+
+        let alpha_related = related_manifest["/notes/alpha/"]
+            .as_array()
+            .expect("alpha related entries should be an array");
+        assert_eq!(alpha_related.len(), 1);
+        assert_eq!(alpha_related[0]["source_path"], "Beta.md");
+        assert_eq!(alpha_related[0]["title"], "Beta");
+        assert_eq!(alpha_related[0]["url"], "/notes/beta/");
+        assert_eq!(
+            alpha_related[0]["shared_tags"],
+            serde_json::json!(["shared"])
+        );
+
+        let beta_related = related_manifest["/notes/beta/"]
+            .as_array()
+            .expect("beta related entries should be an array");
+        assert_eq!(beta_related.len(), 2);
+        assert_eq!(beta_related[0]["source_path"], "Alpha.md");
+        assert_eq!(
+            beta_related[0]["shared_tags"],
+            serde_json::json!(["shared"])
+        );
+        assert_eq!(beta_related[1]["source_path"], "Gamma.md");
+        assert_eq!(beta_related[1]["shared_tags"], serde_json::json!(["beta"]));
+
+        let gamma_related = related_manifest["/notes/gamma/"]
+            .as_array()
+            .expect("gamma related entries should be an array");
+        assert_eq!(gamma_related.len(), 1);
+        assert_eq!(gamma_related[0]["source_path"], "Beta.md");
+        assert_eq!(gamma_related[0]["shared_tags"], serde_json::json!(["beta"]));
+
+        assert!(report
+            .files
+            .contains(&"assets/recent-notes.json".to_string()));
+        assert!(report
+            .files
+            .contains(&"assets/related-notes.json".to_string()));
     }
 
     #[test]
