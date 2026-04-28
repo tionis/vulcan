@@ -1568,6 +1568,7 @@ fn entry_label(entry: &crate::app_config::ConfigListEntry) -> String {
             "permissions.profiles.<name>" => "new profile...".to_string(),
             "plugins.<name>" => "new plugin...".to_string(),
             "export.profiles.<name>" => "new export profile...".to_string(),
+            "site.profiles.<name>" => "new site profile...".to_string(),
             _ => entry.key.clone(),
         };
     }
@@ -1596,6 +1597,7 @@ fn category_order(key: &str) -> usize {
         "permissions" => 12,
         "aliases" => 13,
         "export" => 14,
+        "site" => 15,
         _ => 50,
     }
 }
@@ -2227,6 +2229,7 @@ mod tests {
         assert!(state.find_entry("aliases.<name>").is_some());
         assert!(state.find_entry("plugins.<name>").is_some());
         assert!(state.find_entry("permissions.profiles.<name>").is_some());
+        assert!(state.find_entry("site.profiles.<name>").is_some());
     }
 
     #[test]
@@ -2286,6 +2289,37 @@ mod tests {
         assert!(state.find_entry("permissions.profiles.agent.git").is_some());
         assert!(state
             .find_entry("permissions.profiles.agent.read")
+            .is_some());
+        assert!(state.dirty);
+    }
+
+    #[test]
+    fn create_dynamic_site_profile_rebuilds_state_in_place() {
+        let mut state = sample_state();
+        let (category_index, entry_index) = state
+            .find_entry("site.profiles.<name>")
+            .expect("site profile placeholder should exist");
+        state.selected_category = category_index;
+        state.selected_entry = entry_index;
+
+        state
+            .apply_create_dynamic_entry("public", "{}")
+            .expect("site profile should be created");
+
+        let (category_index, entry_index) = state
+            .find_entry("site.profiles.public")
+            .expect("concrete site profile should exist after creation");
+        state.selected_category = category_index;
+        state.selected_entry = entry_index;
+
+        let entry = state.selected_entry().clone();
+        assert!(matches!(
+            state.shared_value(&entry),
+            Some(TomlValue::Table(table)) if table.is_empty()
+        ));
+        assert!(state.find_entry("site.profiles.public.title").is_some());
+        assert!(state
+            .find_entry("site.profiles.public.link_policy")
             .is_some());
         assert!(state.dirty);
     }

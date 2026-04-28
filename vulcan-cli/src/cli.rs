@@ -2645,6 +2645,65 @@ pub enum ToolInitExampleArg {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum SiteCommand {
+    #[command(about = "Build a static website from the current vault profile")]
+    Build {
+        #[arg(long, help = "Named site profile to build")]
+        profile: Option<String>,
+        #[arg(long = "output-dir", help = "Override the profile output directory")]
+        output_dir: Option<PathBuf>,
+        #[arg(long, help = "Remove the output directory before writing fresh files")]
+        clean: bool,
+        #[arg(long, help = "Plan the build without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Keep watching the vault and rebuild after changes")]
+        watch: bool,
+        #[arg(long, help = "Fail when the site build reports publish diagnostics")]
+        strict: bool,
+        #[arg(long, help = "Alias for --strict for CI-style preview checks")]
+        fail_on_warning: bool,
+        #[arg(
+            long,
+            default_value_t = 100,
+            help = "Watcher debounce window in milliseconds when site watch mode is enabled"
+        )]
+        debounce_ms: u64,
+    },
+    #[command(about = "Serve the generated static site from a lightweight local preview server")]
+    Serve {
+        #[arg(long, help = "Named site profile to serve")]
+        profile: Option<String>,
+        #[arg(long = "output-dir", help = "Override the profile output directory")]
+        output_dir: Option<PathBuf>,
+        #[arg(
+            long,
+            default_value_t = 4173,
+            help = "Loopback port for the local preview server"
+        )]
+        port: u16,
+        #[arg(long, help = "Keep watching the vault and rebuild after changes")]
+        watch: bool,
+        #[arg(long, help = "Fail when the served build reports publish diagnostics")]
+        strict: bool,
+        #[arg(long, help = "Alias for --strict for CI-style preview checks")]
+        fail_on_warning: bool,
+        #[arg(
+            long,
+            default_value_t = 100,
+            help = "Watcher debounce window in milliseconds when site watch mode is enabled"
+        )]
+        debounce_ms: u64,
+    },
+    #[command(about = "List configured static-site profiles and their effective settings")]
+    Profiles,
+    #[command(about = "Run publish-focused diagnostics for a static-site profile")]
+    Doctor {
+        #[arg(long, help = "Named site profile to inspect")]
+        profile: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ToolCommand {
     #[command(about = "List discovered custom tools")]
     List,
@@ -4623,6 +4682,11 @@ pub enum Command {
             help = "Skip auto-loading .vulcan/scripts/startup.js even in trusted vaults"
         )]
         no_startup: bool,
+    },
+    #[command(about = "Build and inspect static websites from vault content")]
+    Site {
+        #[command(subcommand)]
+        command: SiteCommand,
     },
     #[command(
         about = "Fetch and search external web content",

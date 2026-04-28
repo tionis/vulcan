@@ -124,6 +124,8 @@ Export, static site generation, and the future web wiki should share one publica
 - Link and asset policies should run after note-level transforms are resolved, so removed sections or metadata cannot leak through backlinks, embeds, or copied attachments.
 - The persisted configuration model should stay rule-based. Direct one-off export commands may still offer single-rule sugar, but the export profile CLI should manage ordered persisted rules explicitly.
 
+Static publication surfaces should also share one page/render contract. The site builder establishes reusable structs such as `RenderContext`, `RenderedNote`, `RenderedEmbed`, and `SiteRoute`; later WebUI note pages and wiki mode should extend or consume those contracts rather than inventing a second note-page schema. Route planning, canonical URLs, hover-preview payloads, search documents, and graph assets should stay aligned across static and dynamic surfaces unless a documented runtime requirement forces divergence.
+
 ## 5. Data model overview
 
 The implementation should use stable internal identifiers rather than paths as primary keys. Paths move; identities should survive moves.
