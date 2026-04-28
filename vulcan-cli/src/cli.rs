@@ -1,5 +1,6 @@
 use clap::{ArgAction, Args, Parser, Subcommand, ValueEnum};
 use clap_complete::Shell;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 const ROOT_AFTER_HELP: &str = "\
@@ -104,12 +105,14 @@ Examples:
 
 const RENDER_COMMAND_AFTER_HELP: &str = "\
 Notes:
-  Human output uses Vulcan's terminal markdown renderer.
+  `render` defaults to Vulcan's terminal markdown renderer.
+  `render --mode html` uses the same HTML pipeline as `note get --mode html`.
   When stdout is not a TTY, the rendered output is emitted without ANSI escapes.
-  Use `--output markdown` to print the original markdown source unchanged.
+  Use `--output markdown` with terminal mode to print the original markdown source unchanged.
 
 Examples:
   vulcan render README.md
+  vulcan render --mode html README.md
   cat README.md | vulcan render
   vulcan --output markdown render README.md";
 
@@ -3010,6 +3013,15 @@ pub enum WebFetchMode {
 pub struct RenderArgs {
     #[arg(help = "Markdown file to render; omit to read from stdin")]
     pub file: Option<PathBuf>,
+    #[arg(long, value_enum, default_value_t = RenderMode::Terminal)]
+    pub mode: RenderMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RenderMode {
+    Terminal,
+    Html,
 }
 
 /// CLI-level search backend selector (mirrors `SearchBackendKind` from config).

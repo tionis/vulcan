@@ -19,6 +19,7 @@ mod file_metadata;
 pub mod git;
 pub mod graph;
 pub mod history;
+pub mod html;
 pub mod init;
 pub mod json_schema;
 pub mod kanban;
@@ -128,6 +129,10 @@ pub use history::{
     create_checkpoint, list_checkpoints, query_change_report, query_graph_trends, ChangeAnchor,
     ChangeItem, ChangeKind, ChangeReport, ChangeStatus, CheckpointError, CheckpointRecord,
     GraphTrendPoint, GraphTrendsReport,
+};
+pub use html::{
+    render_note_fragment_html, render_note_html, render_vault_html, HtmlDataviewJsPolicy,
+    HtmlLinkTargets, HtmlRenderDiagnostic, HtmlRenderHeading, HtmlRenderOptions, HtmlRenderResult,
 };
 pub use init::{initialize_vault, InitError, InitSummary};
 pub use json_schema::{validate_json_value_against_schema, JsonSchemaValidationError};
