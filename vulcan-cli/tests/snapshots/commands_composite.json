@@ -6503,6 +6503,240 @@
         "subcommands": []
       },
       {
+        "about": "Build and inspect static websites from vault content",
+        "name": "site",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Build a static website from the current vault profile",
+            "name": "build",
+            "options": [
+              {
+                "help": "Named site profile to build",
+                "id": "profile",
+                "long": "profile",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PROFILE"
+                ]
+              },
+              {
+                "help": "Override the profile output directory",
+                "id": "output_dir",
+                "long": "output-dir",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "OUTPUT_DIR"
+                ]
+              },
+              {
+                "help": "Remove the output directory before writing fresh files",
+                "id": "clean",
+                "long": "clean",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CLEAN"
+                ]
+              },
+              {
+                "help": "Plan the build without writing files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Keep watching the vault and rebuild after changes",
+                "id": "watch",
+                "long": "watch",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WATCH"
+                ]
+              },
+              {
+                "help": "Fail when the site build reports publish diagnostics",
+                "id": "strict",
+                "long": "strict",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "STRICT"
+                ]
+              },
+              {
+                "help": "Alias for --strict for CI-style preview checks",
+                "id": "fail_on_warning",
+                "long": "fail-on-warning",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FAIL_ON_WARNING"
+                ]
+              },
+              {
+                "help": "Watcher debounce window in milliseconds when site watch mode is enabled",
+                "id": "debounce_ms",
+                "long": "debounce-ms",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DEBOUNCE_MS"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Serve the generated static site from a lightweight local preview server",
+            "name": "serve",
+            "options": [
+              {
+                "help": "Named site profile to serve",
+                "id": "profile",
+                "long": "profile",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PROFILE"
+                ]
+              },
+              {
+                "help": "Override the profile output directory",
+                "id": "output_dir",
+                "long": "output-dir",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "OUTPUT_DIR"
+                ]
+              },
+              {
+                "help": "Loopback port for the local preview server",
+                "id": "port",
+                "long": "port",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PORT"
+                ]
+              },
+              {
+                "help": "Keep watching the vault and rebuild after changes",
+                "id": "watch",
+                "long": "watch",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WATCH"
+                ]
+              },
+              {
+                "help": "Fail when the served build reports publish diagnostics",
+                "id": "strict",
+                "long": "strict",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "STRICT"
+                ]
+              },
+              {
+                "help": "Alias for --strict for CI-style preview checks",
+                "id": "fail_on_warning",
+                "long": "fail-on-warning",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FAIL_ON_WARNING"
+                ]
+              },
+              {
+                "help": "Watcher debounce window in milliseconds when site watch mode is enabled",
+                "id": "debounce_ms",
+                "long": "debounce-ms",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DEBOUNCE_MS"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "List configured static-site profiles and their effective settings",
+            "name": "profiles",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Run publish-focused diagnostics for a static-site profile",
+            "name": "doctor",
+            "options": [
+              {
+                "help": "Named site profile to inspect",
+                "id": "profile",
+                "long": "profile",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PROFILE"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
         "about": "Fetch and search external web content",
         "after_help": "Subcommands:\n  search      query the configured web search backend\n  fetch       fetch one URL as markdown, html, or raw content\n\nNotes:\n  `web search` reads backend settings from `[web.search]` in `.vulcan/config.toml`.\n  `disabled` intentionally turns off `web search` and `web.search()` while leaving `web fetch` available.\n  `duckduckgo` is the default backend and works without an API key.\n  `auto` prefers Kagi, Exa, Tavily, Brave, then Ollama when their API key env vars are set, and falls back to DuckDuckGo.\n  `web fetch --mode markdown` uses `rs-trafilatura` main-content extraction.\n  If no readable main content can be extracted, retry with `--mode html` or `--mode raw`.\n  `web fetch` uses a Vulcan user-agent and performs a best-effort robots.txt check before fetching.\n\nExamples:\n  vulcan web search \"release notes\" --limit 5\n  vulcan web search \"release notes\" --backend duckduckgo\n  vulcan web search \"release notes\" --backend ollama\n  vulcan web fetch https://example.com --mode markdown\n  vulcan web fetch https://example.com --mode raw --save page.bin",
         "name": "web",

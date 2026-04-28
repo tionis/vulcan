@@ -1142,6 +1142,95 @@ fn dynamic_config_descriptors() -> Vec<ConfigDescriptor> {
         Some(TomlValue::Array(Vec::new())),
         &[],
     );
+    push(
+        "site.profiles.<name>",
+        ConfigValueKind::Object,
+        ConfigTargetSupport::SharedAndLocal,
+        Some("vulcan config set"),
+        None,
+        &[],
+    );
+    for key in [
+        "site.profiles.<name>.title",
+        "site.profiles.<name>.page_title_template",
+        "site.profiles.<name>.base_url",
+        "site.profiles.<name>.output_dir",
+        "site.profiles.<name>.home",
+        "site.profiles.<name>.language",
+        "site.profiles.<name>.theme",
+        "site.profiles.<name>.favicon",
+        "site.profiles.<name>.logo",
+        "site.profiles.<name>.include_query",
+        "site.profiles.<name>.include_query_json",
+    ] {
+        push(
+            key,
+            ConfigValueKind::String,
+            ConfigTargetSupport::SharedAndLocal,
+            Some("vulcan config set"),
+            None,
+            &[],
+        );
+    }
+    for key in [
+        "site.profiles.<name>.search",
+        "site.profiles.<name>.graph",
+        "site.profiles.<name>.backlinks",
+        "site.profiles.<name>.rss",
+    ] {
+        push(
+            key,
+            ConfigValueKind::Boolean,
+            ConfigTargetSupport::SharedAndLocal,
+            Some("vulcan config set"),
+            None,
+            &[],
+        );
+    }
+    for key in [
+        "site.profiles.<name>.extra_css",
+        "site.profiles.<name>.extra_js",
+        "site.profiles.<name>.include_paths",
+        "site.profiles.<name>.include_folders",
+        "site.profiles.<name>.exclude_paths",
+        "site.profiles.<name>.exclude_folders",
+        "site.profiles.<name>.exclude_tags",
+        "site.profiles.<name>.asset_policy.include_folders",
+        "site.profiles.<name>.content_transforms",
+    ] {
+        push(
+            key,
+            ConfigValueKind::Array,
+            ConfigTargetSupport::SharedAndLocal,
+            Some("vulcan config set"),
+            Some(TomlValue::Array(Vec::new())),
+            &[],
+        );
+    }
+    push(
+        "site.profiles.<name>.link_policy",
+        ConfigValueKind::Enum,
+        ConfigTargetSupport::SharedAndLocal,
+        Some("vulcan config set"),
+        None,
+        &["error", "warn", "drop_link", "render_plain_text"],
+    );
+    push(
+        "site.profiles.<name>.asset_policy.mode",
+        ConfigValueKind::Enum,
+        ConfigTargetSupport::SharedAndLocal,
+        Some("vulcan config set"),
+        None,
+        &["copy_referenced", "error_on_missing"],
+    );
+    push(
+        "site.profiles.<name>.dataview_js",
+        ConfigValueKind::Enum,
+        ConfigTargetSupport::SharedAndLocal,
+        Some("vulcan config set"),
+        None,
+        &["off", "static"],
+    );
 
     descriptors
 }
@@ -1412,6 +1501,9 @@ fn is_sample_dynamic_storage_path(segments: &[String]) -> bool {
     ) || matches!(
         segments,
         [first, second, _, ..] if first == "export" && second == "profiles"
+    ) || matches!(
+        segments,
+        [first, second, _, ..] if first == "site" && second == "profiles"
     )
 }
 
@@ -1525,6 +1617,11 @@ fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
             title: "Export Profiles",
             description: "Named export profiles stored in config and managed by dedicated export commands.",
         },
+        Some("site") => CategoryDescriptor {
+            key: "site",
+            title: "Static Site",
+            description: "Static-site publication profiles, filters, route policies, and theme assets.",
+        },
         Some(_) | None => CategoryDescriptor {
             key: "general",
             title: "General",
@@ -1581,6 +1678,12 @@ fn config_path_description(path: &str) -> String {
         _ if path.starts_with("export.profiles.") => {
             "Named export profile metadata; dedicated `export profile` commands are preferred for edits.".to_string()
         }
+        _ if path == "site.profiles.<name>.page_title_template" => {
+            "Template for the HTML `<title>` tag on built pages. Supported placeholders: `{page}`, `{site}`, and `{profile}`.".to_string()
+        }
+        _ if path.starts_with("site.profiles.") => {
+            "Static-site publication profile metadata, publish filters, theme assets, and route policy settings.".to_string()
+        }
         _ => format!("Edit `{path}` in `.vulcan/config.toml` or `.vulcan/config.local.toml`."),
     }
 }
@@ -1593,6 +1696,7 @@ fn preferred_command_for_key(path: &str) -> Option<String> {
         }
         _ if path.starts_with("plugins.") => Some("vulcan plugin set".to_string()),
         _ if path.starts_with("export.profiles.") => Some("vulcan export profile set".to_string()),
+        _ if path.starts_with("site.profiles.") => Some("vulcan config set".to_string()),
         _ => None,
     }
 }
@@ -1613,6 +1717,16 @@ fn config_path_examples(path: &str) -> Vec<String> {
         ],
         _ if path.starts_with("export.profiles.<name>.") || path == "export.profiles.<name>" => vec![
             "vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub".to_string(),
+        ],
+        _ if path == "site.profiles.<name>" => vec![
+            "vulcan config set site.profiles.public '{}'".to_string(),
+        ],
+        _ if path == "site.profiles.<name>.page_title_template" => vec![
+            r#"vulcan config set site.profiles.public.page_title_template '"{site} :: {page}"'"#.to_string(),
+        ],
+        _ if path.starts_with("site.profiles.<name>.") => vec![
+            r#"vulcan config set site.profiles.public.title '"Public Notes"'"#.to_string(),
+            r#"vulcan config set site.profiles.public.include_paths '["Home.md", "Garden/Now.md"]'"#.to_string(),
         ],
         _ => vec![format!("vulcan config set {path} <value>")],
     }
@@ -1663,15 +1777,16 @@ pub fn build_config_list_report(
     }
 
     let known_paths = collect_known_display_paths(&display.toml, &shared_toml, &local_toml);
-    for path in known_paths {
+    for path in &known_paths {
         for descriptor in catalog
             .iter()
             .filter(|descriptor| descriptor.key.contains('<'))
         {
-            if let Some(concrete) = instantiate_descriptor(descriptor, &path) {
+            if let Some(concrete) = instantiate_descriptor(descriptor, path) {
                 descriptors.insert(concrete.key.clone(), concrete);
             }
         }
+        instantiate_dynamic_family_descriptors_for_parent(&mut descriptors, &catalog, path);
     }
 
     let mut entries = descriptors
@@ -1709,15 +1824,16 @@ pub fn build_config_list_report_from_overrides(
     }
 
     let known_paths = collect_known_display_paths(&display.toml, shared_toml, local_toml);
-    for path in known_paths {
+    for path in &known_paths {
         for descriptor in catalog
             .iter()
             .filter(|descriptor| descriptor.key.contains('<'))
         {
-            if let Some(concrete) = instantiate_descriptor(descriptor, &path) {
+            if let Some(concrete) = instantiate_descriptor(descriptor, path) {
                 descriptors.insert(concrete.key.clone(), concrete);
             }
         }
+        instantiate_dynamic_family_descriptors_for_parent(&mut descriptors, &catalog, path);
     }
 
     let mut entries = descriptors
@@ -1779,6 +1895,55 @@ fn instantiate_descriptor(descriptor: &ConfigDescriptor, key: &str) -> Option<Co
     concrete.key = key.to_string();
     concrete.storage_key = descriptor_match.storage_segments.join(".");
     Some(concrete)
+}
+
+fn descriptor_placeholder_bindings(
+    descriptor: &ConfigDescriptor,
+    key: &str,
+) -> Option<BTreeMap<String, String>> {
+    let key_segments = parse_key_segments(key);
+    let descriptor_segments = parse_key_segments(&descriptor.key);
+    if key_segments.len() != descriptor_segments.len() {
+        return None;
+    }
+
+    let mut placeholders = BTreeMap::<String, String>::new();
+    for (expected, actual) in descriptor_segments.iter().zip(&key_segments) {
+        if is_placeholder_segment(expected) {
+            placeholders.insert(expected.clone(), actual.clone());
+        } else if expected != actual {
+            return None;
+        }
+    }
+
+    Some(placeholders)
+}
+
+fn instantiate_dynamic_family_descriptors_for_parent(
+    descriptors: &mut BTreeMap<String, ConfigDescriptor>,
+    catalog: &[ConfigDescriptor],
+    concrete_parent_key: &str,
+) {
+    for parent in catalog.iter().filter(|descriptor| {
+        descriptor.key.contains('<') && descriptor.kind == ConfigValueKind::Object
+    }) {
+        let Some(bindings) = descriptor_placeholder_bindings(parent, concrete_parent_key) else {
+            continue;
+        };
+        let family_prefix = format!("{}.", parent.key);
+        for descriptor in catalog.iter().filter(|descriptor| {
+            descriptor.key == parent.key || descriptor.key.starts_with(&family_prefix)
+        }) {
+            let concrete_key = parse_key_segments(&descriptor.key)
+                .into_iter()
+                .map(|segment| bindings.get(&segment).cloned().unwrap_or(segment))
+                .collect::<Vec<_>>()
+                .join(".");
+            if let Some(concrete) = instantiate_descriptor(descriptor, &concrete_key) {
+                descriptors.insert(concrete.key.clone(), concrete);
+            }
+        }
+    }
 }
 
 fn config_key_matches_filter(key: &str, filter: &str) -> bool {
@@ -2356,6 +2521,9 @@ read = { allow = ["folder:Projects/**"] }
             "permissions.profiles.<name>.network",
             "export.profiles.<name>",
             "export.profiles.<name>.format",
+            "site.profiles.<name>",
+            "site.profiles.<name>.page_title_template",
+            "site.profiles.<name>.link_policy",
         ] {
             assert!(
                 catalog_keys.contains(key),
@@ -2419,6 +2587,51 @@ read = { allow = ["folder:Projects/**"] }
             placeholder.preferred_command.as_deref(),
             Some("vulcan plugin set --sandbox")
         );
+    }
+
+    #[test]
+    fn override_reports_reflect_in_memory_site_profile_edits() {
+        let (_dir, paths) = test_paths();
+        let shared_toml = r#"
+[site.profiles.public]
+title = "Public Notes"
+output_dir = ".vulcan/site/public"
+search = true
+"#
+        .parse::<TomlValue>()
+        .expect("shared override should parse");
+        let local_toml = r#"
+[site.profiles.public]
+graph = true
+link_policy = "warn"
+"#
+        .parse::<TomlValue>()
+        .expect("local override should parse");
+
+        let list = build_config_list_report_from_overrides(
+            &paths,
+            &shared_toml,
+            &local_toml,
+            Some("site"),
+        )
+        .expect("override list report should build");
+
+        assert!(list
+            .entries
+            .iter()
+            .any(|entry| entry.key == "site.profiles.public"));
+        assert!(list
+            .entries
+            .iter()
+            .any(|entry| entry.key == "site.profiles.public.title"));
+        assert!(list
+            .entries
+            .iter()
+            .any(|entry| entry.key == "site.profiles.public.graph"));
+        assert!(list
+            .entries
+            .iter()
+            .any(|entry| entry.key == "site.profiles.public.link_policy"));
     }
 
     #[test]

@@ -14,6 +14,7 @@ pub mod notes;
 pub mod plugins;
 pub mod scan;
 pub mod serve;
+pub mod site;
 pub mod tasks;
 pub mod templates;
 pub mod tools;

@@ -1013,3 +1013,120 @@ Named export profiles stored in config and managed by dedicated export commands.
   Named export profile metadata; dedicated `export profile` commands are preferred for edits.
   Preferred command: `vulcan export profile set`
   Example: `vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub`
+
+### Static Site
+
+Static-site publication profiles, filters, route policies, and theme assets.
+
+- `site.profiles.<name>` — type: `object`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public '{}'`
+- `site.profiles.<name>.asset_policy.include_folders` — type: `array`; target: `shared|local`; default: `[0 items]`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.asset_policy.mode` — type: `enum`; target: `shared|local`; values: `copy_referenced`, `error_on_missing`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.backlinks` — type: `boolean`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.base_url` — type: `string`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.content_transforms` — type: `array`; target: `shared|local`; default: `[0 items]`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.dataview_js` — type: `enum`; target: `shared|local`; values: `off`, `static`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.exclude_folders` — type: `array`; target: `shared|local`; default: `[0 items]`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.exclude_paths` — type: `array`; target: `shared|local`; default: `[0 items]`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.exclude_tags` — type: `array`; target: `shared|local`; default: `[0 items]`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.extra_css` — type: `array`; target: `shared|local`; default: `[0 items]`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.extra_js` — type: `array`; target: `shared|local`; default: `[0 items]`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.favicon` — type: `string`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.graph` — type: `boolean`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.home` — type: `string`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.include_folders` — type: `array`; target: `shared|local`; default: `[0 items]`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.include_paths` — type: `array`; target: `shared|local`; default: `[0 items]`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.include_query` — type: `string`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.include_query_json` — type: `string`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.language` — type: `string`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.link_policy` — type: `enum`; target: `shared|local`; values: `error`, `warn`, `drop_link`, `render_plain_text`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.logo` — type: `string`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.output_dir` — type: `string`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.page_title_template` — type: `string`; target: `shared|local`
+  Template for the HTML `<title>` tag on built pages. Supported placeholders: `{page}`, `{site}`, and `{profile}`.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.page_title_template '"{site} :: {page}"'`
+- `site.profiles.<name>.rss` — type: `boolean`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.search` — type: `boolean`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.theme` — type: `string`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.title` — type: `string`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`

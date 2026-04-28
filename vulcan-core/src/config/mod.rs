@@ -236,6 +236,38 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # skills_folder = ".agents/skills"
 # tools_folder = ".agents/tools"
 
+# [site.profiles.public]
+# title = "My Notes"
+# page_title_template = "{page} | {site}"  # placeholders: {page}, {site}, {profile}
+# base_url = "https://notes.example.com"
+# output_dir = ".vulcan/site/public"
+# home = "Home"
+# language = "en"
+# theme = "default"
+# search = true
+# graph = true
+# backlinks = true
+# rss = true
+# favicon = "site/favicon.png"
+# logo = "site/logo.svg"
+# extra_css = ["site/public.css"]
+# extra_js = ["site/public.js"]
+# include_query = 'from notes where file.path starts_with "Garden/"'
+# include_paths = ["Home.md"]
+# include_folders = ["Docs/**"]
+# exclude_folders = ["Templates/**", "Archive/**"]
+# exclude_tags = ["private", "draft"]
+# link_policy = "warn"        # error | warn | drop_link | render_plain_text
+# dataview_js = "off"         # off | static
+# [site.profiles.public.asset_policy]
+# mode = "copy_referenced"    # copy_referenced | error_on_missing
+# include_folders = ["site/shared/**"]
+# [[site.profiles.public.content_transforms]]
+# exclude_callouts = ["internal"]
+# [[site.profiles.public.content_transforms.replace]]
+# pattern = "Secret"
+# replacement = "Public"
+
 # [export.profiles.team-book]
 # format = "epub"  # markdown | json | csv | graph | epub | zip | sqlite | search-index
 # query = 'from notes where file.path matches "^(People|Projects)/"'
@@ -2326,6 +2358,98 @@ pub struct ExportProfileConfig {
     pub content_transform_rules: Option<Vec<ContentTransformRuleConfig>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteLinkPolicyConfig {
+    Error,
+    #[default]
+    Warn,
+    DropLink,
+    RenderPlainText,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteAssetPolicyModeConfig {
+    #[default]
+    CopyReferenced,
+    ErrorOnMissing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteDataviewJsPolicyConfig {
+    #[default]
+    Off,
+    Static,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SiteAssetPolicyConfig {
+    #[serde(default)]
+    pub mode: SiteAssetPolicyModeConfig,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include_folders: Vec<String>,
+}
+
+impl Default for SiteAssetPolicyConfig {
+    fn default() -> Self {
+        Self {
+            mode: SiteAssetPolicyModeConfig::CopyReferenced,
+            include_folders: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SiteConfig {
+    #[serde(default)]
+    pub profiles: BTreeMap<String, SiteProfileConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SiteProfileConfig {
+    pub title: Option<String>,
+    pub page_title_template: Option<String>,
+    pub base_url: Option<String>,
+    pub output_dir: Option<PathBuf>,
+    pub home: Option<String>,
+    pub language: Option<String>,
+    pub theme: Option<String>,
+    pub search: Option<bool>,
+    pub graph: Option<bool>,
+    pub backlinks: Option<bool>,
+    pub rss: Option<bool>,
+    pub favicon: Option<PathBuf>,
+    pub logo: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_css: Vec<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_js: Vec<PathBuf>,
+    pub include_query: Option<String>,
+    pub include_query_json: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include_folders: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_folders: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude_tags: Vec<String>,
+    pub link_policy: Option<SiteLinkPolicyConfig>,
+    #[serde(default)]
+    pub asset_policy: SiteAssetPolicyConfig,
+    pub dataview_js: Option<SiteDataviewJsPolicyConfig>,
+    #[serde(
+        default,
+        rename = "content_transforms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub content_transform_rules: Option<Vec<ContentTransformRuleConfig>>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VaultConfig {
     pub scan: ScanConfig,
@@ -2351,6 +2475,8 @@ pub struct VaultConfig {
     pub web: WebConfig,
     pub periodic: PeriodicConfig,
     pub export: ExportConfig,
+    #[serde(default)]
+    pub site: SiteConfig,
     #[serde(default)]
     pub plugins: BTreeMap<String, PluginRegistration>,
     #[serde(default)]
@@ -2382,6 +2508,7 @@ impl Default for VaultConfig {
             web: WebConfig::default(),
             periodic: PeriodicConfig::default(),
             export: ExportConfig::default(),
+            site: SiteConfig::default(),
             plugins: BTreeMap::new(),
             aliases: builtin_command_aliases(),
         }
@@ -2611,6 +2738,7 @@ struct PartialVulcanConfig {
     web: Option<PartialWebConfig>,
     periodic: Option<PartialPeriodicConfig>,
     export: Option<PartialExportConfig>,
+    site: Option<PartialSiteConfig>,
     permissions: Option<PartialPermissionsConfig>,
     plugins: Option<BTreeMap<String, PartialPluginRegistration>>,
     aliases: Option<BTreeMap<String, String>>,
@@ -2660,6 +2788,11 @@ struct PartialAttachmentExtractionConfig {
 #[derive(Debug, Deserialize, Default)]
 struct PartialExportConfig {
     profiles: Option<BTreeMap<String, ExportProfileConfig>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+struct PartialSiteConfig {
+    profiles: Option<BTreeMap<String, SiteProfileConfig>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -7227,6 +7360,85 @@ fn merge_export_profile_config(target: &mut ExportProfileConfig, profile: Export
     }
 }
 
+fn merge_site_profile_config(target: &mut SiteProfileConfig, profile: SiteProfileConfig) {
+    if let Some(title) = profile.title {
+        target.title = Some(title);
+    }
+    if let Some(page_title_template) = profile.page_title_template {
+        target.page_title_template = Some(page_title_template);
+    }
+    if let Some(base_url) = profile.base_url {
+        target.base_url = Some(base_url);
+    }
+    if let Some(output_dir) = profile.output_dir {
+        target.output_dir = Some(output_dir);
+    }
+    if let Some(home) = profile.home {
+        target.home = Some(home);
+    }
+    if let Some(language) = profile.language {
+        target.language = Some(language);
+    }
+    if let Some(theme) = profile.theme {
+        target.theme = Some(theme);
+    }
+    if let Some(search) = profile.search {
+        target.search = Some(search);
+    }
+    if let Some(graph) = profile.graph {
+        target.graph = Some(graph);
+    }
+    if let Some(backlinks) = profile.backlinks {
+        target.backlinks = Some(backlinks);
+    }
+    if let Some(rss) = profile.rss {
+        target.rss = Some(rss);
+    }
+    if let Some(favicon) = profile.favicon {
+        target.favicon = Some(favicon);
+    }
+    if let Some(logo) = profile.logo {
+        target.logo = Some(logo);
+    }
+    if !profile.extra_css.is_empty() {
+        target.extra_css = profile.extra_css;
+    }
+    if !profile.extra_js.is_empty() {
+        target.extra_js = profile.extra_js;
+    }
+    if let Some(include_query) = profile.include_query {
+        target.include_query = Some(include_query);
+    }
+    if let Some(include_query_json) = profile.include_query_json {
+        target.include_query_json = Some(include_query_json);
+    }
+    if !profile.include_paths.is_empty() {
+        target.include_paths = profile.include_paths;
+    }
+    if !profile.include_folders.is_empty() {
+        target.include_folders = profile.include_folders;
+    }
+    if !profile.exclude_paths.is_empty() {
+        target.exclude_paths = profile.exclude_paths;
+    }
+    if !profile.exclude_folders.is_empty() {
+        target.exclude_folders = profile.exclude_folders;
+    }
+    if !profile.exclude_tags.is_empty() {
+        target.exclude_tags = profile.exclude_tags;
+    }
+    if let Some(link_policy) = profile.link_policy {
+        target.link_policy = Some(link_policy);
+    }
+    target.asset_policy = profile.asset_policy;
+    if let Some(dataview_js) = profile.dataview_js {
+        target.dataview_js = Some(dataview_js);
+    }
+    if let Some(content_transform_rules) = profile.content_transform_rules {
+        target.content_transform_rules = Some(content_transform_rules);
+    }
+}
+
 #[allow(clippy::too_many_lines)]
 fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConfig) {
     if let Some(scan) = overrides.scan {
@@ -7853,6 +8065,15 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
             for (name, profile) in profiles {
                 let target = config.export.profiles.entry(name).or_default();
                 merge_export_profile_config(target, profile);
+            }
+        }
+    }
+
+    if let Some(site) = overrides.site {
+        if let Some(profiles) = site.profiles {
+            for (name, profile) in profiles {
+                let target = config.site.profiles.entry(name).or_default();
+                merge_site_profile_config(target, profile);
             }
         }
     }
@@ -11075,6 +11296,261 @@ default_mode = "off"
             fs::read_to_string(paths.gitignore_file()).expect("gitignore should exist"),
             "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n"
         );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn vulcan_config_loads_site_profiles() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"
+[site.profiles.public]
+title = "Public Notes"
+page_title_template = "{site} :: {page}"
+base_url = "https://notes.example.com"
+output_dir = ".vulcan/site/public"
+home = "Home"
+language = "en"
+theme = "default"
+search = true
+graph = false
+backlinks = true
+rss = true
+favicon = "site/favicon.png"
+logo = "site/logo.svg"
+extra_css = ["site/public.css"]
+extra_js = ["site/public.js"]
+include_query = 'from notes where file.path starts_with "Garden/"'
+include_paths = ["Home.md"]
+include_folders = ["Docs/**"]
+exclude_paths = ["Private.md"]
+exclude_folders = ["Templates/**"]
+exclude_tags = ["private", "draft"]
+link_policy = "render_plain_text"
+dataview_js = "static"
+
+[site.profiles.public.asset_policy]
+mode = "error_on_missing"
+include_folders = ["site/shared/**"]
+
+[[site.profiles.public.content_transforms]]
+exclude_callouts = ["internal"]
+exclude_headings = ["Scratch"]
+"#,
+        )
+        .expect("config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+        let profile = loaded
+            .config
+            .site
+            .profiles
+            .get("public")
+            .expect("site profile should be loaded");
+
+        assert_eq!(profile.title.as_deref(), Some("Public Notes"));
+        assert_eq!(
+            profile.page_title_template.as_deref(),
+            Some("{site} :: {page}")
+        );
+        assert_eq!(
+            profile.base_url.as_deref(),
+            Some("https://notes.example.com")
+        );
+        assert_eq!(
+            profile.output_dir.as_ref(),
+            Some(&PathBuf::from(".vulcan/site/public"))
+        );
+        assert_eq!(profile.home.as_deref(), Some("Home"));
+        assert_eq!(profile.language.as_deref(), Some("en"));
+        assert_eq!(profile.theme.as_deref(), Some("default"));
+        assert_eq!(profile.search, Some(true));
+        assert_eq!(profile.graph, Some(false));
+        assert_eq!(profile.backlinks, Some(true));
+        assert_eq!(profile.rss, Some(true));
+        assert_eq!(
+            profile.favicon.as_ref(),
+            Some(&PathBuf::from("site/favicon.png"))
+        );
+        assert_eq!(profile.logo.as_ref(), Some(&PathBuf::from("site/logo.svg")));
+        assert_eq!(profile.extra_css, vec![PathBuf::from("site/public.css")]);
+        assert_eq!(profile.extra_js, vec![PathBuf::from("site/public.js")]);
+        assert_eq!(
+            profile.include_query.as_deref(),
+            Some(r#"from notes where file.path starts_with "Garden/""#)
+        );
+        assert_eq!(profile.include_paths, vec!["Home.md".to_string()]);
+        assert_eq!(profile.include_folders, vec!["Docs/**".to_string()]);
+        assert_eq!(profile.exclude_paths, vec!["Private.md".to_string()]);
+        assert_eq!(profile.exclude_folders, vec!["Templates/**".to_string()]);
+        assert_eq!(
+            profile.exclude_tags,
+            vec!["private".to_string(), "draft".to_string()]
+        );
+        assert_eq!(
+            profile.link_policy,
+            Some(SiteLinkPolicyConfig::RenderPlainText)
+        );
+        assert_eq!(
+            profile.dataview_js,
+            Some(SiteDataviewJsPolicyConfig::Static)
+        );
+        assert_eq!(
+            profile.asset_policy.mode,
+            SiteAssetPolicyModeConfig::ErrorOnMissing
+        );
+        assert_eq!(
+            profile.asset_policy.include_folders,
+            vec!["site/shared/**".to_string()]
+        );
+        assert_eq!(
+            profile.content_transform_rules.as_ref().map(|rules| {
+                rules
+                    .iter()
+                    .map(|rule| {
+                        (
+                            rule.transforms.exclude_callouts.clone(),
+                            rule.transforms.exclude_headings.clone(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            }),
+            Some(vec![(
+                vec!["internal".to_string()],
+                vec!["Scratch".to_string()],
+            )])
+        );
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
+    fn local_config_can_override_site_profile_fields() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path();
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"
+[site.profiles.public]
+title = "Public Notes"
+page_title_template = "{page} | {site}"
+output_dir = ".vulcan/site/public"
+search = true
+link_policy = "warn"
+extra_css = ["site/public.css"]
+
+[site.profiles.public.asset_policy]
+mode = "copy_referenced"
+
+[[site.profiles.public.content_transforms]]
+exclude_callouts = ["internal"]
+"#,
+        )
+        .expect("shared config should be written");
+        fs::write(
+            vault_root.join(".vulcan/config.local.toml"),
+            r#"
+[site.profiles.public]
+page_title_template = "{site} :: {page} [{profile}]"
+base_url = "https://preview.example.test"
+output_dir = ".vulcan/site/preview"
+graph = true
+link_policy = "render_plain_text"
+dataview_js = "static"
+extra_css = ["site/local.css"]
+
+[site.profiles.public.asset_policy]
+mode = "error_on_missing"
+include_folders = ["site/shared/**"]
+
+[[site.profiles.public.content_transforms]]
+exclude_headings = ["Scratch"]
+
+[site.profiles.docs]
+title = "Project Docs"
+output_dir = ".vulcan/site/docs"
+include_paths = ["Docs/Intro.md"]
+"#,
+        )
+        .expect("local config should be written");
+
+        let loaded = load_vault_config(&VaultPaths::new(vault_root));
+        let public = loaded
+            .config
+            .site
+            .profiles
+            .get("public")
+            .expect("merged site profile should be loaded");
+        let docs = loaded
+            .config
+            .site
+            .profiles
+            .get("docs")
+            .expect("local site profile should be loaded");
+
+        assert_eq!(public.title.as_deref(), Some("Public Notes"));
+        assert_eq!(
+            public.page_title_template.as_deref(),
+            Some("{site} :: {page} [{profile}]")
+        );
+        assert_eq!(
+            public.base_url.as_deref(),
+            Some("https://preview.example.test")
+        );
+        assert_eq!(
+            public.output_dir.as_ref(),
+            Some(&PathBuf::from(".vulcan/site/preview"))
+        );
+        assert_eq!(public.search, Some(true));
+        assert_eq!(public.graph, Some(true));
+        assert_eq!(
+            public.link_policy,
+            Some(SiteLinkPolicyConfig::RenderPlainText)
+        );
+        assert_eq!(public.dataview_js, Some(SiteDataviewJsPolicyConfig::Static));
+        assert_eq!(public.extra_css, vec![PathBuf::from("site/local.css")]);
+        assert_eq!(
+            public.asset_policy.mode,
+            SiteAssetPolicyModeConfig::ErrorOnMissing
+        );
+        assert_eq!(
+            public.asset_policy.include_folders,
+            vec!["site/shared/**".to_string()]
+        );
+        assert_eq!(
+            public.content_transform_rules.as_ref().map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(
+            public
+                .content_transform_rules
+                .as_ref()
+                .and_then(|rules| rules.first())
+                .map(|rule| rule.transforms.exclude_headings.clone()),
+            Some(vec!["Scratch".to_string()])
+        );
+
+        assert_eq!(docs.title.as_deref(), Some("Project Docs"));
+        assert_eq!(
+            docs.output_dir.as_ref(),
+            Some(&PathBuf::from(".vulcan/site/docs"))
+        );
+        assert_eq!(docs.include_paths, vec!["Docs/Intro.md".to_string()]);
+    }
+
+    #[test]
+    fn default_config_template_documents_site_profiles() {
+        let template = default_config_template();
+
+        assert!(template.contains("[site.profiles.public]"));
+        assert!(template.contains("page_title_template = \"{page} | {site}\""));
+        assert!(template.contains("output_dir = \".vulcan/site/public\""));
+        assert!(template.contains("link_policy = \"warn\""));
+        assert!(template.contains("dataview_js = \"off\""));
+        assert!(template.contains("mode = \"copy_referenced\""));
     }
 
     #[test]

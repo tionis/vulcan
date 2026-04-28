@@ -782,6 +782,23 @@ fn help_topic_js_plugins_describes_hook_api() {
 }
 
 #[test]
+fn help_topic_static_sites_describes_profiles_and_preview_loop() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["help", "static-sites"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("vulcan site build --profile public")
+                .and(predicate::str::contains(
+                    "vulcan site serve --profile public --watch",
+                ))
+                .and(predicate::str::contains("/__vulcan_site/live-reload.json"))
+                .and(predicate::str::contains("same vault-aware HTML renderer")),
+        );
+}
+
+#[test]
 fn help_topics_cover_custom_tools_host_execution_and_surface_comparison() {
     Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -20869,6 +20886,210 @@ fn render_html_uses_shared_html_renderer_for_vault_files() {
     assert!(html.contains("<h2 id=\"lists\">Lists</h2>"));
     assert!(html.contains("class=\"dql-table\""));
     assert!(html.contains("DataviewJS disabled"));
+}
+
+#[test]
+fn site_profiles_list_reports_effective_settings() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[site.profiles.public]
+title = "Public Notes"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md", "Projects/Alpha.md"]
+search = true
+graph = false
+"#,
+    )
+    .expect("site config should write");
+    run_scan(&vault_root);
+
+    let assert = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "site",
+            "profiles",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let entries = json.as_array().expect("profiles report should be an array");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["name"], "public");
+    assert_eq!(entries[0]["note_count"], 2);
+    assert_eq!(entries[0]["graph"], false);
+}
+
+#[test]
+fn site_doctor_reports_publish_diagnostics() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join("Home.md"),
+        "# Home
+
+See [[Private]].
+",
+    )
+    .expect("home note should write");
+    fs::write(
+        vault_root.join("Private.md"),
+        "---
+tags:
+  - private
+---
+
+# Private
+",
+    )
+    .expect("private note should write");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[site.profiles.public]
+include_paths = ["Home.md", "Private.md"]
+exclude_tags = ["private"]
+link_policy = "error"
+"#,
+    )
+    .expect("config should write");
+    run_scan(&vault_root);
+
+    let assert = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "site",
+            "doctor",
+            "--profile",
+            "public",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let diagnostics = json["diagnostics"]
+        .as_array()
+        .expect("diagnostics should be an array");
+    assert!(diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic["kind"] == "unpublished_link_target"));
+}
+
+#[test]
+fn site_build_writes_static_output_and_reports_routes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[site.profiles.public]
+title = "Public Notes"
+base_url = "https://notes.example.com"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md", "Projects/Alpha.md"]
+search = true
+graph = true
+rss = true
+"#,
+    )
+    .expect("site config should write");
+    run_scan(&vault_root);
+
+    let assert = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "site",
+            "build",
+            "--profile",
+            "public",
+            "--clean",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    assert_eq!(json["profile"], "public");
+    assert_eq!(json["note_count"], 2);
+    let routes = json["routes"]
+        .as_array()
+        .expect("routes should be an array");
+    assert!(routes
+        .iter()
+        .any(|route| route["url_path"] == "/notes/home/"));
+    assert!(vault_root.join(".vulcan/site/public/index.html").exists());
+    assert!(vault_root
+        .join(".vulcan/site/public/assets/search-index.json")
+        .exists());
+    assert!(vault_root
+        .join(".vulcan/site/public/assets/graph.json")
+        .exists());
+    assert!(vault_root.join(".vulcan/site/public/rss.xml").exists());
+}
+
+#[test]
+fn site_build_strict_fails_on_publish_diagnostics() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join("Home.md"),
+        "# Home
+
+See [[Private]].
+",
+    )
+    .expect("home note should write");
+    fs::write(
+        vault_root.join("Private.md"),
+        "---
+tags:
+  - private
+---
+
+# Private
+",
+    )
+    .expect("private note should write");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[site.profiles.public]
+include_paths = ["Home.md", "Private.md"]
+exclude_tags = ["private"]
+link_policy = "warn"
+"#,
+    )
+    .expect("config should write");
+    run_scan(&vault_root);
+
+    let assert = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "site",
+            "build",
+            "--profile",
+            "public",
+            "--strict",
+        ])
+        .assert()
+        .failure();
+    let json = parse_stdout_json(&assert);
+    assert_eq!(json["code"], "operation_failed");
+    assert!(json["error"]
+        .as_str()
+        .is_some_and(|message| message.contains("publish diagnostic")));
 }
 
 #[test]

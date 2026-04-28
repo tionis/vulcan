@@ -17,6 +17,7 @@ mod note_picker;
 mod output;
 mod resolve;
 mod serve;
+mod site_server;
 mod terminal_markdown;
 
 mod plugins {
@@ -377,8 +378,8 @@ pub use cli::{
     OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg,
     PluginSandboxArg, PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand,
     RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand, SavedCreateCommand,
-    SearchBackendArg, SearchMode, SearchSortArg, SkillCommand, SuggestCommand, TagSortArg,
-    TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
+    SearchBackendArg, SearchMode, SearchSortArg, SiteCommand, SkillCommand, SuggestCommand,
+    TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
     TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
     TemplateSubcommand, ToolCommand, ToolInitExampleArg, ToolSandboxArg, TrustCommand,
     VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
@@ -399,6 +400,7 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use serve::{serve_forever, ServeOptions};
+use site_server::{build_site_with_policy, serve_site_forever, SiteServeOptions};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter, Write as FmtWrite};
@@ -448,6 +450,11 @@ use vulcan_app::notes::{
     NoteSetRequest as AppNoteSetRequest,
 };
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
+use vulcan_app::site::{
+    build_site_doctor_report as app_build_site_doctor_report,
+    build_site_profiles_report as app_build_site_profiles_report, SiteBuildReport,
+    SiteBuildRequest, SiteDoctorReport, SiteProfileListEntry,
+};
 use vulcan_app::tasks::{
     apply_task_add, apply_task_archive, apply_task_complete, apply_task_convert, apply_task_create,
     apply_task_pomodoro_start, apply_task_pomodoro_stop, apply_task_reschedule, apply_task_set,
@@ -1860,7 +1867,8 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Suggest { .. }
         | Command::Refactor { .. }
         | Command::Checkpoint { .. }
-        | Command::Export { .. } => true,
+        | Command::Export { .. }
+        | Command::Site { .. } => true,
         Command::Daily { command } => matches!(
             command,
             DailyCommand::Show { .. } | DailyCommand::List { .. } | DailyCommand::ExportIcs { .. }
@@ -7374,6 +7382,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             handle_plugin_command(cli, &paths, command, stdout_is_tty, use_stdout_color)
         }
         Command::Tool { ref command } => handle_tool_command(cli, &paths, command),
+        Command::Site { ref command } => handle_site_command(cli.output, &paths, command),
         Command::Agent { ref command } => {
             commands::agent::handle_agent_command(cli, &paths, command)
         }
@@ -11712,6 +11721,91 @@ fn print_export_profile_rule_list(
     }
 }
 
+fn handle_site_command(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    command: &SiteCommand,
+) -> Result<(), CliError> {
+    match command {
+        SiteCommand::Build {
+            profile,
+            output_dir,
+            clean,
+            dry_run,
+            watch,
+            debounce_ms,
+            strict,
+            fail_on_warning,
+        } => {
+            let request = SiteBuildRequest {
+                profile: profile.clone(),
+                output_dir: output_dir.clone(),
+                clean: *clean,
+                dry_run: *dry_run,
+            };
+            let report = build_site_with_policy(paths, &request, *strict, *fail_on_warning)?;
+            print_site_build_report(output, &report)?;
+            if *watch {
+                watch_site_builds_forever(
+                    output,
+                    paths,
+                    &request,
+                    *debounce_ms,
+                    *strict,
+                    *fail_on_warning,
+                )?;
+            }
+            Ok(())
+        }
+        SiteCommand::Serve {
+            profile,
+            output_dir,
+            port,
+            watch,
+            debounce_ms,
+            strict,
+            fail_on_warning,
+        } => {
+            match output {
+                OutputFormat::Json => print_json(&json!({
+                    "ok": true,
+                    "profile": profile.clone().unwrap_or_else(|| "default".to_string()),
+                    "url": format!("http://127.0.0.1:{port}/"),
+                    "watch": watch,
+                    "strict": *strict || *fail_on_warning,
+                }))?,
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    println!(
+                        "Serving static site at http://127.0.0.1:{port}/{}",
+                        if *watch { " (watch enabled)" } else { "" }
+                    );
+                }
+            }
+            serve_site_forever(
+                paths,
+                &SiteServeOptions {
+                    profile: profile.clone(),
+                    output_dir: output_dir.clone(),
+                    port: *port,
+                    watch: *watch,
+                    debounce_ms: *debounce_ms,
+                    strict: *strict,
+                    fail_on_warning: *fail_on_warning,
+                },
+            )
+        }
+        SiteCommand::Profiles => {
+            let report = app_build_site_profiles_report(paths).map_err(CliError::operation)?;
+            print_site_profile_list_report(output, &report)
+        }
+        SiteCommand::Doctor { profile } => {
+            let report = app_build_site_doctor_report(paths, profile.as_deref())
+                .map_err(CliError::operation)?;
+            print_site_doctor_report(output, &report)
+        }
+    }
+}
+
 fn print_export_profile_rule_write_report(
     output: OutputFormat,
     report: &ExportProfileRuleWriteReport,
@@ -11948,6 +12042,170 @@ fn run_config_import_batch(
         reports,
     };
     print_config_import_batch_report(output, paths, &report)
+}
+
+fn watch_site_builds_forever(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    request: &SiteBuildRequest,
+    debounce_ms: u64,
+    strict: bool,
+    fail_on_warning: bool,
+) -> Result<(), CliError> {
+    watch_vault(paths, &WatchOptions { debounce_ms }, |watch_report| {
+        if watch_report.startup {
+            return Ok(());
+        }
+        let report = build_site_with_policy(
+            paths,
+            &SiteBuildRequest {
+                profile: request.profile.clone(),
+                output_dir: request.output_dir.clone(),
+                clean: false,
+                dry_run: request.dry_run,
+            },
+            strict,
+            fail_on_warning,
+        )?;
+        print_site_build_report(output, &report)
+    })
+    .map_err(CliError::operation)
+}
+
+fn print_site_profile_list_report(
+    output: OutputFormat,
+    entries: &[SiteProfileListEntry],
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(&entries.to_vec()),
+        OutputFormat::Markdown => {
+            for entry in entries {
+                let implicit = if entry.implicit { " (implicit)" } else { "" };
+                println!(
+                    "- `{}`{}: {} note(s), theme `{}`, output `{}`",
+                    entry.name, implicit, entry.note_count, entry.theme, entry.output_dir
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Human => {
+            if entries.is_empty() {
+                println!("No site profiles configured.");
+                return Ok(());
+            }
+            for entry in entries {
+                let implicit = if entry.implicit { " (implicit)" } else { "" };
+                println!(
+                    "{}{}	{} notes	{}",
+                    entry.name, implicit, entry.note_count, entry.output_dir
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_site_build_report(output: OutputFormat, report: &SiteBuildReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Markdown => {
+            println!(
+                "# Site Build
+"
+            );
+            println!("- Profile: `{}`", report.profile);
+            println!("- Output: `{}`", report.output_dir);
+            println!("- Notes: {}", report.note_count);
+            println!("- Pages: {}", report.page_count);
+            println!("- Assets: {}", report.asset_count);
+            if !report.diagnostics.is_empty() {
+                println!(
+                    "
+## Diagnostics"
+                );
+                for diagnostic in &report.diagnostics {
+                    println!(
+                        "- {} {} {}",
+                        diagnostic.level, diagnostic.kind, diagnostic.message
+                    );
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Human => {
+            println!(
+                "Built {} note(s) into {} ({} pages, {} assets)",
+                report.note_count, report.output_dir, report.page_count, report.asset_count
+            );
+            if !report.diagnostics.is_empty() {
+                println!("Diagnostics:");
+                for diagnostic in &report.diagnostics {
+                    match diagnostic.source_path.as_deref() {
+                        Some(path) => println!(
+                            "- [{}] {} {} ({})",
+                            diagnostic.level, diagnostic.kind, diagnostic.message, path
+                        ),
+                        None => println!(
+                            "- [{}] {} {}",
+                            diagnostic.level, diagnostic.kind, diagnostic.message
+                        ),
+                    }
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_site_doctor_report(
+    output: OutputFormat,
+    report: &SiteDoctorReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Markdown => {
+            println!(
+                "# Site Doctor
+"
+            );
+            println!("- Profile: `{}`", report.profile);
+            println!("- Published notes: {}", report.note_count);
+            println!("- Diagnostics: {}", report.diagnostics.len());
+            for diagnostic in &report.diagnostics {
+                println!(
+                    "- [{}] {} {}",
+                    diagnostic.level, diagnostic.kind, diagnostic.message
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Human => {
+            if report.diagnostics.is_empty() {
+                println!(
+                    "No publish diagnostics for profile `{}` ({} note(s)).",
+                    report.profile, report.note_count
+                );
+                return Ok(());
+            }
+            println!(
+                "Publish diagnostics for profile `{}` ({} note(s)):",
+                report.profile, report.note_count
+            );
+            for diagnostic in &report.diagnostics {
+                match diagnostic.source_path.as_deref() {
+                    Some(path) => println!(
+                        "- [{}] {} {} ({})",
+                        diagnostic.level, diagnostic.kind, diagnostic.message, path
+                    ),
+                    None => println!(
+                        "- [{}] {} {}",
+                        diagnostic.level, diagnostic.kind, diagnostic.message
+                    ),
+                }
+            }
+            Ok(())
+        }
+    }
 }
 
 fn print_config_import_list_report(
@@ -16165,6 +16423,7 @@ fn help_overview() -> HelpTopicReport {
                     "Run saved reports, checks, and repairs for CI workflows",
                 ),
                 ("export", "Write static export artifacts from the cache"),
+                ("site", "Build, diagnose, and preview static websites from vault profiles"),
                 (
                     "checkpoint",
                     "Create and list named cache-state checkpoints",
@@ -16301,6 +16560,13 @@ fn builtin_help_topics() -> Vec<HelpTopicReport> {
             "Current scripting-oriented surfaces and the path to the standalone JS runtime.",
             include_str!("../../docs/guide/scripting.md"),
             &["sandbox", "js", "describe"],
+        ),
+        static_help_topic(
+            "static-sites",
+            HelpTopicKind::Guide,
+            "Profile-driven static publishing, diagnostics, and local preview workflow.",
+            include_str!("../../docs/guide/static-sites.md"),
+            &["site", "render", "note get", "export"],
         ),
         static_help_topic(
             "sandbox",
@@ -22535,6 +22801,73 @@ mod tests {
                     repair_fts: true,
                     fail_on_issues: true,
                 }
+            }
+        );
+    }
+
+    #[test]
+    fn parses_site_build_and_serve_commands() {
+        let build = Cli::try_parse_from([
+            "vulcan",
+            "site",
+            "build",
+            "--profile",
+            "public",
+            "--output-dir",
+            "dist",
+            "--clean",
+            "--watch",
+            "--strict",
+            "--fail-on-warning",
+            "--debounce-ms",
+            "75",
+        ])
+        .expect("cli should parse");
+        let serve = Cli::try_parse_from([
+            "vulcan",
+            "site",
+            "serve",
+            "--profile",
+            "public",
+            "--output-dir",
+            "dist",
+            "--port",
+            "43110",
+            "--watch",
+            "--strict",
+            "--fail-on-warning",
+            "--debounce-ms",
+            "60",
+        ])
+        .expect("cli should parse");
+
+        assert_eq!(
+            build.command,
+            Command::Site {
+                command: SiteCommand::Build {
+                    profile: Some("public".to_string()),
+                    output_dir: Some(PathBuf::from("dist")),
+                    clean: true,
+                    dry_run: false,
+                    watch: true,
+                    strict: true,
+                    fail_on_warning: true,
+                    debounce_ms: 75,
+                },
+            }
+        );
+        assert_eq!(
+            serve.command,
+            Command::Site {
+                command: SiteCommand::Serve {
+                    profile: Some("public".to_string()),
+                    output_dir: Some(PathBuf::from("dist")),
+                    port: 43110,
+                    watch: true,
+                    strict: true,
+                    fail_on_warning: true,
+                    debounce_ms: 60,
+                },
             }
         );
     }

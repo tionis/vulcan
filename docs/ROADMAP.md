@@ -3920,114 +3920,124 @@ search = true
 graph = false
 ```
 
+#### Current implementation status (2026-04-29)
+
+- `site build|serve|profiles|doctor` are in-tree with JSON output, deterministic route planning, folder/tag/recent/home/search/graph pages, route/search/graph/hover manifests, RSS/sitemap emission, and publish-filter diagnostics.
+- The builder reuses the same shared HTML renderer already used by `note get --mode html` and `render --mode html`; this currently covers inline Dataview expressions, `dataview` query blocks, `tasks` query blocks, `.base` embeds, note embeds, callouts, attachment rewriting, and DataviewJS off/static fallback behavior.
+- The preview loop currently uses a lightweight loopback server plus browser polling at `/__vulcan_site/live-reload.json`; SSE/WebSocket transport and true affected-page incremental rebuilds are still pending.
+- Remaining gaps for this phase are primarily snapshot coverage, accessibility polish, raw-HTML policy controls, richer graph/search UX, explicit later-phase reuse cross-references, and broader read-only fixture coverage for TaskNotes/periodic/Kanban-style surfaces.
+
 ### 9.20.1 Shared render contract and CLI surface
 
 This is the foundation. Do this before building site chrome, templates, or preview tooling.
 
-- [ ] Add `vulcan site build [--profile <name>] [--output-dir <path>] [--clean] [--dry-run] [--watch]`
-- [ ] Add `vulcan site serve [--profile <name>] [--output-dir <path>] [--port <n>] [--watch]`
-- [ ] Add `vulcan site profiles` (list available site profiles with effective settings)
-- [ ] Add `vulcan site doctor [--profile <name>]` for publish-specific diagnostics: unpublished link targets, slug collisions, unsupported embeds, missing assets, SEO metadata gaps
-- [ ] Land `vault.note(path).html` and `vulcan note get --mode html` on the same renderer used by site generation
-- [ ] Add HTML output to `vulcan render` so users can quickly convert markdown from stdin or files using the same shared render pipeline rather than a separate converter
-- [ ] Define shared render structs in Rust (`RenderContext`, `RenderedNote`, `RenderedEmbed`, `SiteRoute`, etc.) so CLI/site/WebUI reuse the same contracts
-- [ ] Define deterministic route/slug planning with diagnostics on collisions and stable defaults derived from note path/frontmatter
-- [ ] Add JSON output for `site build`, `site profiles`, and `site doctor` for automation/LLM use
+- [x] Add `vulcan site build [--profile <name>] [--output-dir <path>] [--clean] [--dry-run] [--watch]`
+- [x] Add `vulcan site serve [--profile <name>] [--output-dir <path>] [--port <n>] [--watch]`
+- [x] Add `vulcan site profiles` (list available site profiles with effective settings)
+- [x] Add `vulcan site doctor [--profile <name>]` for publish-specific diagnostics: unpublished link targets, slug collisions, unsupported embeds, missing assets, SEO metadata gaps
+- [x] Land `vault.note(path).html` and `vulcan note get --mode html` on the same renderer used by site generation
+- [x] Add HTML output to `vulcan render` so users can quickly convert markdown from stdin or files using the same shared render pipeline rather than a separate converter
+- [x] Define shared render structs in Rust (`RenderContext`, `RenderedNote`, `RenderedEmbed`, `SiteRoute`, etc.) so CLI/site/WebUI reuse the same contracts
+- [x] Define deterministic route/slug planning with diagnostics on collisions and stable defaults derived from note path/frontmatter
+- [x] Add JSON output for `site build`, `site profiles`, and `site doctor` for automation/LLM use
 - [ ] Snapshot tests for single-note HTML rendering and route manifests
 
 ### 9.20.2 Site profiles and publication selection
 
 Publishing a subset of the vault is a first-class requirement. Profiles are the mechanism.
 
-- [ ] Add `[site.profiles.<name>]` config section to `.vulcan/config.toml`
-- [ ] Support profile fields: `title`, `base_url`, `output_dir`, `home`, `language`, `theme`, `search`, `graph`, `backlinks`, `rss`, `favicon`, `logo`, `extra_css`, `extra_js`
-- [ ] Support inclusion/exclusion by canonical query AST, folder glob, explicit note path, tag, and frontmatter predicates
-- [ ] Support multiple profiles per vault so one vault can publish a public garden, project docs, and private local preview separately
-- [ ] Reuse export/publication `content_transforms`, link policy, and asset policy in site profiles so export, static site, and future web wiki publication all share the same audience-filtering model
-- [ ] Use the same rule semantics in site profiles: profile selection defines the published note set, while per-rule queries only target which published notes get transformed
-- [ ] Add per-profile slug/frontmatter overrides: title, description, canonical URL, summary image, custom slug
-- [ ] Add link policy for references that point outside the published subset: `error`, `warn`, `drop-link`, or `render-plain-text`
-- [ ] Add attachment policy: copy only referenced assets, copy whole folders, or error on missing references
-- [ ] "Private pages" in static mode are implemented as exclusion rules only; document this constraint explicitly in help and config docs
-- [ ] Config tests for precedence, profile parsing, subset selection, and publish-leak prevention
+- [x] Add `[site.profiles.<name>]` config section to `.vulcan/config.toml`
+- [x] Support profile fields: `title`, `base_url`, `output_dir`, `home`, `language`, `theme`, `search`, `graph`, `backlinks`, `rss`, `favicon`, `logo`, `extra_css`, `extra_js`
+- [x] Support inclusion/exclusion by canonical query AST, folder glob, explicit note path, tag, and frontmatter predicates
+- [x] Support multiple profiles per vault so one vault can publish a public garden, project docs, and private local preview separately
+- [x] Reuse export/publication `content_transforms`, link policy, and asset policy in site profiles so export, static site, and future web wiki publication all share the same audience-filtering model
+- [x] Use the same rule semantics in site profiles: profile selection defines the published note set, while per-rule queries only target which published notes get transformed
+- [x] Add per-profile slug/frontmatter overrides: title, description, canonical URL, summary image, custom slug
+- [x] Add link policy for references that point outside the published subset: `error`, `warn`, `drop-link`, or `render-plain-text`
+- [x] Add attachment policy: copy only referenced assets, copy whole folders, or error on missing references
+- [x] "Private pages" in static mode are implemented as exclusion rules only; document this constraint explicitly in help and config docs
+- [x] Config tests for precedence, profile parsing, subset selection, and publish-leak prevention
 
 ### 9.20.3 Obsidian-native HTML renderer
 
 The renderer should understand vault semantics, not just CommonMark.
 
-- [ ] Render Markdown to HTML with Obsidian-compatible support for wikilinks, heading/block refs, note embeds, image/audio/video/PDF embeds, footnotes, callouts, task lists, tables, and syntax highlighting
-- [ ] Render math and mermaid with clear server/client responsibilities (static HTML + minimal runtime hook, or prerender where practical)
-- [ ] Generate stable heading IDs and block anchors for deep links and embeds
-- [ ] Render note/block embeds recursively with loop detection and depth limits
-- [ ] Copy referenced attachments into the output with deterministic paths; optionally content-hash emitted asset filenames
+- [x] Render Markdown to HTML with Obsidian-compatible support for wikilinks, heading/block refs, note embeds, image/audio/video/PDF embeds, footnotes, callouts, task lists, tables, and syntax highlighting
+- [~] Render math and mermaid with clear server/client responsibilities; the shared renderer already emits math HTML and `language-mermaid` fenced code blocks, but explicit runtime-hook/docs polish is still pending
+- [x] Generate stable heading IDs and block anchors for deep links and embeds
+- [x] Render note/block embeds recursively with loop detection and depth limits
+- [x] Copy referenced attachments into the output with deterministic paths; optionally content-hash emitted asset filenames
 - [ ] Add configurable raw HTML policy: passthrough, sanitize, or strip with diagnostics
-- [ ] Generate per-page metadata from existing indexes: title, excerpt/summary, tags, aliases, outgoing links, backlinks, breadcrumbs, heading tree, created/modified dates
-- [ ] Preserve unsupported syntax as visible diagnostics or fallback blocks rather than silently dropping content
-- [ ] Add snapshot/integration tests against fixture vaults covering embeds, block refs, math, mermaid, callouts, and attachment rewriting
+- [x] Generate per-page metadata from existing indexes: title, excerpt/summary, tags, aliases, outgoing links, backlinks, breadcrumbs, heading tree, created/modified dates
+- [x] Preserve unsupported syntax as visible diagnostics or fallback blocks rather than silently dropping content
+- [x] Add snapshot/integration tests against fixture vaults covering embeds, block refs, math, mermaid, callouts, and attachment rewriting
 
 ### 9.20.4 Site generation, theme system, and default UX
 
 This sub-phase turns rendered notes into a coherent website rather than a folder of HTML fragments.
 
-- [ ] Generate note pages, home page, folder listings, tag listings, recent-notes page, and optional archive page
-- [ ] Add TOC, breadcrumbs, backlinks, and previous/next navigation using existing graph and path metadata
-- [ ] Ship a responsive default theme implemented with plain CSS and minimal JS; no SPA router required for the first usable version
-- [ ] Use CSS custom properties for the theme token system so customization stays simple and stable
-- [ ] Support light/dark mode out of the box: `prefers-color-scheme` by default plus a manual toggle persisted in browser storage
-- [ ] Support profile-scoped custom CSS as a first-class feature (`extra_css`) and optional profile-scoped custom JS (`extra_js`)
-- [ ] Support favicon/logo injection and custom page title templates
-- [ ] Implement SEO basics: canonical URLs, sitemap.xml, RSS/Atom feed, OpenGraph/Twitter metadata, social preview fallbacks
+- [x] Generate note pages, home page, folder listings, tag listings, recent-notes page, and optional archive page
+- [x] Add TOC, breadcrumbs, backlinks, and previous/next navigation using existing graph and path metadata
+- [x] Ship a responsive default theme implemented with plain CSS and minimal JS; no SPA router required for the first usable version
+- [x] Use CSS custom properties for the theme token system so customization stays simple and stable
+- [x] Support light/dark mode out of the box: `prefers-color-scheme` by default plus a manual toggle persisted in browser storage
+- [x] Support profile-scoped custom CSS as a first-class feature (`extra_css`) and optional profile-scoped custom JS (`extra_js`)
+- [x] Support favicon/logo injection
+- [x] Add custom page title templates
+- [x] Implement SEO basics: canonical URLs, sitemap.xml, RSS/Atom feed, OpenGraph/Twitter metadata, social preview fallbacks
 - [ ] Accessibility budget: ensure the default theme is keyboard-navigable, mobile-friendly, and screen-reader-friendly; add snapshot or smoke tests for landmarks/heading structure
-- [ ] If `vulcan export html` is kept, implement it as a thin wrapper over `site build` rather than a parallel renderer/template stack
+- [-] `vulcan export html` remains superseded by `site build`; do not reintroduce a parallel renderer/template stack unless a later phase revives that dedicated command surface
 
 ### 9.20.5 Client-side search, graph assets, and hover previews
 
 These features differentiate the site from a plain markdown-to-HTML export and directly reuse existing Vulcan data structures.
 
-- [ ] Generate a static client-side search index from chunks/search metadata with note titles, headings, excerpts, tags, and URLs
+- [x] Generate a static client-side search index from chunks/search metadata with note titles, headings, excerpts, tags, and URLs
 - [ ] Provide a default search UI with keyboard shortcut, result highlighting, and mobile-friendly behavior
-- [ ] Emit graph JSON using the resolved note graph plus per-page local neighborhoods for a local graph view
-- [ ] Add a global graph page and per-page local graph component using the same JSON asset schema later reusable by WebUI
-- [ ] Generate a hover-preview/popover manifest with title, excerpt, URL, and optional heading outline so links can show Wikipedia-style previews
+- [x] Emit graph JSON using the resolved note graph plus per-page local neighborhoods for a local graph view
+- [x] Add a global graph page using the same JSON asset schema later reusable by WebUI
+- [ ] Add a per-page local graph component using the same JSON asset schema later reusable by WebUI
+- [x] Generate a hover-preview/popover manifest with title, excerpt, URL, and optional heading outline so links can show Wikipedia-style previews
 - [ ] Generate recent-notes and related-notes manifests from existing metadata/graph data where useful
-- [ ] Ensure publish filters apply uniformly: excluded notes must not appear in search indexes, graph JSON, preview manifests, feeds, or copied assets
-- [ ] Add regression tests proving excluded/draft/private notes cannot leak through any generated static asset
+- [x] Ensure publish filters apply uniformly: excluded notes must not appear in search indexes, graph JSON, preview manifests, feeds, or copied assets
+- [x] Add regression tests proving excluded/draft/private notes cannot leak through any generated static asset
 
 ### 9.20.6 Local preview server and incremental rebuilds
 
 This is a site-development loop, not a replacement for the daemon.
 
-- [ ] `vulcan site serve --watch` serves the generated site from a lightweight local HTTP server
-- [ ] Watch vault files, `.vulcan/config.toml`, profile CSS/JS assets, and theme/template files; rebuild incrementally when inputs change
+- [x] `vulcan site serve --watch` serves the generated site from a lightweight local HTTP server
+- [x] Watch vault files, `.vulcan/config.toml`, profile CSS/JS assets, and theme/template files; rebuild incrementally when inputs change
 - [ ] Rebuild only affected pages/indices/assets where possible using the existing incremental scan and dependency information
-- [ ] Browser live reload via SSE or WebSocket; keep this local and simple rather than reusing Phase 10 routing/auth
+- [x] Browser live reload via a local polling endpoint plus in-browser reload/error overlay; keep this local and simple rather than reusing Phase 10 routing/auth
+- [ ] Upgrade live reload transport to SSE or WebSocket if polling proves insufficient
 - [ ] Clear diagnostics in the terminal and optional in-browser overlay for broken links, unsupported embeds, render failures, or leaked/private pages
-- [ ] Add `--fail-on-warning` / `--strict` mode for CI-style preview checks
-- [ ] Integration tests for build → serve → modify source → incremental rebuild → updated output
+- [x] Add `--fail-on-warning` / `--strict` mode for CI-style preview checks
+- [x] Integration tests for build → serve → modify source → incremental rebuild → updated output
 
 ### 9.20.7 Dataview, Bases, Tasks, and advanced read-only surfaces
 
 Vulcan should compete on Obsidian-native semantics here, not just theming.
 
-- [ ] Render inline Dataview expressions in note pages using the same evaluator as CLI/WebUI
-- [ ] Render DQL query blocks to static HTML tables/lists/task views when evaluation is deterministic
-- [ ] Render Bases views to static tables/cards using the canonical query AST and existing Bases evaluator
-- [ ] Render Tasks plugin views, TaskNotes views, periodic-note event listings, and Kanban boards in read-only HTML where the underlying data already exists in the cache
-- [ ] Add explicit DataviewJS publish policy: default `off`; optional `static` mode behind `js_runtime` feature flag and profile opt-in
+- [x] Render inline Dataview expressions in note pages using the same evaluator as CLI/WebUI
+- [x] Render DQL query blocks to static HTML tables/lists/task views when evaluation is deterministic
+- [~] Render Bases views to static tables/cards using the canonical query AST and existing Bases evaluator; `.base` embeds already flow through the shared renderer, but broader dedicated coverage and workflows are still pending
+- [~] Render Tasks plugin query blocks in read-only HTML via the shared renderer; TaskNotes views, periodic-note event listings, and Kanban boards are still pending
+- [x] Add explicit DataviewJS publish policy: default `off`; optional `static` mode behind `js_runtime` feature flag and profile opt-in
 - [ ] In DataviewJS `static` mode, enforce determinism constraints: no network, no wall-clock dependence, no filesystem writes, and clear diagnostics on unsupported behavior
-- [ ] Unsupported or disabled DataviewJS blocks should render visible fallback output with diagnostics rather than disappearing silently
-- [ ] Document what is intentionally deferred from the first static-site release: comments, analytics integrations, stacked pages, SPA routing, full browser-side DataviewJS parity, and any "private page" mechanism that depends on runtime auth
+- [x] Unsupported or disabled DataviewJS blocks should render visible fallback output with diagnostics rather than disappearing silently
+- [x] Document what is intentionally deferred from the first static-site release: comments, analytics integrations, stacked pages, SPA routing, full browser-side DataviewJS parity, and any "private page" mechanism that depends on runtime auth
 - [ ] Integration tests on fixture vaults containing Dataview, Bases, Tasks, TaskNotes, Kanban, and periodic-note content
 
 ### 9.20.8 Testing, determinism, and later-phase reuse
 
 This phase is only worth doing early if later phases can build on it directly.
 
-- [ ] Build-twice determinism test: same vault + same config must produce byte-identical output (modulo intentional timestamps in feeds, which should be normalized in tests)
-- [ ] Multi-profile tests: one vault builds multiple profiles with different subsets/themes without asset leakage between outputs
-- [ ] Publish-subset leak tests: excluded notes cannot appear in HTML, JSON manifests, feeds, copied assets, or hover previews
+- [x] Build-twice determinism test: same vault + same config must produce byte-identical output (modulo intentional timestamps in feeds, which should be normalized in tests)
+- [x] Multi-profile tests: one vault builds multiple profiles with different subsets/themes without asset leakage between outputs
+- [x] Publish-subset leak tests: excluded notes cannot appear in HTML, JSON manifests, feeds, copied assets, or hover previews
 - [ ] HTML snapshot tests for representative pages and fixture vaults
-- [ ] Document the shared renderer/output contracts reused by Phase 13 note pages and Phase 16 wiki mode
+- [x] Document the shared renderer/output contracts reused by Phase 13 note pages and Phase 16 wiki mode
 - [ ] Add explicit cross-reference notes in later phases: WebUI and wiki features must reuse this renderer/search/graph asset model unless a documented reason requires divergence
 
 ---
