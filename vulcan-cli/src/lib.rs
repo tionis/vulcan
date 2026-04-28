@@ -376,12 +376,12 @@ pub use cli::{
     McpTransportArg, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
     OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg,
     PluginSandboxArg, PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand,
-    RefreshMode, RenderArgs, RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg,
-    SearchMode, SearchSortArg, SkillCommand, SuggestCommand, TagSortArg, TasksCommand,
-    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
-    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, ToolCommand,
-    ToolInitExampleArg, ToolSandboxArg, TrustCommand, VectorQueueCommand, VectorsCommand,
-    WebCommand, WebFetchMode,
+    RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand, SavedCreateCommand,
+    SearchBackendArg, SearchMode, SearchSortArg, SkillCommand, SuggestCommand, TagSortArg,
+    TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
+    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
+    TemplateSubcommand, ToolCommand, ToolInitExampleArg, ToolSandboxArg, TrustCommand,
+    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -513,32 +513,32 @@ use vulcan_core::{
     load_kanban_board, load_saved_report, load_vault_config, merge_tags, move_kanban_card,
     move_note, period_range_for_date, plan_base_note_create, query_backlinks, query_change_report,
     query_links, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
-    rename_heading, rename_property, render_markdown_fragment_html, render_markdown_html,
-    repair_fts, resolve_note_reference, resolve_periodic_note, resolve_permission_profile,
-    save_saved_report, scan_vault_with_progress, search_vault, step_period_start, verify_cache,
-    watch_vault, AssistantToolSecretSpec, AutoScanMode, BacklinkRecord, BacklinksReport,
-    BasesCreateContext, BasesEvalReport, BasesViewEditReport, BulkMutationReport,
-    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
-    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterReport, ConfigImportReport,
-    CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult,
-    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
-    DuplicateSuggestionsReport, GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport,
-    GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate, GraphMocReport,
-    GraphPathReport, GraphQueryError, GraphTrendsReport, ImportTarget, InitSummary,
-    JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary,
-    KanbanImporter, KanbanMoveReport, KanbanTaskStatus, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
-    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig,
-    PeriodicNotesImporter, PermissionFilter, PermissionGuard, PluginEvent, PluginImporter,
-    ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport, RefactorChange,
-    RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport,
-    ResolvedPermissionProfile, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport, SearchSort,
-    StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult, TemplaterImporter,
-    VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
-    VectorIndexReport, VectorNeighborHit, VectorNeighborsReport, VectorQueueReport,
-    VectorRepairReport, WatchOptions, WatchReport,
+    rename_heading, rename_property, render_note_fragment_html, render_note_html,
+    render_vault_html, repair_fts, resolve_note_reference, resolve_periodic_note,
+    resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
+    step_period_start, verify_cache, watch_vault, AssistantToolSecretSpec, AutoScanMode,
+    BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport, BasesViewEditReport,
+    BulkMutationReport, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport,
+    ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterReport,
+    ConfigImportReport, CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput,
+    DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    DqlQueryResult, DuplicateSuggestionsReport, GitBlameLine, GitCommitReport, GitLogEntry,
+    GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
+    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
+    HtmlRenderOptions, ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport,
+    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport,
+    KanbanTaskStatus, MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary,
+    NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter, PermissionFilter, PermissionGuard,
+    PluginEvent, PluginImporter, ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport,
+    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
+    RepairFtsReport, ResolvedPermissionProfile, SavedExport, SavedExportFormat,
+    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
+    ScanPhase, ScanProgress, ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport,
+    SearchSort, StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult,
+    TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase,
+    VectorIndexProgress, VectorIndexReport, VectorNeighborHit, VectorNeighborsReport,
+    VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -1212,6 +1212,7 @@ struct RenderReport {
     path: Option<String>,
     source: String,
     rendered: String,
+    mode: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -5259,6 +5260,8 @@ fn run_note_get_command(
     let selection_is_full_document =
         selection_covers_full_document(&selection.selected_lines, selection.total_lines);
     let rendered_content = render_note_get_content(
+        paths,
+        target.target.vault_relative_path.as_deref(),
         &selection.content,
         mode,
         selection_is_full_document && !no_frontmatter,
@@ -5425,14 +5428,33 @@ fn run_note_checkbox_command(
     })
 }
 
-fn render_note_get_content(content: &str, mode: NoteGetMode, full_document: bool) -> String {
+fn render_note_get_content(
+    paths: &VaultPaths,
+    source_path: Option<&str>,
+    content: &str,
+    mode: NoteGetMode,
+    full_document: bool,
+) -> String {
     match mode {
         NoteGetMode::Markdown => content.to_string(),
         NoteGetMode::Html => {
             if full_document {
-                render_markdown_html(content)
+                source_path.map_or_else(
+                    || {
+                        render_vault_html(
+                            paths,
+                            content,
+                            &HtmlRenderOptions {
+                                full_document: true,
+                                ..HtmlRenderOptions::default()
+                            },
+                        )
+                        .html
+                    },
+                    |path| render_note_html(paths, path, content).html,
+                )
             } else {
-                render_markdown_fragment_html(content)
+                render_note_fragment_html(paths, source_path, content).html
             }
         }
     }
@@ -7223,10 +7245,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         return Ok(());
     }
 
-    if let Command::Render(RenderArgs { ref file }) = cli.command {
+    if let Command::Render(RenderArgs { ref file, mode }) = cli.command {
         let stdout_is_tty = io::stdout().is_terminal();
         let use_stdout_color = resolve_use_color(cli.color, stdout_is_tty);
-        let report = run_render_command(file.as_ref())?;
+        let render_paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
+        let report = run_render_command(&render_paths, file.as_ref(), mode)?;
         return print_render_report(cli.output, &report, stdout_is_tty, use_stdout_color);
     }
 
@@ -9209,19 +9232,27 @@ fn print_search_report(
     }
 }
 
-fn run_render_command(path: Option<&PathBuf>) -> Result<RenderReport, CliError> {
-    let (path, source) = match path {
+fn run_render_command(
+    paths: &VaultPaths,
+    path: Option<&PathBuf>,
+    mode: RenderMode,
+) -> Result<RenderReport, CliError> {
+    let (path, source, source_path) = match path {
         Some(path) if path.as_os_str() == "-" => {
             let mut source = String::new();
             io::stdin()
                 .read_to_string(&mut source)
                 .map_err(CliError::operation)?;
-            (None, source)
+            (None, source, None)
         }
-        Some(path) => (
-            Some(path.display().to_string()),
-            fs::read_to_string(path).map_err(CliError::operation)?,
-        ),
+        Some(path) => {
+            let contents = fs::read_to_string(path).map_err(CliError::operation)?;
+            let absolute = fs::canonicalize(path).map_err(CliError::operation)?;
+            let source_path = paths
+                .relative_to_vault(&absolute)
+                .map(|relative| path_buf_to_slash_string(&relative));
+            (Some(path.display().to_string()), contents, source_path)
+        }
         None => {
             if io::stdin().is_terminal() {
                 return Err(CliError::operation(
@@ -9232,15 +9263,36 @@ fn run_render_command(path: Option<&PathBuf>) -> Result<RenderReport, CliError> 
             io::stdin()
                 .read_to_string(&mut source)
                 .map_err(CliError::operation)?;
-            (None, source)
+            (None, source, None)
         }
     };
 
-    let rendered = terminal_markdown::render_terminal_markdown(&source, false);
+    let rendered = match mode {
+        RenderMode::Terminal => terminal_markdown::render_terminal_markdown(&source, false),
+        RenderMode::Html => source_path.as_deref().map_or_else(
+            || {
+                render_vault_html(
+                    paths,
+                    &source,
+                    &HtmlRenderOptions {
+                        full_document: true,
+                        ..HtmlRenderOptions::default()
+                    },
+                )
+                .html
+            },
+            |relative_path| render_note_html(paths, relative_path, &source).html,
+        ),
+    };
     Ok(RenderReport {
         path,
         source,
         rendered,
+        mode: match mode {
+            RenderMode::Terminal => "terminal",
+            RenderMode::Html => "html",
+        }
+        .to_string(),
     })
 }
 
@@ -9291,7 +9343,7 @@ fn print_render_report(
     match output {
         OutputFormat::Json => print_json(report),
         OutputFormat::Human => {
-            let rendered = if stdout_is_tty {
+            let rendered = if report.mode == "terminal" && stdout_is_tty {
                 terminal_markdown::render_terminal_markdown(&report.source, use_color)
             } else {
                 report.rendered.clone()
@@ -9303,8 +9355,13 @@ fn print_render_report(
             Ok(())
         }
         OutputFormat::Markdown => {
-            print!("{}", report.source);
-            if !report.source.ends_with('\n') {
+            let rendered = if report.mode == "html" {
+                report.rendered.as_str()
+            } else {
+                report.source.as_str()
+            };
+            print!("{rendered}");
+            if !rendered.ends_with('\n') {
                 println!();
             }
             Ok(())

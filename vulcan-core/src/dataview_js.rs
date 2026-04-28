@@ -281,7 +281,7 @@ mod runtime {
     use crate::VaultPaths;
     use crate::{
         move_note, parse_document, query_backlinks_with_filter, query_links_with_filter,
-        render_markdown_html, scan_vault, ScanMode,
+        render_note_html, scan_vault, ScanMode,
     };
     use serde_json::{Map, Value};
     use std::cmp::Ordering;
@@ -3792,7 +3792,7 @@ globalThis.Function = undefined;
             "file": FileMetadataResolver::object(note),
             "frontmatter": note.frontmatter.clone(),
             "content": source,
-            "html": render_markdown_html(&source),
+            "html": render_note_html(paths, &path, &source).html,
             "outline": outline,
             "headings": parsed.headings.into_iter().map(|heading| serde_json::json!({
                 "level": heading.level,
@@ -5976,7 +5976,7 @@ cpu_limit_ms = 25
                   ["raw", "html"],
                   [[
                     note.content.startsWith("---\nstatus: draft"),
-                    note.html.includes("<h2>Lists</h2>") && !note.html.includes("status: draft")
+                    note.html.includes("Lists</h2>") && !note.html.includes("status: draft")
                   ]]
                 );
                 "#,

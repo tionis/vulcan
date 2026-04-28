@@ -6605,7 +6605,7 @@
       },
       {
         "about": "Render markdown from a file or stdin in the terminal",
-        "after_help": "Notes:\n  Human output uses Vulcan's terminal markdown renderer.\n  When stdout is not a TTY, the rendered output is emitted without ANSI escapes.\n  Use `--output markdown` to print the original markdown source unchanged.\n\nExamples:\n  vulcan render README.md\n  cat README.md | vulcan render\n  vulcan --output markdown render README.md",
+        "after_help": "Notes:\n  `render` defaults to Vulcan's terminal markdown renderer.\n  `render --mode html` uses the same HTML pipeline as `note get --mode html`.\n  When stdout is not a TTY, the rendered output is emitted without ANSI escapes.\n  Use `--output markdown` with terminal mode to print the original markdown source unchanged.\n\nExamples:\n  vulcan render README.md\n  vulcan render --mode html README.md\n  cat README.md | vulcan render\n  vulcan --output markdown render README.md",
         "name": "render",
         "options": [
           {
@@ -6617,6 +6617,20 @@
             "short": null,
             "value_names": [
               "FILE"
+            ]
+          },
+          {
+            "help": null,
+            "id": "mode",
+            "long": "mode",
+            "possible_values": [
+              "terminal",
+              "html"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "MODE"
             ]
           }
         ],

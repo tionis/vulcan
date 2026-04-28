@@ -3246,8 +3246,8 @@ fn note_get_html_mode_renders_selected_markdown() {
         .expect("html content should be serialized as a string");
 
     assert_eq!(json["metadata"]["mode"], "html");
-    assert!(html.contains("<h1>Dashboard</h1>"));
-    assert!(html.contains("<h2>Tasks</h2>"));
+    assert!(html.contains("<h1 id=\"dashboard\">Dashboard</h1>"));
+    assert!(html.contains("<h2 id=\"tasks\">Tasks</h2>"));
     assert!(html.contains("TODO first"));
     assert!(!html.contains("status: active"));
 }
@@ -20810,6 +20810,65 @@ fn mcp_structured_outputs_match_cli_json_reports() {
     .expect("cli status json should parse");
     assert_eq!(mcp_status, cli_status);
     assert!(session.finish().is_empty());
+}
+
+#[test]
+fn note_get_html_uses_shared_html_renderer() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+
+    let output = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "note",
+            "get",
+            "Dashboard",
+            "--mode",
+            "html",
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let html = String::from_utf8(output).expect("html output should be utf-8");
+
+    assert!(html.contains("<h2 id=\"lists\">Lists</h2>"));
+    assert!(html.contains("class=\"dataview-inline-field\""));
+    assert!(html.contains("class=\"dql-table\""));
+    assert!(html.contains("DataviewJS disabled"));
+}
+
+#[test]
+fn render_html_uses_shared_html_renderer_for_vault_files() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("dataview", &vault_root);
+    run_scan(&vault_root);
+    let dashboard = vault_root.join("Dashboard.md");
+
+    let output = cargo_vulcan_fixed_now()
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "render",
+            "--mode",
+            "html",
+            dashboard.to_str().expect("utf-8"),
+        ])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let html = String::from_utf8(output).expect("html output should be utf-8");
+
+    assert!(html.contains("<h2 id=\"lists\">Lists</h2>"));
+    assert!(html.contains("class=\"dql-table\""));
+    assert!(html.contains("DataviewJS disabled"));
 }
 
 #[test]
