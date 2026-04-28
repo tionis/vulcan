@@ -3925,7 +3925,7 @@ graph = false
 - `site build|serve|profiles|doctor` are in-tree with JSON output, deterministic route planning, folder/tag/recent/home/search/graph pages, route/search/graph/hover manifests, RSS/sitemap emission, and publish-filter diagnostics.
 - The builder reuses the same shared HTML renderer already used by `note get --mode html` and `render --mode html`; this currently covers inline Dataview expressions, `dataview` query blocks, `tasks` query blocks, `.base` embeds, note embeds, callouts, attachment rewriting, and DataviewJS off/static fallback behavior.
 - The preview loop currently uses a lightweight loopback server plus browser polling at `/__vulcan_site/live-reload.json`; SSE/WebSocket transport and true affected-page incremental rebuilds are still pending.
-- Remaining gaps for this phase are primarily snapshot coverage, accessibility polish, raw-HTML policy controls, richer graph/search UX, explicit later-phase reuse cross-references, and broader read-only fixture coverage for TaskNotes/periodic/Kanban-style surfaces.
+- Remaining gaps for this phase are primarily broader fixture snapshot coverage, raw-HTML policy controls, richer graph/search UX, per-page local graph/search enhancements, preview-diagnostics polish, and broader read-only fixture coverage for TaskNotes/periodic/Kanban-style surfaces.
 
 ### 9.20.1 Shared render contract and CLI surface
 
@@ -3940,7 +3940,7 @@ This is the foundation. Do this before building site chrome, templates, or previ
 - [x] Define shared render structs in Rust (`RenderContext`, `RenderedNote`, `RenderedEmbed`, `SiteRoute`, etc.) so CLI/site/WebUI reuse the same contracts
 - [x] Define deterministic route/slug planning with diagnostics on collisions and stable defaults derived from note path/frontmatter
 - [x] Add JSON output for `site build`, `site profiles`, and `site doctor` for automation/LLM use
-- [ ] Snapshot tests for single-note HTML rendering and route manifests
+- [x] Snapshot tests for single-note HTML rendering and route manifests
 
 ### 9.20.2 Site profiles and publication selection
 
@@ -3985,7 +3985,7 @@ This sub-phase turns rendered notes into a coherent website rather than a folder
 - [x] Support favicon/logo injection
 - [x] Add custom page title templates
 - [x] Implement SEO basics: canonical URLs, sitemap.xml, RSS/Atom feed, OpenGraph/Twitter metadata, social preview fallbacks
-- [ ] Accessibility budget: ensure the default theme is keyboard-navigable, mobile-friendly, and screen-reader-friendly; add snapshot or smoke tests for landmarks/heading structure
+- [x] Accessibility budget: ensure the default theme is keyboard-navigable, mobile-friendly, and screen-reader-friendly; add snapshot or smoke tests for landmarks/heading structure
 - [-] `vulcan export html` remains superseded by `site build`; do not reintroduce a parallel renderer/template stack unless a later phase revives that dedicated command surface
 
 ### 9.20.5 Client-side search, graph assets, and hover previews
@@ -4036,9 +4036,9 @@ This phase is only worth doing early if later phases can build on it directly.
 - [x] Build-twice determinism test: same vault + same config must produce byte-identical output (modulo intentional timestamps in feeds, which should be normalized in tests)
 - [x] Multi-profile tests: one vault builds multiple profiles with different subsets/themes without asset leakage between outputs
 - [x] Publish-subset leak tests: excluded notes cannot appear in HTML, JSON manifests, feeds, copied assets, or hover previews
-- [ ] HTML snapshot tests for representative pages and fixture vaults
+- [~] HTML snapshot tests for representative pages and fixture vaults
 - [x] Document the shared renderer/output contracts reused by Phase 13 note pages and Phase 16 wiki mode
-- [ ] Add explicit cross-reference notes in later phases: WebUI and wiki features must reuse this renderer/search/graph asset model unless a documented reason requires divergence
+- [x] Add explicit cross-reference notes in later phases: WebUI and wiki features must reuse this renderer/search/graph asset model unless a documented reason requires divergence
 
 ---
 

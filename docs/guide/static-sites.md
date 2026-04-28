@@ -123,8 +123,9 @@ The builder currently emits a profile-scoped site with:
 - `sitemap.xml` when `base_url` is set
 - `rss.xml` when RSS is enabled and `base_url` is set
 
-The default theme includes light/dark mode, keyboard-first search (`/`), profile-scoped `extra_css` /
-`extra_js`, favicon injection, and logo rendering from the site profile.
+The default theme includes light/dark mode, keyboard-first search (`/`), a skip link plus landmarked
+page shell, profile-scoped `extra_css` / `extra_js`, favicon injection, and logo rendering from the
+site profile.
 
 ## Diagnostics and automation
 
