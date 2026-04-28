@@ -69,12 +69,16 @@ const DEFAULT_THEME_CSS: &str = concat!(
     "code, pre { font-family: 'IBM Plex Mono', 'SFMono-Regular', monospace; background: var(--code-bg); }\n",
     "pre { padding: 1rem; border-radius: 1rem; overflow: auto; }\n",
     ".site-shell { max-width: 1180px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }\n",
+    ".site-skip-link { position: absolute; left: 1rem; top: 0.75rem; padding: 0.65rem 0.9rem; border-radius: 999px; background: var(--accent); color: #fff; text-decoration: none; transform: translateY(-180%); transition: transform 0.18s ease; z-index: 10000; }\n",
+    ".site-skip-link:focus { transform: translateY(0); }\n",
     ".site-header { display: flex; gap: 1rem; justify-content: space-between; align-items: center; margin-bottom: 2rem; }\n",
-    ".site-brand h1 { margin: 0; font-size: clamp(2rem, 4vw, 3rem); }\n",
     ".site-brand { display: flex; gap: 0.85rem; align-items: center; }\n",
+    ".site-brand-title { margin: 0; font-size: clamp(2rem, 4vw, 3rem); font-weight: 700; }\n",
+    ".site-brand-title a { color: inherit; text-decoration: none; }\n",
     ".site-brand p { margin: 0.4rem 0 0; color: var(--muted); }\n",
     ".site-brand-mark { width: 3rem; height: 3rem; border-radius: 0.9rem; object-fit: cover; border: 1px solid var(--border); box-shadow: var(--shadow); background: rgba(255,255,255,0.35); }\n",
     ".site-toolbar { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }\n",
+    ".site-top-nav { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }\n",
     ".site-toolbar a, .site-toolbar button { border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 999px; padding: 0.55rem 0.9rem; text-decoration: none; cursor: pointer; box-shadow: var(--shadow); }\n",
     ".site-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 1.5rem; }\n",
     ".site-main, .site-sidebar > section, .site-listing, .site-search-card, .site-graph-card { background: var(--panel); border: 1px solid var(--border); border-radius: 1.5rem; box-shadow: var(--shadow); }\n",
@@ -89,26 +93,34 @@ const DEFAULT_THEME_CSS: &str = concat!(
     ".site-card { border: 1px solid var(--border); border-radius: 1.2rem; padding: 1rem; background: rgba(255,255,255,0.22); }\n",
     ".site-footer { margin-top: 2rem; font-size: 0.95rem; }\n",
     ".site-search-input { width: 100%; padding: 0.8rem 1rem; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.55); color: var(--text); }\n",
+    ".site-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }\n",
     ".site-pill-list { display: flex; gap: 0.5rem; flex-wrap: wrap; list-style: none; padding: 0; margin: 0.9rem 0 0; }\n",
     ".site-pill-list a { display: inline-flex; border: 1px solid var(--border); padding: 0.35rem 0.75rem; border-radius: 999px; text-decoration: none; }\n",
     ".site-inline-nav { display: flex; gap: 0.8rem; justify-content: space-between; margin-top: 2rem; flex-wrap: wrap; }\n",
     ".site-callout { border-left: 4px solid var(--accent); padding-left: 1rem; color: var(--muted); }\n",
     ".site-diagnostics { margin-top: 1rem; border-radius: 1rem; border: 1px solid rgba(178, 69, 54, 0.35); background: rgba(178, 69, 54, 0.08); padding: 1rem; }\n",
     ".site-live-overlay { position: fixed; right: 1rem; bottom: 1rem; z-index: 9999; background: rgba(20, 20, 20, 0.92); color: #fff; padding: 0.9rem 1rem; border-radius: 1rem; max-width: 24rem; box-shadow: 0 18px 36px rgba(0,0,0,0.35); }\n",
+    "a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 3px; }\n",
     "@media (max-width: 900px) { .site-layout { grid-template-columns: 1fr; } .site-header { flex-direction: column; align-items: start; } }\n"
 );
 
 const DEFAULT_THEME_JS: &str = concat!(
     "(() => {\n",
     "  const root = document.documentElement;\n",
+    "  const syncThemeButtons = () => {\n",
+    "    const pressed = root.dataset.theme === 'dark' ? 'true' : 'false';\n",
+    "    document.querySelectorAll('[data-theme-toggle]').forEach(button => button.setAttribute('aria-pressed', pressed));\n",
+    "  };\n",
     "  const storedTheme = localStorage.getItem('vulcan-site-theme');\n",
     "  if (storedTheme) root.dataset.theme = storedTheme;\n",
+    "  syncThemeButtons();\n",
     "  document.addEventListener('click', event => {\n",
     "    const button = event.target.closest('[data-theme-toggle]');\n",
     "    if (!button) return;\n",
     "    const next = root.dataset.theme === 'dark' ? 'light' : 'dark';\n",
     "    root.dataset.theme = next;\n",
     "    localStorage.setItem('vulcan-site-theme', next);\n",
+    "    syncThemeButtons();\n",
     "  });\n",
     "  const searchInput = document.querySelector('[data-site-search-input]');\n",
     "  const searchResults = document.querySelector('[data-site-search-results]');\n",
@@ -525,16 +537,20 @@ pub fn build_site(
             write_output_file(&search_path, &search_json)?;
             write_output_file(
                 &output_dir.join("search/index.html"),
-                &render_generic_page(
-                    &context,
-                    "Search",
-                    "Find published notes with keyboard-first search.",
-                    concat!(
-                        "<section class=\"site-search-card\"><input class=\"site-search-input\" data-site-search-input placeholder=\"Type to search…\" />",
-                        "<ol class=\"site-search-results\" data-site-search-results></ol></section>"
-                    ),
-                    &plan.profile,
-                    true,
+                    &render_generic_page(
+                        &context,
+                        "Search",
+                        "Find published notes with keyboard-first search.",
+                        concat!(
+                            "<section class=\"site-search-card\" aria-labelledby=\"site-search-title\">",
+                            "<h2 id=\"site-search-title\">Search published notes</h2>",
+                            "<p id=\"site-search-hint\" class=\"site-meta\">Press / to focus search. Results update as you type.</p>",
+                            "<label class=\"site-visually-hidden\" for=\"site-search-input\">Search published notes</label>",
+                            "<input id=\"site-search-input\" class=\"site-search-input\" data-site-search-input type=\"search\" inputmode=\"search\" enterkeyhint=\"search\" autocomplete=\"off\" spellcheck=\"false\" aria-describedby=\"site-search-hint\" aria-keyshortcuts=\"/\" placeholder=\"Type to search…\" />",
+                            "<ol class=\"site-search-results\" data-site-search-results aria-live=\"polite\"></ol></section>"
+                        ),
+                        &plan.profile,
+                        true,
                     "/search/",
                 ),
             )?;
@@ -1415,11 +1431,17 @@ fn render_generic_page(
     canonical_path: &str,
 ) -> String {
     let canonical_url = canonical_url_for_path(context.base_url.as_deref(), canonical_path);
+    let body = format!(
+        "<section class=\"site-main\"><h1>{}</h1><p class=\"site-meta\">{}</p>{}</section>",
+        escape_html(title),
+        escape_html(description),
+        body
+    );
     render_document_shell(
         context,
         title,
         description,
-        body,
+        &body,
         &[],
         profile,
         search_page,
@@ -1487,9 +1509,9 @@ fn render_document_shell(
             "<meta property=\"og:description\" content=\"{}\" />{}",
             "<link rel=\"stylesheet\" href=\"/assets/vulcan-site.css\" />{}",
             "<script defer src=\"/assets/vulcan-site.js\"></script></head>",
-            "<body data-search-asset=\"{}\"><div class=\"site-shell\">",
-            "<header class=\"site-header\"><div class=\"site-brand\">{}<div><h1>{}</h1><p>{}</p></div></div><div class=\"site-toolbar\">{}<button data-theme-toggle type=\"button\">Theme</button></div></header>",
-            "<div class=\"site-layout\">{}<aside class=\"site-sidebar\">{}</aside></div>",
+            "<body data-search-asset=\"{}\"><a class=\"site-skip-link\" href=\"#main-content\">Skip to content</a><div class=\"site-shell\">",
+            "<header class=\"site-header\"><div class=\"site-brand\">{}<div><p class=\"site-brand-title\"><a href=\"/\">{}</a></p><p>{}</p></div></div><div class=\"site-toolbar\"><nav class=\"site-top-nav\" aria-label=\"Primary\">{}</nav><button data-theme-toggle type=\"button\" aria-label=\"Toggle color theme\" aria-pressed=\"false\">Theme</button></div></header>",
+            "<div class=\"site-layout\"><main id=\"main-content\" class=\"site-content\">{}</main><aside class=\"site-sidebar\" aria-label=\"Page context\">{}</aside></div>",
             "<footer class=\"site-footer\">Built by Vulcan static site builder.</footer></div></body></html>"
         ),
         escape_html(&context.language),
@@ -1612,7 +1634,7 @@ fn render_breadcrumbs(breadcrumbs: &[String]) -> String {
         .map(|crumb| format!("<span>{}</span>", escape_html(crumb)))
         .collect::<Vec<_>>()
         .join("<span>/</span>");
-    format!("<nav class=\"site-breadcrumbs\">{parts}</nav>")
+    format!("<nav class=\"site-breadcrumbs\" aria-label=\"Breadcrumbs\">{parts}</nav>")
 }
 
 fn render_toc(headings: &[HtmlRenderHeading]) -> String {
@@ -1677,7 +1699,9 @@ fn render_prev_next(previous: Option<&RenderedNote>, next: Option<&RenderedNote>
             escape_html(&note.title)
         )
     });
-    format!("<nav class=\"site-inline-nav\">{previous_link}{next_link}</nav>")
+    format!(
+        "<nav class=\"site-inline-nav\" aria-label=\"Pagination\">{previous_link}{next_link}</nav>"
+    )
 }
 
 fn render_note_tags(tags: &[String]) -> String {
@@ -2515,6 +2539,22 @@ mod tests {
         })
     }
 
+    fn read_site_text(root: &Path, relative: &str) -> String {
+        fs::read_to_string(root.join(relative)).expect("site output should be readable")
+    }
+
+    fn read_site_json(root: &Path, relative: &str) -> Value {
+        serde_json::from_str(&read_site_text(root, relative)).expect("site json should parse")
+    }
+
+    fn compact_html(value: &str) -> String {
+        value.lines().map(str::trim).collect::<String>()
+    }
+
+    fn count_occurrences(haystack: &str, needle: &str) -> usize {
+        haystack.match_indices(needle).count()
+    }
+
     #[test]
     fn site_build_writes_pages_and_manifests() {
         let temp_dir = TempDir::new().expect("temp dir should exist");
@@ -2982,6 +3022,163 @@ search = true
         assert!(home_html.contains(r"<title>Published Garden :: Published Garden [public]</title>"));
         assert!(search_html.contains(r"<title>Published Garden :: Search [public]</title>"));
         assert!(note_html.contains(r"<title>Published Garden :: Guide [public]</title>"));
+    }
+
+    #[test]
+    fn site_build_regression_covers_route_manifest_and_note_page_html() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join("Guide.md"),
+            r"---
+site:
+  profiles:
+    public:
+      description: Guide summary.
+---
+
+# Guide
+
+Body text.
+",
+        )
+        .expect("guide note should write");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Public Notes"
+output_dir = ".vulcan/site/public"
+include_paths = ["Guide.md"]
+search = false
+graph = false
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let report = build_site(
+            &VaultPaths::new(&vault_root),
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("site build should succeed");
+        let output_root = vault_root.join(".vulcan/site/public");
+        let route_manifest = read_site_json(&output_root, "assets/route-manifest.json");
+        let note_route = report
+            .routes
+            .iter()
+            .find(|route| route.source_path.as_deref() == Some("Guide.md"))
+            .expect("guide route should exist")
+            .output_path
+            .clone();
+        let note_html = read_site_text(&output_root, &note_route);
+
+        assert_eq!(
+            route_manifest,
+            serde_json::json!([
+                {
+                    "kind": "note",
+                    "source_path": "Guide.md",
+                    "title": "Guide",
+                    "slug": "Guide",
+                    "url_path": "/notes/guide/",
+                    "output_path": "notes/guide/index.html"
+                }
+            ])
+        );
+        assert_eq!(
+            compact_html(&note_html),
+            concat!(
+                "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\" />",
+                "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />",
+                "<title>Guide | Public Notes</title><meta name=\"description\" content=\"Guide summary.\" />",
+                "<meta name=\"twitter:card\" content=\"summary\" />",
+                "<meta property=\"og:title\" content=\"Guide\" />",
+                "<meta property=\"og:description\" content=\"Guide summary.\" />",
+                "<link rel=\"stylesheet\" href=\"/assets/vulcan-site.css\" />",
+                "<script defer src=\"/assets/vulcan-site.js\"></script></head>",
+                "<body data-search-asset=\"\"><a class=\"site-skip-link\" href=\"#main-content\">Skip to content</a><div class=\"site-shell\">",
+                "<header class=\"site-header\"><div class=\"site-brand\"><div><p class=\"site-brand-title\"><a href=\"/\">Public Notes</a></p><p>Guide summary.</p></div></div>",
+                "<div class=\"site-toolbar\"><nav class=\"site-top-nav\" aria-label=\"Primary\"><a href=\"/\">Home</a><a href=\"/recent/\">Recent</a><a href=\"/folders/\">Folders</a><a href=\"/tags/\">Tags</a></nav>",
+                "<button data-theme-toggle type=\"button\" aria-label=\"Toggle color theme\" aria-pressed=\"false\">Theme</button></div></header>",
+                "<div class=\"site-layout\"><main id=\"main-content\" class=\"site-content\"><article class=\"site-main\"><div class=\"site-meta\">Updated from Guide.md</div><h1 id=\"guide\">Guide</h1><p>Body text.</p></article></main>",
+                "<aside class=\"site-sidebar\" aria-label=\"Page context\"><section><h2>Contents</h2><ul><li><a href=\"#guide\">Guide</a></li></ul></section></aside></div>",
+                "<footer class=\"site-footer\">Built by Vulcan static site builder.</footer></div></body></html>"
+            )
+        );
+    }
+
+    #[test]
+    fn site_build_default_shell_accessibility_smoke() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join("Notes")).expect("notes dir should exist");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(vault_root.join("Home.md"), "# Home\n\nLanding page.\n")
+            .expect("home note should write");
+        fs::write(
+            vault_root.join("Notes/Guide.md"),
+            "# Guide\n\nLinked page.\n",
+        )
+        .expect("guide note should write");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Published Garden"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md", "Notes/Guide.md"]
+search = true
+graph = false
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let report = build_site(
+            &VaultPaths::new(&vault_root),
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("site build should succeed");
+        let output_root = vault_root.join(".vulcan/site/public");
+        let home_html = read_site_text(&output_root, "index.html");
+        let search_html = read_site_text(&output_root, "search/index.html");
+        let guide_route = report
+            .routes
+            .iter()
+            .find(|route| route.source_path.as_deref() == Some("Notes/Guide.md"))
+            .expect("guide route should exist")
+            .output_path
+            .clone();
+        let guide_html = read_site_text(&output_root, &guide_route);
+
+        for html in [&home_html, &search_html, &guide_html] {
+            assert!(html.contains("href=\"#main-content\""));
+            assert!(html.contains(r#"id="main-content""#));
+            assert!(html.contains(r#"aria-label="Primary""#));
+            assert!(html.contains(r#"aria-label="Page context""#));
+        }
+        assert_eq!(count_occurrences(&home_html, "<h1"), 1);
+        assert_eq!(count_occurrences(&search_html, "<h1"), 1);
+        assert_eq!(count_occurrences(&guide_html, "<h1"), 1);
+        assert!(guide_html.contains(r#"aria-label="Breadcrumbs""#));
+        assert!(search_html.contains(
+            r#"<label class="site-visually-hidden" for="site-search-input">Search published notes</label>"#
+        ));
+        assert!(search_html.contains(r#"type="search""#));
+        assert!(search_html.contains(r#"aria-describedby="site-search-hint""#));
+        assert!(search_html.contains(r#"aria-keyshortcuts="/""#));
+        assert!(search_html.contains(r#"aria-live="polite""#));
     }
 
     #[test]
