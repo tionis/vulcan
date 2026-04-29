@@ -3986,6 +3986,8 @@ This sub-phase turns rendered notes into a coherent website rather than a folder
 - [x] Support profile-scoped custom CSS as a first-class feature (`extra_css`) and optional profile-scoped custom JS (`extra_js`)
 - [x] Support favicon/logo injection
 - [x] Add custom page title templates
+- [ ] Add a simple modular theming contract with a small fixed set of overridable shell regions/partials (for example head, header, nav, footer, note chrome) and stable data inputs, without introducing a full general-purpose template language or a required Node stack
+- [ ] Treat theme tokens, major CSS class hooks, and overridable shell regions as a documented compatibility surface; ship a reference custom-theme example and keep docs for users/integrators current as the shell evolves
 - [x] Implement SEO basics: canonical URLs, sitemap.xml, RSS/Atom feed, OpenGraph/Twitter metadata, social preview fallbacks
 - [ ] Make generated navigation, note routes, asset URLs, client-side manifest fetches, RSS links, and canonical metadata prefix-aware so built output works unchanged behind reverse-proxy subpaths
 - [x] Accessibility budget: ensure the default theme is keyboard-navigable, mobile-friendly, and screen-reader-friendly; add snapshot or smoke tests for landmarks/heading structure
