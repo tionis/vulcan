@@ -932,8 +932,7 @@ fn custom_tool_is_callable(
     };
     match effective_permission_profile.as_deref() {
         Some(profile) => resolve_permission_profile(paths, Some(profile))
-            .map(|selection| selection.grant.execute)
-            .unwrap_or(false),
+            .is_ok_and(|selection| selection.grant.execute),
         None => true,
     }
 }
