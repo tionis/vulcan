@@ -2171,7 +2171,7 @@ fn apply_link_policy_to_source(
                 && link
                     .resolved_target_path
                     .as_ref()
-                    .map_or(true, |path| !published_paths.contains(path));
+                    .is_none_or(|path| !published_paths.contains(path));
             if !unresolved_note {
                 return None;
             }

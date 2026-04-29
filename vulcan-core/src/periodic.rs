@@ -305,7 +305,7 @@ pub fn list_daily_note_events(
         let (date, path, start_time, end_time, title, metadata_json, tags_json) = row?;
         let needs_new_item = items
             .last()
-            .map_or(true, |item| item.date != date || item.path != path);
+            .is_none_or(|item| item.date != date || item.path != path);
         if needs_new_item {
             items.push(DailyNoteEvents {
                 date: date.clone(),

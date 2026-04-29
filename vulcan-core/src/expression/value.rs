@@ -132,7 +132,7 @@ fn system_local_offset_ms(timestamp_ms: i64) -> i64 {
 
     // SAFETY: `time` and `result` point to valid memory for the duration of the call.
     let local = unsafe {
-        if localtime_r(&time, result.as_mut_ptr()).is_null() {
+        if localtime_r(&raw const time, result.as_mut_ptr()).is_null() {
             return 0;
         }
         result.assume_init()

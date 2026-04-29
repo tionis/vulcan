@@ -97,6 +97,12 @@ where
     S: Fn() -> bool,
     E: Display,
 {
+    let (sender, receiver) = mpsc::channel::<notify::Result<Event>>();
+    let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |event| {
+        let _ = sender.send(event);
+    })?;
+    watcher.watch(paths.vault_root(), RecursiveMode::Recursive)?;
+
     let startup_summary = scan_vault(paths, ScanMode::Incremental)?;
     on_report(WatchReport {
         startup: true,
@@ -105,12 +111,6 @@ where
         summary: startup_summary,
     })
     .map_err(|error| WatchError::Callback(error.to_string()))?;
-
-    let (sender, receiver) = mpsc::channel::<notify::Result<Event>>();
-    let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |event| {
-        let _ = sender.send(event);
-    })?;
-    watcher.watch(paths.vault_root(), RecursiveMode::Recursive)?;
 
     let debounce = Duration::from_millis(options.debounce_ms);
     loop {

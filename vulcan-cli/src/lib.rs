@@ -1090,7 +1090,7 @@ fn dedup_failure_messages(failures: &[(String, String, String)]) -> Vec<(&str, u
 fn color_enabled_for_terminal(is_tty: bool) -> bool {
     is_tty
         && std::env::var_os("NO_COLOR").is_none()
-        && std::env::var("TERM").map_or(true, |value| value != "dumb")
+        && !std::env::var("TERM").is_ok_and(|value| value == "dumb")
 }
 
 fn resolve_use_color(mode: ColorMode, is_tty: bool) -> bool {
