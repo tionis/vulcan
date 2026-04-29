@@ -3925,7 +3925,7 @@ graph = false
 - `site build|serve|profiles|doctor` are in-tree with JSON output, deterministic route planning, folder/tag/recent/home/search/graph pages, route/search/graph/hover/recent/related manifests, RSS/sitemap emission, and publish-filter diagnostics.
 - The builder reuses the same shared HTML renderer already used by `note get --mode html` and `render --mode html`; this currently covers inline Dataview expressions, `dataview` query blocks, `tasks` query blocks, `.base` embeds, note embeds, callouts, attachment rewriting, and DataviewJS off/static fallback behavior.
 - The preview loop currently uses a lightweight loopback server plus browser polling at `/__vulcan_site/live-reload.json`; SSE/WebSocket transport and true affected-page incremental rebuilds are still pending.
-- Remaining gaps for this phase are primarily broader fixture snapshot coverage, raw-HTML policy controls, richer graph/search UX, per-page local graph/search enhancements, preview-diagnostics polish, and broader read-only fixture coverage for TaskNotes/periodic/Kanban-style surfaces.
+- Remaining gaps for this phase are primarily broader fixture snapshot coverage, raw-HTML policy controls, richer graph/search UX, prefix-aware deploy-path hosting, per-page local graph/search enhancements, preview-diagnostics polish, and broader read-only fixture coverage for TaskNotes/periodic/Kanban-style surfaces.
 
 ### 9.20.1 Shared render contract and CLI surface
 
@@ -3948,6 +3948,7 @@ Publishing a subset of the vault is a first-class requirement. Profiles are the 
 
 - [x] Add `[site.profiles.<name>]` config section to `.vulcan/config.toml`
 - [x] Support profile fields: `title`, `base_url`, `output_dir`, `home`, `language`, `theme`, `search`, `graph`, `backlinks`, `rss`, `favicon`, `logo`, `extra_css`, `extra_js`
+- [ ] Add a profile-scoped deploy path / site prefix setting distinct from `base_url` so generated sites can be hosted under subpaths such as `/wiki/` as well as at the domain root
 - [x] Support inclusion/exclusion by canonical query AST, folder glob, explicit note path, tag, and frontmatter predicates
 - [x] Support multiple profiles per vault so one vault can publish a public garden, project docs, and private local preview separately
 - [x] Reuse export/publication `content_transforms`, link policy, and asset policy in site profiles so export, static site, and future web wiki publication all share the same audience-filtering model
@@ -3985,6 +3986,7 @@ This sub-phase turns rendered notes into a coherent website rather than a folder
 - [x] Support favicon/logo injection
 - [x] Add custom page title templates
 - [x] Implement SEO basics: canonical URLs, sitemap.xml, RSS/Atom feed, OpenGraph/Twitter metadata, social preview fallbacks
+- [ ] Make generated navigation, note routes, asset URLs, client-side manifest fetches, RSS links, and canonical metadata prefix-aware so built output works unchanged behind reverse-proxy subpaths
 - [x] Accessibility budget: ensure the default theme is keyboard-navigable, mobile-friendly, and screen-reader-friendly; add snapshot or smoke tests for landmarks/heading structure
 - [-] `vulcan export html` remains superseded by `site build`; do not reintroduce a parallel renderer/template stack unless a later phase revives that dedicated command surface
 
@@ -4014,6 +4016,7 @@ This is a site-development loop, not a replacement for the daemon.
 - [ ] Clear diagnostics in the terminal and optional in-browser overlay for broken links, unsupported embeds, render failures, or leaked/private pages
 - [x] Add `--fail-on-warning` / `--strict` mode for CI-style preview checks
 - [x] Integration tests for build → serve → modify source → incremental rebuild → updated output
+- [ ] Make `site serve` preview routing and live-reload endpoints prefix-aware when a profile deploy path is configured, while still supporting root-hosted loopback previews by default
 
 ### 9.20.7 Dataview, Bases, Tasks, and advanced read-only surfaces
 
@@ -4036,6 +4039,7 @@ This phase is only worth doing early if later phases can build on it directly.
 - [x] Build-twice determinism test: same vault + same config must produce byte-identical output (modulo intentional timestamps in feeds, which should be normalized in tests)
 - [x] Multi-profile tests: one vault builds multiple profiles with different subsets/themes without asset leakage between outputs
 - [x] Publish-subset leak tests: excluded notes cannot appear in HTML, JSON manifests, feeds, copied assets, or hover previews
+- [ ] Add regression tests for root-hosted and subpath-hosted builds so nav links, asset URLs, manifests, feeds, and preview/live-reload paths stay correct under both deployment models
 - [~] HTML snapshot tests for representative pages and fixture vaults
 - [x] Document the shared renderer/output contracts reused by Phase 13 note pages and Phase 16 wiki mode
 - [x] Add explicit cross-reference notes in later phases: WebUI and wiki features must reuse this renderer/search/graph asset model unless a documented reason requires divergence
