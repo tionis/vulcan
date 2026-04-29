@@ -3886,6 +3886,7 @@ The current Linux x86\_64 release binary is about 31.3MB unstripped and 26.0MB s
 - **Privacy by omission, never by hiding.** In static output, "private pages" means excluded at build time. Never emit hidden HTML/JSON and rely on client-side checks.
 - **Subset publishing uses existing query/filter concepts.** Site profiles should reuse canonical query/filter machinery instead of inventing a separate publish DSL.
 - **No required Node toolchain.** The default theme, renderer, and preview server should ship in the Rust binary. Optional downstream theming pipelines can exist later.
+- **Separate frontend pipelines must consume Vulcan contracts, not replace Vulcan semantics.** If Astro/Next/Vite or other tools are used later, Vulcan should still own vault-aware parsing, querying, filtering, and rendered publication fragments instead of forcing downstream tools to reimplement Obsidian behavior.
 - **Custom CSS and light/dark mode are baseline features, not post-launch polish.**
 - **Static assets must respect publish filters.** Search indexes, graph JSON, hover-preview manifests, RSS feeds, and copied attachments must never leak excluded notes.
 
@@ -3925,7 +3926,7 @@ graph = false
 - `site build|serve|profiles|doctor` are in-tree with JSON output, deterministic route planning, folder/tag/recent/home/search/graph pages, route/search/graph/hover/recent/related manifests, RSS/sitemap emission, and publish-filter diagnostics.
 - The builder reuses the same shared HTML renderer already used by `note get --mode html` and `render --mode html`; this currently covers inline Dataview expressions, `dataview` query blocks, `tasks` query blocks, `.base` embeds, note embeds, callouts, attachment rewriting, and DataviewJS off/static fallback behavior.
 - The preview loop currently uses a lightweight loopback server plus browser polling at `/__vulcan_site/live-reload.json`; SSE/WebSocket transport and true affected-page incremental rebuilds are still pending.
-- Remaining gaps for this phase are primarily broader fixture snapshot coverage, raw-HTML policy controls, richer graph/search UX, prefix-aware deploy-path hosting, per-page local graph/search enhancements, preview-diagnostics polish, and broader read-only fixture coverage for TaskNotes/periodic/Kanban-style surfaces.
+- Remaining gaps for this phase are primarily broader fixture snapshot coverage, raw-HTML policy controls, richer graph/search UX, prefix-aware deploy-path hosting, per-page local graph/search enhancements, preview-diagnostics polish, broader read-only fixture coverage for TaskNotes/periodic/Kanban-style surfaces, and a separate external-frontend bundle/export mode with stable integration docs and live-preview handoff.
 
 ### 9.20.1 Shared render contract and CLI surface
 
@@ -4043,6 +4044,21 @@ This phase is only worth doing early if later phases can build on it directly.
 - [~] HTML snapshot tests for representative pages and fixture vaults
 - [x] Document the shared renderer/output contracts reused by Phase 13 note pages and Phase 16 wiki mode
 - [x] Add explicit cross-reference notes in later phases: WebUI and wiki features must reuse this renderer/search/graph asset model unless a documented reason requires divergence
+
+### 9.20.9 External frontend bundle mode and integration contract
+
+This is additive, not a replacement for `site build`. The goal is to let dedicated frontend tools own layout/styling/deployment while Vulcan stays the source of truth for vault-aware publication semantics.
+
+- [ ] Extract a shared publication pipeline from `site build` and `export` so note selection, content transforms, route planning, asset planning, diagnostics, and manifest generation are reusable across built-in and external publication modes
+- [ ] Add a separate frontend-oriented publication mode such as `web_bundle` / `frontend_bundle`, preferably integrated with export/publication profiles rather than as a second site-only configuration system
+- [ ] Keep publication controls shared across `site` and export/bundle modes: publish subset selection, content transforms, link policy, asset policy, route policy, and deploy-path/prefix semantics should not drift by surface
+- [ ] Emit a versioned, typed bundle contract with per-note metadata, rendered `body_html` fragments, route information, headings, backlinks/outgoing links, diagnostics, and site-level manifests/assets so downstream tools do not need to reimplement wikilinks, embeds, Dataview, Tasks, or attachment rewriting
+- [ ] Generate machine-consumable integration artifacts for downstream builders such as JSON Schema and/or TypeScript type definitions, plus a reference example bundle checked into tests/docs
+- [ ] Add watch/dev-preview support for external frontend pipelines: bundle rebuilds on change, changed-route/asset invalidation manifests, and a simple local SSE or similar event stream that frontend dev servers can subscribe to for HMR/live reload
+- [ ] Preserve parity with `site build`: search/graph/hover/recent/related manifests, publish diagnostics, and deterministic route planning should be shared outputs, not reimplemented separately for external consumers
+- [ ] Keep the built-in static site builder as the default/reference implementation so Vulcan still ships a no-Node publishing path and a concrete compatibility oracle for external integrations
+- [ ] Maintain extensive, versioned, up-to-date docs for both users and integrators covering config, bundle layout, schema/types, live-preview workflow, deployment patterns, upgrade notes, and compatibility guarantees; treat stale docs/examples as a release-blocking regression for this surface
+- [ ] Add integration tests covering bundle determinism, schema stability, root-hosted vs subpath-hosted path correctness, and parity with representative `site build` output for notes/manifests/assets
 
 ---
 
