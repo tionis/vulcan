@@ -1154,6 +1154,7 @@ fn dynamic_config_descriptors() -> Vec<ConfigDescriptor> {
         "site.profiles.<name>.title",
         "site.profiles.<name>.page_title_template",
         "site.profiles.<name>.base_url",
+        "site.profiles.<name>.deploy_path",
         "site.profiles.<name>.output_dir",
         "site.profiles.<name>.home",
         "site.profiles.<name>.language",

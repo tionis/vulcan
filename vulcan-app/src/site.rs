@@ -143,7 +143,7 @@ const DEFAULT_THEME_JS: &str = concat!(
     "    });\n",
     "  }\n",
     "  let liveVersion = null;\n",
-    "  const liveUrl = '/__vulcan_site/live-reload.json';\n",
+    "  const liveUrl = document.body.dataset.liveReloadUrl || '/__vulcan_site/live-reload.json';\n",
     "  const overlayId = 'vulcan-site-live-overlay';\n",
     "  const ensureOverlay = message => {\n",
     "    let overlay = document.getElementById(overlayId);\n",
@@ -155,12 +155,17 @@ const DEFAULT_THEME_JS: &str = concat!(
     "    }\n",
     "    overlay.textContent = message;\n",
     "  };\n",
+    "  const clearOverlay = () => {\n",
+    "    const overlay = document.getElementById(overlayId);\n",
+    "    if (overlay) overlay.remove();\n",
+    "  };\n",
     "  const pollLiveReload = () => {\n",
     "    fetch(liveUrl, { cache: 'no-store' }).then(response => response.ok ? response.json() : null).then(payload => {\n",
     "      if (!payload) return;\n",
     "      if (liveVersion === null) { liveVersion = payload.version; }\n",
     "      else if (payload.version !== liveVersion) { window.location.reload(); }\n",
     "      if (payload.last_error) ensureOverlay(payload.last_error);\n",
+    "      else clearOverlay();\n",
     "    }).catch(() => {});\n",
     "  };\n",
     "  window.setInterval(pollLiveReload, 1200);\n",
@@ -174,6 +179,7 @@ pub struct RenderContext {
     pub language: String,
     pub theme: String,
     pub base_url: Option<String>,
+    pub deploy_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -233,6 +239,7 @@ pub struct SiteProfileListEntry {
     pub name: String,
     pub title: String,
     pub output_dir: String,
+    pub deploy_path: String,
     pub note_count: usize,
     pub search: bool,
     pub graph: bool,
@@ -254,6 +261,7 @@ pub struct SiteBuildRequest {
 pub struct SiteBuildReport {
     pub profile: String,
     pub output_dir: String,
+    pub deploy_path: String,
     pub dry_run: bool,
     pub clean: bool,
     pub note_count: usize,
@@ -283,6 +291,7 @@ struct ResolvedSiteProfile {
     page_title_template: String,
     output_dir: PathBuf,
     base_url: Option<String>,
+    deploy_path: String,
     home: Option<String>,
     language: String,
     theme: String,
@@ -358,6 +367,7 @@ pub fn build_site_profiles_report(
                 name: profile.name.clone(),
                 title: profile.title.clone(),
                 output_dir: display_path(&profile.output_dir),
+                deploy_path: profile.deploy_path.clone(),
                 note_count,
                 search: profile.search,
                 graph: profile.graph,
@@ -420,6 +430,7 @@ pub fn build_site(
         language: plan.profile.language.clone(),
         theme: plan.profile.theme.clone(),
         base_url: plan.profile.base_url.clone(),
+        deploy_path: plan.profile.deploy_path.clone(),
     };
 
     let tag_index = build_tag_index(&rendered_notes);
@@ -449,7 +460,7 @@ pub fn build_site(
         files.insert(note.route.output_path.clone());
     }
 
-    let asset_links = collect_asset_links(&plan.links);
+    let asset_links = collect_asset_links(&plan.links, &plan.profile.deploy_path);
     for (source_path, href) in &asset_links {
         let destination = asset_output_path(&output_dir, source_path);
         if !request.dry_run {
@@ -588,7 +599,7 @@ pub fn build_site(
                         ),
                         &plan.profile,
                         true,
-                    "/search/",
+                        &prefixed_site_path(&context.deploy_path, "/search/"),
                 ),
             )?;
         }
@@ -618,7 +629,7 @@ pub fn build_site(
                     &graph_card,
                     &plan.profile,
                     false,
-                    "/graph/",
+                    &prefixed_site_path(&context.deploy_path, "/graph/"),
                 ),
             )?;
         }
@@ -673,7 +684,7 @@ pub fn build_site(
                     &body,
                     &plan.profile,
                     false,
-                    "/",
+                    &site_root_href(&context.deploy_path),
                 ),
             )?;
         }
@@ -681,7 +692,7 @@ pub fn build_site(
     files.insert("index.html".to_string());
 
     if let Some(base_url) = context.base_url.as_deref() {
-        let sitemap = build_sitemap(base_url, &files, &rendered_notes);
+        let sitemap = build_sitemap(base_url, &context.deploy_path, &files, &rendered_notes);
         if !request.dry_run {
             write_output_file(&output_dir.join("sitemap.xml"), &sitemap)?;
         }
@@ -692,6 +703,7 @@ pub fn build_site(
     Ok(SiteBuildReport {
         profile: plan.profile.name,
         output_dir: display_path(&output_dir),
+        deploy_path: plan.profile.deploy_path,
         dry_run: request.dry_run,
         clean: request.clean,
         note_count: plan.notes.len(),
@@ -776,6 +788,7 @@ fn resolve_site_profile(
             .unwrap_or_else(|| DEFAULT_PAGE_TITLE_TEMPLATE.to_string()),
         output_dir,
         base_url: raw.base_url.clone(),
+        deploy_path: normalize_site_deploy_path(raw.deploy_path.as_deref())?,
         home: raw.home.clone(),
         language: raw.language.clone().unwrap_or_else(|| "en".to_string()),
         theme: raw.theme.clone().unwrap_or_else(|| "default".to_string()),
@@ -818,7 +831,7 @@ fn plan_site(
         profile.content_transform_rules.as_deref(),
     )
     .map_err(AppError::operation)?;
-    let routes = plan_note_routes(&prepared.notes, &profile.name);
+    let routes = plan_note_routes(&prepared.notes, &profile.name, &profile.deploy_path);
     let diagnostics =
         collect_site_diagnostics(paths, &profile, &prepared.notes, &prepared.links, &routes);
     Ok(SitePlan {
@@ -929,7 +942,11 @@ fn select_site_notes(
     Ok(notes)
 }
 
-fn plan_note_routes(notes: &[ExportedNoteDocument], profile_name: &str) -> Vec<SiteRoute> {
+fn plan_note_routes(
+    notes: &[ExportedNoteDocument],
+    profile_name: &str,
+    deploy_path: &str,
+) -> Vec<SiteRoute> {
     let mut routes = notes
         .iter()
         .map(|document| {
@@ -946,9 +963,12 @@ fn plan_note_routes(notes: &[ExportedNoteDocument], profile_name: &str) -> Vec<S
                 format!("notes/{}/index", route_segments.join("/"))
             };
             let url_path = if route_segments.is_empty() {
-                "/notes/".to_string()
+                prefixed_site_path(deploy_path, "/notes/")
             } else {
-                format!("/notes/{}/", route_segments.join("/"))
+                prefixed_site_path(
+                    deploy_path,
+                    &format!("/notes/{}/", route_segments.join("/")),
+                )
             };
             SiteRoute {
                 kind: "note".to_string(),
@@ -1070,12 +1090,12 @@ fn render_site_notes(paths: &VaultPaths, plan: &SitePlan) -> Result<Vec<Rendered
         })
         .collect::<HashMap<_, _>>();
     let published_paths = route_map.keys().cloned().collect::<HashSet<_>>();
-    let asset_hrefs = collect_asset_links(&plan.links);
+    let asset_hrefs = collect_asset_links(&plan.links, &plan.profile.deploy_path);
     let note_hrefs = route_map
         .iter()
         .map(|(path, route)| (path.clone(), route.url_path.clone()))
         .collect::<HashMap<_, _>>();
-    let tag_hrefs = build_tag_href_map(&plan.notes);
+    let tag_hrefs = build_tag_href_map(&plan.notes, &plan.profile.deploy_path);
     let links_by_source = links_by_source(&plan.links);
     let backlinks = backlinks_by_target(&plan.links, &published_paths);
     let link_targets = HtmlLinkTargets {
@@ -1152,7 +1172,7 @@ fn render_site_notes(paths: &VaultPaths, plan: &SitePlan) -> Result<Vec<Rendered
                     {
                         route_map.get(&target_path).map_or_else(
                             || {
-                                collect_asset_links(&plan.links)
+                                collect_asset_links(&plan.links, &plan.profile.deploy_path)
                                     .get(&target_path)
                                     .cloned()
                                     .unwrap_or_default()
@@ -1160,7 +1180,7 @@ fn render_site_notes(paths: &VaultPaths, plan: &SitePlan) -> Result<Vec<Rendered
                             |route| route.url_path.clone(),
                         )
                     } else {
-                        collect_asset_links(&plan.links)
+                        collect_asset_links(&plan.links, &plan.profile.deploy_path)
                             .get(&target_path)
                             .cloned()
                             .unwrap_or_default()
@@ -1220,14 +1240,24 @@ fn render_note_document(
     let breadcrumbs = render_breadcrumbs(&note.breadcrumbs);
     let toc = render_toc(&note.headings);
     let backlinks = if profile.backlinks {
-        render_note_links("Backlinks", &note.backlinks, route_urls)
+        render_note_links(
+            &context.deploy_path,
+            "Backlinks",
+            &note.backlinks,
+            route_urls,
+        )
     } else {
         String::new()
     };
-    let outgoing = render_note_links("Outgoing links", &note.outgoing_links, route_urls);
+    let outgoing = render_note_links(
+        &context.deploy_path,
+        "Outgoing links",
+        &note.outgoing_links,
+        route_urls,
+    );
     let diagnostics = render_note_diagnostics(&note.diagnostics);
     let prev_next = render_prev_next(previous, next);
-    let tags = render_note_tags(&note.tags);
+    let tags = render_note_tags(&context.deploy_path, &note.tags);
     let body = format!(
         concat!(
             "<article class=\"site-main\">{}<div class=\"site-meta\">Updated from {}</div>",
@@ -1260,7 +1290,7 @@ fn render_note_document(
         } else {
             String::new()
         },
-        render_folder_summary(note, folder_index),
+        render_folder_summary(&context.deploy_path, note, folder_index),
         render_related_tags(note, tag_index),
     );
     let canonical_url = note
@@ -1271,7 +1301,7 @@ fn render_note_document(
     let summary_image = note
         .summary_image
         .as_deref()
-        .and_then(summary_image_meta_url)
+        .and_then(|value| summary_image_meta_url(&context.deploy_path, value))
         .and_then(|value| normalize_site_metadata_url(context.base_url.as_deref(), &value));
     render_document_shell(
         context,
@@ -1295,20 +1325,25 @@ fn render_home_page(
 ) -> String {
     let body = format!(
         "<article class=\"site-main\">{}{}{}{}</article>",
-        render_note_tags(&note.tags),
+        render_note_tags(&context.deploy_path, &note.tags),
         note.html,
-        render_folder_summary(note, folder_index),
+        render_folder_summary(&context.deploy_path, note, folder_index),
         render_related_tags(note, tag_index),
     );
     let canonical_url = note
         .canonical_url
         .as_deref()
         .and_then(|value| normalize_site_metadata_url(context.base_url.as_deref(), value))
-        .or_else(|| canonical_url_for_path(context.base_url.as_deref(), "/"));
+        .or_else(|| {
+            canonical_url_for_path(
+                context.base_url.as_deref(),
+                &site_root_href(&context.deploy_path),
+            )
+        });
     let summary_image = note
         .summary_image
         .as_deref()
-        .and_then(summary_image_meta_url)
+        .and_then(|value| summary_image_meta_url(&context.deploy_path, value))
         .and_then(|value| normalize_site_metadata_url(context.base_url.as_deref(), &value));
     render_document_shell(
         context,
@@ -1341,7 +1376,7 @@ fn render_recent_page(
         ),
         profile,
         false,
-        "/recent/",
+        &prefixed_site_path(&context.deploy_path, "/recent/"),
     )
 }
 
@@ -1356,7 +1391,7 @@ fn render_folder_pages(
         .map(|(folder, notes)| {
             render_card(
                 folder,
-                &folder_page_href(folder),
+                &folder_page_href(&context.deploy_path, folder),
                 &format!("{} published note(s)", notes.len()),
             )
         })
@@ -1370,7 +1405,7 @@ fn render_folder_pages(
             &format!("<section class=\"site-listing\"><div class=\"site-card-grid\">{overview}</div></section>"),
             profile,
             false,
-            "/folders/",
+            &prefixed_site_path(&context.deploy_path, "/folders/"),
         ),
     ));
     for (folder, notes) in folder_index {
@@ -1387,7 +1422,7 @@ fn render_folder_pages(
                 &format!("<section class=\"site-listing\"><div class=\"site-card-grid\">{list}</div></section>"),
                 profile,
                 false,
-                &folder_page_href(folder),
+                &folder_page_href(&context.deploy_path, folder),
             ),
         ));
     }
@@ -1405,7 +1440,7 @@ fn render_tag_pages(
         .map(|(tag, notes)| {
             render_card(
                 &format!("#{tag}"),
-                &tag_page_href(tag),
+                &tag_page_href(&context.deploy_path, tag),
                 &format!("{} published note(s)", notes.len()),
             )
         })
@@ -1419,7 +1454,7 @@ fn render_tag_pages(
             &format!("<section class=\"site-listing\"><div class=\"site-card-grid\">{overview}</div></section>"),
             profile,
             false,
-            "/tags/",
+            &prefixed_site_path(&context.deploy_path, "/tags/"),
         ),
     ));
     for (tag, notes) in tag_index {
@@ -1436,7 +1471,7 @@ fn render_tag_pages(
                 &format!("<section class=\"site-listing\"><div class=\"site-card-grid\">{list}</div></section>"),
                 profile,
                 false,
-                &tag_page_href(tag),
+                &tag_page_href(&context.deploy_path, tag),
             ),
         ));
     }
@@ -1489,8 +1524,8 @@ fn render_document_shell(
         .cloned()
         .collect::<String>();
     let document_title = render_page_title(profile, context, title);
-    let head_assets = render_head_assets(profile);
-    let nav = render_top_nav(profile);
+    let head_assets = render_head_assets(context, profile);
+    let nav = render_top_nav(context, profile);
     let canonical = canonical_url
         .map(|url| format!("<link rel=\"canonical\" href=\"{}\" />", escape_html(url)))
         .unwrap_or_default();
@@ -1517,11 +1552,14 @@ fn render_document_shell(
         },
     );
     let rss = if profile.rss && context.base_url.is_some() {
-        "<link rel=\"alternate\" type=\"application/rss+xml\" href=\"/rss.xml\" title=\"RSS\" />"
+        format!(
+            "<link rel=\"alternate\" type=\"application/rss+xml\" href=\"{}\" title=\"RSS\" />",
+            escape_html(&prefixed_site_path(&context.deploy_path, "/rss.xml"))
+        )
     } else {
-        ""
+        String::new()
     };
-    let logo = render_logo(profile);
+    let logo = render_logo(context, profile);
     format!(
         concat!(
             "<!doctype html><html lang=\"{}\"><head><meta charset=\"utf-8\" />",
@@ -1529,10 +1567,10 @@ fn render_document_shell(
             "<title>{}</title><meta name=\"description\" content=\"{}\" />{}{}{}",
             "<meta property=\"og:title\" content=\"{}\" />",
             "<meta property=\"og:description\" content=\"{}\" />{}",
-            "<link rel=\"stylesheet\" href=\"/assets/vulcan-site.css\" />{}",
-            "<script defer src=\"/assets/vulcan-site.js\"></script></head>",
-            "<body data-search-asset=\"{}\"><a class=\"site-skip-link\" href=\"#main-content\">Skip to content</a><div class=\"site-shell\">",
-            "<header class=\"site-header\"><div class=\"site-brand\">{}<div><p class=\"site-brand-title\"><a href=\"/\">{}</a></p><p>{}</p></div></div><div class=\"site-toolbar\"><nav class=\"site-top-nav\" aria-label=\"Primary\">{}</nav><button data-theme-toggle type=\"button\" aria-label=\"Toggle color theme\" aria-pressed=\"false\">Theme</button></div></header>",
+            "<link rel=\"stylesheet\" href=\"{}\" />{}",
+            "<script defer src=\"{}\"></script></head>",
+            "<body data-search-asset=\"{}\" data-graph-asset=\"{}\" data-live-reload-url=\"{}\"><a class=\"site-skip-link\" href=\"#main-content\">Skip to content</a><div class=\"site-shell\">",
+            "<header class=\"site-header\"><div class=\"site-brand\">{}<div><p class=\"site-brand-title\"><a href=\"{}\">{}</a></p><p>{}</p></div></div><div class=\"site-toolbar\"><nav class=\"site-top-nav\" aria-label=\"Primary\">{}</nav><button data-theme-toggle type=\"button\" aria-label=\"Toggle color theme\" aria-pressed=\"false\">Theme</button></div></header>",
             "<div class=\"site-layout\"><main id=\"main-content\" class=\"site-content\">{}</main><aside class=\"site-sidebar\" aria-label=\"Page context\">{}</aside></div>",
             "<footer class=\"site-footer\">Built by Vulcan static site builder.</footer></div></body></html>"
         ),
@@ -1545,9 +1583,22 @@ fn render_document_shell(
         escape_html(title),
         escape_html(description),
         og_url,
+        escape_html(&prefixed_site_path(&context.deploy_path, "/assets/vulcan-site.css")),
         head_assets,
-        if search_page { "/assets/search-index.json" } else { "" },
+        escape_html(&prefixed_site_path(&context.deploy_path, "/assets/vulcan-site.js")),
+        if search_page {
+            prefixed_site_path(&context.deploy_path, "/assets/search-index.json")
+        } else {
+            String::new()
+        },
+        if profile.graph {
+            prefixed_site_path(&context.deploy_path, "/assets/graph.json")
+        } else {
+            String::new()
+        },
+        prefixed_site_path(&context.deploy_path, "/__vulcan_site/live-reload.json"),
         logo,
+        escape_html(&site_root_href(&context.deploy_path)),
         escape_html(&context.site_title),
         escape_html(description),
         nav,
@@ -1573,56 +1624,86 @@ fn render_page_title(
     }
 }
 
-fn render_head_assets(profile: &ResolvedSiteProfile) -> String {
+fn render_head_assets(context: &RenderContext, profile: &ResolvedSiteProfile) -> String {
     let mut rendered = String::new();
     if let Some(favicon) = profile.favicon.as_ref() {
         write!(
             rendered,
-            "<link rel=\"icon\" href=\"/assets/{}\" />",
-            encode_url_path(normalize_relative_path(favicon))
+            "<link rel=\"icon\" href=\"{}\" />",
+            escape_html(&prefixed_site_path(
+                &context.deploy_path,
+                &format!(
+                    "/assets/{}",
+                    encode_url_path(normalize_relative_path(favicon))
+                ),
+            ))
         )
         .expect("writing to string cannot fail");
     }
     for asset in &profile.extra_css {
         write!(
             rendered,
-            "<link rel=\"stylesheet\" href=\"/assets/{}\" />",
-            encode_url_path(normalize_relative_path(asset))
+            "<link rel=\"stylesheet\" href=\"{}\" />",
+            escape_html(&prefixed_site_path(
+                &context.deploy_path,
+                &format!(
+                    "/assets/{}",
+                    encode_url_path(normalize_relative_path(asset))
+                ),
+            ))
         )
         .expect("writing to string cannot fail");
     }
     for asset in &profile.extra_js {
         write!(
             rendered,
-            "<script defer src=\"/assets/{}\"></script>",
-            encode_url_path(normalize_relative_path(asset))
+            "<script defer src=\"{}\"></script>",
+            escape_html(&prefixed_site_path(
+                &context.deploy_path,
+                &format!(
+                    "/assets/{}",
+                    encode_url_path(normalize_relative_path(asset))
+                ),
+            ))
         )
         .expect("writing to string cannot fail");
     }
     rendered
 }
 
-fn render_logo(profile: &ResolvedSiteProfile) -> String {
+fn render_logo(context: &RenderContext, profile: &ResolvedSiteProfile) -> String {
     profile.logo.as_ref().map_or_else(String::new, |logo| {
         format!(
-            "<img class=\"site-brand-mark\" src=\"/assets/{}\" alt=\"\" />",
-            encode_url_path(normalize_relative_path(logo))
+            "<img class=\"site-brand-mark\" src=\"{}\" alt=\"\" />",
+            escape_html(&prefixed_site_path(
+                &context.deploy_path,
+                &format!("/assets/{}", encode_url_path(normalize_relative_path(logo))),
+            ))
         )
     })
 }
 
-fn render_top_nav(profile: &ResolvedSiteProfile) -> String {
+fn render_top_nav(context: &RenderContext, profile: &ResolvedSiteProfile) -> String {
     let mut items = vec![
-        ("Home", "/".to_string()),
-        ("Recent", "/recent/".to_string()),
-        ("Folders", "/folders/".to_string()),
-        ("Tags", "/tags/".to_string()),
+        ("Home", site_root_href(&context.deploy_path)),
+        (
+            "Recent",
+            prefixed_site_path(&context.deploy_path, "/recent/"),
+        ),
+        (
+            "Folders",
+            prefixed_site_path(&context.deploy_path, "/folders/"),
+        ),
+        ("Tags", prefixed_site_path(&context.deploy_path, "/tags/")),
     ];
     if profile.search {
-        items.push(("Search", "/search/".to_string()));
+        items.push((
+            "Search",
+            prefixed_site_path(&context.deploy_path, "/search/"),
+        ));
     }
     if profile.graph {
-        items.push(("Graph", "/graph/".to_string()));
+        items.push(("Graph", prefixed_site_path(&context.deploy_path, "/graph/")));
     }
     items
         .into_iter()
@@ -1677,6 +1758,7 @@ fn render_toc(headings: &[HtmlRenderHeading]) -> String {
 }
 
 fn render_note_links(
+    deploy_path: &str,
     title: &str,
     note_paths: &[String],
     route_urls: &HashMap<String, String>,
@@ -1688,7 +1770,10 @@ fn render_note_links(
         .iter()
         .map(|path| {
             let href = route_urls.get(path).cloned().unwrap_or_else(|| {
-                format!("/notes/{}/", slugify_path(trim_markdown_extension(path)))
+                prefixed_site_path(
+                    deploy_path,
+                    &format!("/notes/{}/", slugify_path(trim_markdown_extension(path))),
+                )
             });
             format!(
                 "<li><a href=\"{}\">{}</a></li>",
@@ -1726,7 +1811,7 @@ fn render_prev_next(previous: Option<&RenderedNote>, next: Option<&RenderedNote>
     )
 }
 
-fn render_note_tags(tags: &[String]) -> String {
+fn render_note_tags(deploy_path: &str, tags: &[String]) -> String {
     if tags.is_empty() {
         return String::new();
     }
@@ -1736,7 +1821,7 @@ fn render_note_tags(tags: &[String]) -> String {
             let normalized = normalize_tag(tag);
             format!(
                 "<li><a href=\"{}\">#{}</a></li>",
-                tag_page_href(&normalized),
+                tag_page_href(deploy_path, &normalized),
                 escape_html(&normalized)
             )
         })
@@ -1764,6 +1849,7 @@ fn render_note_diagnostics(diagnostics: &[HtmlRenderDiagnostic]) -> String {
 }
 
 fn render_folder_summary(
+    deploy_path: &str,
     note: &RenderedNote,
     folder_index: &BTreeMap<String, Vec<&RenderedNote>>,
 ) -> String {
@@ -1774,7 +1860,7 @@ fn render_folder_summary(
     let count = folder_index.get(&folder).map_or(0, Vec::len);
     format!(
         "<section class=\"site-callout\"><a href=\"{}\">Folder view</a> includes {} note(s).</section>",
-        folder_page_href(&folder),
+        folder_page_href(deploy_path, &folder),
         count
     )
 }
@@ -1999,23 +2085,42 @@ fn build_rss_document(context: &RenderContext, notes: &[RenderedNote]) -> String
     format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><rss version=\"2.0\"><channel><title>{}</title><link>{}</link><description>{}</description>{items}</channel></rss>",
         escape_xml(&context.site_title),
-        escape_xml(context.base_url.as_deref().unwrap_or("/")),
+        escape_xml(
+            &context
+                .base_url
+                .as_deref()
+                .map_or_else(|| site_root_href(&context.deploy_path), |base| {
+                    format!(
+                        "{}{}",
+                        base.trim_end_matches('/'),
+                        site_root_href(&context.deploy_path)
+                    )
+                }),
+        ),
         escape_xml(&context.site_title),
     )
 }
 
-fn build_sitemap(base_url: &str, files: &BTreeSet<String>, notes: &[RenderedNote]) -> String {
+fn build_sitemap(
+    base_url: &str,
+    deploy_path: &str,
+    files: &BTreeSet<String>,
+    notes: &[RenderedNote],
+) -> String {
     let note_urls = notes
         .iter()
-        .map(|note| note.route.url_path.as_str())
+        .map(|note| note.route.url_path.clone())
         .chain(files.iter().filter_map(|path| {
             if path.ends_with("index.html") {
-                Some(path.trim_end_matches("index.html"))
+                Some(prefixed_site_path(
+                    deploy_path,
+                    path.trim_end_matches("index.html"),
+                ))
             } else if Path::new(path)
                 .extension()
                 .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
             {
-                Some(path.as_str())
+                Some(prefixed_site_path(deploy_path, path))
             } else {
                 None
             }
@@ -2026,15 +2131,7 @@ fn build_sitemap(base_url: &str, files: &BTreeSet<String>, notes: &[RenderedNote
         .map(|path| {
             format!(
                 "<url><loc>{}</loc></url>",
-                escape_xml(&format!(
-                    "{}{}",
-                    base_url.trim_end_matches('/'),
-                    if path.starts_with('/') {
-                        path.to_string()
-                    } else {
-                        format!("/{path}")
-                    }
-                ))
+                escape_xml(&format!("{}{}", base_url.trim_end_matches('/'), path))
             )
         })
         .collect::<String>();
@@ -2084,14 +2181,17 @@ fn backlinks_by_target(
         .collect()
 }
 
-fn build_tag_href_map(notes: &[ExportedNoteDocument]) -> HashMap<String, String> {
+fn build_tag_href_map(
+    notes: &[ExportedNoteDocument],
+    deploy_path: &str,
+) -> HashMap<String, String> {
     notes
         .iter()
         .flat_map(|note| note.note.tags.iter())
         .map(|tag| normalize_tag(tag))
         .collect::<BTreeSet<_>>()
         .into_iter()
-        .map(|tag| (tag.clone(), tag_page_href(&tag)))
+        .map(|tag| (tag.clone(), tag_page_href(deploy_path, &tag)))
         .collect()
 }
 
@@ -2133,7 +2233,7 @@ fn resolve_home_note<'a>(
     })
 }
 
-fn collect_asset_links(links: &[ExportLinkRecord]) -> HashMap<String, String> {
+fn collect_asset_links(links: &[ExportLinkRecord], deploy_path: &str) -> HashMap<String, String> {
     links
         .iter()
         .filter_map(|link| {
@@ -2143,7 +2243,7 @@ fn collect_asset_links(links: &[ExportLinkRecord]) -> HashMap<String, String> {
             let target = link.resolved_target_path.as_ref()?;
             Some((
                 target.clone(),
-                format!("/assets/{}", encode_url_path(target)),
+                prefixed_site_path(deploy_path, &format!("/assets/{}", encode_url_path(target))),
             ))
         })
         .collect()
@@ -2259,7 +2359,7 @@ fn normalize_site_metadata_url(base_url: Option<&str>, value: &str) -> Option<St
     Some(value.to_string())
 }
 
-fn summary_image_meta_url(value: &str) -> Option<String> {
+fn summary_image_meta_url(deploy_path: &str, value: &str) -> Option<String> {
     let value = value.trim();
     if value.is_empty() {
         return None;
@@ -2271,7 +2371,10 @@ fn summary_image_meta_url(value: &str) -> Option<String> {
     if relative.as_os_str().is_empty() {
         None
     } else {
-        Some(format!("/assets/{}", encode_url_path(&relative)))
+        Some(prefixed_site_path(
+            deploy_path,
+            &format!("/assets/{}", encode_url_path(&relative)),
+        ))
     }
 }
 
@@ -2355,16 +2458,16 @@ fn folder_for_note(path: &str) -> String {
         .map_or_else(String::new, |(folder, _)| folder.to_string())
 }
 
-fn folder_page_href(folder: &str) -> String {
+fn folder_page_href(deploy_path: &str, folder: &str) -> String {
     if folder.is_empty() {
-        "/folders/".to_string()
+        prefixed_site_path(deploy_path, "/folders/")
     } else {
-        format!("/folders/{}/", slugify_path(folder))
+        prefixed_site_path(deploy_path, &format!("/folders/{}/", slugify_path(folder)))
     }
 }
 
-fn tag_page_href(tag: &str) -> String {
-    format!("/tags/{}/", slugify_segment(tag))
+fn tag_page_href(deploy_path: &str, tag: &str) -> String {
+    prefixed_site_path(deploy_path, &format!("/tags/{}/", slugify_segment(tag)))
 }
 
 fn asset_output_path(output_dir: &Path, asset_path: &str) -> PathBuf {
@@ -2430,6 +2533,56 @@ fn write_output_file(path: &Path, contents: &str) -> Result<(), AppError> {
     }
     fs::write(path, contents).map_err(AppError::operation)?;
     Ok(())
+}
+
+fn normalize_site_deploy_path(value: Option<&str>) -> Result<String, AppError> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(String::new());
+    };
+    let segments = value
+        .replace('\\', "/")
+        .split('/')
+        .filter(|segment| !segment.is_empty() && *segment != ".")
+        .map(|segment| {
+            if segment == ".." {
+                Err(AppError::operation(format!(
+                    "site deploy_path cannot contain parent traversal segments: `{value}`"
+                )))
+            } else {
+                Ok(encode_url_segment(segment))
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if segments.is_empty() {
+        Ok(String::new())
+    } else {
+        Ok(format!("/{}", segments.join("/")))
+    }
+}
+
+fn site_root_href(deploy_path: &str) -> String {
+    if deploy_path.is_empty() {
+        "/".to_string()
+    } else {
+        format!("{deploy_path}/")
+    }
+}
+
+fn prefixed_site_path(deploy_path: &str, path: &str) -> String {
+    let path = if path.is_empty() {
+        "/".to_string()
+    } else if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{path}")
+    };
+    if deploy_path.is_empty() {
+        path
+    } else if path == "/" {
+        site_root_href(deploy_path)
+    } else {
+        format!("{deploy_path}{path}")
+    }
 }
 
 fn normalize_relative_path(path: impl AsRef<Path>) -> PathBuf {
@@ -3258,6 +3411,84 @@ search = true
     }
 
     #[test]
+    fn site_build_prefixes_routes_assets_and_feeds_with_deploy_path() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join("Home.md"),
+            "# Home\n\nPublished home page.\n",
+        )
+        .expect("home note should write");
+        fs::write(vault_root.join("Guide.md"), "# Guide\n\nGuide page.\n")
+            .expect("guide note should write");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Public Notes"
+base_url = "https://notes.example.com"
+deploy_path = "/garden"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md", "Guide.md"]
+search = true
+graph = true
+rss = true
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let report = build_site(
+            &VaultPaths::new(&vault_root),
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("site build should succeed");
+
+        assert_eq!(report.deploy_path, "/garden");
+        assert!(report
+            .routes
+            .iter()
+            .all(|route| route.url_path.starts_with("/garden/")));
+
+        let output_root = vault_root.join(".vulcan/site/public");
+        let home_html = read_site_text(&output_root, "index.html");
+        let search_html = read_site_text(&output_root, "search/index.html");
+        let route_manifest = read_site_json(&output_root, "assets/route-manifest.json");
+        let recent_manifest = read_site_json(&output_root, "assets/recent-notes.json");
+        let hover_manifest = read_site_json(&output_root, "assets/hover-previews.json");
+        let rss = read_site_text(&output_root, "rss.xml");
+        let sitemap = read_site_text(&output_root, "sitemap.xml");
+
+        assert!(home_html.contains(r#"href="/garden/""#));
+        assert!(home_html.contains(r#"href="/garden/assets/vulcan-site.css""#));
+        assert!(
+            home_html.contains(r#"data-live-reload-url="/garden/__vulcan_site/live-reload.json""#)
+        );
+        assert!(search_html.contains(r#"data-search-asset="/garden/assets/search-index.json""#));
+        assert!(search_html.contains(r#"data-graph-asset="/garden/assets/graph.json""#));
+        assert_eq!(route_manifest[0]["url_path"], "/garden/notes/guide/");
+        assert!(recent_manifest
+            .as_array()
+            .is_some_and(|entries| entries.iter().all(|entry| {
+                entry["url"]
+                    .as_str()
+                    .is_some_and(|url| url.starts_with("/garden/"))
+            })));
+        assert!(hover_manifest["/garden/notes/home/"]["url"]
+            .as_str()
+            .is_some_and(|url| url == "/garden/notes/home/"));
+        assert!(rss.contains("<link>https://notes.example.com/garden/</link>"));
+        assert!(sitemap.contains("https://notes.example.com/garden/notes/home/"));
+        assert!(sitemap.contains("https://notes.example.com/garden/rss.xml"));
+    }
+
+    #[test]
     fn site_build_regression_covers_route_manifest_and_note_page_html() {
         let temp_dir = TempDir::new().expect("temp dir should exist");
         let vault_root = temp_dir.path().join("vault");
@@ -3335,7 +3566,7 @@ graph = false
                 "<meta property=\"og:description\" content=\"Guide summary.\" />",
                 "<link rel=\"stylesheet\" href=\"/assets/vulcan-site.css\" />",
                 "<script defer src=\"/assets/vulcan-site.js\"></script></head>",
-                "<body data-search-asset=\"\"><a class=\"site-skip-link\" href=\"#main-content\">Skip to content</a><div class=\"site-shell\">",
+                "<body data-search-asset=\"\" data-graph-asset=\"\" data-live-reload-url=\"/__vulcan_site/live-reload.json\"><a class=\"site-skip-link\" href=\"#main-content\">Skip to content</a><div class=\"site-shell\">",
                 "<header class=\"site-header\"><div class=\"site-brand\"><div><p class=\"site-brand-title\"><a href=\"/\">Public Notes</a></p><p>Guide summary.</p></div></div>",
                 "<div class=\"site-toolbar\"><nav class=\"site-top-nav\" aria-label=\"Primary\"><a href=\"/\">Home</a><a href=\"/recent/\">Recent</a><a href=\"/folders/\">Folders</a><a href=\"/tags/\">Tags</a></nav>",
                 "<button data-theme-toggle type=\"button\" aria-label=\"Toggle color theme\" aria-pressed=\"false\">Theme</button></div></header>",
