@@ -1046,6 +1046,10 @@ Static-site publication profiles, filters, route policies, and theme assets.
   Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
   Preferred command: `vulcan config set`
   Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+- `site.profiles.<name>.deploy_path` — type: `string`; target: `shared|local`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
 - `site.profiles.<name>.exclude_folders` — type: `array`; target: `shared|local`; default: `[0 items]`
   Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
   Preferred command: `vulcan config set`

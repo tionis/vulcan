@@ -29,6 +29,7 @@ Example:
 title = "Public Notes"
 page_title_template = "{page} | {site}"
 base_url = "https://notes.example.com"
+deploy_path = "/garden"
 output_dir = ".vulcan/site/public"
 home = "Home"
 search = true
@@ -53,6 +54,8 @@ Important rules:
   previews, feeds, or copied assets.
 - `content_transforms`, link policy, and asset policy reuse the same publication model as export
   profiles.
+- `deploy_path` is optional and distinct from `base_url`. Use it when the built site will be hosted
+  under a subpath such as `/garden/` or `/wiki/`.
 - Site profiles can be layered through `.vulcan/config.local.toml` when a local preview needs a
   different `output_dir`, `base_url`, or filter set.
 - Static mode has no runtime auth layer. “Private pages” means excluded at build time, never hidden in
@@ -98,6 +101,10 @@ site output directory and exposes a local live-reload endpoint at:
 
 - `/__vulcan_site/live-reload.json`
 
+When a profile sets `deploy_path`, the built HTML, manifests, RSS links, canonical metadata, and
+preview live-reload endpoint all use that prefix. The loopback preview still serves `/` for convenience
+and also serves the prefixed routes such as `/garden/` and `/garden/__vulcan_site/live-reload.json`.
+
 When `--watch` is enabled, the server watches the vault, `.vulcan/config.toml`, and referenced site
 assets through the normal vault watcher. Successful rebuilds bump the live-reload version. Failed
 rebuilds keep the previous output available and surface the last error through the live-reload
@@ -111,7 +118,7 @@ problem through `last_error`.
 
 The builder currently emits a profile-scoped site with:
 
-- note pages under `/notes/.../`
+- note pages under `/notes/.../` or `/<deploy_path>/notes/.../`
 - `index.html`
 - folder listings
 - tag listings
@@ -127,7 +134,8 @@ The builder currently emits a profile-scoped site with:
 
 The default theme includes light/dark mode, keyboard-first search (`/`), a skip link plus landmarked
 page shell, profile-scoped `extra_css` / `extra_js`, favicon injection, and logo rendering from the
-site profile.
+site profile. When a deploy path is configured, the default shell, manifests, and preview server all
+emit prefix-aware URLs so the built output can be hosted under that subpath unchanged.
 
 ## Diagnostics and automation
 

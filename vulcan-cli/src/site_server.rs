@@ -276,7 +276,17 @@ fn route_request(state: &Arc<Mutex<SiteServeState>>, request: &Request) -> Respo
         return response_text(405, "text/plain; charset=utf-8", "method not allowed");
     }
 
-    if request.path == "/__vulcan_site/live-reload.json" {
+    let deploy_path = state
+        .lock()
+        .ok()
+        .map(|state| state.report.deploy_path.clone())
+        .unwrap_or_default();
+    let prefixed_live_reload = if deploy_path.is_empty() {
+        "/__vulcan_site/live-reload.json".to_string()
+    } else {
+        format!("{deploy_path}/__vulcan_site/live-reload.json")
+    };
+    if request.path == "/__vulcan_site/live-reload.json" || request.path == prefixed_live_reload {
         let payload = state.lock().ok().map_or_else(
             || {
                 json!({
@@ -300,7 +310,7 @@ fn route_request(state: &Arc<Mutex<SiteServeState>>, request: &Request) -> Respo
     }
 
     let Some((output_dir, body_path)) = state.lock().ok().and_then(|state| {
-        resolve_site_path(&state.output_dir, &request.path)
+        resolve_site_path(&state.output_dir, &request.path, &state.report.deploy_path)
             .map(|body_path| (state.output_dir.clone(), body_path))
     }) else {
         return response_text(404, "text/plain; charset=utf-8", "not found");
@@ -325,11 +335,12 @@ fn route_request(state: &Arc<Mutex<SiteServeState>>, request: &Request) -> Respo
     }
 }
 
-fn resolve_site_path(output_dir: &Path, request_path: &str) -> Option<PathBuf> {
-    let normalized = if request_path.is_empty() || request_path == "/" {
+fn resolve_site_path(output_dir: &Path, request_path: &str, deploy_path: &str) -> Option<PathBuf> {
+    let relative_request = strip_deploy_path(request_path, deploy_path).unwrap_or(request_path);
+    let normalized = if relative_request.is_empty() || relative_request == "/" {
         PathBuf::from("index.html")
     } else {
-        let trimmed = request_path.trim_start_matches('/');
+        let trimmed = relative_request.trim_start_matches('/');
         let decoded = percent_decode(trimmed);
         let mut relative = PathBuf::new();
         for component in Path::new(&decoded).components() {
@@ -339,7 +350,7 @@ fn resolve_site_path(output_dir: &Path, request_path: &str) -> Option<PathBuf> {
                 _ => return None,
             }
         }
-        if request_path.ends_with('/') {
+        if relative_request.ends_with('/') {
             relative.push("index.html");
         }
         relative
@@ -365,6 +376,16 @@ fn resolve_site_path(output_dir: &Path, request_path: &str) -> Option<PathBuf> {
     }
 
     None
+}
+
+fn strip_deploy_path<'a>(request_path: &'a str, deploy_path: &str) -> Option<&'a str> {
+    if deploy_path.is_empty() {
+        return Some(request_path);
+    }
+    if request_path == deploy_path {
+        return Some("/");
+    }
+    request_path.strip_prefix(deploy_path)
 }
 
 fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
@@ -752,6 +773,55 @@ Strict preview should block this. See [[Private]].
         let after = get_text(handle.addr(), "/notes/home/");
         assert!(after.contains("Baseline public page."));
         assert!(!after.contains("Strict preview should block this."));
+
+        handle.shutdown().expect("site server should shut down");
+    }
+
+    #[test]
+    fn site_serve_supports_prefixed_routes_and_live_reload_endpoints() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Public Notes"
+base_url = "https://notes.example.com"
+deploy_path = "/garden"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md", "Projects/Alpha.md"]
+search = true
+graph = true
+"#,
+        )
+        .expect("config should be written");
+        scan_vault(&VaultPaths::new(&vault_root), ScanMode::Full).expect("scan should succeed");
+
+        let handle = spawn_site_server(
+            VaultPaths::new(&vault_root),
+            SiteServeOptions {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                port: 0,
+                watch: false,
+                debounce_ms: 50,
+                strict: false,
+                fail_on_warning: false,
+            },
+        )
+        .expect("site server should start");
+
+        let root_index = get_text(handle.addr(), "/");
+        let prefixed_index = get_text(handle.addr(), "/garden/");
+        let prefixed_note = get_text(handle.addr(), "/garden/notes/home/");
+        let prefixed_live = get_json(handle.addr(), "/garden/__vulcan_site/live-reload.json");
+
+        assert!(root_index.contains(r#"href="/garden/""#));
+        assert!(prefixed_index.contains(r#"href="/garden/assets/vulcan-site.css""#));
+        assert!(prefixed_note.contains("Home links to"));
+        assert_eq!(prefixed_live["ok"], true);
+        assert_eq!(prefixed_live["profile"], "public");
 
         handle.shutdown().expect("site server should shut down");
     }

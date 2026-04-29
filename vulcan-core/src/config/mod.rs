@@ -240,6 +240,7 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # title = "My Notes"
 # page_title_template = "{page} | {site}"  # placeholders: {page}, {site}, {profile}
 # base_url = "https://notes.example.com"
+# deploy_path = "/wiki"
 # output_dir = ".vulcan/site/public"
 # home = "Home"
 # language = "en"
@@ -2412,6 +2413,7 @@ pub struct SiteProfileConfig {
     pub title: Option<String>,
     pub page_title_template: Option<String>,
     pub base_url: Option<String>,
+    pub deploy_path: Option<String>,
     pub output_dir: Option<PathBuf>,
     pub home: Option<String>,
     pub language: Option<String>,
@@ -7370,6 +7372,9 @@ fn merge_site_profile_config(target: &mut SiteProfileConfig, profile: SiteProfil
     if let Some(base_url) = profile.base_url {
         target.base_url = Some(base_url);
     }
+    if let Some(deploy_path) = profile.deploy_path {
+        target.deploy_path = Some(deploy_path);
+    }
     if let Some(output_dir) = profile.output_dir {
         target.output_dir = Some(output_dir);
     }
@@ -11311,6 +11316,7 @@ default_mode = "off"
 title = "Public Notes"
 page_title_template = "{site} :: {page}"
 base_url = "https://notes.example.com"
+deploy_path = "/garden"
 output_dir = ".vulcan/site/public"
 home = "Home"
 language = "en"
@@ -11360,6 +11366,7 @@ exclude_headings = ["Scratch"]
             profile.base_url.as_deref(),
             Some("https://notes.example.com")
         );
+        assert_eq!(profile.deploy_path.as_deref(), Some("/garden"));
         assert_eq!(
             profile.output_dir.as_ref(),
             Some(&PathBuf::from(".vulcan/site/public"))
@@ -11456,6 +11463,7 @@ exclude_callouts = ["internal"]
 [site.profiles.public]
 page_title_template = "{site} :: {page} [{profile}]"
 base_url = "https://preview.example.test"
+deploy_path = "/preview"
 output_dir = ".vulcan/site/preview"
 graph = true
 link_policy = "render_plain_text"
@@ -11500,6 +11508,7 @@ include_paths = ["Docs/Intro.md"]
             public.base_url.as_deref(),
             Some("https://preview.example.test")
         );
+        assert_eq!(public.deploy_path.as_deref(), Some("/preview"));
         assert_eq!(
             public.output_dir.as_ref(),
             Some(&PathBuf::from(".vulcan/site/preview"))
@@ -11547,6 +11556,7 @@ include_paths = ["Docs/Intro.md"]
 
         assert!(template.contains("[site.profiles.public]"));
         assert!(template.contains("page_title_template = \"{page} | {site}\""));
+        assert!(template.contains("deploy_path = \"/wiki\""));
         assert!(template.contains("output_dir = \".vulcan/site/public\""));
         assert!(template.contains("link_policy = \"warn\""));
         assert!(template.contains("dataview_js = \"off\""));
