@@ -57,7 +57,9 @@ fn is_broken_pipe_panic_payload(payload: &(dyn Any + Send)) -> bool {
             && (message.contains("Broken pipe")
                 || message.contains("os error 32")
                 || message.contains("The pipe has been ended.")
-                || message.contains("os error 109"))
+                || message.contains("os error 109")
+                || message.contains("The pipe is being closed.")
+                || message.contains("os error 232"))
     })
 }
 
@@ -87,4 +89,31 @@ fn wants_json_output() -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_broken_pipe_panic_payload;
+
+    #[test]
+    fn detects_broken_pipe_panic_payloads_across_platform_variants() {
+        let linux = String::from("failed printing to stdout: Broken pipe (os error 32)");
+        let windows_ended =
+            String::from("failed printing to stdout: The pipe has been ended. (os error 109)");
+        let windows_closed =
+            String::from("failed printing to stdout: The pipe is being closed. (os error 232)");
+
+        assert!(is_broken_pipe_panic_payload(&linux));
+        assert!(is_broken_pipe_panic_payload(&windows_ended));
+        assert!(is_broken_pipe_panic_payload(&windows_closed));
+    }
+
+    #[test]
+    fn ignores_non_broken_pipe_panic_payloads() {
+        let unrelated = String::from("failed printing to stdout: permission denied (os error 5)");
+        let stderr = String::from("failed printing to stderr: Broken pipe (os error 32)");
+
+        assert!(!is_broken_pipe_panic_payload(&unrelated));
+        assert!(!is_broken_pipe_panic_payload(&stderr));
+    }
 }
