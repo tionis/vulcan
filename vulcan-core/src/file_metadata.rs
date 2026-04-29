@@ -297,15 +297,13 @@ fn task_fully_completed(
     if !task.completed {
         return false;
     }
-    task_children
-        .get(task.id.as_str())
-        .map_or(true, |children| {
-            children.iter().all(|child| {
-                task_by_id
-                    .get(child.id.as_str())
-                    .is_some_and(|task| task_fully_completed(task, task_by_id, task_children))
-            })
+    task_children.get(task.id.as_str()).is_none_or(|children| {
+        children.iter().all(|child| {
+            task_by_id
+                .get(child.id.as_str())
+                .is_some_and(|task| task_fully_completed(task, task_by_id, task_children))
         })
+    })
 }
 
 fn list_item_link(note: &NoteRecord, item: &NoteListItemRecord) -> String {

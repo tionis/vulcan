@@ -3019,7 +3019,7 @@ fn strip_task_global_filter(task: &mut Value, raw_tag: &str, normalized_tag: &st
     if let Some(Value::Array(tags)) = object.get_mut("tags") {
         tags.retain(|tag| {
             tag.as_str()
-                .map_or(true, |tag| normalize_tag_name(tag) != normalized_tag)
+                .is_none_or(|tag| normalize_tag_name(tag) != normalized_tag)
         });
     }
 

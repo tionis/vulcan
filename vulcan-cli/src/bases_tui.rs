@@ -228,7 +228,7 @@ fn draw_table(frame: &mut Frame<'_>, state: &BasesTuiState, area: Rect) {
     let rendered_rows = rows.into_iter().map(Row::new).collect::<Vec<_>>();
     let table = Table::new(rendered_rows, widths)
         .header(header)
-        .highlight_style(Style::default().bg(Color::DarkGray))
+        .row_highlight_style(Style::default().bg(Color::DarkGray))
         .block(
             Block::default()
                 .title("Rows")

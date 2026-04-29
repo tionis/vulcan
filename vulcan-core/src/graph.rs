@@ -652,7 +652,7 @@ pub fn query_links_with_filter(
             let row = row?;
             let has_resolved_target = row.resolved_target_path.is_some();
             let resolved_target_path = row.resolved_target_path.and_then(|path| {
-                if filter.map_or(true, |filter| filter.is_allowed(&path)) {
+                if filter.is_none_or(|filter| filter.is_allowed(&path)) {
                     Some(path)
                 } else {
                     None

@@ -184,7 +184,7 @@ fn recurrence_occurrences(
         if recurrence_matches(recurrence, anchor_ms, current_ms) {
             seen = seen.saturating_add(1);
             let current_day = format_day(current_ms);
-            if recurrence.count.map_or(true, |count| seen <= count)
+            if recurrence.count.is_none_or(|count| seen <= count)
                 && current_ms >= start_ms
                 && !exclusions.contains(&current_day)
             {

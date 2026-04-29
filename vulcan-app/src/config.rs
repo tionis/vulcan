@@ -1792,9 +1792,7 @@ pub fn build_config_list_report(
     let mut entries = descriptors
         .into_values()
         .filter(|descriptor| {
-            section.map_or(true, |filter| {
-                config_key_matches_filter(&descriptor.key, filter)
-            })
+            section.is_none_or(|filter| config_key_matches_filter(&descriptor.key, filter))
         })
         .map(|descriptor| {
             build_config_list_entry(&descriptor, &display.toml, &shared_toml, &local_toml)
@@ -1839,9 +1837,7 @@ pub fn build_config_list_report_from_overrides(
     let mut entries = descriptors
         .into_values()
         .filter(|descriptor| {
-            section.map_or(true, |filter| {
-                config_key_matches_filter(&descriptor.key, filter)
-            })
+            section.is_none_or(|filter| config_key_matches_filter(&descriptor.key, filter))
         })
         .map(|descriptor| {
             build_config_list_entry(&descriptor, &display.toml, shared_toml, local_toml)

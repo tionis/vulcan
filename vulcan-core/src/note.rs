@@ -478,7 +478,7 @@ fn note_outline_section_matches_scope(
     section: &NoteOutlineSection,
     scope_section: Option<&NoteOutlineSection>,
 ) -> bool {
-    scope_section.map_or(true, |scope| {
+    scope_section.is_none_or(|scope| {
         section.id != scope.id
             && section.start_line >= scope.start_line
             && section.end_line <= scope.end_line
@@ -492,14 +492,14 @@ fn note_outline_section_matches_depth(
     max_depth: Option<usize>,
 ) -> bool {
     let relative_depth = note_outline_section_tree_depth(section).saturating_sub(scope_depth);
-    (!has_scope || relative_depth > 0) && max_depth.map_or(true, |depth| relative_depth <= depth)
+    (!has_scope || relative_depth > 0) && max_depth.is_none_or(|depth| relative_depth <= depth)
 }
 
 fn note_outline_block_ref_matches_scope(
     block_ref: &NoteOutlineBlockRef,
     scope_section: Option<&NoteOutlineSection>,
 ) -> bool {
-    scope_section.map_or(true, |scope| {
+    scope_section.is_none_or(|scope| {
         block_ref.start_line >= scope.start_line && block_ref.end_line <= scope.end_line
     })
 }
@@ -525,10 +525,10 @@ fn note_outline_block_ref_matches_depth(
         .saturating_sub(scope_depth);
 
     if has_scope {
-        return max_depth.map_or(true, |depth| relative_depth > 0 && relative_depth <= depth);
+        return max_depth.is_none_or(|depth| relative_depth > 0 && relative_depth <= depth);
     }
 
-    max_depth.map_or(true, |depth| relative_depth <= depth)
+    max_depth.is_none_or(|depth| relative_depth <= depth)
 }
 
 fn select_section_lines(current: &[usize], section: &NoteOutlineSection) -> Vec<usize> {
