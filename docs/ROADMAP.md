@@ -3926,12 +3926,12 @@ search = true
 graph = false
 ```
 
-#### Current implementation status (2026-04-29)
+#### Current implementation status (2026-04-30)
 
 - `site build|serve|profiles|doctor` are in-tree with JSON output, deterministic route planning, folder/tag/recent/home/search/graph pages, route/search/graph/hover/recent/related manifests, RSS/sitemap emission, and publish-filter diagnostics.
 - The builder reuses the same shared HTML renderer already used by `note get --mode html` and `render --mode html`; this currently covers inline Dataview expressions, `dataview` query blocks, `tasks` query blocks, `.base` embeds, note embeds, callouts, attachment rewriting, and DataviewJS off/static fallback behavior.
-- The preview loop currently uses a lightweight loopback server plus browser polling at `/__vulcan_site/live-reload.json`; SSE/WebSocket transport and true affected-page incremental rebuilds are still pending.
-- Remaining gaps for this phase are primarily broader fixture snapshot coverage, raw-HTML policy controls, richer graph/search UX, prefix-aware deploy-path hosting, per-page local graph/search enhancements, preview-diagnostics polish, broader read-only fixture coverage for TaskNotes/periodic/Kanban-style surfaces, and a separate external-frontend bundle/export mode with stable integration docs and live-preview handoff.
+- The preview loop now exposes both JSON polling and SSE live-reload endpoints, surfaces publish diagnostics to the terminal/browser overlay, and tracks changed/deleted outputs so watch rebuilds only rewrite files whose bytes actually changed.
+- Remaining gaps for this phase are primarily broader fixture snapshot coverage, stricter DataviewJS static determinism, broader read-only fixture coverage for TaskNotes/periodic/Kanban-style surfaces, and a separate external-frontend bundle/export mode with stable integration docs and live-preview handoff.
 
 ### 9.20.1 Shared render contract and CLI surface
 
@@ -3974,7 +3974,7 @@ The renderer should understand vault semantics, not just CommonMark.
 - [x] Generate stable heading IDs and block anchors for deep links and embeds
 - [x] Render note/block embeds recursively with loop detection and depth limits
 - [x] Copy referenced attachments into the output with deterministic paths; optionally content-hash emitted asset filenames
-- [ ] Add configurable raw HTML policy: passthrough, sanitize, or strip with diagnostics
+- [x] Add configurable raw HTML policy: passthrough, sanitize, or strip with diagnostics
 - [x] Generate per-page metadata from existing indexes: title, excerpt/summary, tags, aliases, outgoing links, backlinks, breadcrumbs, heading tree, created/modified dates
 - [x] Preserve unsupported syntax as visible diagnostics or fallback blocks rather than silently dropping content
 - [x] Add snapshot/integration tests against fixture vaults covering embeds, block refs, math, mermaid, callouts, and attachment rewriting
@@ -3991,8 +3991,8 @@ This sub-phase turns rendered notes into a coherent website rather than a folder
 - [x] Support profile-scoped custom CSS as a first-class feature (`extra_css`) and optional profile-scoped custom JS (`extra_js`)
 - [x] Support favicon/logo injection
 - [x] Add custom page title templates
-- [ ] Add a simple modular theming contract with a small fixed set of overridable shell regions/partials (for example head, header, nav, footer, note chrome) and stable data inputs, without introducing a full general-purpose template language or a required Node stack
-- [ ] Treat theme tokens, major CSS class hooks, and overridable shell regions as a documented compatibility surface; ship a reference custom-theme example and keep docs for users/integrators current as the shell evolves
+- [x] Add a simple modular theming contract with a small fixed set of overridable shell regions/partials (for example head, header, nav, footer, note chrome) and stable data inputs, without introducing a full general-purpose template language or a required Node stack
+- [x] Treat theme tokens, major CSS class hooks, and overridable shell regions as a documented compatibility surface; ship a reference custom-theme example and keep docs for users/integrators current as the shell evolves
 - [x] Implement SEO basics: canonical URLs, sitemap.xml, RSS/Atom feed, OpenGraph/Twitter metadata, social preview fallbacks
 - [x] Make generated navigation, note routes, asset URLs, client-side manifest fetches, RSS links, and canonical metadata prefix-aware so built output works unchanged behind reverse-proxy subpaths
 - [x] Accessibility budget: ensure the default theme is keyboard-navigable, mobile-friendly, and screen-reader-friendly; add snapshot or smoke tests for landmarks/heading structure
@@ -4003,10 +4003,10 @@ This sub-phase turns rendered notes into a coherent website rather than a folder
 These features differentiate the site from a plain markdown-to-HTML export and directly reuse existing Vulcan data structures.
 
 - [x] Generate a static client-side search index from chunks/search metadata with note titles, headings, excerpts, tags, and URLs
-- [ ] Provide a default search UI with keyboard shortcut, result highlighting, and mobile-friendly behavior
+- [x] Provide a default search UI with keyboard shortcut, result highlighting, and mobile-friendly behavior
 - [x] Emit graph JSON using the resolved note graph plus per-page local neighborhoods for a local graph view
 - [x] Add a global graph page using the same JSON asset schema later reusable by WebUI
-- [ ] Add a per-page local graph component using the same JSON asset schema later reusable by WebUI
+- [x] Add a per-page local graph component using the same JSON asset schema later reusable by WebUI
 - [x] Generate a hover-preview/popover manifest with title, excerpt, URL, and optional heading outline so links can show Wikipedia-style previews
 - [x] Generate recent-notes and related-notes manifests from existing metadata/graph data where useful
 - [x] Ensure publish filters apply uniformly: excluded notes must not appear in search indexes, graph JSON, preview manifests, feeds, or copied assets
@@ -4018,10 +4018,10 @@ This is a site-development loop, not a replacement for the daemon.
 
 - [x] `vulcan site serve --watch` serves the generated site from a lightweight local HTTP server
 - [x] Watch vault files, `.vulcan/config.toml`, profile CSS/JS assets, and theme/template files; rebuild incrementally when inputs change
-- [ ] Rebuild only affected pages/indices/assets where possible using the existing incremental scan and dependency information
+- [x] Rebuild only affected pages/indices/assets where possible using the existing incremental scan and dependency information
 - [x] Browser live reload via a local polling endpoint plus in-browser reload/error overlay; keep this local and simple rather than reusing Phase 10 routing/auth
-- [ ] Upgrade live reload transport to SSE or WebSocket if polling proves insufficient
-- [ ] Clear diagnostics in the terminal and optional in-browser overlay for broken links, unsupported embeds, render failures, or leaked/private pages
+- [x] Upgrade live reload transport to SSE or WebSocket if polling proves insufficient
+- [x] Clear diagnostics in the terminal and optional in-browser overlay for broken links, unsupported embeds, render failures, or leaked/private pages
 - [x] Add `--fail-on-warning` / `--strict` mode for CI-style preview checks
 - [x] Integration tests for build → serve → modify source → incremental rebuild → updated output
 - [x] Make `site serve` preview routing and live-reload endpoints prefix-aware when a profile deploy path is configured, while still supporting root-hosted loopback previews by default

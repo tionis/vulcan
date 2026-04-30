@@ -38,8 +38,10 @@ rss = true
 include_paths = ["Home.md"]
 exclude_folders = ["Templates/**", "Archive/**"]
 exclude_tags = ["private", "draft"]
+theme = "reference"
 link_policy = "warn"
 dataview_js = "off"
+raw_html = "sanitize"
 logo = "site/logo.png"
 
 [site.profiles.public.asset_policy]
@@ -62,6 +64,9 @@ Important rules:
   emitted HTML or JSON.
 - `page_title_template` controls the browser `<title>` tag. Supported placeholders are `{page}`,
   `{site}`, and `{profile}`.
+- `raw_html` controls how literal HTML blocks/inline HTML are published: `passthrough`, `sanitize`,
+  or `strip`. `sanitize` keeps the content visible while removing unsafe markup; `strip` removes the
+  raw tags and reports diagnostics in the rendered note.
 
 Per-note publish metadata can be overridden in frontmatter, including `title`, `slug`, `description`,
 `canonical_url`, and `summary_image`.
@@ -94,21 +99,64 @@ wikilinks, embeds, callouts, task lists, headings, backlinks, and publication di
 The shared contracts exposed by the builder are `RenderContext`, `RenderedNote`, `RenderedEmbed`, and
 `SiteRoute`; later note pages should reuse those structures instead of defining parallel HTML/page models.
 
+## Theme contract
+
+`theme = "default"` uses the built-in CSS/JS shell. Any other theme name resolves to either:
+
+- `.vulcan/site/themes/<theme>/`
+- a vault-relative directory path when `theme` already looks like a path
+
+Optional files in that directory:
+
+- `theme.css`
+- `theme.js`
+- `head.html`
+- `header.html`
+- `nav.html`
+- `footer.html`
+- `note_before.html`
+- `note_after.html`
+
+This is intentionally a small fixed compatibility surface, not a general template language. Theme
+partials can use stable placeholder tokens:
+
+- `{{site_title}}`
+- `{{page_title}}`
+- `{{page_description}}`
+- `{{profile_name}}`
+- `{{home_href}}`
+- `{{deploy_path}}`
+- `{{canonical_url}}`
+- `{{current_note_path}}`
+- `{{nav}}`
+- `{{search_button}}`
+- `{{theme_toggle}}`
+- `{{site_logo}}`
+
+`header.html` supersedes `nav.html`; otherwise `nav.html` only replaces the nav strip inside the
+default header. `theme.css` and `theme.js` are copied into published assets and loaded after
+Vulcan's built-in shell assets. A reference bundle lives at
+`docs/examples/static-site-theme-reference/`.
+
 ## Preview server
 
 `vulcan site serve` is loopback-only and daemon-independent. It serves built files directly from the
 site output directory and exposes a local live-reload endpoint at:
 
 - `/__vulcan_site/live-reload.json`
+- `/__vulcan_site/live-reload.events`
 
 When a profile sets `deploy_path`, the built HTML, manifests, RSS links, canonical metadata, and
 preview live-reload endpoint all use that prefix. The loopback preview still serves `/` for convenience
-and also serves the prefixed routes such as `/garden/` and `/garden/__vulcan_site/live-reload.json`.
+and also serves the prefixed routes such as `/garden/`, `/garden/__vulcan_site/live-reload.json`, and
+`/garden/__vulcan_site/live-reload.events`.
 
 When `--watch` is enabled, the server watches the vault, `.vulcan/config.toml`, and referenced site
-assets through the normal vault watcher. Successful rebuilds bump the live-reload version. Failed
-rebuilds keep the previous output available and surface the last error through the live-reload
-payload so the browser overlay can show it.
+assets through the normal vault watcher. Successful rebuilds track which generated files actually
+changed or were deleted, only rewrite outputs whose bytes differ, and bump the live-reload version.
+Failed rebuilds keep the previous output available and surface the last error through the live-reload
+payload so the browser overlay can show it. The payload also includes publish diagnostics plus
+`changed_files` / `deleted_files` so downstream tooling can react to the watched build.
 
 When strict mode is enabled, Vulcan preflights the rebuild in `--dry-run` mode first. If publish
 warnings or errors are detected, the running preview keeps serving the last good output and reports the
@@ -133,9 +181,11 @@ The builder currently emits a profile-scoped site with:
 - `rss.xml` when RSS is enabled and `base_url` is set
 
 The default theme includes light/dark mode, keyboard-first search (`/`), a skip link plus landmarked
-page shell, profile-scoped `extra_css` / `extra_js`, favicon injection, and logo rendering from the
-site profile. When a deploy path is configured, the default shell, manifests, and preview server all
-emit prefix-aware URLs so the built output can be hosted under that subpath unchanged.
+page shell, a global mobile-friendly search dialog with result highlighting, a per-note local graph
+card powered by `assets/graph.json`, profile-scoped `extra_css` / `extra_js`, favicon injection, and
+logo rendering from the site profile. When a deploy path is configured, the default shell, manifests,
+and preview server all emit prefix-aware URLs so the built output can be hosted under that subpath
+unchanged.
 
 ## Diagnostics and automation
 

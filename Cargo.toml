@@ -10,6 +10,7 @@ rust-version = "1.86"
 license = "MIT OR Apache-2.0"
 
 [workspace.dependencies]
+ammonia = "4.1.2"
 assert_cmd = "2.1.1"
 blake3 = "1.8.2"
 clap = { version = "4.5.49", features = ["derive", "string", "env"] }

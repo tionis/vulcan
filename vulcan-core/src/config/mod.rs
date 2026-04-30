@@ -260,6 +260,7 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # exclude_tags = ["private", "draft"]
 # link_policy = "warn"        # error | warn | drop_link | render_plain_text
 # dataview_js = "off"         # off | static
+# raw_html = "sanitize"       # passthrough | sanitize | strip
 # [site.profiles.public.asset_policy]
 # mode = "copy_referenced"    # copy_referenced | error_on_missing
 # include_folders = ["site/shared/**"]
@@ -2385,6 +2386,15 @@ pub enum SiteDataviewJsPolicyConfig {
     Static,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteRawHtmlPolicyConfig {
+    #[default]
+    Passthrough,
+    Sanitize,
+    Strip,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SiteAssetPolicyConfig {
     #[serde(default)]
@@ -2444,6 +2454,7 @@ pub struct SiteProfileConfig {
     #[serde(default)]
     pub asset_policy: SiteAssetPolicyConfig,
     pub dataview_js: Option<SiteDataviewJsPolicyConfig>,
+    pub raw_html: Option<SiteRawHtmlPolicyConfig>,
     #[serde(
         default,
         rename = "content_transforms",
@@ -7439,6 +7450,9 @@ fn merge_site_profile_config(target: &mut SiteProfileConfig, profile: SiteProfil
     if let Some(dataview_js) = profile.dataview_js {
         target.dataview_js = Some(dataview_js);
     }
+    if let Some(raw_html) = profile.raw_html {
+        target.raw_html = Some(raw_html);
+    }
     if let Some(content_transform_rules) = profile.content_transform_rules {
         target.content_transform_rules = Some(content_transform_rules);
     }
@@ -11337,6 +11351,7 @@ exclude_folders = ["Templates/**"]
 exclude_tags = ["private", "draft"]
 link_policy = "render_plain_text"
 dataview_js = "static"
+raw_html = "sanitize"
 
 [site.profiles.public.asset_policy]
 mode = "error_on_missing"
@@ -11405,6 +11420,7 @@ exclude_headings = ["Scratch"]
             profile.dataview_js,
             Some(SiteDataviewJsPolicyConfig::Static)
         );
+        assert_eq!(profile.raw_html, Some(SiteRawHtmlPolicyConfig::Sanitize));
         assert_eq!(
             profile.asset_policy.mode,
             SiteAssetPolicyModeConfig::ErrorOnMissing
@@ -11468,6 +11484,7 @@ output_dir = ".vulcan/site/preview"
 graph = true
 link_policy = "render_plain_text"
 dataview_js = "static"
+raw_html = "strip"
 extra_css = ["site/local.css"]
 
 [site.profiles.public.asset_policy]
@@ -11520,6 +11537,7 @@ include_paths = ["Docs/Intro.md"]
             Some(SiteLinkPolicyConfig::RenderPlainText)
         );
         assert_eq!(public.dataview_js, Some(SiteDataviewJsPolicyConfig::Static));
+        assert_eq!(public.raw_html, Some(SiteRawHtmlPolicyConfig::Strip));
         assert_eq!(public.extra_css, vec![PathBuf::from("site/local.css")]);
         assert_eq!(
             public.asset_policy.mode,
@@ -11560,6 +11578,7 @@ include_paths = ["Docs/Intro.md"]
         assert!(template.contains("output_dir = \".vulcan/site/public\""));
         assert!(template.contains("link_policy = \"warn\""));
         assert!(template.contains("dataview_js = \"off\""));
+        assert!(template.contains("# raw_html = \"sanitize\""));
         assert!(template.contains("mode = \"copy_referenced\""));
     }
 

@@ -13,6 +13,7 @@ use crate::tasks::{evaluate_tasks_query, TasksQueryResult};
 use crate::{
     evaluate_base_file, evaluate_dataview_js_with_options, evaluate_dql_with_filter, parse_document,
 };
+use ammonia::clean as sanitize_html_fragment;
 use pulldown_cmark::{
     html, CowStr, Event as MarkdownEvent, Parser as MarkdownParser, Tag as MarkdownTag,
 };
@@ -31,6 +32,15 @@ pub enum HtmlDataviewJsPolicy {
     Static,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum HtmlRawHtmlPolicy {
+    #[default]
+    Passthrough,
+    Sanitize,
+    Strip,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct HtmlLinkTargets {
     pub note_hrefs: HashMap<String, String>,
@@ -44,6 +54,7 @@ pub struct HtmlRenderOptions<'a> {
     pub full_document: bool,
     pub link_targets: Option<&'a HtmlLinkTargets>,
     pub dataview_js_policy: HtmlDataviewJsPolicy,
+    pub raw_html_policy: HtmlRawHtmlPolicy,
     pub max_embed_depth: usize,
 }
 
@@ -54,6 +65,7 @@ impl Default for HtmlRenderOptions<'_> {
             full_document: true,
             link_targets: None,
             dataview_js_policy: HtmlDataviewJsPolicy::Off,
+            raw_html_policy: HtmlRawHtmlPolicy::Passthrough,
             max_embed_depth: 4,
         }
     }
@@ -94,6 +106,7 @@ struct HtmlRenderEnvironment<'a> {
     resolver_documents: Option<&'a [ResolverDocument]>,
     link_targets: &'a HtmlLinkTargets,
     dataview_js_policy: HtmlDataviewJsPolicy,
+    raw_html_policy: HtmlRawHtmlPolicy,
     max_embed_depth: usize,
 }
 
@@ -102,6 +115,14 @@ struct HtmlMarkdownReplacement {
     start: usize,
     end: usize,
     replacement: String,
+}
+
+#[derive(Debug, Default)]
+struct RenderedMarkdownHtml {
+    html: String,
+    raw_html_events: usize,
+    sanitized_raw_html_events: usize,
+    stripped_raw_html_events: usize,
 }
 
 #[must_use]
@@ -120,6 +141,7 @@ pub fn render_vault_html(
         resolver_documents: resolver_documents.as_deref(),
         link_targets: options.link_targets.unwrap_or(&empty_targets),
         dataview_js_policy: options.dataview_js_policy,
+        raw_html_policy: options.raw_html_policy,
         max_embed_depth: options.max_embed_depth.max(1),
     };
     let mut state = HtmlRenderState::default();
@@ -190,12 +212,32 @@ fn render_html_internal(
         &mut diagnostics,
     );
     let headings = collect_headings(&parsed);
-    let mut html = render_markdown_html_with_targets(
+    let rendered = render_markdown_html_with_targets(
         &rendered_markdown,
         source_path,
         full_document,
         env.link_targets,
+        env.raw_html_policy,
     );
+    if rendered.sanitized_raw_html_events > 0 {
+        diagnostics.push(HtmlRenderDiagnostic {
+            kind: "raw_html_sanitized".to_string(),
+            message: format!(
+                "sanitized {} raw HTML fragment(s) during HTML rendering",
+                rendered.sanitized_raw_html_events
+            ),
+        });
+    }
+    if rendered.stripped_raw_html_events > 0 {
+        diagnostics.push(HtmlRenderDiagnostic {
+            kind: "raw_html_stripped".to_string(),
+            message: format!(
+                "stripped {} raw HTML fragment(s) during HTML rendering",
+                rendered.stripped_raw_html_events
+            ),
+        });
+    }
+    let mut html = rendered.html;
     if !headings.is_empty() {
         html = inject_heading_ids(&html, &headings);
     }
@@ -1186,7 +1228,8 @@ fn render_markdown_html_with_targets(
     source_path: Option<&str>,
     full_document: bool,
     link_targets: &HtmlLinkTargets,
-) -> String {
+    raw_html_policy: HtmlRawHtmlPolicy,
+) -> RenderedMarkdownHtml {
     let empty_path = String::new();
     let source_path = source_path.unwrap_or(&empty_path);
     let options = if full_document {
@@ -1194,6 +1237,7 @@ fn render_markdown_html_with_targets(
     } else {
         fragment_parser_options()
     };
+    let mut rendered_html = RenderedMarkdownHtml::default();
     let parser = MarkdownParser::new_ext(source, options).map(|event| match event {
         MarkdownEvent::Start(MarkdownTag::Link {
             link_type,
@@ -1226,12 +1270,62 @@ fn render_markdown_html_with_targets(
             title,
             id,
         }),
+        MarkdownEvent::Html(raw) => rewrite_raw_html_event(
+            raw,
+            raw_html_policy,
+            &mut rendered_html.raw_html_events,
+            &mut rendered_html.sanitized_raw_html_events,
+            &mut rendered_html.stripped_raw_html_events,
+            true,
+        ),
+        MarkdownEvent::InlineHtml(raw) => rewrite_raw_html_event(
+            raw,
+            raw_html_policy,
+            &mut rendered_html.raw_html_events,
+            &mut rendered_html.sanitized_raw_html_events,
+            &mut rendered_html.stripped_raw_html_events,
+            false,
+        ),
         other => other,
     });
 
-    let mut rendered = String::new();
-    html::push_html(&mut rendered, parser);
-    rendered
+    html::push_html(&mut rendered_html.html, parser);
+    rendered_html
+}
+
+fn rewrite_raw_html_event<'a>(
+    raw: CowStr<'a>,
+    policy: HtmlRawHtmlPolicy,
+    raw_html_events: &mut usize,
+    sanitized_events: &mut usize,
+    stripped_events: &mut usize,
+    block: bool,
+) -> MarkdownEvent<'a> {
+    *raw_html_events += 1;
+    match policy {
+        HtmlRawHtmlPolicy::Passthrough => {
+            if block {
+                MarkdownEvent::Html(raw)
+            } else {
+                MarkdownEvent::InlineHtml(raw)
+            }
+        }
+        HtmlRawHtmlPolicy::Sanitize => {
+            let sanitized = sanitize_html_fragment(raw.as_ref());
+            if sanitized != raw.as_ref() {
+                *sanitized_events += 1;
+            }
+            if block {
+                MarkdownEvent::Html(CowStr::from(sanitized))
+            } else {
+                MarkdownEvent::InlineHtml(CowStr::from(sanitized))
+            }
+        }
+        HtmlRawHtmlPolicy::Strip => {
+            *stripped_events += 1;
+            MarkdownEvent::Text(CowStr::from(String::new()))
+        }
+    }
 }
 
 fn rewrite_link_destination(
@@ -1610,7 +1704,7 @@ fn select_render_title(
 mod tests {
     use super::{
         render_note_fragment_html, render_note_html, render_vault_html, HtmlDataviewJsPolicy,
-        HtmlRenderOptions,
+        HtmlRawHtmlPolicy, HtmlRenderOptions,
     };
     use crate::{scan_vault, ScanMode, VaultPaths};
     use std::fs;
@@ -1711,5 +1805,63 @@ mod tests {
         );
 
         assert!(rendered.html.contains("Hello from JS"));
+    }
+
+    #[test]
+    fn raw_html_passthrough_is_the_default_policy() {
+        let (_temp_dir, paths) = build_render_vault();
+        let rendered = render_vault_html(
+            &paths,
+            "<aside class=\"callout\">Visible</aside><script>alert('x')</script>",
+            &HtmlRenderOptions::default(),
+        );
+
+        assert!(rendered
+            .html
+            .contains("<aside class=\"callout\">Visible</aside>"));
+        assert!(rendered.html.contains("<script>alert('x')</script>"));
+        assert!(rendered.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn raw_html_sanitize_policy_strips_unsafe_tags_and_reports_it() {
+        let (_temp_dir, paths) = build_render_vault();
+        let rendered = render_vault_html(
+            &paths,
+            "<div class=\"callout\">Visible</div><script>alert('x')</script>",
+            &HtmlRenderOptions {
+                raw_html_policy: HtmlRawHtmlPolicy::Sanitize,
+                ..HtmlRenderOptions::default()
+            },
+        );
+
+        assert!(rendered.html.contains("Visible"));
+        assert!(!rendered.html.contains("<script>alert('x')</script>"));
+        assert!(rendered
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "raw_html_sanitized"));
+    }
+
+    #[test]
+    fn raw_html_strip_policy_removes_fragments_and_reports_it() {
+        let (_temp_dir, paths) = build_render_vault();
+        let rendered = render_vault_html(
+            &paths,
+            "Before <div class=\"callout\">Visible</div> After",
+            &HtmlRenderOptions {
+                raw_html_policy: HtmlRawHtmlPolicy::Strip,
+                ..HtmlRenderOptions::default()
+            },
+        );
+
+        assert!(rendered.html.contains("Before"));
+        assert!(rendered.html.contains("After"));
+        assert!(!rendered.html.contains("callout"));
+        assert!(rendered.html.contains("Visible"));
+        assert!(rendered
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "raw_html_stripped"));
     }
 }

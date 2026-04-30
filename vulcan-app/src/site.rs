@@ -17,11 +17,12 @@ use std::path::{Component, Path, PathBuf};
 use vulcan_core::config::{
     load_vault_config, ContentTransformRuleConfig, SiteAssetPolicyConfig,
     SiteAssetPolicyModeConfig, SiteDataviewJsPolicyConfig, SiteLinkPolicyConfig, SiteProfileConfig,
+    SiteRawHtmlPolicyConfig,
 };
 use vulcan_core::graph::resolve_note_reference;
 use vulcan_core::html::{
-    render_vault_html, HtmlDataviewJsPolicy, HtmlLinkTargets, HtmlRenderDiagnostic,
-    HtmlRenderHeading, HtmlRenderOptions,
+    render_vault_html, HtmlDataviewJsPolicy, HtmlLinkTargets, HtmlRawHtmlPolicy,
+    HtmlRenderDiagnostic, HtmlRenderHeading, HtmlRenderOptions,
 };
 use vulcan_core::properties::NoteRecord;
 use vulcan_core::query::{execute_query_report, QueryAst, QueryReport};
@@ -88,11 +89,24 @@ const DEFAULT_THEME_CSS: &str = concat!(
     ".site-meta, .site-breadcrumbs, .site-footer, .site-listing p, .site-empty { color: var(--muted); }\n",
     ".site-breadcrumbs { display: flex; gap: 0.5rem; flex-wrap: wrap; font-size: 0.95rem; margin-bottom: 1rem; }\n",
     ".site-listing, .site-search-card, .site-graph-card { padding: 1.25rem; }\n",
-    ".site-listing ul, .site-sidebar ul, .site-search-results { padding-left: 1.2rem; margin: 0.75rem 0 0; }\n",
+    ".site-listing ul, .site-sidebar ul { padding-left: 1.2rem; margin: 0.75rem 0 0; }\n",
     ".site-card-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }\n",
     ".site-card { border: 1px solid var(--border); border-radius: 1.2rem; padding: 1rem; background: rgba(255,255,255,0.22); }\n",
     ".site-footer { margin-top: 2rem; font-size: 0.95rem; }\n",
     ".site-search-input { width: 100%; padding: 0.8rem 1rem; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.55); color: var(--text); }\n",
+    ".site-search-launch, .site-search-dialog-header button { border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 999px; padding: 0.55rem 0.9rem; text-decoration: none; cursor: pointer; box-shadow: var(--shadow); }\n",
+    ".site-search-dialog[hidden] { display: none; }\n",
+    ".site-search-dialog { position: fixed; inset: 0; z-index: 9998; padding: 1.25rem; background: rgba(19, 17, 15, 0.56); backdrop-filter: blur(10px); }\n",
+    ".site-search-dialog-panel { max-width: 44rem; margin: 2rem auto 0; background: var(--panel); border: 1px solid var(--border); border-radius: 1.5rem; box-shadow: var(--shadow); padding: 1.1rem; }\n",
+    ".site-search-dialog-header { display: flex; gap: 1rem; align-items: center; justify-content: space-between; }\n",
+    ".site-search-results { list-style: none; padding: 0; margin: 1rem 0 0; display: grid; gap: 0.8rem; }\n",
+    ".site-search-results li { border: 1px solid var(--border); border-radius: 1rem; padding: 0.9rem 1rem; background: rgba(255,255,255,0.18); }\n",
+    ".site-search-results a { font-weight: 700; text-decoration: none; }\n",
+    ".site-search-results mark { background: rgba(13, 107, 87, 0.2); color: inherit; padding: 0 0.15em; border-radius: 0.2rem; }\n",
+    ".site-local-graph-list { list-style: none; padding: 0; margin: 0.75rem 0 0; display: grid; gap: 0.75rem; }\n",
+    ".site-local-graph-list li { border-bottom: 1px solid var(--border); padding-bottom: 0.75rem; }\n",
+    ".site-local-graph-list li:last-child { border-bottom: 0; padding-bottom: 0; }\n",
+    ".site-local-graph-direction { display: block; font-size: 0.8rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.2rem; }\n",
     ".site-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }\n",
     ".site-pill-list { display: flex; gap: 0.5rem; flex-wrap: wrap; list-style: none; padding: 0; margin: 0.9rem 0 0; }\n",
     ".site-pill-list a { display: inline-flex; border: 1px solid var(--border); padding: 0.35rem 0.75rem; border-radius: 999px; text-decoration: none; }\n",
@@ -101,76 +115,221 @@ const DEFAULT_THEME_CSS: &str = concat!(
     ".site-diagnostics { margin-top: 1rem; border-radius: 1rem; border: 1px solid rgba(178, 69, 54, 0.35); background: rgba(178, 69, 54, 0.08); padding: 1rem; }\n",
     ".site-live-overlay { position: fixed; right: 1rem; bottom: 1rem; z-index: 9999; background: rgba(20, 20, 20, 0.92); color: #fff; padding: 0.9rem 1rem; border-radius: 1rem; max-width: 24rem; box-shadow: 0 18px 36px rgba(0,0,0,0.35); }\n",
     "a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 3px; }\n",
-    "@media (max-width: 900px) { .site-layout { grid-template-columns: 1fr; } .site-header { flex-direction: column; align-items: start; } }\n"
+    "@media (max-width: 900px) { .site-layout { grid-template-columns: 1fr; } .site-header { flex-direction: column; align-items: start; } .site-search-dialog { padding: 0.65rem; } .site-search-dialog-panel { margin-top: 0; min-height: calc(100vh - 1.3rem); border-radius: 1.2rem; } }\n"
 );
 
-const DEFAULT_THEME_JS: &str = concat!(
-    "(() => {\n",
-    "  const root = document.documentElement;\n",
-    "  const syncThemeButtons = () => {\n",
-    "    const pressed = root.dataset.theme === 'dark' ? 'true' : 'false';\n",
-    "    document.querySelectorAll('[data-theme-toggle]').forEach(button => button.setAttribute('aria-pressed', pressed));\n",
-    "  };\n",
-    "  const storedTheme = localStorage.getItem('vulcan-site-theme');\n",
-    "  if (storedTheme) root.dataset.theme = storedTheme;\n",
-    "  syncThemeButtons();\n",
-    "  document.addEventListener('click', event => {\n",
-    "    const button = event.target.closest('[data-theme-toggle]');\n",
-    "    if (!button) return;\n",
-    "    const next = root.dataset.theme === 'dark' ? 'light' : 'dark';\n",
-    "    root.dataset.theme = next;\n",
-    "    localStorage.setItem('vulcan-site-theme', next);\n",
-    "    syncThemeButtons();\n",
-    "  });\n",
-    "  const searchInput = document.querySelector('[data-site-search-input]');\n",
-    "  const searchResults = document.querySelector('[data-site-search-results]');\n",
-    "  const searchAsset = document.body.dataset.searchAsset;\n",
-    "  if (searchInput && searchResults && searchAsset) {\n",
-    "    let entries = [];\n",
-    "    fetch(searchAsset).then(response => response.ok ? response.json() : []).then(payload => { entries = payload.entries || []; });\n",
-    "    const render = () => {\n",
-    "      const query = searchInput.value.trim().toLowerCase();\n",
-    "      const hits = query ? entries.filter(entry => (entry.title + ' ' + entry.content + ' ' + entry.tags.join(' ')).toLowerCase().includes(query)).slice(0, 20) : [];\n",
-    "      searchResults.innerHTML = hits.map(hit => `<li><a href=\"${hit.url}\">${hit.title}</a><div>${hit.excerpt}</div></li>`).join('') || (query ? '<li>No matches</li>' : '');\n",
-    "    };\n",
-    "    searchInput.addEventListener('input', render);\n",
-    "    document.addEventListener('keydown', event => {\n",
-    "      if (event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey) {\n",
-    "        if (document.activeElement && /input|textarea/i.test(document.activeElement.tagName)) return;\n",
-    "        event.preventDefault();\n",
-    "        searchInput.focus();\n",
-    "      }\n",
-    "    });\n",
-    "  }\n",
-    "  let liveVersion = null;\n",
-    "  const liveUrl = document.body.dataset.liveReloadUrl || '/__vulcan_site/live-reload.json';\n",
-    "  const overlayId = 'vulcan-site-live-overlay';\n",
-    "  const ensureOverlay = message => {\n",
-    "    let overlay = document.getElementById(overlayId);\n",
-    "    if (!overlay) {\n",
-    "      overlay = document.createElement('div');\n",
-    "      overlay.id = overlayId;\n",
-    "      overlay.className = 'site-live-overlay';\n",
-    "      document.body.appendChild(overlay);\n",
-    "    }\n",
-    "    overlay.textContent = message;\n",
-    "  };\n",
-    "  const clearOverlay = () => {\n",
-    "    const overlay = document.getElementById(overlayId);\n",
-    "    if (overlay) overlay.remove();\n",
-    "  };\n",
-    "  const pollLiveReload = () => {\n",
-    "    fetch(liveUrl, { cache: 'no-store' }).then(response => response.ok ? response.json() : null).then(payload => {\n",
-    "      if (!payload) return;\n",
-    "      if (liveVersion === null) { liveVersion = payload.version; }\n",
-    "      else if (payload.version !== liveVersion) { window.location.reload(); }\n",
-    "      if (payload.last_error) ensureOverlay(payload.last_error);\n",
-    "      else clearOverlay();\n",
-    "    }).catch(() => {});\n",
-    "  };\n",
-    "  window.setInterval(pollLiveReload, 1200);\n",
-    "})();\n"
-);
+const DEFAULT_THEME_JS: &str = r#"(() => {
+  const root = document.documentElement;
+  const body = document.body;
+  const syncThemeButtons = () => {
+    const pressed = root.dataset.theme === 'dark' ? 'true' : 'false';
+    document
+      .querySelectorAll('[data-theme-toggle]')
+      .forEach((button) => button.setAttribute('aria-pressed', pressed));
+  };
+  const storedTheme = localStorage.getItem('vulcan-site-theme');
+  if (storedTheme) root.dataset.theme = storedTheme;
+  syncThemeButtons();
+  document.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-theme-toggle]');
+    if (!button) return;
+    const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
+    root.dataset.theme = next;
+    localStorage.setItem('vulcan-site-theme', next);
+    syncThemeButtons();
+  });
+
+  const escapeHtml = (value) =>
+    String(value).replace(/[&<>"']/g, (char) => ({
+      '&': '&amp;',
+      '<': '&lt;',
+      '>': '&gt;',
+      '"': '&quot;',
+      "'": '&#39;',
+    })[char] ?? char);
+  const escapeRegExp = (value) => String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const highlightText = (value, query) => {
+    const terms = query.trim().split(/\s+/).filter(Boolean).map(escapeRegExp);
+    if (!terms.length) return escapeHtml(value);
+    const regex = new RegExp(`(${terms.join('|')})`, 'ig');
+    return escapeHtml(value).replace(regex, '<mark>$1</mark>');
+  };
+
+  const searchDialog = document.querySelector('[data-site-search-dialog]');
+  const searchInput = searchDialog?.querySelector('[data-site-search-input]');
+  const searchResults = searchDialog?.querySelector('[data-site-search-results]');
+  const searchAsset = body.dataset.searchAsset;
+  const openSearch = () => {
+    if (!searchDialog || !searchInput) return;
+    searchDialog.hidden = false;
+    searchInput.focus();
+    searchInput.select();
+  };
+  const closeSearch = () => {
+    if (!searchDialog) return;
+    searchDialog.hidden = true;
+  };
+  if (searchDialog) {
+    document.querySelectorAll('[data-site-search-open]').forEach((button) => {
+      button.addEventListener('click', openSearch);
+    });
+    document.querySelectorAll('[data-site-search-close]').forEach((button) => {
+      button.addEventListener('click', closeSearch);
+    });
+    searchDialog.addEventListener('click', (event) => {
+      if (event.target === searchDialog) closeSearch();
+    });
+  }
+  if (searchInput && searchResults && searchAsset) {
+    let entries = [];
+    fetch(searchAsset)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload) => {
+        entries = payload?.entries || [];
+      })
+      .catch(() => {});
+    const renderSearchResults = () => {
+      const query = searchInput.value.trim().toLowerCase();
+      if (!query) {
+        searchResults.innerHTML = '<li>Type to search the published site.</li>';
+        return;
+      }
+      const hits = entries
+        .filter((entry) =>
+          `${entry.title} ${entry.content} ${entry.tags.join(' ')}`.toLowerCase().includes(query)
+        )
+        .slice(0, 20);
+      if (!hits.length) {
+        searchResults.innerHTML = '<li>No matching notes in the published subset.</li>';
+        return;
+      }
+      searchResults.innerHTML = hits
+        .map(
+          (hit) => `<li><a href="${hit.url}">${highlightText(hit.title, query)}</a><div>${highlightText(hit.excerpt, query)}</div></li>`
+        )
+        .join('');
+    };
+    searchInput.addEventListener('input', renderSearchResults);
+    renderSearchResults();
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape' && searchDialog && !searchDialog.hidden) {
+        event.preventDefault();
+        closeSearch();
+        return;
+      }
+      if (event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+        if (document.activeElement && /input|textarea/i.test(document.activeElement.tagName)) return;
+        event.preventDefault();
+        openSearch();
+      }
+    });
+  }
+
+  const graphAsset = body.dataset.graphAsset;
+  const localGraphCards = [...document.querySelectorAll('[data-site-local-graph]')];
+  if (graphAsset && localGraphCards.length) {
+    fetch(graphAsset)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((payload) => {
+        const nodes = payload?.nodes || [];
+        const edges = payload?.edges || [];
+        const nodeByPath = new Map(nodes.map((node) => [node.path, node]));
+        for (const card of localGraphCards) {
+          const notePath = card.getAttribute('data-site-note-path') || body.dataset.currentNotePath;
+          const list = card.querySelector('[data-site-local-graph-list]');
+          if (!notePath || !list) continue;
+          const neighbors = [];
+          for (const edge of edges) {
+            if (edge.source === notePath && nodeByPath.has(edge.target)) {
+              neighbors.push({ direction: 'Outgoing', node: nodeByPath.get(edge.target) });
+            } else if (edge.target === notePath && nodeByPath.has(edge.source)) {
+              neighbors.push({ direction: 'Backlink', node: nodeByPath.get(edge.source) });
+            }
+          }
+          if (!neighbors.length) {
+            list.innerHTML = '<li>No published neighbors for this note.</li>';
+            continue;
+          }
+          const unique = new Map();
+          for (const neighbor of neighbors) {
+            unique.set(`${neighbor.direction}:${neighbor.node.path}`, neighbor);
+          }
+          list.innerHTML = [...unique.values()]
+            .slice(0, 10)
+            .map(
+              ({ direction, node }) =>
+                `<li><span class="site-local-graph-direction">${direction}</span><a href="${node.url}">${escapeHtml(node.title || node.path)}</a></li>`
+            )
+            .join('');
+        }
+      })
+      .catch(() => {});
+  }
+
+  let liveVersion = null;
+  const liveUrl = body.dataset.liveReloadUrl || '/__vulcan_site/live-reload.json';
+  const liveSseUrl = body.dataset.liveReloadSseUrl || '';
+  const overlayId = 'vulcan-site-live-overlay';
+  const ensureOverlay = (message) => {
+    let overlay = document.getElementById(overlayId);
+    if (!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = overlayId;
+      overlay.className = 'site-live-overlay';
+      document.body.appendChild(overlay);
+    }
+    overlay.innerHTML = message;
+  };
+  const clearOverlay = () => {
+    const overlay = document.getElementById(overlayId);
+    if (overlay) overlay.remove();
+  };
+  const formatDiagnosticsOverlay = (payload) => {
+    if (payload.last_error) return escapeHtml(payload.last_error);
+    if (!Array.isArray(payload.diagnostics) || !payload.diagnostics.length) return '';
+    return payload.diagnostics
+      .slice(0, 3)
+      .map((diagnostic) => {
+        const path = diagnostic.source_path ? ` <br><small>${escapeHtml(diagnostic.source_path)}</small>` : '';
+        return `<strong>[${escapeHtml(diagnostic.level)}]</strong> ${escapeHtml(diagnostic.kind)} ${escapeHtml(diagnostic.message)}${path}`;
+      })
+      .join('<hr>');
+  };
+  const handleLivePayload = (payload) => {
+    if (!payload) return;
+    if (liveVersion === null) {
+      liveVersion = payload.version;
+    } else if (payload.version !== liveVersion) {
+      window.location.reload();
+      return;
+    }
+    const overlayMessage = formatDiagnosticsOverlay(payload);
+    if (overlayMessage) ensureOverlay(overlayMessage);
+    else clearOverlay();
+  };
+  const startPolling = () => {
+    window.setInterval(() => {
+      fetch(liveUrl, { cache: 'no-store' })
+        .then((response) => (response.ok ? response.json() : null))
+        .then(handleLivePayload)
+        .catch(() => {});
+    }, 1200);
+  };
+  if (window.EventSource && liveSseUrl) {
+    const source = new EventSource(liveSseUrl);
+    source.addEventListener('update', (event) => {
+      try {
+        handleLivePayload(JSON.parse(event.data));
+      } catch (_) {}
+    });
+    source.onerror = () => {
+      source.close();
+      startPolling();
+    };
+  } else {
+    startPolling();
+  }
+})();"#;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RenderContext {
@@ -274,6 +433,8 @@ pub struct SiteBuildReport {
     pub routes: Vec<SiteRoute>,
     pub rendered_notes: Vec<RenderedNote>,
     pub files: Vec<String>,
+    pub changed_files: Vec<String>,
+    pub deleted_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -313,6 +474,8 @@ struct ResolvedSiteProfile {
     link_policy: SiteLinkPolicyConfig,
     asset_policy: SiteAssetPolicyConfig,
     dataview_js: SiteDataviewJsPolicyConfig,
+    raw_html: SiteRawHtmlPolicyConfig,
+    theme_overrides: ResolvedSiteTheme,
     content_transform_rules: Option<Vec<ContentTransformRuleConfig>>,
     implicit: bool,
 }
@@ -324,6 +487,18 @@ struct SitePlan {
     links: Vec<ExportLinkRecord>,
     routes: Vec<SiteRoute>,
     diagnostics: Vec<SiteDiagnostic>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ResolvedSiteTheme {
+    css_assets: Vec<PathBuf>,
+    js_assets: Vec<PathBuf>,
+    head: Option<String>,
+    header: Option<String>,
+    nav: Option<String>,
+    footer: Option<String>,
+    note_before: Option<String>,
+    note_after: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -418,6 +593,7 @@ pub fn build_site(
         .map(|note| (note.source_path.clone(), note.route.url_path.clone()))
         .collect::<HashMap<_, _>>();
     let mut files = BTreeSet::<String>::new();
+    let mut changed_files = BTreeSet::<String>::new();
     let mut asset_count = 0_usize;
 
     if !request.dry_run {
@@ -455,7 +631,9 @@ pub fn build_site(
         );
         if !request.dry_run {
             let path = output_dir.join(&note.route.output_path);
-            write_output_file(&path, &html)?;
+            if write_output_file(&path, &html)? {
+                changed_files.insert(note.route.output_path.clone());
+            }
         }
         files.insert(note.route.output_path.clone());
     }
@@ -463,8 +641,12 @@ pub fn build_site(
     let asset_links = collect_asset_links(&plan.links, &plan.profile.deploy_path);
     for (source_path, href) in &asset_links {
         let destination = asset_output_path(&output_dir, source_path);
-        if !request.dry_run {
-            copy_asset(paths, source_path, &destination)?;
+        if !request.dry_run && copy_asset(paths, source_path, &destination)? {
+            changed_files.insert(display_path(
+                destination
+                    .strip_prefix(&output_dir)
+                    .unwrap_or(&destination),
+            ));
         }
         files.insert(display_path(
             destination
@@ -484,8 +666,12 @@ pub fn build_site(
         let destination = output_dir
             .join("assets")
             .join(normalize_relative_path(summary_image));
-        if !request.dry_run {
-            copy_file_from_vault(paths, summary_image, &destination)?;
+        if !request.dry_run && copy_file_from_vault(paths, summary_image, &destination)? {
+            changed_files.insert(display_path(
+                destination
+                    .strip_prefix(&output_dir)
+                    .unwrap_or(&destination),
+            ));
         }
         files.insert(display_path(
             destination
@@ -505,8 +691,12 @@ pub fn build_site(
     {
         let relative = normalize_relative_path(extra_asset);
         let destination = output_dir.join("assets").join(&relative);
-        if !request.dry_run {
-            copy_file_from_vault(paths, extra_asset, &destination)?;
+        if !request.dry_run && copy_file_from_vault(paths, extra_asset, &destination)? {
+            changed_files.insert(display_path(
+                destination
+                    .strip_prefix(&output_dir)
+                    .unwrap_or(&destination),
+            ));
         }
         files.insert(display_path(
             destination
@@ -521,8 +711,12 @@ pub fn build_site(
             let destination = output_dir
                 .join("assets")
                 .join(normalize_relative_path(&asset));
-            if !request.dry_run {
-                copy_file_from_vault(paths, &asset, &destination)?;
+            if !request.dry_run && copy_file_from_vault(paths, &asset, &destination)? {
+                changed_files.insert(display_path(
+                    destination
+                        .strip_prefix(&output_dir)
+                        .unwrap_or(&destination),
+                ));
             }
             files.insert(display_path(
                 destination
@@ -536,16 +730,20 @@ pub fn build_site(
     let css_path = output_dir.join("assets/vulcan-site.css");
     let js_path = output_dir.join("assets/vulcan-site.js");
     if !request.dry_run {
-        write_output_file(&css_path, DEFAULT_THEME_CSS)?;
-        write_output_file(&js_path, DEFAULT_THEME_JS)?;
+        if write_output_file(&css_path, DEFAULT_THEME_CSS)? {
+            changed_files.insert("assets/vulcan-site.css".to_string());
+        }
+        if write_output_file(&js_path, DEFAULT_THEME_JS)? {
+            changed_files.insert("assets/vulcan-site.js".to_string());
+        }
     }
     files.insert("assets/vulcan-site.css".to_string());
     files.insert("assets/vulcan-site.js".to_string());
 
     let manifest = serde_json::to_string_pretty(&plan.routes).map_err(AppError::operation)?;
     let manifest_path = output_dir.join("assets/route-manifest.json");
-    if !request.dry_run {
-        write_output_file(&manifest_path, &manifest)?;
+    if !request.dry_run && write_output_file(&manifest_path, &manifest)? {
+        changed_files.insert("assets/route-manifest.json".to_string());
     }
     files.insert("assets/route-manifest.json".to_string());
 
@@ -553,8 +751,8 @@ pub fn build_site(
     let hover_manifest_json =
         serde_json::to_string_pretty(&hover_manifest).map_err(AppError::operation)?;
     let hover_path = output_dir.join("assets/hover-previews.json");
-    if !request.dry_run {
-        write_output_file(&hover_path, &hover_manifest_json)?;
+    if !request.dry_run && write_output_file(&hover_path, &hover_manifest_json)? {
+        changed_files.insert("assets/hover-previews.json".to_string());
     }
     files.insert("assets/hover-previews.json".to_string());
 
@@ -562,8 +760,8 @@ pub fn build_site(
     let recent_manifest_json =
         serde_json::to_string_pretty(&recent_manifest).map_err(AppError::operation)?;
     let recent_manifest_path = output_dir.join("assets/recent-notes.json");
-    if !request.dry_run {
-        write_output_file(&recent_manifest_path, &recent_manifest_json)?;
+    if !request.dry_run && write_output_file(&recent_manifest_path, &recent_manifest_json)? {
+        changed_files.insert("assets/recent-notes.json".to_string());
     }
     files.insert("assets/recent-notes.json".to_string());
 
@@ -571,8 +769,8 @@ pub fn build_site(
     let related_manifest_json =
         serde_json::to_string_pretty(&related_manifest).map_err(AppError::operation)?;
     let related_manifest_path = output_dir.join("assets/related-notes.json");
-    if !request.dry_run {
-        write_output_file(&related_manifest_path, &related_manifest_json)?;
+    if !request.dry_run && write_output_file(&related_manifest_path, &related_manifest_json)? {
+        changed_files.insert("assets/related-notes.json".to_string());
     }
     files.insert("assets/related-notes.json".to_string());
 
@@ -582,26 +780,29 @@ pub fn build_site(
             serde_json::to_string_pretty(&search_index).map_err(AppError::operation)?;
         let search_path = output_dir.join("assets/search-index.json");
         if !request.dry_run {
-            write_output_file(&search_path, &search_json)?;
-            write_output_file(
+            if write_output_file(&search_path, &search_json)? {
+                changed_files.insert("assets/search-index.json".to_string());
+            }
+            if write_output_file(
                 &output_dir.join("search/index.html"),
-                    &render_generic_page(
-                        &context,
-                        "Search",
-                        "Find published notes with keyboard-first search.",
-                        concat!(
-                            "<section class=\"site-search-card\" aria-labelledby=\"site-search-title\">",
-                            "<h2 id=\"site-search-title\">Search published notes</h2>",
-                            "<p id=\"site-search-hint\" class=\"site-meta\">Press / to focus search. Results update as you type.</p>",
-                            "<label class=\"site-visually-hidden\" for=\"site-search-input\">Search published notes</label>",
-                            "<input id=\"site-search-input\" class=\"site-search-input\" data-site-search-input type=\"search\" inputmode=\"search\" enterkeyhint=\"search\" autocomplete=\"off\" spellcheck=\"false\" aria-describedby=\"site-search-hint\" aria-keyshortcuts=\"/\" placeholder=\"Type to search…\" />",
-                            "<ol class=\"site-search-results\" data-site-search-results aria-live=\"polite\"></ol></section>"
-                        ),
-                        &plan.profile,
-                        true,
-                        &prefixed_site_path(&context.deploy_path, "/search/"),
+                &render_generic_page(
+                    &context,
+                    "Search",
+                    "Find published notes with keyboard-first search.",
+                    concat!(
+                        "<section class=\"site-search-card\" aria-labelledby=\"site-search-title\">",
+                        "<h2 id=\"site-search-title\">Search published notes</h2>",
+                        "<p class=\"site-meta\">Use the toolbar search button or press / anywhere in the site. This page keeps the same search UI available as a full-screen mobile sheet.</p>",
+                        "<button class=\"site-search-launch\" type=\"button\" data-site-search-open>Open search</button>",
+                        "</section>"
+                    ),
+                    &plan.profile,
+                    true,
+                    &prefixed_site_path(&context.deploy_path, "/search/"),
                 ),
-            )?;
+            )? {
+                changed_files.insert("search/index.html".to_string());
+            }
         }
         files.insert("assets/search-index.json".to_string());
         files.insert("search/index.html".to_string());
@@ -611,7 +812,9 @@ pub fn build_site(
         let graph_json = build_graph_asset(paths, &rendered_notes)?;
         let graph_path = output_dir.join("assets/graph.json");
         if !request.dry_run {
-            write_output_file(&graph_path, &graph_json)?;
+            if write_output_file(&graph_path, &graph_json)? {
+                changed_files.insert("assets/graph.json".to_string());
+            }
             let graph_card = format!(
                 concat!(
                     "<section class=\"site-graph-card\"><h2>Published graph</h2>",
@@ -620,7 +823,7 @@ pub fn build_site(
                 ),
                 escape_html(&graph_json)
             );
-            write_output_file(
+            if write_output_file(
                 &output_dir.join("graph/index.html"),
                 &render_generic_page(
                     &context,
@@ -631,7 +834,9 @@ pub fn build_site(
                     false,
                     &prefixed_site_path(&context.deploy_path, "/graph/"),
                 ),
-            )?;
+            )? {
+                changed_files.insert("graph/index.html".to_string());
+            }
         }
         files.insert("assets/graph.json".to_string());
         files.insert("graph/index.html".to_string());
@@ -639,43 +844,43 @@ pub fn build_site(
 
     if plan.profile.rss && plan.profile.base_url.is_some() {
         let rss = build_rss_document(&context, &rendered_notes);
-        if !request.dry_run {
-            write_output_file(&output_dir.join("rss.xml"), &rss)?;
+        if !request.dry_run && write_output_file(&output_dir.join("rss.xml"), &rss)? {
+            changed_files.insert("rss.xml".to_string());
         }
         files.insert("rss.xml".to_string());
     }
 
     let folder_pages = render_folder_pages(&context, &folder_index, &plan.profile);
     for (relative_path, body) in folder_pages {
-        if !request.dry_run {
-            write_output_file(&output_dir.join(&relative_path), &body)?;
+        if !request.dry_run && write_output_file(&output_dir.join(&relative_path), &body)? {
+            changed_files.insert(relative_path.clone());
         }
         files.insert(relative_path);
     }
 
     let tag_pages = render_tag_pages(&context, &tag_index, &plan.profile);
     for (relative_path, body) in tag_pages {
-        if !request.dry_run {
-            write_output_file(&output_dir.join(&relative_path), &body)?;
+        if !request.dry_run && write_output_file(&output_dir.join(&relative_path), &body)? {
+            changed_files.insert(relative_path.clone());
         }
         files.insert(relative_path);
     }
 
     let recent_html = render_recent_page(&context, &rendered_notes, &plan.profile);
-    if !request.dry_run {
-        write_output_file(&output_dir.join("recent/index.html"), &recent_html)?;
+    if !request.dry_run && write_output_file(&output_dir.join("recent/index.html"), &recent_html)? {
+        changed_files.insert("recent/index.html".to_string());
     }
     files.insert("recent/index.html".to_string());
 
     if let Some(home) = home_note.as_ref() {
         let home_html = render_home_page(&context, home, &plan.profile, &tag_index, &folder_index);
-        if !request.dry_run {
-            write_output_file(&output_dir.join("index.html"), &home_html)?;
+        if !request.dry_run && write_output_file(&output_dir.join("index.html"), &home_html)? {
+            changed_files.insert("index.html".to_string());
         }
     } else {
         let body = render_listing_cards(&rendered_notes);
-        if !request.dry_run {
-            write_output_file(
+        if !request.dry_run
+            && write_output_file(
                 &output_dir.join("index.html"),
                 &render_generic_page(
                     &context,
@@ -686,19 +891,27 @@ pub fn build_site(
                     false,
                     &site_root_href(&context.deploy_path),
                 ),
-            )?;
+            )?
+        {
+            changed_files.insert("index.html".to_string());
         }
     }
     files.insert("index.html".to_string());
 
     if let Some(base_url) = context.base_url.as_deref() {
         let sitemap = build_sitemap(base_url, &context.deploy_path, &files, &rendered_notes);
-        if !request.dry_run {
-            write_output_file(&output_dir.join("sitemap.xml"), &sitemap)?;
+        if !request.dry_run && write_output_file(&output_dir.join("sitemap.xml"), &sitemap)? {
+            changed_files.insert("sitemap.xml".to_string());
         }
         files.insert("sitemap.xml".to_string());
     }
 
+    let deleted_files = if request.dry_run {
+        Vec::new()
+    } else {
+        remove_stale_output_files(&output_dir, &files)?
+    };
+    changed_files.extend(deleted_files.iter().cloned());
     let file_list = files.into_iter().collect::<Vec<_>>();
     Ok(SiteBuildReport {
         profile: plan.profile.name,
@@ -720,6 +933,8 @@ pub fn build_site(
         routes: plan.routes,
         rendered_notes,
         files: file_list,
+        changed_files: changed_files.into_iter().collect(),
+        deleted_files,
     })
 }
 
@@ -776,6 +991,12 @@ fn resolve_site_profile(
     } else {
         paths.vault_root().join(output_dir)
     };
+    let theme = raw.theme.clone().unwrap_or_else(|| "default".to_string());
+    let theme_overrides = resolve_site_theme(paths, &theme)?;
+    let mut extra_css = theme_overrides.css_assets.clone();
+    extra_css.extend(raw.extra_css.clone());
+    let mut extra_js = theme_overrides.js_assets.clone();
+    extra_js.extend(raw.extra_js.clone());
     Ok(ResolvedSiteProfile {
         name: requested_name.to_string(),
         title: raw
@@ -791,15 +1012,15 @@ fn resolve_site_profile(
         deploy_path: normalize_site_deploy_path(raw.deploy_path.as_deref())?,
         home: raw.home.clone(),
         language: raw.language.clone().unwrap_or_else(|| "en".to_string()),
-        theme: raw.theme.clone().unwrap_or_else(|| "default".to_string()),
+        theme,
         search: raw.search.unwrap_or(true),
         graph: raw.graph.unwrap_or(true),
         backlinks: raw.backlinks.unwrap_or(true),
         rss: raw.rss.unwrap_or(false),
         favicon: raw.favicon.clone(),
         logo: raw.logo.clone(),
-        extra_css: raw.extra_css.clone(),
-        extra_js: raw.extra_js.clone(),
+        extra_css,
+        extra_js,
         include_query: raw.include_query.clone(),
         include_query_json: raw.include_query_json.clone(),
         include_paths: raw.include_paths.clone(),
@@ -810,6 +1031,8 @@ fn resolve_site_profile(
         link_policy: raw.link_policy.unwrap_or(SiteLinkPolicyConfig::Warn),
         asset_policy: raw.asset_policy,
         dataview_js: raw.dataview_js.unwrap_or(SiteDataviewJsPolicyConfig::Off),
+        raw_html: raw.raw_html.unwrap_or(SiteRawHtmlPolicyConfig::Passthrough),
+        theme_overrides,
         content_transform_rules: raw.content_transform_rules.clone(),
         implicit,
     })
@@ -1133,6 +1356,11 @@ fn render_site_notes(paths: &VaultPaths, plan: &SitePlan) -> Result<Vec<Rendered
                         SiteDataviewJsPolicyConfig::Off => HtmlDataviewJsPolicy::Off,
                         SiteDataviewJsPolicyConfig::Static => HtmlDataviewJsPolicy::Static,
                     },
+                    raw_html_policy: match plan.profile.raw_html {
+                        SiteRawHtmlPolicyConfig::Passthrough => HtmlRawHtmlPolicy::Passthrough,
+                        SiteRawHtmlPolicyConfig::Sanitize => HtmlRawHtmlPolicy::Sanitize,
+                        SiteRawHtmlPolicyConfig::Strip => HtmlRawHtmlPolicy::Strip,
+                    },
                     max_embed_depth: 4,
                 },
             );
@@ -1239,6 +1467,11 @@ fn render_note_document(
 ) -> String {
     let breadcrumbs = render_breadcrumbs(&note.breadcrumbs);
     let toc = render_toc(&note.headings);
+    let local_graph = if profile.graph {
+        render_local_graph_card(note)
+    } else {
+        String::new()
+    };
     let backlinks = if profile.backlinks {
         render_note_links(
             &context.deploy_path,
@@ -1258,6 +1491,25 @@ fn render_note_document(
     let diagnostics = render_note_diagnostics(&note.diagnostics);
     let prev_next = render_prev_next(previous, next);
     let tags = render_note_tags(&context.deploy_path, &note.tags);
+    let canonical_url = note
+        .canonical_url
+        .as_deref()
+        .and_then(|value| normalize_site_metadata_url(context.base_url.as_deref(), value))
+        .or_else(|| canonical_url_for_path(context.base_url.as_deref(), &note.route.url_path));
+    let summary_image = note
+        .summary_image
+        .as_deref()
+        .and_then(|value| summary_image_meta_url(&context.deploy_path, value))
+        .and_then(|value| normalize_site_metadata_url(context.base_url.as_deref(), &value));
+    let note_body = render_note_theme_chrome(
+        context,
+        profile,
+        &note.title,
+        &note.description,
+        canonical_url.as_deref(),
+        &note.source_path,
+        &note.html,
+    );
     let body = format!(
         concat!(
             "<article class=\"site-main\">{}<div class=\"site-meta\">Updated from {}</div>",
@@ -1267,7 +1519,7 @@ fn render_note_document(
         breadcrumbs,
         escape_html(&note.source_path),
         tags,
-        note.html,
+        note_body,
         diagnostics,
         prev_next,
         if note.embeds.is_empty() {
@@ -1293,26 +1545,17 @@ fn render_note_document(
         render_folder_summary(&context.deploy_path, note, folder_index),
         render_related_tags(note, tag_index),
     );
-    let canonical_url = note
-        .canonical_url
-        .as_deref()
-        .and_then(|value| normalize_site_metadata_url(context.base_url.as_deref(), value))
-        .or_else(|| canonical_url_for_path(context.base_url.as_deref(), &note.route.url_path));
-    let summary_image = note
-        .summary_image
-        .as_deref()
-        .and_then(|value| summary_image_meta_url(&context.deploy_path, value))
-        .and_then(|value| normalize_site_metadata_url(context.base_url.as_deref(), &value));
     render_document_shell(
         context,
         &note.title,
         &note.description,
         &body,
-        &[toc, backlinks, outgoing],
+        &[toc, local_graph, backlinks, outgoing],
         profile,
         false,
         canonical_url.as_deref(),
         summary_image.as_deref(),
+        Some(&note.source_path),
     )
 }
 
@@ -1323,13 +1566,6 @@ fn render_home_page(
     tag_index: &BTreeMap<String, Vec<&RenderedNote>>,
     folder_index: &BTreeMap<String, Vec<&RenderedNote>>,
 ) -> String {
-    let body = format!(
-        "<article class=\"site-main\">{}{}{}{}</article>",
-        render_note_tags(&context.deploy_path, &note.tags),
-        note.html,
-        render_folder_summary(&context.deploy_path, note, folder_index),
-        render_related_tags(note, tag_index),
-    );
     let canonical_url = note
         .canonical_url
         .as_deref()
@@ -1345,6 +1581,22 @@ fn render_home_page(
         .as_deref()
         .and_then(|value| summary_image_meta_url(&context.deploy_path, value))
         .and_then(|value| normalize_site_metadata_url(context.base_url.as_deref(), &value));
+    let note_body = render_note_theme_chrome(
+        context,
+        profile,
+        &context.site_title,
+        &note.description,
+        canonical_url.as_deref(),
+        &note.source_path,
+        &note.html,
+    );
+    let body = format!(
+        "<article class=\"site-main\">{}{}{}{}</article>",
+        render_note_tags(&context.deploy_path, &note.tags),
+        note_body,
+        render_folder_summary(&context.deploy_path, note, folder_index),
+        render_related_tags(note, tag_index),
+    );
     render_document_shell(
         context,
         &context.site_title,
@@ -1355,6 +1607,7 @@ fn render_home_page(
         false,
         canonical_url.as_deref(),
         summary_image.as_deref(),
+        Some(&note.source_path),
     )
 }
 
@@ -1409,6 +1662,9 @@ fn render_folder_pages(
         ),
     ));
     for (folder, notes) in folder_index {
+        if folder.is_empty() {
+            continue;
+        }
         let list = notes
             .iter()
             .map(|note| render_card(&note.title, &note.route.url_path, &note.excerpt))
@@ -1504,6 +1760,7 @@ fn render_generic_page(
         search_page,
         canonical_url.as_deref(),
         None,
+        None,
     )
 }
 
@@ -1514,9 +1771,10 @@ fn render_document_shell(
     body: &str,
     sidebar_sections: &[String],
     profile: &ResolvedSiteProfile,
-    search_page: bool,
+    _search_page: bool,
     canonical_url: Option<&str>,
     summary_image_url: Option<&str>,
+    current_note_path: Option<&str>,
 ) -> String {
     let sidebar = sidebar_sections
         .iter()
@@ -1525,7 +1783,29 @@ fn render_document_shell(
         .collect::<String>();
     let document_title = render_page_title(profile, context, title);
     let head_assets = render_head_assets(context, profile);
-    let nav = render_top_nav(context, profile);
+    let default_nav = render_top_nav(context, profile);
+    let search_button = if profile.search {
+        "<button type=\"button\" data-site-search-open aria-haspopup=\"dialog\">Search</button>"
+    } else {
+        ""
+    };
+    let theme_toggle =
+        "<button data-theme-toggle type=\"button\" aria-label=\"Toggle color theme\" aria-pressed=\"false\">Theme</button>";
+    let search_dialog = if profile.search {
+        concat!(
+            "<div class=\"site-search-dialog\" data-site-search-dialog hidden>",
+            "<div class=\"site-search-dialog-panel\" role=\"dialog\" aria-modal=\"true\" aria-labelledby=\"site-search-dialog-title\">",
+            "<div class=\"site-search-dialog-header\"><h2 id=\"site-search-dialog-title\">Search published notes</h2><button type=\"button\" data-site-search-close aria-label=\"Close search\">Close</button></div>",
+            "<p id=\"site-search-dialog-hint\" class=\"site-meta\">Press / to open search from anywhere, then use Esc to close it.</p>",
+            "<label class=\"site-visually-hidden\" for=\"site-search-dialog-input\">Search published notes</label>",
+            "<input id=\"site-search-dialog-input\" class=\"site-search-input\" data-site-search-input type=\"search\" inputmode=\"search\" enterkeyhint=\"search\" autocomplete=\"off\" spellcheck=\"false\" aria-describedby=\"site-search-dialog-hint\" aria-keyshortcuts=\"/\" placeholder=\"Search titles, excerpts, and tags…\" />",
+            "<ol class=\"site-search-results\" data-site-search-results aria-live=\"polite\"></ol>",
+            "</div></div>"
+        )
+        .to_string()
+    } else {
+        String::new()
+    };
     let canonical = canonical_url
         .map(|url| format!("<link rel=\"canonical\" href=\"{}\" />", escape_html(url)))
         .unwrap_or_default();
@@ -1560,6 +1840,55 @@ fn render_document_shell(
         String::new()
     };
     let logo = render_logo(context, profile);
+    let default_tokens = render_shell_theme_tokens(
+        context,
+        profile,
+        title,
+        description,
+        canonical_url,
+        current_note_path,
+        &default_nav,
+        search_button,
+        theme_toggle,
+        &logo,
+    );
+    let nav = profile.theme_overrides.nav.as_deref().map_or_else(
+        || default_nav.clone(),
+        |partial| render_theme_partial(Some(partial), &default_tokens),
+    );
+    let tokens = render_shell_theme_tokens(
+        context,
+        profile,
+        title,
+        description,
+        canonical_url,
+        current_note_path,
+        &nav,
+        search_button,
+        theme_toggle,
+        &logo,
+    );
+    let head_partial = render_theme_partial(profile.theme_overrides.head.as_deref(), &tokens);
+    let header = profile.theme_overrides.header.as_deref().map_or_else(
+        || {
+            render_default_header(
+                context,
+                description,
+                &nav,
+                search_button,
+                theme_toggle,
+                &logo,
+            )
+        },
+        |partial| render_theme_partial(Some(partial), &tokens),
+    );
+    let footer = profile
+        .theme_overrides
+        .footer
+        .as_deref()
+        .map_or_else(render_default_footer, |partial| {
+            render_theme_partial(Some(partial), &tokens)
+        });
     format!(
         concat!(
             "<!doctype html><html lang=\"{}\"><head><meta charset=\"utf-8\" />",
@@ -1567,12 +1896,10 @@ fn render_document_shell(
             "<title>{}</title><meta name=\"description\" content=\"{}\" />{}{}{}",
             "<meta property=\"og:title\" content=\"{}\" />",
             "<meta property=\"og:description\" content=\"{}\" />{}",
-            "<link rel=\"stylesheet\" href=\"{}\" />{}",
+            "<link rel=\"stylesheet\" href=\"{}\" />{}{}",
             "<script defer src=\"{}\"></script></head>",
-            "<body data-search-asset=\"{}\" data-graph-asset=\"{}\" data-live-reload-url=\"{}\"><a class=\"site-skip-link\" href=\"#main-content\">Skip to content</a><div class=\"site-shell\">",
-            "<header class=\"site-header\"><div class=\"site-brand\">{}<div><p class=\"site-brand-title\"><a href=\"{}\">{}</a></p><p>{}</p></div></div><div class=\"site-toolbar\"><nav class=\"site-top-nav\" aria-label=\"Primary\">{}</nav><button data-theme-toggle type=\"button\" aria-label=\"Toggle color theme\" aria-pressed=\"false\">Theme</button></div></header>",
-            "<div class=\"site-layout\"><main id=\"main-content\" class=\"site-content\">{}</main><aside class=\"site-sidebar\" aria-label=\"Page context\">{}</aside></div>",
-            "<footer class=\"site-footer\">Built by Vulcan static site builder.</footer></div></body></html>"
+            "<body data-search-asset=\"{}\" data-graph-asset=\"{}\" data-live-reload-url=\"{}\" data-live-reload-sse-url=\"{}\" data-current-note-path=\"{}\"><a class=\"site-skip-link\" href=\"#main-content\">Skip to content</a>{}<div class=\"site-shell\">",
+            "{}<div class=\"site-layout\"><main id=\"main-content\" class=\"site-content\">{}</main><aside class=\"site-sidebar\" aria-label=\"Page context\">{}</aside></div>{}</div></body></html>"
         ),
         escape_html(&context.language),
         escape_html(&document_title),
@@ -1585,8 +1912,9 @@ fn render_document_shell(
         og_url,
         escape_html(&prefixed_site_path(&context.deploy_path, "/assets/vulcan-site.css")),
         head_assets,
+        head_partial,
         escape_html(&prefixed_site_path(&context.deploy_path, "/assets/vulcan-site.js")),
-        if search_page {
+        if profile.search {
             prefixed_site_path(&context.deploy_path, "/assets/search-index.json")
         } else {
             String::new()
@@ -1597,13 +1925,13 @@ fn render_document_shell(
             String::new()
         },
         prefixed_site_path(&context.deploy_path, "/__vulcan_site/live-reload.json"),
-        logo,
-        escape_html(&site_root_href(&context.deploy_path)),
-        escape_html(&context.site_title),
-        escape_html(description),
-        nav,
+        prefixed_site_path(&context.deploy_path, "/__vulcan_site/live-reload.events"),
+        current_note_path.unwrap_or_default(),
+        search_dialog,
+        header,
         body,
         sidebar,
+        footer,
     )
 }
 
@@ -1711,6 +2039,112 @@ fn render_top_nav(context: &RenderContext, profile: &ResolvedSiteProfile) -> Str
         .collect::<String>()
 }
 
+fn render_default_header(
+    context: &RenderContext,
+    description: &str,
+    nav: &str,
+    search_button: &str,
+    theme_toggle: &str,
+    logo: &str,
+) -> String {
+    format!(
+        concat!(
+            "<header class=\"site-header\"><div class=\"site-brand\">{}<div>",
+            "<p class=\"site-brand-title\"><a href=\"{}\">{}</a></p><p>{}</p></div></div>",
+            "<div class=\"site-toolbar\"><nav class=\"site-top-nav\" aria-label=\"Primary\">{}</nav>{}{}",
+            "</div></header>"
+        ),
+        logo,
+        escape_html(&site_root_href(&context.deploy_path)),
+        escape_html(&context.site_title),
+        escape_html(description),
+        nav,
+        search_button,
+        theme_toggle,
+    )
+}
+
+fn render_default_footer() -> String {
+    "<footer class=\"site-footer\">Built by Vulcan static site builder.</footer>".to_string()
+}
+
+fn render_theme_partial(template: Option<&str>, replacements: &[(&str, String)]) -> String {
+    let Some(template) = template else {
+        return String::new();
+    };
+    replacements
+        .iter()
+        .fold(template.to_string(), |rendered, (token, value)| {
+            rendered.replace(token, value)
+        })
+}
+
+fn render_shell_theme_tokens(
+    context: &RenderContext,
+    profile: &ResolvedSiteProfile,
+    title: &str,
+    description: &str,
+    canonical_url: Option<&str>,
+    current_note_path: Option<&str>,
+    nav: &str,
+    search_button: &str,
+    theme_toggle: &str,
+    logo: &str,
+) -> Vec<(&'static str, String)> {
+    vec![
+        ("{{site_title}}", escape_html(&context.site_title)),
+        ("{{page_title}}", escape_html(title)),
+        ("{{page_description}}", escape_html(description)),
+        ("{{profile_name}}", escape_html(&profile.name)),
+        (
+            "{{home_href}}",
+            escape_html(&site_root_href(&context.deploy_path)),
+        ),
+        ("{{deploy_path}}", escape_html(&context.deploy_path)),
+        (
+            "{{canonical_url}}",
+            canonical_url.map_or_else(String::new, escape_html),
+        ),
+        (
+            "{{current_note_path}}",
+            current_note_path.map_or_else(String::new, escape_html),
+        ),
+        ("{{nav}}", nav.to_string()),
+        ("{{search_button}}", search_button.to_string()),
+        ("{{theme_toggle}}", theme_toggle.to_string()),
+        ("{{site_logo}}", logo.to_string()),
+    ]
+}
+
+fn render_note_theme_chrome(
+    context: &RenderContext,
+    profile: &ResolvedSiteProfile,
+    title: &str,
+    description: &str,
+    canonical_url: Option<&str>,
+    note_path: &str,
+    body_html: &str,
+) -> String {
+    let tokens = render_shell_theme_tokens(
+        context,
+        profile,
+        title,
+        description,
+        canonical_url,
+        Some(note_path),
+        "",
+        "",
+        "",
+        "",
+    );
+    format!(
+        "{}{}{}",
+        render_theme_partial(profile.theme_overrides.note_before.as_deref(), &tokens),
+        body_html,
+        render_theme_partial(profile.theme_overrides.note_after.as_deref(), &tokens),
+    )
+}
+
 fn render_listing_cards(notes: &[RenderedNote]) -> String {
     let cards = notes
         .iter()
@@ -1785,6 +2219,19 @@ fn render_note_links(
     format!(
         "<section><h2>{}</h2><ul>{items}</ul></section>",
         escape_html(title)
+    )
+}
+
+fn render_local_graph_card(note: &RenderedNote) -> String {
+    format!(
+        concat!(
+            "<section class=\"site-graph-card\" data-site-local-graph data-site-note-path=\"{}\">",
+            "<h2>Local graph</h2>",
+            "<p class=\"site-meta\">Published neighbors for this note, powered by the same graph asset used elsewhere in Vulcan.</p>",
+            "<ul class=\"site-local-graph-list\" data-site-local-graph-list><li>Loading local graph…</li></ul>",
+            "</section>"
+        ),
+        escape_html(&note.source_path)
     )
 }
 
@@ -2040,6 +2487,10 @@ fn build_graph_asset(
         .iter()
         .map(|note| (note.source_path.as_str(), note.route.url_path.clone()))
         .collect::<HashMap<_, _>>();
+    let title_map = rendered_notes
+        .iter()
+        .map(|note| (note.source_path.as_str(), note.title.clone()))
+        .collect::<HashMap<_, _>>();
     let graph = export_graph(paths).map_err(AppError::operation)?;
     let nodes = graph
         .nodes
@@ -2049,6 +2500,7 @@ fn build_graph_asset(
             serde_json::json!({
                 "id": node.id,
                 "path": node.path,
+                "title": title_map.get(node.path.as_str()).cloned().unwrap_or_else(|| trim_markdown_extension(&node.path).to_string()),
                 "url": route_map.get(node.path.as_str()).cloned().unwrap_or_default(),
             })
         })
@@ -2510,7 +2962,7 @@ fn collect_extra_assets_recursive(
     Ok(())
 }
 
-fn copy_asset(paths: &VaultPaths, relative: &str, destination: &Path) -> Result<(), AppError> {
+fn copy_asset(paths: &VaultPaths, relative: &str, destination: &Path) -> Result<bool, AppError> {
     copy_file_from_vault(paths, Path::new(relative), destination)
 }
 
@@ -2518,21 +2970,136 @@ fn copy_file_from_vault(
     paths: &VaultPaths,
     relative: &Path,
     destination: &Path,
-) -> Result<(), AppError> {
+) -> Result<bool, AppError> {
     let source = paths.vault_root().join(relative);
-    if let Some(parent) = destination.parent() {
-        fs::create_dir_all(parent).map_err(AppError::operation)?;
-    }
-    fs::copy(source, destination).map_err(AppError::operation)?;
-    Ok(())
+    let contents = fs::read(source).map_err(AppError::operation)?;
+    write_output_bytes_if_changed(destination, &contents)
 }
 
-fn write_output_file(path: &Path, contents: &str) -> Result<(), AppError> {
+fn write_output_file(path: &Path, contents: &str) -> Result<bool, AppError> {
+    write_output_bytes_if_changed(path, contents.as_bytes())
+}
+
+fn write_output_bytes_if_changed(path: &Path, contents: &[u8]) -> Result<bool, AppError> {
+    if fs::read(path).ok().as_deref() == Some(contents) {
+        return Ok(false);
+    }
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(AppError::operation)?;
     }
     fs::write(path, contents).map_err(AppError::operation)?;
-    Ok(())
+    Ok(true)
+}
+
+fn remove_stale_output_files(
+    output_dir: &Path,
+    expected_files: &BTreeSet<String>,
+) -> Result<Vec<String>, AppError> {
+    if !output_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut deleted = Vec::new();
+    remove_stale_output_files_recursive(output_dir, output_dir, expected_files, &mut deleted)?;
+    deleted.sort();
+    Ok(deleted)
+}
+
+fn remove_stale_output_files_recursive(
+    output_dir: &Path,
+    directory: &Path,
+    expected_files: &BTreeSet<String>,
+    deleted: &mut Vec<String>,
+) -> Result<bool, AppError> {
+    let mut has_entries = false;
+    for entry in fs::read_dir(directory).map_err(AppError::operation)? {
+        let entry = entry.map_err(AppError::operation)?;
+        let path = entry.path();
+        if entry.file_type().map_err(AppError::operation)?.is_dir() {
+            let child_has_entries =
+                remove_stale_output_files_recursive(output_dir, &path, expected_files, deleted)?;
+            if child_has_entries {
+                has_entries = true;
+            } else {
+                fs::remove_dir(&path).map_err(AppError::operation)?;
+            }
+            continue;
+        }
+
+        let relative = display_path(path.strip_prefix(output_dir).map_err(AppError::operation)?);
+        if expected_files.contains(&relative) {
+            has_entries = true;
+            continue;
+        }
+        fs::remove_file(&path).map_err(AppError::operation)?;
+        deleted.push(relative);
+    }
+    Ok(has_entries)
+}
+
+fn resolve_site_theme(paths: &VaultPaths, theme: &str) -> Result<ResolvedSiteTheme, AppError> {
+    let trimmed = theme.trim();
+    if trimmed.is_empty() || trimmed == "default" {
+        return Ok(ResolvedSiteTheme::default());
+    }
+
+    let theme_dir = resolve_site_theme_dir(paths, trimmed)?;
+    let relative_theme_dir = theme_dir
+        .strip_prefix(paths.vault_root())
+        .map_err(AppError::operation)?;
+    let relative_theme_dir = PathBuf::from(display_path(relative_theme_dir));
+    let css_assets = if theme_dir.join("theme.css").is_file() {
+        vec![relative_theme_dir.join("theme.css")]
+    } else {
+        Vec::new()
+    };
+    let js_assets = if theme_dir.join("theme.js").is_file() {
+        vec![relative_theme_dir.join("theme.js")]
+    } else {
+        Vec::new()
+    };
+
+    Ok(ResolvedSiteTheme {
+        css_assets,
+        js_assets,
+        head: read_optional_theme_partial(&theme_dir.join("head.html"))?,
+        header: read_optional_theme_partial(&theme_dir.join("header.html"))?,
+        nav: read_optional_theme_partial(&theme_dir.join("nav.html"))?,
+        footer: read_optional_theme_partial(&theme_dir.join("footer.html"))?,
+        note_before: read_optional_theme_partial(&theme_dir.join("note_before.html"))?,
+        note_after: read_optional_theme_partial(&theme_dir.join("note_after.html"))?,
+    })
+}
+
+fn resolve_site_theme_dir(paths: &VaultPaths, theme: &str) -> Result<PathBuf, AppError> {
+    let candidates = if theme.contains('/') || theme.contains('\\') || theme.starts_with('.') {
+        vec![paths.vault_root().join(theme)]
+    } else {
+        vec![
+            paths.vault_root().join(".vulcan/site/themes").join(theme),
+            paths.vault_root().join(theme),
+        ]
+    };
+    let Some(theme_dir) = candidates.into_iter().find(|candidate| candidate.exists()) else {
+        return Err(AppError::operation(format!(
+            "site theme `{theme}` was not found in `.vulcan/site/themes/{theme}` or `{theme}`"
+        )));
+    };
+    if !theme_dir.is_dir() {
+        return Err(AppError::operation(format!(
+            "site theme `{theme}` must resolve to a directory, got `{}`",
+            theme_dir.display()
+        )));
+    }
+    Ok(theme_dir)
+}
+
+fn read_optional_theme_partial(path: &Path) -> Result<Option<String>, AppError> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    fs::read_to_string(path)
+        .map(Some)
+        .map_err(AppError::operation)
 }
 
 fn normalize_site_deploy_path(value: Option<&str>) -> Result<String, AppError> {
@@ -2911,6 +3478,234 @@ include_paths = ["Home", "Notes/Embed Note.md"]
             .expect("note page should read");
         assert!(note_html.contains("Embed Note"));
         assert!(note_html.contains("/notes/home/"));
+    }
+
+    #[test]
+    fn site_build_applies_theme_regions_search_dialog_and_local_graph_shell() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        fs::create_dir_all(vault_root.join(".vulcan/site/themes/reference"))
+            .expect("theme dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/site/themes/reference/theme.css"),
+            ".theme-header { letter-spacing: 0.08em; }",
+        )
+        .expect("theme css should write");
+        fs::write(
+            vault_root.join(".vulcan/site/themes/reference/theme.js"),
+            "window.vulcanThemeLoaded = true;",
+        )
+        .expect("theme js should write");
+        fs::write(
+            vault_root.join(".vulcan/site/themes/reference/header.html"),
+            "<header class=\"site-header\"><div class=\"theme-header\">{{site_title}} {{nav}} {{search_button}} {{theme_toggle}}</div></header>",
+        )
+        .expect("theme header should write");
+        fs::write(
+            vault_root.join(".vulcan/site/themes/reference/nav.html"),
+            "<a class=\"custom-nav\" href=\"{{home_href}}\">Portal</a>",
+        )
+        .expect("theme nav should write");
+        fs::write(
+            vault_root.join(".vulcan/site/themes/reference/footer.html"),
+            "<footer class=\"site-footer\">Custom footer {{profile_name}}</footer>",
+        )
+        .expect("theme footer should write");
+        fs::write(
+            vault_root.join(".vulcan/site/themes/reference/note_before.html"),
+            "<div class=\"note-before\">{{current_note_path}}</div>",
+        )
+        .expect("theme note_before should write");
+        fs::write(
+            vault_root.join(".vulcan/site/themes/reference/note_after.html"),
+            "<div class=\"note-after\">{{page_title}}</div>",
+        )
+        .expect("theme note_after should write");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Custom Garden"
+home = "Home"
+output_dir = ".vulcan/site/public"
+theme = "reference"
+include_paths = ["Home.md", "Projects/Alpha.md"]
+search = true
+graph = true
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let report = build_site(
+            &VaultPaths::new(&vault_root),
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("site build should succeed");
+
+        let output_root = vault_root.join(".vulcan/site/public");
+        let home_html = read_site_text(&output_root, "index.html");
+        let note_route = report
+            .routes
+            .iter()
+            .find(|route| route.source_path.as_deref() == Some("Projects/Alpha.md"))
+            .expect("alpha route should exist")
+            .output_path
+            .clone();
+        let note_html = read_site_text(&output_root, &note_route);
+        let graph_json = read_site_json(&output_root, "assets/graph.json");
+
+        assert!(home_html.contains("data-site-search-dialog"));
+        assert!(home_html.contains("custom-nav"));
+        assert!(home_html.contains("Custom footer public"));
+        assert!(home_html.contains("assets/.vulcan/site/themes/reference/theme.css"));
+        assert!(home_html.contains("assets/.vulcan/site/themes/reference/theme.js"));
+        assert!(note_html.contains("data-site-local-graph"));
+        assert!(note_html.contains("note-before"));
+        assert!(note_html.contains("Projects/Alpha.md"));
+        assert!(note_html.contains("note-after"));
+        assert!(output_root
+            .join("assets/.vulcan/site/themes/reference/theme.css")
+            .exists());
+        assert!(output_root
+            .join("assets/.vulcan/site/themes/reference/theme.js")
+            .exists());
+        assert!(graph_json["nodes"]
+            .as_array()
+            .is_some_and(|nodes| nodes.iter().all(|node| node["title"].as_str().is_some())));
+    }
+
+    #[test]
+    fn site_build_applies_raw_html_policy_from_profile() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join("Home.md"),
+            "# Home\n\n<script>alert('secret')</script>\n\n<div class=\"safe\">Visible</div>\n",
+        )
+        .expect("home note should write");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "HTML Policy"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md"]
+raw_html = "strip"
+search = false
+graph = false
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let report = build_site(
+            &VaultPaths::new(&vault_root),
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("site build should succeed");
+        let home_html = read_site_text(&vault_root.join(".vulcan/site/public"), "index.html");
+
+        assert!(!home_html.contains("<script>alert('secret')</script>"));
+        assert!(!home_html.contains("class=\"safe\""));
+        assert!(report.rendered_notes.iter().any(|note| {
+            note.diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.kind == "raw_html_stripped")
+        }));
+    }
+
+    #[test]
+    fn site_build_tracks_changed_and_deleted_outputs_without_clean_rebuilds() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Incremental Demo"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md", "Projects/Alpha.md"]
+search = false
+graph = false
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let first = build_site(
+            &VaultPaths::new(&vault_root),
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("first build should succeed");
+        assert!(!first.changed_files.is_empty());
+
+        let second = build_site(
+            &VaultPaths::new(&vault_root),
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: false,
+                dry_run: false,
+            },
+        )
+        .expect("second build should succeed");
+        assert!(
+            second.changed_files.is_empty(),
+            "unexpected second-build changes: {:?}",
+            second.changed_files
+        );
+        assert!(second.deleted_files.is_empty());
+
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Incremental Demo"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md"]
+search = false
+graph = false
+"#,
+        )
+        .expect("updated config should write");
+        scan_vault(&VaultPaths::new(&vault_root), ScanMode::Incremental)
+            .expect("incremental scan should succeed");
+
+        let third = build_site(
+            &VaultPaths::new(&vault_root),
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: false,
+                dry_run: false,
+            },
+        )
+        .expect("third build should succeed");
+        assert!(third
+            .deleted_files
+            .iter()
+            .any(|path| path.contains("notes/projects/alpha/index.html")));
+        assert!(!vault_root
+            .join(".vulcan/site/public/notes/projects/alpha/index.html")
+            .exists());
     }
 
     #[test]
@@ -3566,7 +4361,7 @@ graph = false
                 "<meta property=\"og:description\" content=\"Guide summary.\" />",
                 "<link rel=\"stylesheet\" href=\"/assets/vulcan-site.css\" />",
                 "<script defer src=\"/assets/vulcan-site.js\"></script></head>",
-                "<body data-search-asset=\"\" data-graph-asset=\"\" data-live-reload-url=\"/__vulcan_site/live-reload.json\"><a class=\"site-skip-link\" href=\"#main-content\">Skip to content</a><div class=\"site-shell\">",
+                "<body data-search-asset=\"\" data-graph-asset=\"\" data-live-reload-url=\"/__vulcan_site/live-reload.json\" data-live-reload-sse-url=\"/__vulcan_site/live-reload.events\" data-current-note-path=\"Guide.md\"><a class=\"site-skip-link\" href=\"#main-content\">Skip to content</a><div class=\"site-shell\">",
                 "<header class=\"site-header\"><div class=\"site-brand\"><div><p class=\"site-brand-title\"><a href=\"/\">Public Notes</a></p><p>Guide summary.</p></div></div>",
                 "<div class=\"site-toolbar\"><nav class=\"site-top-nav\" aria-label=\"Primary\"><a href=\"/\">Home</a><a href=\"/recent/\">Recent</a><a href=\"/folders/\">Folders</a><a href=\"/tags/\">Tags</a></nav>",
                 "<button data-theme-toggle type=\"button\" aria-label=\"Toggle color theme\" aria-pressed=\"false\">Theme</button></div></header>",
@@ -3637,10 +4432,11 @@ graph = false
         assert_eq!(count_occurrences(&guide_html, "<h1"), 1);
         assert!(guide_html.contains(r#"aria-label="Breadcrumbs""#));
         assert!(search_html.contains(
-            r#"<label class="site-visually-hidden" for="site-search-input">Search published notes</label>"#
+            r#"<label class="site-visually-hidden" for="site-search-dialog-input">Search published notes</label>"#
         ));
+        assert!(search_html.contains(r"data-site-search-open"));
         assert!(search_html.contains(r#"type="search""#));
-        assert!(search_html.contains(r#"aria-describedby="site-search-hint""#));
+        assert!(search_html.contains(r#"aria-describedby="site-search-dialog-hint""#));
         assert!(search_html.contains(r#"aria-keyshortcuts="/""#));
         assert!(search_html.contains(r#"aria-live="polite""#));
     }

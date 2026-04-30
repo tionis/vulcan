@@ -11,6 +11,7 @@ js_runtime = ["dep:rquickjs", "dep:rquickjs-serde"]
 
 [dependencies]
 aho-corasick = "1"
+ammonia.workspace = true
 blake3.workspace = true
 csv.workspace = true
 fs2.workspace = true
