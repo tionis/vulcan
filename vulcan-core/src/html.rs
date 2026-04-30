@@ -337,23 +337,22 @@ fn render_markdown_with_replacements(
         if link.link_kind != LinkKind::Embed {
             continue;
         }
-        let replacement = if link.is_note_embed {
-            render_note_embed_html(paths, source_path, link, env, state, diagnostics)
-        } else if link
+        let replacement = if link
             .target_path_candidate
             .as_deref()
             .is_some_and(|candidate| {
                 Path::new(candidate)
                     .extension()
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("base"))
-            })
-        {
+            }) {
             render_base_embed_html(
                 paths,
                 source_path,
                 link.target_path_candidate.as_deref().unwrap_or_default(),
                 link.target_heading.as_deref(),
             )
+        } else if link.is_note_embed {
+            render_note_embed_html(paths, source_path, link, env, state, diagnostics)
         } else {
             render_asset_embed_html(source_path, link, env)
         };

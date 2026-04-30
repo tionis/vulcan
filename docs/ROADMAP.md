@@ -3931,7 +3931,7 @@ graph = false
 - `site build|serve|profiles|doctor` are in-tree with JSON output, deterministic route planning, folder/tag/recent/home/search/graph pages, route/search/graph/hover/recent/related manifests, RSS/sitemap emission, and publish-filter diagnostics.
 - The builder reuses the same shared HTML renderer already used by `note get --mode html` and `render --mode html`; this currently covers inline Dataview expressions, `dataview` query blocks, `tasks` query blocks, `.base` embeds, note embeds, callouts, attachment rewriting, and DataviewJS off/static fallback behavior.
 - The preview loop now exposes both JSON polling and SSE live-reload endpoints, surfaces publish diagnostics to the terminal/browser overlay, and tracks changed/deleted outputs so watch rebuilds only rewrite files whose bytes actually changed.
-- Remaining gaps for this phase are primarily broader fixture snapshot coverage, broader read-only fixture coverage for TaskNotes/periodic/Kanban-style surfaces, and a separate external-frontend bundle/export mode with stable integration docs and live-preview handoff.
+- Remaining gaps for this phase are primarily broader fixture snapshot coverage, broader dedicated Bases/TaskNotes workflow polish, and a separate external-frontend bundle/export mode with stable integration docs and live-preview handoff.
 
 ### 9.20.1 Shared render contract and CLI surface
 
@@ -4038,7 +4038,7 @@ Vulcan should compete on Obsidian-native semantics here, not just theming.
 - [x] In DataviewJS `static` mode, enforce determinism constraints: no network, no wall-clock dependence, no filesystem writes, and clear diagnostics on unsupported behavior
 - [x] Unsupported or disabled DataviewJS blocks should render visible fallback output with diagnostics rather than disappearing silently
 - [x] Document what is intentionally deferred from the first static-site release: comments, analytics integrations, stacked pages, SPA routing, full browser-side DataviewJS parity, and any "private page" mechanism that depends on runtime auth
-- [ ] Integration tests on fixture vaults containing Dataview, Bases, Tasks, TaskNotes, Kanban, and periodic-note content
+- [x] Integration tests on fixture vaults containing Dataview, Bases, Tasks, TaskNotes, Kanban, and periodic-note content
 
 ### 9.20.8 Testing, determinism, and later-phase reuse
 

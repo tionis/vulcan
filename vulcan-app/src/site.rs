@@ -4481,4 +4481,99 @@ include_paths = ["Dashboard.md"]
         assert!(dashboard_html.contains(r#"class="dql-table""#));
         assert!(dashboard_html.contains("DataviewJS disabled"));
     }
+
+    #[test]
+    fn site_build_renders_hardening_fixture_surfaces_for_bases_tasks_tasknotes_kanban_and_periodic_notes(
+    ) {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("hardening", &vault_root);
+        fs::write(
+            vault_root.join("Showcase.md"),
+            concat!(
+                "# Showcase\n\n",
+                "![[Reports/release.base#Release Table]]\n\n",
+                "```tasks\n",
+                "path includes TaskNotes/Tasks\n",
+                "not done\n",
+                "sort by due\n",
+                "```\n",
+            ),
+        )
+        .expect("showcase note should write");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Hardening Site"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md", "Dashboard.md", "Showcase.md"]
+include_folders = ["Boards/**", "Journal/**", "People/**", "Projects/**", "TaskNotes/**"]
+exclude_paths = ["Broken.md"]
+search = false
+graph = false
+rss = false
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let report = build_site(
+            &VaultPaths::new(&vault_root),
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("site build should succeed");
+        assert!(
+            report.diagnostics.is_empty(),
+            "hardening fixture site build should stay clean, got: {:?}",
+            report.diagnostics
+        );
+
+        let output_root = vault_root.join(".vulcan/site/public");
+        let route_html = |source_path: &str| {
+            let relative = report
+                .routes
+                .iter()
+                .find(|route| route.source_path.as_deref() == Some(source_path))
+                .unwrap_or_else(|| panic!("route should exist for {source_path}"))
+                .output_path
+                .clone();
+            read_site_text(&output_root, &relative)
+        };
+
+        let dashboard_html = route_html("Dashboard.md");
+        let showcase_html = route_html("Showcase.md");
+        let board_html = route_html("Boards/Roadmap.md");
+        let daily_html = route_html("Journal/Daily/2026-04-04.md");
+        let task_html = route_html("TaskNotes/Tasks/Write Docs.md");
+
+        assert!(dashboard_html.contains("Release Dashboard"));
+        assert!(dashboard_html.contains("in-progress"));
+        assert!(dashboard_html.contains("2026-04-10"));
+        assert!(dashboard_html.contains("2026-04-04"));
+
+        assert!(showcase_html.contains("Release Table"));
+        assert!(showcase_html.contains(r#"class="bases-table""#));
+        assert!(showcase_html.contains(r#"class="tasks-query-list""#));
+        assert!(showcase_html.contains("Write docs"));
+        assert!(!showcase_html.contains("Prep outline"));
+
+        assert!(board_html.contains("Release Board"));
+        assert!(board_html.contains("Backlog"));
+        assert!(board_html.contains("Draft release email"));
+        assert!(board_html.contains("Write Docs"));
+
+        assert!(daily_html.contains("2026-04-04"));
+        assert!(daily_html.contains("Review"));
+        assert!(daily_html.contains("Finish"));
+        assert!(daily_html.contains("Write Docs"));
+
+        assert!(task_html.contains("Write docs"));
+        assert!(task_html.contains("Write the docs body."));
+    }
 }
