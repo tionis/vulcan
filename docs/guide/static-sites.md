@@ -67,6 +67,10 @@ Important rules:
 - `raw_html` controls how literal HTML blocks/inline HTML are published: `passthrough`, `sanitize`,
   or `strip`. `sanitize` keeps the content visible while removing unsafe markup; `strip` removes the
   raw tags and reports diagnostics in the rendered note.
+- `dataview_js = "static"` runs DataviewJS blocks in deterministic publish mode. Static rendering
+  rejects wall-clock access (`Date.now()`, `new Date()`, `VulcanDateTime.now()`, `today`-style
+  daily helpers), network calls, host exec/shell helpers, and any filesystem writes. Unsupported
+  blocks stay visible in the output as DataviewJS error callouts instead of disappearing silently.
 
 Per-note publish metadata can be overridden in frontmatter, including `title`, `slug`, `description`,
 `canonical_url`, and `summary_image`.

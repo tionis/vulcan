@@ -416,6 +416,7 @@ fn render_dataview_block_html(
             source_path,
             crate::DataviewJsEvalOptions {
                 sandbox: Some(JsRuntimeSandbox::Strict),
+                deterministic_static: true,
                 ..crate::DataviewJsEvalOptions::default()
             },
         ) {
@@ -1805,6 +1806,37 @@ mod tests {
         );
 
         assert!(rendered.html.contains("Hello from JS"));
+    }
+
+    #[test]
+    fn dataviewjs_static_policy_surfaces_wall_clock_errors() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should exist");
+        fs::write(
+            vault_root.join("Home.md"),
+            concat!("# Home\n\n", "```dataviewjs\n", "Date.now()\n", "```\n",),
+        )
+        .expect("home should write");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let source =
+            fs::read_to_string(paths.vault_root().join("Home.md")).expect("home should read");
+
+        let rendered = render_vault_html(
+            &paths,
+            &source,
+            &HtmlRenderOptions {
+                source_path: Some("Home.md"),
+                dataview_js_policy: HtmlDataviewJsPolicy::Static,
+                ..HtmlRenderOptions::default()
+            },
+        );
+
+        assert!(rendered.html.contains("DataviewJS error:"));
+        assert!(rendered
+            .html
+            .contains("DataviewJS static mode does not allow wall-clock time via Date.now()"));
     }
 
     #[test]

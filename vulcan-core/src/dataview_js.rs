@@ -62,6 +62,7 @@ pub struct DataviewJsEvalOptions {
     pub sandbox: Option<JsRuntimeSandbox>,
     pub permission_profile: Option<String>,
     pub resolved_permissions: Option<ResolvedPermissionProfile>,
+    pub deterministic_static: bool,
     pub disable_policy_hooks: bool,
     pub tool_registry: Option<Arc<dyn DataviewJsToolRegistry>>,
 }
@@ -74,6 +75,7 @@ impl std::fmt::Debug for DataviewJsEvalOptions {
             .field("sandbox", &self.sandbox)
             .field("permission_profile", &self.permission_profile)
             .field("resolved_permissions", &self.resolved_permissions)
+            .field("deterministic_static", &self.deterministic_static)
             .field("disable_policy_hooks", &self.disable_policy_hooks)
             .field(
                 "tool_registry",
@@ -296,6 +298,7 @@ mod runtime {
         shell_path: Option<PathBuf>,
         sandbox: JsRuntimeSandbox,
         permissions: Option<ProfilePermissionGuard>,
+        deterministic_static: bool,
         runtime_timeout: Option<Duration>,
         transaction: Mutex<Option<JsTransactionState>>,
         tool_registry: Option<Arc<dyn DataviewJsToolRegistry>>,
@@ -365,6 +368,37 @@ mod runtime {
     }
 
     const DATAVIEW_JS_PRELUDE: &str = r#"
+const __vulcanDeterministicStatic = Boolean(globalThis.__vulcan_deterministic_static);
+
+function __vulcanStaticTimeError(operation) {
+  throw new Error(`DataviewJS static mode does not allow wall-clock time via ${operation}; pass an explicit date or timestamp instead.`);
+}
+
+const __vulcanOriginalDate = Date;
+if (__vulcanDeterministicStatic) {
+  globalThis.Date = new Proxy(__vulcanOriginalDate, {
+    apply(target, thisArg, args) {
+      if ((args?.length ?? 0) === 0) {
+        __vulcanStaticTimeError("Date()");
+      }
+      return Reflect.apply(target, thisArg, args);
+    },
+    construct(target, args, newTarget) {
+      if ((args?.length ?? 0) === 0) {
+        __vulcanStaticTimeError("new Date()");
+      }
+      return Reflect.construct(target, args, newTarget);
+    },
+    get(target, prop, receiver) {
+      if (prop === "now") {
+        return () => __vulcanStaticTimeError("Date.now()");
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    }
+  });
+}
+
 class DataArray {
   constructor(values = []) {
     this.values = Array.from(values ?? []);
@@ -963,6 +997,9 @@ class VulcanDateTime {
   }
 
   static now() {
+    if (__vulcanDeterministicStatic) {
+      __vulcanStaticTimeError("VulcanDateTime.now()");
+    }
     return new VulcanDateTime(new Date());
   }
 
@@ -2928,6 +2965,7 @@ globalThis.Function = undefined;
                 shell_path: loaded_config.templates.shell_path.clone(),
                 sandbox,
                 permissions,
+                deterministic_static: options.deterministic_static,
                 runtime_timeout: timeout,
                 transaction: Mutex::new(None),
                 tool_registry: options.tool_registry,
@@ -3010,6 +3048,10 @@ globalThis.Function = undefined;
         outputs: Arc<Mutex<Vec<DataviewJsOutput>>>,
     ) -> Result<(), DataviewJsError> {
         let globals = ctx.globals();
+
+        globals
+            .set("__vulcan_deterministic_static", state.deterministic_static)
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
         globals
             .set(
@@ -3173,8 +3215,15 @@ globalThis.Function = undefined;
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
+        let today_state = Arc::clone(&state);
         globals
-            .set("__vulcan_today", Func::from(today_utc_string))
+            .set(
+                "__vulcan_today",
+                Func::from(move |ctx: Ctx<'_>| {
+                    current_today(&today_state, "vault.daily.today()")
+                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))
+                }),
+            )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
         let vault_daily_state = Arc::clone(&state);
@@ -3190,6 +3239,8 @@ globalThis.Function = undefined;
                                 &vault_daily_state.periodic_config,
                                 note_index,
                                 &date,
+                                vault_daily_state.deterministic_static,
+                                "vault.daily.get()",
                             )
                             .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
                         )
@@ -3211,6 +3262,8 @@ globalThis.Function = undefined;
                                 note_index,
                                 &from,
                                 &to,
+                                vault_daily_range_state.deterministic_static,
+                                "vault.daily.range()",
                             )
                             .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
                         )
@@ -3225,10 +3278,13 @@ globalThis.Function = undefined;
                 "__vulcan_vault_events_json",
                 Func::from(
                     move |ctx: Ctx<'_>, from: Option<String>, to: Option<String>| {
-                        let (from, to) =
-                            normalize_daily_event_range(from.as_deref(), to.as_deref()).map_err(
-                                |error| Exception::throw_message(&ctx, &error.to_string()),
-                            )?;
+                        let (from, to) = normalize_daily_event_range(
+                            from.as_deref(),
+                            to.as_deref(),
+                            vault_events_state.deterministic_static,
+                            "vault.events()",
+                        )
+                        .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?;
                         to_json_string(
                             &ctx,
                             list_events_between(&vault_events_state.paths, &from, &to).map_err(
@@ -3940,6 +3996,7 @@ globalThis.Function = undefined;
     }
 
     fn begin_transaction(state: &JsEvalState) -> Result<(), DataviewJsError> {
+        ensure_static_mode_allows(state, "vault.transaction()", "filesystem writes")?;
         ensure_fs_access(state, "vault.transaction()")?;
         let mut transaction = state.transaction.lock().map_err(|_| {
             DataviewJsError::Message("DataviewJS transaction lock poisoned".to_string())
@@ -4006,7 +4063,6 @@ globalThis.Function = undefined;
     ) -> Result<Value, DataviewJsError> {
         match kind {
             "set" => {
-                ensure_fs_access(state, "vault.set()")?;
                 let path = payload_string(&payload, "path")?;
                 let content = payload_string(&payload, "content")?.to_string();
                 let preserve_frontmatter = payload_bool(&payload, "preserveFrontmatter");
@@ -4026,7 +4082,6 @@ globalThis.Function = undefined;
                 mutation_note_response(state, &resolved_path)
             }
             "create" => {
-                ensure_fs_access(state, "vault.create()")?;
                 let path =
                     normalize_note_path_for_write(&state.paths, payload_string(&payload, "path")?)?;
                 ensure_write_access(state, &path, "vault.create()")?;
@@ -4052,7 +4107,6 @@ globalThis.Function = undefined;
                 mutation_note_response(state, &path)
             }
             "append" => {
-                ensure_fs_access(state, "vault.append()")?;
                 let path =
                     resolve_existing_note_path(&state.paths, payload_string(&payload, "path")?)?;
                 ensure_write_access(state, &path, "vault.append()")?;
@@ -4076,7 +4130,6 @@ globalThis.Function = undefined;
                 mutation_note_response(state, &path)
             }
             "patch" => {
-                ensure_fs_access(state, "vault.patch()")?;
                 let path =
                     resolve_existing_note_path(&state.paths, payload_string(&payload, "path")?)?;
                 ensure_write_access(state, &path, "vault.patch()")?;
@@ -4103,7 +4156,6 @@ globalThis.Function = undefined;
                 Ok(response)
             }
             "update" => {
-                ensure_fs_access(state, "vault.update()")?;
                 let path =
                     resolve_existing_note_path(&state.paths, payload_string(&payload, "path")?)?;
                 ensure_write_access(state, &path, "vault.update()")?;
@@ -4116,7 +4168,6 @@ globalThis.Function = undefined;
                 mutation_note_response(state, &path)
             }
             "unset" => {
-                ensure_fs_access(state, "vault.unset()")?;
                 let path =
                     resolve_existing_note_path(&state.paths, payload_string(&payload, "path")?)?;
                 ensure_write_access(state, &path, "vault.unset()")?;
@@ -4128,7 +4179,6 @@ globalThis.Function = undefined;
                 mutation_note_response(state, &path)
             }
             "inbox" => {
-                ensure_fs_access(state, "vault.inbox()")?;
                 let path = normalize_note_path_for_write(&state.paths, &state.inbox_config.path)?;
                 ensure_write_access(state, &path, "vault.inbox()")?;
                 record_transaction_original(state, &path)?;
@@ -4159,8 +4209,11 @@ globalThis.Function = undefined;
                 Ok(serde_json::json!({ "path": path, "appended": true }))
             }
             "daily.append" => {
-                ensure_fs_access(state, "vault.daily.append()")?;
-                let date = normalize_daily_event_date(payload.get("date").and_then(Value::as_str))?;
+                let date = normalize_daily_event_date(
+                    payload.get("date").and_then(Value::as_str),
+                    state.deterministic_static,
+                    "vault.daily.append()",
+                )?;
                 let path =
                     crate::expected_periodic_note_path(&state.periodic_config, "daily", &date)
                         .ok_or_else(|| {
@@ -4187,7 +4240,6 @@ globalThis.Function = undefined;
                 mutation_note_response(state, &path)
             }
             "refactor.renameAlias" => {
-                ensure_fs_access(state, "vault.refactor.renameAlias()")?;
                 ensure_no_transaction(state, "vault.refactor.renameAlias()")?;
                 let note = payload_string(&payload, "note")?;
                 let resolved_note = resolve_existing_note_path(&state.paths, note)?;
@@ -4201,7 +4253,6 @@ globalThis.Function = undefined;
                     .map_err(|error| DataviewJsError::Message(error.to_string()))
             }
             "refactor.renameHeading" => {
-                ensure_fs_access(state, "vault.refactor.renameHeading()")?;
                 ensure_no_transaction(state, "vault.refactor.renameHeading()")?;
                 let note = payload_string(&payload, "note")?;
                 let resolved_note = resolve_existing_note_path(&state.paths, note)?;
@@ -4215,7 +4266,6 @@ globalThis.Function = undefined;
                     .map_err(|error| DataviewJsError::Message(error.to_string()))
             }
             "refactor.renameBlockRef" => {
-                ensure_fs_access(state, "vault.refactor.renameBlockRef()")?;
                 ensure_no_transaction(state, "vault.refactor.renameBlockRef()")?;
                 let note = payload_string(&payload, "note")?;
                 let resolved_note = resolve_existing_note_path(&state.paths, note)?;
@@ -4230,7 +4280,6 @@ globalThis.Function = undefined;
                     .map_err(|error| DataviewJsError::Message(error.to_string()))
             }
             "refactor.renameProperty" => {
-                ensure_fs_access(state, "vault.refactor.renameProperty()")?;
                 ensure_no_transaction(state, "vault.refactor.renameProperty()")?;
                 ensure_unrestricted_refactor_scope(state, "vault.refactor.renameProperty()")?;
                 let old_key = payload_string(&payload, "oldKey")?;
@@ -4242,7 +4291,6 @@ globalThis.Function = undefined;
                     .map_err(|error| DataviewJsError::Message(error.to_string()))
             }
             "refactor.mergeTags" => {
-                ensure_fs_access(state, "vault.refactor.mergeTags()")?;
                 ensure_no_transaction(state, "vault.refactor.mergeTags()")?;
                 ensure_unrestricted_refactor_scope(state, "vault.refactor.mergeTags()")?;
                 let from_tag = payload_string(&payload, "fromTag")?;
@@ -4254,7 +4302,6 @@ globalThis.Function = undefined;
                     .map_err(|error| DataviewJsError::Message(error.to_string()))
             }
             "refactor.move" => {
-                ensure_fs_access(state, "vault.refactor.move()")?;
                 ensure_no_transaction(state, "vault.refactor.move()")?;
                 let source = payload_string(&payload, "source")?;
                 let resolved_source = resolve_existing_note_path(&state.paths, source)?;
@@ -4276,6 +4323,36 @@ globalThis.Function = undefined;
         }
     }
 
+    fn static_mode_denied(operation: &str, capability: &str) -> DataviewJsError {
+        DataviewJsError::Message(format!(
+            "DataviewJS static mode does not allow {capability} via {operation}"
+        ))
+    }
+
+    fn static_mode_time_denied(operation: &str) -> DataviewJsError {
+        DataviewJsError::Message(format!(
+            "DataviewJS static mode does not allow wall-clock time via {operation}; pass an explicit date or timestamp instead"
+        ))
+    }
+
+    fn ensure_static_mode_allows(
+        state: &JsEvalState,
+        operation: &str,
+        capability: &str,
+    ) -> Result<(), DataviewJsError> {
+        if state.deterministic_static {
+            return Err(static_mode_denied(operation, capability));
+        }
+        Ok(())
+    }
+
+    fn current_today(state: &JsEvalState, operation: &str) -> Result<String, DataviewJsError> {
+        if state.deterministic_static {
+            return Err(static_mode_time_denied(operation));
+        }
+        Ok(today_utc_string())
+    }
+
     fn ensure_fs_access(state: &JsEvalState, operation: &str) -> Result<(), DataviewJsError> {
         if !sandbox_allows_fs(state.sandbox) {
             return Err(DataviewJsError::Message(format!(
@@ -4286,6 +4363,7 @@ globalThis.Function = undefined;
     }
 
     fn ensure_network_access(state: &JsEvalState, operation: &str) -> Result<(), DataviewJsError> {
+        ensure_static_mode_allows(state, operation, "network access")?;
         if !sandbox_allows_network(state.sandbox) {
             return Err(DataviewJsError::Message(format!(
                 "{operation} requires --sandbox net or higher"
@@ -4303,7 +4381,8 @@ globalThis.Function = undefined;
         Ok(())
     }
 
-    fn ensure_execute_access(state: &JsEvalState, _operation: &str) -> Result<(), DataviewJsError> {
+    fn ensure_execute_access(state: &JsEvalState, operation: &str) -> Result<(), DataviewJsError> {
+        ensure_static_mode_allows(state, operation, "host execution")?;
         if let Some(permissions) = state.permissions.as_ref() {
             permissions
                 .check_execute()
@@ -4312,7 +4391,8 @@ globalThis.Function = undefined;
         Ok(())
     }
 
-    fn ensure_shell_access(state: &JsEvalState, _operation: &str) -> Result<(), DataviewJsError> {
+    fn ensure_shell_access(state: &JsEvalState, operation: &str) -> Result<(), DataviewJsError> {
+        ensure_static_mode_allows(state, operation, "shell execution")?;
         if let Some(permissions) = state.permissions.as_ref() {
             permissions
                 .check_shell()
@@ -4329,6 +4409,7 @@ globalThis.Function = undefined;
         path: &str,
         operation: &str,
     ) -> Result<(), DataviewJsError> {
+        ensure_static_mode_allows(state, operation, "filesystem writes")?;
         ensure_fs_access(state, operation)?;
         if let Some(permissions) = state.permissions.as_ref() {
             permissions
@@ -4343,6 +4424,7 @@ globalThis.Function = undefined;
         path: &str,
         operation: &str,
     ) -> Result<(), DataviewJsError> {
+        ensure_static_mode_allows(state, operation, "filesystem writes")?;
         ensure_fs_access(state, operation)?;
         if let Some(permissions) = state.permissions.as_ref() {
             permissions
@@ -4356,6 +4438,8 @@ globalThis.Function = undefined;
         state: &JsEvalState,
         operation: &str,
     ) -> Result<(), DataviewJsError> {
+        ensure_static_mode_allows(state, operation, "filesystem writes")?;
+        ensure_fs_access(state, operation)?;
         if let Some(permissions) = state.permissions.as_ref() {
             let filter = permissions.refactor_filter();
             if !filter.path_permission().is_unrestricted() {
@@ -5072,8 +5156,11 @@ globalThis.Function = undefined;
         periodic_config: &crate::PeriodicConfig,
         note_index: &std::collections::HashMap<String, NoteRecord>,
         date: &str,
+        deterministic_static: bool,
+        operation: &str,
     ) -> Result<Value, DataviewJsError> {
-        let normalized_date = normalize_daily_event_date(Some(date))?;
+        let normalized_date =
+            normalize_daily_event_date(Some(date), deterministic_static, operation)?;
         let Some(path) = resolve_periodic_note(
             paths.vault_root(),
             periodic_config,
@@ -5095,8 +5182,11 @@ globalThis.Function = undefined;
         note_index: &std::collections::HashMap<String, NoteRecord>,
         from: &str,
         to: &str,
+        deterministic_static: bool,
+        operation: &str,
     ) -> Result<Vec<Value>, DataviewJsError> {
-        let (from, to) = normalize_daily_event_range(Some(from), Some(to))?;
+        let (from, to) =
+            normalize_daily_event_range(Some(from), Some(to), deterministic_static, operation)?;
         let daily_notes = list_daily_note_events(paths, &from, &to)
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
         Ok(daily_notes
@@ -5134,17 +5224,31 @@ globalThis.Function = undefined;
     fn normalize_daily_event_range(
         from: Option<&str>,
         to: Option<&str>,
+        deterministic_static: bool,
+        operation: &str,
     ) -> Result<(String, String), DataviewJsError> {
-        let today = today_utc_string();
+        let today = if deterministic_static {
+            None
+        } else {
+            Some(today_utc_string())
+        };
         let from_date = match from {
-            Some(value) => normalize_daily_event_date(Some(value))?,
-            None if to.is_some() => normalize_daily_event_date(to)?,
-            None => today.clone(),
+            Some(value) => {
+                normalize_daily_event_date(Some(value), deterministic_static, operation)?
+            }
+            None if to.is_some() => {
+                normalize_daily_event_date(to, deterministic_static, operation)?
+            }
+            None => today
+                .clone()
+                .ok_or_else(|| static_mode_time_denied(operation))?,
         };
         let to_date = match to {
-            Some(value) => normalize_daily_event_date(Some(value))?,
+            Some(value) => {
+                normalize_daily_event_date(Some(value), deterministic_static, operation)?
+            }
             None if from.is_some() => from_date.clone(),
-            None => today,
+            None => today.ok_or_else(|| static_mode_time_denied(operation))?,
         };
         if from_date > to_date {
             return Err(DataviewJsError::Message(format!(
@@ -5154,13 +5258,21 @@ globalThis.Function = undefined;
         Ok((from_date, to_date))
     }
 
-    fn normalize_daily_event_date(raw: Option<&str>) -> Result<String, DataviewJsError> {
+    fn normalize_daily_event_date(
+        raw: Option<&str>,
+        deterministic_static: bool,
+        operation: &str,
+    ) -> Result<String, DataviewJsError> {
         let value = raw
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .unwrap_or("today");
         if value.eq_ignore_ascii_case("today") {
-            return Ok(today_utc_string());
+            return if deterministic_static {
+                Err(static_mode_time_denied(operation))
+            } else {
+                Ok(today_utc_string())
+            };
         }
         let bytes = value.as_bytes();
         let valid_shape = bytes.len() == 10
@@ -6127,6 +6239,113 @@ cpu_limit_ms = 25
                 DataviewJsError::Message(message) if message.contains("rollback")
             ));
             assert!(!vault_root.join("Temp.md").exists());
+        }
+
+        #[test]
+        fn dataviewjs_static_mode_rejects_wall_clock_helpers_and_host_side_effects() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let exec_argv =
+                serde_json::to_string(&test_host_exec_argv(&test_host_output_command("alpha")))
+                    .expect("argv json should serialize");
+            let shell_command =
+                serde_json::to_string(&test_host_output_command("alpha")).expect("shell string");
+            let cases = vec![
+                ("Date.now()".to_string(), "wall-clock time via Date.now()"),
+                ("new Date()".to_string(), "wall-clock time via new Date()"),
+                (
+                    "VulcanDateTime.now()".to_string(),
+                    "wall-clock time via VulcanDateTime.now()",
+                ),
+                (
+                    "vault.daily.today()".to_string(),
+                    "wall-clock time via vault.daily.today()",
+                ),
+                (
+                    r#"vault.daily.get("today")"#.to_string(),
+                    "wall-clock time via vault.daily.get()",
+                ),
+                (
+                    "vault.events()".to_string(),
+                    "wall-clock time via vault.events()",
+                ),
+                (
+                    format!("host.exec({exec_argv})"),
+                    "host execution via host.exec()",
+                ),
+                (
+                    format!("host.shell({shell_command})"),
+                    "shell execution via host.shell()",
+                ),
+                (
+                    r#"web.fetch("https://example.test")"#.to_string(),
+                    "network access via web.fetch()",
+                ),
+            ];
+
+            for (source, expected) in cases {
+                let error = evaluate_dataview_js_with_options(
+                    &paths,
+                    &source,
+                    Some("Dashboard.md"),
+                    DataviewJsEvalOptions {
+                        timeout: None,
+                        sandbox: Some(JsRuntimeSandbox::Strict),
+                        deterministic_static: true,
+                        ..DataviewJsEvalOptions::default()
+                    },
+                )
+                .expect_err("static DataviewJS should reject non-deterministic helpers");
+                assert!(
+                    error.to_string().contains(expected),
+                    "expected `{expected}` in `{error}` for source `{source}`"
+                );
+            }
+        }
+
+        #[test]
+        fn dataviewjs_static_mode_rejects_filesystem_writes_and_transactions() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            for (source, expected) in [
+                (
+                    r##"vault.create("Scratch", { content: "# Scratch" })"##,
+                    "filesystem writes via vault.create()",
+                ),
+                (
+                    "vault.transaction(() => null)",
+                    "filesystem writes via vault.transaction()",
+                ),
+            ] {
+                let error = evaluate_dataview_js_with_options(
+                    &paths,
+                    source,
+                    Some("Dashboard.md"),
+                    DataviewJsEvalOptions {
+                        timeout: None,
+                        sandbox: Some(JsRuntimeSandbox::Strict),
+                        deterministic_static: true,
+                        ..DataviewJsEvalOptions::default()
+                    },
+                )
+                .expect_err("static DataviewJS should reject filesystem writes");
+                assert!(
+                    error.to_string().contains(expected),
+                    "expected `{expected}` in `{error}` for source `{source}`"
+                );
+            }
         }
 
         #[allow(clippy::too_many_lines)]

@@ -3931,7 +3931,7 @@ graph = false
 - `site build|serve|profiles|doctor` are in-tree with JSON output, deterministic route planning, folder/tag/recent/home/search/graph pages, route/search/graph/hover/recent/related manifests, RSS/sitemap emission, and publish-filter diagnostics.
 - The builder reuses the same shared HTML renderer already used by `note get --mode html` and `render --mode html`; this currently covers inline Dataview expressions, `dataview` query blocks, `tasks` query blocks, `.base` embeds, note embeds, callouts, attachment rewriting, and DataviewJS off/static fallback behavior.
 - The preview loop now exposes both JSON polling and SSE live-reload endpoints, surfaces publish diagnostics to the terminal/browser overlay, and tracks changed/deleted outputs so watch rebuilds only rewrite files whose bytes actually changed.
-- Remaining gaps for this phase are primarily broader fixture snapshot coverage, stricter DataviewJS static determinism, broader read-only fixture coverage for TaskNotes/periodic/Kanban-style surfaces, and a separate external-frontend bundle/export mode with stable integration docs and live-preview handoff.
+- Remaining gaps for this phase are primarily broader fixture snapshot coverage, broader read-only fixture coverage for TaskNotes/periodic/Kanban-style surfaces, and a separate external-frontend bundle/export mode with stable integration docs and live-preview handoff.
 
 ### 9.20.1 Shared render contract and CLI surface
 
@@ -4035,7 +4035,7 @@ Vulcan should compete on Obsidian-native semantics here, not just theming.
 - [~] Render Bases views to static tables/cards using the canonical query AST and existing Bases evaluator; `.base` embeds already flow through the shared renderer, but broader dedicated coverage and workflows are still pending
 - [~] Render Tasks plugin query blocks in read-only HTML via the shared renderer; TaskNotes views, periodic-note event listings, and Kanban boards are still pending
 - [x] Add explicit DataviewJS publish policy: default `off`; optional `static` mode behind `js_runtime` feature flag and profile opt-in
-- [ ] In DataviewJS `static` mode, enforce determinism constraints: no network, no wall-clock dependence, no filesystem writes, and clear diagnostics on unsupported behavior
+- [x] In DataviewJS `static` mode, enforce determinism constraints: no network, no wall-clock dependence, no filesystem writes, and clear diagnostics on unsupported behavior
 - [x] Unsupported or disabled DataviewJS blocks should render visible fallback output with diagnostics rather than disappearing silently
 - [x] Document what is intentionally deferred from the first static-site release: comments, analytics integrations, stacked pages, SPA routing, full browser-side DataviewJS parity, and any "private page" mechanism that depends on runtime auth
 - [ ] Integration tests on fixture vaults containing Dataview, Bases, Tasks, TaskNotes, Kanban, and periodic-note content
