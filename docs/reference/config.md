@@ -1118,6 +1118,10 @@ Static-site publication profiles, filters, route policies, and theme assets.
   Template for the HTML `<title>` tag on built pages. Supported placeholders: `{page}`, `{site}`, and `{profile}`.
   Preferred command: `vulcan config set`
   Example: `vulcan config set site.profiles.public.page_title_template '"{site} :: {page}"'`
+- `site.profiles.<name>.raw_html` — type: `enum`; target: `shared|local`; values: `passthrough`, `sanitize`, `strip`
+  Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
 - `site.profiles.<name>.rss` — type: `boolean`; target: `shared|local`
   Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
   Preferred command: `vulcan config set`

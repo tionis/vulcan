@@ -1,0 +1,34 @@
+.theme-header {
+  align-items: flex-start;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 1rem;
+}
+
+.theme-header__brand,
+.theme-header__tools {
+  display: flex;
+  gap: 0.9rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.theme-nav-link {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.theme-note-banner,
+.theme-note-tail {
+  border: 1px dashed var(--border);
+  border-radius: 0.9rem;
+  padding: 0.7rem 0.9rem;
+  color: var(--muted);
+}
+
+.theme-note-banner {
+  margin-bottom: 1rem;
+}
+
+.theme-note-tail {
+  margin-top: 1rem;
+}

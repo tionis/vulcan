@@ -1232,6 +1232,14 @@ fn dynamic_config_descriptors() -> Vec<ConfigDescriptor> {
         None,
         &["off", "static"],
     );
+    push(
+        "site.profiles.<name>.raw_html",
+        ConfigValueKind::Enum,
+        ConfigTargetSupport::SharedAndLocal,
+        Some("vulcan config set"),
+        None,
+        &["passthrough", "sanitize", "strip"],
+    );
 
     descriptors
 }
