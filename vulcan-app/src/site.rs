@@ -1840,7 +1840,7 @@ fn render_site_notes(paths: &VaultPaths, plan: &SitePlan) -> Result<Vec<Rendered
     let backlinks = backlinks_by_target(&plan.links, &published_paths);
     let link_targets = HtmlLinkTargets {
         note_hrefs,
-        asset_hrefs,
+        asset_hrefs: asset_hrefs.clone(),
         tag_hrefs,
     };
 
@@ -1909,27 +1909,8 @@ fn render_site_notes(paths: &VaultPaths, plan: &SitePlan) -> Result<Vec<Rendered
                     if !link.link_kind.eq_ignore_ascii_case("embed") {
                         return None;
                     }
-                    let target_path = link.resolved_target_path.clone()?;
-                    let url_path = if link
-                        .resolved_target_extension
-                        .as_deref()
-                        .is_some_and(|value| value.eq_ignore_ascii_case("md"))
-                    {
-                        route_map.get(&target_path).map_or_else(
-                            || {
-                                collect_asset_links(&plan.links, &plan.profile.deploy_path)
-                                    .get(&target_path)
-                                    .cloned()
-                                    .unwrap_or_default()
-                            },
-                            |route| route.url_path.clone(),
-                        )
-                    } else {
-                        collect_asset_links(&plan.links, &plan.profile.deploy_path)
-                            .get(&target_path)
-                            .cloned()
-                            .unwrap_or_default()
-                    };
+                    let (target_path, url_path) =
+                        resolve_embed_target(&route_map, &asset_hrefs, link)?;
                     Some(RenderedEmbed {
                         kind: link.link_kind.clone(),
                         source_path: note.note.document_path.clone(),
@@ -1969,6 +1950,27 @@ fn render_site_notes(paths: &VaultPaths, plan: &SitePlan) -> Result<Vec<Rendered
             })
         })
         .collect()
+}
+
+fn resolve_embed_target(
+    route_map: &HashMap<String, SiteRoute>,
+    asset_hrefs: &HashMap<String, String>,
+    link: &ExportLinkRecord,
+) -> Option<(String, String)> {
+    let target_path = link.resolved_target_path.clone()?;
+    let url_path = if link
+        .resolved_target_extension
+        .as_deref()
+        .is_some_and(|value| value.eq_ignore_ascii_case("md"))
+    {
+        route_map.get(&target_path).map_or_else(
+            || asset_hrefs.get(&target_path).cloned().unwrap_or_default(),
+            |route| route.url_path.clone(),
+        )
+    } else {
+        asset_hrefs.get(&target_path).cloned().unwrap_or_default()
+    };
+    Some((target_path, url_path))
 }
 
 fn render_note_document(
@@ -4158,6 +4160,26 @@ mod tests {
         scan_vault(&VaultPaths::new(vault_root), ScanMode::Full).expect("scan should succeed");
     }
 
+    fn export_link_record(
+        raw_text: &str,
+        resolved_target_path: Option<&str>,
+        resolved_target_extension: Option<&str>,
+    ) -> ExportLinkRecord {
+        ExportLinkRecord {
+            source_document_path: "Home.md".to_string(),
+            raw_text: raw_text.to_string(),
+            link_kind: "embed".to_string(),
+            display_text: None,
+            target_path_candidate: resolved_target_path.map(ToOwned::to_owned),
+            target_heading: None,
+            target_block: None,
+            resolved_target_path: resolved_target_path.map(ToOwned::to_owned),
+            origin_context: "body".to_string(),
+            byte_offset: 0,
+            resolved_target_extension: resolved_target_extension.map(ToOwned::to_owned),
+        }
+    }
+
     fn snapshot_output_tree(root: &Path) -> BTreeMap<String, Vec<u8>> {
         fn visit(root: &Path, current: &Path, out: &mut BTreeMap<String, Vec<u8>>) {
             for entry in fs::read_dir(current).expect("directory should be readable") {
@@ -4207,6 +4229,45 @@ mod tests {
 
     fn count_occurrences(haystack: &str, needle: &str) -> usize {
         haystack.match_indices(needle).count()
+    }
+
+    #[test]
+    fn resolve_embed_target_prefers_note_routes_and_asset_hrefs() {
+        let route_map = HashMap::from([(
+            "Notes/Target.md".to_string(),
+            SiteRoute {
+                kind: "note".to_string(),
+                source_path: Some("Notes/Target.md".to_string()),
+                title: "Target".to_string(),
+                slug: "Notes/Target".to_string(),
+                url_path: "/notes/target/".to_string(),
+                output_path: "notes/target/index.html".to_string(),
+            },
+        )]);
+        let asset_hrefs = HashMap::from([(
+            "images/diagram.png".to_string(),
+            "/assets/images/diagram.png".to_string(),
+        )]);
+
+        let note_embed =
+            export_link_record("![[Notes/Target]]", Some("Notes/Target.md"), Some("md"));
+        let asset_embed = export_link_record(
+            "![[images/diagram.png]]",
+            Some("images/diagram.png"),
+            Some("png"),
+        );
+
+        assert_eq!(
+            resolve_embed_target(&route_map, &asset_hrefs, &note_embed),
+            Some(("Notes/Target.md".to_string(), "/notes/target/".to_string()))
+        );
+        assert_eq!(
+            resolve_embed_target(&route_map, &asset_hrefs, &asset_embed),
+            Some((
+                "images/diagram.png".to_string(),
+                "/assets/images/diagram.png".to_string()
+            ))
+        );
     }
 
     #[test]
