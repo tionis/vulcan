@@ -1033,13 +1033,16 @@ Notes:
   `epub --backlinks` appends indexed inlinks after each exported note chapter.
   Archive exports require `-o/--path` because they produce binary or database files.
   The search-index export is intended for client-side search tools (e.g., Pagefind, Fuse.js).
+  Frontend-bundle profiles reuse one `site.profiles.<name>` publication profile and emit typed JSON fragments plus shared search/graph/preview manifests for external frontends.
   Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.
 
 Examples:
   vulcan export profile list
   vulcan export profile run team-book
+  vulcan export profile serve public-bundle --port 4174
   vulcan export profile show team-book
   vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub --title 'Team Notes'
+  vulcan export profile create public-bundle --format frontend-bundle -o exports/public-bundle --site-profile public
   vulcan export profile set team-book --backlinks --frontmatter
   vulcan export profile rule list team-book
   vulcan export profile rule add team-book --exclude-callout internal
@@ -1698,6 +1701,8 @@ pub enum ExportProfileFormatArg {
     Sqlite,
     #[value(name = "search-index")]
     SearchIndex,
+    #[value(name = "frontend-bundle")]
+    FrontendBundle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -1708,6 +1713,23 @@ pub enum ExportProfileCommand {
     Run {
         #[arg(help = "Export profile name from [export.profiles.<name>]")]
         name: String,
+    },
+    #[command(about = "Watch a frontend-bundle export profile and expose live-reload events")]
+    Serve {
+        #[arg(help = "Export profile name from [export.profiles.<name>]")]
+        name: String,
+        #[arg(
+            long,
+            default_value_t = 4174,
+            help = "Loopback port for bundle live-reload JSON and SSE endpoints"
+        )]
+        port: u16,
+        #[arg(
+            long,
+            default_value_t = 100,
+            help = "Watcher debounce window in milliseconds"
+        )]
+        debounce_ms: u64,
     },
     #[command(about = "Show the effective config for one export profile")]
     Show {
@@ -1737,6 +1759,11 @@ pub enum ExportProfileCommand {
             help = "Destination file path stored in the profile"
         )]
         path: PathBuf,
+        #[arg(
+            long = "site-profile",
+            help = "Site profile name reused by frontend-bundle publication profiles"
+        )]
+        site_profile: Option<String>,
         #[arg(long, help = "Optional heading or book title stored in the profile")]
         title: Option<String>,
         #[arg(
@@ -1789,6 +1816,14 @@ pub enum ExportProfileCommand {
         path: Option<PathBuf>,
         #[arg(long, help = "Clear any stored destination path")]
         clear_path: bool,
+        #[arg(
+            long = "site-profile",
+            help = "Site profile name reused by frontend-bundle publication profiles",
+            conflicts_with = "clear_site_profile"
+        )]
+        site_profile: Option<String>,
+        #[arg(long, help = "Clear any stored frontend-bundle site profile")]
+        clear_site_profile: bool,
         #[arg(
             long,
             help = "Optional heading or book title stored in the profile",

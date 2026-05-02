@@ -437,6 +437,133 @@ pub struct SiteBuildReport {
     pub deleted_files: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FrontendBundleRequest {
+    pub profile: Option<String>,
+    pub output_dir: PathBuf,
+    pub clean: bool,
+    pub dry_run: bool,
+    pub pretty: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FrontendBundleContractInfo {
+    pub name: String,
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FrontendBundleProfile {
+    pub name: String,
+    pub title: String,
+    pub deploy_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    pub language: String,
+    pub theme: String,
+    pub search: bool,
+    pub graph: bool,
+    pub backlinks: bool,
+    pub rss: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FrontendBundleArtifactPaths {
+    pub route_manifest: String,
+    pub hover_previews: String,
+    pub recent_notes: String,
+    pub related_notes: String,
+    pub note_index: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_index: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub graph: Option<String>,
+    pub invalidation: String,
+    pub schema: String,
+    pub typescript: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub copied_assets: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FrontendBundleNoteIndexEntry {
+    pub source_path: String,
+    pub title: String,
+    pub excerpt: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_image: Option<String>,
+    pub route: SiteRoute,
+    pub document_path: String,
+    pub tags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FrontendBundleNoteDocument {
+    pub source_path: String,
+    pub title: String,
+    pub excerpt: String,
+    pub description: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub summary_image: Option<String>,
+    pub route: SiteRoute,
+    pub body_html: String,
+    pub headings: Vec<HtmlRenderHeading>,
+    pub tags: Vec<String>,
+    pub aliases: Vec<String>,
+    pub outgoing_links: Vec<String>,
+    pub backlinks: Vec<String>,
+    pub breadcrumbs: Vec<String>,
+    pub asset_paths: Vec<String>,
+    pub embeds: Vec<RenderedEmbed>,
+    pub diagnostics: Vec<HtmlRenderDiagnostic>,
+    pub file_mtime: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FrontendBundleContract {
+    pub contract: FrontendBundleContractInfo,
+    pub profile: FrontendBundleProfile,
+    pub context: RenderContext,
+    pub note_count: usize,
+    pub diagnostics: Vec<SiteDiagnostic>,
+    pub routes: Vec<SiteRoute>,
+    pub notes: Vec<FrontendBundleNoteIndexEntry>,
+    pub artifacts: FrontendBundleArtifactPaths,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FrontendBundleInvalidationReport {
+    pub changed_files: Vec<String>,
+    pub deleted_files: Vec<String>,
+    pub changed_routes: Vec<String>,
+    pub deleted_routes: Vec<String>,
+    pub changed_assets: Vec<String>,
+    pub deleted_assets: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FrontendBundleBuildReport {
+    pub profile: String,
+    pub output_dir: String,
+    pub deploy_path: String,
+    pub dry_run: bool,
+    pub clean: bool,
+    pub note_count: usize,
+    pub asset_count: usize,
+    pub diagnostics: Vec<SiteDiagnostic>,
+    pub routes: Vec<SiteRoute>,
+    pub note_documents: Vec<FrontendBundleNoteDocument>,
+    pub contract: FrontendBundleContract,
+    pub invalidation: FrontendBundleInvalidationReport,
+    pub files: Vec<String>,
+    pub changed_files: Vec<String>,
+    pub deleted_files: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SiteDoctorReport {
     pub profile: String,
@@ -935,6 +1062,396 @@ pub fn build_site(
         files: file_list,
         changed_files: changed_files.into_iter().collect(),
         deleted_files,
+    })
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn build_frontend_bundle(
+    paths: &VaultPaths,
+    request: &FrontendBundleRequest,
+) -> Result<FrontendBundleBuildReport, AppError> {
+    let plan = plan_site(
+        paths,
+        request.profile.as_deref(),
+        Some(request.output_dir.as_path()),
+    )?;
+    if request.clean && !request.dry_run && plan.profile.output_dir.exists() {
+        fs::remove_dir_all(&plan.profile.output_dir).map_err(AppError::operation)?;
+    }
+
+    let output_dir = plan.profile.output_dir.clone();
+    let mut rendered_notes = render_site_notes(paths, &plan)?;
+    rendered_notes.sort_by(|left, right| left.route.url_path.cmp(&right.route.url_path));
+
+    let routes_by_path = rendered_notes
+        .iter()
+        .map(|note| (note.source_path.clone(), note.route.clone()))
+        .collect::<HashMap<_, _>>();
+    let context = RenderContext {
+        profile: plan.profile.name.clone(),
+        site_title: plan.profile.title.clone(),
+        language: plan.profile.language.clone(),
+        theme: plan.profile.theme.clone(),
+        base_url: plan.profile.base_url.clone(),
+        deploy_path: plan.profile.deploy_path.clone(),
+    };
+    let tag_index = build_tag_index(&rendered_notes);
+    let note_documents = rendered_notes
+        .iter()
+        .map(|note| FrontendBundleNoteDocument {
+            source_path: note.source_path.clone(),
+            title: note.title.clone(),
+            excerpt: note.excerpt.clone(),
+            description: note.description.clone(),
+            canonical_url: note.canonical_url.clone(),
+            summary_image: note.summary_image.clone(),
+            route: note.route.clone(),
+            body_html: note.html.clone(),
+            headings: note.headings.clone(),
+            tags: note.tags.clone(),
+            aliases: note.aliases.clone(),
+            outgoing_links: note.outgoing_links.clone(),
+            backlinks: note.backlinks.clone(),
+            breadcrumbs: note.breadcrumbs.clone(),
+            asset_paths: note.asset_paths.clone(),
+            embeds: note.embeds.clone(),
+            diagnostics: note.diagnostics.clone(),
+            file_mtime: note.file_mtime,
+        })
+        .collect::<Vec<_>>();
+    let note_index = note_documents
+        .iter()
+        .map(|note| FrontendBundleNoteIndexEntry {
+            source_path: note.source_path.clone(),
+            title: note.title.clone(),
+            excerpt: note.excerpt.clone(),
+            canonical_url: note.canonical_url.clone(),
+            summary_image: note.summary_image.clone(),
+            route: note.route.clone(),
+            document_path: frontend_bundle_note_document_path(&note.route),
+            tags: note.tags.clone(),
+        })
+        .collect::<Vec<_>>();
+
+    if !request.dry_run {
+        fs::create_dir_all(&output_dir).map_err(AppError::operation)?;
+    }
+
+    let mut files = BTreeSet::<String>::new();
+    let mut changed_files = BTreeSet::<String>::new();
+    let mut changed_routes = BTreeSet::<String>::new();
+    let mut copied_assets = BTreeSet::<String>::new();
+
+    for note in &note_documents {
+        let relative_path = frontend_bundle_note_document_path(&note.route);
+        let payload = render_json_payload(note, request.pretty)?;
+        if !request.dry_run && write_output_file(&output_dir.join(&relative_path), &payload)? {
+            changed_files.insert(relative_path.clone());
+            changed_routes.insert(note.route.url_path.clone());
+        }
+        files.insert(relative_path);
+    }
+
+    let asset_links = collect_asset_links(&plan.links, &plan.profile.deploy_path);
+    for source_path in asset_links.keys() {
+        let destination = asset_output_path(&output_dir, source_path);
+        let relative_path = display_path(
+            destination
+                .strip_prefix(&output_dir)
+                .unwrap_or(&destination),
+        );
+        if !request.dry_run && copy_asset(paths, source_path, &destination)? {
+            changed_files.insert(relative_path.clone());
+        }
+        files.insert(relative_path.clone());
+        copied_assets.insert(relative_path);
+    }
+
+    let summary_image_assets = rendered_notes
+        .iter()
+        .filter_map(|note| note.summary_image.as_deref())
+        .filter_map(summary_image_source_path)
+        .collect::<BTreeSet<_>>();
+    for summary_image in &summary_image_assets {
+        let destination = output_dir
+            .join("assets")
+            .join(normalize_relative_path(summary_image));
+        let relative_path = display_path(
+            destination
+                .strip_prefix(&output_dir)
+                .unwrap_or(&destination),
+        );
+        if !request.dry_run && copy_file_from_vault(paths, summary_image, &destination)? {
+            changed_files.insert(relative_path.clone());
+        }
+        files.insert(relative_path.clone());
+        copied_assets.insert(relative_path);
+    }
+
+    for extra_asset in plan
+        .profile
+        .extra_css
+        .iter()
+        .chain(plan.profile.extra_js.iter())
+        .chain(plan.profile.favicon.iter())
+        .chain(plan.profile.logo.iter())
+    {
+        let relative = normalize_relative_path(extra_asset);
+        let destination = output_dir.join("assets").join(&relative);
+        let relative_path = display_path(
+            destination
+                .strip_prefix(&output_dir)
+                .unwrap_or(&destination),
+        );
+        if !request.dry_run && copy_file_from_vault(paths, extra_asset, &destination)? {
+            changed_files.insert(relative_path.clone());
+        }
+        files.insert(relative_path.clone());
+        copied_assets.insert(relative_path);
+    }
+
+    for extra_pattern in &plan.profile.asset_policy.include_folders {
+        for asset in collect_extra_assets(paths, extra_pattern)? {
+            let destination = output_dir
+                .join("assets")
+                .join(normalize_relative_path(&asset));
+            let relative_path = display_path(
+                destination
+                    .strip_prefix(&output_dir)
+                    .unwrap_or(&destination),
+            );
+            if !request.dry_run && copy_file_from_vault(paths, &asset, &destination)? {
+                changed_files.insert(relative_path.clone());
+            }
+            files.insert(relative_path.clone());
+            copied_assets.insert(relative_path);
+        }
+    }
+
+    let route_manifest_path = "assets/route-manifest.json".to_string();
+    let hover_manifest_path = "assets/hover-previews.json".to_string();
+    let recent_manifest_path = "assets/recent-notes.json".to_string();
+    let related_manifest_path = "assets/related-notes.json".to_string();
+    let note_index_path = frontend_bundle_note_index_path().to_string();
+    let contract_path = frontend_bundle_root_contract_path().to_string();
+    let schema_path = frontend_bundle_schema_path().to_string();
+    let types_path = frontend_bundle_types_path().to_string();
+    let invalidation_path = frontend_bundle_invalidation_path().to_string();
+
+    write_serialized_json_output(
+        &output_dir,
+        &route_manifest_path,
+        &plan.routes,
+        request.pretty,
+        request.dry_run,
+        &mut files,
+        &mut changed_files,
+    )?;
+    let hover_manifest = build_hover_manifest(&rendered_notes);
+    write_serialized_json_output(
+        &output_dir,
+        &hover_manifest_path,
+        &hover_manifest,
+        request.pretty,
+        request.dry_run,
+        &mut files,
+        &mut changed_files,
+    )?;
+    let recent_manifest = build_recent_manifest(&rendered_notes);
+    write_serialized_json_output(
+        &output_dir,
+        &recent_manifest_path,
+        &recent_manifest,
+        request.pretty,
+        request.dry_run,
+        &mut files,
+        &mut changed_files,
+    )?;
+    let related_manifest = build_related_manifest(&rendered_notes, &tag_index);
+    write_serialized_json_output(
+        &output_dir,
+        &related_manifest_path,
+        &related_manifest,
+        request.pretty,
+        request.dry_run,
+        &mut files,
+        &mut changed_files,
+    )?;
+    write_serialized_json_output(
+        &output_dir,
+        &note_index_path,
+        &note_index,
+        request.pretty,
+        request.dry_run,
+        &mut files,
+        &mut changed_files,
+    )?;
+
+    let search_index_path = if plan.profile.search {
+        let relative_path = "assets/search-index.json".to_string();
+        let search_index = build_search_index(paths, &plan.notes, &routes_by_path)?;
+        write_serialized_json_output(
+            &output_dir,
+            &relative_path,
+            &search_index,
+            request.pretty,
+            request.dry_run,
+            &mut files,
+            &mut changed_files,
+        )?;
+        Some(relative_path)
+    } else {
+        None
+    };
+    let graph_path = if plan.profile.graph {
+        let relative_path = "assets/graph.json".to_string();
+        let graph_json = build_graph_asset(paths, &rendered_notes)?;
+        if !request.dry_run && write_output_file(&output_dir.join(&relative_path), &graph_json)? {
+            changed_files.insert(relative_path.clone());
+        }
+        files.insert(relative_path.clone());
+        Some(relative_path)
+    } else {
+        None
+    };
+
+    let contract = FrontendBundleContract {
+        contract: FrontendBundleContractInfo {
+            name: frontend_bundle_contract_name().to_string(),
+            version: 1,
+        },
+        profile: FrontendBundleProfile {
+            name: plan.profile.name.clone(),
+            title: plan.profile.title.clone(),
+            deploy_path: plan.profile.deploy_path.clone(),
+            base_url: plan.profile.base_url.clone(),
+            language: plan.profile.language.clone(),
+            theme: plan.profile.theme.clone(),
+            search: plan.profile.search,
+            graph: plan.profile.graph,
+            backlinks: plan.profile.backlinks,
+            rss: plan.profile.rss,
+        },
+        context: context.clone(),
+        note_count: note_documents.len(),
+        diagnostics: plan.diagnostics.clone(),
+        routes: plan.routes.clone(),
+        notes: note_index.clone(),
+        artifacts: FrontendBundleArtifactPaths {
+            route_manifest: route_manifest_path.clone(),
+            hover_previews: hover_manifest_path.clone(),
+            recent_notes: recent_manifest_path.clone(),
+            related_notes: related_manifest_path.clone(),
+            note_index: note_index_path.clone(),
+            search_index: search_index_path.clone(),
+            graph: graph_path.clone(),
+            invalidation: invalidation_path.clone(),
+            schema: schema_path.clone(),
+            typescript: types_path.clone(),
+            copied_assets: copied_assets.iter().cloned().collect(),
+        },
+    };
+    write_serialized_json_output(
+        &output_dir,
+        &contract_path,
+        &contract,
+        request.pretty,
+        request.dry_run,
+        &mut files,
+        &mut changed_files,
+    )?;
+
+    files.insert(schema_path.clone());
+    if !request.dry_run
+        && write_output_file(
+            &output_dir.join(&schema_path),
+            &frontend_bundle_contract_schema_json(),
+        )?
+    {
+        changed_files.insert(schema_path.clone());
+    }
+    files.insert(types_path.clone());
+    if !request.dry_run
+        && write_output_file(
+            &output_dir.join(&types_path),
+            frontend_bundle_typescript_definitions(),
+        )?
+    {
+        changed_files.insert(types_path.clone());
+    }
+    files.insert(invalidation_path.clone());
+
+    let deleted_files = if request.dry_run {
+        Vec::new()
+    } else {
+        remove_stale_output_files(&output_dir, &files)?
+    };
+    let mut deleted_routes = BTreeSet::<String>::new();
+    let mut deleted_assets = BTreeSet::<String>::new();
+    for deleted in &deleted_files {
+        if let Some(url_path) =
+            frontend_bundle_route_from_document_path(deleted, &plan.profile.deploy_path)
+        {
+            deleted_routes.insert(url_path);
+        } else {
+            deleted_assets.insert(deleted.clone());
+        }
+    }
+
+    let mut changed_assets = changed_files
+        .iter()
+        .filter(|path| !is_frontend_bundle_note_document(path))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let invalidation = FrontendBundleInvalidationReport {
+        changed_files: changed_files.iter().cloned().collect(),
+        deleted_files: deleted_files.clone(),
+        changed_routes: changed_routes.iter().cloned().collect(),
+        deleted_routes: deleted_routes.iter().cloned().collect(),
+        changed_assets: changed_assets.iter().cloned().collect(),
+        deleted_assets: deleted_assets.iter().cloned().collect(),
+    };
+    let stable_invalidation = FrontendBundleInvalidationReport {
+        changed_files: Vec::new(),
+        deleted_files: Vec::new(),
+        changed_routes: Vec::new(),
+        deleted_routes: Vec::new(),
+        changed_assets: Vec::new(),
+        deleted_assets: Vec::new(),
+    };
+    if !request.dry_run
+        && write_output_file(
+            &output_dir.join(&invalidation_path),
+            &render_json_payload(&stable_invalidation, request.pretty)?,
+        )?
+    {
+        changed_files.insert(invalidation_path.clone());
+        changed_assets.insert(invalidation_path.clone());
+    }
+
+    Ok(FrontendBundleBuildReport {
+        profile: plan.profile.name,
+        output_dir: display_path(&output_dir),
+        deploy_path: plan.profile.deploy_path,
+        dry_run: request.dry_run,
+        clean: request.clean,
+        note_count: note_documents.len(),
+        asset_count: copied_assets.len(),
+        diagnostics: plan.diagnostics,
+        routes: plan.routes,
+        note_documents,
+        contract,
+        invalidation: FrontendBundleInvalidationReport {
+            changed_files: changed_files.iter().cloned().collect(),
+            deleted_files,
+            changed_routes: changed_routes.into_iter().collect(),
+            deleted_routes: deleted_routes.into_iter().collect(),
+            changed_assets: changed_assets.into_iter().collect(),
+            deleted_assets: deleted_assets.into_iter().collect(),
+        },
+        files: files.into_iter().collect(),
+        changed_files: changed_files.into_iter().collect(),
+        deleted_files: invalidation.deleted_files,
     })
 }
 
@@ -2980,6 +3497,330 @@ fn write_output_file(path: &Path, contents: &str) -> Result<bool, AppError> {
     write_output_bytes_if_changed(path, contents.as_bytes())
 }
 
+fn render_json_payload<T: Serialize + ?Sized>(value: &T, pretty: bool) -> Result<String, AppError> {
+    if pretty {
+        serde_json::to_string_pretty(value).map_err(AppError::operation)
+    } else {
+        serde_json::to_string(value).map_err(AppError::operation)
+    }
+}
+
+fn write_serialized_json_output<T: Serialize + ?Sized>(
+    output_dir: &Path,
+    relative_path: &str,
+    value: &T,
+    pretty: bool,
+    dry_run: bool,
+    files: &mut BTreeSet<String>,
+    changed_files: &mut BTreeSet<String>,
+) -> Result<(), AppError> {
+    let payload = render_json_payload(value, pretty)?;
+    if !dry_run && write_output_file(&output_dir.join(relative_path), &payload)? {
+        changed_files.insert(relative_path.to_string());
+    }
+    files.insert(relative_path.to_string());
+    Ok(())
+}
+
+fn frontend_bundle_contract_name() -> &'static str {
+    "vulcan_frontend_bundle"
+}
+
+fn frontend_bundle_root_contract_path() -> &'static str {
+    "frontend-bundle.json"
+}
+
+fn frontend_bundle_note_index_path() -> &'static str {
+    "assets/note-index.json"
+}
+
+fn frontend_bundle_invalidation_path() -> &'static str {
+    "assets/invalidation.json"
+}
+
+fn frontend_bundle_schema_path() -> &'static str {
+    "schema/frontend-bundle.schema.json"
+}
+
+fn frontend_bundle_types_path() -> &'static str {
+    "schema/frontend-bundle.d.ts"
+}
+
+fn frontend_bundle_note_document_path(route: &SiteRoute) -> String {
+    route.output_path.strip_suffix(".html").map_or_else(
+        || format!("{}.json", route.output_path),
+        |path| format!("{path}.json"),
+    )
+}
+
+fn is_frontend_bundle_note_document(path: &str) -> bool {
+    path.starts_with("notes/")
+        && Path::new(path)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("json"))
+}
+
+fn frontend_bundle_route_from_document_path(path: &str, deploy_path: &str) -> Option<String> {
+    let stripped = path.strip_prefix("notes/")?;
+    let route_suffix = stripped.strip_suffix("index.json")?;
+    let route_path = if route_suffix.is_empty() {
+        "/notes/".to_string()
+    } else {
+        format!("/notes/{route_suffix}")
+    };
+    Some(prefixed_site_path(deploy_path, &route_path))
+}
+
+fn frontend_bundle_contract_schema_json() -> String {
+    r##"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.vulcan.dev/frontend-bundle/v1.json",
+  "title": "Vulcan Frontend Bundle v1",
+  "type": "object",
+  "required": ["contract", "profile", "context", "note_count", "diagnostics", "routes", "notes", "artifacts"],
+  "additionalProperties": false,
+  "properties": {
+    "contract": { "$ref": "#/$defs/contractInfo" },
+    "profile": { "$ref": "#/$defs/profile" },
+    "context": { "$ref": "#/$defs/renderContext" },
+    "note_count": { "type": "integer", "minimum": 0 },
+    "diagnostics": { "type": "array", "items": { "$ref": "#/$defs/siteDiagnostic" } },
+    "routes": { "type": "array", "items": { "$ref": "#/$defs/siteRoute" } },
+    "notes": { "type": "array", "items": { "$ref": "#/$defs/noteIndexEntry" } },
+    "artifacts": { "$ref": "#/$defs/artifactPaths" }
+  },
+  "$defs": {
+    "contractInfo": {
+      "type": "object",
+      "required": ["name", "version"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "profile": {
+      "type": "object",
+      "required": ["name", "title", "deploy_path", "language", "theme", "search", "graph", "backlinks", "rss"],
+      "additionalProperties": false,
+      "properties": {
+        "name": { "type": "string" },
+        "title": { "type": "string" },
+        "deploy_path": { "type": "string" },
+        "base_url": { "type": ["string", "null"] },
+        "language": { "type": "string" },
+        "theme": { "type": "string" },
+        "search": { "type": "boolean" },
+        "graph": { "type": "boolean" },
+        "backlinks": { "type": "boolean" },
+        "rss": { "type": "boolean" }
+      }
+    },
+    "renderContext": {
+      "type": "object",
+      "required": ["profile", "site_title", "language", "theme", "deploy_path"],
+      "additionalProperties": false,
+      "properties": {
+        "profile": { "type": "string" },
+        "site_title": { "type": "string" },
+        "language": { "type": "string" },
+        "theme": { "type": "string" },
+        "base_url": { "type": ["string", "null"] },
+        "deploy_path": { "type": "string" }
+      }
+    },
+    "siteRoute": {
+      "type": "object",
+      "required": ["kind", "title", "slug", "url_path", "output_path"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": { "type": "string" },
+        "source_path": { "type": ["string", "null"] },
+        "title": { "type": "string" },
+        "slug": { "type": "string" },
+        "url_path": { "type": "string" },
+        "output_path": { "type": "string" }
+      }
+    },
+    "siteDiagnostic": {
+      "type": "object",
+      "required": ["level", "kind", "message"],
+      "additionalProperties": false,
+      "properties": {
+        "level": { "type": "string" },
+        "kind": { "type": "string" },
+        "source_path": { "type": ["string", "null"] },
+        "message": { "type": "string" }
+      }
+    },
+    "noteIndexEntry": {
+      "type": "object",
+      "required": ["source_path", "title", "excerpt", "route", "document_path", "tags"],
+      "additionalProperties": false,
+      "properties": {
+        "source_path": { "type": "string" },
+        "title": { "type": "string" },
+        "excerpt": { "type": "string" },
+        "canonical_url": { "type": ["string", "null"] },
+        "summary_image": { "type": ["string", "null"] },
+        "route": { "$ref": "#/$defs/siteRoute" },
+        "document_path": { "type": "string" },
+        "tags": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "artifactPaths": {
+      "type": "object",
+      "required": ["route_manifest", "hover_previews", "recent_notes", "related_notes", "note_index", "invalidation", "schema", "typescript", "copied_assets"],
+      "additionalProperties": false,
+      "properties": {
+        "route_manifest": { "type": "string" },
+        "hover_previews": { "type": "string" },
+        "recent_notes": { "type": "string" },
+        "related_notes": { "type": "string" },
+        "note_index": { "type": "string" },
+        "search_index": { "type": ["string", "null"] },
+        "graph": { "type": ["string", "null"] },
+        "invalidation": { "type": "string" },
+        "schema": { "type": "string" },
+        "typescript": { "type": "string" },
+        "copied_assets": { "type": "array", "items": { "type": "string" } }
+      }
+    }
+  }
+}"##
+    .to_string()
+}
+
+fn frontend_bundle_typescript_definitions() -> &'static str {
+    r"export interface FrontendBundleContractInfo {
+  name: string;
+  version: number;
+}
+
+export interface FrontendBundleProfile {
+  name: string;
+  title: string;
+  deploy_path: string;
+  base_url?: string | null;
+  language: string;
+  theme: string;
+  search: boolean;
+  graph: boolean;
+  backlinks: boolean;
+  rss: boolean;
+}
+
+export interface RenderContext {
+  profile: string;
+  site_title: string;
+  language: string;
+  theme: string;
+  base_url?: string | null;
+  deploy_path: string;
+}
+
+export interface SiteRoute {
+  kind: string;
+  source_path?: string | null;
+  title: string;
+  slug: string;
+  url_path: string;
+  output_path: string;
+}
+
+export interface SiteDiagnostic {
+  level: string;
+  kind: string;
+  source_path?: string | null;
+  message: string;
+}
+
+export interface HtmlRenderHeading {
+  level: number;
+  text: string;
+  id: string;
+}
+
+export interface HtmlRenderDiagnostic {
+  kind: string;
+  message: string;
+}
+
+export interface RenderedEmbed {
+  kind: string;
+  source_path: string;
+  target_path: string;
+  url_path: string;
+}
+
+export interface FrontendBundleArtifactPaths {
+  route_manifest: string;
+  hover_previews: string;
+  recent_notes: string;
+  related_notes: string;
+  note_index: string;
+  search_index?: string | null;
+  graph?: string | null;
+  invalidation: string;
+  schema: string;
+  typescript: string;
+  copied_assets: string[];
+}
+
+export interface FrontendBundleNoteIndexEntry {
+  source_path: string;
+  title: string;
+  excerpt: string;
+  canonical_url?: string | null;
+  summary_image?: string | null;
+  route: SiteRoute;
+  document_path: string;
+  tags: string[];
+}
+
+export interface FrontendBundleNoteDocument {
+  source_path: string;
+  title: string;
+  excerpt: string;
+  description: string;
+  canonical_url?: string | null;
+  summary_image?: string | null;
+  route: SiteRoute;
+  body_html: string;
+  headings: HtmlRenderHeading[];
+  tags: string[];
+  aliases: string[];
+  outgoing_links: string[];
+  backlinks: string[];
+  breadcrumbs: string[];
+  asset_paths: string[];
+  embeds: RenderedEmbed[];
+  diagnostics: HtmlRenderDiagnostic[];
+  file_mtime: number;
+}
+
+export interface FrontendBundleContract {
+  contract: FrontendBundleContractInfo;
+  profile: FrontendBundleProfile;
+  context: RenderContext;
+  note_count: number;
+  diagnostics: SiteDiagnostic[];
+  routes: SiteRoute[];
+  notes: FrontendBundleNoteIndexEntry[];
+  artifacts: FrontendBundleArtifactPaths;
+}
+
+export interface FrontendBundleInvalidationReport {
+  changed_files: string[];
+  deleted_files: string[];
+  changed_routes: string[];
+  deleted_routes: string[];
+  changed_assets: string[];
+  deleted_assets: string[];
+}
+"
+}
+
 fn write_output_bytes_if_changed(path: &Path, contents: &[u8]) -> Result<bool, AppError> {
     if fs::read(path).ok().as_deref() == Some(contents) {
         return Ok(false);
@@ -3366,6 +4207,148 @@ mod tests {
 
     fn count_occurrences(haystack: &str, needle: &str) -> usize {
         haystack.match_indices(needle).count()
+    }
+
+    #[test]
+    fn frontend_bundle_build_emits_typed_contract_and_shared_manifests_with_site_parity() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Public Notes"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md", "Projects/Alpha.md"]
+search = true
+graph = true
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let site_report = build_site(
+            &VaultPaths::new(&vault_root),
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("site build should succeed");
+        let bundle_report = build_frontend_bundle(
+            &VaultPaths::new(&vault_root),
+            &FrontendBundleRequest {
+                profile: Some("public".to_string()),
+                output_dir: vault_root.join("exports/public-bundle"),
+                clean: true,
+                dry_run: false,
+                pretty: true,
+            },
+        )
+        .expect("bundle build should succeed");
+
+        let site_root = vault_root.join(".vulcan/site/public");
+        let bundle_root = vault_root.join("exports/public-bundle");
+        let site_routes = read_site_json(&site_root, "assets/route-manifest.json");
+        let bundle_routes = read_site_json(&bundle_root, "assets/route-manifest.json");
+        let site_search = read_site_json(&site_root, "assets/search-index.json");
+        let bundle_search = read_site_json(&bundle_root, "assets/search-index.json");
+        let site_graph = read_site_json(&site_root, "assets/graph.json");
+        let bundle_graph = read_site_json(&bundle_root, "assets/graph.json");
+        let contract = read_site_json(&bundle_root, "frontend-bundle.json");
+        let home_note = read_site_json(&bundle_root, "notes/home/index.json");
+
+        assert_eq!(site_report.routes, bundle_report.routes);
+        assert_eq!(site_routes, bundle_routes);
+        assert_eq!(site_search, bundle_search);
+        assert_eq!(site_graph, bundle_graph);
+        assert_eq!(
+            bundle_report.contract.contract.name,
+            "vulcan_frontend_bundle"
+        );
+        assert_eq!(bundle_report.contract.profile.name, "public");
+        assert_eq!(
+            contract["artifacts"]["schema"],
+            "schema/frontend-bundle.schema.json"
+        );
+        assert_eq!(
+            contract["artifacts"]["typescript"],
+            "schema/frontend-bundle.d.ts"
+        );
+        assert!(bundle_root
+            .join("schema/frontend-bundle.schema.json")
+            .exists());
+        assert!(bundle_root.join("schema/frontend-bundle.d.ts").exists());
+        assert_eq!(home_note["route"]["url_path"], "/notes/home/");
+        assert!(home_note["body_html"]
+            .as_str()
+            .is_some_and(|html| html.contains("Alpha")));
+    }
+
+    #[test]
+    fn frontend_bundle_build_is_deterministic_and_prefix_aware() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Public Notes"
+home = "Home"
+output_dir = ".vulcan/site/public"
+deploy_path = "/garden"
+include_paths = ["Home.md", "Projects/Alpha.md"]
+search = true
+graph = true
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let request = FrontendBundleRequest {
+            profile: Some("public".to_string()),
+            output_dir: vault_root.join("exports/public-bundle"),
+            clean: true,
+            dry_run: false,
+            pretty: true,
+        };
+        let first = build_frontend_bundle(&VaultPaths::new(&vault_root), &request)
+            .expect("first bundle build should succeed");
+        let first_tree = snapshot_output_tree(&vault_root.join("exports/public-bundle"));
+
+        let second = build_frontend_bundle(
+            &VaultPaths::new(&vault_root),
+            &FrontendBundleRequest {
+                clean: false,
+                ..request.clone()
+            },
+        )
+        .expect("second bundle build should succeed");
+        let second_tree = snapshot_output_tree(&vault_root.join("exports/public-bundle"));
+        let contract = read_site_json(
+            &vault_root.join("exports/public-bundle"),
+            "frontend-bundle.json",
+        );
+        let invalidation = read_site_json(
+            &vault_root.join("exports/public-bundle"),
+            "assets/invalidation.json",
+        );
+
+        assert!(first
+            .changed_files
+            .iter()
+            .any(|path| path == "frontend-bundle.json"));
+        assert!(second.changed_files.is_empty());
+        assert_eq!(first_tree, second_tree);
+        assert_eq!(contract["context"]["deploy_path"], "/garden");
+        assert!(contract["notes"].as_array().is_some_and(|notes| notes
+            .iter()
+            .any(|note| note["route"]["url_path"] == "/garden/notes/home/")));
+        assert_eq!(invalidation["changed_files"], serde_json::json!([]));
+        assert_eq!(invalidation["changed_routes"], serde_json::json!([]));
     }
 
     #[test]

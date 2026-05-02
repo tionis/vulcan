@@ -3484,7 +3484,7 @@
       },
       {
         "about": "Write static export artifacts derived from the cache",
-        "after_help": "Subcommands:\n  profile       Run or manage named export profiles\n  markdown      Export matched notes as one combined Markdown document\n  json          Export matched notes with metadata and raw content as JSON\n  csv           Export note query results as CSV\n  graph         Export the resolved link graph for external tools\n  epub          Render matched notes as an EPUB book\n  zip           Export matched notes and linked attachments as a ZIP archive\n  sqlite        Export matched notes into a standalone SQLite database\n  search-index  Write the cached search corpus as a static JSON index\n\nNotes:\n  Profiles live under `[export.profiles.<name>]` in `.vulcan/config.toml`.\n  `export profile run <name>` resolves relative profile paths from the vault root.\n  `export profile create|set|delete` updates shared `.vulcan/config.toml`; `show` prints the effective merged profile.\n  `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.\n  `markdown`, `json`, `epub`, and `zip` support publication-oriented content transforms such as `--exclude-callout`, `--exclude-heading`, `--exclude-frontmatter-key`, `--exclude-inline-field`, and ordered `--replace-rule` rewrites.\n  Direct export flags build one implicit transform rule that applies to all exported notes.\n  Profile config stores transforms as ordered `[[export.profiles.<name>.content_transforms]]` rules; `export profile rule ...` edits those rules explicitly.\n  Each rule query only narrows within the profile query result; rule order matters for replacement rewrites.\n  If multiple rules match one note, exclusions are unioned and replacement rules run in declaration order.\n  Exported metadata, links, backlinks, inline expressions, and copied attachments are rebuilt from transformed note content before packaging.\n  Text exports print to stdout by default; pass `-o/--path` to write a file instead.\n  `epub --backlinks` appends indexed inlinks after each exported note chapter.\n  Archive exports require `-o/--path` because they produce binary or database files.\n  The search-index export is intended for client-side search tools (e.g., Pagefind, Fuse.js).\n  Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.\n\nExamples:\n  vulcan export profile list\n  vulcan export profile run team-book\n  vulcan export profile show team-book\n  vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub --title 'Team Notes'\n  vulcan export profile set team-book --backlinks --frontmatter\n  vulcan export profile rule list team-book\n  vulcan export profile rule add team-book --exclude-callout internal\n  vulcan export profile rule add team-book 'from notes where file.path starts_with \"People/\"' --replace-rule regex '[A-Za-z0-9._%+-]+@example\\.com' redacted\n  vulcan export profile rule update team-book 1 --exclude-callout internal --exclude-heading Scratch\n  vulcan export profile rule move team-book 2 --before 1\n  vulcan export json 'from notes' --exclude-callout 'secret gm' -o exports/public.json\n  vulcan export json 'from notes' --replace-rule regex '[A-Za-z0-9._%+-]+@example\\.com' redacted -o exports/public.json\n  vulcan export profile delete team-book --dry-run\n  vulcan export markdown 'from notes where file.path matches \"^Projects/\"'\n  vulcan export json 'from notes where status = done' --pretty -o exports/done.json\n  vulcan export csv 'from notes where file.tags has_tag project' -o exports/projects.csv\n  vulcan export graph --format dot -o exports/graph.dot\n  vulcan export epub 'from notes where file.path matches \"^(Projects|People)/\"' -o exports/team.epub --title 'Team Notes' --backlinks\n  vulcan export zip 'from notes where file.path matches \"^Projects/\"' -o exports/projects.zip\n  vulcan export sqlite 'from notes where status = done' -o exports/done.db\n  vulcan export search-index --path public/search-index.json\n  vulcan export search-index --pretty > /tmp/search.json",
+        "after_help": "Subcommands:\n  profile       Run or manage named export profiles\n  markdown      Export matched notes as one combined Markdown document\n  json          Export matched notes with metadata and raw content as JSON\n  csv           Export note query results as CSV\n  graph         Export the resolved link graph for external tools\n  epub          Render matched notes as an EPUB book\n  zip           Export matched notes and linked attachments as a ZIP archive\n  sqlite        Export matched notes into a standalone SQLite database\n  search-index  Write the cached search corpus as a static JSON index\n\nNotes:\n  Profiles live under `[export.profiles.<name>]` in `.vulcan/config.toml`.\n  `export profile run <name>` resolves relative profile paths from the vault root.\n  `export profile create|set|delete` updates shared `.vulcan/config.toml`; `show` prints the effective merged profile.\n  `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.\n  `markdown`, `json`, `epub`, and `zip` support publication-oriented content transforms such as `--exclude-callout`, `--exclude-heading`, `--exclude-frontmatter-key`, `--exclude-inline-field`, and ordered `--replace-rule` rewrites.\n  Direct export flags build one implicit transform rule that applies to all exported notes.\n  Profile config stores transforms as ordered `[[export.profiles.<name>.content_transforms]]` rules; `export profile rule ...` edits those rules explicitly.\n  Each rule query only narrows within the profile query result; rule order matters for replacement rewrites.\n  If multiple rules match one note, exclusions are unioned and replacement rules run in declaration order.\n  Exported metadata, links, backlinks, inline expressions, and copied attachments are rebuilt from transformed note content before packaging.\n  Text exports print to stdout by default; pass `-o/--path` to write a file instead.\n  `epub --backlinks` appends indexed inlinks after each exported note chapter.\n  Archive exports require `-o/--path` because they produce binary or database files.\n  The search-index export is intended for client-side search tools (e.g., Pagefind, Fuse.js).\n  Frontend-bundle profiles reuse one `site.profiles.<name>` publication profile and emit typed JSON fragments plus shared search/graph/preview manifests for external frontends.\n  Use `--pretty` for human-readable JSON; omit for compact output suitable for piping.\n\nExamples:\n  vulcan export profile list\n  vulcan export profile run team-book\n  vulcan export profile serve public-bundle --port 4174\n  vulcan export profile show team-book\n  vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub --title 'Team Notes'\n  vulcan export profile create public-bundle --format frontend-bundle -o exports/public-bundle --site-profile public\n  vulcan export profile set team-book --backlinks --frontmatter\n  vulcan export profile rule list team-book\n  vulcan export profile rule add team-book --exclude-callout internal\n  vulcan export profile rule add team-book 'from notes where file.path starts_with \"People/\"' --replace-rule regex '[A-Za-z0-9._%+-]+@example\\.com' redacted\n  vulcan export profile rule update team-book 1 --exclude-callout internal --exclude-heading Scratch\n  vulcan export profile rule move team-book 2 --before 1\n  vulcan export json 'from notes' --exclude-callout 'secret gm' -o exports/public.json\n  vulcan export json 'from notes' --replace-rule regex '[A-Za-z0-9._%+-]+@example\\.com' redacted -o exports/public.json\n  vulcan export profile delete team-book --dry-run\n  vulcan export markdown 'from notes where file.path matches \"^Projects/\"'\n  vulcan export json 'from notes where status = done' --pretty -o exports/done.json\n  vulcan export csv 'from notes where file.tags has_tag project' -o exports/projects.csv\n  vulcan export graph --format dot -o exports/graph.dot\n  vulcan export epub 'from notes where file.path matches \"^(Projects|People)/\"' -o exports/team.epub --title 'Team Notes' --backlinks\n  vulcan export zip 'from notes where file.path matches \"^Projects/\"' -o exports/projects.zip\n  vulcan export sqlite 'from notes where status = done' -o exports/done.db\n  vulcan export search-index --path public/search-index.json\n  vulcan export search-index --pretty > /tmp/search.json",
         "name": "export",
         "options": [],
         "subcommands": [
@@ -3512,6 +3512,46 @@
                     "short": null,
                     "value_names": [
                       "NAME"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Watch a frontend-bundle export profile and expose live-reload events",
+                "name": "serve",
+                "options": [
+                  {
+                    "help": "Export profile name from [export.profiles.<name>]",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Loopback port for bundle live-reload JSON and SSE endpoints",
+                    "id": "port",
+                    "long": "port",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "PORT"
+                    ]
+                  },
+                  {
+                    "help": "Watcher debounce window in milliseconds",
+                    "id": "debounce_ms",
+                    "long": "debounce-ms",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DEBOUNCE_MS"
                     ]
                   }
                 ],
@@ -3562,7 +3602,8 @@
                       "epub",
                       "zip",
                       "sqlite",
-                      "search-index"
+                      "search-index",
+                      "frontend-bundle"
                     ],
                     "required": true,
                     "short": null,
@@ -3601,6 +3642,17 @@
                     "short": "o",
                     "value_names": [
                       "PATH"
+                    ]
+                  },
+                  {
+                    "help": "Site profile name reused by frontend-bundle publication profiles",
+                    "id": "site_profile",
+                    "long": "site-profile",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "SITE_PROFILE"
                     ]
                   },
                   {
@@ -3768,7 +3820,8 @@
                       "epub",
                       "zip",
                       "sqlite",
-                      "search-index"
+                      "search-index",
+                      "frontend-bundle"
                     ],
                     "required": false,
                     "short": null,
@@ -3835,6 +3888,31 @@
                     "short": null,
                     "value_names": [
                       "CLEAR_PATH"
+                    ]
+                  },
+                  {
+                    "help": "Site profile name reused by frontend-bundle publication profiles",
+                    "id": "site_profile",
+                    "long": "site-profile",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "SITE_PROFILE"
+                    ]
+                  },
+                  {
+                    "help": "Clear any stored frontend-bundle site profile",
+                    "id": "clear_site_profile",
+                    "long": "clear-site-profile",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CLEAR_SITE_PROFILE"
                     ]
                   },
                   {

@@ -1,0 +1,68 @@
+{
+  "contract": {
+    "name": "vulcan_frontend_bundle",
+    "version": 1
+  },
+  "profile": {
+    "name": "public",
+    "title": "Public Notes",
+    "deploy_path": "/garden",
+    "base_url": "https://notes.example.com",
+    "language": "en",
+    "theme": "default",
+    "search": true,
+    "graph": true,
+    "backlinks": true,
+    "rss": false
+  },
+  "context": {
+    "profile": "public",
+    "site_title": "Public Notes",
+    "language": "en",
+    "theme": "default",
+    "base_url": "https://notes.example.com",
+    "deploy_path": "/garden"
+  },
+  "note_count": 1,
+  "diagnostics": [],
+  "routes": [
+    {
+      "kind": "note",
+      "source_path": "Home.md",
+      "title": "Home",
+      "slug": "Home",
+      "url_path": "/garden/notes/home/",
+      "output_path": "notes/home/index.html"
+    }
+  ],
+  "notes": [
+    {
+      "source_path": "Home.md",
+      "title": "Home",
+      "excerpt": "Home links to Projects/Alpha and Bob.",
+      "route": {
+        "kind": "note",
+        "source_path": "Home.md",
+        "title": "Home",
+        "slug": "Home",
+        "url_path": "/garden/notes/home/",
+        "output_path": "notes/home/index.html"
+      },
+      "document_path": "notes/home/index.json",
+      "tags": ["dashboard"]
+    }
+  ],
+  "artifacts": {
+    "route_manifest": "assets/route-manifest.json",
+    "hover_previews": "assets/hover-previews.json",
+    "recent_notes": "assets/recent-notes.json",
+    "related_notes": "assets/related-notes.json",
+    "note_index": "assets/note-index.json",
+    "search_index": "assets/search-index.json",
+    "graph": "assets/graph.json",
+    "invalidation": "assets/invalidation.json",
+    "schema": "schema/frontend-bundle.schema.json",
+    "typescript": "schema/frontend-bundle.d.ts",
+    "copied_assets": []
+  }
+}

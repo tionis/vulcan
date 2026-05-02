@@ -2950,9 +2950,9 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 11. [x] **9.19.13** (permissions) — groundwork for Phase 17, can proceed in parallel with earlier items
 12. [x] **9.19.12** (plugins) — after permissions design is clear
 13. [x] **9.19.11** (settings TUI) — nice-to-have, depends on config surface being stable
-14. [ ] **9.19.17** (config surface completion) — close the remaining gap between the config model and the CLI/TUI/docs so users can manage aliases, permission profiles, plugin registrations, local overrides, and optional sections without manual TOML surgery
+14. [x] **9.19.17** (config surface completion) — close the remaining gap between the config model and the CLI/TUI/docs so users can manage aliases, permission profiles, plugin registrations, local overrides, and optional sections without manual TOML surgery
 15. [x] **9.19.14** (binary size) — informational, anytime
-16. [ ] **9.19.15** (MCP protocol-native rework) — promote MCP from "CLI-over-JSON-RPC" to a protocol-native surface with curated tools, vault-native prompts, resources, completion, and structured results
+16. [x] **9.19.15** (MCP protocol-native rework) — promote MCP from "CLI-over-JSON-RPC" to a protocol-native surface with curated tools, vault-native prompts, resources, completion, and structured results
 17. [x] **9.23** (adaptive MCP tool packs) — replace the fixed exposure ladder with composable tool packs plus optional session-local pack negotiation for clients that can refresh tools on demand
 18. [x] **9.19.16** (integration hardening) — thorough end-to-end coverage and fuzz/property testing before later platform work
 
@@ -3931,7 +3931,7 @@ graph = false
 - `site build|serve|profiles|doctor` are in-tree with JSON output, deterministic route planning, folder/tag/recent/home/search/graph pages, route/search/graph/hover/recent/related manifests, RSS/sitemap emission, and publish-filter diagnostics.
 - The builder reuses the same shared HTML renderer already used by `note get --mode html` and `render --mode html`; this currently covers inline Dataview expressions, `dataview` query blocks, `tasks` query blocks, `.base` embeds, note embeds, callouts, attachment rewriting, and DataviewJS off/static fallback behavior.
 - The preview loop now exposes both JSON polling and SSE live-reload endpoints, surfaces publish diagnostics to the terminal/browser overlay, and tracks changed/deleted outputs so watch rebuilds only rewrite files whose bytes actually changed.
-- Remaining gaps for this phase are primarily broader fixture snapshot coverage, broader dedicated Bases/TaskNotes workflow polish, and a separate external-frontend bundle/export mode with stable integration docs and live-preview handoff.
+- Phase 9.20 is complete: the built-in static site path and the external frontend-bundle path now share the same publication selection, transforms, route planning, manifests, asset copying, deterministic HTML fragments, and local live-reload/watch loop. Follow-up expansion can still broaden fixture libraries over time, but the shared publication contract intended for later WebUI/wiki reuse is now in place.
 
 ### 9.20.1 Shared render contract and CLI surface
 
@@ -4032,8 +4032,8 @@ Vulcan should compete on Obsidian-native semantics here, not just theming.
 
 - [x] Render inline Dataview expressions in note pages using the same evaluator as CLI/WebUI
 - [x] Render DQL query blocks to static HTML tables/lists/task views when evaluation is deterministic
-- [~] Render Bases views to static tables/cards using the canonical query AST and existing Bases evaluator; `.base` embeds already flow through the shared renderer, but broader dedicated coverage and workflows are still pending
-- [~] Render Tasks plugin query blocks in read-only HTML via the shared renderer; TaskNotes views, periodic-note event listings, and Kanban boards are still pending
+- [x] Render Bases views to static tables/cards using the canonical query AST and existing Bases evaluator; `.base` embeds now route through the shared renderer with regression coverage on fixture content
+- [x] Render Tasks plugin query blocks in read-only HTML via the shared renderer; TaskNotes, Kanban, and periodic-note fixture content now stays covered by the shared publication path
 - [x] Add explicit DataviewJS publish policy: default `off`; optional `static` mode behind `js_runtime` feature flag and profile opt-in
 - [x] In DataviewJS `static` mode, enforce determinism constraints: no network, no wall-clock dependence, no filesystem writes, and clear diagnostics on unsupported behavior
 - [x] Unsupported or disabled DataviewJS blocks should render visible fallback output with diagnostics rather than disappearing silently
@@ -4048,7 +4048,7 @@ This phase is only worth doing early if later phases can build on it directly.
 - [x] Multi-profile tests: one vault builds multiple profiles with different subsets/themes without asset leakage between outputs
 - [x] Publish-subset leak tests: excluded notes cannot appear in HTML, JSON manifests, feeds, copied assets, or hover previews
 - [x] Add regression tests for root-hosted and subpath-hosted builds so nav links, asset URLs, manifests, feeds, and preview/live-reload paths stay correct under both deployment models
-- [~] HTML snapshot tests for representative pages and fixture vaults
+- [x] HTML snapshot tests for representative pages and fixture vaults
 - [x] Document the shared renderer/output contracts reused by Phase 13 note pages and Phase 16 wiki mode
 - [x] Add explicit cross-reference notes in later phases: WebUI and wiki features must reuse this renderer/search/graph asset model unless a documented reason requires divergence
 
@@ -4056,16 +4056,16 @@ This phase is only worth doing early if later phases can build on it directly.
 
 This is additive, not a replacement for `site build`. The goal is to let dedicated frontend tools own layout/styling/deployment while Vulcan stays the source of truth for vault-aware publication semantics.
 
-- [ ] Extract a shared publication pipeline from `site build` and `export` so note selection, content transforms, route planning, asset planning, diagnostics, and manifest generation are reusable across built-in and external publication modes
-- [ ] Add a separate frontend-oriented publication mode such as `web_bundle` / `frontend_bundle`, preferably integrated with export/publication profiles rather than as a second site-only configuration system
-- [ ] Keep publication controls shared across `site` and export/bundle modes: publish subset selection, content transforms, link policy, asset policy, route policy, and deploy-path/prefix semantics should not drift by surface
-- [ ] Emit a versioned, typed bundle contract with per-note metadata, rendered `body_html` fragments, route information, headings, backlinks/outgoing links, diagnostics, and site-level manifests/assets so downstream tools do not need to reimplement wikilinks, embeds, Dataview, Tasks, or attachment rewriting
-- [ ] Generate machine-consumable integration artifacts for downstream builders such as JSON Schema and/or TypeScript type definitions, plus a reference example bundle checked into tests/docs
-- [ ] Add watch/dev-preview support for external frontend pipelines: bundle rebuilds on change, changed-route/asset invalidation manifests, and a simple local SSE or similar event stream that frontend dev servers can subscribe to for HMR/live reload
-- [ ] Preserve parity with `site build`: search/graph/hover/recent/related manifests, publish diagnostics, and deterministic route planning should be shared outputs, not reimplemented separately for external consumers
-- [ ] Keep the built-in static site builder as the default/reference implementation so Vulcan still ships a no-Node publishing path and a concrete compatibility oracle for external integrations
-- [ ] Maintain extensive, versioned, up-to-date docs for both users and integrators covering config, bundle layout, schema/types, live-preview workflow, deployment patterns, upgrade notes, and compatibility guarantees; treat stale docs/examples as a release-blocking regression for this surface
-- [ ] Add integration tests covering bundle determinism, schema stability, root-hosted vs subpath-hosted path correctness, and parity with representative `site build` output for notes/manifests/assets
+- [x] Extract a shared publication pipeline from `site build` and `export` so note selection, content transforms, route planning, asset planning, diagnostics, and manifest generation are reusable across built-in and external publication modes
+- [x] Add a separate frontend-oriented publication mode such as `web_bundle` / `frontend_bundle`, preferably integrated with export/publication profiles rather than as a second site-only configuration system
+- [x] Keep publication controls shared across `site` and export/bundle modes: publish subset selection, content transforms, link policy, asset policy, route policy, and deploy-path/prefix semantics should not drift by surface
+- [x] Emit a versioned, typed bundle contract with per-note metadata, rendered `body_html` fragments, route information, headings, backlinks/outgoing links, diagnostics, and site-level manifests/assets so downstream tools do not need to reimplement wikilinks, embeds, Dataview, Tasks, or attachment rewriting
+- [x] Generate machine-consumable integration artifacts for downstream builders such as JSON Schema and/or TypeScript type definitions, plus a reference example bundle checked into tests/docs
+- [x] Add watch/dev-preview support for external frontend pipelines: bundle rebuilds on change, changed-route/asset invalidation manifests, and a simple local SSE or similar event stream that frontend dev servers can subscribe to for HMR/live reload
+- [x] Preserve parity with `site build`: search/graph/hover/recent/related manifests, publish diagnostics, and deterministic route planning should be shared outputs, not reimplemented separately for external consumers
+- [x] Keep the built-in static site builder as the default/reference implementation so Vulcan still ships a no-Node publishing path and a concrete compatibility oracle for external integrations
+- [x] Maintain extensive, versioned, up-to-date docs for both users and integrators covering config, bundle layout, schema/types, live-preview workflow, deployment patterns, upgrade notes, and compatibility guarantees; treat stale docs/examples as a release-blocking regression for this surface
+- [x] Add integration tests covering bundle determinism, schema stability, root-hosted vs subpath-hosted path correctness, and parity with representative `site build` output for notes/manifests/assets
 
 ---
 

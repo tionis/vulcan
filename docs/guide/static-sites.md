@@ -191,6 +191,64 @@ logo rendering from the site profile. When a deploy path is configured, the defa
 and preview server all emit prefix-aware URLs so the built output can be hosted under that subpath
 unchanged.
 
+## Frontend bundle mode
+
+External frontend tools should consume Vulcan's publication output, not replace its vault semantics.
+The bundle flow therefore reuses an existing `site` profile instead of defining a second publish
+configuration surface.
+
+Example:
+
+```toml
+[site.profiles.public]
+title = "Public Notes"
+deploy_path = "/garden"
+include_paths = ["Home.md", "Projects/Alpha.md"]
+search = true
+graph = true
+
+[export.profiles.public_bundle]
+format = "frontend-bundle"
+path = "exports/public-bundle"
+site_profile = "public"
+pretty = true
+```
+
+Core commands:
+
+- `vulcan export profile run public_bundle`
+- `vulcan export profile serve public_bundle --port 4174`
+
+`export profile run` writes a deterministic bundle directory. `export profile serve` keeps rebuilding
+that directory on watched changes and exposes local live-reload endpoints at:
+
+- `/__vulcan_bundle/live-reload.json`
+- `/__vulcan_bundle/live-reload.events`
+
+The bundle layout is intentionally stable and typed:
+
+- `frontend-bundle.json` — versioned root contract with profile metadata, note index entries, route
+  information, diagnostics, and artifact paths
+- `notes/.../index.json` — per-note documents with rendered `body_html`, headings, embeds, outgoing
+  links, backlinks, breadcrumbs, and render diagnostics
+- `assets/route-manifest.json`
+- `assets/hover-previews.json`
+- `assets/recent-notes.json`
+- `assets/related-notes.json`
+- `assets/search-index.json` when search is enabled
+- `assets/graph.json` when graph export is enabled
+- `assets/invalidation.json`
+- `schema/frontend-bundle.schema.json`
+- `schema/frontend-bundle.d.ts`
+
+One-shot bundle builds keep `assets/invalidation.json` deterministic so repeated builds of the same
+vault/config stay byte-identical. During `export profile serve`, the JSON/SSE live-reload payload
+carries the current `changed_files`, `deleted_files`, `changed_routes`, `deleted_routes`,
+`changed_assets`, and `deleted_assets` sets so Vite/Astro/Next-style dev servers can trigger HMR or
+full reloads without re-walking the bundle directory.
+
+Reference example files live under `docs/examples/frontend-bundle-reference/`.
+
 ## Diagnostics and automation
 
 Use `--output json` with `site profiles`, `site doctor`, and `site build` when another tool or LLM

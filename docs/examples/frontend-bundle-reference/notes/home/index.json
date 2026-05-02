@@ -1,0 +1,31 @@
+{
+  "source_path": "Home.md",
+  "title": "Home",
+  "excerpt": "Home links to Projects/Alpha and Bob.",
+  "description": "Home links to Projects/Alpha and Bob.",
+  "route": {
+    "kind": "note",
+    "source_path": "Home.md",
+    "title": "Home",
+    "slug": "Home",
+    "url_path": "/garden/notes/home/",
+    "output_path": "notes/home/index.html"
+  },
+  "body_html": "<h1 id=\"home\">Home</h1><p>Home links to <a href=\"/garden/notes/projects/alpha/\">Projects/Alpha</a> and <a href=\"/garden/notes/people/bob/\">Bob</a>.</p>",
+  "headings": [
+    {
+      "level": 1,
+      "text": "Home",
+      "id": "home"
+    }
+  ],
+  "tags": ["dashboard"],
+  "aliases": ["Start"],
+  "outgoing_links": ["Projects/Alpha.md", "People/Bob.md"],
+  "backlinks": [],
+  "breadcrumbs": [],
+  "asset_paths": [],
+  "embeds": [],
+  "diagnostics": [],
+  "file_mtime": 0
+}
