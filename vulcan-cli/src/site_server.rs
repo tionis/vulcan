@@ -30,21 +30,27 @@ pub struct SiteServeHandle {
     join_handle: Option<thread::JoinHandle<Result<(), CliError>>>,
 }
 
-#[cfg(test)]
 impl SiteServeHandle {
     #[must_use]
     pub fn addr(&self) -> SocketAddr {
         self.addr
     }
 
-    pub fn shutdown(mut self) -> Result<(), CliError> {
-        self.shutdown.store(true, Ordering::SeqCst);
+    pub fn join(mut self) -> Result<(), CliError> {
         if let Some(join_handle) = self.join_handle.take() {
             join_handle
                 .join()
                 .map_err(|_| CliError::operation("site serve thread panicked"))??;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl SiteServeHandle {
+    pub fn shutdown(self) -> Result<(), CliError> {
+        self.shutdown.store(true, Ordering::SeqCst);
+        self.join()
     }
 }
 
@@ -124,16 +130,6 @@ pub(crate) fn build_site_with_policy(
         }
     }
     app_build_site(paths, request).map_err(CliError::operation)
-}
-
-pub fn serve_site_forever(paths: &VaultPaths, options: &SiteServeOptions) -> Result<(), CliError> {
-    let mut handle = spawn_site_server(paths.clone(), options.clone())?;
-    if let Some(join_handle) = handle.join_handle.take() {
-        join_handle
-            .join()
-            .map_err(|_| CliError::operation("site serve thread panicked"))??;
-    }
-    Ok(())
 }
 
 #[allow(clippy::too_many_lines)]

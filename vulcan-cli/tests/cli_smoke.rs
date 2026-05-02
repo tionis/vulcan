@@ -21177,6 +21177,64 @@ link_policy = "warn"
 }
 
 #[test]
+fn site_serve_json_reports_a_ready_bound_url() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"));
+    command
+        .env("VULCAN_FIXED_NOW", FIXED_NOW)
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "site",
+            "serve",
+            "--port",
+            "0",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = command.spawn().expect("site serve should start");
+    let mut stdout = BufReader::new(child.stdout.take().expect("stdout should be piped"));
+
+    let mut line = String::new();
+    let bytes = stdout
+        .read_line(&mut line)
+        .expect("site serve should emit a startup report");
+    assert!(bytes > 0, "site serve should report a startup URL");
+
+    let report: Value = serde_json::from_str(line.trim()).expect("startup report should be json");
+    let url = report["url"]
+        .as_str()
+        .expect("startup report should include a url");
+    assert!(
+        !url.ends_with(":0/"),
+        "site serve should report the bound port instead of the requested port 0"
+    );
+
+    let addr = url
+        .strip_prefix("http://")
+        .and_then(|value| value.strip_suffix('/'))
+        .expect("startup url should be an http loopback url");
+    let mut stream = TcpStream::connect(addr)
+        .expect("site serve should already be listening when it reports the url");
+    stream
+        .write_all(b"GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .expect("request should write");
+    let response = read_http_response(stream);
+    assert_eq!(response.status_line, "HTTP/1.1 200 OK");
+
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+#[test]
 fn describe_mcp_matches_live_registry_for_same_pack_selection() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

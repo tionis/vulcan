@@ -402,7 +402,7 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use serve::{serve_forever, ServeOptions};
-use site_server::{build_site_with_policy, serve_site_forever, SiteServeOptions};
+use site_server::{build_site_with_policy, spawn_site_server, SiteServeOptions};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter, Write as FmtWrite};
@@ -11786,24 +11786,9 @@ fn handle_site_command(
             strict,
             fail_on_warning,
         } => {
-            match output {
-                OutputFormat::Json => print_json(&json!({
-                    "ok": true,
-                    "profile": profile.clone().unwrap_or_else(|| "default".to_string()),
-                    "url": format!("http://127.0.0.1:{port}/"),
-                    "watch": watch,
-                    "strict": *strict || *fail_on_warning,
-                }))?,
-                OutputFormat::Human | OutputFormat::Markdown => {
-                    println!(
-                        "Serving static site at http://127.0.0.1:{port}/{}",
-                        if *watch { " (watch enabled)" } else { "" }
-                    );
-                }
-            }
-            serve_site_forever(
-                paths,
-                &SiteServeOptions {
+            let handle = spawn_site_server(
+                paths.clone(),
+                SiteServeOptions {
                     profile: profile.clone(),
                     output_dir: output_dir.clone(),
                     port: *port,
@@ -11812,7 +11797,24 @@ fn handle_site_command(
                     strict: *strict,
                     fail_on_warning: *fail_on_warning,
                 },
-            )
+            )?;
+            let addr = handle.addr();
+            match output {
+                OutputFormat::Json => print_json(&json!({
+                    "ok": true,
+                    "profile": profile.clone().unwrap_or_else(|| "default".to_string()),
+                    "url": format!("http://{addr}/"),
+                    "watch": watch,
+                    "strict": *strict || *fail_on_warning,
+                }))?,
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    println!(
+                        "Serving static site at http://{addr}/{}",
+                        if *watch { " (watch enabled)" } else { "" }
+                    );
+                }
+            }
+            handle.join()
         }
         SiteCommand::Profiles => {
             let report = app_build_site_profiles_report(paths).map_err(CliError::operation)?;
