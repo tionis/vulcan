@@ -2892,6 +2892,10 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.23 (adaptive MCP packs)← 9.19.15,9.19.13,9.18.7     │── Wave 9+ (after protocol-native MCP, before broader MCP clients depend on it)
 9.24 (custom tools)      ← 9.18.5,9.19.12,9.19.13,9.19.15,9.23│── Wave 9+ (after JS runtime + plugins + permissions + protocol-native tool registry)
 9.19.16 (test hardening) ← 9.19.6,9.19.7,9.19.13,9.19.12│── final hardening wave before 9.20/10
+                                         │
+9.25 (graph communities) ← 9.19.13      │── Wave 9+ (after permissions, existing graph adjacency)
+9.26 (suggest links)     ← 9.25         │── Wave 9+ (after communities, existing mentions+vectors)
+9.27 (confidence tags)   ← 9.26         │── Wave 9+ (after link suggestions, existing links schema)
 ```
 
 **Recommended implementation order:**
@@ -2908,8 +2912,9 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 8. **Wave 7 — Optional embedded host mode:** revisit **9.21** only if external runtimes cannot cover the workflow and after permissions + daemon foundations are mature. Treat 9.12.8 as the deferral gate and 9.21 as the implementation bucket.
 9. **Wave 8:** 9.13 (QuickAdd) — capture format compatibility and settings import. Benefits from 9.7 (template variables) and 9.16 (periodic notes) being in place. QuickAdd importer (9.13.2) uses `PluginImporter`.
 10. **Wave 9+:** 9.19.15 → 9.23 → 9.24 for the protocol-native programmable tool surface. Build the MCP-native registry first, then pack negotiation, then vault-defined custom tools on top of that shared registry.
-11. **9.17.7 (init integration)** can land anytime after 9.17.6.
-12. **9.18.1 (command tree reorg)** should land last within 9.18 — it renames everything, so it's easier to build the new commands first (9.18.2–9.18.9) under the old structure, then reorganize in one pass.
+11. **Wave 9+ — Link graph intelligence (after Wave 9+ MCP foundation):** **9.25 → 9.26 → 9.27** sequenced because each builds on the output of the prior phase. Community detection (9.25) on the existing link graph enables cross-community scoring in link suggestions (9.26), which in turn feeds INFERRED edges into the confidence-tagged graph (9.27). 9.25 and 9.26 are additive (new features); 9.27 is a structural schema change that wires through all existing graph surfaces.
+12. **9.17.7 (init integration)** can land anytime after 9.17.6.
+13. **9.18.1 (command tree reorg)** should land last within 9.18 — it renames everything, so it's easier to build the new commands first (9.18.2–9.18.9) under the old structure, then reorganize in one pass.
 
 **Critical path:** Phase 4 → 9.6 → 9.8.1 → ... → 9.8.8 → 9.9 (Templater). The Dataview sub-phases are the longest sequential chain and gate Templater's JS-dependent features. For the subprocess-runtime AI path, the critical chain is: 9.18.2/9.18.7/9.18.8 → 9.12.1–9.12.6 (`pi` integration). For the MCP-native AI path, the follow-on chain is: 9.12.6 (vault-native prompts/skills) → 9.19.6 (basic MCP server) → 9.19.13 (permissions) → 9.19.15 (protocol-native MCP rework) → 9.23 (adaptive MCP tool packs) → 9.24 (vault-native custom tools). Native chat adapters are explicitly off the current critical path. For JS/runtime-backed programmability: 9.8.8 → 9.18.5 → 9.19.12/9.19.13 → 9.24.
 
@@ -5781,6 +5786,166 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 - [x] Add regression tests for invalid tool manifests, missing entrypoints, failing scripts, output-schema mismatches, and recursive tool-call loops
 - [x] Add end-to-end tests for `host.exec()` / `host.shell()` permission enforcement and timeout/output capture behavior
 - [x] Roll out with QuickJS only; treat WASM and finer-grained command allowlists as follow-up work once the registry contract is stable
+
+---
+
+## Phase 9.25: Link-graph community detection
+
+**Goal:** Find dense topic clusters within the wikilink graph using topological community detection (Louvain/Leiden), without requiring embeddings. Builds directly on the existing `GraphAdjacency` and `graph components` infrastructure. This unlocks "orphan near cluster X → suggest bridge links" and "clusters A and B share tags but have zero cross-links → suggest hub note" workflows.
+
+**Depends on:** `graph components` (existing), `GraphAdjacency.undirected()` (existing), vault permissions (9.19.13)
+
+**Test fixtures:** Extend `tests/fixtures/vaults/basic/` or create a dedicated `graph-communities/` vault with:
+- A densely linked subgraph forming an obvious cluster (e.g., 5-8 notes on one topic with inter-links)
+- Several orphaned notes (zero links) and near-orphan notes (1-2 links, not yet connected to the cluster)
+- Two disconnected subgraphs with overlapping tags but no cross-links
+- Notes with mixed link directions (some bidirectional, some one-way) to test undirected conversion
+
+### 9.25.1 Louvain algorithm integration
+
+Louvain performs as well as Leiden on typical wikilink graphs while being simpler to implement in Rust. Use iterative modularity maximization: compute modularity gain for moving each node to a neighboring community, repeat until convergence, then aggregate communities into super-nodes for a second pass.
+
+- [ ] Implement Louvain community detection in `vulcan-core/src/graph.rs` on `GraphAdjacency.undirected()`, returning `HashMap<String, usize>` (node id → community id, where community ids are ephemeral per-computation and stabilized only when persisted to the `graph_clusters` table)
+- [ ] Re-use the same BFS-based connected-component infrastructure (`build_graph_components_report`) as the fallback for graphs with <2 edges per node on average
+- [ ] For large graphs, partition into sub-graphs of ≤1000 nodes via connected-component splitting before running Louvain; this avoids unnecessary super-node aggregation passes while preserving correctness on sparse vault graphs
+- [ ] Unit tests: known community structure (two cliques bridged by a single edge), empty graph, single-node graph, fully-disconnected graph
+- [ ] Benchmark: <500ms for a 500-node, 2000-edge graph on a warm cache
+
+### 9.25.2 Community summary and labeling
+
+Produce human-readable community descriptions for CLI and MCP surfaces.
+
+- [ ] Compute per-community stats: size, cohesion (edge density ratio), top-3 most-connected internal notes, notes that link to other communities (boundary notes), inter-community edge counts
+- [ ] Generate auto-labels from the top 2-3 most frequent shared tags, falling back to the highest-degree node label
+- [ ] Persist community assignments in the SQLite cache (`vector_clusters` table pattern, but rename or add a `graph_clusters` table keyed by document path rather than chunk id)
+
+### 9.25.3 CLI and MCP surfaces
+
+- [ ] `vulcan graph communities [--limit N]` — list communities sorted by size, with member count, cohesion, top nodes
+- [ ] `vulcan graph communities --community C` — show detail for one community: full member list, boundary notes (linking to other communities), cross-community edges
+- [ ] `vulcan graph communities --orphans` — list orphaned notes (no incoming or outgoing links) with their closest community by tag overlap and shortest-path distance if any non-zero path exists
+- [ ] `vulcan graph communities --bridges` — list boundary notes (notes connecting communities), ranked by betweenness
+- [ ] Add `graph_communities` MCP tool to the notes-read pack (read-only, no mutation)
+- [ ] JSON output for all CLI surfaces with `--output json`
+- [ ] `--dry-run` for community computation (report without persisting to cache)
+
+### 9.25.4 Permission filtering
+
+- [ ] Filter community members to only visible documents per the active permission profile
+- [ ] Recompute community size and cohesion after permission filtering
+- [ ] Exclude communities with <2 visible members from output
+
+### 9.25.5 Integration testing
+
+- [ ] Add integration tests with the `graph-communities` fixture vault covering all CLI surfaces
+- [ ] Test permission filtering on a mixed-visibility community (some docs hidden)
+- [ ] Test idempotency: clustering twice on the same graph produces identical community IDs
+- [ ] Test incremental update: adding a new linked note to a community doesn't reshuffle unrelated communities
+
+### 9.25.6 Skill and AGENTS.md update
+
+- [ ] Add `graph_communities` to the `graph-exploration` skill in `docs/assistant/skills/graph-exploration.md` frontmatter `tools:` list
+- [ ] Add example move: "Find which topic cluster an orphaned note belongs to, then suggest a bridge link."
+- [ ] Update the `graph-exploration` skill’s Recommended Flow to include community detection when the task is about understanding vault topology at scale.
+
+## Phase 9.26: Composite link suggestion ranking
+
+**Goal:** A `vulcan suggest links` command that synthesizes multiple existing signals into a single ranked suggestion queue with user feedback tracking (accept/reject). Composes text mentions, embedding similarity, graph distance, and tag overlap — all of which already exist as independent query surfaces.
+
+**Depends on:** `suggest mentions` (existing, `vulcan-core/src/suggestions.rs`), `query_related_notes` (existing, `vulcan-core/src/vector.rs:852`), `GraphAdjacency` (existing), tag queries (existing), community detection (9.25)
+
+**Test fixture:** Extend the `suggestions` fixture vault with additional notes that exercise composite scoring:
+- A note with a text mention AND high embedding similarity AND a shared tag (should score highest)
+- A note with only embedding similarity but no text mention (should score lower, but still appear)
+- A note at 2-hop distance in the link graph with no other signals (should appear at the bottom)
+
+### 9.26.1 Suggestion scoring model
+
+- [ ] Define a `LinkSuggestion` struct: `source_path`, `target_path`, composite `score` (0.0–1.15, capped at 1.0 for display), `signals` (breakdown of contributing factors), `status` (pending/accepted/rejected), `created_at`, `accepted_at`
+- [ ] Composite score formula: `0.4 × embedding_cosine + 0.3 × graph_proximity_bonus + 0.2 × text_mention_bonus + 0.1 × tag_overlap_bonus`
+  - `embedding_cosine`: raw cosine similarity from `query_related_notes` (typically [0, 1]), multiplied by 0.4
+  - `graph_proximity_bonus`: `0.3 / hop_distance` if the notes are within graph reach with no direct link, 0 if directly linked (cap at 0.3 for 1-hop)
+  - `text_mention_bonus`: 0.2 if a text mention exists (from `suggest_mentions`), 0 otherwise
+  - `tag_overlap_bonus`: Jaccard similarity of the two notes' tag sets, multiplied by 0.1
+- [ ] Apply a 1.15× multiplier to the total score for cross-community note pairs (notes whose closest communities differ)
+
+### 9.26.2 Suggestion persistence and feedback
+
+- [ ] Create a `link_suggestions` table in the SQLite cache: `id` (ULID), `source_document_id`, `target_document_id`, `score` (REAL), `signals` (JSON text), `status` (TEXT, default 'pending'), `created_at`, `accepted_at` (nullable), `rejected_at` (nullable)
+- [ ] On accepted suggestions: create a real link in the `links` table with `confidence = 'INFERRED'` and `confidence_score = score`
+- [ ] On rejected suggestions: set status to 'rejected' and deprioritize the same (source, target) pair from future suggestion runs (halve the score)
+- [ ] `vulcan suggest links --accept ID` and `vulcan suggest links --reject ID` for explicit user feedback
+- [ ] `vulcan suggest links --accepted` to list accepted suggestions that were auto-converted to links
+
+### 9.26.3 CLI and MCP surfaces
+
+- [ ] `vulcan suggest links [--note PATH] [--limit N] [--min-score S]` — ranked suggestion queue, scoped to one note or vault-wide
+- [ ] `vulcan suggest links --status pending|accepted|rejected` — filter by feedback state
+- [ ] `vulcan suggest links --apply [--dry-run]` — apply all pending suggestions above a configurable min-score threshold (default 0.6); respects auto-commit and `--no-commit`
+- [ ] Add `suggest_links` MCP tool to the notes-read pack (reading suggestions) and notes-write pack (accepting/rejecting)
+- [ ] JSON output: each suggestion includes score breakdown (`embedding_score`, `graph_score`, `mention_score`, `tag_score`, `cross_community_bonus`)
+
+### 9.26.4 Integration testing
+
+- [ ] Full pipeline test: scan → compute suggestions → verify ranking → accept one → verify link appears in graph → reject another → verify it's deprioritized
+- [ ] Test that cross-community suggestions get the bonus multiplier
+- [ ] Test that directly-linked note pairs are excluded (no self-suggestion of existing links, including INFERRED links from previously accepted suggestions)
+- [ ] Test idempotency: running suggestions twice produces identical scores on unchanged data
+
+### 9.26.5 Skill and AGENTS.md update
+
+- [ ] Add `suggest_links` to the `graph-exploration` skill in `docs/assistant/skills/graph-exploration.md` frontmatter `tools:` list once the MCP tool ships in 9.26.3, or create a new `link-curation` skill if the flow warrants a separate teaching surface.
+- [ ] Add example move: "Discover and review a ranked list of suggested connections for an orphan note, then accept the ones that make sense."
+- [ ] Update the `graph-exploration` skill’s Recommended Flow to include `suggest links` as a way to find connections when a note feels isolated in the graph.
+- [ ] If a new `link-curation` skill is created, add it to the AGENTS.md template so new vaults ship with it.
+
+## Phase 9.27: Confidence tagging on graph edges
+
+**Goal:** Add `confidence` (EXTRACTED/INFERRED/AMBIGUOUS) and `confidence_score` (0.0-1.0) to every edge in the link graph. This is a schema change that wires through the graph walking API, CLI surfaces, and MCP tools so consumers always know what was found vs. inferred from the source vault.
+
+**Depends on:** Links schema (existing), `graph export` (existing), `graph path` (existing), `graph hubs` (existing), MCP tool catalog (existing), link suggestions (9.26)
+
+**Schema migration:** Additive migration (no rebuild required). Existing links default to `confidence = 'EXTRACTED', confidence_score = 1.0`.
+
+### 9.27.1 Schema and migration
+
+- [ ] Add columns to `links` table: `confidence` TEXT NOT NULL DEFAULT 'EXTRACTED', `confidence_score` REAL NOT NULL DEFAULT 1.0
+- [ ] Add check constraint: `confidence IN ('EXTRACTED', 'INFERRED', 'AMBIGUOUS')`
+- [ ] Add check constraint: `confidence_score BETWEEN 0.0 AND 1.0`
+- [ ] Bump `user_version` pragma and add migration step
+- [ ] Write migration idempotency test: reindex twice, all links stay `confidence = 'EXTRACTED', confidence_score = 1.0`
+
+### 9.27.2 Confidence in graph queries
+
+- [ ] Augment `GraphAdjacency` to carry per-edge confidence metadata (prefer a parallel `HashMap<(String, String), (String, f64)>` lookup map rather than changing the `edges: Vec<(String, String)>` representation, to minimize disruption to existing callers)
+- [ ] `graph path` output: annotate each hop with its confidence label and score
+- [ ] `graph hubs` output: break down hub degree by confidence tier (N EXTRACTED edges, M INFERRED edges)
+- [ ] `graph export`: include `confidence` and `confidence_score` in the edge output
+- [ ] `graph stats`: add confidence breakdown (total EXTRACTED/INFERRED/AMBIGUOUS edges) to the analytics report
+
+### 9.27.3 Accepted suggestions become inferred edges
+
+- [ ] When a user accepts a `link_suggestions` entry (9.26.2), insert the corresponding row in `links` with `confidence = 'INFERRED', confidence_score = <suggestion score>`
+- [ ] Accepted edges participate fully in graph queries (path, hubs, communities, components) but are visually distinct in output
+- [ ] Recomputing suggestions for an already-accepted pair returns a note that a link exists (inferred), not a new suggestion
+
+### 9.27.4 CLI and MCP surfaces
+
+- [ ] All graph subcommands (`graph path`, `graph hubs`, `graph export`, `graph stats`) include confidence in their JSON output
+- [ ] All MCP tools that return graph data (`note_info`, `status`, and any dedicated graph tools added in 9.25/9.26) include confidence fields in structured content
+- [ ] `vulcan graph stats` adds a "Confidence" section to the human-readable output: `Edges: 1423 (1310 EXTRACTED, 98 INFERRED, 15 AMBIGUOUS)`
+
+### 9.27.5 Integration testing
+
+- [ ] Test that existing links survive reindex with confidence = EXTRACTED
+- [ ] Test that accepted suggestions produce confidence = INFERRED edges
+- [ ] Test that graph path traversal includes confidence on each hop
+- [ ] Test that MCP `note_info` returns confidence for resolved backlinks once 9.27 data is on the graph
+- [ ] Test schema downgrade safety (older cache version → correct error, not silent corruption)
+
+### 9.27.6 Skill and AGENTS.md update
+
+No skill changes required. Confidence tagging is internal metadata that enriches existing CLI output (`vulcan graph hubs`, `vulcan graph path`, `vulcan graph export`) and MCP tool responses (`graph_hubs`, `graph_path`, `graph_export` in the `graph-exploration` skill) without changing the tool surface. The skill's example moves and guardrails remain valid because these surfaces automatically include confidence context in their JSON output once this phase ships.
 
 ---
 
