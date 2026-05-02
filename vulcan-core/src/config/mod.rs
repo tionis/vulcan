@@ -271,9 +271,10 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # replacement = "Public"
 
 # [export.profiles.team-book]
-# format = "epub"  # markdown | json | csv | graph | epub | zip | sqlite | search-index
+# format = "epub"  # markdown | json | csv | graph | epub | zip | sqlite | search-index | frontend-bundle
 # query = 'from notes where file.path matches "^(People|Projects)/"'
 # path = "exports/team-book.epub"  # relative paths resolve from the vault root
+# site_profile = "public"          # frontend-bundle only: reuse one [site.profiles.<name>] publication profile
 # title = "Team Book"              # markdown heading or EPUB title, depending on format
 # author = "Vulcan"                # EPUB only
 # toc = "tree"                     # EPUB only: tree | flat
@@ -2316,6 +2317,7 @@ pub enum ExportProfileFormat {
     Zip,
     Sqlite,
     SearchIndex,
+    FrontendBundle,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -2345,6 +2347,7 @@ pub struct ExportProfileConfig {
     pub query: Option<String>,
     pub query_json: Option<String>,
     pub path: Option<PathBuf>,
+    pub site_profile: Option<String>,
     pub title: Option<String>,
     pub author: Option<String>,
     pub toc: Option<ExportEpubTocStyleConfig>,
@@ -7347,6 +7350,9 @@ fn merge_export_profile_config(target: &mut ExportProfileConfig, profile: Export
     if let Some(path) = profile.path {
         target.path = Some(path);
     }
+    if let Some(site_profile) = profile.site_profile {
+        target.site_profile = Some(site_profile);
+    }
     if let Some(title) = profile.title {
         target.title = Some(title);
     }
@@ -9882,6 +9888,7 @@ path = ".vulcan/plugins/custom-lint.js"
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn vulcan_config_loads_export_profiles() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path();
@@ -9898,6 +9905,11 @@ author = "Vulcan"
 toc = "flat"
 backlinks = true
 frontmatter = true
+
+[export.profiles.public_bundle]
+format = "frontend-bundle"
+path = "exports/public-bundle"
+site_profile = "public"
 
 [[export.profiles.team_book.content_transforms]]
 exclude_callouts = ["secret gm", "internal"]
@@ -9922,6 +9934,12 @@ regex = true
             .profiles
             .get("team_book")
             .expect("export profile should be loaded");
+        let public_bundle = loaded
+            .config
+            .export
+            .profiles
+            .get("public_bundle")
+            .expect("frontend bundle profile should be loaded");
 
         assert_eq!(profile.format, Some(ExportProfileFormat::Epub));
         assert_eq!(
@@ -9937,6 +9955,15 @@ regex = true
         assert_eq!(profile.toc, Some(ExportEpubTocStyleConfig::Flat));
         assert_eq!(profile.backlinks, Some(true));
         assert_eq!(profile.frontmatter, Some(true));
+        assert_eq!(
+            public_bundle.format,
+            Some(ExportProfileFormat::FrontendBundle)
+        );
+        assert_eq!(
+            public_bundle.path.as_ref(),
+            Some(&PathBuf::from("exports/public-bundle"))
+        );
+        assert_eq!(public_bundle.site_profile.as_deref(), Some("public"));
         assert_eq!(
             profile.content_transform_rules.as_ref().map(|rules| {
                 rules
@@ -10026,6 +10053,11 @@ regex = true
 format = "graph"
 path = "exports/graph.dot"
 graph_format = "dot"
+
+[export.profiles.public_bundle]
+format = "frontend-bundle"
+path = "exports/public-bundle"
+site_profile = "public-local"
 "#,
         )
         .expect("local config should be written");
@@ -10043,6 +10075,12 @@ graph_format = "dot"
             .profiles
             .get("graph_dump")
             .expect("local export profile should be loaded");
+        let public_bundle = loaded
+            .config
+            .export
+            .profiles
+            .get("public_bundle")
+            .expect("bundle export profile should be loaded");
 
         assert_eq!(team_book.format, Some(ExportProfileFormat::Epub));
         assert_eq!(
@@ -10093,6 +10131,15 @@ graph_format = "dot"
             Some(&PathBuf::from("exports/graph.dot"))
         );
         assert_eq!(graph_dump.graph_format, Some(ExportGraphFormatConfig::Dot));
+        assert_eq!(
+            public_bundle.format,
+            Some(ExportProfileFormat::FrontendBundle)
+        );
+        assert_eq!(
+            public_bundle.path.as_ref(),
+            Some(&PathBuf::from("exports/public-bundle"))
+        );
+        assert_eq!(public_bundle.site_profile.as_deref(), Some("public-local"));
     }
 
     #[test]

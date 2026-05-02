@@ -66,6 +66,7 @@ pub struct ExportProfileCreateRequest {
     pub query: Option<String>,
     pub query_json: Option<String>,
     pub path: PathBuf,
+    pub site_profile: Option<String>,
     pub title: Option<String>,
     pub author: Option<String>,
     pub toc: Option<ExportEpubTocStyleConfig>,
@@ -110,6 +111,7 @@ pub struct ExportProfileSetRequest {
     pub query_json: Option<String>,
     pub clear_query: bool,
     pub path: ConfigValueUpdate<PathBuf>,
+    pub site_profile: ConfigValueUpdate<String>,
     pub title: ConfigValueUpdate<String>,
     pub author: ConfigValueUpdate<String>,
     pub toc: ConfigValueUpdate<ExportEpubTocStyleConfig>,
@@ -3134,6 +3136,7 @@ pub fn export_profile_format_label(format: ExportProfileFormat) -> &'static str 
         ExportProfileFormat::Zip => "zip",
         ExportProfileFormat::Sqlite => "sqlite",
         ExportProfileFormat::SearchIndex => "search-index",
+        ExportProfileFormat::FrontendBundle => "frontend-bundle",
     }
 }
 
@@ -3196,6 +3199,7 @@ pub fn export_profile_query_args<'a>(
     Ok((query, query_json))
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn validate_export_profile_config(
     name: &str,
     profile: &ExportProfileConfig,
@@ -3250,16 +3254,28 @@ pub fn validate_export_profile_config(
     }
     if !matches!(
         format,
-        ExportProfileFormat::Json | ExportProfileFormat::SearchIndex
+        ExportProfileFormat::Json
+            | ExportProfileFormat::SearchIndex
+            | ExportProfileFormat::FrontendBundle
     ) && profile.pretty.is_some()
     {
         return Err(AppError::operation(format!(
-            "export profile `{name}` only supports `pretty` for json and search-index exports"
+            "export profile `{name}` only supports `pretty` for json, search-index, and frontend-bundle exports"
         )));
     }
     if !matches!(format, ExportProfileFormat::Graph) && profile.graph_format.is_some() {
         return Err(AppError::operation(format!(
             "export profile `{name}` only supports `graph_format` for graph exports"
+        )));
+    }
+    if matches!(format, ExportProfileFormat::FrontendBundle) && profile.site_profile.is_none() {
+        return Err(AppError::operation(format!(
+            "export profile `{name}` requires `site_profile` for frontend-bundle exports"
+        )));
+    }
+    if !matches!(format, ExportProfileFormat::FrontendBundle) && profile.site_profile.is_some() {
+        return Err(AppError::operation(format!(
+            "export profile `{name}` only supports `site_profile` for frontend-bundle exports"
         )));
     }
     if let Some(content_transform_rules) = profile.content_transform_rules.as_ref() {
@@ -3444,6 +3460,7 @@ fn build_export_profile_config(request: &ExportProfileCreateRequest) -> ExportPr
         query: request.query.clone(),
         query_json: request.query_json.clone(),
         path: Some(request.path.clone()),
+        site_profile: request.site_profile.clone(),
         title: request.title.clone(),
         author: request.author.clone(),
         toc: request.toc,
@@ -3564,6 +3581,7 @@ fn apply_export_profile_settings(
     }
 
     changed |= apply_updated_path(&mut profile.path, &request.path);
+    changed |= apply_updated_string(&mut profile.site_profile, &request.site_profile);
     changed |= apply_updated_string(&mut profile.title, &request.title);
     changed |= apply_updated_string(&mut profile.author, &request.author);
     changed |= apply_updated_value(&mut profile.toc, &request.toc);
@@ -3581,6 +3599,7 @@ fn export_profile_set_request_has_changes(request: &ExportProfileSetRequest) -> 
         || request.query_json.is_some()
         || request.clear_query
         || request.path.has_change()
+        || request.site_profile.has_change()
         || request.title.has_change()
         || request.author.has_change()
         || request.toc.has_change()
@@ -4134,6 +4153,7 @@ mod tests {
             query: Some("from notes".to_string()),
             query_json: None,
             path: PathBuf::from("exports/public.json"),
+            site_profile: None,
             title: None,
             author: None,
             toc: None,
@@ -4236,6 +4256,7 @@ mod tests {
                 query: Some("from notes".to_string()),
                 query_json: None,
                 path: PathBuf::from("exports/docs.md"),
+                site_profile: None,
                 title: Some("Docs".to_string()),
                 author: None,
                 toc: None,
@@ -4258,6 +4279,7 @@ mod tests {
                 query_json: Some("{\"source\":\"notes\"}".to_string()),
                 clear_query: false,
                 path: ConfigValueUpdate::Set(PathBuf::from("exports/docs.json")),
+                site_profile: ConfigValueUpdate::Keep,
                 title: ConfigValueUpdate::Clear,
                 author: ConfigValueUpdate::Keep,
                 toc: ConfigValueUpdate::Keep,
@@ -4284,6 +4306,58 @@ mod tests {
         assert!(contents.contains("format = \"json\""));
         assert!(contents.contains("query_json = "));
         assert!(!contents.contains("title = \"Docs\""));
+    }
+
+    #[test]
+    fn export_profile_create_and_set_support_frontend_bundle_site_profiles() {
+        let (_temp_dir, paths) = export_paths();
+        let create = apply_export_profile_create(
+            &paths,
+            "public_bundle",
+            &ExportProfileCreateRequest {
+                format: ExportProfileFormat::FrontendBundle,
+                query: None,
+                query_json: None,
+                path: PathBuf::from("exports/public-bundle"),
+                site_profile: Some("public".to_string()),
+                title: None,
+                author: None,
+                toc: None,
+                backlinks: false,
+                frontmatter: false,
+                pretty: true,
+                graph_format: None,
+            },
+            false,
+            false,
+        )
+        .expect("create frontend bundle profile");
+        assert_eq!(create.profile["format"], "frontend-bundle");
+        assert_eq!(create.profile["site_profile"], "public");
+
+        let update = apply_export_profile_set(
+            &paths,
+            "public_bundle",
+            &ExportProfileSetRequest {
+                format: None,
+                query: None,
+                query_json: None,
+                clear_query: false,
+                path: ConfigValueUpdate::Keep,
+                site_profile: ConfigValueUpdate::Set("docs".to_string()),
+                title: ConfigValueUpdate::Keep,
+                author: ConfigValueUpdate::Keep,
+                toc: ConfigValueUpdate::Keep,
+                backlinks: BoolConfigUpdate::Keep,
+                frontmatter: BoolConfigUpdate::Keep,
+                pretty: BoolConfigUpdate::Keep,
+                graph_format: ConfigValueUpdate::Keep,
+            },
+            false,
+        )
+        .expect("update frontend bundle profile");
+        assert_eq!(update.profile["site_profile"], "docs");
+        assert!(config_contents(paths.vault_root()).contains("site_profile = \"docs\""));
     }
 
     #[test]

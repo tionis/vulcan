@@ -6,6 +6,7 @@
 
 mod bases_tui;
 mod browse_tui;
+mod bundle_server;
 mod cli;
 mod commands;
 mod commit;
@@ -393,6 +394,7 @@ use crate::output::{
     render_human_value, select_fields, ListOutputControls,
 };
 use crate::resolve::{interactive_note_selection_allowed, resolve_note_argument};
+use bundle_server::{serve_frontend_bundle_profile, FrontendBundleServeOptions};
 use clap::error::ErrorKind;
 use clap::{CommandFactory, Parser};
 use clap_complete::generate;
@@ -451,9 +453,10 @@ use vulcan_app::notes::{
 };
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::site::{
+    build_frontend_bundle as app_build_frontend_bundle,
     build_site_doctor_report as app_build_site_doctor_report,
-    build_site_profiles_report as app_build_site_profiles_report, SiteBuildReport,
-    SiteBuildRequest, SiteDoctorReport, SiteProfileListEntry,
+    build_site_profiles_report as app_build_site_profiles_report, FrontendBundleRequest,
+    SiteBuildReport, SiteBuildRequest, SiteDoctorReport, SiteProfileListEntry,
 };
 use vulcan_app::tasks::{
     apply_task_add, apply_task_archive, apply_task_complete, apply_task_convert, apply_task_create,
@@ -8233,6 +8236,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     ExportProfileCommand::Run { name } => {
                         run_export_profile(cli, &paths, name, read_filter.as_ref())
                     }
+                    ExportProfileCommand::Serve {
+                        name,
+                        port,
+                        debounce_ms,
+                    } => run_export_profile_serve(&paths, name, *port, *debounce_ms),
                     ExportProfileCommand::Show { name } => {
                         run_export_profile_show(&paths, cli.output, name)
                     }
@@ -8242,6 +8250,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         query,
                         query_json,
                         path,
+                        site_profile,
                         title,
                         author,
                         toc,
@@ -8258,6 +8267,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                             query: query.clone(),
                             query_json: query_json.clone(),
                             path: path.clone(),
+                            site_profile: site_profile.clone(),
                             title: title.clone(),
                             author: author.clone(),
                             toc: export_epub_toc_style_config_from_cli(*toc),
@@ -8295,6 +8305,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         clear_query,
                         path,
                         clear_path,
+                        site_profile,
+                        clear_site_profile,
                         title,
                         clear_title,
                         author,
@@ -8321,6 +8333,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                                 ConfigValueUpdate::Clear
                             } else if let Some(path) = path {
                                 ConfigValueUpdate::Set(path.clone())
+                            } else {
+                                ConfigValueUpdate::Keep
+                            },
+                            site_profile: if *clear_site_profile {
+                                ConfigValueUpdate::Clear
+                            } else if let Some(site_profile) = site_profile {
+                                ConfigValueUpdate::Set(site_profile.clone())
                             } else {
                                 ConfigValueUpdate::Keep
                             },
@@ -11504,6 +11523,7 @@ fn export_profile_format_from_arg(format: ExportProfileFormatArg) -> ExportProfi
         ExportProfileFormatArg::Zip => ExportProfileFormat::Zip,
         ExportProfileFormatArg::Sqlite => ExportProfileFormat::Sqlite,
         ExportProfileFormatArg::SearchIndex => ExportProfileFormat::SearchIndex,
+        ExportProfileFormatArg::FrontendBundle => ExportProfileFormat::FrontendBundle,
     }
 }
 
@@ -15526,6 +15546,94 @@ fn run_search_index_export_profile(
     }))
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct FrontendBundleExportSummary {
+    path: String,
+    site_profile: String,
+    contract_path: String,
+    note_count: usize,
+    asset_count: usize,
+    search_enabled: bool,
+    graph_enabled: bool,
+    diagnostic_count: usize,
+}
+
+fn require_frontend_bundle_site_profile<'a>(
+    name: &str,
+    profile: &'a ExportProfileConfig,
+) -> Result<&'a str, CliError> {
+    profile.site_profile.as_deref().ok_or_else(|| {
+        CliError::operation(format!(
+            "export profile `{name}` requires `site_profile` for frontend-bundle exports"
+        ))
+    })
+}
+
+fn run_frontend_bundle_export_profile(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    profile_name: &str,
+    output_path: &Path,
+    profile: &ExportProfileConfig,
+) -> Result<Value, CliError> {
+    let site_profile = require_frontend_bundle_site_profile(profile_name, profile)?;
+    let report = app_build_frontend_bundle(
+        paths,
+        &FrontendBundleRequest {
+            profile: Some(site_profile.to_string()),
+            output_dir: output_path.to_path_buf(),
+            clean: false,
+            dry_run: false,
+            pretty: profile.pretty.unwrap_or(true),
+        },
+    )
+    .map_err(CliError::operation)?;
+    let summary = FrontendBundleExportSummary {
+        path: report.output_dir.clone(),
+        site_profile: site_profile.to_string(),
+        contract_path: PathBuf::from(&report.output_dir)
+            .join("frontend-bundle.json")
+            .display()
+            .to_string(),
+        note_count: report.note_count,
+        asset_count: report.asset_count,
+        search_enabled: report.contract.profile.search,
+        graph_enabled: report.contract.profile.graph,
+        diagnostic_count: report.diagnostics.len(),
+    };
+    finish_export_profile_binary(output, &summary.path, &summary)
+}
+
+fn run_export_profile_serve(
+    paths: &VaultPaths,
+    name: &str,
+    port: u16,
+    debounce_ms: u64,
+) -> Result<(), CliError> {
+    let profile = require_export_profile_config(paths, name)?;
+    validate_export_profile_config(name, &profile).map_err(CliError::operation)?;
+    let format = require_export_profile_format(name, &profile).map_err(CliError::operation)?;
+    if format != ExportProfileFormat::FrontendBundle {
+        return Err(CliError::operation(format!(
+            "export profile `{name}` must use format `frontend-bundle` for `export profile serve`"
+        )));
+    }
+    let output_path =
+        require_export_profile_path(paths, name, &profile).map_err(CliError::operation)?;
+    let site_profile = require_frontend_bundle_site_profile(name, &profile)?;
+    serve_frontend_bundle_profile(
+        paths,
+        &FrontendBundleServeOptions {
+            export_profile_name: name.to_string(),
+            site_profile_name: site_profile.to_string(),
+            output_dir: output_path,
+            port,
+            debounce_ms,
+            pretty: profile.pretty.unwrap_or(true),
+        },
+    )
+}
+
 fn run_export_profile(
     cli: &Cli,
     paths: &VaultPaths,
@@ -15614,6 +15722,9 @@ fn run_export_profile(
             &output_path,
             profile.pretty.unwrap_or(false),
         )?,
+        ExportProfileFormat::FrontendBundle => {
+            run_frontend_bundle_export_profile(cli.output, paths, name, &output_path, &profile)?
+        }
     };
 
     if cli.output == OutputFormat::Json {
@@ -21837,6 +21948,16 @@ mod tests {
         let export_profile_run =
             Cli::try_parse_from(["vulcan", "export", "profile", "run", "team-book"])
                 .expect("cli should parse");
+        let export_profile_serve = Cli::try_parse_from([
+            "vulcan",
+            "export",
+            "profile",
+            "serve",
+            "public-bundle",
+            "--port",
+            "4174",
+        ])
+        .expect("cli should parse");
         let export_profile_show =
             Cli::try_parse_from(["vulcan", "export", "profile", "show", "team-book"])
                 .expect("cli should parse");
@@ -22195,6 +22316,18 @@ mod tests {
             }
         );
         assert_eq!(
+            export_profile_serve.command,
+            Command::Export {
+                command: ExportCommand::Profile {
+                    command: ExportProfileCommand::Serve {
+                        name: "public-bundle".to_string(),
+                        port: 4174,
+                        debounce_ms: 100,
+                    },
+                },
+            }
+        );
+        assert_eq!(
             export_profile_show.command,
             Command::Export {
                 command: ExportCommand::Profile {
@@ -22214,6 +22347,7 @@ mod tests {
                         query: Some("from notes".to_string()),
                         query_json: None,
                         path: PathBuf::from("exports/team.epub"),
+                        site_profile: None,
                         title: Some("Team Notes".to_string()),
                         author: None,
                         toc: None,
@@ -22240,6 +22374,8 @@ mod tests {
                         clear_query: false,
                         path: None,
                         clear_path: false,
+                        site_profile: None,
+                        clear_site_profile: false,
                         title: None,
                         clear_title: false,
                         author: None,

@@ -13716,6 +13716,90 @@ fn export_profile_set_updates_profile_fields() {
 }
 
 #[test]
+fn export_profiles_run_frontend_bundle_profile() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[site.profiles.public]
+title = "Public Notes"
+home = "Home"
+include_paths = ["Home.md", "Projects/Alpha.md"]
+search = true
+graph = true
+"#,
+    )
+    .expect("site config should be written");
+    run_scan(&vault_root);
+
+    let vault_root_str = vault_root
+        .to_str()
+        .expect("vault path should be valid utf-8")
+        .to_string();
+
+    let create_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "export",
+            "profile",
+            "create",
+            "public_bundle",
+            "--format",
+            "frontend-bundle",
+            "-o",
+            "exports/public-bundle",
+            "--site-profile",
+            "public",
+        ])
+        .assert()
+        .success();
+    let create_json = parse_stdout_json(&create_assert);
+    assert_eq!(create_json["profile"]["format"], "frontend-bundle");
+    assert_eq!(create_json["profile"]["site_profile"], "public");
+
+    let run_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "export",
+            "profile",
+            "run",
+            "public_bundle",
+        ])
+        .assert()
+        .success();
+    let run_json = parse_stdout_json(&run_assert);
+    assert_eq!(run_json["name"], "public_bundle");
+    assert_eq!(run_json["format"], "frontend-bundle");
+    assert_eq!(run_json["summary"]["site_profile"], "public");
+    assert_eq!(
+        run_json["summary"]["path"],
+        vault_root
+            .join("exports/public-bundle")
+            .display()
+            .to_string()
+    );
+
+    let contract_path = vault_root.join("exports/public-bundle/frontend-bundle.json");
+    let contract = serde_json::from_str::<Value>(
+        &fs::read_to_string(&contract_path).expect("frontend bundle contract should exist"),
+    )
+    .expect("frontend bundle contract should parse");
+    assert_eq!(contract["contract"]["name"], "vulcan_frontend_bundle");
+    assert!(vault_root
+        .join("exports/public-bundle/notes/home/index.json")
+        .exists());
+}
+
+#[test]
 fn export_profile_create_and_run_support_content_transforms() {
     let (_temp_dir, vault_root) = build_export_replacement_transform_vault();
     let vault_root_str = vault_root
