@@ -49,7 +49,7 @@ Notes:
   `agent import` previews or applies imports from common external harness layouts such as `CLAUDE.md`,
   `.claude/commands/`, `.codex/prompts/`, and `.gemini/skills/`.
   Skills are installed in the harness-friendly layout `.agents/skills/<name>/SKILL.md`.
-  Use `--example-tool` to also scaffold a starter custom tool under `.agents/tools/`.
+  Use `--example-tool` to also scaffold a starter Agent Skills-compatible skill command under `.agents/skills/<example>/scripts/`, with command metadata in `SKILL.md` under `metadata.vulcan.commands`.
   Existing files are kept by default; use `--overwrite` to refresh them from the current Vulcan build.
 
 Examples:
@@ -69,16 +69,29 @@ Subcommands:
   list       enumerate visible bundled and vault-defined skills
   get        read one skill's metadata plus Markdown body
 
+Planned subcommands:
+  show       read one skill's metadata plus SKILL.md body (alias for get)
+  commands   list Vulcan-declared commands exported by one skill
+  run        run a skill command with validated JSON input
+  validate   validate skills, command metadata, schemas, scripts, and permission profile references
+  init       scaffold a new skill directory with optional starter command
+
 Notes:
   Skill visibility follows the active permission profile's read filter.
   External runtimes should call `skill list` up front and `skill get <name>` on demand.
   Skill names are normalized from folder names, but `skill get` also accepts the relative path.
+  Currently only `list` and `get` are implemented; the remaining subcommands are planned.
 
 Examples:
   vulcan skill list
   vulcan --output json skill list
   vulcan skill get note-operations
-  vulcan skill get weekly-review";
+  vulcan skill get weekly-review
+  // TODO: vulcan skill show daily-review
+  // TODO: vulcan skill commands daily-review
+  // TODO: vulcan skill run daily-review prepare-day --input-json '{\"date\":\"2026-05-05\",\"dryRun\":true}'
+  // TODO: vulcan skill validate
+  // TODO: vulcan skill init my-skill --starter-command hello";
 
 const TOOL_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
@@ -90,6 +103,9 @@ Subcommands:
   set        update common manifest fields without hand-editing YAML
 
 Notes:
+  New reusable callable automation should be packaged as Agent Skills-compatible
+  skill commands under `.agents/skills/<skill-name>/` with command metadata declared
+  in `SKILL.md` under `metadata.vulcan.commands`.
   Tool execution requires a trusted vault: `vulcan trust add`.
   `tool run` defaults to `{}` input when no `--input-json` or `--input-file` is provided.
   `tool set --secret name=ENV` replaces the full secret list for the tool.
@@ -101,7 +117,10 @@ Examples:
   vulcan tool run summarize_meeting --input-json '{\"note\":\"Meetings/Weekly.md\"}'
   vulcan tool init summarize_meeting --description \"Summarize one meeting note\"
   vulcan tool set summarize_meeting --sandbox fs --read-only --timeout-ms 5000
-  vulcan tool validate";
+  vulcan tool validate
+
+See also:
+  `vulcan skill` — Agent Skills-compatible skill commands (preferred for new automation)";
 
 const RENDER_COMMAND_AFTER_HELP: &str = "\
 Notes:
@@ -2875,7 +2894,7 @@ pub struct AgentInstallArgs {
     pub overwrite: bool,
     #[arg(
         long,
-        help = "Also scaffold an example custom tool into the configured assistant tools folder"
+        help = "Also scaffold an example Agent Skills-compatible skill command under .agents/skills/"
     )]
     pub example_tool: bool,
 }
@@ -2968,7 +2987,7 @@ pub struct InitArgs {
     #[arg(
         long,
         requires = "agent_files",
-        help = "Also scaffold an example custom tool into the configured assistant tools folder"
+        help = "Also scaffold an example Agent Skills-compatible skill command under .agents/skills/"
     )]
     pub example_tool: bool,
 }
