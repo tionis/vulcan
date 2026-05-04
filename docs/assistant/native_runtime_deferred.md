@@ -285,7 +285,11 @@ Preserved user-skill idea:
 
 Preserved executable-skill idea:
 
-- advanced skills may include JS scripts using `#!/usr/bin/env -S vulcan run --script`
+- User-defined skills should follow the Agent Skills directory format: `.agents/skills/<name>/SKILL.md` with optional `scripts/`, `references/`, and `assets/`.
+- Advanced skills may declare Vulcan-specific commands under `metadata.vulcan.commands` in `SKILL.md`.
+- A command usually points at a script under `scripts/` and may be projected as a CLI/MCP/describe tool.
+- Script shebangs should prefer `#!/usr/bin/env -S vulcan skill exec` or an equivalent stable runner so other harnesses can execute the command as a normal file.
+- The future native assistant should activate skills via progressive disclosure and call projected skill commands through the shared registry rather than inventing a native-only execution path.
 
 ## 9. Native chat runtime
 
