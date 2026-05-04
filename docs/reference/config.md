@@ -111,9 +111,11 @@ Top-level vault configuration not covered by a more specific section.
   Edit `assistant.prompts_folder` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set assistant.prompts_folder <value>`
 - `assistant.skills_folder` — type: `string`; target: `shared|local`; default: `.agents/skills`
+  Preferred root for Agent Skills-compatible skill packages. New callable automation should be packaged here.
   Edit `assistant.skills_folder` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set assistant.skills_folder <value>`
 - `assistant.tools_folder` — type: `string`; target: `shared|local`; default: `.agents/tools`
+  Standalone custom-tool root. Prefer skill commands under `assistant.skills_folder` for new callable automation.
   Edit `assistant.tools_folder` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set assistant.tools_folder <value>`
 - `chunking.overlap` — type: `integer`; target: `shared|local`; default: `0`

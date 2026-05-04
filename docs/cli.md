@@ -281,8 +281,12 @@ Behavior:
 
 ### Skill and skill-command commands
 
+Currently implemented:
 - `vulcan skill list`: list discovered Agent Skills-compatible skill directories.
-- `vulcan skill show <skill>`: show parsed metadata and `SKILL.md` instructions for one skill.
+- `vulcan skill get <skill>`: show parsed metadata and `SKILL.md` instructions for one skill.
+
+Planned skill-command surface (not yet implemented):
+- `vulcan skill show <skill>`: show parsed metadata and `SKILL.md` instructions for one skill (alias for `get`).
 - `vulcan skill commands <skill>`: list Vulcan-declared commands exported by one skill.
 - `vulcan skill run <skill> <command> --input-json <json>`: run one skill command with validated JSON input.
 - `vulcan skill validate [<skill>]`: validate skill frontmatter, command metadata, schemas, scripts, and permission-profile references.
@@ -303,9 +307,10 @@ Example:
 
 ```bash
 vulcan skill list
-vulcan skill show daily-review
-vulcan skill commands daily-review
-vulcan skill run daily-review prepare-day --input-json '{"date":"2026-05-05","dryRun":true}'
+vulcan skill get daily-review
+# Planned:
+# vulcan skill commands daily-review
+# vulcan skill run daily-review prepare-day --input-json '{"date":"2026-05-05","dryRun":true}'
 ```
 
 ### Plugin commands
