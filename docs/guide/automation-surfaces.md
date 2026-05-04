@@ -1,90 +1,85 @@
 # Automation Surfaces
 
-Vulcan has several related but different automation surfaces. They should be documented together so
-users do not have to infer architecture from implementation details.
+Vulcan has several related but different automation surfaces. They are documented together so users can choose the right abstraction without inferring architecture from implementation details.
 
 ## Short version
 
-- Use a **skill** to teach a workflow.
-- Use a **custom tool** to expose a reusable typed callable function.
+- Use a **skill** to package workflow instructions, examples, references, assets, and optional commands.
+- Use a **skill command** when part of a skill should be directly callable with typed input and output.
 - Use a **plugin** to react to Vulcan lifecycle events.
-- Use **`vulcan run`** for one-off or local scripting that does not need to become a first-class
-  discoverable tool.
+- Use **`vulcan run`** for one-off or local scripting that does not need to become a first-class skill command.
 
 ## Comparison
 
-| Surface | Primary purpose | Trigger | Discoverable as tool | Best for |
+| Surface | Primary purpose | Trigger | Discoverable as MCP/describe tool | Best for |
 |---|---|---|---|---|
-| Skill | Guidance and examples | Read by human/LLM | No | Teaching workflows |
-| Custom tool | Direct request/response callable | Explicit invocation | Yes | Reusable typed automation |
+| Skill | Portable workflow package | Activated by human/LLM | Catalog/resource, not executable by itself | Teaching workflows and bundling resources |
+| Skill command | Typed callable inside a skill | Explicit invocation | Yes, when projected | Reusable automation with schemas/permissions |
 | Plugin | Reactive hook | Lifecycle event | No | Policy, linting, post-action automation |
-| `vulcan run` script | Ad hoc script execution | Manual script run | No | One-off or local automation |
+| `vulcan run` script | Ad hoc script execution | Manual script run | No | One-off or experimental automation |
 
 ## Skills
 
-Skills are Markdown guidance files, usually under `.agents/skills/<name>/SKILL.md`.
+Skills are Agent Skills-compatible directories, usually under `.agents/skills/<name>/`.
+
+A skill contains a required `SKILL.md` file and may contain supporting directories such as `scripts/`, `references/`, and `assets/`.
 
 Use a skill when:
 
 - the main value is instructions, heuristics, examples, or sequencing advice
 - a human or LLM needs help choosing commands or avoiding common mistakes
-- the workflow can be expressed as "when to use this" and "how to approach it"
+- you want a portable package that other Agent Skills-compatible harnesses can inspect
+- the workflow needs supporting references, templates, or scripts
 
-Do not use a skill when:
+Do not use a skill alone when:
 
-- you need a typed callable interface with structured input and output
-- the behavior should be exported through MCP or `describe --format openai-tools`
-- the primary asset is executable logic rather than guidance
+- behavior must be callable by name with typed input and output
+- you need permission, secret, timeout, and output-schema metadata for a specific action
 
 Example:
 
-- "daily-review" is a skill because it teaches how to inspect the day's notes, search results, and
-  tasks, but does not need to be a single callable function.
+- `daily-review` is a skill because it teaches how to inspect the day's notes, tasks, and context. It may also export commands such as `prepare-day` and `process-inbox`.
 
-## Custom tools
+## Skill commands
 
-Custom tools are vault-defined callable functions, planned under `.agents/tools/<name>/`.
+Skill commands are executable entrypoints declared by a skill. They usually live under the skill's `scripts/` directory and are described under `metadata.vulcan.commands` in `SKILL.md`.
 
-Use a custom tool when:
+Use a skill command when:
 
-- the behavior should be callable by name from CLI, MCP, external runtimes, and JS
+- behavior should be callable by name from CLI, MCP, external runtimes, or JS
 - the function benefits from an explicit input schema and output schema
-- you want one reusable request/response surface rather than repeating script snippets
-
-Do not use a custom tool when:
-
-- the code should run automatically on events
-- the asset is mostly explanatory or instructional
-- the logic is purely one-off and does not justify registry/discovery overhead
+- the command needs scoped permissions, sandboxing, or secret bindings
+- the command belongs with skill instructions and examples rather than as an unrelated standalone script
 
 Examples:
 
-- `summarize_meeting`: read a note, return structured decisions and action items
-- `calendar_lookup`: call an external API and normalize the response into a stable JSON shape
-- `bulk_tag_cleanup`: take typed input and apply a constrained vault mutation
+- `daily-review.prepare-day`: read calendar/tasks/recent notes and propose a daily briefing
+- `gmail.triage`: read recent email and propose inbox items or tasks
+- `forgejo.project-status`: read issues/PRs and update a project status note
+
+Projected command names may be normalized for tool surfaces, for example `daily_review_prepare_day`.
 
 ## Plugins
 
-Plugins are event-driven JS hooks, usually registered under `[plugins.<name>]` and stored in
-`.vulcan/plugins/`.
+Plugins are event-driven JS hooks, usually registered under `[plugins.<name>]` and stored in `.vulcan/plugins/`.
 
 Use a plugin when:
 
-- the code should run because something happened in Vulcan
+- code should run because something happened in Vulcan
 - success or failure should block or annotate an existing operation
 - the right mental model is "hook into write/scan/commit/refactor"
 
 Do not use a plugin when:
 
 - a human or LLM should call the behavior directly by name
-- the behavior needs a typed request/response contract exposed to MCP or `describe`
-- the asset is primarily instructions or examples
+- behavior needs a typed request/response contract exposed to MCP or `describe`
+- the asset is primarily instructions, examples, or workflow guidance
 
 Examples:
 
 - reject note writes that violate formatting rules
 - run a linter before commit
-- emit a warning after scan completion if diagnostics crossed a threshold
+- emit a warning after scan completion if diagnostics cross a threshold
 
 ## `vulcan run` scripts
 
@@ -92,11 +87,11 @@ Examples:
 
 Use it when:
 
-- the automation is one-off or experimental
-- you are prototyping logic before deciding whether it deserves promotion into a custom tool
-- the code does not need registry-backed discovery or typed schemas
+- automation is one-off or experimental
+- you are prototyping logic before promoting it into a skill command
+- code does not need registry-backed discovery or typed schemas
 
-Promote a script into a custom tool when:
+Promote a script into a skill command when:
 
 - other people or agents should discover and call it by name
 - you want stable schemas and documentation
@@ -104,14 +99,14 @@ Promote a script into a custom tool when:
 
 ## Choosing the right surface
 
-If you are unsure, ask these questions in order:
+If unsure, ask these questions in order:
 
-1. Is the main asset instructions rather than code?
-   Then use a skill.
-2. Should it run automatically in response to Vulcan events?
-   Then use a plugin.
-3. Should it be directly callable by name with typed input and output?
-   Then use a custom tool.
+1. Is this a workflow package with instructions, references, assets, or examples?
+   Use a skill.
+2. Is part of that skill directly callable with typed input/output?
+   Add a skill command.
+3. Should code run automatically in response to Vulcan events?
+   Use a plugin.
 4. Is it still exploratory or personal automation?
    Start with `vulcan run`.
 
@@ -122,10 +117,10 @@ Scenario: "Teach the assistant how to do a weekly review."
 - Best fit: skill
 - Why: the main value is process guidance and examples
 
-Scenario: "Given a note path, return a structured meeting summary."
+Scenario: "Given a date, prepare a daily briefing with proposed note edits."
 
-- Best fit: custom tool
-- Why: direct invocation with typed input/output
+- Best fit: skill command inside a `daily-review` skill
+- Why: typed invocation plus skill-local guidance and templates
 
 Scenario: "Prevent commits if generated notes are malformed."
 
@@ -134,17 +129,15 @@ Scenario: "Prevent commits if generated notes are malformed."
 
 Scenario: "Try a one-off migration over a subset of notes."
 
-- Best fit: `vulcan run` script first
-- Why: low ceremony until the behavior stabilizes
+- Best fit: `vulcan run` first
+- Why: low ceremony until behavior stabilizes
 
 ## Documentation expectations
 
-The integrated help system and in-repo docs should describe these surfaces consistently. In
-particular, plugin docs should not assume users already understand how plugins differ from tools and
-skills, and custom tool docs should explain when a plugin or plain script would be the better fit.
+The integrated help system and in-repo docs should describe these surfaces consistently. Plugin docs should not assume users already understand how plugins differ from skills and skill commands. Skill-command docs should explain when a plugin or plain script would be the better fit.
 
 See also:
 
-- [custom_tools.md](../assistant/custom_tools.md)
+- [skill_commands.md](../assistant/skill_commands.md)
 - [plugins.md](../reference/js-api/plugins.md)
 - [scripting.md](./scripting.md)

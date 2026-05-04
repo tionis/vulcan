@@ -112,6 +112,27 @@ Current migration inventory for the Phase 9.22 cleanup:
 
 Contributor rule: new reusable business logic must not land in `vulcan-cli` unless it is unambiguously CLI- or TUI-only. Treat the size and responsibility spread of `vulcan-cli/src/lib.rs` as a migration target, not the desired steady state.
 
+### Agent Skills and projected skill commands
+
+Vulcan's assistant-facing automation should use Agent Skills-compatible skill directories as the portable packaging layer.
+
+A skill is a directory containing `SKILL.md` plus optional supporting resources such as `scripts/`, `references/`, and `assets/`. Vulcan discovers skills from `.agents/skills/` and configured skill roots. The `SKILL.md` frontmatter uses the official fields (`name`, `description`, `license`, `compatibility`, `allowed-tools`, and `metadata`) for cross-client compatibility.
+
+Vulcan-specific command declarations live under `metadata.vulcan.commands`. Each command is a named executable entrypoint, usually pointing at a file under the skill's `scripts/` directory. Commands declare JSON input and output schemas, sandbox requirements, permission-profile ceilings, secret bindings, pack membership, and exposure policy.
+
+The internal tool registry should treat built-in tools and projected skill commands uniformly. CLI, `describe`, MCP, internal JS APIs, schedulers, and future assistant runtimes should all call the same registry entry. The physical packaging is a skill directory; the callable surface is a projected tool.
+
+This replaces the earlier standalone `.agents/tools/<name>/TOOL.md` package model as the preferred user-facing format. A compatibility loader may remain useful, but new documentation and scaffolding should prefer skill commands.
+
+Design rules:
+
+- Discovery must be static and must not execute command code.
+- The vault remains the source of truth for skill package files.
+- SQLite may cache discovered skills and command metadata but remains rebuildable.
+- Effective authority is the restrictive intersection of caller profile, command profile, sandbox, trust state, and normal Vulcan path/network/execute checks.
+- Mutating commands should prefer proposal/dry-run output so Vulcan can preview diffs, checkpoint, approve, and audit side effects.
+- Grants should be bound to skill id, command id, script hash, and permission profile so code changes invalidate stale trust.
+
 ### 4.1 Publication transform rules
 
 Export, static site generation, and the future web wiki should share one publication model that separates **selection** from **transformation**.

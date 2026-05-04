@@ -402,7 +402,7 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Map, Value};
 use serve::{serve_forever, ServeOptions};
-use site_server::{build_site_with_policy, spawn_site_server, SiteServeOptions};
+use site_server::{build_site_with_policy_and_progress, spawn_site_server, SiteServeOptions};
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::ffi::OsString;
 use std::fmt::{Display, Formatter, Write as FmtWrite};
@@ -456,7 +456,8 @@ use vulcan_app::site::{
     build_frontend_bundle as app_build_frontend_bundle,
     build_site_doctor_report as app_build_site_doctor_report,
     build_site_profiles_report as app_build_site_profiles_report, FrontendBundleRequest,
-    SiteBuildReport, SiteBuildRequest, SiteDoctorReport, SiteProfileListEntry,
+    SiteBuildPhase, SiteBuildProgress, SiteBuildReport, SiteBuildRequest, SiteDoctorReport,
+    SiteProfileListEntry,
 };
 use vulcan_app::tasks::{
     apply_task_add, apply_task_archive, apply_task_complete, apply_task_convert, apply_task_create,
@@ -922,6 +923,94 @@ impl ScanProgressReporter {
                 }
             }
             ScanPhase::Completed => {}
+        }
+    }
+}
+
+struct SiteBuildProgressReporter {
+    palette: AnsiPalette,
+    started_at: Instant,
+    last_phase: Option<SiteBuildPhase>,
+    next_checkpoint: usize,
+}
+
+impl SiteBuildProgressReporter {
+    fn new(use_color: bool) -> Self {
+        Self {
+            palette: AnsiPalette::new(use_color),
+            started_at: Instant::now(),
+            last_phase: None,
+            next_checkpoint: 25,
+        }
+    }
+
+    fn record(&mut self, progress: &SiteBuildProgress) {
+        match progress.phase {
+            SiteBuildPhase::Planning => {
+                if self.last_phase != Some(progress.phase) {
+                    eprintln!("{}", self.palette.cyan("Planning site build..."));
+                    self.last_phase = Some(progress.phase);
+                }
+            }
+            SiteBuildPhase::RenderingNotes => {
+                if progress.processed == 0 {
+                    eprintln!(
+                        "{} {} note(s)...",
+                        self.palette.cyan("Rendering"),
+                        self.palette.bold(&progress.total.to_string()),
+                    );
+                    self.last_phase = Some(progress.phase);
+                    self.next_checkpoint = 25.min(progress.total.max(1));
+                    return;
+                }
+
+                if progress.processed >= self.next_checkpoint
+                    || progress.processed == progress.total
+                    || progress.total <= 10
+                {
+                    let elapsed = self.started_at.elapsed();
+                    let rate =
+                        count_as_f64(progress.processed) / elapsed.as_secs_f64().max(f64::EPSILON);
+                    let current = progress.current_path.as_deref().unwrap_or_default();
+                    eprintln!(
+                        "{} {}/{} note(s) | {}{}",
+                        self.palette.cyan("Rendered"),
+                        self.palette.bold(&progress.processed.to_string()),
+                        progress.total,
+                        self.palette.dim(&format!("{rate:.1} notes/s")),
+                        if current.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" | {}", self.palette.dim(current))
+                        }
+                    );
+                    while self.next_checkpoint <= progress.processed {
+                        self.next_checkpoint += 25;
+                    }
+                }
+            }
+            SiteBuildPhase::CopyingAssets => {
+                self.report_stage_once("Copying static assets...", progress.phase)
+            }
+            SiteBuildPhase::WritingSearchIndex => {
+                self.report_stage_once("Building search index...", progress.phase)
+            }
+            SiteBuildPhase::WritingGraph => {
+                self.report_stage_once("Building graph export...", progress.phase)
+            }
+            SiteBuildPhase::WritingPages => {
+                self.report_stage_once("Writing pages and manifests...", progress.phase)
+            }
+            SiteBuildPhase::Finalizing => {
+                self.report_stage_once("Finalizing site output...", progress.phase)
+            }
+        }
+    }
+
+    fn report_stage_once(&mut self, message: &str, phase: SiteBuildPhase) {
+        if self.last_phase != Some(phase) {
+            eprintln!("{}", self.palette.cyan(message));
+            self.last_phase = Some(phase);
         }
     }
 }
@@ -7385,7 +7474,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             handle_plugin_command(cli, &paths, command, stdout_is_tty, use_stdout_color)
         }
         Command::Tool { ref command } => handle_tool_command(cli, &paths, command),
-        Command::Site { ref command } => handle_site_command(cli.output, &paths, command),
+        Command::Site { ref command } => {
+            handle_site_command(cli.output, &paths, command, use_stderr_color)
+        }
         Command::Agent { ref command } => {
             commands::agent::handle_agent_command(cli, &paths, command)
         }
@@ -11745,6 +11836,7 @@ fn handle_site_command(
     output: OutputFormat,
     paths: &VaultPaths,
     command: &SiteCommand,
+    use_stderr_color: bool,
 ) -> Result<(), CliError> {
     match command {
         SiteCommand::Build {
@@ -11763,7 +11855,19 @@ fn handle_site_command(
                 clean: *clean,
                 dry_run: *dry_run,
             };
-            let report = build_site_with_policy(paths, &request, *strict, *fail_on_warning)?;
+            let mut progress = (output == OutputFormat::Human)
+                .then(|| SiteBuildProgressReporter::new(use_stderr_color));
+            let report = build_site_with_policy_and_progress(
+                paths,
+                &request,
+                *strict,
+                *fail_on_warning,
+                |event| {
+                    if let Some(progress) = progress.as_mut() {
+                        progress.record(event);
+                    }
+                },
+            )?;
             print_site_build_report(output, &report)?;
             if *watch {
                 watch_site_builds_forever(
@@ -11773,6 +11877,7 @@ fn handle_site_command(
                     *debounce_ms,
                     *strict,
                     *fail_on_warning,
+                    use_stderr_color,
                 )?;
             }
             Ok(())
@@ -12073,12 +12178,15 @@ fn watch_site_builds_forever(
     debounce_ms: u64,
     strict: bool,
     fail_on_warning: bool,
+    use_stderr_color: bool,
 ) -> Result<(), CliError> {
     watch_vault(paths, &WatchOptions { debounce_ms }, |watch_report| {
         if watch_report.startup {
             return Ok(());
         }
-        let report = build_site_with_policy(
+        let mut progress = (output == OutputFormat::Human)
+            .then(|| SiteBuildProgressReporter::new(use_stderr_color));
+        let report = build_site_with_policy_and_progress(
             paths,
             &SiteBuildRequest {
                 profile: request.profile.clone(),
@@ -12088,6 +12196,11 @@ fn watch_site_builds_forever(
             },
             strict,
             fail_on_warning,
+            |event| {
+                if let Some(progress) = progress.as_mut() {
+                    progress.record(event);
+                }
+            },
         )?;
         print_site_build_report(output, &report)
     })
@@ -16673,6 +16786,13 @@ fn builtin_help_topics() -> Vec<HelpTopicReport> {
             "Current scripting-oriented surfaces and the path to the standalone JS runtime.",
             include_str!("../../docs/guide/scripting.md"),
             &["sandbox", "js", "describe"],
+        ),
+        static_help_topic(
+            "skill-commands",
+            HelpTopicKind::Concept,
+            "Declare executable, schema-validated commands inside skills and expose them through CLI, MCP, describe, and JS.",
+            include_str!("../../docs/guide/skill-commands.md"),
+            &["skill command", "commands", "scripts", "scripts/", "mcp", "tool", "tools", "schema", "json schema", "permissions", "sandbox", "skill run"],
         ),
         static_help_topic(
             "static-sites",

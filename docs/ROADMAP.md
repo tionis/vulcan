@@ -5947,6 +5947,21 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 
 No skill changes required. Confidence tagging is internal metadata that enriches existing CLI output (`vulcan graph hubs`, `vulcan graph path`, `vulcan graph export`) and MCP tool responses (`graph_hubs`, `graph_path`, `graph_export` in the `graph-exploration` skill) without changing the tool surface. The skill's example moves and guardrails remain valid because these surfaces automatically include confidence context in their JSON output once this phase ships.
 
+### 9.28 Agent Skills-compatible skill commands
+
+**Goal:** Align Vulcan's executable assistant assets with the Agent Skills package format while preserving the shared registry, permission profiles, MCP exposure, and JS runtime.
+
+- [ ] Discover Agent Skills-compatible directories from `.agents/skills/<name>/SKILL.md` and configured skill roots.
+- [ ] Parse official skill frontmatter fields: `name`, `description`, `license`, `compatibility`, `allowed-tools`, and `metadata`.
+- [ ] Parse `metadata.vulcan.commands` as Vulcan-specific command declarations.
+- [ ] Validate command IDs, script paths, input/output schemas, sandbox values, permission-profile references, pack names, and exposure flags.
+- [ ] Add `vulcan skill list|show|commands|run|validate|init`.
+- [ ] Project trusted skill commands into the shared registry used by CLI, `describe`, MCP, and internal JS APIs.
+- [ ] Expose projected skill commands as first-class MCP tools and add MCP resources for skill index, skill content, command metadata, and resource listings.
+- [ ] Update `vulcan index init --agent-files --example-tool` and `vulcan agent install --example-tool` to scaffold an Agent Skills-compatible example with a command under `scripts/`.
+- [ ] Keep legacy standalone custom-tool loading, if implemented, as a compatibility path or migrate it into skill-command scaffolding.
+- [ ] Add docs and integrated help topics for `skill`, `skill-command`, `js.skills`, and the skills-vs-commands-vs-plugins decision model.
+
 ---
 
 ## New crates (Phases 10+)

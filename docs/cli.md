@@ -51,6 +51,9 @@ Useful starting points:
 - `vulcan plugin --help`
 - `vulcan edit --help`
 - `vulcan browse --help`
+- `vulcan skill --help`
+- `vulcan help skill`
+- `vulcan help skill-command`
 
 ## Global options and output behavior
 
@@ -91,7 +94,7 @@ Precedence is:
 3. `.obsidian/app.json`
 4. Built-in defaults
 
-`vulcan index init` creates `.vulcan/config.toml`, `cache.db`, and a default `.vulcan/.gitignore` that keeps `config.toml` tracked while ignoring `config.local.toml`. It also detects importable Obsidian settings and reports them; use `vulcan index init --import` to apply every detected importer immediately. Use `vulcan index init --agent-files` to write the bundled `AGENTS.md` template, default `.agents/skills/<name>/SKILL.md` reference files, and prompt examples into the vault. Add `--example-tool` to also scaffold a starter custom tool under the configured `assistant.tools_folder`.
+`vulcan index init` creates `.vulcan/config.toml`, `cache.db`, and a default `.vulcan/.gitignore` that keeps `config.toml` tracked while ignoring `config.local.toml`. It also detects importable Obsidian settings and reports them; use `vulcan index init --import` to apply every detected importer immediately. Use `vulcan index init --agent-files` to write the bundled `AGENTS.md` template, default Agent Skills-compatible `.agents/skills/<name>/SKILL.md` reference files, and prompt examples into the vault. Add `--example-tool` to also scaffold a starter skill command under `.agents/skills/<example>/scripts/` with the corresponding `metadata.vulcan.commands` entry in `SKILL.md`.
 
 Automatic cache refresh is configured under `[scan]`:
 
@@ -147,8 +150,8 @@ Behavior:
 
 ### Indexing, cache, and local service commands
 
-- `vulcan index init [--import|--no-import] [--agent-files] [--example-tool]`: create `.vulcan/`, `cache.db`, `config.toml`, and the local ignore rules; optionally import all detected Obsidian settings immediately and optionally write the bundled AGENTS/skills/prompt files plus a starter custom tool.
-- `vulcan agent install [--overwrite] [--example-tool]`: install or refresh the bundled `AGENTS.md` template, default `.agents/skills/<name>/SKILL.md` files, prompt files, and an optional starter custom tool for external agent harnesses.
+- `vulcan index init [--import|--no-import] [--agent-files] [--example-tool]`: create `.vulcan/`, `cache.db`, `config.toml`, and the local ignore rules; optionally import detected Obsidian settings and write bundled AGENTS/skills/prompt files. `--example-tool` scaffolds a starter Agent Skills-compatible skill command.
+- `vulcan agent install [--overwrite] [--example-tool]`: install or refresh the bundled `AGENTS.md` template, default `.agents/skills/<name>/SKILL.md` files, prompt files, and an optional starter skill command for external agent harnesses.
 - `vulcan index scan [--full] [--no-commit]`: perform an incremental or full scan and refresh the cache.
 - `vulcan index rebuild [--dry-run]`: rebuild the cache from disk.
 - `vulcan index repair fts [--dry-run]`: rebuild the full-text search index from cached chunks.
@@ -274,6 +277,36 @@ Behavior:
 - The REPL supports multiline input, tab completion, history in `.vulcan/repl_history`, pretty-printed objects, and preserved JS variables between prompts.
 - The runtime exposes `vault.note()`, `vault.notes()`, `vault.query()`, `vault.search()`, `vault.graph.*`, `vault.daily.*`, `vault.events()`, `vault.set/create/append/patch/update/unset`, `vault.transaction()`, `vault.refactor.*`, `web.search()`, `web.fetch()`, and `help(obj)`.
 - `vault.note(path).outline()` returns the same semantic section/block outline as `vulcan note outline`, and `vault.note(path).read(opts)` reuses the same section/heading/block/line/match selectors as `vulcan note get`.
+- Use `vulcan run` for exploratory scripts. Promote reusable scripts into Agent Skills-compatible skill commands when they need discovery, schemas, permissions, MCP exposure, or cross-harness packaging.
+
+### Skill and skill-command commands
+
+- `vulcan skill list`: list discovered Agent Skills-compatible skill directories.
+- `vulcan skill show <skill>`: show parsed metadata and `SKILL.md` instructions for one skill.
+- `vulcan skill commands <skill>`: list Vulcan-declared commands exported by one skill.
+- `vulcan skill run <skill> <command> --input-json <json>`: run one skill command with validated JSON input.
+- `vulcan skill validate [<skill>]`: validate skill frontmatter, command metadata, schemas, scripts, and permission-profile references.
+- `vulcan skill init <name>`: scaffold a new skill directory with `SKILL.md` and optional starter command.
+
+Behavior:
+
+- Skills are discovered from `.agents/skills/<name>/SKILL.md` and other configured skill roots.
+- Vulcan-specific command metadata lives under `metadata.vulcan.commands` in `SKILL.md`.
+- Commands usually point at scripts under the skill's `scripts/` directory.
+- Command input is validated with JSON Schema before execution.
+- Command output is validated when an output schema is declared.
+- Trusted skill commands may be projected into `vulcan describe --format mcp|openai-tools|json-schema` and into the live MCP server as first-class tools.
+- Mutating commands should support dry-run/proposal output so Vulcan can preview diffs, require approval, and write audit records.
+- Skill-command permissions are the intersection of the active caller profile, the command's declared permission profile, its sandbox, and normal Vulcan path/network/execute checks.
+
+Example:
+
+```bash
+vulcan skill list
+vulcan skill show daily-review
+vulcan skill commands daily-review
+vulcan skill run daily-review prepare-day --input-json '{"date":"2026-05-05","dryRun":true}'
+```
 
 ### Plugin commands
 
