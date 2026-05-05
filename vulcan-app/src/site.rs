@@ -10,6 +10,7 @@ use crate::AppError;
 use regex::Regex;
 use serde::Serialize;
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
@@ -1923,17 +1924,16 @@ where
         })
         .map(|(index, note, route)| {
             let source_links = links_by_source
-                .get(&note.note.document_path)
-                .cloned()
-                .unwrap_or_default();
+                .get(note.note.document_path.as_str())
+                .map_or(&[][..], Vec::as_slice);
             let adjusted = apply_link_policy_to_source(
                 &note.content,
-                &source_links,
+                source_links,
                 &published_paths,
                 plan.profile.link_policy,
             );
             let rendered = html_renderer.render(
-                &adjusted,
+                adjusted.as_ref(),
                 &HtmlRenderOptions {
                     source_path: Some(&note.note.document_path),
                     full_document: true,
@@ -1952,7 +1952,7 @@ where
             );
             let diagnostics = rendered.diagnostics.clone();
             let title = note_title(&note.note, &plan.profile.name, rendered.title.as_deref());
-            let excerpt = excerpt_from_markdown(&adjusted);
+            let excerpt = excerpt_from_markdown(adjusted.as_ref());
             let outgoing_links = source_links
                 .iter()
                 .filter_map(|link| link.resolved_target_path.clone())
@@ -3187,13 +3187,13 @@ fn build_sitemap(
     format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?><urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">{body}</urlset>")
 }
 
-fn links_by_source(links: &[ExportLinkRecord]) -> HashMap<String, Vec<ExportLinkRecord>> {
-    let mut grouped = HashMap::<String, Vec<ExportLinkRecord>>::new();
+fn links_by_source(links: &[ExportLinkRecord]) -> HashMap<&str, Vec<&ExportLinkRecord>> {
+    let mut grouped = HashMap::<&str, Vec<&ExportLinkRecord>>::new();
     for link in links {
         grouped
-            .entry(link.source_document_path.clone())
+            .entry(link.source_document_path.as_str())
             .or_default()
-            .push(link.clone());
+            .push(link);
     }
     grouped
 }
@@ -3298,17 +3298,17 @@ fn collect_asset_links(links: &[ExportLinkRecord], deploy_path: &str) -> HashMap
         .collect()
 }
 
-fn apply_link_policy_to_source(
-    source: &str,
-    links: &[ExportLinkRecord],
+fn apply_link_policy_to_source<'a>(
+    source: &'a str,
+    links: &[&ExportLinkRecord],
     published_paths: &HashSet<String>,
     policy: SiteLinkPolicyConfig,
-) -> String {
+) -> Cow<'a, str> {
     if !matches!(
         policy,
         SiteLinkPolicyConfig::DropLink | SiteLinkPolicyConfig::RenderPlainText
     ) {
-        return source.to_string();
+        return Cow::Borrowed(source);
     }
     let mut replacements = links
         .iter()
@@ -3339,6 +3339,9 @@ fn apply_link_policy_to_source(
             Some((start, end, replacement))
         })
         .collect::<Vec<_>>();
+    if replacements.is_empty() {
+        return Cow::Borrowed(source);
+    }
     replacements.sort_by_key(|(start, _, _)| *start);
     replacements.reverse();
     let mut rendered = source.to_string();
@@ -3347,7 +3350,7 @@ fn apply_link_policy_to_source(
             rendered.replace_range(start..end, &replacement);
         }
     }
-    rendered
+    Cow::Owned(rendered)
 }
 
 fn is_markdown_asset(link: &ExportLinkRecord) -> bool {
@@ -4202,6 +4205,7 @@ fn site_link_policy_level(policy: SiteLinkPolicyConfig) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::borrow::Cow;
     use std::fs;
     use tempfile::TempDir;
     use vulcan_core::{scan_vault, ScanMode};
@@ -4346,6 +4350,28 @@ mod tests {
                 "/assets/images/diagram.png".to_string()
             ))
         );
+    }
+
+    #[test]
+    fn apply_link_policy_to_source_borrows_when_no_rewrite_is_needed() {
+        let published = HashSet::from(["Notes/Target.md".to_string()]);
+        let note_link = export_link_record("[[Notes/Target]]", Some("Notes/Target.md"), Some("md"));
+
+        let unchanged = apply_link_policy_to_source(
+            "[[Notes/Target]]",
+            &[&note_link],
+            &published,
+            SiteLinkPolicyConfig::Warn,
+        );
+        assert!(matches!(unchanged, Cow::Borrowed(_)));
+
+        let dropped = apply_link_policy_to_source(
+            "[[Notes/Target]]",
+            &[&note_link],
+            &HashSet::new(),
+            SiteLinkPolicyConfig::DropLink,
+        );
+        assert!(matches!(dropped, Cow::Owned(_)));
     }
 
     #[test]
