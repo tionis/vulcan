@@ -8,7 +8,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use vulcan_app::site::{build_site as app_build_site, SiteBuildReport, SiteBuildRequest};
+use vulcan_app::site::{
+    build_site as app_build_site, build_site_with_progress as app_build_site_with_progress,
+    SiteBuildProgress, SiteBuildReport, SiteBuildRequest,
+};
 use vulcan_core::{watch_vault_until, VaultPaths, WatchOptions};
 
 #[derive(Debug, Clone)]
@@ -121,6 +124,19 @@ pub(crate) fn build_site_with_policy(
     strict: bool,
     fail_on_warning: bool,
 ) -> Result<SiteBuildReport, CliError> {
+    build_site_with_policy_and_progress(paths, request, strict, fail_on_warning, |_| {})
+}
+
+pub(crate) fn build_site_with_policy_and_progress<F>(
+    paths: &VaultPaths,
+    request: &SiteBuildRequest,
+    strict: bool,
+    fail_on_warning: bool,
+    mut progress: F,
+) -> Result<SiteBuildReport, CliError>
+where
+    F: FnMut(&SiteBuildProgress),
+{
     if strict || fail_on_warning {
         let mut preflight = request.clone();
         preflight.dry_run = true;
@@ -129,7 +145,8 @@ pub(crate) fn build_site_with_policy(
             return Err(CliError::operation(message));
         }
     }
-    app_build_site(paths, request).map_err(CliError::operation)
+    app_build_site_with_progress(paths, request, |event| progress(event))
+        .map_err(CliError::operation)
 }
 
 #[allow(clippy::too_many_lines)]

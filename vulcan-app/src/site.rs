@@ -416,6 +416,25 @@ pub struct SiteBuildRequest {
     pub dry_run: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiteBuildPhase {
+    Planning,
+    RenderingNotes,
+    CopyingAssets,
+    WritingSearchIndex,
+    WritingGraph,
+    WritingPages,
+    Finalizing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SiteBuildProgress {
+    pub phase: SiteBuildPhase,
+    pub processed: usize,
+    pub total: usize,
+    pub current_path: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct SiteBuildReport {
     pub profile: String,
@@ -699,6 +718,18 @@ pub fn build_site(
     paths: &VaultPaths,
     request: &SiteBuildRequest,
 ) -> Result<SiteBuildReport, AppError> {
+    build_site_with_progress(paths, request, |_| {})
+}
+
+pub fn build_site_with_progress<F>(
+    paths: &VaultPaths,
+    request: &SiteBuildRequest,
+    mut progress: F,
+) -> Result<SiteBuildReport, AppError>
+where
+    F: FnMut(&SiteBuildProgress),
+{
+    report_site_build_progress(&mut progress, SiteBuildPhase::Planning, 0, 0, None);
     let plan = plan_site(
         paths,
         request.profile.as_deref(),
@@ -708,7 +739,7 @@ pub fn build_site(
         fs::remove_dir_all(&plan.profile.output_dir).map_err(AppError::operation)?;
     }
     let output_dir = plan.profile.output_dir.clone();
-    let mut rendered_notes = render_site_notes(paths, &plan)?;
+    let mut rendered_notes = render_site_notes(paths, &plan, &mut progress)?;
     rendered_notes.sort_by(|left, right| left.route.url_path.cmp(&right.route.url_path));
 
     let routes_by_path = rendered_notes
@@ -722,6 +753,7 @@ pub fn build_site(
     let mut files = BTreeSet::<String>::new();
     let mut changed_files = BTreeSet::<String>::new();
     let mut asset_count = 0_usize;
+    report_site_build_progress(&mut progress, SiteBuildPhase::CopyingAssets, 0, 0, None);
 
     if !request.dry_run {
         fs::create_dir_all(&output_dir).map_err(AppError::operation)?;
@@ -902,6 +934,13 @@ pub fn build_site(
     files.insert("assets/related-notes.json".to_string());
 
     if plan.profile.search {
+        report_site_build_progress(
+            &mut progress,
+            SiteBuildPhase::WritingSearchIndex,
+            0,
+            0,
+            None,
+        );
         let search_index = build_search_index(paths, &plan.notes, &routes_by_path)?;
         let search_json =
             serde_json::to_string_pretty(&search_index).map_err(AppError::operation)?;
@@ -936,6 +975,7 @@ pub fn build_site(
     }
 
     if plan.profile.graph {
+        report_site_build_progress(&mut progress, SiteBuildPhase::WritingGraph, 0, 0, None);
         let graph_json = build_graph_asset(paths, &rendered_notes)?;
         let graph_path = output_dir.join("assets/graph.json");
         if !request.dry_run {
@@ -977,6 +1017,7 @@ pub fn build_site(
         files.insert("rss.xml".to_string());
     }
 
+    report_site_build_progress(&mut progress, SiteBuildPhase::WritingPages, 0, 0, None);
     let folder_pages = render_folder_pages(&context, &folder_index, &plan.profile);
     for (relative_path, body) in folder_pages {
         if !request.dry_run && write_output_file(&output_dir.join(&relative_path), &body)? {
@@ -1038,6 +1079,7 @@ pub fn build_site(
     } else {
         remove_stale_output_files(&output_dir, &files)?
     };
+    report_site_build_progress(&mut progress, SiteBuildPhase::Finalizing, 0, 0, None);
     changed_files.extend(deleted_files.iter().cloned());
     let file_list = files.into_iter().collect::<Vec<_>>();
     Ok(SiteBuildReport {
@@ -1065,6 +1107,23 @@ pub fn build_site(
     })
 }
 
+fn report_site_build_progress<F>(
+    progress: &mut F,
+    phase: SiteBuildPhase,
+    processed: usize,
+    total: usize,
+    current_path: Option<String>,
+) where
+    F: FnMut(&SiteBuildProgress),
+{
+    progress(&SiteBuildProgress {
+        phase,
+        processed,
+        total,
+        current_path,
+    });
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn build_frontend_bundle(
     paths: &VaultPaths,
@@ -1080,7 +1139,7 @@ pub fn build_frontend_bundle(
     }
 
     let output_dir = plan.profile.output_dir.clone();
-    let mut rendered_notes = render_site_notes(paths, &plan)?;
+    let mut rendered_notes = render_site_notes(paths, &plan, &mut |_| {})?;
     rendered_notes.sort_by(|left, right| left.route.url_path.cmp(&right.route.url_path));
 
     let routes_by_path = rendered_notes
@@ -1818,7 +1877,14 @@ fn collect_site_diagnostics(
     diagnostics
 }
 
-fn render_site_notes(paths: &VaultPaths, plan: &SitePlan) -> Result<Vec<RenderedNote>, AppError> {
+fn render_site_notes<F>(
+    paths: &VaultPaths,
+    plan: &SitePlan,
+    progress: &mut F,
+) -> Result<Vec<RenderedNote>, AppError>
+where
+    F: FnMut(&SiteBuildProgress),
+{
     let route_map = plan
         .routes
         .iter()
@@ -1843,15 +1909,18 @@ fn render_site_notes(paths: &VaultPaths, plan: &SitePlan) -> Result<Vec<Rendered
         asset_hrefs: asset_hrefs.clone(),
         tag_hrefs,
     };
+    let total = plan.notes.len();
+    report_site_build_progress(progress, SiteBuildPhase::RenderingNotes, 0, total, None);
 
     plan.notes
         .iter()
-        .filter_map(|note| {
+        .enumerate()
+        .filter_map(|(index, note)| {
             route_map
                 .get(&note.note.document_path)
-                .map(|route| (note, route))
+                .map(|route| (index, note, route))
         })
-        .map(|(note, route)| {
+        .map(|(index, note, route)| {
             let source_links = links_by_source
                 .get(&note.note.document_path)
                 .cloned()
@@ -1925,7 +1994,7 @@ fn render_site_notes(paths: &VaultPaths, plan: &SitePlan) -> Result<Vec<Rendered
                 frontmatter_override(&note.note, &plan.profile.name, "canonical_url");
             let summary_image =
                 frontmatter_override(&note.note, &plan.profile.name, "summary_image");
-            Ok(RenderedNote {
+            let rendered_note = RenderedNote {
                 source_path: note.note.document_path.clone(),
                 title,
                 excerpt,
@@ -1947,7 +2016,15 @@ fn render_site_notes(paths: &VaultPaths, plan: &SitePlan) -> Result<Vec<Rendered
                 embeds,
                 diagnostics,
                 file_mtime: note.note.file_mtime,
-            })
+            };
+            report_site_build_progress(
+                progress,
+                SiteBuildPhase::RenderingNotes,
+                index + 1,
+                total,
+                Some(rendered_note.source_path.clone()),
+            );
+            Ok(rendered_note)
         })
         .collect()
 }
@@ -2966,6 +3043,10 @@ fn build_search_index(
         .iter()
         .map(|note| note.note.document_path.as_str())
         .collect::<HashSet<_>>();
+    let note_tags = notes
+        .iter()
+        .map(|note| (note.note.document_path.as_str(), note.note.tags.clone()))
+        .collect::<HashMap<_, _>>();
     let static_index = export_static_search_index(paths).map_err(AppError::operation)?;
     let entries = static_index
         .entries
@@ -2973,15 +3054,12 @@ fn build_search_index(
         .filter(|entry| published.contains(entry.document_path.as_str()))
         .filter_map(|entry| {
             let route = routes_by_path.get(&entry.document_path)?;
-            let title = routes_by_path.get(&entry.document_path).map_or_else(
-                || trim_markdown_extension(&entry.document_path).to_string(),
-                |site_route| site_route.title.clone(),
-            );
+            let title = route.title.clone();
             let excerpt = excerpt_from_markdown(&entry.content);
-            let tags = notes
-                .iter()
-                .find(|note| note.note.document_path == entry.document_path)
-                .map_or_else(Vec::new, |note| note.note.tags.clone());
+            let tags = note_tags
+                .get(entry.document_path.as_str())
+                .cloned()
+                .unwrap_or_default();
             Some(SearchIndexEntry {
                 title,
                 url: route.url_path.clone(),
