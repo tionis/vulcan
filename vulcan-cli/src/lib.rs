@@ -990,19 +990,19 @@ impl SiteBuildProgressReporter {
                 }
             }
             SiteBuildPhase::CopyingAssets => {
-                self.report_stage_once("Copying static assets...", progress.phase)
+                self.report_stage_once("Copying static assets...", progress.phase);
             }
             SiteBuildPhase::WritingSearchIndex => {
-                self.report_stage_once("Building search index...", progress.phase)
+                self.report_stage_once("Building search index...", progress.phase);
             }
             SiteBuildPhase::WritingGraph => {
-                self.report_stage_once("Building graph export...", progress.phase)
+                self.report_stage_once("Building graph export...", progress.phase);
             }
             SiteBuildPhase::WritingPages => {
-                self.report_stage_once("Writing pages and manifests...", progress.phase)
+                self.report_stage_once("Writing pages and manifests...", progress.phase);
             }
             SiteBuildPhase::Finalizing => {
-                self.report_stage_once("Finalizing site output...", progress.phase)
+                self.report_stage_once("Finalizing site output...", progress.phase);
             }
         }
     }
@@ -16791,7 +16791,7 @@ fn builtin_help_topics() -> Vec<HelpTopicReport> {
             "skill-commands",
             HelpTopicKind::Concept,
             "Declare executable, schema-validated commands inside skills and expose them through CLI, MCP, describe, and JS.",
-            include_str!("../../docs/guide/skill-commands.md"),
+            include_str!("../../docs/guide/skill_command.md"),
             &["skill command", "commands", "scripts", "scripts/", "mcp", "tool", "tools", "schema", "json schema", "permissions", "sandbox", "skill run"],
         ),
         static_help_topic(

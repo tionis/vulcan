@@ -150,7 +150,7 @@
                 ]
               },
               {
-                "help": "Also scaffold an example custom tool into the configured assistant tools folder",
+                "help": "Also scaffold an example Agent Skills-compatible skill command under .agents/skills/",
                 "id": "example_tool",
                 "long": "example-tool",
                 "possible_values": [
@@ -5951,7 +5951,7 @@
       },
       {
         "about": "Install bundled files for external agent harnesses",
-        "after_help": "Notes:\n  `agent install` writes the bundled `AGENTS.md` template, default Vulcan skills, and prompt files.\n  `agent print-config` emits runtime-oriented wrapper snippets, command examples, and folder paths.\n  `agent import` previews or applies imports from common external harness layouts such as `CLAUDE.md`,\n  `.claude/commands/`, `.codex/prompts/`, and `.gemini/skills/`.\n  Skills are installed in the harness-friendly layout `.agents/skills/<name>/SKILL.md`.\n  Use `--example-tool` to also scaffold a starter custom tool under `.agents/tools/`.\n  Existing files are kept by default; use `--overwrite` to refresh them from the current Vulcan build.\n\nExamples:\n  vulcan agent install\n  vulcan agent install --example-tool\n  vulcan agent install --overwrite\n  vulcan agent print-config --runtime pi\n  vulcan agent print-config --runtime codex\n  vulcan agent import\n  vulcan agent import --apply\n  vulcan agent import --apply --symlink\n  vulcan init --agent-files\n  vulcan init --agent-files --example-tool",
+        "after_help": "Notes:\n  `agent install` writes the bundled `AGENTS.md` template, default Vulcan skills, and prompt files.\n  `agent print-config` emits runtime-oriented wrapper snippets, command examples, and folder paths.\n  `agent import` previews or applies imports from common external harness layouts such as `CLAUDE.md`,\n  `.claude/commands/`, `.codex/prompts/`, and `.gemini/skills/`.\n  Skills are installed in the harness-friendly layout `.agents/skills/<name>/SKILL.md`.\n  Use `--example-tool` to also scaffold a starter Agent Skills-compatible skill command under `.agents/skills/<example>/scripts/`, with command metadata in `SKILL.md` under `metadata.vulcan.commands`.\n  Existing files are kept by default; use `--overwrite` to refresh them from the current Vulcan build.\n\nExamples:\n  vulcan agent install\n  vulcan agent install --overwrite\n  vulcan agent print-config --runtime pi\n  vulcan agent print-config --runtime codex\n  vulcan agent import\n  vulcan agent import --apply\n  vulcan agent import --apply --symlink\n  vulcan init --agent-files",
         "name": "agent",
         "options": [],
         "subcommands": [
@@ -5974,7 +5974,7 @@
                 ]
               },
               {
-                "help": "Also scaffold an example custom tool into the configured assistant tools folder",
+                "help": "Also scaffold an example Agent Skills-compatible skill command under .agents/skills/",
                 "id": "example_tool",
                 "long": "example-tool",
                 "possible_values": [
@@ -6081,7 +6081,7 @@
       },
       {
         "about": "List and read bundled or vault-defined assistant skills",
-        "after_help": "Subcommands:\n  list       enumerate visible bundled and vault-defined skills\n  get        read one skill's metadata plus Markdown body\n\nNotes:\n  Skill visibility follows the active permission profile's read filter.\n  External runtimes should call `skill list` up front and `skill get <name>` on demand.\n  Skill names are normalized from folder names, but `skill get` also accepts the relative path.\n\nExamples:\n  vulcan skill list\n  vulcan --output json skill list\n  vulcan skill get note-operations\n  vulcan skill get weekly-review",
+        "after_help": "Subcommands:\n  list       enumerate visible bundled and vault-defined skills\n  get        read one skill's metadata plus Markdown body\n\nPlanned subcommands:\n  show       read one skill's metadata plus SKILL.md body (alias for get)\n  commands   list Vulcan-declared commands exported by one skill\n  run        run a skill command with validated JSON input\n  validate   validate skills, command metadata, schemas, scripts, and permission profile references\n  init       scaffold a new skill directory with optional starter command\n\nNotes:\n  Skill visibility follows the active permission profile's read filter.\n  External runtimes should call `skill list` up front and `skill get <name>` on demand.\n  Skill names are normalized from folder names, but `skill get` also accepts the relative path.\n  Currently only `list` and `get` are implemented; the remaining subcommands are planned.\n\nExamples:\n  vulcan skill list\n  vulcan --output json skill list\n  vulcan skill get note-operations\n  vulcan skill get weekly-review\n  // TODO: vulcan skill show daily-review\n  // TODO: vulcan skill commands daily-review\n  // TODO: vulcan skill run daily-review prepare-day --input-json '{\"date\":\"2026-05-05\",\"dryRun\":true}'\n  // TODO: vulcan skill validate\n  // TODO: vulcan skill init my-skill --starter-command hello",
         "name": "skill",
         "options": [],
         "subcommands": [
@@ -10789,7 +10789,7 @@
       },
       {
         "about": "List, validate, scaffold, and run vault-native custom tools",
-        "after_help": "Subcommands:\n  list       inspect discovered custom tools\n  show       read one tool manifest plus its Markdown docs\n  run        validate JSON input and invoke one tool\n  validate   check one tool or the whole tools folder\n  init       scaffold `.agents/tools/<name>/TOOL.md` plus `main.js`\n  set        update common manifest fields without hand-editing YAML\n\nNotes:\n  Tool execution requires a trusted vault: `vulcan trust add`.\n  `tool run` defaults to `{}` input when no `--input-json` or `--input-file` is provided.\n  `tool set --secret name=ENV` replaces the full secret list for the tool.\n  `tool set --pack <name>` replaces the full pack list for the tool.\n\nExamples:\n  vulcan tool list\n  vulcan tool show summarize_meeting\n  vulcan tool run summarize_meeting --input-json '{\"note\":\"Meetings/Weekly.md\"}'\n  vulcan tool init summarize_meeting --description \"Summarize one meeting note\"\n  vulcan tool set summarize_meeting --sandbox fs --read-only --timeout-ms 5000\n  vulcan tool validate",
+        "after_help": "Subcommands:\n  list       inspect discovered custom tools\n  show       read one tool manifest plus its Markdown docs\n  run        validate JSON input and invoke one tool\n  validate   check one tool or the whole tools folder\n  init       scaffold `.agents/tools/<name>/TOOL.md` plus `main.js`\n  set        update common manifest fields without hand-editing YAML\n\nNotes:\n  New reusable callable automation should be packaged as Agent Skills-compatible\n  skill commands under `.agents/skills/<skill-name>/` with command metadata declared\n  in `SKILL.md` under `metadata.vulcan.commands`.\n  Tool execution requires a trusted vault: `vulcan trust add`.\n  `tool run` defaults to `{}` input when no `--input-json` or `--input-file` is provided.\n  `tool set --secret name=ENV` replaces the full secret list for the tool.\n  `tool set --pack <name>` replaces the full pack list for the tool.\n\nExamples:\n  vulcan tool list\n  vulcan tool show summarize_meeting\n  vulcan tool run summarize_meeting --input-json '{\"note\":\"Meetings/Weekly.md\"}'\n  vulcan tool init summarize_meeting --description \"Summarize one meeting note\"\n  vulcan tool set summarize_meeting --sandbox fs --read-only --timeout-ms 5000\n  vulcan tool validate\n\nSee also:\n  `vulcan skill` — Agent Skills-compatible skill commands (preferred for new automation)",
         "name": "tool",
         "options": [],
         "subcommands": [

@@ -54,15 +54,13 @@ Notes:
 
 Examples:
   vulcan agent install
-  vulcan agent install --example-tool
   vulcan agent install --overwrite
   vulcan agent print-config --runtime pi
   vulcan agent print-config --runtime codex
   vulcan agent import
   vulcan agent import --apply
   vulcan agent import --apply --symlink
-  vulcan init --agent-files
-  vulcan init --agent-files --example-tool";
+  vulcan init --agent-files";
 
 const SKILL_COMMAND_AFTER_HELP: &str = "\
 Subcommands:

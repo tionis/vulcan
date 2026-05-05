@@ -828,8 +828,8 @@ fn help_topics_cover_custom_tools_host_execution_and_surface_comparison() {
         .assert()
         .success()
         .stdout(
-            predicate::str::contains("Use a skill to teach a workflow.")
-                .and(predicate::str::contains("Use a custom tool"))
+            predicate::str::contains("Use a skill to package workflow instructions")
+                .and(predicate::str::contains("Use a skill command"))
                 .and(predicate::str::contains("Use a plugin")),
         );
 }
