@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::cache::CacheDatabase;
-use crate::config::load_vault_config;
+use crate::config::{load_vault_config, VaultConfig};
 use crate::expression::eval::{
     compare_values, evaluate, is_truthy, parse_wikilink_target,
     resolve_note_reference as resolve_lookup_note_reference, value_to_display, EvalContext,
@@ -143,14 +143,57 @@ pub fn evaluate_parsed_dql_with_filter(
     filter: Option<&PermissionFilter>,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let config = load_vault_config(paths).config;
+    let note_lookup = load_note_index(paths)?;
+    evaluate_parsed_dql_with_note_index_and_config(
+        paths,
+        query,
+        current_file,
+        filter,
+        &config,
+        &note_lookup,
+    )
+}
+
+pub(crate) fn evaluate_dql_with_note_index_and_config(
+    paths: &VaultPaths,
+    source: &str,
+    current_file: Option<&str>,
+    filter: Option<&PermissionFilter>,
+    config: &VaultConfig,
+    note_lookup: &HashMap<String, NoteRecord>,
+) -> Result<DqlQueryResult, DqlEvalError> {
+    let query = parse_dql(source).map_err(DqlEvalError::Parse)?;
+    evaluate_parsed_dql_with_note_index_and_config(
+        paths,
+        &query,
+        current_file,
+        filter,
+        config,
+        note_lookup,
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+pub(crate) fn evaluate_parsed_dql_with_note_index_and_config(
+    paths: &VaultPaths,
+    query: &DqlQuery,
+    current_file: Option<&str>,
+    filter: Option<&PermissionFilter>,
+    config: &VaultConfig,
+    note_lookup: &HashMap<String, NoteRecord>,
+) -> Result<DqlQueryResult, DqlEvalError> {
     let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
     let compiled = compile_dql(query);
     let mut diagnostics = DqlDiagnosticCollector::default();
-    let mut note_lookup = load_note_index(paths)?;
-    if let Some(filter) = filter {
-        note_lookup.retain(|_, note| filter.is_allowed(&note.document_path));
-    }
-    let all_notes = sorted_notes(&note_lookup);
+    let filtered_note_lookup = filter.map(|filter| {
+        note_lookup
+            .iter()
+            .filter(|(_, note)| filter.is_allowed(&note.document_path))
+            .map(|(path, note)| (path.clone(), note.clone()))
+            .collect::<HashMap<_, _>>()
+    });
+    let note_lookup = filtered_note_lookup.as_ref().unwrap_or(note_lookup);
+    let all_notes = sorted_notes(note_lookup);
     let from_sources = compiled
         .commands
         .iter()
@@ -172,7 +215,7 @@ pub fn evaluate_parsed_dql_with_filter(
             query,
             source,
             current_file,
-            &note_lookup,
+            note_lookup,
             &all_notes,
             filter,
         )?
@@ -182,12 +225,8 @@ pub fn evaluate_parsed_dql_with_filter(
     // Resolve the note that contains the query, used as the `this` reference in expressions.
     // When the query is embedded in a note (e.g. a Dataview code block), `current_file` names
     // that note so `WHERE file.name != this.file.name` can filter it out.
-    let source_note: Option<NoteRecord> = current_file.and_then(|path| {
-        note_lookup
-            .values()
-            .find(|n| n.document_path == path)
-            .cloned()
-    });
+    let source_note =
+        current_file.and_then(|path| note_lookup.values().find(|n| n.document_path == path));
     let mut page_rows_are_pristine = query.query_type != super::DqlQueryType::Task;
 
     for command in &compiled.commands {
@@ -218,8 +257,8 @@ pub fn evaluate_parsed_dql_with_filter(
                         rows,
                         &where_clause.expr,
                         query,
-                        &note_lookup,
-                        source_note.as_ref(),
+                        note_lookup,
+                        source_note,
                         time_zone,
                         &mut diagnostics,
                     )?;
@@ -232,9 +271,9 @@ pub fn evaluate_parsed_dql_with_filter(
                     for key in keys {
                         let value = match row.evaluate_with_source(
                             &key.expr,
-                            &note_lookup,
+                            note_lookup,
                             time_zone,
-                            source_note.as_ref(),
+                            source_note,
                         ) {
                             Ok(value) => value,
                             Err(error) => recover_unsupported_feature(
@@ -268,11 +307,11 @@ pub fn evaluate_parsed_dql_with_filter(
             }
             CompiledDqlCommand::Limit(limit) => rows.truncate(*limit),
             CompiledDqlCommand::GroupBy(named_expr) => {
-                rows = apply_group_by(rows, named_expr, &note_lookup, time_zone, &mut diagnostics)?;
+                rows = apply_group_by(rows, named_expr, note_lookup, time_zone, &mut diagnostics)?;
                 page_rows_are_pristine = false;
             }
             CompiledDqlCommand::Flatten(named_expr) => {
-                rows = apply_flatten(rows, named_expr, &note_lookup, time_zone, &mut diagnostics)?;
+                rows = apply_flatten(rows, named_expr, note_lookup, time_zone, &mut diagnostics)?;
                 page_rows_are_pristine = false;
             }
         }
@@ -283,7 +322,7 @@ pub fn evaluate_parsed_dql_with_filter(
         &config.dataview.primary_column_name,
         &config.dataview.group_column_name,
         rows,
-        &note_lookup,
+        note_lookup,
         time_zone,
         &mut diagnostics,
     )?;
@@ -1438,7 +1477,9 @@ mod tests {
 
     use tempfile::tempdir;
 
+    use crate::config::load_vault_config;
     use crate::permissions::{PathPermission, PermissionFilter, ResourceSpecifier};
+    use crate::properties::load_note_index;
     use crate::{scan_vault, ScanMode, VaultPaths};
 
     use super::*;
@@ -1503,6 +1544,36 @@ LIMIT 1"#,
             result.rows[0]["File"],
             Value::String("[[Projects/Alpha]]".to_string())
         );
+    }
+
+    #[test]
+    fn cached_dql_context_matches_one_shot_evaluation() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        copy_fixture_vault("dataview", &vault_root);
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+        let source = r"LIST file.name
+WHERE file.name != this.file.name
+SORT file.name ASC";
+        let config = load_vault_config(&paths).config;
+        let note_index = load_note_index(&paths).expect("note index should load");
+
+        let one_shot =
+            evaluate_dql(&paths, source, Some("Dashboard.md")).expect("DQL should evaluate");
+        let cached = evaluate_dql_with_note_index_and_config(
+            &paths,
+            source,
+            Some("Dashboard.md"),
+            None,
+            &config,
+            &note_index,
+        )
+        .expect("cached DQL should evaluate");
+
+        assert_eq!(cached, one_shot);
     }
 
     #[test]

@@ -8,7 +8,7 @@ use crate::expression::eval::compare_values;
 use crate::expression::functions::parse_date_like_string;
 use crate::file_metadata::FileMetadataResolver;
 use crate::paths::VaultPaths;
-use crate::properties::load_note_index;
+use crate::properties::{load_note_index, NoteRecord};
 
 use super::{
     parse_tasks_query, TasksDateRelation, TasksError, TasksFilter, TasksQuery, TasksQueryCommand,
@@ -73,11 +73,27 @@ pub fn evaluate_parsed_tasks_query(
     query: &TasksQuery,
 ) -> Result<TasksQueryResult, TasksError> {
     let note_index = load_note_index(paths)?;
-    Ok(build_tasks_query_result(
-        task_rows(&note_index),
+    Ok(evaluate_parsed_tasks_query_with_note_index(
         query,
-        true,
+        &note_index,
     ))
+}
+
+pub(crate) fn evaluate_tasks_query_with_note_index(
+    source: &str,
+    note_index: &HashMap<String, NoteRecord>,
+) -> Result<TasksQueryResult, TasksError> {
+    let query = parse_tasks_query(source).map_err(TasksError::Parse)?;
+    Ok(evaluate_parsed_tasks_query_with_note_index(
+        &query, note_index,
+    ))
+}
+
+pub(crate) fn evaluate_parsed_tasks_query_with_note_index(
+    query: &TasksQuery,
+    note_index: &HashMap<String, NoteRecord>,
+) -> TasksQueryResult {
+    build_tasks_query_result(task_rows(note_index), query, true)
 }
 
 #[must_use]
@@ -465,6 +481,7 @@ mod tests {
 
     use tempfile::TempDir;
 
+    use crate::properties::load_note_index;
     use crate::{scan_vault, ScanMode, VaultPaths};
 
     use super::*;
@@ -674,6 +691,27 @@ mod tests {
         assert_eq!(result.groups.len(), 2);
         assert_eq!(result.groups[0].field, "source");
         assert_eq!(result.groups[0].key, Value::String("file".to_string()));
+    }
+
+    #[test]
+    fn cached_tasks_context_matches_one_shot_evaluation() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        write_eval_fixture(&vault_root);
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let source = "not done\nsort by due reverse\ngroup by status.type\nlimit 2\nshow urgency";
+        let note_index = load_note_index(&paths).expect("note index should load");
+
+        let one_shot =
+            evaluate_tasks_query(&paths, source).expect("one-shot tasks query should succeed");
+        let cached = evaluate_tasks_query_with_note_index(source, &note_index)
+            .expect("cached tasks query should succeed");
+
+        assert_eq!(cached, one_shot);
     }
 
     fn task_texts(result: &TasksQueryResult) -> Vec<String> {
