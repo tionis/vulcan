@@ -15,6 +15,7 @@ use crate::resolve_note_reference;
 pub use ast::{
     TasksDateField, TasksDateRelation, TasksFilter, TasksQuery, TasksQueryCommand, TasksTextField,
 };
+pub(crate) use eval::evaluate_tasks_query_with_note_index;
 pub use eval::{
     evaluate_parsed_tasks_query, evaluate_tasks_query, shape_tasks_query_result, TasksQueryGroup,
     TasksQueryResult,

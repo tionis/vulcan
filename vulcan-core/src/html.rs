@@ -1,7 +1,9 @@
 use crate::bases::{BasesEvalReport, BasesEvaluatedView, BasesRow};
 use crate::config::{load_vault_config, JsRuntimeSandbox, VaultConfig};
 use crate::dataview_js::{DataviewJsOutput, DataviewJsResult};
-use crate::dql::{DqlDiagnostic, DqlQueryResult, DqlQueryType};
+use crate::dql::{
+    evaluate_dql_with_note_index_and_config, DqlDiagnostic, DqlQueryResult, DqlQueryType,
+};
 use crate::note::{read_note, NoteReadOptions};
 use crate::parser::{
     fragment_parser_options, parser_options, LinkKind, ParseDiagnosticKind, ParsedDocument,
@@ -9,7 +11,7 @@ use crate::parser::{
 use crate::paths::VaultPaths;
 use crate::properties::{evaluate_note_inline_expressions, load_note_index, NoteRecord};
 use crate::resolver::{resolve_link, ResolverDocument, ResolverLink};
-use crate::tasks::{evaluate_tasks_query, TasksQueryResult};
+use crate::tasks::{evaluate_tasks_query, evaluate_tasks_query_with_note_index, TasksQueryResult};
 use crate::{
     evaluate_base_file, evaluate_dataview_js_with_options, evaluate_dql_with_filter, parse_document,
 };
@@ -354,7 +356,7 @@ fn render_markdown_with_replacements(
         replacements.push(HtmlMarkdownReplacement {
             start: block.byte_range.start,
             end: block.byte_range.end,
-            replacement: render_tasks_block_html(paths, &block.text),
+            replacement: render_tasks_block_html(paths, &block.text, env),
         });
     }
 
@@ -416,7 +418,19 @@ fn render_dataview_block_html(
     diagnostics: &mut Vec<HtmlRenderDiagnostic>,
 ) -> String {
     if language == "dataview" {
-        return match evaluate_dql_with_filter(paths, source, source_path, None) {
+        let result = if let Some(note_index) = env.note_index {
+            evaluate_dql_with_note_index_and_config(
+                paths,
+                source,
+                source_path,
+                None,
+                env.config,
+                note_index,
+            )
+        } else {
+            evaluate_dql_with_filter(paths, source, source_path, None)
+        };
+        return match result {
             Ok(result) => {
                 render_dql_query_html(paths, &result, source_path, env, state, diagnostics)
             }
@@ -456,8 +470,17 @@ fn render_dataview_block_html(
     )
 }
 
-fn render_tasks_block_html(paths: &VaultPaths, source: &str) -> String {
-    match evaluate_tasks_query(paths, source) {
+fn render_tasks_block_html(
+    paths: &VaultPaths,
+    source: &str,
+    env: &HtmlRenderEnvironment<'_>,
+) -> String {
+    let result = if let Some(note_index) = env.note_index {
+        evaluate_tasks_query_with_note_index(source, note_index)
+    } else {
+        evaluate_tasks_query(paths, source)
+    };
+    match result {
         Ok(result) => render_tasks_query_html(&result),
         Err(error) => render_message_html("Tasks error:", &error.to_string()),
     }
