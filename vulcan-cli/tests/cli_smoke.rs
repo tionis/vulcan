@@ -21121,6 +21121,35 @@ rss = true
 }
 
 #[test]
+fn site_build_human_output_reports_stage_progress_on_stderr() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "site",
+            "build",
+        ])
+        .assert()
+        .success()
+        .stderr(
+            predicate::str::contains("Planning site build...")
+                .and(predicate::str::contains("Rendering 3 note(s)..."))
+                .and(predicate::str::contains("Building search index..."))
+                .and(predicate::str::contains("Building graph export..."))
+                .and(predicate::str::contains("Writing pages and manifests..."))
+                .and(predicate::str::contains("Finalizing site output...")),
+        );
+}
+
+#[test]
 fn site_build_strict_fails_on_publish_diagnostics() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
