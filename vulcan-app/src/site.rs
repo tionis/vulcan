@@ -21,8 +21,8 @@ use vulcan_core::config::{
 };
 use vulcan_core::graph::resolve_note_reference;
 use vulcan_core::html::{
-    render_vault_html, HtmlDataviewJsPolicy, HtmlLinkTargets, HtmlRawHtmlPolicy,
-    HtmlRenderDiagnostic, HtmlRenderHeading, HtmlRenderOptions,
+    HtmlDataviewJsPolicy, HtmlLinkTargets, HtmlRawHtmlPolicy, HtmlRenderDiagnostic,
+    HtmlRenderHeading, HtmlRenderOptions, VaultHtmlRenderer,
 };
 use vulcan_core::properties::NoteRecord;
 use vulcan_core::query::{execute_query_report, QueryAst, QueryReport};
@@ -1909,6 +1909,7 @@ where
         asset_hrefs: asset_hrefs.clone(),
         tag_hrefs,
     };
+    let html_renderer = VaultHtmlRenderer::load(paths);
     let total = plan.notes.len();
     report_site_build_progress(progress, SiteBuildPhase::RenderingNotes, 0, total, None);
 
@@ -1931,8 +1932,7 @@ where
                 &published_paths,
                 plan.profile.link_policy,
             );
-            let rendered = render_vault_html(
-                paths,
+            let rendered = html_renderer.render(
                 &adjusted,
                 &HtmlRenderOptions {
                     source_path: Some(&note.note.document_path),

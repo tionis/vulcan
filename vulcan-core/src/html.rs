@@ -95,6 +95,14 @@ pub struct HtmlRenderResult {
     pub diagnostics: Vec<HtmlRenderDiagnostic>,
 }
 
+#[derive(Debug, Clone)]
+pub struct VaultHtmlRenderer {
+    paths: VaultPaths,
+    config: VaultConfig,
+    note_index: Option<HashMap<String, NoteRecord>>,
+    resolver_documents: Option<Vec<ResolverDocument>>,
+}
+
 #[derive(Debug, Default)]
 struct HtmlRenderState {
     embed_stack: Vec<String>,
@@ -125,34 +133,51 @@ struct RenderedMarkdownHtml {
     stripped_raw_html_events: usize,
 }
 
+impl VaultHtmlRenderer {
+    #[must_use]
+    pub fn load(paths: &VaultPaths) -> Self {
+        let config = load_vault_config(paths).config;
+        let note_index = load_note_index(paths).ok();
+        let resolver_documents = note_index.as_ref().map(build_resolver_documents);
+        Self {
+            paths: paths.clone(),
+            config,
+            note_index,
+            resolver_documents,
+        }
+    }
+
+    #[must_use]
+    pub fn render(&self, source: &str, options: &HtmlRenderOptions<'_>) -> HtmlRenderResult {
+        let empty_targets = HtmlLinkTargets::default();
+        let env = HtmlRenderEnvironment {
+            config: &self.config,
+            note_index: self.note_index.as_ref(),
+            resolver_documents: self.resolver_documents.as_deref(),
+            link_targets: options.link_targets.unwrap_or(&empty_targets),
+            dataview_js_policy: options.dataview_js_policy,
+            raw_html_policy: options.raw_html_policy,
+            max_embed_depth: options.max_embed_depth.max(1),
+        };
+        let mut state = HtmlRenderState::default();
+        render_html_internal(
+            &self.paths,
+            source,
+            options.source_path,
+            options.full_document,
+            &env,
+            &mut state,
+        )
+    }
+}
+
 #[must_use]
 pub fn render_vault_html(
     paths: &VaultPaths,
     source: &str,
     options: &HtmlRenderOptions<'_>,
 ) -> HtmlRenderResult {
-    let config = load_vault_config(paths).config;
-    let note_index = load_note_index(paths).ok();
-    let resolver_documents = note_index.as_ref().map(build_resolver_documents);
-    let empty_targets = HtmlLinkTargets::default();
-    let env = HtmlRenderEnvironment {
-        config: &config,
-        note_index: note_index.as_ref(),
-        resolver_documents: resolver_documents.as_deref(),
-        link_targets: options.link_targets.unwrap_or(&empty_targets),
-        dataview_js_policy: options.dataview_js_policy,
-        raw_html_policy: options.raw_html_policy,
-        max_embed_depth: options.max_embed_depth.max(1),
-    };
-    let mut state = HtmlRenderState::default();
-    render_html_internal(
-        paths,
-        source,
-        options.source_path,
-        options.full_document,
-        &env,
-        &mut state,
-    )
+    VaultHtmlRenderer::load(paths).render(source, options)
 }
 
 #[must_use]
@@ -1704,7 +1729,7 @@ fn select_render_title(
 mod tests {
     use super::{
         render_note_fragment_html, render_note_html, render_vault_html, HtmlDataviewJsPolicy,
-        HtmlRawHtmlPolicy, HtmlRenderOptions,
+        HtmlRawHtmlPolicy, HtmlRenderOptions, VaultHtmlRenderer,
     };
     use crate::{scan_vault, ScanMode, VaultPaths};
     use std::fs;
@@ -1763,6 +1788,27 @@ mod tests {
             !rendered.html.contains("status: draft"),
             "frontmatter should stay out of rendered html"
         );
+    }
+
+    #[test]
+    fn loaded_html_renderer_matches_one_shot_output_across_notes() {
+        let (_temp_dir, paths) = build_render_vault();
+        let html_renderer = VaultHtmlRenderer::load(&paths);
+
+        for path in ["Dashboard.md", "People/Alice.md"] {
+            let source =
+                fs::read_to_string(paths.vault_root().join(path)).expect("note source should read");
+            let actual = html_renderer.render(
+                &source,
+                &HtmlRenderOptions {
+                    source_path: Some(path),
+                    full_document: true,
+                    ..HtmlRenderOptions::default()
+                },
+            );
+
+            assert_eq!(actual, render_note_html(&paths, path, &source));
+        }
     }
 
     #[test]

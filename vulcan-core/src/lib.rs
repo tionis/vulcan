@@ -133,6 +133,7 @@ pub use history::{
 pub use html::{
     render_note_fragment_html, render_note_html, render_vault_html, HtmlDataviewJsPolicy,
     HtmlLinkTargets, HtmlRenderDiagnostic, HtmlRenderHeading, HtmlRenderOptions, HtmlRenderResult,
+    VaultHtmlRenderer,
 };
 pub use init::{initialize_vault, InitError, InitSummary};
 pub use json_schema::{validate_json_value_against_schema, JsonSchemaValidationError};
