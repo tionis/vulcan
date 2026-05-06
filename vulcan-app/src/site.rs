@@ -5,16 +5,20 @@
     clippy::too_many_lines
 )]
 
-use crate::export::{prepare_export_data, ExportLinkRecord, ExportedNoteDocument};
+use crate::export::{
+    content_transform_rules_have_effective_transforms, load_export_links_for_notes,
+    prepare_export_data, ExportLinkRecord,
+};
 use crate::AppError;
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+use std::time::UNIX_EPOCH;
 use vulcan_core::config::{
     load_vault_config, ContentTransformRuleConfig, SiteAssetPolicyConfig,
     SiteAssetPolicyModeConfig, SiteDataviewJsPolicyConfig, SiteLinkPolicyConfig, SiteProfileConfig,
@@ -28,9 +32,10 @@ use vulcan_core::html::{
 use vulcan_core::properties::NoteRecord;
 use vulcan_core::query::{execute_query_report, QueryAst, QueryReport};
 use vulcan_core::search::export_static_search_index;
-use vulcan_core::{export_graph, VaultPaths};
+use vulcan_core::{ensure_vulcan_dir, export_graph, parse_document, VaultPaths};
 
 const DEFAULT_PAGE_TITLE_TEMPLATE: &str = "{page} | {site}";
+const SITE_BUILD_STATE_VERSION: u32 = 1;
 
 const DEFAULT_THEME_CSS: &str = concat!(
     ":root {\n",
@@ -342,7 +347,7 @@ pub struct RenderContext {
     pub deploy_path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SiteRoute {
     pub kind: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -353,7 +358,7 @@ pub struct SiteRoute {
     pub output_path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenderedEmbed {
     pub kind: String,
     pub source_path: String,
@@ -361,7 +366,7 @@ pub struct RenderedEmbed {
     pub url_path: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RenderedNote {
     pub source_path: String,
     pub title: String,
@@ -628,12 +633,21 @@ struct ResolvedSiteProfile {
 }
 
 #[derive(Debug, Clone)]
+struct SitePlanNote {
+    note: NoteRecord,
+    published_source: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 struct SitePlan {
     profile: ResolvedSiteProfile,
-    notes: Vec<ExportedNoteDocument>,
+    notes: Vec<SitePlanNote>,
     links: Vec<ExportLinkRecord>,
     routes: Vec<SiteRoute>,
     diagnostics: Vec<SiteDiagnostic>,
+    all_note_signatures: BTreeMap<String, SiteInputSignature>,
+    config_signature: String,
+    transforms_active: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -646,6 +660,65 @@ struct ResolvedSiteTheme {
     footer: Option<String>,
     note_before: Option<String>,
     note_after: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SiteInputSignature {
+    file_mtime: i64,
+    file_size: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SiteFileDependency {
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    signature: Option<SiteInputSignature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SiteNoteDependencies {
+    link_state_hash: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    note_embeds: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    base_embeds: Vec<SiteFileDependency>,
+    has_vault_queries: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct SiteBuildStateNote {
+    source_path: String,
+    signature: SiteInputSignature,
+    rendered: RenderedNote,
+    dependencies: SiteNoteDependencies,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+struct SiteBuildState {
+    version: u32,
+    config_signature: String,
+    all_note_signatures: BTreeMap<String, SiteInputSignature>,
+    notes: Vec<SiteBuildStateNote>,
+}
+
+#[derive(Debug, Clone)]
+struct SiteSelectedNotes {
+    selected: Vec<NoteRecord>,
+    all_note_signatures: BTreeMap<String, SiteInputSignature>,
+}
+
+struct SiteRenderShared<'a> {
+    route_map: HashMap<String, SiteRoute>,
+    published_paths: HashSet<String>,
+    asset_hrefs: HashMap<String, String>,
+    link_targets: HtmlLinkTargets,
+    links_by_source: HashMap<&'a str, Vec<&'a ExportLinkRecord>>,
+    backlinks: HashMap<String, Vec<String>>,
+}
+
+struct SiteRenderOutcome {
+    rendered_notes: Vec<RenderedNote>,
+    next_state: Option<SiteBuildState>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -684,7 +757,7 @@ pub fn build_site_profiles_report(
         .into_iter()
         .map(|name| {
             let profile = resolve_site_profile(paths, Some(name.as_str()), None)?;
-            let note_count = select_site_notes(paths, &profile)?.len();
+            let note_count = select_site_notes(paths, &profile)?.selected.len();
             Ok(SiteProfileListEntry {
                 name: profile.name.clone(),
                 title: profile.title.clone(),
@@ -736,11 +809,19 @@ where
         request.profile.as_deref(),
         request.output_dir.as_deref(),
     )?;
+    let cached_state = if plan.transforms_active {
+        None
+    } else {
+        load_site_build_state(paths, &plan.profile)?
+    };
     if request.clean && !request.dry_run && plan.profile.output_dir.exists() {
         fs::remove_dir_all(&plan.profile.output_dir).map_err(AppError::operation)?;
     }
     let output_dir = plan.profile.output_dir.clone();
-    let mut rendered_notes = render_site_notes(paths, &plan, &mut progress)?;
+    let SiteRenderOutcome {
+        mut rendered_notes,
+        next_state,
+    } = render_site_notes(paths, &plan, cached_state.as_ref(), &mut progress)?;
     rendered_notes.sort_by(|left, right| left.route.url_path.cmp(&right.route.url_path));
 
     let routes_by_path = rendered_notes
@@ -1082,6 +1163,11 @@ where
     };
     report_site_build_progress(&mut progress, SiteBuildPhase::Finalizing, 0, 0, None);
     changed_files.extend(deleted_files.iter().cloned());
+    if !request.dry_run {
+        if let Some(state) = next_state.as_ref() {
+            save_site_build_state(paths, &plan.profile, state)?;
+        }
+    }
     let file_list = files.into_iter().collect::<Vec<_>>();
     Ok(SiteBuildReport {
         profile: plan.profile.name,
@@ -1140,7 +1226,7 @@ pub fn build_frontend_bundle(
     }
 
     let output_dir = plan.profile.output_dir.clone();
-    let mut rendered_notes = render_site_notes(paths, &plan, &mut |_| {})?;
+    let mut rendered_notes = render_site_notes(paths, &plan, None, &mut |_| {})?.rendered_notes;
     rendered_notes.sort_by(|left, right| left.route.url_path.cmp(&right.route.url_path));
 
     let routes_by_path = rendered_notes
@@ -1621,25 +1707,62 @@ fn plan_site(
     output_override: Option<&Path>,
 ) -> Result<SitePlan, AppError> {
     let profile = resolve_site_profile(paths, profile_name, output_override)?;
-    let notes = select_site_notes(paths, &profile)?;
-    let query = build_profile_query_ast(&profile)?;
-    let report = QueryReport { query, notes };
-    let prepared = prepare_export_data(
-        paths,
-        &report,
-        None,
-        profile.content_transform_rules.as_deref(),
-    )
-    .map_err(AppError::operation)?;
-    let routes = plan_note_routes(&prepared.notes, &profile.name, &profile.deploy_path);
-    let diagnostics =
-        collect_site_diagnostics(paths, &profile, &prepared.notes, &prepared.links, &routes);
+    let selected = select_site_notes(paths, &profile)?;
+    let transforms_active = profile
+        .content_transform_rules
+        .as_deref()
+        .is_some_and(content_transform_rules_have_effective_transforms);
+    let (notes, links) = if transforms_active {
+        let query = build_profile_query_ast(&profile)?;
+        let report = QueryReport {
+            query,
+            notes: selected.selected.clone(),
+        };
+        let prepared = prepare_export_data(
+            paths,
+            &report,
+            None,
+            profile.content_transform_rules.as_deref(),
+        )
+        .map_err(AppError::operation)?;
+        (
+            prepared
+                .notes
+                .into_iter()
+                .map(|document| SitePlanNote {
+                    note: document.note,
+                    published_source: Some(document.content),
+                })
+                .collect::<Vec<_>>(),
+            prepared.links,
+        )
+    } else {
+        let links = load_export_links_for_notes(paths, &selected.selected)?;
+        (
+            selected
+                .selected
+                .iter()
+                .cloned()
+                .map(|note| SitePlanNote {
+                    note,
+                    published_source: None,
+                })
+                .collect::<Vec<_>>(),
+            links,
+        )
+    };
+    let routes = plan_note_routes(&notes, &profile.name, &profile.deploy_path);
+    let diagnostics = collect_site_diagnostics(paths, &profile, &notes, &links, &routes);
+    let config_signature = site_build_config_signature(paths, &profile);
     Ok(SitePlan {
         profile,
-        notes: prepared.notes,
-        links: prepared.links,
+        notes,
+        links,
         routes,
         diagnostics,
+        all_note_signatures: selected.all_note_signatures,
+        config_signature,
+        transforms_active,
     })
 }
 
@@ -1656,12 +1779,22 @@ fn build_profile_query_ast(profile: &ResolvedSiteProfile) -> Result<QueryAst, Ap
 fn select_site_notes(
     paths: &VaultPaths,
     profile: &ResolvedSiteProfile,
-) -> Result<Vec<NoteRecord>, AppError> {
+) -> Result<SiteSelectedNotes, AppError> {
     let all_report = execute_query_report(
         paths,
         QueryAst::from_dsl("from notes").map_err(AppError::operation)?,
     )
     .map_err(AppError::operation)?;
+    let all_note_signatures = all_report
+        .notes
+        .iter()
+        .map(|note| {
+            (
+                note.document_path.clone(),
+                site_input_signature_for_note(note),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut selected = BTreeSet::<String>::new();
     let has_includes = profile.include_query.is_some()
         || profile.include_query_json.is_some()
@@ -1739,11 +1872,14 @@ fn select_site_notes(
         })
         .collect::<Vec<_>>();
     notes.sort_by(|left, right| left.document_path.cmp(&right.document_path));
-    Ok(notes)
+    Ok(SiteSelectedNotes {
+        selected: notes,
+        all_note_signatures,
+    })
 }
 
 fn plan_note_routes(
-    notes: &[ExportedNoteDocument],
+    notes: &[SitePlanNote],
     profile_name: &str,
     deploy_path: &str,
 ) -> Vec<SiteRoute> {
@@ -1787,7 +1923,7 @@ fn plan_note_routes(
 fn collect_site_diagnostics(
     paths: &VaultPaths,
     profile: &ResolvedSiteProfile,
-    notes: &[ExportedNoteDocument],
+    notes: &[SitePlanNote],
     links: &[ExportLinkRecord],
     routes: &[SiteRoute],
 ) -> Vec<SiteDiagnostic> {
@@ -1881,11 +2017,154 @@ fn collect_site_diagnostics(
 fn render_site_notes<F>(
     paths: &VaultPaths,
     plan: &SitePlan,
+    cached_state: Option<&SiteBuildState>,
     progress: &mut F,
-) -> Result<Vec<RenderedNote>, AppError>
+) -> Result<SiteRenderOutcome, AppError>
 where
     F: FnMut(&SiteBuildProgress),
 {
+    let shared = build_site_render_shared(plan);
+    let reusable_state =
+        cached_state.filter(|state| site_build_state_matches_plan(plan, state, &shared.route_map));
+    let cached_by_path = reusable_state.map(site_build_state_notes_by_path);
+    let current_link_hashes = current_site_link_hashes(plan, &shared)?;
+
+    let notes_to_render = if let Some(state) = reusable_state {
+        let cached_by_path = cached_by_path
+            .as_ref()
+            .expect("reusable state should always have a path map");
+        // Reuse cached HTML whenever the selected set and routes are stable, then
+        // conservatively invalidate notes whose output may be affected by source,
+        // link-resolution, backlink, listing, embed, or vault-query changes.
+        let direct_changed = plan
+            .notes
+            .iter()
+            .filter(|note| {
+                cached_by_path
+                    .get(note.note.document_path.as_str())
+                    .is_none_or(|cached| {
+                        cached.signature != site_input_signature_for_note(&note.note)
+                    })
+            })
+            .map(|note| note.note.document_path.clone())
+            .collect::<HashSet<_>>();
+        let link_changed = plan
+            .notes
+            .iter()
+            .filter(|note| {
+                cached_by_path
+                    .get(note.note.document_path.as_str())
+                    .zip(current_link_hashes.get(&note.note.document_path))
+                    .is_some_and(|(cached, current)| {
+                        cached.dependencies.link_state_hash != current.as_str()
+                    })
+            })
+            .map(|note| note.note.document_path.clone())
+            .collect::<HashSet<_>>();
+        let current_outgoing = current_outgoing_links_by_source(plan, &shared);
+        let backlink_dependents = collect_backlink_dependents(
+            &direct_changed,
+            &link_changed,
+            cached_by_path,
+            &current_outgoing,
+        );
+        let tag_folder_dependents =
+            collect_tag_and_folder_dependents(&direct_changed, plan, cached_by_path);
+        let (base_changed, base_changed_files) = collect_base_dependency_changes(paths, state)?;
+        let query_dependents = if !plan.all_note_signatures.eq(&state.all_note_signatures)
+            || !base_changed_files.is_empty()
+        {
+            state
+                .notes
+                .iter()
+                .filter(|note| note.dependencies.has_vault_queries)
+                .map(|note| note.source_path.clone())
+                .collect::<HashSet<_>>()
+        } else {
+            HashSet::new()
+        };
+        expand_embed_dependents(
+            &direct_changed
+                .into_iter()
+                .chain(link_changed)
+                .chain(backlink_dependents)
+                .chain(tag_folder_dependents)
+                .chain(base_changed)
+                .chain(query_dependents)
+                .collect::<HashSet<_>>(),
+            state,
+        )
+    } else {
+        plan.notes
+            .iter()
+            .map(|note| note.note.document_path.clone())
+            .collect::<HashSet<_>>()
+    };
+
+    let total = notes_to_render.len();
+    report_site_build_progress(progress, SiteBuildPhase::RenderingNotes, 0, total, None);
+    let html_renderer = (!notes_to_render.is_empty()).then(|| VaultHtmlRenderer::load(paths));
+    let vault_config = (!notes_to_render.is_empty()).then(|| load_vault_config(paths).config);
+    let mut rendered_notes = Vec::with_capacity(plan.notes.len());
+    let mut next_state_notes = Vec::with_capacity(plan.notes.len());
+    let mut processed = 0_usize;
+
+    for note in &plan.notes {
+        let source_path = note.note.document_path.as_str();
+        let should_render = notes_to_render.contains(source_path);
+        if !should_render {
+            if let Some(cached) = cached_by_path
+                .as_ref()
+                .and_then(|cached| cached.get(source_path))
+            {
+                rendered_notes.push(cached.rendered.clone());
+                next_state_notes.push((*cached).clone());
+                continue;
+            }
+        }
+
+        let source = load_site_plan_note_source(paths, note)?;
+        let rendered = render_site_plan_note(
+            paths,
+            plan,
+            note,
+            source.as_ref(),
+            &shared,
+            html_renderer
+                .as_ref()
+                .expect("renderer should exist whenever notes are rendered"),
+            vault_config
+                .as_ref()
+                .expect("config should exist whenever notes are rendered"),
+            current_link_hashes
+                .get(source_path)
+                .expect("every note should have a link hash"),
+        )?;
+        processed += 1;
+        report_site_build_progress(
+            progress,
+            SiteBuildPhase::RenderingNotes,
+            processed,
+            total,
+            Some(source_path.to_string()),
+        );
+        rendered_notes.push(rendered.rendered.clone());
+        next_state_notes.push(rendered);
+    }
+
+    next_state_notes.sort_by(|left, right| left.source_path.cmp(&right.source_path));
+    Ok(SiteRenderOutcome {
+        rendered_notes,
+        next_state: (!plan.transforms_active).then_some(SiteBuildState {
+            version: SITE_BUILD_STATE_VERSION,
+            config_signature: plan.config_signature.clone(),
+            all_note_signatures: plan.all_note_signatures.clone(),
+            notes: next_state_notes,
+        }),
+    })
+}
+
+fn build_site_render_shared(plan: &SitePlan) -> SiteRenderShared<'_> {
     let route_map = plan
         .routes
         .iter()
@@ -1910,123 +2189,530 @@ where
         asset_hrefs: asset_hrefs.clone(),
         tag_hrefs,
     };
-    let html_renderer = VaultHtmlRenderer::load(paths);
-    let total = plan.notes.len();
-    report_site_build_progress(progress, SiteBuildPhase::RenderingNotes, 0, total, None);
+    SiteRenderShared {
+        route_map,
+        published_paths,
+        asset_hrefs,
+        link_targets,
+        links_by_source,
+        backlinks,
+    }
+}
 
+fn load_site_plan_note_source<'a>(
+    paths: &VaultPaths,
+    note: &'a SitePlanNote,
+) -> Result<Cow<'a, str>, AppError> {
+    if let Some(source) = note.published_source.as_deref() {
+        return Ok(Cow::Borrowed(source));
+    }
+    fs::read_to_string(paths.vault_root().join(&note.note.document_path))
+        .map(Cow::Owned)
+        .map_err(AppError::operation)
+}
+
+fn render_site_plan_note(
+    paths: &VaultPaths,
+    plan: &SitePlan,
+    note: &SitePlanNote,
+    source: &str,
+    shared: &SiteRenderShared<'_>,
+    html_renderer: &VaultHtmlRenderer,
+    vault_config: &vulcan_core::config::VaultConfig,
+    link_state_hash: &str,
+) -> Result<SiteBuildStateNote, AppError> {
+    let route = shared
+        .route_map
+        .get(&note.note.document_path)
+        .ok_or_else(|| AppError::operation("missing note route during site render"))?;
+    let source_links = shared
+        .links_by_source
+        .get(note.note.document_path.as_str())
+        .map_or(&[][..], Vec::as_slice);
+    let adjusted = apply_link_policy_to_source(
+        source,
+        source_links,
+        &shared.published_paths,
+        plan.profile.link_policy,
+    );
+    let rendered = html_renderer.render(
+        adjusted.as_ref(),
+        &HtmlRenderOptions {
+            source_path: Some(&note.note.document_path),
+            full_document: true,
+            link_targets: Some(&shared.link_targets),
+            dataview_js_policy: match plan.profile.dataview_js {
+                SiteDataviewJsPolicyConfig::Off => HtmlDataviewJsPolicy::Off,
+                SiteDataviewJsPolicyConfig::Static => HtmlDataviewJsPolicy::Static,
+            },
+            raw_html_policy: match plan.profile.raw_html {
+                SiteRawHtmlPolicyConfig::Passthrough => HtmlRawHtmlPolicy::Passthrough,
+                SiteRawHtmlPolicyConfig::Sanitize => HtmlRawHtmlPolicy::Sanitize,
+                SiteRawHtmlPolicyConfig::Strip => HtmlRawHtmlPolicy::Strip,
+            },
+            max_embed_depth: 4,
+        },
+    );
+    let diagnostics = rendered.diagnostics.clone();
+    let title = note_title(&note.note, &plan.profile.name, rendered.title.as_deref());
+    let excerpt = excerpt_from_markdown(adjusted.as_ref());
+    let description = frontmatter_override(&note.note, &plan.profile.name, "description")
+        .unwrap_or_else(|| excerpt.clone());
+    let canonical_url = frontmatter_override(&note.note, &plan.profile.name, "canonical_url");
+    let summary_image = frontmatter_override(&note.note, &plan.profile.name, "summary_image");
+    let rendered_note = RenderedNote {
+        source_path: note.note.document_path.clone(),
+        title,
+        excerpt,
+        description,
+        canonical_url,
+        summary_image,
+        route: route.clone(),
+        html: rendered.html,
+        headings: rendered.headings,
+        tags: note.note.tags.clone(),
+        aliases: note.note.aliases.clone(),
+        outgoing_links: collect_note_outgoing_links(source_links, &shared.published_paths),
+        backlinks: shared
+            .backlinks
+            .get(&note.note.document_path)
+            .cloned()
+            .unwrap_or_default(),
+        breadcrumbs: breadcrumbs_for_path(&note.note.document_path),
+        asset_paths: collect_note_asset_paths(source_links),
+        embeds: collect_note_embeds(source_links, &note.note.document_path, shared),
+        diagnostics,
+        file_mtime: note.note.file_mtime,
+    };
+    let dependencies = build_site_note_dependencies(
+        paths,
+        source,
+        source_links,
+        vault_config,
+        plan.profile.dataview_js,
+        link_state_hash,
+    )?;
+    Ok(SiteBuildStateNote {
+        source_path: note.note.document_path.clone(),
+        signature: site_input_signature_for_note(&note.note),
+        rendered: rendered_note,
+        dependencies,
+    })
+}
+
+fn build_site_note_dependencies(
+    paths: &VaultPaths,
+    source: &str,
+    source_links: &[&ExportLinkRecord],
+    vault_config: &vulcan_core::config::VaultConfig,
+    dataview_js_policy: SiteDataviewJsPolicyConfig,
+    link_state_hash: &str,
+) -> Result<SiteNoteDependencies, AppError> {
+    let parsed = parse_document(source, vault_config);
+    let has_query_blocks = parsed
+        .dataview_blocks
+        .iter()
+        .any(|block| block.language != "dataviewjs")
+        || !parsed.tasks_blocks.is_empty()
+        || (dataview_js_policy == SiteDataviewJsPolicyConfig::Static
+            && parsed
+                .dataview_blocks
+                .iter()
+                .any(|block| block.language == "dataviewjs"));
+
+    let note_embeds = source_links
+        .iter()
+        .filter(|link| link.link_kind.eq_ignore_ascii_case("embed"))
+        .filter(|link| {
+            link.resolved_target_extension
+                .as_deref()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+        })
+        .filter_map(|link| link.resolved_target_path.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let mut base_embeds = source_links
+        .iter()
+        .filter(|link| link.link_kind.eq_ignore_ascii_case("embed"))
+        .filter_map(|link| {
+            let target = link
+                .resolved_target_path
+                .as_deref()
+                .or(link.target_path_candidate.as_deref())?;
+            Path::new(target)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("base"))
+                .then_some(normalize_relative_path(target))
+        })
+        .map(|path| {
+            let signature = site_input_signature_for_relative_path(paths, &path)?;
+            Ok(SiteFileDependency {
+                path: display_path(&path),
+                signature,
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+    base_embeds.sort_by(|left, right| left.path.cmp(&right.path));
+    base_embeds.dedup_by(|left, right| left.path == right.path);
+    let has_vault_queries = has_query_blocks || !base_embeds.is_empty();
+
+    Ok(SiteNoteDependencies {
+        link_state_hash: link_state_hash.to_string(),
+        note_embeds,
+        base_embeds,
+        has_vault_queries,
+    })
+}
+
+fn current_site_link_hashes(
+    plan: &SitePlan,
+    shared: &SiteRenderShared<'_>,
+) -> Result<HashMap<String, String>, AppError> {
     plan.notes
         .iter()
-        .enumerate()
-        .filter_map(|(index, note)| {
-            route_map
-                .get(&note.note.document_path)
-                .map(|route| (index, note, route))
-        })
-        .map(|(index, note, route)| {
-            let source_links = links_by_source
+        .map(|note| {
+            let source_links = shared
+                .links_by_source
                 .get(note.note.document_path.as_str())
                 .map_or(&[][..], Vec::as_slice);
-            let adjusted = apply_link_policy_to_source(
-                &note.content,
-                source_links,
-                &published_paths,
-                plan.profile.link_policy,
-            );
-            let rendered = html_renderer.render(
-                adjusted.as_ref(),
-                &HtmlRenderOptions {
-                    source_path: Some(&note.note.document_path),
-                    full_document: true,
-                    link_targets: Some(&link_targets),
-                    dataview_js_policy: match plan.profile.dataview_js {
-                        SiteDataviewJsPolicyConfig::Off => HtmlDataviewJsPolicy::Off,
-                        SiteDataviewJsPolicyConfig::Static => HtmlDataviewJsPolicy::Static,
-                    },
-                    raw_html_policy: match plan.profile.raw_html {
-                        SiteRawHtmlPolicyConfig::Passthrough => HtmlRawHtmlPolicy::Passthrough,
-                        SiteRawHtmlPolicyConfig::Sanitize => HtmlRawHtmlPolicy::Sanitize,
-                        SiteRawHtmlPolicyConfig::Strip => HtmlRawHtmlPolicy::Strip,
-                    },
-                    max_embed_depth: 4,
-                },
-            );
-            let diagnostics = rendered.diagnostics.clone();
-            let title = note_title(&note.note, &plan.profile.name, rendered.title.as_deref());
-            let excerpt = excerpt_from_markdown(adjusted.as_ref());
-            let outgoing_links = source_links
-                .iter()
-                .filter_map(|link| link.resolved_target_path.clone())
-                .filter(|path| published_paths.contains(path))
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-            let asset_paths = source_links
-                .iter()
-                .filter_map(|link| {
-                    if is_markdown_asset(link) {
-                        link.resolved_target_path.clone()
-                    } else {
-                        None
-                    }
-                })
-                .collect::<BTreeSet<_>>()
-                .into_iter()
-                .collect::<Vec<_>>();
-            let embeds = source_links
-                .iter()
-                .filter_map(|link| {
-                    if !link.link_kind.eq_ignore_ascii_case("embed") {
-                        return None;
-                    }
-                    let (target_path, url_path) =
-                        resolve_embed_target(&route_map, &asset_hrefs, link)?;
-                    Some(RenderedEmbed {
-                        kind: link.link_kind.clone(),
-                        source_path: note.note.document_path.clone(),
-                        target_path,
-                        url_path,
-                    })
-                })
-                .collect::<Vec<_>>();
-            let description = frontmatter_override(&note.note, &plan.profile.name, "description")
-                .unwrap_or_else(|| excerpt.clone());
-            let canonical_url =
-                frontmatter_override(&note.note, &plan.profile.name, "canonical_url");
-            let summary_image =
-                frontmatter_override(&note.note, &plan.profile.name, "summary_image");
-            let rendered_note = RenderedNote {
-                source_path: note.note.document_path.clone(),
-                title,
-                excerpt,
-                description,
-                canonical_url,
-                summary_image,
-                route: route.clone(),
-                html: rendered.html,
-                headings: rendered.headings,
-                tags: note.note.tags.clone(),
-                aliases: note.note.aliases.clone(),
-                outgoing_links,
-                backlinks: backlinks
-                    .get(&note.note.document_path)
-                    .cloned()
-                    .unwrap_or_default(),
-                breadcrumbs: breadcrumbs_for_path(&note.note.document_path),
-                asset_paths,
-                embeds,
-                diagnostics,
-                file_mtime: note.note.file_mtime,
-            };
-            report_site_build_progress(
-                progress,
-                SiteBuildPhase::RenderingNotes,
-                index + 1,
-                total,
-                Some(rendered_note.source_path.clone()),
-            );
-            Ok(rendered_note)
+            Ok((
+                note.note.document_path.clone(),
+                site_link_state_hash(source_links)?,
+            ))
         })
         .collect()
+}
+
+fn current_outgoing_links_by_source(
+    plan: &SitePlan,
+    shared: &SiteRenderShared<'_>,
+) -> HashMap<String, Vec<String>> {
+    plan.notes
+        .iter()
+        .map(|note| {
+            let source_links = shared
+                .links_by_source
+                .get(note.note.document_path.as_str())
+                .map_or(&[][..], Vec::as_slice);
+            (
+                note.note.document_path.clone(),
+                collect_note_outgoing_links(source_links, &shared.published_paths),
+            )
+        })
+        .collect()
+}
+
+fn collect_backlink_dependents(
+    direct_changed: &HashSet<String>,
+    link_changed: &HashSet<String>,
+    cached_by_path: &HashMap<&str, &SiteBuildStateNote>,
+    current_outgoing: &HashMap<String, Vec<String>>,
+) -> HashSet<String> {
+    direct_changed
+        .iter()
+        .chain(link_changed.iter())
+        .flat_map(|source_path| {
+            let previous = cached_by_path
+                .get(source_path.as_str())
+                .into_iter()
+                .flat_map(|note| note.rendered.outgoing_links.iter().cloned());
+            let current = current_outgoing
+                .get(source_path)
+                .into_iter()
+                .flat_map(|links| links.iter().cloned());
+            previous.chain(current).collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn collect_tag_and_folder_dependents(
+    direct_changed: &HashSet<String>,
+    plan: &SitePlan,
+    cached_by_path: &HashMap<&str, &SiteBuildStateNote>,
+) -> HashSet<String> {
+    let current_tags = plan
+        .notes
+        .iter()
+        .map(|note| {
+            (
+                note.note.document_path.clone(),
+                note.note
+                    .tags
+                    .iter()
+                    .map(|tag| normalize_tag(tag))
+                    .collect::<HashSet<_>>(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let current_folders = plan
+        .notes
+        .iter()
+        .map(|note| {
+            (
+                note.note.document_path.clone(),
+                folder_for_note(&note.note.document_path),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let mut dependents = HashSet::new();
+
+    for source_path in direct_changed {
+        let previous_tags = cached_by_path
+            .get(source_path.as_str())
+            .map(|note| {
+                note.rendered
+                    .tags
+                    .iter()
+                    .map(|tag| normalize_tag(tag))
+                    .collect::<HashSet<_>>()
+            })
+            .unwrap_or_default();
+        let previous_folder = cached_by_path
+            .get(source_path.as_str())
+            .map(|note| folder_for_note(&note.source_path));
+        let current_note_tags = current_tags.get(source_path).cloned().unwrap_or_default();
+        let current_folder = current_folders
+            .get(source_path)
+            .cloned()
+            .unwrap_or_default();
+
+        for note in &plan.notes {
+            let candidate_path = &note.note.document_path;
+            let candidate_tags = current_tags
+                .get(candidate_path)
+                .expect("every note should have a current tag set");
+            let candidate_folder = current_folders
+                .get(candidate_path)
+                .expect("every note should have a current folder");
+            if candidate_tags
+                .iter()
+                .any(|tag| previous_tags.contains(tag) || current_note_tags.contains(tag))
+                || previous_folder.as_deref() == Some(candidate_folder.as_str())
+                || current_folder == *candidate_folder
+            {
+                dependents.insert(candidate_path.clone());
+            }
+        }
+    }
+
+    dependents
+}
+
+fn collect_base_dependency_changes(
+    paths: &VaultPaths,
+    state: &SiteBuildState,
+) -> Result<(HashSet<String>, HashSet<String>), AppError> {
+    let mut changed_notes = HashSet::new();
+    let mut changed_files = HashSet::new();
+    for note in &state.notes {
+        let mut note_changed = false;
+        for dependency in &note.dependencies.base_embeds {
+            let current =
+                site_input_signature_for_relative_path(paths, Path::new(&dependency.path))?;
+            if current != dependency.signature {
+                note_changed = true;
+                changed_files.insert(dependency.path.clone());
+            }
+        }
+        if note_changed {
+            changed_notes.insert(note.source_path.clone());
+        }
+    }
+    Ok((changed_notes, changed_files))
+}
+
+fn expand_embed_dependents(changed: &HashSet<String>, state: &SiteBuildState) -> HashSet<String> {
+    let mut expanded = changed.clone();
+    loop {
+        let mut grew = false;
+        for note in &state.notes {
+            if expanded.contains(&note.source_path) {
+                continue;
+            }
+            if note
+                .dependencies
+                .note_embeds
+                .iter()
+                .any(|target| expanded.contains(target))
+                && expanded.insert(note.source_path.clone())
+            {
+                grew = true;
+            }
+        }
+        if !grew {
+            break;
+        }
+    }
+    expanded
+}
+
+fn site_build_state_matches_plan(
+    plan: &SitePlan,
+    state: &SiteBuildState,
+    route_map: &HashMap<String, SiteRoute>,
+) -> bool {
+    if state.version != SITE_BUILD_STATE_VERSION
+        || state.config_signature != plan.config_signature
+        || state.notes.len() != plan.notes.len()
+    {
+        return false;
+    }
+    let cached_by_path = site_build_state_notes_by_path(state);
+    plan.notes.iter().all(|note| {
+        cached_by_path
+            .get(note.note.document_path.as_str())
+            .and_then(|cached| {
+                route_map
+                    .get(&note.note.document_path)
+                    .map(|route| cached.rendered.route == *route)
+            })
+            .unwrap_or(false)
+    })
+}
+
+fn site_build_state_notes_by_path(state: &SiteBuildState) -> HashMap<&str, &SiteBuildStateNote> {
+    state
+        .notes
+        .iter()
+        .map(|note| (note.source_path.as_str(), note))
+        .collect()
+}
+
+fn site_link_state_hash(source_links: &[&ExportLinkRecord]) -> Result<String, AppError> {
+    serde_json::to_vec(source_links)
+        .map(|payload| blake3::hash(&payload).to_hex().to_string())
+        .map_err(AppError::operation)
+}
+
+fn collect_note_outgoing_links(
+    source_links: &[&ExportLinkRecord],
+    published_paths: &HashSet<String>,
+) -> Vec<String> {
+    source_links
+        .iter()
+        .filter_map(|link| link.resolved_target_path.clone())
+        .filter(|path| published_paths.contains(path))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn collect_note_asset_paths(source_links: &[&ExportLinkRecord]) -> Vec<String> {
+    source_links
+        .iter()
+        .filter_map(|link| {
+            if is_markdown_asset(link) {
+                link.resolved_target_path.clone()
+            } else {
+                None
+            }
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn collect_note_embeds(
+    source_links: &[&ExportLinkRecord],
+    source_path: &str,
+    shared: &SiteRenderShared<'_>,
+) -> Vec<RenderedEmbed> {
+    source_links
+        .iter()
+        .filter_map(|link| {
+            if !link.link_kind.eq_ignore_ascii_case("embed") {
+                return None;
+            }
+            let (target_path, url_path) =
+                resolve_embed_target(&shared.route_map, &shared.asset_hrefs, link)?;
+            Some(RenderedEmbed {
+                kind: link.link_kind.clone(),
+                source_path: source_path.to_string(),
+                target_path,
+                url_path,
+            })
+        })
+        .collect()
+}
+
+fn site_input_signature_for_note(note: &NoteRecord) -> SiteInputSignature {
+    SiteInputSignature {
+        file_mtime: note.file_mtime,
+        file_size: note.file_size,
+    }
+}
+
+fn site_input_signature_for_relative_path(
+    paths: &VaultPaths,
+    relative: &Path,
+) -> Result<Option<SiteInputSignature>, AppError> {
+    let metadata = match fs::metadata(paths.vault_root().join(relative)) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(AppError::operation(error)),
+    };
+    let file_size = i64::try_from(metadata.len())
+        .map_err(|_| AppError::operation("site dependency file size exceeded supported range"))?;
+    let file_mtime = metadata
+        .modified()
+        .ok()
+        .and_then(system_time_to_millis)
+        .ok_or_else(|| AppError::operation("failed to read site dependency modification time"))?;
+    Ok(Some(SiteInputSignature {
+        file_mtime,
+        file_size,
+    }))
+}
+
+fn system_time_to_millis(time: std::time::SystemTime) -> Option<i64> {
+    let duration = time.duration_since(UNIX_EPOCH).ok()?;
+    i64::try_from(duration.as_millis()).ok()
+}
+
+fn site_build_config_signature(paths: &VaultPaths, profile: &ResolvedSiteProfile) -> String {
+    let vault_config = load_vault_config(paths).config;
+    let payload = format!("{vault_config:?}\n{profile:?}");
+    blake3::hash(payload.as_bytes()).to_hex().to_string()
+}
+
+fn load_site_build_state(
+    paths: &VaultPaths,
+    profile: &ResolvedSiteProfile,
+) -> Result<Option<SiteBuildState>, AppError> {
+    let path = site_build_state_path(paths, profile);
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(AppError::operation(error)),
+    };
+    Ok(serde_json::from_str(&contents).ok())
+}
+
+fn save_site_build_state(
+    paths: &VaultPaths,
+    profile: &ResolvedSiteProfile,
+    state: &SiteBuildState,
+) -> Result<(), AppError> {
+    // Store per-profile render state under `.vulcan/` so future builds can skip
+    // unchanged note-page compilation while keeping the output directory clean.
+    ensure_vulcan_dir(paths).map_err(AppError::operation)?;
+    let path = site_build_state_path(paths, profile);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(AppError::operation)?;
+    }
+    let payload = serde_json::to_string_pretty(state).map_err(AppError::operation)?;
+    fs::write(path, payload).map_err(AppError::operation)
+}
+
+fn site_build_state_path(paths: &VaultPaths, profile: &ResolvedSiteProfile) -> PathBuf {
+    let key = format!("{}\0{}", profile.name, profile.output_dir.display());
+    let hash = blake3::hash(key.as_bytes()).to_hex().to_string();
+    paths.vulcan_dir().join("site-state").join(format!(
+        "{}-{}.json",
+        slugify_segment(&profile.name),
+        &hash[..12]
+    ))
 }
 
 fn resolve_embed_target(
@@ -3036,7 +3722,7 @@ fn build_related_manifest(
 
 fn build_search_index(
     paths: &VaultPaths,
-    notes: &[ExportedNoteDocument],
+    notes: &[SitePlanNote],
     routes_by_path: &HashMap<String, SiteRoute>,
 ) -> Result<Value, AppError> {
     let published = notes
@@ -3230,10 +3916,7 @@ fn backlinks_by_target(
         .collect()
 }
 
-fn build_tag_href_map(
-    notes: &[ExportedNoteDocument],
-    deploy_path: &str,
-) -> HashMap<String, String> {
+fn build_tag_href_map(notes: &[SitePlanNote], deploy_path: &str) -> HashMap<String, String> {
     notes
         .iter()
         .flat_map(|note| note.note.tags.iter())
@@ -4242,6 +4925,11 @@ mod tests {
         scan_vault(&VaultPaths::new(vault_root), ScanMode::Full).expect("scan should succeed");
     }
 
+    fn scan_fixture_incremental(vault_root: &Path) {
+        scan_vault(&VaultPaths::new(vault_root), ScanMode::Incremental)
+            .expect("incremental scan should succeed");
+    }
+
     fn export_link_record(
         raw_text: &str,
         resolved_target_path: Option<&str>,
@@ -4303,6 +4991,16 @@ mod tests {
 
     fn read_site_json(root: &Path, relative: &str) -> Value {
         serde_json::from_str(&read_site_text(root, relative)).expect("site json should parse")
+    }
+
+    fn note_output_path(report: &SiteBuildReport, source_path: &str) -> String {
+        report
+            .routes
+            .iter()
+            .find(|route| route.source_path.as_deref() == Some(source_path))
+            .unwrap_or_else(|| panic!("route should exist for {source_path}"))
+            .output_path
+            .clone()
     }
 
     fn compact_html(value: &str) -> String {
@@ -4854,6 +5552,227 @@ graph = false
         assert!(!vault_root
             .join(".vulcan/site/public/notes/projects/alpha/index.html")
             .exists());
+    }
+
+    #[test]
+    fn site_build_incrementally_reuses_unaffected_note_pages() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        fs::create_dir_all(vault_root.join("Misc")).expect("misc dir should exist");
+        fs::write(
+            vault_root.join("Misc/Gamma.md"),
+            "# Gamma\n\nStandalone page.\n",
+        )
+        .expect("gamma note should write");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Incremental Demo"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md", "Projects/Alpha.md", "People/Bob.md", "Misc/Gamma.md"]
+search = false
+graph = false
+backlinks = false
+rss = false
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let paths = VaultPaths::new(&vault_root);
+        let first = build_site(
+            &paths,
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("first build should succeed");
+        let profile =
+            resolve_site_profile(&paths, Some("public"), None).expect("profile should resolve");
+        assert!(
+            site_build_state_path(&paths, &profile).exists(),
+            "incremental state should be persisted after a successful build"
+        );
+
+        let home_route = note_output_path(&first, "Home.md");
+        let alpha_route = note_output_path(&first, "Projects/Alpha.md");
+        let bob_route = note_output_path(&first, "People/Bob.md");
+        let gamma_route = note_output_path(&first, "Misc/Gamma.md");
+
+        fs::write(
+            vault_root.join("Misc/Gamma.md"),
+            "# Gamma\n\nStandalone page with a changed body.\n",
+        )
+        .expect("gamma note update should write");
+        scan_fixture_incremental(&vault_root);
+
+        let second = build_site(
+            &paths,
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: false,
+                dry_run: false,
+            },
+        )
+        .expect("second build should succeed");
+
+        assert!(second.changed_files.iter().any(|path| path == &gamma_route));
+        assert!(!second.changed_files.iter().any(|path| path == &home_route));
+        assert!(!second.changed_files.iter().any(|path| path == &alpha_route));
+        assert!(!second.changed_files.iter().any(|path| path == &bob_route));
+    }
+
+    #[test]
+    fn site_build_incrementally_rerenders_backlink_dependents() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("basic", &vault_root);
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Backlink Demo"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md", "Projects/Alpha.md", "People/Bob.md"]
+search = false
+graph = false
+backlinks = true
+rss = false
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let paths = VaultPaths::new(&vault_root);
+        let first = build_site(
+            &paths,
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("first build should succeed");
+
+        let home_route = note_output_path(&first, "Home.md");
+        let alpha_route = note_output_path(&first, "Projects/Alpha.md");
+        let bob_route = note_output_path(&first, "People/Bob.md");
+        fs::write(
+            vault_root.join("Projects/Alpha.md"),
+            r"---
+status: active
+tags:
+  - project
+  - work
+---
+
+# Alpha
+
+Owned by [[People/Bob]].
+
+## Status
+
+Alpha now stands on its own.
+",
+        )
+        .expect("alpha update should write");
+        scan_fixture_incremental(&vault_root);
+
+        let second = build_site(
+            &paths,
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: false,
+                dry_run: false,
+            },
+        )
+        .expect("second build should succeed");
+
+        assert!(second.changed_files.iter().any(|path| path == &alpha_route));
+        assert!(
+            second.changed_files.iter().any(|path| path == &home_route),
+            "home note page should rerender when its backlinks change: {:?}",
+            second.changed_files
+        );
+        assert!(!second.changed_files.iter().any(|path| path == &bob_route));
+    }
+
+    #[test]
+    fn site_build_incrementally_rerenders_dataview_pages_for_non_published_vault_changes() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        copy_fixture_vault("dataview", &vault_root);
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Dataview Demo"
+output_dir = ".vulcan/site/public"
+include_paths = ["Dashboard.md"]
+search = false
+graph = false
+backlinks = false
+rss = false
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let paths = VaultPaths::new(&vault_root);
+        let first = build_site(
+            &paths,
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("first build should succeed");
+        let dashboard_route = note_output_path(&first, "Dashboard.md");
+
+        fs::write(
+            vault_root.join("Projects/Beta.md"),
+            r"---
+status: backlog
+reviewed: true
+---
+
+#project
+priority:: 5
+
+- [/] Prepare backlog 🗓️ 2026-04-03 ✅ 2026-04-04 ➕ 2026-04-01 🛫 2026-04-02 ⏳ 2026-04-05 🔺 🔁 every week ⛔ ALPHA-1 🆔 BETA-1
+",
+        )
+        .expect("beta update should write");
+        scan_fixture_incremental(&vault_root);
+
+        let second = build_site(
+            &paths,
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: false,
+                dry_run: false,
+            },
+        )
+        .expect("second build should succeed");
+
+        assert!(
+            second
+                .changed_files
+                .iter()
+                .any(|path| path == &dashboard_route),
+            "dashboard should rerender when a vault note changes its dataview result: {:?}",
+            second.changed_files
+        );
     }
 
     #[test]

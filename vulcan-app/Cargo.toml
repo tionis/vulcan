@@ -10,6 +10,7 @@ default = ["js_runtime"]
 js_runtime = ["dep:rquickjs", "vulcan-core/js_runtime"]
 
 [dependencies]
+blake3.workspace = true
 csv.workspace = true
 pulldown-cmark.workspace = true
 regex.workspace = true

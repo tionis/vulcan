@@ -442,14 +442,32 @@ pub fn load_export_links(
     paths: &VaultPaths,
     notes: &[ExportedNoteDocument],
 ) -> Result<Vec<ExportLinkRecord>, AppError> {
-    if notes.is_empty() {
-        return Ok(Vec::new());
-    }
-
     let document_ids = notes
         .iter()
         .map(|entry| entry.note.document_id.as_str())
         .collect::<Vec<_>>();
+    load_export_links_for_document_ids(paths, &document_ids)
+}
+
+pub fn load_export_links_for_notes(
+    paths: &VaultPaths,
+    notes: &[NoteRecord],
+) -> Result<Vec<ExportLinkRecord>, AppError> {
+    let document_ids = notes
+        .iter()
+        .map(|note| note.document_id.as_str())
+        .collect::<Vec<_>>();
+    load_export_links_for_document_ids(paths, &document_ids)
+}
+
+fn load_export_links_for_document_ids(
+    paths: &VaultPaths,
+    document_ids: &[&str],
+) -> Result<Vec<ExportLinkRecord>, AppError> {
+    if document_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
     let placeholders = document_ids
         .iter()
         .map(|_| "?")
@@ -3631,7 +3649,9 @@ fn export_profile_supports_content_transforms(format: ExportProfileFormat) -> bo
     )
 }
 
-fn content_transform_rules_have_effective_transforms(rules: &[ContentTransformRuleConfig]) -> bool {
+pub(crate) fn content_transform_rules_have_effective_transforms(
+    rules: &[ContentTransformRuleConfig],
+) -> bool {
     rules.iter().any(|rule| !rule.is_empty())
 }
 
