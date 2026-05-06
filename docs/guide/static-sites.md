@@ -142,6 +142,36 @@ default header. `theme.css` and `theme.js` are copied into published assets and 
 Vulcan's built-in shell assets. A reference bundle lives at
 `docs/examples/static-site-theme-reference/`.
 
+## Math and Mermaid contract
+
+Vulcan keeps math and Mermaid responsibilities split cleanly between the shared server renderer and
+an optional browser runtime.
+
+Server-side output:
+
+- inline and display math stay in the HTML as TeX text wrapped in stable `data-site-math="inline"`
+  or `data-site-math="display"` markers
+- Mermaid fences stay readable as `<pre><code class="language-mermaid">...</code></pre>` with
+  `data-site-mermaid-source="true"` on the `<pre>` wrapper
+
+Built-in shell behavior:
+
+- `assets/vulcan-site.js` does not bundle KaTeX or Mermaid on its own
+- on `DOMContentLoaded`, it dispatches `vulcan-site:math` and `vulcan-site:mermaid`
+  `CustomEvent`s with the matched nodes in `event.detail.nodes`
+- if those events are not canceled and a compatible global runtime is present, the shell enhances
+  the page in place with `window.katex.render(...)` or `window.mermaid.run(...)`
+- if no runtime is present, the server-rendered fallback remains visible instead of disappearing
+
+Custom themes or external frontends can either:
+
+- provide global KaTeX/Mermaid runtimes and let the built-in shell enhance automatically
+- listen for `vulcan-site:math` or `vulcan-site:mermaid`, call `event.preventDefault()`, and take
+  over rendering themselves
+
+Because `theme.js` loads after the built-in shell, these enhancement hooks fire on
+`DOMContentLoaded` so custom themes still have time to register listeners first.
+
 ## Preview server
 
 `vulcan site serve` is loopback-only and daemon-independent. It serves built files directly from the

@@ -3971,7 +3971,7 @@ Publishing a subset of the vault is a first-class requirement. Profiles are the 
 The renderer should understand vault semantics, not just CommonMark.
 
 - [x] Render Markdown to HTML with Obsidian-compatible support for wikilinks, heading/block refs, note embeds, image/audio/video/PDF embeds, footnotes, callouts, task lists, tables, and syntax highlighting
-- [~] Render math and mermaid with clear server/client responsibilities; the shared renderer already emits math HTML and `language-mermaid` fenced code blocks, but explicit runtime-hook/docs polish is still pending
+- [x] Render math and mermaid with clear server/client responsibilities; the shared renderer now emits stable math/mermaid markers, the built-in shell auto-enhances them when KaTeX/Mermaid runtimes are present, and the static-site docs spell out the server/runtime contract
 - [x] Generate stable heading IDs and block anchors for deep links and embeds
 - [x] Render note/block embeds recursively with loop detection and depth limits
 - [x] Copy referenced attachments into the output with deterministic paths; optionally content-hash emitted asset filenames
