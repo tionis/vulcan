@@ -796,9 +796,10 @@ rss = true
         assert_eq!(live["ok"], true);
         assert_eq!(live["version"], 1);
         assert!(live["last_error"].is_null());
-        assert!(search["entries"]
+        assert_eq!(search["version"], 2);
+        assert!(search["documents"]
             .as_array()
-            .is_some_and(|entries| !entries.is_empty()));
+            .is_some_and(|documents| !documents.is_empty()));
 
         handle.shutdown().expect("site server should shut down");
     }

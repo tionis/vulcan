@@ -14,6 +14,7 @@ fn parser_options_internal(include_metadata_blocks: bool) -> Options {
     let mut options = Options::empty();
     options.insert(Options::ENABLE_WIKILINKS);
     options.insert(Options::ENABLE_GFM);
+    options.insert(Options::ENABLE_TASKLISTS);
     options.insert(Options::ENABLE_MATH);
     options.insert(Options::ENABLE_FOOTNOTES);
     if include_metadata_blocks {
