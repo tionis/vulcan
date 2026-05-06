@@ -166,6 +166,34 @@ When strict mode is enabled, Vulcan preflights the rebuild in `--dry-run` mode f
 warnings or errors are detected, the running preview keeps serving the last good output and reports the
 problem through `last_error`.
 
+## Incremental builds
+
+Site builds now persist note-render state under `.vulcan/site-state/`. When the same profile writes
+to the same `output_dir` and its planned routes stay stable, Vulcan reuses unchanged rendered note
+pages instead of recompiling the whole published subset on every rebuild. `site serve --watch` uses
+the same cache automatically, so the live preview loop benefits from the same incremental note-page
+reuse as one-shot `site build`.
+
+The current cache invalidates and rerenders:
+
+- notes whose own source file changed
+- notes whose resolved link or embed state changed after some other vault edit
+- backlink, tag-listing, folder-listing, and embed dependents of changed notes
+- notes with `dataview`, `tasks`, `.base`, or static `dataviewjs` output when other vault notes change
+- notes that depend on changed `.base` files
+
+Vulcan still falls back to a full note-page rerender when:
+
+- vault config or site-profile config changes
+- the published note set changes
+- route planning changes for the selected notes
+- site `content_transforms` are active
+
+Aggregate outputs such as the home page, folder/tag listings, recent pages, manifests, feeds, and
+copied assets are still regenerated conservatively from the current rendered-note set. The main
+incremental win today is skipping unchanged note-page HTML compilation while keeping the overall
+publication output deterministic.
+
 ## Output shape
 
 The builder currently emits a profile-scoped site with:

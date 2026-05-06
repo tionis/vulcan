@@ -3932,6 +3932,7 @@ graph = false
 - The builder reuses the same shared HTML renderer already used by `note get --mode html` and `render --mode html`; this currently covers inline Dataview expressions, `dataview` query blocks, `tasks` query blocks, `.base` embeds, note embeds, callouts, attachment rewriting, and DataviewJS off/static fallback behavior.
 - The preview loop now exposes both JSON polling and SSE live-reload endpoints, surfaces publish diagnostics to the terminal/browser overlay, and tracks changed/deleted outputs so watch rebuilds only rewrite files whose bytes actually changed.
 - Phase 9.20 is complete: the built-in static site path and the external frontend-bundle path now share the same publication selection, transforms, route planning, manifests, asset copying, deterministic HTML fragments, and local live-reload/watch loop. Follow-up expansion can still broaden fixture libraries over time, but the shared publication contract intended for later WebUI/wiki reuse is now in place.
+- Follow-up optimization (2026-05-06): site builds now persist per-profile note-render state under `.vulcan/site-state/` and reuse unchanged note pages when the profile config, published set, and planned routes remain stable. Watch/small-update rebuilds invalidate backlink/tag/folder/embed/query dependents conservatively, while aggregate pages and manifests are still regenerated from the current rendered-note set.
 
 ### 9.20.1 Shared render contract and CLI surface
 
