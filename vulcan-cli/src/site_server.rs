@@ -5,6 +5,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
@@ -181,6 +182,12 @@ pub fn spawn_site_server(
         version: 1,
         last_error: None,
     }));
+    let (watch_ready_sender, watch_ready_receiver) = if options.watch {
+        let (sender, receiver) = mpsc::sync_channel(1);
+        (Some(sender), Some(receiver))
+    } else {
+        (None, None)
+    };
     let join_shutdown = Arc::clone(&shutdown);
     let join_state = Arc::clone(&state);
 
@@ -200,6 +207,7 @@ pub fn spawn_site_server(
             };
             let watch_strict = options.strict;
             let watch_fail_on_warning = options.fail_on_warning;
+            let mut watch_ready_sender = watch_ready_sender;
             Some(thread::spawn(move || {
                 let result = watch_vault_until(
                     &watch_paths,
@@ -207,6 +215,9 @@ pub fn spawn_site_server(
                     || watch_shutdown.load(Ordering::SeqCst),
                     |watch_report| {
                         if watch_report.startup {
+                            if let Some(sender) = watch_ready_sender.take() {
+                                let _ = sender.send(Ok(()));
+                            }
                             return Ok::<_, std::convert::Infallible>(());
                         }
                         match build_site_with_policy(
@@ -246,6 +257,9 @@ pub fn spawn_site_server(
                 );
                 if let Err(error) = result {
                     let error_message = error.to_string();
+                    if let Some(sender) = watch_ready_sender.take() {
+                        let _ = sender.send(Err(error_message.clone()));
+                    }
                     if let Ok(mut state) = watch_state.lock() {
                         if state.last_error.as_deref() != Some(error_message.as_str()) {
                             state.version = state.version.saturating_add(1);
@@ -267,6 +281,31 @@ pub fn spawn_site_server(
         }
         result
     });
+
+    if let Some(receiver) = watch_ready_receiver {
+        match receiver.recv_timeout(Duration::from_secs(5)) {
+            Ok(Ok(())) => {}
+            Ok(Err(message)) => {
+                shutdown.store(true, Ordering::SeqCst);
+                let _ = join_handle.join();
+                return Err(CliError::operation(message));
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                shutdown.store(true, Ordering::SeqCst);
+                let _ = join_handle.join();
+                return Err(CliError::operation(
+                    "site serve watch did not initialize within 5 seconds",
+                ));
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                shutdown.store(true, Ordering::SeqCst);
+                let _ = join_handle.join();
+                return Err(CliError::operation(
+                    "site serve watch initialization channel closed unexpectedly",
+                ));
+            }
+        }
+    }
 
     Ok(SiteServeHandle {
         addr,
