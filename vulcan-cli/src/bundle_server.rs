@@ -500,6 +500,23 @@ mod tests {
     use vulcan_core::{scan_vault, ScanMode};
 
     #[test]
+    fn copy_vault_tree_prepares_fresh_vulcan_dir_when_source_omits_it() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let source_root = temp_dir.path().join("source");
+        let destination_root = temp_dir.path().join("destination");
+        fs::create_dir_all(source_root.join("Projects")).expect("source directories should exist");
+        fs::write(source_root.join("Home.md"), "# Home\n").expect("home note should be written");
+        fs::write(source_root.join("Projects/Alpha.md"), "# Alpha\n")
+            .expect("project note should be written");
+
+        copy_vault_tree(&source_root, &destination_root);
+
+        assert!(destination_root.join("Home.md").exists());
+        assert!(destination_root.join("Projects/Alpha.md").exists());
+        assert!(destination_root.join(".vulcan").is_dir());
+    }
+
+    #[test]
     fn bundle_serve_serves_contract_and_live_reload_state() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
@@ -619,13 +636,21 @@ graph = true
         let source = Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../tests/fixtures/vaults")
             .join(name);
-        copy_dir_recursive(&source, destination);
+        copy_vault_tree(&source, destination);
+    }
+
+    fn copy_vault_tree(source: &Path, destination: &Path) {
+        copy_dir_recursive(source, destination);
+        fs::create_dir_all(destination.join(".vulcan")).expect(".vulcan dir should be created");
     }
 
     fn copy_dir_recursive(source: &Path, destination: &Path) {
         fs::create_dir_all(destination).expect("destination directory should be created");
         for entry in fs::read_dir(source).expect("source directory should be readable") {
             let entry = entry.expect("directory entry should be readable");
+            if entry.file_name() == ".vulcan" {
+                continue;
+            }
             let source_path = entry.path();
             let destination_path = destination.join(entry.file_name());
             if entry
@@ -635,6 +660,9 @@ graph = true
             {
                 copy_dir_recursive(&source_path, &destination_path);
             } else {
+                if let Some(parent) = destination_path.parent() {
+                    fs::create_dir_all(parent).expect("parent directory should be created");
+                }
                 fs::copy(&source_path, &destination_path)
                     .expect("fixture file should copy successfully");
             }
