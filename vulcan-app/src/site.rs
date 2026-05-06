@@ -21,7 +21,8 @@ use std::path::{Component, Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use vulcan_core::config::{
     load_vault_config, ContentTransformRuleConfig, SiteAssetPolicyConfig,
-    SiteAssetPolicyModeConfig, SiteDataviewJsPolicyConfig, SiteLinkPolicyConfig, SiteProfileConfig,
+    SiteAssetPolicyModeConfig, SiteDataviewJsPolicyConfig, SiteExplorerFolderStateConfig,
+    SiteFolderClickBehaviorConfig, SiteLinkPolicyConfig, SitePaletteModeConfig, SiteProfileConfig,
     SiteRawHtmlPolicyConfig,
 };
 use vulcan_core::graph::resolve_note_reference;
@@ -37,115 +38,785 @@ use vulcan_core::{ensure_vulcan_dir, export_graph, parse_document, VaultPaths};
 const DEFAULT_PAGE_TITLE_TEMPLATE: &str = "{page} | {site}";
 const SITE_BUILD_STATE_VERSION: u32 = 1;
 
-const DEFAULT_THEME_CSS: &str = concat!(
-    ":root {\n",
-    "  color-scheme: light dark;\n",
-    "  --bg: #f5f1e8;\n",
-    "  --bg-strong: #ece3d1;\n",
-    "  --panel: rgba(255, 252, 247, 0.9);\n",
-    "  --text: #1f1a14;\n",
-    "  --muted: #625448;\n",
-    "  --accent: #0d6b57;\n",
-    "  --accent-strong: #094c3d;\n",
-    "  --border: rgba(31, 26, 20, 0.14);\n",
-    "  --shadow: 0 20px 40px rgba(31, 26, 20, 0.08);\n",
-    "  --code-bg: rgba(31, 26, 20, 0.06);\n",
-    "  --link: #0f5e9c;\n",
-    "}\n",
-    "@media (prefers-color-scheme: dark) {\n",
-    "  :root {\n",
-    "    --bg: #161515;\n",
-    "    --bg-strong: #201e1c;\n",
-    "    --panel: rgba(30, 28, 26, 0.92);\n",
-    "    --text: #f0eadf;\n",
-    "    --muted: #bcaf9c;\n",
-    "    --accent: #6dc7a7;\n",
-    "    --accent-strong: #91e0c4;\n",
-    "    --border: rgba(240, 234, 223, 0.14);\n",
-    "    --shadow: 0 20px 40px rgba(0, 0, 0, 0.35);\n",
-    "    --code-bg: rgba(240, 234, 223, 0.08);\n",
-    "    --link: #8ec7ff;\n",
-    "  }\n",
-    "}\n",
-    "html[data-theme='light'] { color-scheme: light; }\n",
-    "html[data-theme='dark'] { color-scheme: dark; }\n",
-    "* { box-sizing: border-box; }\n",
-    "body { margin: 0; font-family: Georgia, 'Iowan Old Style', 'Palatino Linotype', serif; background: radial-gradient(circle at top, var(--bg-strong), var(--bg)); color: var(--text); }\n",
-    "a { color: var(--link); }\n",
-    "img, video { max-width: 100%; height: auto; }\n",
-    "code, pre { font-family: 'IBM Plex Mono', 'SFMono-Regular', monospace; background: var(--code-bg); }\n",
-    "pre { padding: 1rem; border-radius: 1rem; overflow: auto; }\n",
-    ".site-shell { max-width: 1180px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }\n",
-    ".site-skip-link { position: absolute; left: 1rem; top: 0.75rem; padding: 0.65rem 0.9rem; border-radius: 999px; background: var(--accent); color: #fff; text-decoration: none; transform: translateY(-180%); transition: transform 0.18s ease; z-index: 10000; }\n",
-    ".site-skip-link:focus { transform: translateY(0); }\n",
-    ".site-header { display: flex; gap: 1rem; justify-content: space-between; align-items: center; margin-bottom: 2rem; }\n",
-    ".site-brand { display: flex; gap: 0.85rem; align-items: center; }\n",
-    ".site-brand-title { margin: 0; font-size: clamp(2rem, 4vw, 3rem); font-weight: 700; }\n",
-    ".site-brand-title a { color: inherit; text-decoration: none; }\n",
-    ".site-brand p { margin: 0.4rem 0 0; color: var(--muted); }\n",
-    ".site-brand-mark { width: 3rem; height: 3rem; border-radius: 0.9rem; object-fit: cover; border: 1px solid var(--border); box-shadow: var(--shadow); background: rgba(255,255,255,0.35); }\n",
-    ".site-toolbar { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }\n",
-    ".site-top-nav { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }\n",
-    ".site-toolbar a, .site-toolbar button { border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 999px; padding: 0.55rem 0.9rem; text-decoration: none; cursor: pointer; box-shadow: var(--shadow); }\n",
-    ".site-layout { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 1.5rem; }\n",
-    ".site-main, .site-sidebar > section, .site-listing, .site-search-card, .site-graph-card { background: var(--panel); border: 1px solid var(--border); border-radius: 1.5rem; box-shadow: var(--shadow); }\n",
-    ".site-main { padding: 1.5rem; }\n",
-    ".site-sidebar { display: grid; gap: 1rem; align-content: start; }\n",
-    ".site-sidebar > section { padding: 1rem 1.1rem; }\n",
-    ".site-meta, .site-breadcrumbs, .site-footer, .site-listing p, .site-empty { color: var(--muted); }\n",
-    ".site-breadcrumbs { display: flex; gap: 0.5rem; flex-wrap: wrap; font-size: 0.95rem; margin-bottom: 1rem; }\n",
-    ".site-listing, .site-search-card, .site-graph-card { padding: 1.25rem; }\n",
-    ".site-listing ul, .site-sidebar ul { padding-left: 1.2rem; margin: 0.75rem 0 0; }\n",
-    ".site-card-grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }\n",
-    ".site-card { border: 1px solid var(--border); border-radius: 1.2rem; padding: 1rem; background: rgba(255,255,255,0.22); }\n",
-    ".site-footer { margin-top: 2rem; font-size: 0.95rem; }\n",
-    ".site-search-input { width: 100%; padding: 0.8rem 1rem; border-radius: 999px; border: 1px solid var(--border); background: rgba(255,255,255,0.55); color: var(--text); }\n",
-    ".site-search-launch, .site-search-dialog-header button { border: 1px solid var(--border); background: var(--panel); color: var(--text); border-radius: 999px; padding: 0.55rem 0.9rem; text-decoration: none; cursor: pointer; box-shadow: var(--shadow); }\n",
-    ".site-search-dialog[hidden] { display: none; }\n",
-    ".site-search-dialog { position: fixed; inset: 0; z-index: 9998; padding: 1.25rem; background: rgba(19, 17, 15, 0.56); backdrop-filter: blur(10px); }\n",
-    ".site-search-dialog-panel { max-width: 44rem; margin: 2rem auto 0; background: var(--panel); border: 1px solid var(--border); border-radius: 1.5rem; box-shadow: var(--shadow); padding: 1.1rem; }\n",
-    ".site-search-dialog-header { display: flex; gap: 1rem; align-items: center; justify-content: space-between; }\n",
-    ".site-search-results { list-style: none; padding: 0; margin: 1rem 0 0; display: grid; gap: 0.8rem; }\n",
-    ".site-search-results li { border: 1px solid var(--border); border-radius: 1rem; padding: 0.9rem 1rem; background: rgba(255,255,255,0.18); }\n",
-    ".site-search-results a { font-weight: 700; text-decoration: none; }\n",
-    ".site-search-results mark { background: rgba(13, 107, 87, 0.2); color: inherit; padding: 0 0.15em; border-radius: 0.2rem; }\n",
-    ".site-local-graph-list { list-style: none; padding: 0; margin: 0.75rem 0 0; display: grid; gap: 0.75rem; }\n",
-    ".site-local-graph-list li { border-bottom: 1px solid var(--border); padding-bottom: 0.75rem; }\n",
-    ".site-local-graph-list li:last-child { border-bottom: 0; padding-bottom: 0; }\n",
-    ".site-local-graph-direction { display: block; font-size: 0.8rem; letter-spacing: 0.05em; text-transform: uppercase; color: var(--muted); margin-bottom: 0.2rem; }\n",
-    ".site-visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }\n",
-    ".site-pill-list { display: flex; gap: 0.5rem; flex-wrap: wrap; list-style: none; padding: 0; margin: 0.9rem 0 0; }\n",
-    ".site-pill-list a { display: inline-flex; border: 1px solid var(--border); padding: 0.35rem 0.75rem; border-radius: 999px; text-decoration: none; }\n",
-    ".site-inline-nav { display: flex; gap: 0.8rem; justify-content: space-between; margin-top: 2rem; flex-wrap: wrap; }\n",
-    ".math.math-inline { white-space: nowrap; }\n",
-    ".math.math-display { display: block; overflow-x: auto; padding: 0.5rem 0; }\n",
-    ".site-callout { border-left: 4px solid var(--accent); padding-left: 1rem; color: var(--muted); }\n",
-    ".site-diagnostics { margin-top: 1rem; border-radius: 1rem; border: 1px solid rgba(178, 69, 54, 0.35); background: rgba(178, 69, 54, 0.08); padding: 1rem; }\n",
-    ".site-live-overlay { position: fixed; right: 1rem; bottom: 1rem; z-index: 9999; background: rgba(20, 20, 20, 0.92); color: #fff; padding: 0.9rem 1rem; border-radius: 1rem; max-width: 24rem; box-shadow: 0 18px 36px rgba(0,0,0,0.35); }\n",
-    "a:focus-visible, button:focus-visible, input:focus-visible { outline: 2px solid var(--accent-strong); outline-offset: 3px; }\n",
-    "@media (max-width: 900px) { .site-layout { grid-template-columns: 1fr; } .site-header { flex-direction: column; align-items: start; } .site-search-dialog { padding: 0.65rem; } .site-search-dialog-panel { margin-top: 0; min-height: calc(100vh - 1.3rem); border-radius: 1.2rem; } }\n"
-);
+const DEFAULT_THEME_CSS: &str = r"
+:root {
+  color-scheme: light dark;
+  --bg: #f5f2ea;
+  --bg-strong: #ebe3d5;
+  --bg-elevated: rgba(252, 249, 244, 0.92);
+  --surface: rgba(255, 252, 247, 0.84);
+  --surface-strong: rgba(255, 252, 247, 0.96);
+  --surface-soft: rgba(255, 255, 255, 0.36);
+  --text: #1e1a15;
+  --muted: #6a5d4f;
+  --accent: #1d6b7d;
+  --accent-strong: #154d59;
+  --accent-soft: rgba(29, 107, 125, 0.14);
+  --border: rgba(30, 26, 21, 0.12);
+  --border-strong: rgba(30, 26, 21, 0.2);
+  --shadow: 0 24px 60px rgba(38, 25, 12, 0.08);
+  --code-bg: rgba(30, 26, 21, 0.06);
+  --link: #0d5e9b;
+  --left-rail-width: 20rem;
+  --right-rail-width: 21rem;
+  --content-max: 52rem;
+  --radius-lg: 1.5rem;
+  --radius-md: 1rem;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111312;
+    --bg-strong: #171a19;
+    --bg-elevated: rgba(22, 25, 24, 0.95);
+    --surface: rgba(24, 28, 27, 0.88);
+    --surface-strong: rgba(30, 34, 33, 0.96);
+    --surface-soft: rgba(255, 255, 255, 0.04);
+    --text: #ece6dc;
+    --muted: #b2a797;
+    --accent: #86c5ca;
+    --accent-strong: #9ddce0;
+    --accent-soft: rgba(134, 197, 202, 0.14);
+    --border: rgba(236, 230, 220, 0.12);
+    --border-strong: rgba(236, 230, 220, 0.2);
+    --shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
+    --code-bg: rgba(236, 230, 220, 0.08);
+    --link: #8ec9ff;
+  }
+}
+
+html[data-theme='light'] { color-scheme: light; }
+html[data-theme='dark'] { color-scheme: dark; }
+html { scroll-padding-top: 5rem; }
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  font-family: 'IBM Plex Sans', 'Avenir Next', 'Segoe UI', sans-serif;
+  background:
+    radial-gradient(circle at top left, rgba(29, 107, 125, 0.11), transparent 34rem),
+    radial-gradient(circle at top right, rgba(184, 146, 77, 0.1), transparent 28rem),
+    linear-gradient(180deg, var(--bg-strong), var(--bg));
+  color: var(--text);
+  line-height: 1.65;
+}
+
+a {
+  color: var(--link);
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.18em;
+}
+
+img, video {
+  max-width: 100%;
+  height: auto;
+}
+
+code, pre {
+  font-family: 'IBM Plex Mono', 'SFMono-Regular', monospace;
+  background: var(--code-bg);
+}
+
+pre {
+  padding: 1rem 1.1rem;
+  border-radius: var(--radius-md);
+  overflow: auto;
+  border: 1px solid var(--border);
+}
+
+.site-shell {
+  max-width: 1660px;
+  margin: 0 auto;
+  padding: 1rem 1rem 3rem;
+}
+
+.site-skip-link {
+  position: absolute;
+  left: 1rem;
+  top: 0.8rem;
+  padding: 0.65rem 0.9rem;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  text-decoration: none;
+  transform: translateY(-180%);
+  transition: transform 0.18s ease;
+  z-index: 10000;
+}
+
+.site-skip-link:focus { transform: translateY(0); }
+
+.site-toolbar-bar,
+.site-brand-card,
+.site-listing,
+.site-search-card,
+.site-graph-card,
+.site-main,
+.site-panel,
+.site-search-dialog-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow);
+}
+
+.site-toolbar-bar {
+  position: sticky;
+  top: 0.75rem;
+  z-index: 40;
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.8rem 1rem;
+  border-radius: calc(var(--radius-lg) - 0.15rem);
+  backdrop-filter: blur(18px);
+  margin-bottom: 1.25rem;
+}
+
+.site-toolbar-home {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.8rem;
+  color: inherit;
+  text-decoration: none;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.site-brand-mark {
+  width: 2.6rem;
+  height: 2.6rem;
+  border-radius: 0.9rem;
+  object-fit: cover;
+  background: rgba(255, 255, 255, 0.4);
+  border: 1px solid var(--border);
+}
+
+.site-toolbar-actions,
+.site-rail-controls,
+.site-module-toolbar,
+.site-palette-group {
+  display: flex;
+  gap: 0.55rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.site-control-button,
+.site-palette-button,
+.site-module-toggle,
+.site-toolbar-toggle,
+.site-search-launch,
+.site-search-dialog-header button,
+.site-explorer-folder-toggle,
+.site-explorer-folder-label,
+.site-panel-heading {
+  appearance: none;
+  border: 1px solid var(--border);
+  background: var(--surface-strong);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 0.55rem 0.82rem;
+  text-decoration: none;
+  cursor: pointer;
+  font: inherit;
+  transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease, transform 0.18s ease;
+}
+
+.site-control-button:hover,
+.site-palette-button:hover,
+.site-module-toggle:hover,
+.site-toolbar-toggle:hover,
+.site-search-launch:hover,
+.site-search-dialog-header button:hover,
+.site-explorer-folder-toggle:hover,
+.site-explorer-folder-label:hover,
+.site-panel-heading:hover {
+  border-color: var(--border-strong);
+  background: var(--surface-soft);
+}
+
+.site-palette-button[aria-pressed='true'],
+.site-module-toggle[aria-pressed='true'],
+.site-control-button[aria-pressed='true'],
+.site-toolbar-toggle[aria-expanded='true'] {
+  background: var(--accent-soft);
+  border-color: rgba(29, 107, 125, 0.3);
+  color: var(--accent-strong);
+}
+
+.site-layout {
+  display: grid;
+  gap: 1.25rem;
+  grid-template-columns: var(--left-rail-width) minmax(0, 1fr) var(--right-rail-width);
+}
+
+body[data-left-rail-state='closed'][data-right-rail-state='closed'] .site-layout,
+body[data-left-rail-enabled='false'][data-right-rail-enabled='false'] .site-layout,
+body[data-reader-mode='true'] .site-layout {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+body[data-left-rail-enabled='false'][data-right-rail-enabled='true'][data-right-rail-state='open'] .site-layout,
+body[data-left-rail-state='closed'][data-right-rail-enabled='true'][data-right-rail-state='open'] .site-layout {
+  grid-template-columns: minmax(0, 1fr) var(--right-rail-width);
+}
+
+body[data-left-rail-enabled='true'][data-left-rail-state='open'][data-right-rail-enabled='false'] .site-layout,
+body[data-left-rail-enabled='true'][data-left-rail-state='open'][data-right-rail-state='closed'] .site-layout {
+  grid-template-columns: var(--left-rail-width) minmax(0, 1fr);
+}
+
+.site-left-rail,
+.site-right-rail {
+  position: sticky;
+  top: 5.35rem;
+  align-self: start;
+  max-height: calc(100vh - 6.1rem);
+  overflow: auto;
+  padding-right: 0.15rem;
+}
+
+.site-left-rail.is-disabled,
+.site-right-rail.is-disabled,
+body[data-left-rail-state='closed'] .site-left-rail,
+body[data-right-rail-state='closed'] .site-right-rail,
+body[data-reader-mode='true'] .site-left-rail,
+body[data-reader-mode='true'] .site-right-rail {
+  display: none;
+}
+
+.site-content { min-width: 0; }
+
+.site-main,
+.site-listing,
+.site-search-card,
+.site-graph-card,
+.site-panel,
+.site-brand-card {
+  border-radius: var(--radius-lg);
+}
+
+.site-main {
+  max-width: min(100%, var(--content-max));
+  margin: 0 auto;
+  padding: clamp(1.45rem, 2.4vw, 2.35rem);
+  background: var(--surface-strong);
+}
+
+.site-main > :first-child { margin-top: 0; }
+.site-main > :last-child { margin-bottom: 0; }
+
+.site-main h1,
+.site-main h2,
+.site-main h3,
+.site-main h4,
+.site-main h5,
+.site-main h6 {
+  font-family: 'IBM Plex Sans', 'Avenir Next', 'Segoe UI', sans-serif;
+  line-height: 1.18;
+  letter-spacing: -0.015em;
+}
+
+.site-main p,
+.site-main li,
+.site-main blockquote {
+  font-family: 'Charter', 'Iowan Old Style', 'Palatino Linotype', serif;
+  font-size: 1.04rem;
+}
+
+.site-breadcrumbs,
+.site-meta,
+.site-footer,
+.site-empty {
+  color: var(--muted);
+}
+
+.site-breadcrumbs {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+  font-size: 0.95rem;
+  margin-bottom: 1rem;
+}
+
+.site-brand-card,
+.site-panel,
+.site-listing,
+.site-search-card,
+.site-graph-card {
+  padding: 1rem 1.05rem;
+}
+
+.site-brand-card {
+  display: grid;
+  gap: 1rem;
+  background: linear-gradient(180deg, var(--surface-strong), var(--surface));
+}
+
+.site-brand-title {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 700;
+}
+
+.site-brand-title a {
+  color: inherit;
+  text-decoration: none;
+}
+
+.site-rail-shell {
+  display: grid;
+  gap: 1rem;
+}
+
+.site-primary-nav {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.site-nav-link {
+  display: block;
+  padding: 0.6rem 0.75rem;
+  border-radius: 0.9rem;
+  color: inherit;
+  text-decoration: none;
+  border: 1px solid transparent;
+}
+
+.site-nav-link:hover {
+  background: var(--accent-soft);
+  border-color: rgba(29, 107, 125, 0.16);
+}
+
+.site-rail-section-title {
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.55rem;
+}
+
+.site-explorer-panel {
+  padding: 0.95rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-soft);
+}
+
+.site-explorer-tree,
+.site-explorer-children,
+.site-panel-list,
+.site-local-graph-list,
+.site-search-results {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.site-explorer-tree,
+.site-explorer-children {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.site-explorer-children {
+  margin-left: 1rem;
+  padding-left: 0.85rem;
+  border-left: 1px solid var(--border);
+}
+
+.site-explorer-folder-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.site-explorer-folder-toggle {
+  width: 2rem;
+  padding: 0.35rem 0;
+}
+
+.site-explorer-folder-toggle[aria-expanded='true'] {
+  transform: rotate(90deg);
+}
+
+.site-explorer-folder-link,
+.site-explorer-link,
+.site-explorer-folder-label {
+  min-width: 0;
+  display: block;
+  padding: 0.42rem 0.55rem;
+  border-radius: 0.8rem;
+  color: inherit;
+  text-decoration: none;
+}
+
+.site-explorer-folder-label {
+  border-radius: 0.8rem;
+  text-align: left;
+}
+
+.site-explorer-folder-link:hover,
+.site-explorer-link:hover,
+.site-explorer-folder-label:hover,
+.site-explorer-link.is-active,
+.site-explorer-folder-link.is-active,
+.site-explorer-folder-label.is-active {
+  background: var(--accent-soft);
+}
+
+.site-module-toolbar {
+  margin-bottom: 0.8rem;
+}
+
+.site-panel {
+  overflow: hidden;
+  margin-bottom: 0.9rem;
+}
+
+.site-panel.is-hidden { display: none; }
+
+.site-panel-heading {
+  width: 100%;
+  border-radius: 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  background: transparent;
+  padding: 0.9rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-weight: 700;
+}
+
+.site-panel.is-collapsed .site-panel-body { display: none; }
+.site-panel.is-collapsed .site-panel-chevron { transform: rotate(-90deg); }
+
+.site-panel-body {
+  padding: 0.9rem 1rem 1rem;
+}
+
+.site-panel-list {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.site-panel-list li {
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.site-panel-list li:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.site-listing,
+.site-search-card,
+.site-graph-card {
+  max-width: min(100%, var(--content-max));
+  margin: 0 auto;
+}
+
+.site-card-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.site-card {
+  border: 1px solid var(--border);
+  border-radius: 1.2rem;
+  padding: 1rem;
+  background: var(--surface-soft);
+}
+
+.site-card h3 {
+  margin-top: 0;
+  margin-bottom: 0.6rem;
+}
+
+.site-card p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.site-search-input {
+  width: 100%;
+  padding: 0.85rem 1rem;
+  border-radius: 1rem;
+  border: 1px solid var(--border);
+  background: var(--surface-strong);
+  color: var(--text);
+  font: inherit;
+}
+
+.site-search-dialog[hidden] { display: none; }
+
+.site-search-dialog {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  padding: 1.1rem;
+  background: rgba(16, 18, 19, 0.48);
+  backdrop-filter: blur(12px);
+}
+
+.site-search-dialog-panel {
+  max-width: 46rem;
+  margin: 2rem auto 0;
+  border-radius: var(--radius-lg);
+  padding: 1.15rem;
+  background: var(--bg-elevated);
+}
+
+.site-search-dialog-header {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.site-search-results {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.8rem;
+}
+
+.site-search-results li {
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  padding: 0.9rem 1rem;
+  background: var(--surface-soft);
+}
+
+.site-search-results a {
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.site-search-results mark {
+  background: rgba(29, 107, 125, 0.18);
+  color: inherit;
+  padding: 0 0.15em;
+  border-radius: 0.2rem;
+}
+
+.site-local-graph-list {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.site-local-graph-list li {
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.75rem;
+}
+
+.site-local-graph-list li:last-child {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+
+.site-local-graph-direction {
+  display: block;
+  font-size: 0.78rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.2rem;
+}
+
+.site-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.site-pill-list {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  list-style: none;
+  padding: 0;
+  margin: 0 0 1rem;
+}
+
+.site-pill-list a {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  text-decoration: none;
+  background: var(--surface-soft);
+}
+
+.site-inline-nav {
+  display: flex;
+  gap: 0.8rem;
+  justify-content: space-between;
+  margin-top: 2rem;
+  flex-wrap: wrap;
+}
+
+.math.math-inline { white-space: nowrap; }
+.math.math-display { display: block; overflow-x: auto; padding: 0.5rem 0; }
+
+.site-callout {
+  margin-top: 1rem;
+  border-left: 4px solid var(--accent);
+  padding-left: 1rem;
+  color: var(--muted);
+}
+
+.site-diagnostics {
+  margin-top: 1rem;
+  border-radius: 1rem;
+  border: 1px solid rgba(178, 69, 54, 0.35);
+  background: rgba(178, 69, 54, 0.08);
+  padding: 1rem;
+}
+
+.site-footer {
+  margin-top: 1.4rem;
+  text-align: center;
+  font-size: 0.95rem;
+}
+
+.site-live-overlay {
+  position: fixed;
+  right: 1rem;
+  bottom: 1rem;
+  z-index: 9999;
+  background: rgba(20, 20, 20, 0.92);
+  color: #fff;
+  padding: 0.9rem 1rem;
+  border-radius: 1rem;
+  max-width: 24rem;
+  box-shadow: 0 18px 36px rgba(0, 0, 0, 0.35);
+}
+
+body[data-reader-mode='true'] .site-footer,
+body[data-reader-mode='true'] .site-primary-nav,
+body[data-reader-mode='true'] .site-explorer-panel,
+body[data-reader-mode='true'] .site-toolbar-toggle,
+body[data-reader-mode='true'] [data-site-search-open] {
+  display: none !important;
+}
+
+body[data-reader-mode='true'] .site-toolbar-bar {
+  max-width: min(100%, var(--content-max));
+  margin-inline: auto;
+}
+
+body[data-reader-mode='true'] .site-main {
+  box-shadow: none;
+}
+
+a:focus-visible,
+button:focus-visible,
+input:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 3px;
+}
+
+@media (max-width: 1240px) {
+  :root {
+    --left-rail-width: 17.5rem;
+    --right-rail-width: 18.5rem;
+  }
+}
+
+@media (max-width: 960px) {
+  .site-shell { padding-inline: 0.8rem; }
+
+  .site-layout {
+    grid-template-columns: 1fr !important;
+  }
+
+  .site-left-rail,
+  .site-right-rail {
+    display: block;
+    position: fixed;
+    top: 0.75rem;
+    bottom: 0.75rem;
+    width: min(22rem, calc(100vw - 1.5rem));
+    max-height: none;
+    padding: 4.8rem 0.7rem 0.7rem;
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 28px 60px rgba(0, 0, 0, 0.28);
+    overflow: auto;
+    z-index: 60;
+    transition: transform 0.22s ease, opacity 0.22s ease;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .site-left-rail {
+    left: 0.75rem;
+    transform: translateX(-110%);
+  }
+
+  .site-right-rail {
+    right: 0.75rem;
+    transform: translateX(110%);
+  }
+
+  body[data-left-rail-state='open'] .site-left-rail,
+  body[data-right-rail-state='open'] .site-right-rail {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateX(0);
+  }
+
+  .site-search-dialog { padding: 0.6rem; }
+
+  .site-search-dialog-panel {
+    margin-top: 0;
+    min-height: calc(100vh - 1.2rem);
+  }
+}
+";
 
 const DEFAULT_THEME_JS: &str = r#"(() => {
   const root = document.documentElement;
   const body = document.body;
-  const syncThemeButtons = () => {
-    const pressed = root.dataset.theme === 'dark' ? 'true' : 'false';
-    document
-      .querySelectorAll('[data-theme-toggle]')
-      .forEach((button) => button.setAttribute('aria-pressed', pressed));
+  const profileScope = `${body.dataset.siteProfile || 'site'}:${body.dataset.siteDeployPath || '/'}`;
+  const storageKey = (name) => `vulcan-site:${profileScope}:${name}`;
+  const readStorage = (key) => {
+    try {
+      return localStorage.getItem(key);
+    } catch (_) {
+      return null;
+    }
   };
-  const storedTheme = localStorage.getItem('vulcan-site-theme');
-  if (storedTheme) root.dataset.theme = storedTheme;
-  syncThemeButtons();
-  document.addEventListener('click', (event) => {
-    const button = event.target.closest('[data-theme-toggle]');
-    if (!button) return;
-    const next = root.dataset.theme === 'dark' ? 'light' : 'dark';
-    root.dataset.theme = next;
-    localStorage.setItem('vulcan-site-theme', next);
-    syncThemeButtons();
-  });
+  const writeStorage = (key, value) => {
+    try {
+      localStorage.setItem(key, value);
+    } catch (_) {}
+  };
+  const readJsonStorage = (key, fallback) => {
+    const value = readStorage(key);
+    if (!value) return fallback;
+    try {
+      return JSON.parse(value);
+    } catch (_) {
+      return fallback;
+    }
+  };
 
   const escapeHtml = (value) =>
     String(value).replace(/[&<>"']/g, (char) => ({
@@ -162,6 +833,201 @@ const DEFAULT_THEME_JS: &str = r#"(() => {
     const regex = new RegExp(`(${terms.join('|')})`, 'ig');
     return escapeHtml(value).replace(regex, '<mark>$1</mark>');
   };
+
+  const prefersDark = window.matchMedia?.('(prefers-color-scheme: dark)');
+  const prefersCompactLayout = window.matchMedia?.('(max-width: 960px)');
+  const resolveTheme = (mode) =>
+    mode === 'system' ? (prefersDark?.matches ? 'dark' : 'light') : mode;
+  const syncThemeButtons = () => {
+    const activeMode = root.dataset.themeMode || 'system';
+    document.querySelectorAll('[data-theme-mode]').forEach((button) => {
+      button.setAttribute(
+        'aria-pressed',
+        button.getAttribute('data-theme-mode') === activeMode ? 'true' : 'false'
+      );
+    });
+  };
+  const applyThemeMode = (mode, persist) => {
+    root.dataset.themeMode = mode;
+    root.dataset.theme = resolveTheme(mode);
+    syncThemeButtons();
+    if (persist) writeStorage(storageKey('theme-mode'), mode);
+  };
+  applyThemeMode(readStorage(storageKey('theme-mode')) || body.dataset.defaultPalette || 'system', false);
+  if (prefersDark) {
+    const syncSystemTheme = () => {
+      if ((root.dataset.themeMode || 'system') === 'system') {
+        applyThemeMode('system', false);
+      }
+    };
+    if (prefersDark.addEventListener) prefersDark.addEventListener('change', syncSystemTheme);
+    else if (prefersDark.addListener) prefersDark.addListener(syncSystemTheme);
+  }
+
+  // Persist shell state per profile/deploy path so navigation, modules, and reader mode survive
+  // full-page navigations and live-preview reloads.
+  const railEnabled = {
+    left: body.dataset.leftRailEnabled === 'true',
+    right: body.dataset.rightRailEnabled === 'true',
+  };
+  const railDatasetKey = (side) => (side === 'left' ? 'leftRailState' : 'rightRailState');
+  const syncRailButtons = (side) => {
+    const open = body.dataset[railDatasetKey(side)] === 'open';
+    document.querySelectorAll(`[data-site-rail-toggle="${side}"]`).forEach((button) => {
+      button.setAttribute('aria-expanded', open ? 'true' : 'false');
+    });
+  };
+  const setRailState = (side, state, persist) => {
+    body.dataset[railDatasetKey(side)] = railEnabled[side] ? state : 'closed';
+    syncRailButtons(side);
+    if (persist && railEnabled[side]) {
+      writeStorage(storageKey(`rail:${side}`), body.dataset[railDatasetKey(side)]);
+    }
+  };
+  const defaultRailState = (side) =>
+    railEnabled[side] ? (prefersCompactLayout?.matches ? 'closed' : 'open') : 'closed';
+  setRailState('left', readStorage(storageKey('rail:left')) || defaultRailState('left'), false);
+  setRailState('right', readStorage(storageKey('rail:right')) || defaultRailState('right'), false);
+
+  const readerModeAvailable = body.dataset.readerModeEnabled === 'true';
+  const syncReaderModeButtons = () => {
+    const active = body.dataset.readerMode === 'true';
+    document.querySelectorAll('[data-reader-mode-toggle]').forEach((button) => {
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  };
+  const setReaderMode = (active, persist) => {
+    body.dataset.readerMode = active && readerModeAvailable ? 'true' : 'false';
+    syncReaderModeButtons();
+    if (persist && readerModeAvailable) {
+      writeStorage(storageKey('reader-mode'), body.dataset.readerMode);
+    }
+  };
+  setReaderMode(readStorage(storageKey('reader-mode')) === 'true', false);
+
+  const moduleButtons = new Map(
+    [...document.querySelectorAll('[data-site-module-toggle]')].map((button) => [
+      button.getAttribute('data-site-module-toggle'),
+      button,
+    ])
+  );
+  const modulePanels = new Map(
+    [...document.querySelectorAll('[data-site-module]')].map((panel) => [
+      panel.getAttribute('data-site-module'),
+      panel,
+    ])
+  );
+  let moduleState = readJsonStorage(storageKey('modules'), { hidden: {}, collapsed: {} });
+  const persistModuleState = () => writeStorage(storageKey('modules'), JSON.stringify(moduleState));
+  const applyModuleState = (id) => {
+    const panel = modulePanels.get(id);
+    const button = moduleButtons.get(id);
+    const hidden = Boolean(moduleState.hidden?.[id]);
+    const collapsed = !hidden && Boolean(moduleState.collapsed?.[id]);
+    if (panel) {
+      panel.classList.toggle('is-hidden', hidden);
+      panel.classList.toggle('is-collapsed', collapsed);
+      const heading = panel.querySelector(`[data-site-panel-toggle="${id}"]`);
+      if (heading) {
+        heading.setAttribute('aria-expanded', hidden ? 'false' : collapsed ? 'false' : 'true');
+      }
+    }
+    if (button) button.setAttribute('aria-pressed', hidden ? 'false' : 'true');
+  };
+  for (const id of modulePanels.keys()) applyModuleState(id);
+
+  const explorerTree = document.querySelector('.site-explorer-tree');
+  const explorerUsesSavedState = explorerTree?.dataset.siteSavedState === 'true';
+  const explorerFolderClick = explorerTree?.dataset.siteFolderClick || 'link';
+  let explorerState = readJsonStorage(storageKey('explorer-folders'), {});
+  const persistExplorerState = () => {
+    if (!explorerUsesSavedState) return;
+    writeStorage(storageKey('explorer-folders'), JSON.stringify(explorerState));
+  };
+  const setExplorerFolderOpen = (folderPath, open, persist) => {
+    const toggle = document.querySelector(`[data-site-explorer-folder-toggle="${CSS.escape(folderPath)}"]`);
+    const bodyNode = document.querySelector(`[data-site-explorer-folder-body="${CSS.escape(folderPath)}"]`);
+    if (!toggle || !bodyNode) return;
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+    bodyNode.hidden = !open;
+    if (persist && explorerUsesSavedState) {
+      explorerState[folderPath] = open;
+      persistExplorerState();
+    }
+  };
+  if (explorerTree) {
+    explorerTree.querySelectorAll('[data-site-explorer-folder-toggle]').forEach((toggle) => {
+      const folderPath = toggle.getAttribute('data-site-explorer-folder-toggle');
+      if (!folderPath) return;
+      const saved = explorerUsesSavedState ? explorerState[folderPath] : undefined;
+      const expanded = typeof saved === 'boolean' ? saved : toggle.getAttribute('aria-expanded') === 'true';
+      setExplorerFolderOpen(folderPath, expanded, false);
+    });
+  }
+
+  document.addEventListener('click', (event) => {
+    const paletteButton = event.target.closest('[data-theme-mode]');
+    if (paletteButton) {
+      applyThemeMode(paletteButton.getAttribute('data-theme-mode') || 'system', true);
+      return;
+    }
+
+    const railButton = event.target.closest('[data-site-rail-toggle]');
+    if (railButton) {
+      const side = railButton.getAttribute('data-site-rail-toggle');
+      if (!side || !railEnabled[side]) return;
+      const open = body.dataset[railDatasetKey(side)] === 'open';
+      setRailState(side, open ? 'closed' : 'open', true);
+      return;
+    }
+
+    const readerButton = event.target.closest('[data-reader-mode-toggle]');
+    if (readerButton && readerModeAvailable) {
+      setReaderMode(body.dataset.readerMode !== 'true', true);
+      return;
+    }
+
+    const moduleButton = event.target.closest('[data-site-module-toggle]');
+    if (moduleButton) {
+      const id = moduleButton.getAttribute('data-site-module-toggle');
+      if (!id || !modulePanels.has(id)) return;
+      moduleState.hidden[id] = !Boolean(moduleState.hidden?.[id]);
+      if (moduleState.hidden[id]) moduleState.collapsed[id] = false;
+      applyModuleState(id);
+      persistModuleState();
+      return;
+    }
+
+    const panelToggle = event.target.closest('[data-site-panel-toggle]');
+    if (panelToggle) {
+      const id = panelToggle.getAttribute('data-site-panel-toggle');
+      if (!id || !modulePanels.has(id) || moduleState.hidden?.[id]) return;
+      moduleState.collapsed[id] = !Boolean(moduleState.collapsed?.[id]);
+      applyModuleState(id);
+      persistModuleState();
+      return;
+    }
+
+    const folderToggle = event.target.closest('[data-site-explorer-folder-toggle]');
+    if (folderToggle) {
+      const folderPath = folderToggle.getAttribute('data-site-explorer-folder-toggle');
+      if (!folderPath) return;
+      const open = folderToggle.getAttribute('aria-expanded') === 'true';
+      setExplorerFolderOpen(folderPath, !open, true);
+      return;
+    }
+
+    const folderLabel = event.target.closest('[data-site-explorer-folder-label]');
+    if (folderLabel && explorerFolderClick === 'collapse') {
+      const folderPath = folderLabel.getAttribute('data-site-explorer-folder-label');
+      if (!folderPath) return;
+      const toggle = document.querySelector(
+        `[data-site-explorer-folder-toggle="${CSS.escape(folderPath)}"]`
+      );
+      const open = toggle?.getAttribute('aria-expanded') === 'true';
+      setExplorerFolderOpen(folderPath, !open, true);
+    }
+  });
 
   const searchDialog = document.querySelector('[data-site-search-dialog]');
   const searchInput = searchDialog?.querySelector('[data-site-search-input]');
@@ -219,19 +1085,28 @@ const DEFAULT_THEME_JS: &str = r#"(() => {
     };
     searchInput.addEventListener('input', renderSearchResults);
     renderSearchResults();
-    document.addEventListener('keydown', (event) => {
-      if (event.key === 'Escape' && searchDialog && !searchDialog.hidden) {
+  }
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      if (searchDialog && !searchDialog.hidden) {
         event.preventDefault();
         closeSearch();
         return;
       }
-      if (event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey) {
-        if (document.activeElement && /input|textarea/i.test(document.activeElement.tagName)) return;
-        event.preventDefault();
-        openSearch();
+      if (prefersCompactLayout?.matches) {
+        if (body.dataset.leftRailState === 'open') setRailState('left', 'closed', true);
+        if (body.dataset.rightRailState === 'open') setRailState('right', 'closed', true);
       }
-    });
-  }
+      return;
+    }
+    if (event.key === '/' && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      if (document.activeElement && /input|textarea/i.test(document.activeElement.tagName)) return;
+      if (!searchDialog) return;
+      event.preventDefault();
+      openSearch();
+    }
+  });
 
   const graphAsset = body.dataset.graphAsset;
   const localGraphCards = [...document.querySelectorAll('[data-site-local-graph]')];
@@ -332,8 +1207,6 @@ const DEFAULT_THEME_JS: &str = r#"(() => {
       window.mermaid.run({ nodes: hosts });
     } catch (_) {}
   };
-  // Fire runtime hooks on DOMContentLoaded so theme.js, which is loaded after
-  // the built-in shell, can register listeners before optional enhancement runs.
   const runOptionalRuntimeEnhancements = () => {
     enhanceMath();
     enhanceMermaid();
@@ -562,11 +1435,15 @@ pub struct FrontendBundleProfile {
     pub graph: bool,
     pub backlinks: bool,
     pub rss: bool,
+    pub shell: FrontendBundleShell,
+    pub navigation: FrontendBundleNavigation,
+    pub modules: FrontendBundleModules,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct FrontendBundleArtifactPaths {
     pub route_manifest: String,
+    pub navigation_tree: String,
     pub hover_previews: String,
     pub recent_notes: String,
     pub related_notes: String,
@@ -580,6 +1457,35 @@ pub struct FrontendBundleArtifactPaths {
     pub typescript: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub copied_assets: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FrontendBundleShell {
+    pub reader_mode: bool,
+    pub default_palette: String,
+    pub left_rail: bool,
+    pub right_rail: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FrontendBundleNavigation {
+    pub explorer: bool,
+    pub folder_click: String,
+    pub default_folder_state: String,
+    pub use_saved_state: bool,
+    pub show_home: bool,
+    pub show_recent: bool,
+    pub show_folders: bool,
+    pub show_tags: bool,
+    pub show_graph: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct FrontendBundleModules {
+    pub toc: bool,
+    pub graph: bool,
+    pub backlinks: bool,
+    pub outgoing_links: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -684,6 +1590,9 @@ struct ResolvedSiteProfile {
     graph: bool,
     backlinks: bool,
     rss: bool,
+    shell: ResolvedSiteShell,
+    navigation: ResolvedSiteNavigation,
+    modules: ResolvedSiteModules,
     favicon: Option<PathBuf>,
     logo: Option<PathBuf>,
     extra_css: Vec<PathBuf>,
@@ -729,9 +1638,62 @@ struct ResolvedSiteTheme {
     head: Option<String>,
     header: Option<String>,
     nav: Option<String>,
+    toolbar: Option<String>,
+    left_rail: Option<String>,
+    right_rail: Option<String>,
     footer: Option<String>,
     note_before: Option<String>,
     note_after: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ResolvedSiteShell {
+    reader_mode: bool,
+    default_palette: SitePaletteModeConfig,
+    left_rail: bool,
+    right_rail: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ResolvedSiteNavigation {
+    explorer: bool,
+    folder_click: SiteFolderClickBehaviorConfig,
+    default_folder_state: SiteExplorerFolderStateConfig,
+    use_saved_state: bool,
+    show_home: bool,
+    show_recent: bool,
+    show_folders: bool,
+    show_tags: bool,
+    show_graph: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ResolvedSiteModules {
+    toc: bool,
+    graph: bool,
+    backlinks: bool,
+    outgoing_links: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct SiteNavigationNode {
+    kind: String,
+    title: String,
+    id: String,
+    url: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    children: Vec<SiteNavigationNode>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    folder_path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct SiteShellModule {
+    id: &'static str,
+    title: &'static str,
+    body_html: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -925,6 +1887,7 @@ where
     let tag_index = build_tag_index(&rendered_notes);
     let folder_index = build_folder_index(&rendered_notes);
     let home_note = resolve_home_note(&plan.profile, &rendered_notes);
+    let navigation_tree = build_navigation_tree(&context.deploy_path, &rendered_notes);
 
     for (index, note) in rendered_notes.iter().enumerate() {
         let previous = index
@@ -937,6 +1900,7 @@ where
             previous,
             next,
             &plan.profile,
+            &navigation_tree,
             &route_urls,
             &tag_index,
             &folder_index,
@@ -1060,6 +2024,14 @@ where
     }
     files.insert("assets/route-manifest.json".to_string());
 
+    let navigation_manifest =
+        serde_json::to_string_pretty(&navigation_tree).map_err(AppError::operation)?;
+    let navigation_manifest_path = output_dir.join("assets/navigation-tree.json");
+    if !request.dry_run && write_output_file(&navigation_manifest_path, &navigation_manifest)? {
+        changed_files.insert("assets/navigation-tree.json".to_string());
+    }
+    files.insert("assets/navigation-tree.json".to_string());
+
     let hover_manifest = build_hover_manifest(&rendered_notes);
     let hover_manifest_json =
         serde_json::to_string_pretty(&hover_manifest).map_err(AppError::operation)?;
@@ -1116,6 +2088,7 @@ where
                         "<button class=\"site-search-launch\" type=\"button\" data-site-search-open>Open search</button>",
                         "</section>"
                     ),
+                    &navigation_tree,
                     &plan.profile,
                     true,
                     &prefixed_site_path(&context.deploy_path, "/search/"),
@@ -1151,6 +2124,7 @@ where
                     "Graph",
                     "Graph export",
                     &graph_card,
+                    &navigation_tree,
                     &plan.profile,
                     false,
                     &prefixed_site_path(&context.deploy_path, "/graph/"),
@@ -1172,7 +2146,8 @@ where
     }
 
     report_site_build_progress(&mut progress, SiteBuildPhase::WritingPages, 0, 0, None);
-    let folder_pages = render_folder_pages(&context, &folder_index, &plan.profile);
+    let folder_pages =
+        render_folder_pages(&context, &folder_index, &navigation_tree, &plan.profile);
     for (relative_path, body) in folder_pages {
         if !request.dry_run && write_output_file(&output_dir.join(&relative_path), &body)? {
             changed_files.insert(relative_path.clone());
@@ -1180,7 +2155,7 @@ where
         files.insert(relative_path);
     }
 
-    let tag_pages = render_tag_pages(&context, &tag_index, &plan.profile);
+    let tag_pages = render_tag_pages(&context, &tag_index, &navigation_tree, &plan.profile);
     for (relative_path, body) in tag_pages {
         if !request.dry_run && write_output_file(&output_dir.join(&relative_path), &body)? {
             changed_files.insert(relative_path.clone());
@@ -1188,14 +2163,22 @@ where
         files.insert(relative_path);
     }
 
-    let recent_html = render_recent_page(&context, &rendered_notes, &plan.profile);
+    let recent_html =
+        render_recent_page(&context, &rendered_notes, &navigation_tree, &plan.profile);
     if !request.dry_run && write_output_file(&output_dir.join("recent/index.html"), &recent_html)? {
         changed_files.insert("recent/index.html".to_string());
     }
     files.insert("recent/index.html".to_string());
 
     if let Some(home) = home_note.as_ref() {
-        let home_html = render_home_page(&context, home, &plan.profile, &tag_index, &folder_index);
+        let home_html = render_home_page(
+            &context,
+            home,
+            &navigation_tree,
+            &plan.profile,
+            &tag_index,
+            &folder_index,
+        );
         if !request.dry_run && write_output_file(&output_dir.join("index.html"), &home_html)? {
             changed_files.insert("index.html".to_string());
         }
@@ -1209,6 +2192,7 @@ where
                     &plan.profile.title,
                     "Published notes",
                     &body,
+                    &navigation_tree,
                     &plan.profile,
                     false,
                     &site_root_href(&context.deploy_path),
@@ -1314,6 +2298,7 @@ pub fn build_frontend_bundle(
         deploy_path: plan.profile.deploy_path.clone(),
     };
     let tag_index = build_tag_index(&rendered_notes);
+    let navigation_tree = build_navigation_tree(&context.deploy_path, &rendered_notes);
     let note_documents = rendered_notes
         .iter()
         .map(|note| FrontendBundleNoteDocument {
@@ -1447,6 +2432,7 @@ pub fn build_frontend_bundle(
     }
 
     let route_manifest_path = "assets/route-manifest.json".to_string();
+    let navigation_tree_path = frontend_bundle_navigation_tree_path().to_string();
     let hover_manifest_path = "assets/hover-previews.json".to_string();
     let recent_manifest_path = "assets/recent-notes.json".to_string();
     let related_manifest_path = "assets/related-notes.json".to_string();
@@ -1460,6 +2446,15 @@ pub fn build_frontend_bundle(
         &output_dir,
         &route_manifest_path,
         &plan.routes,
+        request.pretty,
+        request.dry_run,
+        &mut files,
+        &mut changed_files,
+    )?;
+    write_serialized_json_output(
+        &output_dir,
+        &navigation_tree_path,
+        &navigation_tree,
         request.pretty,
         request.dry_run,
         &mut files,
@@ -1549,6 +2544,34 @@ pub fn build_frontend_bundle(
             graph: plan.profile.graph,
             backlinks: plan.profile.backlinks,
             rss: plan.profile.rss,
+            shell: FrontendBundleShell {
+                reader_mode: plan.profile.shell.reader_mode,
+                default_palette: site_palette_mode_name(plan.profile.shell.default_palette)
+                    .to_string(),
+                left_rail: plan.profile.shell.left_rail,
+                right_rail: plan.profile.shell.right_rail,
+            },
+            navigation: FrontendBundleNavigation {
+                explorer: plan.profile.navigation.explorer,
+                folder_click: site_folder_click_name(plan.profile.navigation.folder_click)
+                    .to_string(),
+                default_folder_state: site_folder_state_name(
+                    plan.profile.navigation.default_folder_state,
+                )
+                .to_string(),
+                use_saved_state: plan.profile.navigation.use_saved_state,
+                show_home: plan.profile.navigation.show_home,
+                show_recent: plan.profile.navigation.show_recent,
+                show_folders: plan.profile.navigation.show_folders,
+                show_tags: plan.profile.navigation.show_tags,
+                show_graph: plan.profile.navigation.show_graph,
+            },
+            modules: FrontendBundleModules {
+                toc: plan.profile.modules.toc,
+                graph: plan.profile.modules.graph,
+                backlinks: plan.profile.modules.backlinks,
+                outgoing_links: plan.profile.modules.outgoing_links,
+            },
         },
         context: context.clone(),
         note_count: note_documents.len(),
@@ -1557,6 +2580,7 @@ pub fn build_frontend_bundle(
         notes: note_index.clone(),
         artifacts: FrontendBundleArtifactPaths {
             route_manifest: route_manifest_path.clone(),
+            navigation_tree: navigation_tree_path.clone(),
             hover_previews: hover_manifest_path.clone(),
             recent_notes: recent_manifest_path.clone(),
             related_notes: related_manifest_path.clone(),
@@ -1732,6 +2756,41 @@ fn resolve_site_profile(
     extra_css.extend(raw.extra_css.clone());
     let mut extra_js = theme_overrides.js_assets.clone();
     extra_js.extend(raw.extra_js.clone());
+    let search = raw.search.unwrap_or(true);
+    let graph = raw.graph.unwrap_or(true);
+    let backlinks = raw.backlinks.unwrap_or(true);
+    let shell = ResolvedSiteShell {
+        reader_mode: raw.shell.reader_mode.unwrap_or(true),
+        default_palette: raw
+            .shell
+            .default_palette
+            .unwrap_or(SitePaletteModeConfig::System),
+        left_rail: raw.shell.left_rail.unwrap_or(true),
+        right_rail: raw.shell.right_rail.unwrap_or(true),
+    };
+    let navigation = ResolvedSiteNavigation {
+        explorer: raw.navigation.explorer.unwrap_or(true),
+        folder_click: raw
+            .navigation
+            .folder_click
+            .unwrap_or(SiteFolderClickBehaviorConfig::Link),
+        default_folder_state: raw
+            .navigation
+            .default_folder_state
+            .unwrap_or(SiteExplorerFolderStateConfig::Collapsed),
+        use_saved_state: raw.navigation.use_saved_state.unwrap_or(true),
+        show_home: raw.navigation.show_home.unwrap_or(true),
+        show_recent: raw.navigation.show_recent.unwrap_or(true),
+        show_folders: raw.navigation.show_folders.unwrap_or(true),
+        show_tags: raw.navigation.show_tags.unwrap_or(true),
+        show_graph: raw.navigation.show_graph.unwrap_or(graph),
+    };
+    let modules = ResolvedSiteModules {
+        toc: raw.modules.toc.unwrap_or(true),
+        graph: raw.modules.graph.unwrap_or(graph),
+        backlinks: raw.modules.backlinks.unwrap_or(backlinks),
+        outgoing_links: raw.modules.outgoing_links.unwrap_or(true),
+    };
     Ok(ResolvedSiteProfile {
         name: requested_name.to_string(),
         title: raw
@@ -1748,10 +2807,13 @@ fn resolve_site_profile(
         home: raw.home.clone(),
         language: raw.language.clone().unwrap_or_else(|| "en".to_string()),
         theme,
-        search: raw.search.unwrap_or(true),
-        graph: raw.graph.unwrap_or(true),
-        backlinks: raw.backlinks.unwrap_or(true),
+        search,
+        graph,
+        backlinks,
         rss: raw.rss.unwrap_or(false),
+        shell,
+        navigation,
+        modules,
         favicon: raw.favicon.clone(),
         logo: raw.logo.clone(),
         extra_css,
@@ -2808,40 +3870,326 @@ fn resolve_embed_target(
     Some((target_path, url_path))
 }
 
+fn site_palette_mode_name(mode: SitePaletteModeConfig) -> &'static str {
+    match mode {
+        SitePaletteModeConfig::System => "system",
+        SitePaletteModeConfig::Light => "light",
+        SitePaletteModeConfig::Dark => "dark",
+    }
+}
+
+fn site_folder_click_name(mode: SiteFolderClickBehaviorConfig) -> &'static str {
+    match mode {
+        SiteFolderClickBehaviorConfig::Collapse => "collapse",
+        SiteFolderClickBehaviorConfig::Link => "link",
+    }
+}
+
+fn site_folder_state_name(mode: SiteExplorerFolderStateConfig) -> &'static str {
+    match mode {
+        SiteExplorerFolderStateConfig::Collapsed => "collapsed",
+        SiteExplorerFolderStateConfig::Open => "open",
+    }
+}
+
+// Build a published-only explorer tree. Nested index notes become folder landing pages so the
+// left rail can prefer folder notes while still falling back to generated folder listings.
+fn build_navigation_tree(deploy_path: &str, notes: &[RenderedNote]) -> Vec<SiteNavigationNode> {
+    #[derive(Debug, Default)]
+    struct FolderBuilder {
+        title: String,
+        folder_path: String,
+        url: String,
+        source_path: Option<String>,
+        children: BTreeMap<String, FolderBuilder>,
+        notes: Vec<SiteNavigationNode>,
+    }
+
+    fn finalize(builder: FolderBuilder) -> Vec<SiteNavigationNode> {
+        let mut nodes = builder
+            .children
+            .into_values()
+            .map(|child| {
+                let title = child.title.clone();
+                let folder_path = child.folder_path.clone();
+                let url = child.url.clone();
+                let source_path = child.source_path.clone();
+                let children = finalize(child);
+                SiteNavigationNode {
+                    kind: "folder".to_string(),
+                    title,
+                    id: format!("folder:{folder_path}"),
+                    url,
+                    children,
+                    source_path,
+                    folder_path: Some(folder_path),
+                }
+            })
+            .collect::<Vec<_>>();
+        nodes.sort_by(|left, right| left.title.to_lowercase().cmp(&right.title.to_lowercase()));
+        let mut note_nodes = builder.notes;
+        note_nodes
+            .sort_by(|left, right| left.title.to_lowercase().cmp(&right.title.to_lowercase()));
+        nodes.extend(note_nodes);
+        nodes
+    }
+
+    let mut root = FolderBuilder::default();
+    for note in notes {
+        let folder = folder_for_note(&note.source_path);
+        let file_name = note
+            .source_path
+            .rsplit('/')
+            .next()
+            .unwrap_or(&note.source_path);
+        let is_index_note = !folder.is_empty() && file_name.eq_ignore_ascii_case("index.md");
+        let mut current = &mut root;
+        if !folder.is_empty() {
+            let mut assembled = String::new();
+            for segment in folder.split('/') {
+                if !assembled.is_empty() {
+                    assembled.push('/');
+                }
+                assembled.push_str(segment);
+                current = current
+                    .children
+                    .entry(segment.to_string())
+                    .or_insert_with(|| FolderBuilder {
+                        title: segment.to_string(),
+                        folder_path: assembled.clone(),
+                        url: folder_page_href(deploy_path, &assembled),
+                        source_path: None,
+                        children: BTreeMap::new(),
+                        notes: Vec::new(),
+                    });
+            }
+        }
+        if is_index_note {
+            current.url.clone_from(&note.route.url_path);
+            current.source_path = Some(note.source_path.clone());
+        } else {
+            current.notes.push(SiteNavigationNode {
+                kind: "note".to_string(),
+                title: note.title.clone(),
+                id: display_path(&normalize_relative_path(&note.source_path)),
+                url: note.route.url_path.clone(),
+                children: Vec::new(),
+                source_path: Some(note.source_path.clone()),
+                folder_path: if folder.is_empty() {
+                    None
+                } else {
+                    Some(folder)
+                },
+            });
+        }
+    }
+    finalize(root)
+}
+
+fn navigation_node_contains_current(
+    node: &SiteNavigationNode,
+    current_note_path: Option<&str>,
+) -> bool {
+    current_note_path.is_some_and(|current| {
+        node.source_path.as_deref() == Some(current)
+            || node
+                .children
+                .iter()
+                .any(|child| navigation_node_contains_current(child, Some(current)))
+    })
+}
+
+fn render_navigation_tree_html(
+    nodes: &[SiteNavigationNode],
+    current_note_path: Option<&str>,
+    navigation: &ResolvedSiteNavigation,
+) -> String {
+    if nodes.is_empty() {
+        return String::new();
+    }
+    let items = nodes
+        .iter()
+        .map(|node| render_navigation_node_html(node, current_note_path, navigation))
+        .collect::<String>();
+    format!(
+        "<ul class=\"site-explorer-tree\" data-site-folder-click=\"{}\" data-site-folder-state=\"{}\" data-site-saved-state=\"{}\">{items}</ul>",
+        site_folder_click_name(navigation.folder_click),
+        site_folder_state_name(navigation.default_folder_state),
+        if navigation.use_saved_state { "true" } else { "false" },
+    )
+}
+
+fn render_navigation_node_html(
+    node: &SiteNavigationNode,
+    current_note_path: Option<&str>,
+    navigation: &ResolvedSiteNavigation,
+) -> String {
+    let active = node.source_path.as_deref() == current_note_path;
+    match node.kind.as_str() {
+        "folder" => {
+            let open = navigation.default_folder_state == SiteExplorerFolderStateConfig::Open
+                || navigation_node_contains_current(node, current_note_path);
+            let folder_path = node.folder_path.as_deref().unwrap_or_default();
+            let title_html = if navigation.folder_click == SiteFolderClickBehaviorConfig::Link {
+                format!(
+                    "<a class=\"site-explorer-folder-link{}\" href=\"{}\">{}</a>",
+                    if active { " is-active" } else { "" },
+                    escape_html(&node.url),
+                    escape_html(&node.title)
+                )
+            } else {
+                format!(
+                    "<button class=\"site-explorer-folder-label{}\" type=\"button\" data-site-explorer-folder-label=\"{}\">{}</button>",
+                    if active { " is-active" } else { "" },
+                    escape_html(folder_path),
+                    escape_html(&node.title)
+                )
+            };
+            format!(
+                concat!(
+                    "<li class=\"site-explorer-folder\" data-site-explorer-folder=\"{}\">",
+                    "<div class=\"site-explorer-folder-row\">",
+                    "<button class=\"site-explorer-folder-toggle\" type=\"button\" data-site-explorer-folder-toggle=\"{}\" aria-expanded=\"{}\">▸</button>",
+                    "{}",
+                    "</div>",
+                    "<ul class=\"site-explorer-children\" data-site-explorer-folder-body=\"{}\" {}>{}</ul>",
+                    "</li>"
+                ),
+                escape_html(folder_path),
+                escape_html(folder_path),
+                if open { "true" } else { "false" },
+                title_html,
+                escape_html(folder_path),
+                if open { "" } else { "hidden" },
+                node.children
+                    .iter()
+                    .map(|child| render_navigation_node_html(child, current_note_path, navigation))
+                    .collect::<String>(),
+            )
+        }
+        _ => format!(
+            "<li class=\"site-explorer-note\"><a class=\"site-explorer-link{}\" href=\"{}\">{}</a></li>",
+            if active { " is-active" } else { "" },
+            escape_html(&node.url),
+            escape_html(&node.title)
+        ),
+    }
+}
+
+fn render_toc_module(headings: &[HtmlRenderHeading]) -> Option<SiteShellModule> {
+    if headings.is_empty() {
+        return None;
+    }
+    let items = headings
+        .iter()
+        .map(|heading| {
+            format!(
+                "<li><a href=\"#{}\">{}</a></li>",
+                escape_html(&heading.id),
+                escape_html(&heading.text)
+            )
+        })
+        .collect::<String>();
+    Some(SiteShellModule {
+        id: "toc",
+        title: "Contents",
+        body_html: format!("<ul class=\"site-panel-list\">{items}</ul>"),
+    })
+}
+
+fn render_note_links_module(
+    deploy_path: &str,
+    id: &'static str,
+    title: &'static str,
+    note_paths: &[String],
+    route_urls: &HashMap<String, String>,
+) -> Option<SiteShellModule> {
+    if note_paths.is_empty() {
+        return None;
+    }
+    let items = note_paths
+        .iter()
+        .map(|path| {
+            let href = route_urls.get(path).cloned().unwrap_or_else(|| {
+                prefixed_site_path(
+                    deploy_path,
+                    &format!("/notes/{}/", slugify_path(trim_markdown_extension(path))),
+                )
+            });
+            format!(
+                "<li><a href=\"{}\">{}</a></li>",
+                escape_html(&href),
+                escape_html(path)
+            )
+        })
+        .collect::<String>();
+    Some(SiteShellModule {
+        id,
+        title,
+        body_html: format!("<ul class=\"site-panel-list\">{items}</ul>"),
+    })
+}
+
+fn render_local_graph_module(note: &RenderedNote) -> SiteShellModule {
+    SiteShellModule {
+        id: "graph",
+        title: "Local graph",
+        body_html: format!(
+            concat!(
+                "<div class=\"site-panel-copy\" data-site-local-graph data-site-note-path=\"{}\">",
+                "<p class=\"site-meta\">Published neighbors for this note, powered by the same graph asset used elsewhere in Vulcan.</p>",
+                "<ul class=\"site-local-graph-list\" data-site-local-graph-list><li>Loading local graph…</li></ul>",
+                "</div>"
+            ),
+            escape_html(&note.source_path)
+        ),
+    }
+}
+
 fn render_note_document(
     context: &RenderContext,
     note: &RenderedNote,
     previous: Option<&RenderedNote>,
     next: Option<&RenderedNote>,
     profile: &ResolvedSiteProfile,
+    navigation_tree: &[SiteNavigationNode],
     route_urls: &HashMap<String, String>,
     tag_index: &BTreeMap<String, Vec<&RenderedNote>>,
     folder_index: &BTreeMap<String, Vec<&RenderedNote>>,
     home_note: Option<&RenderedNote>,
 ) -> String {
     let breadcrumbs = render_breadcrumbs(&note.breadcrumbs);
-    let toc = render_toc(&note.headings);
-    let local_graph = if profile.graph {
-        render_local_graph_card(note)
-    } else {
-        String::new()
-    };
-    let backlinks = if profile.backlinks {
-        render_note_links(
+    let mut modules = Vec::new();
+    if profile.modules.toc {
+        if let Some(module) = render_toc_module(&note.headings) {
+            modules.push(module);
+        }
+    }
+    if profile.modules.graph && profile.graph {
+        modules.push(render_local_graph_module(note));
+    }
+    if profile.modules.backlinks && profile.backlinks {
+        if let Some(module) = render_note_links_module(
             &context.deploy_path,
+            "backlinks",
             "Backlinks",
             &note.backlinks,
             route_urls,
-        )
-    } else {
-        String::new()
-    };
-    let outgoing = render_note_links(
-        &context.deploy_path,
-        "Outgoing links",
-        &note.outgoing_links,
-        route_urls,
-    );
+        ) {
+            modules.push(module);
+        }
+    }
+    if profile.modules.outgoing_links {
+        if let Some(module) = render_note_links_module(
+            &context.deploy_path,
+            "outgoing",
+            "Outgoing links",
+            &note.outgoing_links,
+            route_urls,
+        ) {
+            modules.push(module);
+        }
+    }
     let diagnostics = render_note_diagnostics(&note.diagnostics);
     let prev_next = render_prev_next(previous, next);
     let tags = render_note_tags(&context.deploy_path, &note.tags);
@@ -2904,7 +4252,8 @@ fn render_note_document(
         &note.title,
         &note.description,
         &body,
-        &[toc, local_graph, backlinks, outgoing],
+        navigation_tree,
+        &modules,
         profile,
         false,
         canonical_url.as_deref(),
@@ -2916,6 +4265,7 @@ fn render_note_document(
 fn render_home_page(
     context: &RenderContext,
     note: &RenderedNote,
+    navigation_tree: &[SiteNavigationNode],
     profile: &ResolvedSiteProfile,
     tag_index: &BTreeMap<String, Vec<&RenderedNote>>,
     folder_index: &BTreeMap<String, Vec<&RenderedNote>>,
@@ -2951,12 +4301,20 @@ fn render_home_page(
         render_folder_summary(&context.deploy_path, note, folder_index),
         render_related_tags(note, tag_index),
     );
+    let modules = if profile.modules.toc {
+        render_toc_module(&note.headings)
+            .into_iter()
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     render_document_shell(
         context,
         &context.site_title,
         &note.description,
         &body,
-        &[render_toc(&note.headings)],
+        navigation_tree,
+        &modules,
         profile,
         false,
         canonical_url.as_deref(),
@@ -2968,6 +4326,7 @@ fn render_home_page(
 fn render_recent_page(
     context: &RenderContext,
     notes: &[RenderedNote],
+    navigation_tree: &[SiteNavigationNode],
     profile: &ResolvedSiteProfile,
 ) -> String {
     let cards = build_recent_manifest(notes)
@@ -2981,6 +4340,7 @@ fn render_recent_page(
         &format!(
             "<section class=\"site-listing\"><div class=\"site-card-grid\">{cards}</div></section>"
         ),
+        navigation_tree,
         profile,
         false,
         &prefixed_site_path(&context.deploy_path, "/recent/"),
@@ -2990,6 +4350,7 @@ fn render_recent_page(
 fn render_folder_pages(
     context: &RenderContext,
     folder_index: &BTreeMap<String, Vec<&RenderedNote>>,
+    navigation_tree: &[SiteNavigationNode],
     profile: &ResolvedSiteProfile,
 ) -> Vec<(String, String)> {
     let mut pages = Vec::new();
@@ -3010,6 +4371,7 @@ fn render_folder_pages(
             "Folders",
             "Folder-based views of the published subset.",
             &format!("<section class=\"site-listing\"><div class=\"site-card-grid\">{overview}</div></section>"),
+            navigation_tree,
             profile,
             false,
             &prefixed_site_path(&context.deploy_path, "/folders/"),
@@ -3030,6 +4392,7 @@ fn render_folder_pages(
                 &format!("Folder: {folder}"),
                 "Published notes in this folder.",
                 &format!("<section class=\"site-listing\"><div class=\"site-card-grid\">{list}</div></section>"),
+                navigation_tree,
                 profile,
                 false,
                 &folder_page_href(&context.deploy_path, folder),
@@ -3042,6 +4405,7 @@ fn render_folder_pages(
 fn render_tag_pages(
     context: &RenderContext,
     tag_index: &BTreeMap<String, Vec<&RenderedNote>>,
+    navigation_tree: &[SiteNavigationNode],
     profile: &ResolvedSiteProfile,
 ) -> Vec<(String, String)> {
     let mut pages = Vec::new();
@@ -3062,6 +4426,7 @@ fn render_tag_pages(
             "Tags",
             "Published tags across the current profile.",
             &format!("<section class=\"site-listing\"><div class=\"site-card-grid\">{overview}</div></section>"),
+            navigation_tree,
             profile,
             false,
             &prefixed_site_path(&context.deploy_path, "/tags/"),
@@ -3079,6 +4444,7 @@ fn render_tag_pages(
                 &format!("Tag: #{tag}"),
                 "Published notes with this tag.",
                 &format!("<section class=\"site-listing\"><div class=\"site-card-grid\">{list}</div></section>"),
+                navigation_tree,
                 profile,
                 false,
                 &tag_page_href(&context.deploy_path, tag),
@@ -3093,6 +4459,7 @@ fn render_generic_page(
     title: &str,
     description: &str,
     body: &str,
+    navigation_tree: &[SiteNavigationNode],
     profile: &ResolvedSiteProfile,
     search_page: bool,
     canonical_path: &str,
@@ -3109,6 +4476,7 @@ fn render_generic_page(
         title,
         description,
         &body,
+        navigation_tree,
         &[],
         profile,
         search_page,
@@ -3123,28 +4491,30 @@ fn render_document_shell(
     title: &str,
     description: &str,
     body: &str,
-    sidebar_sections: &[String],
+    navigation_tree: &[SiteNavigationNode],
+    modules: &[SiteShellModule],
     profile: &ResolvedSiteProfile,
     _search_page: bool,
     canonical_url: Option<&str>,
     summary_image_url: Option<&str>,
     current_note_path: Option<&str>,
 ) -> String {
-    let sidebar = sidebar_sections
-        .iter()
-        .filter(|section| !section.is_empty())
-        .cloned()
-        .collect::<String>();
     let document_title = render_page_title(profile, context, title);
     let head_assets = render_head_assets(context, profile);
     let default_nav = render_top_nav(context, profile);
+    let explorer = if profile.navigation.explorer {
+        render_navigation_tree_html(navigation_tree, current_note_path, &profile.navigation)
+    } else {
+        String::new()
+    };
     let search_button = if profile.search {
-        "<button type=\"button\" data-site-search-open aria-haspopup=\"dialog\">Search</button>"
+        "<button type=\"button\" class=\"site-control-button\" data-site-search-open aria-haspopup=\"dialog\">Search</button>"
     } else {
         ""
     };
-    let theme_toggle =
-        "<button data-theme-toggle type=\"button\" aria-label=\"Toggle color theme\" aria-pressed=\"false\">Theme</button>";
+    let palette_controls = render_palette_controls(profile);
+    let theme_toggle = palette_controls.as_str();
+    let reader_mode_toggle = render_reader_mode_toggle(profile);
     let search_dialog = if profile.search {
         concat!(
             "<div class=\"site-search-dialog\" data-site-search-dialog hidden>",
@@ -3194,6 +4564,30 @@ fn render_document_shell(
         String::new()
     };
     let logo = render_logo(context, profile);
+    let default_toolbar = render_default_toolbar(
+        context,
+        search_button,
+        &reader_mode_toggle,
+        profile.shell.left_rail,
+        profile.shell.right_rail && !modules.is_empty(),
+        &logo,
+    );
+    let default_left_rail = if profile.shell.left_rail {
+        render_default_left_rail(
+            context,
+            profile,
+            &default_nav,
+            search_button,
+            &palette_controls,
+            &reader_mode_toggle,
+            &explorer,
+            &logo,
+        )
+    } else {
+        String::new()
+    };
+    let default_right_rail =
+        render_default_right_rail(modules, profile.shell.right_rail && !modules.is_empty());
     let default_tokens = render_shell_theme_tokens(
         context,
         profile,
@@ -3204,6 +4598,12 @@ fn render_document_shell(
         &default_nav,
         search_button,
         theme_toggle,
+        &palette_controls,
+        &reader_mode_toggle,
+        &explorer,
+        &default_toolbar,
+        &default_left_rail,
+        &default_right_rail,
         &logo,
     );
     let nav = profile.theme_overrides.nav.as_deref().map_or_else(
@@ -3220,22 +4620,42 @@ fn render_document_shell(
         &nav,
         search_button,
         theme_toggle,
+        &palette_controls,
+        &reader_mode_toggle,
+        &explorer,
+        &default_toolbar,
+        &default_left_rail,
+        &default_right_rail,
         &logo,
     );
     let head_partial = render_theme_partial(profile.theme_overrides.head.as_deref(), &tokens);
-    let header = profile.theme_overrides.header.as_deref().map_or_else(
-        || {
-            render_default_header(
-                context,
-                description,
-                &nav,
-                search_button,
-                theme_toggle,
-                &logo,
-            )
-        },
+    let toolbar = profile.theme_overrides.toolbar.as_deref().map_or_else(
+        || default_toolbar.clone(),
         |partial| render_theme_partial(Some(partial), &tokens),
     );
+    let header = profile
+        .theme_overrides
+        .header
+        .as_deref()
+        .map_or_else(String::new, |partial| {
+            render_theme_partial(Some(partial), &tokens)
+        });
+    let left_rail = if profile.shell.left_rail {
+        profile.theme_overrides.left_rail.as_deref().map_or_else(
+            || default_left_rail.clone(),
+            |partial| render_theme_partial(Some(partial), &tokens),
+        )
+    } else {
+        String::new()
+    };
+    let right_rail = if profile.shell.right_rail {
+        profile.theme_overrides.right_rail.as_deref().map_or_else(
+            || default_right_rail.clone(),
+            |partial| render_theme_partial(Some(partial), &tokens),
+        )
+    } else {
+        String::new()
+    };
     let footer = profile
         .theme_overrides
         .footer
@@ -3243,6 +4663,8 @@ fn render_document_shell(
         .map_or_else(render_default_footer, |partial| {
             render_theme_partial(Some(partial), &tokens)
         });
+    let left_rail_enabled = !left_rail.is_empty();
+    let right_rail_enabled = !right_rail.is_empty();
     format!(
         concat!(
             "<!doctype html><html lang=\"{}\"><head><meta charset=\"utf-8\" />",
@@ -3252,8 +4674,8 @@ fn render_document_shell(
             "<meta property=\"og:description\" content=\"{}\" />{}",
             "<link rel=\"stylesheet\" href=\"{}\" />{}{}",
             "<script defer src=\"{}\"></script></head>",
-            "<body data-search-asset=\"{}\" data-graph-asset=\"{}\" data-live-reload-url=\"{}\" data-live-reload-sse-url=\"{}\" data-current-note-path=\"{}\"><a class=\"site-skip-link\" href=\"#main-content\">Skip to content</a>{}<div class=\"site-shell\">",
-            "{}<div class=\"site-layout\"><main id=\"main-content\" class=\"site-content\">{}</main><aside class=\"site-sidebar\" aria-label=\"Page context\">{}</aside></div>{}</div></body></html>"
+            "<body data-search-asset=\"{}\" data-graph-asset=\"{}\" data-live-reload-url=\"{}\" data-live-reload-sse-url=\"{}\" data-current-note-path=\"{}\" data-site-profile=\"{}\" data-site-deploy-path=\"{}\" data-default-palette=\"{}\" data-reader-mode-enabled=\"{}\" data-left-rail-enabled=\"{}\" data-right-rail-enabled=\"{}\"><a class=\"site-skip-link\" href=\"#main-content\">Skip to content</a>{}<div class=\"site-shell\">",
+            "{}{}<div class=\"site-layout\"><aside id=\"site-left-rail\" class=\"site-left-rail{}\" aria-label=\"Site navigation\">{}</aside><main id=\"main-content\" class=\"site-content\">{}</main><aside id=\"site-right-rail\" class=\"site-right-rail{}\" aria-label=\"Page context\">{}</aside></div>{}</div></body></html>"
         ),
         escape_html(&context.language),
         escape_html(&document_title),
@@ -3281,10 +4703,20 @@ fn render_document_shell(
         prefixed_site_path(&context.deploy_path, "/__vulcan_site/live-reload.json"),
         prefixed_site_path(&context.deploy_path, "/__vulcan_site/live-reload.events"),
         current_note_path.unwrap_or_default(),
+        escape_html(&context.profile),
+        escape_html(&context.deploy_path),
+        site_palette_mode_name(profile.shell.default_palette),
+        if profile.shell.reader_mode { "true" } else { "false" },
+        if left_rail_enabled { "true" } else { "false" },
+        if right_rail_enabled { "true" } else { "false" },
         search_dialog,
+        toolbar,
         header,
+        if left_rail_enabled { "" } else { " is-disabled" },
+        left_rail,
         body,
-        sidebar,
+        if right_rail_enabled { "" } else { " is-disabled" },
+        right_rail,
         footer,
     )
 }
@@ -3304,6 +4736,146 @@ fn render_page_title(
     } else {
         rendered
     }
+}
+
+fn render_default_toolbar(
+    context: &RenderContext,
+    search_button: &str,
+    reader_mode_toggle: &str,
+    left_rail_enabled: bool,
+    right_rail_enabled: bool,
+    logo: &str,
+) -> String {
+    let left_toggle = if left_rail_enabled {
+        "<button class=\"site-toolbar-toggle\" type=\"button\" data-site-rail-toggle=\"left\" aria-controls=\"site-left-rail\" aria-expanded=\"false\">Browse</button>"
+    } else {
+        ""
+    };
+    let right_toggle = if right_rail_enabled {
+        "<button class=\"site-toolbar-toggle\" type=\"button\" data-site-rail-toggle=\"right\" aria-controls=\"site-right-rail\" aria-expanded=\"false\">Panels</button>"
+    } else {
+        ""
+    };
+    format!(
+        concat!(
+            "<header class=\"site-toolbar-bar\">{}",
+            "<a class=\"site-toolbar-home\" href=\"{}\">{}<span>{}</span></a>",
+            "<div class=\"site-toolbar-actions\">{}{}{}</div></header>"
+        ),
+        left_toggle,
+        escape_html(&site_root_href(&context.deploy_path)),
+        logo,
+        escape_html(&context.site_title),
+        search_button,
+        reader_mode_toggle,
+        right_toggle,
+    )
+}
+
+fn render_default_left_rail(
+    context: &RenderContext,
+    profile: &ResolvedSiteProfile,
+    nav: &str,
+    search_button: &str,
+    palette_controls: &str,
+    reader_mode_toggle: &str,
+    explorer: &str,
+    logo: &str,
+) -> String {
+    let explorer_section = if explorer.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "<section class=\"site-rail-section site-explorer-panel\"><div class=\"site-rail-section-title\">Explorer</div>{explorer}</section>"
+        )
+    };
+    format!(
+        concat!(
+            "<div class=\"site-rail-shell\">",
+            "<div class=\"site-brand-card\">{}<div><p class=\"site-brand-title\"><a href=\"{}\">{}</a></p><p class=\"site-meta\">Profile: {}</p></div></div>",
+            "<div class=\"site-rail-controls\">{}{}</div>",
+            "{}",
+            "<nav class=\"site-primary-nav\" aria-label=\"Primary\">{}</nav>",
+            "{}",
+            "</div>"
+        ),
+        logo,
+        escape_html(&site_root_href(&context.deploy_path)),
+        escape_html(&context.site_title),
+        escape_html(&profile.name),
+        search_button,
+        palette_controls,
+        reader_mode_toggle,
+        nav,
+        explorer_section,
+    )
+}
+
+fn render_default_right_rail(modules: &[SiteShellModule], enabled: bool) -> String {
+    if !enabled || modules.is_empty() {
+        return String::new();
+    }
+    let toggles = modules
+        .iter()
+        .map(|module| {
+            format!(
+                "<button class=\"site-module-toggle\" type=\"button\" data-site-module-toggle=\"{}\" aria-pressed=\"true\">{}</button>",
+                escape_html(module.id),
+                escape_html(module.title)
+            )
+        })
+        .collect::<String>();
+    let panels = modules
+        .iter()
+        .map(render_shell_module_html)
+        .collect::<String>();
+    format!(
+        "<div class=\"site-module-toolbar\" role=\"toolbar\" aria-label=\"Page panels\">{toggles}</div>{panels}"
+    )
+}
+
+fn render_shell_module_html(module: &SiteShellModule) -> String {
+    format!(
+        concat!(
+            "<section class=\"site-panel\" data-site-module=\"{}\">",
+            "<button class=\"site-panel-heading\" type=\"button\" data-site-panel-toggle=\"{}\" aria-expanded=\"true\">",
+            "<span>{}</span><span class=\"site-panel-chevron\" aria-hidden=\"true\">▾</span>",
+            "</button><div class=\"site-panel-body\">{}</div></section>"
+        ),
+        escape_html(module.id),
+        escape_html(module.id),
+        escape_html(module.title),
+        module.body_html,
+    )
+}
+
+fn render_palette_controls(profile: &ResolvedSiteProfile) -> String {
+    let buttons = [("system", "System"), ("light", "Light"), ("dark", "Dark")]
+        .into_iter()
+        .map(|(mode, label)| {
+            format!(
+                "<button class=\"site-palette-button\" type=\"button\" data-theme-mode=\"{}\" aria-pressed=\"{}\">{}</button>",
+                mode,
+                if mode == site_palette_mode_name(profile.shell.default_palette) {
+                    "true"
+                } else {
+                    "false"
+                },
+                label
+            )
+        })
+        .collect::<String>();
+    format!(
+        "<div class=\"site-palette-group\" role=\"group\" aria-label=\"Color theme\">{buttons}</div>"
+    )
+}
+
+fn render_reader_mode_toggle(profile: &ResolvedSiteProfile) -> String {
+    if !profile.shell.reader_mode {
+        return String::new();
+    }
+    "<button class=\"site-control-button\" type=\"button\" data-reader-mode-toggle aria-pressed=\"false\">Read</button>"
+        .to_string()
 }
 
 fn render_head_assets(context: &RenderContext, profile: &ResolvedSiteProfile) -> String {
@@ -3366,56 +4938,43 @@ fn render_logo(context: &RenderContext, profile: &ResolvedSiteProfile) -> String
 }
 
 fn render_top_nav(context: &RenderContext, profile: &ResolvedSiteProfile) -> String {
-    let mut items = vec![
-        ("Home", site_root_href(&context.deploy_path)),
-        (
+    let mut items = Vec::new();
+    if profile.navigation.show_home {
+        items.push(("Home", site_root_href(&context.deploy_path)));
+    }
+    if profile.navigation.show_recent {
+        items.push((
             "Recent",
             prefixed_site_path(&context.deploy_path, "/recent/"),
-        ),
-        (
+        ));
+    }
+    if profile.navigation.show_folders {
+        items.push((
             "Folders",
             prefixed_site_path(&context.deploy_path, "/folders/"),
-        ),
-        ("Tags", prefixed_site_path(&context.deploy_path, "/tags/")),
-    ];
+        ));
+    }
+    if profile.navigation.show_tags {
+        items.push(("Tags", prefixed_site_path(&context.deploy_path, "/tags/")));
+    }
     if profile.search {
         items.push((
             "Search",
             prefixed_site_path(&context.deploy_path, "/search/"),
         ));
     }
-    if profile.graph {
+    if profile.navigation.show_graph && profile.graph {
         items.push(("Graph", prefixed_site_path(&context.deploy_path, "/graph/")));
     }
     items
         .into_iter()
-        .map(|(label, href)| format!("<a href=\"{href}\">{}</a>", escape_html(label)))
+        .map(|(label, href)| {
+            format!(
+                "<a class=\"site-nav-link\" href=\"{href}\">{}</a>",
+                escape_html(label)
+            )
+        })
         .collect::<String>()
-}
-
-fn render_default_header(
-    context: &RenderContext,
-    description: &str,
-    nav: &str,
-    search_button: &str,
-    theme_toggle: &str,
-    logo: &str,
-) -> String {
-    format!(
-        concat!(
-            "<header class=\"site-header\"><div class=\"site-brand\">{}<div>",
-            "<p class=\"site-brand-title\"><a href=\"{}\">{}</a></p><p>{}</p></div></div>",
-            "<div class=\"site-toolbar\"><nav class=\"site-top-nav\" aria-label=\"Primary\">{}</nav>{}{}",
-            "</div></header>"
-        ),
-        logo,
-        escape_html(&site_root_href(&context.deploy_path)),
-        escape_html(&context.site_title),
-        escape_html(description),
-        nav,
-        search_button,
-        theme_toggle,
-    )
 }
 
 fn render_default_footer() -> String {
@@ -3443,6 +5002,12 @@ fn render_shell_theme_tokens(
     nav: &str,
     search_button: &str,
     theme_toggle: &str,
+    palette_controls: &str,
+    reader_mode_toggle: &str,
+    explorer: &str,
+    toolbar: &str,
+    left_rail: &str,
+    right_rail: &str,
     logo: &str,
 ) -> Vec<(&'static str, String)> {
     vec![
@@ -3466,6 +5031,12 @@ fn render_shell_theme_tokens(
         ("{{nav}}", nav.to_string()),
         ("{{search_button}}", search_button.to_string()),
         ("{{theme_toggle}}", theme_toggle.to_string()),
+        ("{{palette_controls}}", palette_controls.to_string()),
+        ("{{reader_mode_toggle}}", reader_mode_toggle.to_string()),
+        ("{{explorer}}", explorer.to_string()),
+        ("{{toolbar}}", toolbar.to_string()),
+        ("{{left_rail}}", left_rail.to_string()),
+        ("{{right_rail}}", right_rail.to_string()),
         ("{{site_logo}}", logo.to_string()),
     ]
 }
@@ -3486,6 +5057,12 @@ fn render_note_theme_chrome(
         description,
         canonical_url,
         Some(note_path),
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
         "",
         "",
         "",
@@ -3526,67 +5103,6 @@ fn render_breadcrumbs(breadcrumbs: &[String]) -> String {
         .collect::<Vec<_>>()
         .join("<span>/</span>");
     format!("<nav class=\"site-breadcrumbs\" aria-label=\"Breadcrumbs\">{parts}</nav>")
-}
-
-fn render_toc(headings: &[HtmlRenderHeading]) -> String {
-    if headings.is_empty() {
-        return String::new();
-    }
-    let items = headings
-        .iter()
-        .map(|heading| {
-            format!(
-                "<li><a href=\"#{}\">{}</a></li>",
-                escape_html(&heading.id),
-                escape_html(&heading.text)
-            )
-        })
-        .collect::<String>();
-    format!("<section><h2>Contents</h2><ul>{items}</ul></section>")
-}
-
-fn render_note_links(
-    deploy_path: &str,
-    title: &str,
-    note_paths: &[String],
-    route_urls: &HashMap<String, String>,
-) -> String {
-    if note_paths.is_empty() {
-        return String::new();
-    }
-    let items = note_paths
-        .iter()
-        .map(|path| {
-            let href = route_urls.get(path).cloned().unwrap_or_else(|| {
-                prefixed_site_path(
-                    deploy_path,
-                    &format!("/notes/{}/", slugify_path(trim_markdown_extension(path))),
-                )
-            });
-            format!(
-                "<li><a href=\"{}\">{}</a></li>",
-                escape_html(&href),
-                escape_html(path)
-            )
-        })
-        .collect::<String>();
-    format!(
-        "<section><h2>{}</h2><ul>{items}</ul></section>",
-        escape_html(title)
-    )
-}
-
-fn render_local_graph_card(note: &RenderedNote) -> String {
-    format!(
-        concat!(
-            "<section class=\"site-graph-card\" data-site-local-graph data-site-note-path=\"{}\">",
-            "<h2>Local graph</h2>",
-            "<p class=\"site-meta\">Published neighbors for this note, powered by the same graph asset used elsewhere in Vulcan.</p>",
-            "<ul class=\"site-local-graph-list\" data-site-local-graph-list><li>Loading local graph…</li></ul>",
-            "</section>"
-        ),
-        escape_html(&note.source_path)
-    )
 }
 
 fn render_prev_next(previous: Option<&RenderedNote>, next: Option<&RenderedNote>) -> String {
@@ -4372,6 +5888,10 @@ fn frontend_bundle_note_index_path() -> &'static str {
     "assets/note-index.json"
 }
 
+fn frontend_bundle_navigation_tree_path() -> &'static str {
+    "assets/navigation-tree.json"
+}
+
 fn frontend_bundle_invalidation_path() -> &'static str {
     "assets/invalidation.json"
 }
@@ -4439,7 +5959,7 @@ fn frontend_bundle_contract_schema_json() -> String {
     },
     "profile": {
       "type": "object",
-      "required": ["name", "title", "deploy_path", "language", "theme", "search", "graph", "backlinks", "rss"],
+      "required": ["name", "title", "deploy_path", "language", "theme", "search", "graph", "backlinks", "rss", "shell", "navigation", "modules"],
       "additionalProperties": false,
       "properties": {
         "name": { "type": "string" },
@@ -4451,7 +5971,48 @@ fn frontend_bundle_contract_schema_json() -> String {
         "search": { "type": "boolean" },
         "graph": { "type": "boolean" },
         "backlinks": { "type": "boolean" },
-        "rss": { "type": "boolean" }
+        "rss": { "type": "boolean" },
+        "shell": { "$ref": "#/$defs/shellOptions" },
+        "navigation": { "$ref": "#/$defs/navigationOptions" },
+        "modules": { "$ref": "#/$defs/moduleOptions" }
+      }
+    },
+    "shellOptions": {
+      "type": "object",
+      "required": ["reader_mode", "default_palette", "left_rail", "right_rail"],
+      "additionalProperties": false,
+      "properties": {
+        "reader_mode": { "type": "boolean" },
+        "default_palette": { "type": "string", "enum": ["system", "light", "dark"] },
+        "left_rail": { "type": "boolean" },
+        "right_rail": { "type": "boolean" }
+      }
+    },
+    "navigationOptions": {
+      "type": "object",
+      "required": ["explorer", "folder_click", "default_folder_state", "use_saved_state", "show_home", "show_recent", "show_folders", "show_tags", "show_graph"],
+      "additionalProperties": false,
+      "properties": {
+        "explorer": { "type": "boolean" },
+        "folder_click": { "type": "string", "enum": ["collapse", "link"] },
+        "default_folder_state": { "type": "string", "enum": ["collapsed", "open"] },
+        "use_saved_state": { "type": "boolean" },
+        "show_home": { "type": "boolean" },
+        "show_recent": { "type": "boolean" },
+        "show_folders": { "type": "boolean" },
+        "show_tags": { "type": "boolean" },
+        "show_graph": { "type": "boolean" }
+      }
+    },
+    "moduleOptions": {
+      "type": "object",
+      "required": ["toc", "graph", "backlinks", "outgoing_links"],
+      "additionalProperties": false,
+      "properties": {
+        "toc": { "type": "boolean" },
+        "graph": { "type": "boolean" },
+        "backlinks": { "type": "boolean" },
+        "outgoing_links": { "type": "boolean" }
       }
     },
     "renderContext": {
@@ -4508,10 +6069,11 @@ fn frontend_bundle_contract_schema_json() -> String {
     },
     "artifactPaths": {
       "type": "object",
-      "required": ["route_manifest", "hover_previews", "recent_notes", "related_notes", "note_index", "invalidation", "schema", "typescript", "copied_assets"],
+      "required": ["route_manifest", "navigation_tree", "hover_previews", "recent_notes", "related_notes", "note_index", "invalidation", "schema", "typescript", "copied_assets"],
       "additionalProperties": false,
       "properties": {
         "route_manifest": { "type": "string" },
+        "navigation_tree": { "type": "string" },
         "hover_previews": { "type": "string" },
         "recent_notes": { "type": "string" },
         "related_notes": { "type": "string" },
@@ -4546,6 +6108,35 @@ export interface FrontendBundleProfile {
   graph: boolean;
   backlinks: boolean;
   rss: boolean;
+  shell: FrontendBundleShell;
+  navigation: FrontendBundleNavigation;
+  modules: FrontendBundleModules;
+}
+
+export interface FrontendBundleShell {
+  reader_mode: boolean;
+  default_palette: 'system' | 'light' | 'dark';
+  left_rail: boolean;
+  right_rail: boolean;
+}
+
+export interface FrontendBundleNavigation {
+  explorer: boolean;
+  folder_click: 'collapse' | 'link';
+  default_folder_state: 'collapsed' | 'open';
+  use_saved_state: boolean;
+  show_home: boolean;
+  show_recent: boolean;
+  show_folders: boolean;
+  show_tags: boolean;
+  show_graph: boolean;
+}
+
+export interface FrontendBundleModules {
+  toc: boolean;
+  graph: boolean;
+  backlinks: boolean;
+  outgoing_links: boolean;
 }
 
 export interface RenderContext {
@@ -4593,6 +6184,7 @@ export interface RenderedEmbed {
 
 export interface FrontendBundleArtifactPaths {
   route_manifest: string;
+  navigation_tree: string;
   hover_previews: string;
   recent_notes: string;
   related_notes: string;
@@ -4743,6 +6335,9 @@ fn resolve_site_theme(paths: &VaultPaths, theme: &str) -> Result<ResolvedSiteThe
         head: read_optional_theme_partial(&theme_dir.join("head.html"))?,
         header: read_optional_theme_partial(&theme_dir.join("header.html"))?,
         nav: read_optional_theme_partial(&theme_dir.join("nav.html"))?,
+        toolbar: read_optional_theme_partial(&theme_dir.join("toolbar.html"))?,
+        left_rail: read_optional_theme_partial(&theme_dir.join("left_rail.html"))?,
+        right_rail: read_optional_theme_partial(&theme_dir.join("right_rail.html"))?,
         footer: read_optional_theme_partial(&theme_dir.join("footer.html"))?,
         note_before: read_optional_theme_partial(&theme_dir.join("note_before.html"))?,
         note_after: read_optional_theme_partial(&theme_dir.join("note_after.html"))?,
@@ -5075,10 +6670,6 @@ mod tests {
             .clone()
     }
 
-    fn compact_html(value: &str) -> String {
-        value.lines().map(str::trim).collect::<String>()
-    }
-
     fn count_occurrences(haystack: &str, needle: &str) -> usize {
         haystack.match_indices(needle).count()
     }
@@ -5193,6 +6784,7 @@ graph = true
         let bundle_search = read_site_json(&bundle_root, "assets/search-index.json");
         let site_graph = read_site_json(&site_root, "assets/graph.json");
         let bundle_graph = read_site_json(&bundle_root, "assets/graph.json");
+        let bundle_navigation = read_site_json(&bundle_root, "assets/navigation-tree.json");
         let contract = read_site_json(&bundle_root, "frontend-bundle.json");
         let home_note = read_site_json(&bundle_root, "notes/home/index.json");
 
@@ -5205,6 +6797,13 @@ graph = true
             "vulcan_frontend_bundle"
         );
         assert_eq!(bundle_report.contract.profile.name, "public");
+        assert_eq!(contract["profile"]["shell"]["default_palette"], "system");
+        assert_eq!(contract["profile"]["navigation"]["explorer"], true);
+        assert_eq!(contract["profile"]["modules"]["toc"], true);
+        assert_eq!(
+            contract["artifacts"]["navigation_tree"],
+            "assets/navigation-tree.json"
+        );
         assert_eq!(
             contract["artifacts"]["schema"],
             "schema/frontend-bundle.schema.json"
@@ -5217,6 +6816,9 @@ graph = true
             .join("schema/frontend-bundle.schema.json")
             .exists());
         assert!(bundle_root.join("schema/frontend-bundle.d.ts").exists());
+        assert!(bundle_navigation
+            .as_array()
+            .is_some_and(|nodes| nodes.iter().any(|node| node["title"] == "Home")));
         assert_eq!(home_note["route"]["url_path"], "/notes/home/");
         assert!(home_note["body_html"]
             .as_str()
@@ -5421,10 +7023,25 @@ include_paths = ["Home", "Notes/Embed Note.md"]
         )
         .expect("theme header should write");
         fs::write(
+            vault_root.join(".vulcan/site/themes/reference/toolbar.html"),
+            "<div class=\"theme-toolbar\">{{toolbar}}</div>",
+        )
+        .expect("theme toolbar should write");
+        fs::write(
             vault_root.join(".vulcan/site/themes/reference/nav.html"),
             "<a class=\"custom-nav\" href=\"{{home_href}}\">Portal</a>",
         )
         .expect("theme nav should write");
+        fs::write(
+            vault_root.join(".vulcan/site/themes/reference/left_rail.html"),
+            "<div class=\"theme-left\">{{left_rail}}</div>",
+        )
+        .expect("theme left rail should write");
+        fs::write(
+            vault_root.join(".vulcan/site/themes/reference/right_rail.html"),
+            "<div class=\"theme-right\">{{right_rail}}</div>",
+        )
+        .expect("theme right rail should write");
         fs::write(
             vault_root.join(".vulcan/site/themes/reference/footer.html"),
             "<footer class=\"site-footer\">Custom footer {{profile_name}}</footer>",
@@ -5479,11 +7096,14 @@ graph = true
         let graph_json = read_site_json(&output_root, "assets/graph.json");
 
         assert!(home_html.contains("data-site-search-dialog"));
+        assert!(home_html.contains("theme-toolbar"));
         assert!(home_html.contains("custom-nav"));
+        assert!(home_html.contains("theme-left"));
         assert!(home_html.contains("Custom footer public"));
         assert!(home_html.contains("assets/.vulcan/site/themes/reference/theme.css"));
         assert!(home_html.contains("assets/.vulcan/site/themes/reference/theme.js"));
         assert!(note_html.contains("data-site-local-graph"));
+        assert!(note_html.contains("theme-right"));
         assert!(note_html.contains("note-before"));
         assert!(note_html.contains("Projects/Alpha.md"));
         assert!(note_html.contains("note-after"));
@@ -6489,26 +8109,20 @@ graph = false
                 }
             ])
         );
-        assert_eq!(
-            compact_html(&note_html),
-            concat!(
-                "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\" />",
-                "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />",
-                "<title>Guide | Public Notes</title><meta name=\"description\" content=\"Guide summary.\" />",
-                "<meta name=\"twitter:card\" content=\"summary\" />",
-                "<meta property=\"og:title\" content=\"Guide\" />",
-                "<meta property=\"og:description\" content=\"Guide summary.\" />",
-                "<link rel=\"stylesheet\" href=\"/assets/vulcan-site.css\" />",
-                "<script defer src=\"/assets/vulcan-site.js\"></script></head>",
-                "<body data-search-asset=\"\" data-graph-asset=\"\" data-live-reload-url=\"/__vulcan_site/live-reload.json\" data-live-reload-sse-url=\"/__vulcan_site/live-reload.events\" data-current-note-path=\"Guide.md\"><a class=\"site-skip-link\" href=\"#main-content\">Skip to content</a><div class=\"site-shell\">",
-                "<header class=\"site-header\"><div class=\"site-brand\"><div><p class=\"site-brand-title\"><a href=\"/\">Public Notes</a></p><p>Guide summary.</p></div></div>",
-                "<div class=\"site-toolbar\"><nav class=\"site-top-nav\" aria-label=\"Primary\"><a href=\"/\">Home</a><a href=\"/recent/\">Recent</a><a href=\"/folders/\">Folders</a><a href=\"/tags/\">Tags</a></nav>",
-                "<button data-theme-toggle type=\"button\" aria-label=\"Toggle color theme\" aria-pressed=\"false\">Theme</button></div></header>",
-                "<div class=\"site-layout\"><main id=\"main-content\" class=\"site-content\"><article class=\"site-main\"><div class=\"site-meta\">Updated from Guide.md</div><h1 id=\"guide\">Guide</h1><p>Body text.</p></article></main>",
-                "<aside class=\"site-sidebar\" aria-label=\"Page context\"><section><h2>Contents</h2><ul><li><a href=\"#guide\">Guide</a></li></ul></section></aside></div>",
-                "<footer class=\"site-footer\">Built by Vulcan static site builder.</footer></div></body></html>"
-            )
-        );
+        assert!(note_html.contains(r#"data-site-profile="public""#));
+        assert!(note_html.contains(r#"data-default-palette="system""#));
+        assert!(note_html.contains(r#"data-reader-mode-enabled="true""#));
+        assert!(note_html.contains(r#"data-left-rail-enabled="true""#));
+        assert!(note_html.contains(r#"id="site-left-rail""#));
+        assert!(note_html.contains(r#"id="site-right-rail""#));
+        assert!(note_html.contains(r#"class="site-toolbar-bar""#));
+        assert!(note_html.contains(r#"data-theme-mode="system""#));
+        assert!(note_html.contains(r"data-reader-mode-toggle"));
+        assert!(note_html.contains(r#"class="site-explorer-tree""#));
+        assert!(note_html.contains(r#"class="site-module-toolbar""#));
+        assert!(note_html.contains(r#"data-site-module="toc""#));
+        assert!(note_html.contains(r"Guide.md"));
+        assert!(note_html.contains(r#"<h1 id="guide">Guide</h1>"#));
     }
 
     #[test]
@@ -6683,6 +8297,94 @@ include_paths = ["Dashboard.md"]
     }
 
     #[test]
+    fn site_build_emits_folder_note_navigation_manifest_and_profile_shell_state() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join("Guides")).expect("guides dir should exist");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(vault_root.join("Home.md"), "# Home\n\nLanding page.\n")
+            .expect("home note should write");
+        fs::write(
+            vault_root.join("Guides/index.md"),
+            "# Guides\n\nFolder landing page.\n",
+        )
+        .expect("folder note should write");
+        fs::write(
+            vault_root.join("Guides/Intro.md"),
+            "# Intro\n\nGuide body.\n",
+        )
+        .expect("intro note should write");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Docs"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md", "Guides/index.md", "Guides/Intro.md"]
+search = false
+graph = false
+backlinks = false
+
+[site.profiles.public.shell]
+reader_mode = false
+default_palette = "dark"
+
+[site.profiles.public.navigation]
+folder_click = "collapse"
+default_folder_state = "open"
+use_saved_state = false
+
+[site.profiles.public.modules]
+graph = false
+backlinks = false
+outgoing_links = false
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let report = build_site(
+            &VaultPaths::new(&vault_root),
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("site build should succeed");
+        let output_root = vault_root.join(".vulcan/site/public");
+        let intro_html =
+            read_site_text(&output_root, &note_output_path(&report, "Guides/Intro.md"));
+        let navigation_tree = read_site_json(&output_root, "assets/navigation-tree.json");
+        let folder_note_route = report
+            .routes
+            .iter()
+            .find(|route| route.source_path.as_deref() == Some("Guides/index.md"))
+            .expect("folder note route should exist");
+        let guides_node = navigation_tree
+            .as_array()
+            .and_then(|nodes| nodes.iter().find(|node| node["title"] == "Guides"))
+            .expect("guides folder should exist in navigation manifest");
+
+        assert_eq!(guides_node["kind"], "folder");
+        assert_eq!(guides_node["source_path"], "Guides/index.md");
+        assert_eq!(guides_node["url"], folder_note_route.url_path);
+        assert!(guides_node["children"]
+            .as_array()
+            .is_some_and(|children| children.iter().any(|child| child["title"] == "Intro")));
+
+        assert!(intro_html.contains(r#"data-default-palette="dark""#));
+        assert!(intro_html.contains(r#"data-reader-mode-enabled="false""#));
+        assert!(intro_html.contains(r#"data-site-folder-click="collapse""#));
+        assert!(intro_html.contains(r#"data-site-folder-state="open""#));
+        assert!(intro_html.contains(r#"data-site-saved-state="false""#));
+        assert!(intro_html.contains(r#"data-site-module="toc""#));
+        assert!(!intro_html.contains(r#"data-site-module="graph""#));
+        assert!(!intro_html.contains(r#"data-site-module="backlinks""#));
+    }
+
+    #[test]
     fn site_build_renders_hardening_fixture_surfaces_for_bases_tasks_tasknotes_kanban_and_periodic_notes(
     ) {
         let temp_dir = TempDir::new().expect("temp dir should exist");
@@ -6761,7 +8463,12 @@ rss = false
         assert!(showcase_html.contains(r#"class="bases-table""#));
         assert!(showcase_html.contains(r#"class="tasks-query-list""#));
         assert!(showcase_html.contains("Write docs"));
-        assert!(!showcase_html.contains("Prep outline"));
+        let showcase_tasks = showcase_html
+            .split(r#"class="tasks-query-list""#)
+            .nth(1)
+            .and_then(|section| section.split("</ul>").next())
+            .expect("tasks query section should render");
+        assert!(!showcase_tasks.contains("Prep outline"));
 
         assert!(board_html.contains("Release Board"));
         assert!(board_html.contains("Backlog"));
