@@ -56,6 +56,10 @@ fn has_extension(path: &str, extension: &str) -> bool {
         .is_some_and(|value| value.eq_ignore_ascii_case(extension))
 }
 
+fn slash_display_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 fn write_plugin_file(vault_root: &Path, name: &str, source: &str) {
     let plugin_dir = vault_root.join(".vulcan/plugins");
     fs::create_dir_all(&plugin_dir).expect("plugin dir should be created");
@@ -13782,10 +13786,7 @@ graph = true
     assert_eq!(run_json["summary"]["site_profile"], "public");
     assert_eq!(
         run_json["summary"]["path"],
-        vault_root
-            .join("exports/public-bundle")
-            .display()
-            .to_string()
+        slash_display_path(&vault_root.join("exports/public-bundle"))
     );
 
     let contract_path = vault_root.join("exports/public-bundle/frontend-bundle.json");

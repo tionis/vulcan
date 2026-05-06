@@ -11090,6 +11090,10 @@ fn bundled_text_file_display_path(paths: &VaultPaths, file: &BundledTextFile) ->
         .replace('\\', "/")
 }
 
+fn slash_display_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 fn write_bundled_text_contents(
     path: &Path,
     contents: &str,
@@ -15703,13 +15707,11 @@ fn run_frontend_bundle_export_profile(
         },
     )
     .map_err(CliError::operation)?;
+    let contract_path = PathBuf::from(&report.output_dir).join("frontend-bundle.json");
     let summary = FrontendBundleExportSummary {
         path: report.output_dir.clone(),
         site_profile: site_profile.to_string(),
-        contract_path: PathBuf::from(&report.output_dir)
-            .join("frontend-bundle.json")
-            .display()
-            .to_string(),
+        contract_path: slash_display_path(&contract_path),
         note_count: report.note_count,
         asset_count: report.asset_count,
         search_enabled: report.contract.profile.search,
