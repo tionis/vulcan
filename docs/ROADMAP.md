@@ -3931,8 +3931,9 @@ graph = false
 - `site build|serve|profiles|doctor` are in-tree with JSON output, deterministic route planning, folder/tag/recent/home/search/graph pages, route/search/graph/hover/recent/related manifests, RSS/sitemap emission, and publish-filter diagnostics.
 - The builder reuses the same shared HTML renderer already used by `note get --mode html` and `render --mode html`; this currently covers inline Dataview expressions, `dataview` query blocks, `tasks` query blocks, `.base` embeds, note embeds, callouts, attachment rewriting, and DataviewJS off/static fallback behavior.
 - The preview loop now exposes both JSON polling and SSE live-reload endpoints, surfaces publish diagnostics to the terminal/browser overlay, and tracks changed/deleted outputs so watch rebuilds only rewrite files whose bytes actually changed.
-- Phase 9.20 is complete: the built-in static site path and the external frontend-bundle path now share the same publication selection, transforms, route planning, manifests, asset copying, deterministic HTML fragments, and local live-reload/watch loop. Follow-up expansion can still broaden fixture libraries over time, but the shared publication contract intended for later WebUI/wiki reuse is now in place.
+- The original Phase 9.20 baseline is complete: the built-in static site path and the external frontend-bundle path now share the same publication selection, transforms, route planning, manifests, asset copying, deterministic HTML fragments, and local live-reload/watch loop. Follow-up expansion can still broaden fixture libraries over time, but the shared publication contract intended for later WebUI/wiki reuse is now in place.
 - Follow-up optimization (2026-05-06): site builds now persist per-profile note-render state under `.vulcan/site-state/` and reuse unchanged note pages when the profile config, published set, and planned routes remain stable. Watch/small-update rebuilds invalidate backlink/tag/folder/embed/query dependents conservatively, while aggregate pages and manifests are still regenerated from the current rendered-note set.
+- Follow-up shell/theme expansion is tracked in 9.20.10. It builds on the completed 9.20 foundation rather than reopening the original renderer/publication exit criteria.
 
 ### 9.20.1 Shared render contract and CLI surface
 
@@ -4067,6 +4068,129 @@ This is additive, not a replacement for `site build`. The goal is to let dedicat
 - [x] Keep the built-in static site builder as the default/reference implementation so Vulcan still ships a no-Node publishing path and a concrete compatibility oracle for external integrations
 - [x] Maintain extensive, versioned, up-to-date docs for both users and integrators covering config, bundle layout, schema/types, live-preview workflow, deployment patterns, upgrade notes, and compatibility guarantees; treat stale docs/examples as a release-blocking regression for this surface
 - [x] Add integration tests covering bundle determinism, schema stability, root-hosted vs subpath-hosted path correctness, and parity with representative `site build` output for notes/manifests/assets
+
+### 9.20.10 Static site shell, navigation, and theme overhaul
+
+This is a follow-on UX/theming expansion on top of the completed 9.20 publication contract. The goal is to make the built-in site output feel closer to Quartz and MkDocs Material without abandoning Vulcan's no-Node default path or introducing a second renderer/template stack.
+
+**Goal:** Replace the current "header + content + one sidebar" shell with a Quartz-style knowledge-site layout: persistent left navigation/search rail, centered reading surface, contextual right rail, folder-note-aware explorer, richer theme controls, and per-module visibility/state management.
+
+**Builds on:** Completed 9.20 baseline, especially 9.20.1 shared render structs, 9.20.2 site profiles, 9.20.4 theme/default UX, 9.20.5 search/graph manifests, 9.20.6 incremental rebuilds, and 9.20.9 frontend bundle contracts.
+
+**Why this follow-on exists:** The current 9.20 output proves the renderer/publication pipeline, but the shell contract is still too small and the default UX is not yet competitive with Quartz, Obsidian-like knowledge gardens, or Material-style documentation sites. This follow-on is about site information architecture, shell state, and theme/template ergonomics, not about redoing parsing, route planning, or publish semantics.
+
+**Reference implementations to study before and during execution**
+
+- Quartz:
+  - `references/quartz/quartz.layout.ts`
+  - `references/quartz/quartz/components/Explorer.tsx`
+  - `references/quartz/quartz/components/scripts/explorer.inline.ts`
+  - `references/quartz/quartz/components/ReaderMode.tsx`
+  - `references/quartz/quartz/components/Search.tsx`
+  - `references/quartz/quartz/components/TableOfContents.tsx`
+  - `references/quartz/quartz/components/Backlinks.tsx`
+  - `references/quartz/quartz/components/Graph.tsx`
+  - `references/quartz/quartz/util/fileTrie.ts`
+  - `references/quartz/quartz/plugins/emitters/folderPage.tsx`
+- MkDocs Material:
+  - `references/mkdocs-material/material/templates/base.html`
+  - `references/mkdocs-material/material/templates/partials/nav.html`
+  - `references/mkdocs-material/material/templates/partials/toc.html`
+  - `references/mkdocs-material/material/templates/partials/palette.html`
+  - `references/mkdocs-material/docs/setup/setting-up-navigation.md`
+  - `references/mkdocs-material/docs/setup/changing-the-colors.md`
+
+**Design rules**
+
+- Keep Vulcan closer to Quartz overall. Quartz is the structural model; Material is the polish and affordance model.
+- Do not add a required SPA framework, Node build step, or client-side reimplementation of vault semantics.
+- Extend the current shared render/site contract; do not create a separate "fancy theme" renderer that diverges from `site build`, `site serve`, or frontend bundles.
+- Treat folder notes / section index pages as first-class navigation concepts, not as an afterthought layered on top of folder listing pages.
+- Treat shell state as part of the product surface: palette choice, reader mode, open/closed rails, and collapsed modules should persist across navigation and live preview reloads.
+- Preserve accessibility and mobile support as release-blocking requirements, not follow-up polish.
+
+#### 9.20.10.1 Shell contract v2
+
+The current theme contract is too narrow for the layout target. Expand it intentionally.
+
+- [ ] Replace the current single-right-sidebar shell with explicit left rail, main content region, and right rail concepts in the built-in renderer
+- [ ] Add a typed shell-region contract beyond `head/header/nav/footer/note_before/note_after`, for example left-rail, right-rail, toolbar, before-content, after-content, and per-module insertion points
+- [ ] Keep the contract fixed and documented; do not introduce a general-purpose template language or server-side theme execution model
+- [ ] Preserve backward compatibility for existing `header.html` / `nav.html` / `footer.html` themes where feasible, or document a clear migration path if compatibility shims are temporary
+- [ ] Make shell-region contracts available to both built-in HTML output and frontend-bundle consumers so later WebUI/wiki work can reuse the same page architecture
+
+#### 9.20.10.2 Navigation model and folder-note support
+
+The left rail should be a real explorer, not just top-nav links.
+
+- [ ] Add an explorer/navigation manifest derived from the published route set, suitable for both the built-in shell and frontend-bundle consumers
+- [ ] Model folders as navigable nodes with configurable behavior: collapse-only, link-to-folder-page, or prefer folder-note/index-note when present
+- [ ] Add explicit folder-note / section-index behavior for published sites, including rules for `index.md` / configured home notes / folder landing notes
+- [ ] Support explorer sorting, filtering, and default collapse/open behavior with profile-scoped configuration
+- [ ] Persist explorer collapse state and restore scroll position across navigation where possible
+- [ ] Ensure publish filters and route policy apply uniformly: excluded notes/folders must never leak into explorer manifests
+
+#### 9.20.10.3 Left rail search and controls
+
+Search and shell controls should live in the persistent navigation surface, not only in a generic header.
+
+- [ ] Move the default search affordance into the left rail while preserving keyboard-first `/` behavior and accessible dialog/search interactions
+- [ ] Support a Quartz-like compact search trigger plus result overlay/preview experience using the existing static search assets
+- [ ] Add a first-class palette control with `system`, `light`, and `dark` modes instead of the current binary toggle only
+- [ ] Add a first-class reader mode control that hides or de-emphasizes chrome without breaking navigation recovery or accessibility
+- [ ] Persist palette and reader-mode preferences in stable browser storage keys shared across note/list pages
+
+#### 9.20.10.4 Right rail modules and toggleability
+
+The right rail should be a module host, not one hardcoded sidebar.
+
+- [ ] Turn TOC, local graph, backlinks, outgoing links, and similar surfaces into named right-rail modules with stable identifiers
+- [ ] Add per-profile enable/disable settings for each module instead of only top-level booleans like `graph` and `backlinks`
+- [ ] Add per-page/per-note hide controls where appropriate, preferably via frontmatter metadata compatible with later WebUI/wiki reuse
+- [ ] Support collapsible modules with persisted open/closed state
+- [ ] Add TOC behaviors inspired by Material/Quartz, including sticky follow behavior and automatic hiding when headings are absent
+- [ ] Keep graph/backlinks/search assets shared with frontend-bundle mode rather than generating separate UI-specific payloads
+
+#### 9.20.10.5 Profile/config surface expansion
+
+The current site profile booleans are not expressive enough for the intended shell.
+
+- [ ] Extend `[site.profiles.<name>]` with structured shell/navigation/module settings instead of adding many flat booleans
+- [ ] Add config for left rail defaults: explorer enabled, folder click behavior, default collapse state, saved state behavior, mobile drawer behavior
+- [ ] Add config for right rail defaults: which modules are shown, default order, collapse defaults, sticky/follow options
+- [ ] Add config for appearance controls: palette mode defaults, user palette switching enabled/disabled, reader mode enabled/disabled
+- [ ] Add config parsing/default tests and update the default config template/help text to document the new site-shell surface clearly
+
+#### 9.20.10.6 Default theme v2 and visual language
+
+This is the visible payoff. The built-in theme should stop looking like a generic generated site.
+
+- [ ] Redesign the default CSS/JS shell to use a denser Quartz-like layout with a persistent left rail, stronger typography, clearer hierarchy, and more intentional spacing
+- [ ] Borrow Material-style polish for sticky sidebars, palette switching, responsive drawers, and hide/show affordances
+- [ ] Improve list/folder/tag/home pages so they feel like real knowledge-site landing pages instead of generic card dumps
+- [ ] Preserve the no-Node built-in delivery model: plain CSS and minimal JS emitted by the Rust build remain the default path
+- [ ] Update the reference theme example to reflect the new shell contract and demonstrate custom left/right rail replacements
+
+#### 9.20.10.7 Documentation, migration, and testing
+
+This follow-on changes a user-facing compatibility surface and needs stronger guidance than the baseline 9.20 docs.
+
+- [ ] Expand `docs/guide/static-sites.md` with the new shell contract, config reference, module model, folder-note behavior, and migration notes for old theme partials
+- [ ] Add screenshots or fixture-based examples for desktop/mobile layouts, palette modes, reader mode, hidden rails, and folder-note explorer behavior
+- [ ] Add snapshot/smoke tests for landmark structure, keyboard navigation, responsive drawer behavior, reader mode, and module toggling
+- [ ] Add integration tests covering folder-note routing + explorer manifests, per-profile shell config differences, and root-hosted vs subpath-hosted shell asset/state correctness
+- [ ] Keep frontend-bundle contracts in sync: if the built-in shell gains a new typed navigation/module manifest, document and test the bundle shape at the same time
+
+#### 9.20.10 Recommended implementation order
+
+Do the structural pieces before visual polish:
+
+1. Expand the shell/theme contract and site-profile config surface.
+2. Add explorer/navigation manifests plus folder-note/index-note semantics.
+3. Refactor right-rail surfaces into typed modules with persisted state.
+4. Upgrade palette handling and add reader mode as first-class shell state.
+5. Rebuild the default CSS/JS shell around the new layout.
+6. Update docs, reference themes, snapshots, and frontend-bundle parity tests.
 
 ---
 
