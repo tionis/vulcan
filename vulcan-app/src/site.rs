@@ -117,6 +117,8 @@ const DEFAULT_THEME_CSS: &str = concat!(
     ".site-pill-list { display: flex; gap: 0.5rem; flex-wrap: wrap; list-style: none; padding: 0; margin: 0.9rem 0 0; }\n",
     ".site-pill-list a { display: inline-flex; border: 1px solid var(--border); padding: 0.35rem 0.75rem; border-radius: 999px; text-decoration: none; }\n",
     ".site-inline-nav { display: flex; gap: 0.8rem; justify-content: space-between; margin-top: 2rem; flex-wrap: wrap; }\n",
+    ".math.math-inline { white-space: nowrap; }\n",
+    ".math.math-display { display: block; overflow-x: auto; padding: 0.5rem 0; }\n",
     ".site-callout { border-left: 4px solid var(--accent); padding-left: 1rem; color: var(--muted); }\n",
     ".site-diagnostics { margin-top: 1rem; border-radius: 1rem; border: 1px solid rgba(178, 69, 54, 0.35); background: rgba(178, 69, 54, 0.08); padding: 1rem; }\n",
     ".site-live-overlay { position: fixed; right: 1rem; bottom: 1rem; z-index: 9999; background: rgba(20, 20, 20, 0.92); color: #fff; padding: 0.9rem 1rem; border-radius: 1rem; max-width: 24rem; box-shadow: 0 18px 36px rgba(0,0,0,0.35); }\n",
@@ -270,6 +272,76 @@ const DEFAULT_THEME_JS: &str = r#"(() => {
         }
       })
       .catch(() => {});
+  }
+
+  const dispatchRuntimeHook = (name, detail) => {
+    const event = new CustomEvent(name, { cancelable: true, detail });
+    document.dispatchEvent(event);
+    return !event.defaultPrevented;
+  };
+  const enhanceMath = () => {
+    const nodes = [...document.querySelectorAll('[data-site-math]')];
+    if (!nodes.length) return;
+    if (
+      !dispatchRuntimeHook('vulcan-site:math', {
+        nodes,
+        runtimeAvailable: Boolean(window.katex?.render),
+      })
+    ) {
+      return;
+    }
+    if (!window.katex?.render) return;
+    for (const node of nodes) {
+      const tex = node.textContent?.trim();
+      if (!tex) continue;
+      try {
+        window.katex.render(tex, node, {
+          displayMode: node.dataset.siteMath === 'display',
+          throwOnError: false,
+        });
+        node.setAttribute('data-site-math-rendered', 'katex');
+      } catch (_) {}
+    }
+  };
+  const enhanceMermaid = () => {
+    const sourceBlocks = [...document.querySelectorAll('[data-site-mermaid-source]')];
+    if (!sourceBlocks.length) return;
+    if (
+      !dispatchRuntimeHook('vulcan-site:mermaid', {
+        nodes: sourceBlocks,
+        runtimeAvailable: Boolean(window.mermaid?.run),
+      })
+    ) {
+      return;
+    }
+    if (!window.mermaid?.run) return;
+    const hosts = [];
+    for (const block of sourceBlocks) {
+      const code = block.querySelector('code.language-mermaid');
+      const source = code?.textContent?.trim();
+      if (!source) continue;
+      const host = document.createElement('div');
+      host.className = 'mermaid';
+      host.setAttribute('data-site-mermaid', 'true');
+      host.textContent = source;
+      block.replaceWith(host);
+      hosts.push(host);
+    }
+    if (!hosts.length) return;
+    try {
+      window.mermaid.run({ nodes: hosts });
+    } catch (_) {}
+  };
+  // Fire runtime hooks on DOMContentLoaded so theme.js, which is loaded after
+  // the built-in shell, can register listeners before optional enhancement runs.
+  const runOptionalRuntimeEnhancements = () => {
+    enhanceMath();
+    enhanceMermaid();
+  };
+  if (document.readyState === 'complete') {
+    runOptionalRuntimeEnhancements();
+  } else {
+    document.addEventListener('DOMContentLoaded', runOptionalRuntimeEnhancements, { once: true });
   }
 
   let liveVersion = null;
@@ -6506,6 +6578,67 @@ graph = false
         assert!(search_html.contains(r#"aria-describedby="site-search-dialog-hint""#));
         assert!(search_html.contains(r#"aria-keyshortcuts="/""#));
         assert!(search_html.contains(r#"aria-live="polite""#));
+    }
+
+    #[test]
+    fn site_build_emits_math_and_mermaid_runtime_contract() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join("Home.md"),
+            concat!(
+                "# Home\n\n",
+                "Inline math: $x + y$.\n\n",
+                "$$\n",
+                "x^2 + y^2 = z^2\n",
+                "$$\n\n",
+                "```mermaid\n",
+                "flowchart TD\n",
+                "  A --> B\n",
+                "```\n",
+            ),
+        )
+        .expect("home note should write");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Published Garden"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md"]
+search = false
+graph = false
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        build_site(
+            &VaultPaths::new(&vault_root),
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("site build should succeed");
+
+        let output_root = vault_root.join(".vulcan/site/public");
+        let home_html = read_site_text(&output_root, "index.html");
+        let shell_js = read_site_text(&output_root, "assets/vulcan-site.js");
+
+        assert!(home_html.contains(r#"data-site-math="inline""#));
+        assert!(home_html.contains(r#"data-site-math="display""#));
+        assert!(home_html.contains(r#"data-site-mermaid-source="true""#));
+        assert!(home_html.contains(r#"class="language-mermaid""#));
+
+        assert!(shell_js.contains("vulcan-site:math"));
+        assert!(shell_js.contains("vulcan-site:mermaid"));
+        assert!(shell_js.contains("window.katex"));
+        assert!(shell_js.contains("window.mermaid"));
+        assert!(shell_js.contains("data-site-mermaid"));
     }
 
     #[test]

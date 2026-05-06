@@ -1338,7 +1338,33 @@ fn render_markdown_html_with_targets(
     });
 
     html::push_html(&mut rendered_html.html, parser);
+    rendered_html.html = annotate_runtime_render_targets(rendered_html.html);
     rendered_html
+}
+
+fn annotate_runtime_render_targets(mut html: String) -> String {
+    // Mermaid stays a plain fenced code block on the server. Themes or custom
+    // frontends can opt into client-side diagram rendering by looking for this
+    // stable marker and replacing the block when a Mermaid runtime is present.
+    html = html.replace(
+        "<pre><code class=\"language-mermaid\">",
+        "<pre data-site-mermaid-source=\"true\"><code class=\"language-mermaid\">",
+    );
+    // Math is emitted as stable HTML wrappers containing the original TeX
+    // source. Downstream shells can style these directly or post-process them
+    // with KaTeX/MathJax-like runtimes.
+    html = html.replace(
+        "<span class=\"math math-inline\">",
+        "<span class=\"math math-inline\" data-site-math=\"inline\">",
+    );
+    html = html.replace(
+        "<span class=\"math math-display\">",
+        "<span class=\"math math-display\" data-site-math=\"display\">",
+    );
+    html.replace(
+        "<div class=\"math math-display\">",
+        "<div class=\"math math-display\" data-site-math=\"display\">",
+    )
 }
 
 fn rewrite_raw_html_event<'a>(
@@ -1811,6 +1837,39 @@ mod tests {
             !rendered.html.contains("status: draft"),
             "frontmatter should stay out of rendered html"
         );
+    }
+
+    #[test]
+    fn note_html_marks_math_and_mermaid_for_optional_runtime_enhancement() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should exist");
+        fs::write(
+            vault_root.join("Home.md"),
+            concat!(
+                "# Home\n\n",
+                "Inline math: $x + y$.\n\n",
+                "$$\n",
+                "x^2 + y^2 = z^2\n",
+                "$$\n\n",
+                "```mermaid\n",
+                "flowchart TD\n",
+                "  A --> B\n",
+                "```\n",
+            ),
+        )
+        .expect("home should write");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let source =
+            fs::read_to_string(paths.vault_root().join("Home.md")).expect("home should read");
+
+        let rendered = render_note_html(&paths, "Home.md", &source);
+
+        assert!(rendered.html.contains(r#"data-site-math="inline""#));
+        assert!(rendered.html.contains(r#"data-site-math="display""#));
+        assert!(rendered.html.contains(r#"data-site-mermaid-source="true""#));
+        assert!(rendered.html.contains(r#"class="language-mermaid""#));
     }
 
     #[test]
