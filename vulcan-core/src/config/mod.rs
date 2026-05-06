@@ -249,6 +249,26 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # graph = true
 # backlinks = true
 # rss = true
+# [site.profiles.public.shell]
+# reader_mode = true
+# default_palette = "system"  # system | light | dark
+# left_rail = true
+# right_rail = true
+# [site.profiles.public.navigation]
+# explorer = true
+# folder_click = "link"       # collapse | link
+# default_folder_state = "collapsed"  # collapsed | open
+# use_saved_state = true
+# show_home = true
+# show_recent = true
+# show_folders = true
+# show_tags = true
+# show_graph = true
+# [site.profiles.public.modules]
+# toc = true
+# graph = true
+# backlinks = true
+# outgoing_links = true
 # favicon = "site/favicon.png"
 # logo = "site/logo.svg"
 # extra_css = ["site/public.css"]
@@ -2398,6 +2418,60 @@ pub enum SiteRawHtmlPolicyConfig {
     Strip,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SitePaletteModeConfig {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteFolderClickBehaviorConfig {
+    Collapse,
+    #[default]
+    Link,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SiteExplorerFolderStateConfig {
+    #[default]
+    Collapsed,
+    Open,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SiteShellOptionsConfig {
+    pub reader_mode: Option<bool>,
+    pub default_palette: Option<SitePaletteModeConfig>,
+    pub left_rail: Option<bool>,
+    pub right_rail: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SiteNavigationOptionsConfig {
+    pub explorer: Option<bool>,
+    pub folder_click: Option<SiteFolderClickBehaviorConfig>,
+    pub default_folder_state: Option<SiteExplorerFolderStateConfig>,
+    pub use_saved_state: Option<bool>,
+    pub show_home: Option<bool>,
+    pub show_recent: Option<bool>,
+    pub show_folders: Option<bool>,
+    pub show_tags: Option<bool>,
+    pub show_graph: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SiteModulesOptionsConfig {
+    pub toc: Option<bool>,
+    pub graph: Option<bool>,
+    pub backlinks: Option<bool>,
+    pub outgoing_links: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SiteAssetPolicyConfig {
     #[serde(default)]
@@ -2435,6 +2509,12 @@ pub struct SiteProfileConfig {
     pub graph: Option<bool>,
     pub backlinks: Option<bool>,
     pub rss: Option<bool>,
+    #[serde(default)]
+    pub shell: SiteShellOptionsConfig,
+    #[serde(default)]
+    pub navigation: SiteNavigationOptionsConfig,
+    #[serde(default)]
+    pub modules: SiteModulesOptionsConfig,
     pub favicon: Option<PathBuf>,
     pub logo: Option<PathBuf>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -7379,6 +7459,75 @@ fn merge_export_profile_config(target: &mut ExportProfileConfig, profile: Export
     }
 }
 
+fn merge_site_shell_options_config(
+    target: &mut SiteShellOptionsConfig,
+    options: &SiteShellOptionsConfig,
+) {
+    if let Some(reader_mode) = options.reader_mode {
+        target.reader_mode = Some(reader_mode);
+    }
+    if let Some(default_palette) = options.default_palette {
+        target.default_palette = Some(default_palette);
+    }
+    if let Some(left_rail) = options.left_rail {
+        target.left_rail = Some(left_rail);
+    }
+    if let Some(right_rail) = options.right_rail {
+        target.right_rail = Some(right_rail);
+    }
+}
+
+fn merge_site_navigation_options_config(
+    target: &mut SiteNavigationOptionsConfig,
+    options: &SiteNavigationOptionsConfig,
+) {
+    if let Some(explorer) = options.explorer {
+        target.explorer = Some(explorer);
+    }
+    if let Some(folder_click) = options.folder_click {
+        target.folder_click = Some(folder_click);
+    }
+    if let Some(default_folder_state) = options.default_folder_state {
+        target.default_folder_state = Some(default_folder_state);
+    }
+    if let Some(use_saved_state) = options.use_saved_state {
+        target.use_saved_state = Some(use_saved_state);
+    }
+    if let Some(show_home) = options.show_home {
+        target.show_home = Some(show_home);
+    }
+    if let Some(show_recent) = options.show_recent {
+        target.show_recent = Some(show_recent);
+    }
+    if let Some(show_folders) = options.show_folders {
+        target.show_folders = Some(show_folders);
+    }
+    if let Some(show_tags) = options.show_tags {
+        target.show_tags = Some(show_tags);
+    }
+    if let Some(show_graph) = options.show_graph {
+        target.show_graph = Some(show_graph);
+    }
+}
+
+fn merge_site_modules_options_config(
+    target: &mut SiteModulesOptionsConfig,
+    options: &SiteModulesOptionsConfig,
+) {
+    if let Some(toc) = options.toc {
+        target.toc = Some(toc);
+    }
+    if let Some(graph) = options.graph {
+        target.graph = Some(graph);
+    }
+    if let Some(backlinks) = options.backlinks {
+        target.backlinks = Some(backlinks);
+    }
+    if let Some(outgoing_links) = options.outgoing_links {
+        target.outgoing_links = Some(outgoing_links);
+    }
+}
+
 fn merge_site_profile_config(target: &mut SiteProfileConfig, profile: SiteProfileConfig) {
     if let Some(title) = profile.title {
         target.title = Some(title);
@@ -7416,6 +7565,9 @@ fn merge_site_profile_config(target: &mut SiteProfileConfig, profile: SiteProfil
     if let Some(rss) = profile.rss {
         target.rss = Some(rss);
     }
+    merge_site_shell_options_config(&mut target.shell, &profile.shell);
+    merge_site_navigation_options_config(&mut target.navigation, &profile.navigation);
+    merge_site_modules_options_config(&mut target.modules, &profile.modules);
     if let Some(favicon) = profile.favicon {
         target.favicon = Some(favicon);
     }
@@ -11400,6 +11552,25 @@ link_policy = "render_plain_text"
 dataview_js = "static"
 raw_html = "sanitize"
 
+[site.profiles.public.shell]
+reader_mode = true
+default_palette = "dark"
+left_rail = true
+right_rail = true
+
+[site.profiles.public.navigation]
+explorer = true
+folder_click = "collapse"
+default_folder_state = "open"
+use_saved_state = false
+show_graph = false
+
+[site.profiles.public.modules]
+toc = true
+graph = false
+backlinks = true
+outgoing_links = false
+
 [site.profiles.public.asset_policy]
 mode = "error_on_missing"
 include_folders = ["site/shared/**"]
@@ -11440,6 +11611,28 @@ exclude_headings = ["Scratch"]
         assert_eq!(profile.graph, Some(false));
         assert_eq!(profile.backlinks, Some(true));
         assert_eq!(profile.rss, Some(true));
+        assert_eq!(profile.shell.reader_mode, Some(true));
+        assert_eq!(
+            profile.shell.default_palette,
+            Some(SitePaletteModeConfig::Dark)
+        );
+        assert_eq!(profile.shell.left_rail, Some(true));
+        assert_eq!(profile.shell.right_rail, Some(true));
+        assert_eq!(profile.navigation.explorer, Some(true));
+        assert_eq!(
+            profile.navigation.folder_click,
+            Some(SiteFolderClickBehaviorConfig::Collapse)
+        );
+        assert_eq!(
+            profile.navigation.default_folder_state,
+            Some(SiteExplorerFolderStateConfig::Open)
+        );
+        assert_eq!(profile.navigation.use_saved_state, Some(false));
+        assert_eq!(profile.navigation.show_graph, Some(false));
+        assert_eq!(profile.modules.toc, Some(true));
+        assert_eq!(profile.modules.graph, Some(false));
+        assert_eq!(profile.modules.backlinks, Some(true));
+        assert_eq!(profile.modules.outgoing_links, Some(false));
         assert_eq!(
             profile.favicon.as_ref(),
             Some(&PathBuf::from("site/favicon.png"))
@@ -11512,6 +11705,10 @@ search = true
 link_policy = "warn"
 extra_css = ["site/public.css"]
 
+[site.profiles.public.navigation]
+explorer = true
+show_home = true
+
 [site.profiles.public.asset_policy]
 mode = "copy_referenced"
 
@@ -11533,6 +11730,18 @@ link_policy = "render_plain_text"
 dataview_js = "static"
 raw_html = "strip"
 extra_css = ["site/local.css"]
+
+[site.profiles.public.shell]
+default_palette = "light"
+reader_mode = false
+
+[site.profiles.public.navigation]
+folder_click = "collapse"
+show_home = false
+
+[site.profiles.public.modules]
+graph = false
+outgoing_links = false
 
 [site.profiles.public.asset_policy]
 mode = "error_on_missing"
@@ -11580,6 +11789,19 @@ include_paths = ["Docs/Intro.md"]
         assert_eq!(public.search, Some(true));
         assert_eq!(public.graph, Some(true));
         assert_eq!(
+            public.shell.default_palette,
+            Some(SitePaletteModeConfig::Light)
+        );
+        assert_eq!(public.shell.reader_mode, Some(false));
+        assert_eq!(public.navigation.explorer, Some(true));
+        assert_eq!(
+            public.navigation.folder_click,
+            Some(SiteFolderClickBehaviorConfig::Collapse)
+        );
+        assert_eq!(public.navigation.show_home, Some(false));
+        assert_eq!(public.modules.graph, Some(false));
+        assert_eq!(public.modules.outgoing_links, Some(false));
+        assert_eq!(
             public.link_policy,
             Some(SiteLinkPolicyConfig::RenderPlainText)
         );
@@ -11623,6 +11845,12 @@ include_paths = ["Docs/Intro.md"]
         assert!(template.contains("page_title_template = \"{page} | {site}\""));
         assert!(template.contains("deploy_path = \"/wiki\""));
         assert!(template.contains("output_dir = \".vulcan/site/public\""));
+        assert!(template.contains("[site.profiles.public.shell]"));
+        assert!(template.contains("default_palette = \"system\""));
+        assert!(template.contains("[site.profiles.public.navigation]"));
+        assert!(template.contains("folder_click = \"link\""));
+        assert!(template.contains("[site.profiles.public.modules]"));
+        assert!(template.contains("outgoing_links = true"));
         assert!(template.contains("link_policy = \"warn\""));
         assert!(template.contains("dataview_js = \"off\""));
         assert!(template.contains("# raw_html = \"sanitize\""));
