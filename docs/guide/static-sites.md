@@ -115,8 +115,11 @@ Optional files in that directory:
 - `theme.css`
 - `theme.js`
 - `head.html`
+- `toolbar.html`
 - `header.html`
 - `nav.html`
+- `left_rail.html`
+- `right_rail.html`
 - `footer.html`
 - `note_before.html`
 - `note_after.html`
@@ -134,13 +137,74 @@ partials can use stable placeholder tokens:
 - `{{current_note_path}}`
 - `{{nav}}`
 - `{{search_button}}`
+- `{{palette_controls}}`
+- `{{reader_mode_toggle}}`
 - `{{theme_toggle}}`
+- `{{explorer}}`
+- `{{toolbar}}`
+- `{{left_rail}}`
+- `{{right_rail}}`
 - `{{site_logo}}`
 
-`header.html` supersedes `nav.html`; otherwise `nav.html` only replaces the nav strip inside the
-default header. `theme.css` and `theme.js` are copied into published assets and loaded after
-Vulcan's built-in shell assets. A reference bundle lives at
+`theme_toggle` is kept as a compatibility alias for the built-in palette controls. `toolbar.html`
+wraps or replaces the sticky top bar, `header.html` inserts extra chrome between the toolbar and the
+main layout, and `left_rail.html` / `right_rail.html` can replace the default explorer and page-panel
+rails while still receiving the same stable tokens. `header.html` still supersedes `nav.html`;
+otherwise `nav.html` only replaces the primary-nav strip inside the default left rail. `theme.css`
+and `theme.js` are copied into published assets and loaded after Vulcan's built-in shell assets. A
+reference bundle lives at
 `docs/examples/static-site-theme-reference/`.
+
+## Shell and module config
+
+The built-in shell now has first-class profile-scoped config for layout chrome, explorer behavior,
+and right-rail modules:
+
+```toml
+[site.profiles.public]
+title = "Public Notes"
+home = "Home"
+search = true
+graph = true
+backlinks = true
+
+[site.profiles.public.shell]
+reader_mode = true
+default_palette = "system" # system | light | dark
+left_rail = true
+right_rail = true
+
+[site.profiles.public.navigation]
+explorer = true
+folder_click = "link"      # link | collapse
+default_folder_state = "collapsed"
+use_saved_state = true
+show_home = true
+show_recent = true
+show_folders = true
+show_tags = true
+show_graph = true
+
+[site.profiles.public.modules]
+toc = true
+graph = true
+backlinks = true
+outgoing_links = true
+```
+
+Current defaults and semantics:
+
+- `shell.reader_mode = true` enables the built-in reader-mode toggle; the active state persists in
+  browser storage per site profile
+- `shell.default_palette` chooses the default `system` / `light` / `dark` palette before any stored
+  user preference is applied
+- `navigation.folder_click = "link"` makes folder rows prefer folder notes such as `Guides/index.md`
+  when present, otherwise they fall back to generated folder listing pages
+- `navigation.default_folder_state` seeds the explorer's initial collapse state; the built-in shell
+  restores saved folder open/closed state when `use_saved_state = true`
+- `modules.*` control which right-rail panels are available in the built-in shell; the shell still
+  only renders modules whose source data exists on the current page, so TOC stays hidden when a page
+  has no headings and local graph stays hidden when graph export is disabled
 
 ## Math and Mermaid contract
 
@@ -234,6 +298,7 @@ The builder currently emits a profile-scoped site with:
 - tag listings
 - recent notes
 - `assets/route-manifest.json`
+- `assets/navigation-tree.json`
 - `assets/search-index.json`
 - `assets/graph.json`
 - `assets/hover-previews.json`
@@ -242,12 +307,14 @@ The builder currently emits a profile-scoped site with:
 - `sitemap.xml` when `base_url` is set
 - `rss.xml` when RSS is enabled and `base_url` is set
 
-The default theme includes light/dark mode, keyboard-first search (`/`), a skip link plus landmarked
-page shell, a global mobile-friendly search dialog with result highlighting, a per-note local graph
-card powered by `assets/graph.json`, profile-scoped `extra_css` / `extra_js`, favicon injection, and
-logo rendering from the site profile. When a deploy path is configured, the default shell, manifests,
-and preview server all emit prefix-aware URLs so the built output can be hosted under that subpath
-unchanged.
+The default theme now uses a Quartz-like three-region shell: a persistent left rail with search,
+primary navigation, and a folder-note-aware explorer; a centered reading surface; and a right rail
+for TOC, local graph, backlinks, and outgoing links. It includes `system` / `light` / `dark`
+palette controls, a reader mode that hides most chrome, persisted rail/module state, keyboard-first
+search (`/`), a skip link plus landmarked page shell, a global mobile-friendly search dialog with
+result highlighting, profile-scoped `extra_css` / `extra_js`, favicon injection, and logo rendering
+from the site profile. When a deploy path is configured, the default shell, manifests, and preview
+server all emit prefix-aware URLs so the built output can be hosted under that subpath unchanged.
 
 ## Frontend bundle mode
 
@@ -283,13 +350,16 @@ that directory on watched changes and exposes local live-reload endpoints at:
 - `/__vulcan_bundle/live-reload.json`
 - `/__vulcan_bundle/live-reload.events`
 
-The bundle layout is intentionally stable and typed:
+The bundle layout is intentionally stable and typed. The root contract now carries shell, navigation,
+and module defaults mirrored from the selected site profile, and the shared artifacts include the
+published explorer tree used by the built-in shell:
 
 - `frontend-bundle.json` — versioned root contract with profile metadata, note index entries, route
   information, diagnostics, and artifact paths
 - `notes/.../index.json` — per-note documents with rendered `body_html`, headings, embeds, outgoing
   links, backlinks, breadcrumbs, and render diagnostics
 - `assets/route-manifest.json`
+- `assets/navigation-tree.json`
 - `assets/hover-previews.json`
 - `assets/recent-notes.json`
 - `assets/related-notes.json`

@@ -1,3 +1,17 @@
+.theme-toolbar-shell {
+  border: 1px solid var(--border);
+  border-radius: 1.4rem;
+  padding: 0.25rem;
+  background: var(--surface-soft);
+}
+
+.theme-left-rail,
+.theme-right-rail {
+  border-radius: 1.4rem;
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.25rem;
+}
+
 .theme-header {
   align-items: flex-start;
   border-bottom: 1px solid var(--border);
