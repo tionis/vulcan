@@ -32,7 +32,6 @@ use vulcan_core::html::{
 };
 use vulcan_core::properties::NoteRecord;
 use vulcan_core::query::{execute_query_report, QueryAst, QueryReport};
-use vulcan_core::search::export_static_search_index;
 use vulcan_core::{ensure_vulcan_dir, export_graph, parse_document, VaultPaths};
 
 const DEFAULT_PAGE_TITLE_TEMPLATE: &str = "{page} | {site}";
@@ -41,27 +40,28 @@ const SITE_BUILD_STATE_VERSION: u32 = 1;
 const DEFAULT_THEME_CSS: &str = r"
 :root {
   color-scheme: light dark;
-  --bg: #f5f2ea;
-  --bg-strong: #ebe3d5;
-  --bg-elevated: rgba(252, 249, 244, 0.92);
-  --surface: rgba(255, 252, 247, 0.84);
-  --surface-strong: rgba(255, 252, 247, 0.96);
-  --surface-soft: rgba(255, 255, 255, 0.36);
-  --text: #1e1a15;
-  --muted: #6a5d4f;
-  --accent: #1d6b7d;
-  --accent-strong: #154d59;
-  --accent-soft: rgba(29, 107, 125, 0.14);
-  --border: rgba(30, 26, 21, 0.12);
-  --border-strong: rgba(30, 26, 21, 0.2);
-  --shadow: 0 24px 60px rgba(38, 25, 12, 0.08);
-  --code-bg: rgba(30, 26, 21, 0.06);
+  --bg: #f6f2e8;
+  --bg-strong: #efe8da;
+  --bg-elevated: rgba(250, 246, 239, 0.96);
+  --surface: rgba(255, 252, 248, 0.86);
+  --surface-strong: rgba(255, 252, 248, 0.97);
+  --surface-soft: rgba(255, 255, 255, 0.44);
+  --text: #1d1a16;
+  --muted: #6a6155;
+  --accent: #1f6f82;
+  --accent-strong: #154f5c;
+  --accent-soft: rgba(31, 111, 130, 0.12);
+  --border: rgba(29, 26, 22, 0.1);
+  --border-strong: rgba(29, 26, 22, 0.16);
+  --shadow: 0 16px 42px rgba(44, 34, 21, 0.08);
+  --code-bg: rgba(29, 26, 22, 0.06);
   --link: #0d5e9b;
-  --left-rail-width: 20rem;
-  --right-rail-width: 21rem;
-  --content-max: 52rem;
-  --radius-lg: 1.5rem;
-  --radius-md: 1rem;
+  --left-rail-width: 18rem;
+  --right-rail-width: 17.25rem;
+  --content-max: 46rem;
+  --radius-lg: 1.15rem;
+  --radius-md: 0.85rem;
+  --rail-gap: 0.95rem;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -85,9 +85,47 @@ const DEFAULT_THEME_CSS: &str = r"
   }
 }
 
-html[data-theme='light'] { color-scheme: light; }
-html[data-theme='dark'] { color-scheme: dark; }
-html { scroll-padding-top: 5rem; }
+html[data-theme='light'] {
+  color-scheme: light;
+  --bg: #f6f2e8;
+  --bg-strong: #efe8da;
+  --bg-elevated: rgba(250, 246, 239, 0.96);
+  --surface: rgba(255, 252, 248, 0.86);
+  --surface-strong: rgba(255, 252, 248, 0.97);
+  --surface-soft: rgba(255, 255, 255, 0.44);
+  --text: #1d1a16;
+  --muted: #6a6155;
+  --accent: #1f6f82;
+  --accent-strong: #154f5c;
+  --accent-soft: rgba(31, 111, 130, 0.12);
+  --border: rgba(29, 26, 22, 0.1);
+  --border-strong: rgba(29, 26, 22, 0.16);
+  --shadow: 0 16px 42px rgba(44, 34, 21, 0.08);
+  --code-bg: rgba(29, 26, 22, 0.06);
+  --link: #0d5e9b;
+}
+
+html[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: #111312;
+  --bg-strong: #171a19;
+  --bg-elevated: rgba(22, 25, 24, 0.95);
+  --surface: rgba(24, 28, 27, 0.88);
+  --surface-strong: rgba(30, 34, 33, 0.96);
+  --surface-soft: rgba(255, 255, 255, 0.04);
+  --text: #ece6dc;
+  --muted: #b2a797;
+  --accent: #86c5ca;
+  --accent-strong: #9ddce0;
+  --accent-soft: rgba(134, 197, 202, 0.14);
+  --border: rgba(236, 230, 220, 0.12);
+  --border-strong: rgba(236, 230, 220, 0.2);
+  --shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
+  --code-bg: rgba(236, 230, 220, 0.08);
+  --link: #8ec9ff;
+}
+
+html { scroll-padding-top: 2rem; }
 * { box-sizing: border-box; }
 
 body {
@@ -128,7 +166,7 @@ pre {
 .site-shell {
   max-width: 1660px;
   margin: 0 auto;
-  padding: 1rem 1rem 3rem;
+  padding: 1rem 1.15rem 2.75rem;
 }
 
 .site-skip-link {
@@ -147,48 +185,40 @@ pre {
 
 .site-skip-link:focus { transform: translateY(0); }
 
-.site-toolbar-bar,
 .site-brand-card,
 .site-listing,
 .site-search-card,
 .site-graph-card,
 .site-main,
 .site-panel,
-.site-search-dialog-panel {
+.site-search-dialog-panel,
+.site-left-rail,
+.site-right-rail,
+.site-mobile-dock {
   background: var(--surface);
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
 }
 
-.site-toolbar-bar {
-  position: sticky;
-  top: 0.75rem;
-  z-index: 40;
-  display: flex;
-  gap: 1rem;
+.site-mobile-dock {
+  display: none;
+  position: fixed;
+  left: 50%;
+  bottom: 1rem;
+  z-index: 80;
+  gap: 0.5rem;
   align-items: center;
-  justify-content: space-between;
-  padding: 0.8rem 1rem;
-  border-radius: calc(var(--radius-lg) - 0.15rem);
+  justify-content: center;
+  padding: 0.55rem;
+  border-radius: 999px;
   backdrop-filter: blur(18px);
-  margin-bottom: 1.25rem;
-}
-
-.site-toolbar-home {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.8rem;
-  color: inherit;
-  text-decoration: none;
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0.01em;
+  transform: translateX(-50%);
 }
 
 .site-brand-mark {
-  width: 2.6rem;
-  height: 2.6rem;
-  border-radius: 0.9rem;
+  width: 2.1rem;
+  height: 2.1rem;
+  border-radius: 0.65rem;
   object-fit: cover;
   background: rgba(255, 255, 255, 0.4);
   border: 1px solid var(--border);
@@ -199,7 +229,7 @@ pre {
 .site-module-toolbar,
 .site-palette-group {
   display: flex;
-  gap: 0.55rem;
+  gap: 0.45rem;
   align-items: center;
   flex-wrap: wrap;
 }
@@ -217,11 +247,16 @@ pre {
   border: 1px solid var(--border);
   background: var(--surface-strong);
   color: var(--text);
-  border-radius: 999px;
-  padding: 0.55rem 0.82rem;
+  border-radius: 0.8rem;
+  padding: 0.48rem 0.7rem;
   text-decoration: none;
   cursor: pointer;
   font: inherit;
+  font-size: 0.9rem;
+  line-height: 1.3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   transition: border-color 0.18s ease, background 0.18s ease, color 0.18s ease, transform 0.18s ease;
 }
 
@@ -249,8 +284,9 @@ pre {
 
 .site-layout {
   display: grid;
-  gap: 1.25rem;
+  gap: var(--rail-gap);
   grid-template-columns: var(--left-rail-width) minmax(0, 1fr) var(--right-rail-width);
+  align-items: start;
 }
 
 body[data-left-rail-state='closed'][data-right-rail-state='closed'] .site-layout,
@@ -272,11 +308,13 @@ body[data-left-rail-enabled='true'][data-left-rail-state='open'][data-right-rail
 .site-left-rail,
 .site-right-rail {
   position: sticky;
-  top: 5.35rem;
+  top: 1rem;
   align-self: start;
-  max-height: calc(100vh - 6.1rem);
+  max-height: calc(100vh - 2rem);
   overflow: auto;
-  padding-right: 0.15rem;
+  padding: 0;
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(12px);
 }
 
 .site-left-rail.is-disabled,
@@ -295,14 +333,16 @@ body[data-reader-mode='true'] .site-right-rail {
 .site-search-card,
 .site-graph-card,
 .site-panel,
-.site-brand-card {
+.site-brand-card,
+.site-left-rail,
+.site-right-rail {
   border-radius: var(--radius-lg);
 }
 
 .site-main {
   max-width: min(100%, var(--content-max));
   margin: 0 auto;
-  padding: clamp(1.45rem, 2.4vw, 2.35rem);
+  padding: clamp(1.25rem, 2vw, 1.9rem);
   background: var(--surface-strong);
 }
 
@@ -324,7 +364,7 @@ body[data-reader-mode='true'] .site-right-rail {
 .site-main li,
 .site-main blockquote {
   font-family: 'Charter', 'Iowan Old Style', 'Palatino Linotype', serif;
-  font-size: 1.04rem;
+  font-size: 1rem;
 }
 
 .site-breadcrumbs,
@@ -347,19 +387,21 @@ body[data-reader-mode='true'] .site-right-rail {
 .site-listing,
 .site-search-card,
 .site-graph-card {
-  padding: 1rem 1.05rem;
+  padding: 0.9rem 0.95rem;
 }
 
 .site-brand-card {
-  display: grid;
-  gap: 1rem;
-  background: linear-gradient(180deg, var(--surface-strong), var(--surface));
+  display: flex;
+  gap: 0.8rem;
+  align-items: center;
+  background: linear-gradient(180deg, var(--surface-strong), rgba(255, 255, 255, 0.12));
 }
 
 .site-brand-title {
   margin: 0;
-  font-size: 1.15rem;
+  font-size: 1rem;
   font-weight: 700;
+  line-height: 1.25;
 }
 
 .site-brand-title a {
@@ -369,21 +411,57 @@ body[data-reader-mode='true'] .site-right-rail {
 
 .site-rail-shell {
   display: grid;
-  gap: 1rem;
+  gap: 0.9rem;
+  padding: 0.95rem;
+}
+
+.site-rail-header {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.site-rail-controls {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.site-rail-button-row {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+
+.site-search-launch {
+  justify-content: flex-start;
+  width: 100%;
+}
+
+.site-palette-group {
+  width: 100%;
+}
+
+.site-palette-button {
+  flex: 1 1 0;
+}
+
+.site-mobile-dock .site-search-launch,
+.site-mobile-dock .site-control-button {
+  width: auto;
 }
 
 .site-primary-nav {
   display: grid;
-  gap: 0.45rem;
+  gap: 0.25rem;
 }
 
 .site-nav-link {
   display: block;
-  padding: 0.6rem 0.75rem;
-  border-radius: 0.9rem;
+  padding: 0.45rem 0.55rem;
+  border-radius: 0.75rem;
   color: inherit;
   text-decoration: none;
   border: 1px solid transparent;
+  font-size: 0.92rem;
 }
 
 .site-nav-link:hover {
@@ -392,19 +470,19 @@ body[data-reader-mode='true'] .site-right-rail {
 }
 
 .site-rail-section-title {
-  font-size: 0.8rem;
+  font-size: 0.74rem;
   font-weight: 700;
   letter-spacing: 0.08em;
   text-transform: uppercase;
   color: var(--muted);
-  margin-bottom: 0.55rem;
+  margin-bottom: 0.45rem;
 }
 
 .site-explorer-panel {
-  padding: 0.95rem 1rem;
+  padding: 0.8rem 0.85rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--surface-soft);
+  background: rgba(255, 255, 255, 0.03);
 }
 
 .site-explorer-tree,
@@ -420,25 +498,28 @@ body[data-reader-mode='true'] .site-right-rail {
 .site-explorer-tree,
 .site-explorer-children {
   display: grid;
-  gap: 0.35rem;
+  gap: 0.12rem;
 }
 
 .site-explorer-children {
-  margin-left: 1rem;
-  padding-left: 0.85rem;
+  margin-left: 0.7rem;
+  padding-left: 0.7rem;
   border-left: 1px solid var(--border);
 }
 
 .site-explorer-folder-row {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
-  gap: 0.4rem;
+  gap: 0.25rem;
   align-items: center;
 }
 
 .site-explorer-folder-toggle {
-  width: 2rem;
-  padding: 0.35rem 0;
+  width: 1.4rem;
+  min-width: 1.4rem;
+  padding: 0.2rem 0;
+  border-radius: 0.5rem;
+  font-size: 0.8rem;
 }
 
 .site-explorer-folder-toggle[aria-expanded='true'] {
@@ -450,10 +531,12 @@ body[data-reader-mode='true'] .site-right-rail {
 .site-explorer-folder-label {
   min-width: 0;
   display: block;
-  padding: 0.42rem 0.55rem;
-  border-radius: 0.8rem;
+  padding: 0.32rem 0.45rem;
+  border-radius: 0.65rem;
   color: inherit;
   text-decoration: none;
+  font-size: 0.9rem;
+  line-height: 1.35;
 }
 
 .site-explorer-folder-label {
@@ -471,12 +554,12 @@ body[data-reader-mode='true'] .site-right-rail {
 }
 
 .site-module-toolbar {
-  margin-bottom: 0.8rem;
+  margin-bottom: 0.7rem;
 }
 
 .site-panel {
   overflow: hidden;
-  margin-bottom: 0.9rem;
+  margin-bottom: 0.75rem;
 }
 
 .site-panel.is-hidden { display: none; }
@@ -487,7 +570,7 @@ body[data-reader-mode='true'] .site-right-rail {
   border: 0;
   border-bottom: 1px solid var(--border);
   background: transparent;
-  padding: 0.9rem 1rem;
+  padding: 0.75rem 0.9rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -498,7 +581,7 @@ body[data-reader-mode='true'] .site-right-rail {
 .site-panel.is-collapsed .site-panel-chevron { transform: rotate(-90deg); }
 
 .site-panel-body {
-  padding: 0.9rem 1rem 1rem;
+  padding: 0.8rem 0.9rem 0.9rem;
 }
 
 .site-panel-list {
@@ -571,7 +654,7 @@ body[data-reader-mode='true'] .site-right-rail {
   max-width: 46rem;
   margin: 2rem auto 0;
   border-radius: var(--radius-lg);
-  padding: 1.15rem;
+  padding: 1rem;
   background: var(--bg-elevated);
 }
 
@@ -607,29 +690,71 @@ body[data-reader-mode='true'] .site-right-rail {
   border-radius: 0.2rem;
 }
 
-.site-local-graph-list {
-  display: grid;
-  gap: 0.75rem;
-  margin-top: 0.75rem;
+.site-graph-stage {
+  position: relative;
+  min-height: 15rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background:
+    radial-gradient(circle at top, rgba(31, 111, 130, 0.08), transparent 60%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent);
+  overflow: hidden;
 }
 
-.site-local-graph-list li {
-  border-bottom: 1px solid var(--border);
-  padding-bottom: 0.75rem;
+.site-graph-stage.is-global {
+  min-height: 34rem;
 }
 
-.site-local-graph-list li:last-child {
-  border-bottom: 0;
-  padding-bottom: 0;
-}
-
-.site-local-graph-direction {
+.site-graph-stage svg {
   display: block;
-  font-size: 0.78rem;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  width: 100%;
+  height: 100%;
+}
+
+.site-graph-empty,
+.site-graph-caption {
   color: var(--muted);
-  margin-bottom: 0.2rem;
+  font-size: 0.88rem;
+}
+
+.site-graph-empty {
+  margin: 0;
+  padding: 0.85rem 1rem;
+}
+
+.site-graph-caption {
+  margin: 0.7rem 0 0;
+}
+
+.site-graph-edge {
+  stroke: var(--border-strong);
+  stroke-width: 1.1;
+  stroke-opacity: 0.88;
+}
+
+.site-graph-node circle {
+  fill: var(--surface-strong);
+  stroke: var(--accent);
+  stroke-width: 1.4;
+}
+
+.site-graph-node.is-current circle {
+  fill: var(--accent);
+  stroke: var(--accent-strong);
+}
+
+.site-graph-node text {
+  fill: var(--text);
+  font-size: 11px;
+  paint-order: stroke;
+  stroke: var(--bg-elevated);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+}
+
+.site-graph-node.is-current text {
+  fill: #fff;
+  font-weight: 700;
 }
 
 .site-visually-hidden {
@@ -673,6 +798,14 @@ body[data-reader-mode='true'] .site-right-rail {
 .math.math-inline { white-space: nowrap; }
 .math.math-display { display: block; overflow-x: auto; padding: 0.5rem 0; }
 
+.site-main input[type='checkbox'] {
+  width: 0.95rem;
+  height: 0.95rem;
+  margin-right: 0.55rem;
+  accent-color: var(--accent);
+  transform: translateY(0.08rem);
+}
+
 .site-callout {
   margin-top: 1rem;
   border-left: 4px solid var(--accent);
@@ -710,14 +843,9 @@ body[data-reader-mode='true'] .site-right-rail {
 body[data-reader-mode='true'] .site-footer,
 body[data-reader-mode='true'] .site-primary-nav,
 body[data-reader-mode='true'] .site-explorer-panel,
-body[data-reader-mode='true'] .site-toolbar-toggle,
+body[data-reader-mode='true'] .site-mobile-dock,
 body[data-reader-mode='true'] [data-site-search-open] {
   display: none !important;
-}
-
-body[data-reader-mode='true'] .site-toolbar-bar {
-  max-width: min(100%, var(--content-max));
-  margin-inline: auto;
 }
 
 body[data-reader-mode='true'] .site-main {
@@ -733,13 +861,17 @@ input:focus-visible {
 
 @media (max-width: 1240px) {
   :root {
-    --left-rail-width: 17.5rem;
-    --right-rail-width: 18.5rem;
+    --left-rail-width: 16.5rem;
+    --right-rail-width: 16rem;
   }
 }
 
 @media (max-width: 960px) {
   .site-shell { padding-inline: 0.8rem; }
+
+  .site-mobile-dock {
+    display: flex;
+  }
 
   .site-layout {
     grid-template-columns: 1fr !important;
@@ -751,12 +883,10 @@ input:focus-visible {
     position: fixed;
     top: 0.75rem;
     bottom: 0.75rem;
-    width: min(22rem, calc(100vw - 1.5rem));
+    width: min(18rem, calc(100vw - 1.5rem));
     max-height: none;
-    padding: 4.8rem 0.7rem 0.7rem;
+    padding: 0;
     background: var(--bg-elevated);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
     box-shadow: 0 28px 60px rgba(0, 0, 0, 0.28);
     overflow: auto;
     z-index: 60;
@@ -939,14 +1069,26 @@ const DEFAULT_THEME_JS: &str = r#"(() => {
   const explorerTree = document.querySelector('.site-explorer-tree');
   const explorerUsesSavedState = explorerTree?.dataset.siteSavedState === 'true';
   const explorerFolderClick = explorerTree?.dataset.siteFolderClick || 'link';
+  const explorerFolderToggles = new Map(
+    [...document.querySelectorAll('[data-site-explorer-folder-toggle]')].map((toggle) => [
+      toggle.getAttribute('data-site-explorer-folder-toggle'),
+      toggle,
+    ])
+  );
+  const explorerFolderBodies = new Map(
+    [...document.querySelectorAll('[data-site-explorer-folder-body]')].map((panel) => [
+      panel.getAttribute('data-site-explorer-folder-body'),
+      panel,
+    ])
+  );
   let explorerState = readJsonStorage(storageKey('explorer-folders'), {});
   const persistExplorerState = () => {
     if (!explorerUsesSavedState) return;
     writeStorage(storageKey('explorer-folders'), JSON.stringify(explorerState));
   };
   const setExplorerFolderOpen = (folderPath, open, persist) => {
-    const toggle = document.querySelector(`[data-site-explorer-folder-toggle="${CSS.escape(folderPath)}"]`);
-    const bodyNode = document.querySelector(`[data-site-explorer-folder-body="${CSS.escape(folderPath)}"]`);
+    const toggle = explorerFolderToggles.get(folderPath);
+    const bodyNode = explorerFolderBodies.get(folderPath);
     if (!toggle || !bodyNode) return;
     toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
     bodyNode.hidden = !open;
@@ -1021,9 +1163,7 @@ const DEFAULT_THEME_JS: &str = r#"(() => {
     if (folderLabel && explorerFolderClick === 'collapse') {
       const folderPath = folderLabel.getAttribute('data-site-explorer-folder-label');
       if (!folderPath) return;
-      const toggle = document.querySelector(
-        `[data-site-explorer-folder-toggle="${CSS.escape(folderPath)}"]`
-      );
+      const toggle = explorerFolderToggles.get(folderPath);
       const open = toggle?.getAttribute('aria-expanded') === 'true';
       setExplorerFolderOpen(folderPath, !open, true);
     }
@@ -1054,32 +1194,109 @@ const DEFAULT_THEME_JS: &str = r#"(() => {
       if (event.target === searchDialog) closeSearch();
     });
   }
+  const isSearchTokenChar = (char) => /[0-9]/.test(char) || char.toLowerCase() !== char.toUpperCase();
+  const tokenizeSearchQuery = (value) => {
+    const tokens = [];
+    let current = '';
+    for (const char of String(value).toLowerCase()) {
+      if (isSearchTokenChar(char)) current += char;
+      else if (current) {
+        tokens.push(current);
+        current = '';
+      }
+    }
+    if (current) tokens.push(current);
+    return tokens;
+  };
   if (searchInput && searchResults && searchAsset) {
-    let entries = [];
+    let searchDocuments = [];
+    let searchDocumentsById = new Map();
+    let searchTerms = {};
+    let searchTermList = [];
+    let averageLength = 1;
+    let searchReady = false;
+    let searchFailed = false;
     fetch(searchAsset)
       .then((response) => (response.ok ? response.json() : null))
       .then((payload) => {
-        entries = payload?.entries || [];
+        searchDocuments = payload?.documents || [];
+        searchDocumentsById = new Map(searchDocuments.map((document) => [document.id, document]));
+        searchTerms = payload?.terms || {};
+        searchTermList = Object.keys(searchTerms);
+        averageLength = payload?.average_length || 1;
+        searchReady = true;
+        renderSearchResults();
       })
-      .catch(() => {});
+      .catch(() => {
+        searchFailed = true;
+        renderSearchResults();
+      });
+    const searchHits = (query) => {
+      const tokens = tokenizeSearchQuery(query);
+      if (!tokens.length || !searchDocuments.length) return [];
+      const scores = new Map();
+      const matchCounts = new Map();
+      for (const token of tokens) {
+        const candidateTerms = searchTerms[token]
+          ? [token]
+          : searchTermList.filter((term) => term.startsWith(token)).slice(0, 32);
+        const matchedDocuments = new Set();
+        for (const term of candidateTerms) {
+          const postings = searchTerms[term];
+          if (!Array.isArray(postings) || !postings.length) continue;
+          const idf = Math.log(
+            1 + (searchDocuments.length - postings.length + 0.5) / (postings.length + 0.5)
+          );
+          for (const posting of postings) {
+            const document = searchDocumentsById.get(posting.id);
+            if (!document) continue;
+            const tf = Math.max(1, posting.tf || 1);
+            const lengthRatio = averageLength > 0 ? document.length / averageLength : 1;
+            const score =
+              idf * ((tf * 2.2) / (tf + 1.2 * (0.25 + 0.75 * lengthRatio)));
+            scores.set(posting.id, (scores.get(posting.id) || 0) + score);
+            matchedDocuments.add(posting.id);
+          }
+        }
+        for (const documentId of matchedDocuments) {
+          matchCounts.set(documentId, (matchCounts.get(documentId) || 0) + 1);
+        }
+      }
+      return [...scores.entries()]
+        .sort((left, right) => {
+          const rightMatches = matchCounts.get(right[0]) || 0;
+          const leftMatches = matchCounts.get(left[0]) || 0;
+          if (rightMatches !== leftMatches) return rightMatches - leftMatches;
+          if (right[1] !== left[1]) return right[1] - left[1];
+          const rightDocument = searchDocumentsById.get(right[0]);
+          const leftDocument = searchDocumentsById.get(left[0]);
+          return (leftDocument?.title || '').localeCompare(rightDocument?.title || '');
+        })
+        .slice(0, 20)
+        .map(([documentId]) => searchDocumentsById.get(documentId))
+        .filter(Boolean);
+    };
     const renderSearchResults = () => {
-      const query = searchInput.value.trim().toLowerCase();
-      if (!query) {
+      const rawQuery = searchInput.value.trim();
+      if (!rawQuery) {
         searchResults.innerHTML = '<li>Type to search the published site.</li>';
         return;
       }
-      const hits = entries
-        .filter((entry) =>
-          `${entry.title} ${entry.content} ${entry.tags.join(' ')}`.toLowerCase().includes(query)
-        )
-        .slice(0, 20);
+      if (!searchReady) {
+        searchResults.innerHTML = searchFailed
+          ? '<li>Search index could not be loaded.</li>'
+          : '<li>Loading search index…</li>';
+        return;
+      }
+      const hits = searchHits(rawQuery);
       if (!hits.length) {
         searchResults.innerHTML = '<li>No matching notes in the published subset.</li>';
         return;
       }
       searchResults.innerHTML = hits
         .map(
-          (hit) => `<li><a href="${hit.url}">${highlightText(hit.title, query)}</a><div>${highlightText(hit.excerpt, query)}</div></li>`
+          (hit) =>
+            `<li><a href="${hit.url}">${highlightText(hit.title, rawQuery)}</a><div>${highlightText(hit.excerpt || hit.preview || '', rawQuery)}</div></li>`
         )
         .join('');
     };
@@ -1109,41 +1326,175 @@ const DEFAULT_THEME_JS: &str = r#"(() => {
   });
 
   const graphAsset = body.dataset.graphAsset;
-  const localGraphCards = [...document.querySelectorAll('[data-site-local-graph]')];
-  if (graphAsset && localGraphCards.length) {
+  const graphCanvases = [...document.querySelectorAll('[data-site-graph-canvas]')];
+  const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+  const degreesForGraph = (nodes, edges) => {
+    const degrees = new Map(nodes.map((node) => [node.path, 0]));
+    for (const edge of edges) {
+      degrees.set(edge.source, (degrees.get(edge.source) || 0) + 1);
+      degrees.set(edge.target, (degrees.get(edge.target) || 0) + 1);
+    }
+    return degrees;
+  };
+  const buildGraphLayout = (nodes, edges, width, height, pinnedPath) => {
+    const positions = new Map();
+    const nodeCount = Math.max(nodes.length, 1);
+    const radius = Math.min(width, height) * 0.34;
+    nodes.forEach((node, index) => {
+      const angle = (index / nodeCount) * Math.PI * 2;
+      positions.set(node.path, {
+        x: width / 2 + Math.cos(angle) * radius,
+        y: height / 2 + Math.sin(angle) * radius,
+      });
+    });
+    if (pinnedPath && positions.has(pinnedPath)) {
+      positions.set(pinnedPath, { x: width / 2, y: height / 2 });
+    }
+    for (let step = 0; step < 70; step += 1) {
+      const forces = new Map(nodes.map((node) => [node.path, { x: 0, y: 0 }]));
+      for (let i = 0; i < nodes.length; i += 1) {
+        for (let j = i + 1; j < nodes.length; j += 1) {
+          const left = positions.get(nodes[i].path);
+          const right = positions.get(nodes[j].path);
+          if (!left || !right) continue;
+          const dx = right.x - left.x;
+          const dy = right.y - left.y;
+          const distanceSquared = Math.max(dx * dx + dy * dy, 0.01);
+          const force = 1200 / distanceSquared;
+          const distance = Math.sqrt(distanceSquared);
+          const ux = dx / distance;
+          const uy = dy / distance;
+          forces.get(nodes[i].path).x -= ux * force;
+          forces.get(nodes[i].path).y -= uy * force;
+          forces.get(nodes[j].path).x += ux * force;
+          forces.get(nodes[j].path).y += uy * force;
+        }
+      }
+      for (const edge of edges) {
+        const source = positions.get(edge.source);
+        const target = positions.get(edge.target);
+        if (!source || !target) continue;
+        const dx = target.x - source.x;
+        const dy = target.y - source.y;
+        const distance = Math.max(Math.sqrt(dx * dx + dy * dy), 0.01);
+        const spring = (distance - 88) * 0.018;
+        const ux = dx / distance;
+        const uy = dy / distance;
+        forces.get(edge.source).x += ux * spring;
+        forces.get(edge.source).y += uy * spring;
+        forces.get(edge.target).x -= ux * spring;
+        forces.get(edge.target).y -= uy * spring;
+      }
+      for (const node of nodes) {
+        if (node.path === pinnedPath) {
+          positions.set(node.path, { x: width / 2, y: height / 2 });
+          continue;
+        }
+        const force = forces.get(node.path);
+        const current = positions.get(node.path);
+        const centerX = (width / 2 - current.x) * 0.015;
+        const centerY = (height / 2 - current.y) * 0.015;
+        positions.set(node.path, {
+          x: clamp(current.x + force.x + centerX, 20, width - 20),
+          y: clamp(current.y + force.y + centerY, 20, height - 20),
+        });
+      }
+    }
+    return positions;
+  };
+  const renderGraphCanvas = (canvas, nodes, edges, currentPath, globalMode) => {
+    if (!nodes.length) {
+      canvas.innerHTML = '<p class="site-graph-empty">No published graph data is available for this view.</p>';
+      return;
+    }
+    const width = globalMode ? 980 : 360;
+    const height = globalMode ? 560 : 260;
+    const degrees = degreesForGraph(nodes, edges);
+    const positions = buildGraphLayout(nodes, edges, width, height, currentPath);
+    const labelLimit = globalMode ? 28 : nodes.length;
+    const labeledPaths = new Set(
+      [...nodes]
+        .sort((left, right) => {
+          const rightCurrent = right.path === currentPath ? 1 : 0;
+          const leftCurrent = left.path === currentPath ? 1 : 0;
+          if (rightCurrent !== leftCurrent) return rightCurrent - leftCurrent;
+          return (degrees.get(right.path) || 0) - (degrees.get(left.path) || 0);
+        })
+        .slice(0, labelLimit)
+        .map((node) => node.path)
+    );
+    const edgeMarkup = edges
+      .map((edge) => {
+        const source = positions.get(edge.source);
+        const target = positions.get(edge.target);
+        if (!source || !target) return '';
+        return `<line class="site-graph-edge" x1="${source.x.toFixed(2)}" y1="${source.y.toFixed(2)}" x2="${target.x.toFixed(2)}" y2="${target.y.toFixed(2)}" />`;
+      })
+      .join('');
+    const nodeMarkup = nodes
+      .map((node) => {
+        const position = positions.get(node.path);
+        if (!position) return '';
+        const isCurrent = node.path === currentPath;
+        const radius = clamp(5 + (degrees.get(node.path) || 0) * 0.28, 5, isCurrent ? 11 : 9);
+        const label = labeledPaths.has(node.path)
+          ? `<text x="${(position.x + radius + 6).toFixed(2)}" y="${(position.y + 4).toFixed(2)}">${escapeHtml(node.title || node.path)}</text>`
+          : '';
+        return [
+          `<a class="site-graph-node${isCurrent ? ' is-current' : ''}" href="${escapeHtml(node.url)}">`,
+          `<title>${escapeHtml(node.title || node.path)}</title>`,
+          `<circle cx="${position.x.toFixed(2)}" cy="${position.y.toFixed(2)}" r="${radius.toFixed(2)}" />`,
+          label,
+          '</a>',
+        ].join('');
+      })
+      .join('');
+    canvas.innerHTML = `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Published note graph">${edgeMarkup}${nodeMarkup}</svg>`;
+  };
+  if (graphAsset && graphCanvases.length) {
     fetch(graphAsset)
       .then((response) => (response.ok ? response.json() : null))
       .then((payload) => {
         const nodes = payload?.nodes || [];
         const edges = payload?.edges || [];
         const nodeByPath = new Map(nodes.map((node) => [node.path, node]));
-        for (const card of localGraphCards) {
-          const notePath = card.getAttribute('data-site-note-path') || body.dataset.currentNotePath;
-          const list = card.querySelector('[data-site-local-graph-list]');
-          if (!notePath || !list) continue;
-          const neighbors = [];
-          for (const edge of edges) {
-            if (edge.source === notePath && nodeByPath.has(edge.target)) {
-              neighbors.push({ direction: 'Outgoing', node: nodeByPath.get(edge.target) });
-            } else if (edge.target === notePath && nodeByPath.has(edge.source)) {
-              neighbors.push({ direction: 'Backlink', node: nodeByPath.get(edge.source) });
-            }
-          }
-          if (!neighbors.length) {
-            list.innerHTML = '<li>No published neighbors for this note.</li>';
+        const globalDegrees = degreesForGraph(nodes, edges);
+        for (const canvas of graphCanvases) {
+          const mode = canvas.getAttribute('data-site-graph-canvas') || 'local';
+          if (mode === 'global') {
+            const selectedNodes = [...nodes]
+              .sort((left, right) => {
+                const degreeDelta =
+                  (globalDegrees.get(right.path) || 0) - (globalDegrees.get(left.path) || 0);
+                if (degreeDelta !== 0) return degreeDelta;
+                return (left.title || left.path).localeCompare(right.title || right.path);
+              })
+              .slice(0, 180);
+            const selectedPaths = new Set(selectedNodes.map((node) => node.path));
+            const selectedEdges = edges.filter(
+              (edge) => selectedPaths.has(edge.source) && selectedPaths.has(edge.target)
+            );
+            renderGraphCanvas(canvas, selectedNodes, selectedEdges, null, true);
             continue;
           }
-          const unique = new Map();
-          for (const neighbor of neighbors) {
-            unique.set(`${neighbor.direction}:${neighbor.node.path}`, neighbor);
+
+          const notePath = canvas.getAttribute('data-site-note-path') || body.dataset.currentNotePath;
+          if (!notePath || !nodeByPath.has(notePath)) {
+            canvas.innerHTML = '<p class="site-graph-empty">This note has no published graph node.</p>';
+            continue;
           }
-          list.innerHTML = [...unique.values()]
-            .slice(0, 10)
-            .map(
-              ({ direction, node }) =>
-                `<li><span class="site-local-graph-direction">${direction}</span><a href="${node.url}">${escapeHtml(node.title || node.path)}</a></li>`
-            )
-            .join('');
+          const localPaths = new Set([notePath]);
+          for (const edge of edges) {
+            if (edge.source === notePath) localPaths.add(edge.target);
+            if (edge.target === notePath) localPaths.add(edge.source);
+          }
+          const localNodes = [...localPaths]
+            .map((path) => nodeByPath.get(path))
+            .filter(Boolean);
+          const localEdges = edges.filter(
+            (edge) => localPaths.has(edge.source) && localPaths.has(edge.target)
+          );
+          renderGraphCanvas(canvas, localNodes, localEdges, notePath, false);
         }
       })
       .catch(() => {});
@@ -1756,12 +2107,20 @@ struct SiteRenderOutcome {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct SearchIndexEntry {
+struct SearchIndexDocument {
+    id: usize,
     title: String,
     url: String,
     excerpt: String,
-    content: String,
+    preview: String,
     tags: Vec<String>,
+    length: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SearchIndexPosting {
+    id: usize,
+    tf: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1858,10 +2217,6 @@ where
     } = render_site_notes(paths, &plan, cached_state.as_ref(), &mut progress)?;
     rendered_notes.sort_by(|left, right| left.route.url_path.cmp(&right.route.url_path));
 
-    let routes_by_path = rendered_notes
-        .iter()
-        .map(|note| (note.source_path.clone(), note.route.clone()))
-        .collect::<HashMap<_, _>>();
     let route_urls = rendered_notes
         .iter()
         .map(|note| (note.source_path.clone(), note.route.url_path.clone()))
@@ -2067,7 +2422,7 @@ where
             0,
             None,
         );
-        let search_index = build_search_index(paths, &plan.notes, &routes_by_path)?;
+        let search_index = build_search_index(&rendered_notes);
         let search_json =
             serde_json::to_string_pretty(&search_index).map_err(AppError::operation)?;
         let search_path = output_dir.join("assets/search-index.json");
@@ -2084,7 +2439,7 @@ where
                     concat!(
                         "<section class=\"site-search-card\" aria-labelledby=\"site-search-title\">",
                         "<h2 id=\"site-search-title\">Search published notes</h2>",
-                        "<p class=\"site-meta\">Use the toolbar search button or press / anywhere in the site. This page keeps the same search UI available as a full-screen mobile sheet.</p>",
+                        "<p class=\"site-meta\">Use the left rail search button or press / anywhere in the site. This page keeps the same search UI available as a focused mobile sheet.</p>",
                         "<button class=\"site-search-launch\" type=\"button\" data-site-search-open>Open search</button>",
                         "</section>"
                     ),
@@ -2109,13 +2464,14 @@ where
             if write_output_file(&graph_path, &graph_json)? {
                 changed_files.insert("assets/graph.json".to_string());
             }
-            let graph_card = format!(
-                concat!(
-                    "<section class=\"site-graph-card\"><h2>Published graph</h2>",
-                    "<p>This build includes a filtered graph asset reused by later WebUI/wiki work.</p>",
-                    "<pre><code>{}</code></pre></section>"
-                ),
-                escape_html(&graph_json)
+            let graph_card = concat!(
+                "<section class=\"site-graph-card\">",
+                "<h2>Published graph</h2>",
+                "<p class=\"site-meta\">Explore the published subset as a client-side graph. The graph page shows the highest-degree published notes first, while note pages render a local neighborhood in the right rail.</p>",
+                "<div class=\"site-graph-stage is-global\" data-site-graph-canvas=\"global\">",
+                "<p class=\"site-graph-empty\">Loading published graph…</p>",
+                "</div>",
+                "</section>"
             );
             if write_output_file(
                 &output_dir.join("graph/index.html"),
@@ -2123,7 +2479,7 @@ where
                     &context,
                     "Graph",
                     "Graph export",
-                    &graph_card,
+                    graph_card,
                     &navigation_tree,
                     &plan.profile,
                     false,
@@ -2285,10 +2641,6 @@ pub fn build_frontend_bundle(
     let mut rendered_notes = render_site_notes(paths, &plan, None, &mut |_| {})?.rendered_notes;
     rendered_notes.sort_by(|left, right| left.route.url_path.cmp(&right.route.url_path));
 
-    let routes_by_path = rendered_notes
-        .iter()
-        .map(|note| (note.source_path.clone(), note.route.clone()))
-        .collect::<HashMap<_, _>>();
     let context = RenderContext {
         profile: plan.profile.name.clone(),
         site_title: plan.profile.title.clone(),
@@ -2502,7 +2854,7 @@ pub fn build_frontend_bundle(
 
     let search_index_path = if plan.profile.search {
         let relative_path = "assets/search-index.json".to_string();
-        let search_index = build_search_index(paths, &plan.notes, &routes_by_path)?;
+        let search_index = build_search_index(&rendered_notes);
         write_serialized_json_output(
             &output_dir,
             &relative_path,
@@ -3311,10 +3663,12 @@ fn build_site_render_shared(plan: &SitePlan) -> SiteRenderShared<'_> {
         .collect::<HashMap<_, _>>();
     let published_paths = route_map.keys().cloned().collect::<HashSet<_>>();
     let asset_hrefs = collect_asset_links(&plan.links, &plan.profile.deploy_path);
-    let note_hrefs = route_map
-        .iter()
-        .map(|(path, route)| (path.clone(), route.url_path.clone()))
-        .collect::<HashMap<_, _>>();
+    let mut note_hrefs = HashMap::new();
+    for (path, route) in &route_map {
+        for alias in note_route_aliases(path) {
+            note_hrefs.insert(alias, route.url_path.clone());
+        }
+    }
     let tag_hrefs = build_tag_href_map(&plan.notes, &plan.profile.deploy_path);
     let links_by_source = links_by_source(&plan.links);
     let backlinks = backlinks_by_target(&plan.links, &published_paths);
@@ -3937,12 +4291,7 @@ fn build_navigation_tree(deploy_path: &str, notes: &[RenderedNote]) -> Vec<SiteN
     let mut root = FolderBuilder::default();
     for note in notes {
         let folder = folder_for_note(&note.source_path);
-        let file_name = note
-            .source_path
-            .rsplit('/')
-            .next()
-            .unwrap_or(&note.source_path);
-        let is_index_note = !folder.is_empty() && file_name.eq_ignore_ascii_case("index.md");
+        let folder_note = folder_note_path(&note.source_path);
         let mut current = &mut root;
         if !folder.is_empty() {
             let mut assembled = String::new();
@@ -3964,7 +4313,8 @@ fn build_navigation_tree(deploy_path: &str, notes: &[RenderedNote]) -> Vec<SiteN
                     });
             }
         }
-        if is_index_note {
+        if folder_note.as_deref() == Some(folder.as_str()) {
+            current.title.clone_from(&note.title);
             current.url.clone_from(&note.route.url_path);
             current.source_path = Some(note.source_path.clone());
         } else {
@@ -4137,11 +4487,14 @@ fn render_local_graph_module(note: &RenderedNote) -> SiteShellModule {
         body_html: format!(
             concat!(
                 "<div class=\"site-panel-copy\" data-site-local-graph data-site-note-path=\"{}\">",
-                "<p class=\"site-meta\">Published neighbors for this note, powered by the same graph asset used elsewhere in Vulcan.</p>",
-                "<ul class=\"site-local-graph-list\" data-site-local-graph-list><li>Loading local graph…</li></ul>",
+                "<div class=\"site-graph-stage\" data-site-graph-canvas=\"local\" data-site-note-path=\"{}\">",
+                "<p class=\"site-graph-empty\">Loading local graph…</p>",
+                "</div>",
+                "<p class=\"site-graph-caption\">Direct published links and backlinks for this note.</p>",
                 "</div>"
             ),
-            escape_html(&note.source_path)
+            escape_html(&note.source_path),
+            escape_html(&note.source_path),
         ),
     }
 }
@@ -4214,12 +4567,11 @@ fn render_note_document(
     );
     let body = format!(
         concat!(
-            "<article class=\"site-main\">{}<div class=\"site-meta\">Updated from {}</div>",
+            "<article class=\"site-main\">{}",
             "{}{}{}{}{}{}{}{}",
             "</article>"
         ),
         breadcrumbs,
-        escape_html(&note.source_path),
         tags,
         note_body,
         diagnostics,
@@ -4508,7 +4860,7 @@ fn render_document_shell(
         String::new()
     };
     let search_button = if profile.search {
-        "<button type=\"button\" class=\"site-control-button\" data-site-search-open aria-haspopup=\"dialog\">Search</button>"
+        "<button type=\"button\" class=\"site-control-button site-search-launch\" data-site-search-open aria-haspopup=\"dialog\">Search</button>"
     } else {
         ""
     };
@@ -4565,12 +4917,10 @@ fn render_document_shell(
     };
     let logo = render_logo(context, profile);
     let default_toolbar = render_default_toolbar(
-        context,
         search_button,
         &reader_mode_toggle,
         profile.shell.left_rail,
         profile.shell.right_rail && !modules.is_empty(),
-        &logo,
     );
     let default_left_rail = if profile.shell.left_rail {
         render_default_left_rail(
@@ -4580,6 +4930,7 @@ fn render_document_shell(
             search_button,
             &palette_controls,
             &reader_mode_toggle,
+            profile.shell.right_rail && !modules.is_empty(),
             &explorer,
             &logo,
         )
@@ -4739,36 +5090,30 @@ fn render_page_title(
 }
 
 fn render_default_toolbar(
-    context: &RenderContext,
     search_button: &str,
     reader_mode_toggle: &str,
     left_rail_enabled: bool,
     right_rail_enabled: bool,
-    logo: &str,
 ) -> String {
     let left_toggle = if left_rail_enabled {
-        "<button class=\"site-toolbar-toggle\" type=\"button\" data-site-rail-toggle=\"left\" aria-controls=\"site-left-rail\" aria-expanded=\"false\">Browse</button>"
+        "<button class=\"site-control-button\" type=\"button\" data-site-rail-toggle=\"left\" aria-controls=\"site-left-rail\" aria-expanded=\"false\">Browse</button>"
     } else {
         ""
     };
     let right_toggle = if right_rail_enabled {
-        "<button class=\"site-toolbar-toggle\" type=\"button\" data-site-rail-toggle=\"right\" aria-controls=\"site-right-rail\" aria-expanded=\"false\">Panels</button>"
+        "<button class=\"site-control-button\" type=\"button\" data-site-rail-toggle=\"right\" aria-controls=\"site-right-rail\" aria-expanded=\"false\">Panels</button>"
     } else {
         ""
     };
+    if left_toggle.is_empty()
+        && search_button.is_empty()
+        && reader_mode_toggle.is_empty()
+        && right_toggle.is_empty()
+    {
+        return String::new();
+    }
     format!(
-        concat!(
-            "<header class=\"site-toolbar-bar\">{}",
-            "<a class=\"site-toolbar-home\" href=\"{}\">{}<span>{}</span></a>",
-            "<div class=\"site-toolbar-actions\">{}{}{}</div></header>"
-        ),
-        left_toggle,
-        escape_html(&site_root_href(&context.deploy_path)),
-        logo,
-        escape_html(&context.site_title),
-        search_button,
-        reader_mode_toggle,
-        right_toggle,
+        "<div class=\"site-mobile-dock\" aria-label=\"Site controls\">{left_toggle}{search_button}{reader_mode_toggle}{right_toggle}</div>",
     )
 }
 
@@ -4779,22 +5124,29 @@ fn render_default_left_rail(
     search_button: &str,
     palette_controls: &str,
     reader_mode_toggle: &str,
+    right_rail_enabled: bool,
     explorer: &str,
     logo: &str,
 ) -> String {
+    let panels_toggle = if right_rail_enabled {
+        "<button class=\"site-control-button\" type=\"button\" data-site-rail-toggle=\"right\" aria-controls=\"site-right-rail\" aria-expanded=\"false\">Panels</button>"
+    } else {
+        ""
+    };
     let explorer_section = if explorer.is_empty() {
         String::new()
     } else {
         format!(
-            "<section class=\"site-rail-section site-explorer-panel\"><div class=\"site-rail-section-title\">Explorer</div>{explorer}</section>"
+            "<section class=\"site-rail-section site-explorer-panel\"><div class=\"site-rail-section-title\">Browse</div>{explorer}</section>"
         )
     };
     format!(
         concat!(
             "<div class=\"site-rail-shell\">",
-            "<div class=\"site-brand-card\">{}<div><p class=\"site-brand-title\"><a href=\"{}\">{}</a></p><p class=\"site-meta\">Profile: {}</p></div></div>",
-            "<div class=\"site-rail-controls\">{}{}</div>",
-            "{}",
+            "<div class=\"site-rail-header\">",
+            "<div class=\"site-brand-card\">{}<div><p class=\"site-brand-title\"><a href=\"{}\">{}</a></p><p class=\"site-meta\">{}</p></div></div>",
+            "<div class=\"site-rail-controls\">{}<div class=\"site-rail-button-row\">{}{}</div>{}</div>",
+            "</div>",
             "<nav class=\"site-primary-nav\" aria-label=\"Primary\">{}</nav>",
             "{}",
             "</div>"
@@ -4802,10 +5154,11 @@ fn render_default_left_rail(
         logo,
         escape_html(&site_root_href(&context.deploy_path)),
         escape_html(&context.site_title),
-        escape_html(&profile.name),
+        escape_html(&format!("{} profile", profile.name)),
         search_button,
-        palette_controls,
         reader_mode_toggle,
+        panels_toggle,
+        palette_controls,
         nav,
         explorer_section,
     )
@@ -5308,42 +5661,67 @@ fn build_related_manifest(
         .collect()
 }
 
-fn build_search_index(
-    paths: &VaultPaths,
-    notes: &[SitePlanNote],
-    routes_by_path: &HashMap<String, SiteRoute>,
-) -> Result<Value, AppError> {
-    let published = notes
-        .iter()
-        .map(|note| note.note.document_path.as_str())
-        .collect::<HashSet<_>>();
-    let note_tags = notes
-        .iter()
-        .map(|note| (note.note.document_path.as_str(), note.note.tags.clone()))
-        .collect::<HashMap<_, _>>();
-    let static_index = export_static_search_index(paths).map_err(AppError::operation)?;
-    let entries = static_index
-        .entries
+fn build_search_index(rendered_notes: &[RenderedNote]) -> Value {
+    let mut documents = Vec::with_capacity(rendered_notes.len());
+    let mut terms = BTreeMap::<String, BTreeMap<usize, u16>>::new();
+    let mut total_length = 0usize;
+
+    for (id, note) in rendered_notes.iter().enumerate() {
+        let plain_text = strip_html_to_text(&note.html);
+        let preview = if note.excerpt.trim().is_empty() {
+            plain_text.chars().take(240).collect::<String>()
+        } else {
+            note.excerpt.clone()
+        };
+        let length = tokenize_search_text(&plain_text).len().max(1);
+        total_length += length;
+
+        let mut frequencies = BTreeMap::<String, u16>::new();
+        accumulate_search_terms(&mut frequencies, &note.title, 4);
+        accumulate_search_terms(&mut frequencies, &note.excerpt, 2);
+        accumulate_search_terms(&mut frequencies, &plain_text, 1);
+        for tag in &note.tags {
+            accumulate_search_terms(&mut frequencies, tag, 3);
+        }
+
+        for (term, tf) in frequencies {
+            terms.entry(term).or_default().insert(id, tf);
+        }
+
+        documents.push(SearchIndexDocument {
+            id,
+            title: note.title.clone(),
+            url: note.route.url_path.clone(),
+            excerpt: note.excerpt.clone(),
+            preview,
+            tags: note.tags.clone(),
+            length,
+        });
+    }
+
+    let average_length = if documents.is_empty() {
+        1.0
+    } else {
+        f64::from(u32::try_from(total_length).unwrap_or(u32::MAX))
+            / f64::from(u32::try_from(documents.len()).unwrap_or(u32::MAX))
+    };
+    let serialized_terms = terms
         .into_iter()
-        .filter(|entry| published.contains(entry.document_path.as_str()))
-        .filter_map(|entry| {
-            let route = routes_by_path.get(&entry.document_path)?;
-            let title = route.title.clone();
-            let excerpt = excerpt_from_markdown(&entry.content);
-            let tags = note_tags
-                .get(entry.document_path.as_str())
-                .cloned()
-                .unwrap_or_default();
-            Some(SearchIndexEntry {
-                title,
-                url: route.url_path.clone(),
-                excerpt,
-                content: entry.content,
-                tags,
-            })
+        .map(|(term, postings)| {
+            let entries = postings
+                .into_iter()
+                .map(|(id, tf)| SearchIndexPosting { id, tf })
+                .collect::<Vec<_>>();
+            (term, entries)
         })
-        .collect::<Vec<_>>();
-    Ok(serde_json::json!({ "version": 1, "entries": entries }))
+        .collect::<BTreeMap<_, _>>();
+
+    serde_json::json!({
+        "version": 2,
+        "average_length": average_length,
+        "documents": documents,
+        "terms": serialized_terms,
+    })
 }
 
 fn build_graph_asset(
@@ -5643,6 +6021,7 @@ fn is_internal_asset_link(link: &ExportLinkRecord) -> bool {
 
 fn note_route_slug(note: &NoteRecord, profile_name: &str) -> String {
     frontmatter_override(note, profile_name, "slug")
+        .or_else(|| folder_note_path(&note.document_path))
         .unwrap_or_else(|| trim_markdown_extension(&note.document_path).to_string())
 }
 
@@ -5779,6 +6158,39 @@ fn folder_for_note(path: &str) -> String {
     let path = normalize_path(path);
     path.rsplit_once('/')
         .map_or_else(String::new, |(folder, _)| folder.to_string())
+}
+
+fn folder_note_path(path: &str) -> Option<String> {
+    let normalized = normalize_path(path);
+    let (folder, file_name) = normalized.rsplit_once('/')?;
+    if folder.is_empty() {
+        return None;
+    }
+    if file_name.eq_ignore_ascii_case("index.md") {
+        return Some(folder.to_string());
+    }
+    let folder_name = folder.rsplit('/').next().unwrap_or(folder);
+    trim_markdown_extension(file_name)
+        .eq_ignore_ascii_case(folder_name)
+        .then_some(folder.to_string())
+}
+
+fn note_route_aliases(path: &str) -> Vec<String> {
+    let normalized = normalize_path(path);
+    let mut aliases = Vec::new();
+    let mut push_alias = |candidate: String| {
+        if !candidate.is_empty() && !aliases.contains(&candidate) {
+            aliases.push(candidate);
+        }
+    };
+    push_alias(normalized.clone());
+    if let Some(stem) = normalized.strip_suffix(".md") {
+        push_alias(stem.to_string());
+    }
+    if let Some(folder_note) = folder_note_path(&normalized) {
+        push_alias(folder_note);
+    }
+    aliases
 }
 
 fn folder_page_href(deploy_path: &str, folder: &str) -> String {
@@ -6509,6 +6921,68 @@ fn excerpt_from_markdown(source: &str) -> String {
     simplified.chars().take(220).collect::<String>()
 }
 
+fn strip_html_to_text(html: &str) -> String {
+    let mut text = String::new();
+    let mut in_tag = false;
+    let mut previous_was_space = true;
+    for ch in html.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                if !previous_was_space {
+                    text.push(' ');
+                    previous_was_space = true;
+                }
+            }
+            '>' => in_tag = false,
+            _ if in_tag => {}
+            _ if ch.is_whitespace() => {
+                if !previous_was_space {
+                    text.push(' ');
+                    previous_was_space = true;
+                }
+            }
+            _ => {
+                text.push(ch);
+                previous_was_space = false;
+            }
+        }
+    }
+    text.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .trim()
+        .to_string()
+}
+
+fn tokenize_search_text(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_alphanumeric() {
+            current.extend(ch.to_lowercase());
+        } else if !current.is_empty() {
+            tokens.push(std::mem::take(&mut current));
+        }
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    tokens
+}
+
+fn accumulate_search_terms(frequencies: &mut BTreeMap<String, u16>, text: &str, weight: u16) {
+    if weight == 0 {
+        return;
+    }
+    for token in tokenize_search_text(text) {
+        let entry = frequencies.entry(token).or_insert(0);
+        *entry = entry.saturating_add(weight);
+    }
+}
+
 fn escape_html(text: &str) -> String {
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
@@ -6986,7 +7460,20 @@ include_paths = ["Home", "Notes/Embed Note.md"]
         let search_html =
             fs::read_to_string(vault_root.join(".vulcan/site/public/search/index.html"))
                 .expect("search page should read");
+        let search_index = read_site_json(
+            &vault_root.join(".vulcan/site/public"),
+            "assets/search-index.json",
+        );
+        let graph_html =
+            fs::read_to_string(vault_root.join(".vulcan/site/public/graph/index.html"))
+                .expect("graph page should read");
         assert!(search_html.contains("site-search-input"));
+        assert_eq!(search_index["version"], 2);
+        assert_eq!(search_index["documents"].as_array().map(Vec::len), Some(2));
+        assert!(search_index["terms"]["dashboard"]
+            .as_array()
+            .is_some_and(|postings| !postings.is_empty()));
+        assert!(graph_html.contains(r#"data-site-graph-canvas="global""#));
         let note_route = report
             .routes
             .iter()
@@ -7103,6 +7590,7 @@ graph = true
         assert!(home_html.contains("assets/.vulcan/site/themes/reference/theme.css"));
         assert!(home_html.contains("assets/.vulcan/site/themes/reference/theme.js"));
         assert!(note_html.contains("data-site-local-graph"));
+        assert!(note_html.contains(r#"data-site-graph-canvas="local""#));
         assert!(note_html.contains("theme-right"));
         assert!(note_html.contains("note-before"));
         assert!(note_html.contains("Projects/Alpha.md"));
@@ -8115,7 +8603,8 @@ graph = false
         assert!(note_html.contains(r#"data-left-rail-enabled="true""#));
         assert!(note_html.contains(r#"id="site-left-rail""#));
         assert!(note_html.contains(r#"id="site-right-rail""#));
-        assert!(note_html.contains(r#"class="site-toolbar-bar""#));
+        assert!(note_html.contains(r#"class="site-mobile-dock""#));
+        assert!(!note_html.contains(r#"class="site-toolbar-bar""#));
         assert!(note_html.contains(r#"data-theme-mode="system""#));
         assert!(note_html.contains(r"data-reader-mode-toggle"));
         assert!(note_html.contains(r#"class="site-explorer-tree""#));
@@ -8179,6 +8668,7 @@ graph = false
             assert!(html.contains(r#"id="main-content""#));
             assert!(html.contains(r#"aria-label="Primary""#));
             assert!(html.contains(r#"aria-label="Page context""#));
+            assert!(html.contains(r#"class="site-mobile-dock""#));
         }
         assert_eq!(count_occurrences(&home_html, "<h1"), 1);
         assert_eq!(count_occurrences(&search_html, "<h1"), 1);
@@ -8382,6 +8872,87 @@ outgoing_links = false
         assert!(intro_html.contains(r#"data-site-module="toc""#));
         assert!(!intro_html.contains(r#"data-site-module="graph""#));
         assert!(!intro_html.contains(r#"data-site-module="backlinks""#));
+    }
+
+    #[test]
+    fn site_build_rewrites_markdown_links_and_supports_same_name_folder_notes() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should exist");
+        fs::create_dir_all(vault_root.join("Guides")).expect("guides dir should exist");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(
+            vault_root.join("Home.md"),
+            concat!(
+                "# Home\n\n",
+                "[Alpha](Projects/Alpha) and [Guides](Guides)\n\n",
+                "- [ ] Publish polish pass\n",
+            ),
+        )
+        .expect("home note should write");
+        fs::write(
+            vault_root.join("Projects/Alpha.md"),
+            "# Alpha\n\nProject note.\n",
+        )
+        .expect("alpha note should write");
+        fs::write(
+            vault_root.join("Guides/Guides.md"),
+            "# Guides\n\nFolder note.\n",
+        )
+        .expect("folder note should write");
+        fs::write(
+            vault_root.join("Guides/Intro.md"),
+            "# Intro\n\nGuide body.\n",
+        )
+        .expect("guide note should write");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Docs"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md", "Projects/Alpha.md", "Guides/Guides.md", "Guides/Intro.md"]
+search = false
+graph = false
+backlinks = false
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let report = build_site(
+            &VaultPaths::new(&vault_root),
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("site build should succeed");
+
+        let output_root = vault_root.join(".vulcan/site/public");
+        let home_html = read_site_text(&output_root, "index.html");
+        let navigation_tree = read_site_json(&output_root, "assets/navigation-tree.json");
+        let folder_note_route = report
+            .routes
+            .iter()
+            .find(|route| route.source_path.as_deref() == Some("Guides/Guides.md"))
+            .expect("same-name folder note route should exist");
+        let guides_node = navigation_tree
+            .as_array()
+            .and_then(|nodes| nodes.iter().find(|node| node["title"] == "Guides"))
+            .expect("guides folder should exist in navigation manifest");
+
+        assert!(home_html.contains(r#"href="/notes/projects/alpha/""#));
+        assert!(home_html.contains(r#"href="/notes/guides/""#));
+        assert!(home_html.contains(r#"type="checkbox""#));
+        assert_eq!(folder_note_route.url_path, "/notes/guides/");
+        assert_eq!(guides_node["source_path"], "Guides/Guides.md");
+        assert_eq!(guides_node["url"], "/notes/guides/");
+        assert!(guides_node["children"]
+            .as_array()
+            .is_some_and(|children| children.iter().any(|child| child["title"] == "Intro")));
     }
 
     #[test]

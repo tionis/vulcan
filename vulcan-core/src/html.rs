@@ -1646,21 +1646,39 @@ fn resolve_note_href(
     targets: &HashMap<String, String>,
 ) -> Option<String> {
     for key in resolve_lookup_keys(source_document_path, path_part) {
-        let Some(target) = targets
-            .get(&key)
-            .or_else(|| key.strip_suffix(".md").and_then(|stem| targets.get(stem)))
-        else {
-            continue;
-        };
-        let mut rewritten = target.clone();
-        if let Some(fragment) = fragment
-            .map(slugify_fragment)
-            .filter(|value| !value.is_empty())
-        {
-            rewritten.push('#');
-            rewritten.push_str(&fragment);
+        let mut candidates = vec![key.clone()];
+        let has_markdown_extension = Path::new(&key)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"));
+        if !has_markdown_extension {
+            candidates.push(format!("{key}.md"));
+            candidates.push(format!("{key}/index.md"));
+            if let Some(last_segment) = key.rsplit('/').next().filter(|segment| !segment.is_empty())
+            {
+                candidates.push(format!("{key}/{last_segment}.md"));
+            }
         }
-        return Some(rewritten);
+        if has_markdown_extension {
+            let stem = Path::new(&key).with_extension("");
+            let normalized = stem.to_string_lossy().replace('\\', "/");
+            if !normalized.is_empty() {
+                candidates.push(normalized);
+            }
+        }
+        for candidate in candidates {
+            let Some(target) = targets.get(&candidate) else {
+                continue;
+            };
+            let mut rewritten = target.clone();
+            if let Some(fragment) = fragment
+                .map(slugify_fragment)
+                .filter(|value| !value.is_empty())
+            {
+                rewritten.push('#');
+                rewritten.push_str(&fragment);
+            }
+            return Some(rewritten);
+        }
     }
     None
 }
@@ -1870,6 +1888,64 @@ mod tests {
         assert!(rendered.html.contains(r#"data-site-math="display""#));
         assert!(rendered.html.contains(r#"data-site-mermaid-source="true""#));
         assert!(rendered.html.contains(r#"class="language-mermaid""#));
+    }
+
+    #[test]
+    fn note_html_rewrites_markdown_paths_without_extensions() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should exist");
+        let paths = VaultPaths::new(&vault_root);
+        let link_targets = super::HtmlLinkTargets {
+            note_hrefs: std::collections::HashMap::from([
+                (
+                    "Projects/Alpha.md".to_string(),
+                    "/notes/projects/alpha/".to_string(),
+                ),
+                ("Guides/index.md".to_string(), "/notes/guides/".to_string()),
+            ]),
+            ..super::HtmlLinkTargets::default()
+        };
+
+        let rendered = render_vault_html(
+            &paths,
+            "[Alpha](Projects/Alpha) and [Guides](Guides)",
+            &HtmlRenderOptions {
+                source_path: Some("Home.md"),
+                full_document: false,
+                link_targets: Some(&link_targets),
+                ..HtmlRenderOptions::default()
+            },
+        );
+
+        assert!(rendered
+            .html
+            .contains(r#"<a href="/notes/projects/alpha/">Alpha</a>"#));
+        assert!(rendered
+            .html
+            .contains(r#"<a href="/notes/guides/">Guides</a>"#));
+    }
+
+    #[test]
+    fn note_html_renders_task_list_checkboxes() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should exist");
+        let paths = VaultPaths::new(&vault_root);
+
+        let rendered = render_vault_html(
+            &paths,
+            "- [ ] Todo\n- [x] Done\n",
+            &HtmlRenderOptions {
+                source_path: Some("Checklist.md"),
+                full_document: false,
+                ..HtmlRenderOptions::default()
+            },
+        );
+
+        assert!(rendered.html.contains(r#"type="checkbox""#));
+        assert!(rendered.html.contains("Todo"));
+        assert!(rendered.html.contains("Done"));
     }
 
     #[test]

@@ -4080,7 +4080,7 @@ This is a follow-on UX/theming expansion on top of the completed 9.20 publicatio
 
 **Why this follow-on exists:** The current 9.20 output proves the renderer/publication pipeline, but the shell contract is still too small and the default UX is not yet competitive with Quartz, Obsidian-like knowledge gardens, or Material-style documentation sites. This follow-on is about site information architecture, shell state, and theme/template ergonomics, not about redoing parsing, route planning, or publish semantics.
 
-**Current landing (2026-05-06):** Shell contract v2, structured shell/navigation/module profile config, folder-note-aware explorer manifests, palette + reader mode controls, persisted rail/module/folder state, updated reference theme examples, and frontend-bundle parity/docs are now in tree. Remaining follow-up work is mainly richer landing/list-page design, per-page module suppression, deeper right-rail defaults, and broader UX proofing such as screenshots/browser-driven interaction coverage.
+**Current landing (2026-05-06):** Shell contract v2, structured shell/navigation/module profile config, folder-note-aware explorer manifests, note-level folder-note routing, persisted rail/module/folder state, left-rail-first controls with a mobile utility dock, working `system` / `light` / `dark` palette switching, reader mode, checkbox/task-list rendering, client-rendered local/global graph views, and a note-level BM25-style client search index are now in tree. Remaining follow-up work is mainly richer landing/list-page design, per-page module suppression, deeper right-rail defaults, and broader UX proofing such as screenshots/browser-driven interaction coverage.
 
 **Reference implementations to study before and during execution**
 

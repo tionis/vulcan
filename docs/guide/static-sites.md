@@ -147,9 +147,9 @@ partials can use stable placeholder tokens:
 - `{{site_logo}}`
 
 `theme_toggle` is kept as a compatibility alias for the built-in palette controls. `toolbar.html`
-wraps or replaces the sticky top bar, `header.html` inserts extra chrome between the toolbar and the
-main layout, and `left_rail.html` / `right_rail.html` can replace the default explorer and page-panel
-rails while still receiving the same stable tokens. `header.html` still supersedes `nav.html`;
+wraps or replaces the built-in mobile utility dock, `header.html` inserts extra chrome between that
+shell control region and the main layout, and `left_rail.html` / `right_rail.html` can replace the
+default explorer and page-panel rails while still receiving the same stable tokens. `header.html` still supersedes `nav.html`;
 otherwise `nav.html` only replaces the primary-nav strip inside the default left rail. `theme.css`
 and `theme.js` are copied into published assets and loaded after Vulcan's built-in shell assets. A
 reference bundle lives at
@@ -299,8 +299,10 @@ The builder currently emits a profile-scoped site with:
 - recent notes
 - `assets/route-manifest.json`
 - `assets/navigation-tree.json`
-- `assets/search-index.json`
-- `assets/graph.json`
+- `assets/search-index.json` — note-level search documents plus BM25-style term postings for the
+  built-in client-side full-text search
+- `assets/graph.json` — published nodes/edges reused by the graph page, local graph modules, and
+  frontend-bundle consumers
 - `assets/hover-previews.json`
 - `assets/recent-notes.json`
 - `assets/related-notes.json`
@@ -311,10 +313,14 @@ The default theme now uses a Quartz-like three-region shell: a persistent left r
 primary navigation, and a folder-note-aware explorer; a centered reading surface; and a right rail
 for TOC, local graph, backlinks, and outgoing links. It includes `system` / `light` / `dark`
 palette controls, a reader mode that hides most chrome, persisted rail/module state, keyboard-first
-search (`/`), a skip link plus landmarked page shell, a global mobile-friendly search dialog with
-result highlighting, profile-scoped `extra_css` / `extra_js`, favicon injection, and logo rendering
-from the site profile. When a deploy path is configured, the default shell, manifests, and preview
-server all emit prefix-aware URLs so the built output can be hosted under that subpath unchanged.
+search (`/`), a skip link plus landmarked page shell, a global mobile-friendly search dialog backed
+by a note-level BM25-style full-text index, client-rendered local/global graph views backed by the
+shared published graph asset, profile-scoped `extra_css` / `extra_js`, favicon injection, and logo
+rendering from the site profile. The default desktop shell no longer uses a wide top bar; search,
+palette, reader-mode, and panel controls live in the left rail, while a compact mobile utility dock
+handles rail toggles on narrow screens. When a deploy path is configured, the default shell,
+manifests, and preview server all emit prefix-aware URLs so the built output can be hosted under
+that subpath unchanged.
 
 ## Frontend bundle mode
 
