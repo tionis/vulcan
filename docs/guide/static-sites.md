@@ -286,10 +286,12 @@ Vulcan still falls back to a full note-page rerender when:
 - route planning changes for the selected notes
 - site `content_transforms` are active
 
-Aggregate outputs such as the home page, folder/tag listings, recent pages, manifests, feeds, and
-copied assets are still regenerated conservatively from the current rendered-note set. The main
-incremental win today is skipping unchanged note-page HTML compilation while keeping the overall
-publication output deterministic.
+Aggregate outputs such as the home page, folder/tag listings, recent pages, manifests, and feeds
+are still regenerated conservatively from the current rendered-note set. Copied assets now keep a
+small per-profile metadata cache under `.vulcan/site-assets/`, so rebuilds can skip vault asset
+copies when both the source file and the published output copy still match the last successful
+build. The main incremental wins today are skipping unchanged note-page HTML compilation and
+avoiding redundant large-asset rereads while keeping the overall publication output deterministic.
 
 ## Output shape
 

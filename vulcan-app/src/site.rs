@@ -36,6 +36,7 @@ use vulcan_core::{ensure_vulcan_dir, export_graph, parse_document, VaultPaths};
 
 const DEFAULT_PAGE_TITLE_TEMPLATE: &str = "{page} | {site}";
 const SITE_BUILD_STATE_VERSION: u32 = 1;
+const SITE_ASSET_COPY_STATE_VERSION: u32 = 1;
 
 const DEFAULT_THEME_CSS: &str = r"
 :root {
@@ -2166,6 +2167,20 @@ struct SiteBuildState {
     notes: Vec<SiteBuildStateNote>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SiteCopiedAssetState {
+    source_path: String,
+    source_signature: SiteInputSignature,
+    output_signature: SiteInputSignature,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SiteAssetCopyState {
+    version: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    assets: Vec<SiteCopiedAssetState>,
+}
+
 #[derive(Debug, Clone)]
 struct SiteSelectedNotes {
     selected: Vec<NoteRecord>,
@@ -2185,6 +2200,20 @@ struct SiteRenderOutcome {
     rendered_notes: Vec<RenderedNote>,
     search_text_by_path: HashMap<String, String>,
     next_state: Option<SiteBuildState>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SiteAssetCopyWorkItem {
+    source_path: PathBuf,
+    source_key: String,
+    relative_output_path: String,
+    destination: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SiteAssetCopyResult {
+    changed: bool,
+    state: SiteCopiedAssetState,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2288,6 +2317,7 @@ where
     } else {
         load_site_build_state(paths, &plan.profile)?
     };
+    let cached_asset_state = load_site_asset_copy_state(paths, &plan.profile)?;
     if request.clean && !request.dry_run && plan.profile.output_dir.exists() {
         fs::remove_dir_all(&plan.profile.output_dir).map_err(AppError::operation)?;
     }
@@ -2303,10 +2333,22 @@ where
         .iter()
         .map(|note| (note.source_path.clone(), note.route.url_path.clone()))
         .collect::<HashMap<_, _>>();
+    let cached_assets_by_source = cached_asset_state
+        .as_ref()
+        .map(site_asset_copy_state_by_source);
+    let asset_work_items =
+        collect_site_asset_copy_work_items(paths, &plan, &rendered_notes, &output_dir)?;
     let mut files = BTreeSet::<String>::new();
     let mut changed_files = BTreeSet::<String>::new();
-    let mut asset_count = 0_usize;
-    report_site_build_progress(&mut progress, SiteBuildPhase::CopyingAssets, 0, 0, None);
+    let asset_count = asset_work_items.len();
+    let mut next_asset_state = Vec::with_capacity(asset_work_items.len());
+    report_site_build_progress(
+        &mut progress,
+        SiteBuildPhase::CopyingAssets,
+        0,
+        asset_work_items.len(),
+        None,
+    );
 
     if !request.dry_run {
         fs::create_dir_all(&output_dir).map_err(AppError::operation)?;
@@ -2352,93 +2394,22 @@ where
         files.insert(note.route.output_path.clone());
     }
 
-    let asset_links = collect_asset_links(&plan.links, &plan.profile.deploy_path);
-    for (source_path, href) in &asset_links {
-        let destination = asset_output_path(&output_dir, source_path);
-        if !request.dry_run && copy_asset(paths, source_path, &destination)? {
-            changed_files.insert(display_path(
-                destination
-                    .strip_prefix(&output_dir)
-                    .unwrap_or(&destination),
-            ));
-        }
-        files.insert(display_path(
-            destination
-                .strip_prefix(&output_dir)
-                .unwrap_or(&destination),
-        ));
-        let _ = href;
-        asset_count += 1;
-    }
-
-    let summary_image_assets = rendered_notes
-        .iter()
-        .filter_map(|note| note.summary_image.as_deref())
-        .filter_map(summary_image_source_path)
-        .collect::<BTreeSet<_>>();
-    for summary_image in &summary_image_assets {
-        let destination = output_dir
-            .join("assets")
-            .join(normalize_relative_path(summary_image));
-        if !request.dry_run && copy_file_from_vault(paths, summary_image, &destination)? {
-            changed_files.insert(display_path(
-                destination
-                    .strip_prefix(&output_dir)
-                    .unwrap_or(&destination),
-            ));
-        }
-        files.insert(display_path(
-            destination
-                .strip_prefix(&output_dir)
-                .unwrap_or(&destination),
-        ));
-        asset_count += 1;
-    }
-
-    for extra_asset in plan
-        .profile
-        .extra_css
-        .iter()
-        .chain(plan.profile.extra_js.iter())
-        .chain(plan.profile.favicon.iter())
-        .chain(plan.profile.logo.iter())
-    {
-        let relative = normalize_relative_path(extra_asset);
-        let destination = output_dir.join("assets").join(&relative);
-        if !request.dry_run && copy_file_from_vault(paths, extra_asset, &destination)? {
-            changed_files.insert(display_path(
-                destination
-                    .strip_prefix(&output_dir)
-                    .unwrap_or(&destination),
-            ));
-        }
-        files.insert(display_path(
-            destination
-                .strip_prefix(&output_dir)
-                .unwrap_or(&destination),
-        ));
-        asset_count += 1;
-    }
-
-    for extra_pattern in &plan.profile.asset_policy.include_folders {
-        for asset in collect_extra_assets(paths, extra_pattern)? {
-            let destination = output_dir
-                .join("assets")
-                .join(normalize_relative_path(&asset));
-            if !request.dry_run && copy_file_from_vault(paths, &asset, &destination)? {
-                changed_files.insert(display_path(
-                    destination
-                        .strip_prefix(&output_dir)
-                        .unwrap_or(&destination),
-                ));
+    for asset in &asset_work_items {
+        if !request.dry_run {
+            let copied = copy_file_from_vault_with_cache(
+                paths,
+                &asset.source_path,
+                &asset.destination,
+                cached_assets_by_source
+                    .as_ref()
+                    .and_then(|assets| assets.get(asset.source_key.as_str()).copied()),
+            )?;
+            if copied.changed {
+                changed_files.insert(asset.relative_output_path.clone());
             }
-            files.insert(display_path(
-                destination
-                    .strip_prefix(&output_dir)
-                    .unwrap_or(&destination),
-            ));
-            asset_count += 1;
+            next_asset_state.push(copied.state);
         }
+        files.insert(asset.relative_output_path.clone());
     }
 
     let css_path = output_dir.join("assets/vulcan-site.css");
@@ -2658,6 +2629,14 @@ where
     report_site_build_progress(&mut progress, SiteBuildPhase::Finalizing, 0, 0, None);
     changed_files.extend(deleted_files.iter().cloned());
     if !request.dry_run {
+        save_site_asset_copy_state(
+            paths,
+            &plan.profile,
+            &SiteAssetCopyState {
+                version: SITE_ASSET_COPY_STATE_VERSION,
+                assets: next_asset_state,
+            },
+        )?;
         if let Some(state) = next_state.as_ref() {
             save_site_build_state(paths, &plan.profile, state)?;
         }
@@ -2726,6 +2705,12 @@ pub fn build_frontend_bundle(
         next_state: _,
     } = render_site_notes(paths, &plan, None, &mut |_| {})?;
     rendered_notes.sort_by(|left, right| left.route.url_path.cmp(&right.route.url_path));
+    let cached_asset_state = load_site_asset_copy_state(paths, &plan.profile)?;
+    let cached_assets_by_source = cached_asset_state
+        .as_ref()
+        .map(site_asset_copy_state_by_source);
+    let asset_work_items =
+        collect_site_asset_copy_work_items(paths, &plan, &rendered_notes, &output_dir)?;
 
     let context = RenderContext {
         profile: plan.profile.name.clone(),
@@ -2782,6 +2767,7 @@ pub fn build_frontend_bundle(
     let mut changed_files = BTreeSet::<String>::new();
     let mut changed_routes = BTreeSet::<String>::new();
     let mut copied_assets = BTreeSet::<String>::new();
+    let mut next_asset_state = Vec::with_capacity(asset_work_items.len());
 
     for note in &note_documents {
         let relative_path = frontend_bundle_note_document_path(&note.route);
@@ -2793,80 +2779,23 @@ pub fn build_frontend_bundle(
         files.insert(relative_path);
     }
 
-    let asset_links = collect_asset_links(&plan.links, &plan.profile.deploy_path);
-    for source_path in asset_links.keys() {
-        let destination = asset_output_path(&output_dir, source_path);
-        let relative_path = display_path(
-            destination
-                .strip_prefix(&output_dir)
-                .unwrap_or(&destination),
-        );
-        if !request.dry_run && copy_asset(paths, source_path, &destination)? {
-            changed_files.insert(relative_path.clone());
-        }
-        files.insert(relative_path.clone());
-        copied_assets.insert(relative_path);
-    }
-
-    let summary_image_assets = rendered_notes
-        .iter()
-        .filter_map(|note| note.summary_image.as_deref())
-        .filter_map(summary_image_source_path)
-        .collect::<BTreeSet<_>>();
-    for summary_image in &summary_image_assets {
-        let destination = output_dir
-            .join("assets")
-            .join(normalize_relative_path(summary_image));
-        let relative_path = display_path(
-            destination
-                .strip_prefix(&output_dir)
-                .unwrap_or(&destination),
-        );
-        if !request.dry_run && copy_file_from_vault(paths, summary_image, &destination)? {
-            changed_files.insert(relative_path.clone());
-        }
-        files.insert(relative_path.clone());
-        copied_assets.insert(relative_path);
-    }
-
-    for extra_asset in plan
-        .profile
-        .extra_css
-        .iter()
-        .chain(plan.profile.extra_js.iter())
-        .chain(plan.profile.favicon.iter())
-        .chain(plan.profile.logo.iter())
-    {
-        let relative = normalize_relative_path(extra_asset);
-        let destination = output_dir.join("assets").join(&relative);
-        let relative_path = display_path(
-            destination
-                .strip_prefix(&output_dir)
-                .unwrap_or(&destination),
-        );
-        if !request.dry_run && copy_file_from_vault(paths, extra_asset, &destination)? {
-            changed_files.insert(relative_path.clone());
-        }
-        files.insert(relative_path.clone());
-        copied_assets.insert(relative_path);
-    }
-
-    for extra_pattern in &plan.profile.asset_policy.include_folders {
-        for asset in collect_extra_assets(paths, extra_pattern)? {
-            let destination = output_dir
-                .join("assets")
-                .join(normalize_relative_path(&asset));
-            let relative_path = display_path(
-                destination
-                    .strip_prefix(&output_dir)
-                    .unwrap_or(&destination),
-            );
-            if !request.dry_run && copy_file_from_vault(paths, &asset, &destination)? {
-                changed_files.insert(relative_path.clone());
+    for asset in &asset_work_items {
+        if !request.dry_run {
+            let copied = copy_file_from_vault_with_cache(
+                paths,
+                &asset.source_path,
+                &asset.destination,
+                cached_assets_by_source
+                    .as_ref()
+                    .and_then(|assets| assets.get(asset.source_key.as_str()).copied()),
+            )?;
+            if copied.changed {
+                changed_files.insert(asset.relative_output_path.clone());
             }
-            files.insert(relative_path.clone());
-            copied_assets.insert(relative_path);
+            next_asset_state.push(copied.state);
         }
+        files.insert(asset.relative_output_path.clone());
+        copied_assets.insert(asset.relative_output_path.clone());
     }
 
     let route_manifest_path = "assets/route-manifest.json".to_string();
@@ -3060,6 +2989,17 @@ pub fn build_frontend_bundle(
         changed_files.insert(types_path.clone());
     }
     files.insert(invalidation_path.clone());
+
+    if !request.dry_run {
+        save_site_asset_copy_state(
+            paths,
+            &plan.profile,
+            &SiteAssetCopyState {
+                version: SITE_ASSET_COPY_STATE_VERSION,
+                assets: next_asset_state,
+            },
+        )?;
+    }
 
     let deleted_files = if request.dry_run {
         Vec::new()
@@ -4223,11 +4163,8 @@ fn site_input_signature_for_note(note: &NoteRecord) -> SiteInputSignature {
     }
 }
 
-fn site_input_signature_for_relative_path(
-    paths: &VaultPaths,
-    relative: &Path,
-) -> Result<Option<SiteInputSignature>, AppError> {
-    let metadata = match fs::metadata(paths.vault_root().join(relative)) {
+fn site_input_signature_for_path(path: &Path) -> Result<Option<SiteInputSignature>, AppError> {
+    let metadata = match fs::metadata(path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(AppError::operation(error)),
@@ -4237,7 +4174,7 @@ fn site_input_signature_for_relative_path(
     let file_mtime = metadata
         .modified()
         .ok()
-        .and_then(system_time_to_millis)
+        .and_then(system_time_to_nanos)
         .ok_or_else(|| AppError::operation("failed to read site dependency modification time"))?;
     Ok(Some(SiteInputSignature {
         file_mtime,
@@ -4245,9 +4182,16 @@ fn site_input_signature_for_relative_path(
     }))
 }
 
-fn system_time_to_millis(time: std::time::SystemTime) -> Option<i64> {
+fn site_input_signature_for_relative_path(
+    paths: &VaultPaths,
+    relative: &Path,
+) -> Result<Option<SiteInputSignature>, AppError> {
+    site_input_signature_for_path(&paths.vault_root().join(relative))
+}
+
+fn system_time_to_nanos(time: std::time::SystemTime) -> Option<i64> {
     let duration = time.duration_since(UNIX_EPOCH).ok()?;
-    i64::try_from(duration.as_millis()).ok()
+    i64::try_from(duration.as_nanos()).ok()
 }
 
 fn site_build_config_signature(paths: &VaultPaths, profile: &ResolvedSiteProfile) -> String {
@@ -4269,6 +4213,21 @@ fn load_site_build_state(
     Ok(serde_json::from_str(&contents).ok())
 }
 
+fn load_site_asset_copy_state(
+    paths: &VaultPaths,
+    profile: &ResolvedSiteProfile,
+) -> Result<Option<SiteAssetCopyState>, AppError> {
+    let path = site_asset_copy_state_path(paths, profile);
+    let contents = match fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(AppError::operation(error)),
+    };
+    Ok(serde_json::from_str::<SiteAssetCopyState>(&contents)
+        .ok()
+        .filter(|state| state.version == SITE_ASSET_COPY_STATE_VERSION))
+}
+
 fn save_site_build_state(
     paths: &VaultPaths,
     profile: &ResolvedSiteProfile,
@@ -4285,14 +4244,44 @@ fn save_site_build_state(
     fs::write(path, payload).map_err(AppError::operation)
 }
 
+fn save_site_asset_copy_state(
+    paths: &VaultPaths,
+    profile: &ResolvedSiteProfile,
+    state: &SiteAssetCopyState,
+) -> Result<(), AppError> {
+    ensure_vulcan_dir(paths).map_err(AppError::operation)?;
+    let path = site_asset_copy_state_path(paths, profile);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(AppError::operation)?;
+    }
+    let payload = serde_json::to_string_pretty(state).map_err(AppError::operation)?;
+    fs::write(path, payload).map_err(AppError::operation)
+}
+
 fn site_build_state_path(paths: &VaultPaths, profile: &ResolvedSiteProfile) -> PathBuf {
-    let key = format!("{}\0{}", profile.name, profile.output_dir.display());
-    let hash = blake3::hash(key.as_bytes()).to_hex().to_string();
+    let hash = blake3::hash(site_profile_cache_key(profile).as_bytes())
+        .to_hex()
+        .to_string();
     paths.vulcan_dir().join("site-state").join(format!(
         "{}-{}.json",
         slugify_segment(&profile.name),
         &hash[..12]
     ))
+}
+
+fn site_asset_copy_state_path(paths: &VaultPaths, profile: &ResolvedSiteProfile) -> PathBuf {
+    let hash = blake3::hash(site_profile_cache_key(profile).as_bytes())
+        .to_hex()
+        .to_string();
+    paths.vulcan_dir().join("site-assets").join(format!(
+        "{}-{}.json",
+        slugify_segment(&profile.name),
+        &hash[..12]
+    ))
+}
+
+fn site_profile_cache_key(profile: &ResolvedSiteProfile) -> String {
+    format!("{}\0{}", profile.name, profile.output_dir.display())
 }
 
 fn resolve_embed_target(
@@ -6325,6 +6314,66 @@ fn asset_output_path(output_dir: &Path, asset_path: &str) -> PathBuf {
         .join(normalize_relative_path(asset_path))
 }
 
+fn collect_site_asset_copy_work_items(
+    paths: &VaultPaths,
+    plan: &SitePlan,
+    rendered_notes: &[RenderedNote],
+    output_dir: &Path,
+) -> Result<Vec<SiteAssetCopyWorkItem>, AppError> {
+    let mut assets = BTreeMap::<String, SiteAssetCopyWorkItem>::new();
+
+    for source_path in collect_asset_links(&plan.links, &plan.profile.deploy_path).keys() {
+        insert_site_asset_copy_work_item(&mut assets, output_dir, Path::new(source_path));
+    }
+
+    let summary_image_assets = rendered_notes
+        .iter()
+        .filter_map(|note| note.summary_image.as_deref())
+        .filter_map(summary_image_source_path)
+        .collect::<BTreeSet<_>>();
+    for summary_image in &summary_image_assets {
+        insert_site_asset_copy_work_item(&mut assets, output_dir, summary_image);
+    }
+
+    for extra_asset in plan
+        .profile
+        .extra_css
+        .iter()
+        .chain(plan.profile.extra_js.iter())
+        .chain(plan.profile.favicon.iter())
+        .chain(plan.profile.logo.iter())
+    {
+        insert_site_asset_copy_work_item(&mut assets, output_dir, extra_asset);
+    }
+
+    for extra_pattern in &plan.profile.asset_policy.include_folders {
+        for asset in collect_extra_assets(paths, extra_pattern)? {
+            insert_site_asset_copy_work_item(&mut assets, output_dir, &asset);
+        }
+    }
+
+    Ok(assets.into_values().collect())
+}
+
+fn insert_site_asset_copy_work_item(
+    assets: &mut BTreeMap<String, SiteAssetCopyWorkItem>,
+    output_dir: &Path,
+    relative: &Path,
+) {
+    let source_key = display_path(relative);
+    let destination = asset_output_path(output_dir, &source_key);
+    let relative_output_path =
+        display_path(destination.strip_prefix(output_dir).unwrap_or(&destination));
+    assets
+        .entry(relative_output_path.clone())
+        .or_insert_with(|| SiteAssetCopyWorkItem {
+            source_path: relative.to_path_buf(),
+            source_key,
+            relative_output_path,
+            destination,
+        });
+}
+
 fn collect_extra_assets(paths: &VaultPaths, pattern: &str) -> Result<Vec<PathBuf>, AppError> {
     let mut assets = Vec::new();
     collect_extra_assets_recursive(paths.vault_root(), paths.vault_root(), pattern, &mut assets)?;
@@ -6359,18 +6408,64 @@ fn collect_extra_assets_recursive(
     Ok(())
 }
 
-fn copy_asset(paths: &VaultPaths, relative: &str, destination: &Path) -> Result<bool, AppError> {
-    copy_file_from_vault(paths, Path::new(relative), destination)
-}
-
-fn copy_file_from_vault(
+fn copy_file_from_vault_with_cache(
     paths: &VaultPaths,
     relative: &Path,
     destination: &Path,
-) -> Result<bool, AppError> {
+    cached: Option<&SiteCopiedAssetState>,
+) -> Result<SiteAssetCopyResult, AppError> {
     let source = paths.vault_root().join(relative);
-    let contents = fs::read(source).map_err(AppError::operation)?;
-    write_output_bytes_if_changed(destination, &contents)
+    let source_signature = site_input_signature_for_path(&source)?.ok_or_else(|| {
+        AppError::operation(format!(
+            "site asset source does not exist: {}",
+            source.display()
+        ))
+    })?;
+    let destination_signature = site_input_signature_for_path(destination)?;
+
+    if let (Some(cached), Some(current_output_signature)) = (cached, destination_signature.as_ref())
+    {
+        if cached.source_signature == source_signature
+            && cached.output_signature == *current_output_signature
+        {
+            return Ok(SiteAssetCopyResult {
+                changed: false,
+                state: SiteCopiedAssetState {
+                    source_path: display_path(relative),
+                    source_signature,
+                    output_signature: current_output_signature.clone(),
+                },
+            });
+        }
+    }
+
+    let contents = fs::read(&source).map_err(AppError::operation)?;
+    let changed = write_output_bytes_if_changed(destination, &contents)?;
+    let output_signature = site_input_signature_for_path(destination)?.ok_or_else(|| {
+        AppError::operation(format!(
+            "copied site asset disappeared before it could be tracked: {}",
+            destination.display()
+        ))
+    })?;
+
+    Ok(SiteAssetCopyResult {
+        changed,
+        state: SiteCopiedAssetState {
+            source_path: display_path(relative),
+            source_signature,
+            output_signature,
+        },
+    })
+}
+
+fn site_asset_copy_state_by_source(
+    state: &SiteAssetCopyState,
+) -> HashMap<&str, &SiteCopiedAssetState> {
+    state
+        .assets
+        .iter()
+        .map(|asset| (asset.source_path.as_str(), asset))
+        .collect()
 }
 
 fn write_output_file(path: &Path, contents: &str) -> Result<bool, AppError> {
@@ -8546,6 +8641,83 @@ logo = "site/logo.png"
         assert!(vault_root
             .join(".vulcan/site/public/assets/site/logo.png")
             .exists());
+    }
+
+    #[test]
+    fn site_build_tracks_asset_copy_state_and_repairs_drifted_output_assets() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join("site")).expect("site dir should exist");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(vault_root.join("Home.md"), "# Home\n\nLanding page.\n")
+            .expect("home note should write");
+        fs::write(vault_root.join("site/logo.png"), b"source-data")
+            .expect("logo asset should write");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Public Notes"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md"]
+search = false
+graph = false
+logo = "site/logo.png"
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let paths = VaultPaths::new(&vault_root);
+        let first = build_site(
+            &paths,
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("first build should succeed");
+
+        let output_asset = vault_root.join(".vulcan/site/public/assets/site/logo.png");
+        assert_eq!(
+            fs::read(&output_asset).expect("copied asset should read"),
+            b"source-data"
+        );
+        assert!(first
+            .changed_files
+            .iter()
+            .any(|path| path == "assets/site/logo.png"));
+        assert!(
+            vault_root.join(".vulcan/site-assets").exists(),
+            "asset copy state directory should exist after the build"
+        );
+
+        fs::write(&output_asset, b"broken-data").expect("drifted asset should write");
+        let second = build_site(
+            &paths,
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: false,
+                dry_run: false,
+            },
+        )
+        .expect("second build should succeed");
+
+        assert!(
+            second
+                .changed_files
+                .iter()
+                .any(|path| path == "assets/site/logo.png"),
+            "the drifted asset copy should be repaired: {:?}",
+            second.changed_files
+        );
+        assert_eq!(
+            fs::read(&output_asset).expect("repaired asset should read"),
+            b"source-data"
+        );
     }
 
     #[test]
