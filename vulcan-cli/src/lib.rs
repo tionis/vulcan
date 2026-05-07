@@ -990,7 +990,10 @@ impl SiteBuildProgressReporter {
                 }
             }
             SiteBuildPhase::CopyingAssets => {
-                self.report_stage_once("Copying static assets...", progress.phase);
+                self.report_stage_once(
+                    "Writing note pages and copying static assets...",
+                    progress.phase,
+                );
             }
             SiteBuildPhase::WritingSearchIndex => {
                 self.report_stage_once("Building search index...", progress.phase);
