@@ -2156,6 +2156,8 @@ struct SiteBuildStateNote {
     rendered: RenderedNote,
     #[serde(default)]
     search_text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    page_output_signature: Option<SiteInputSignature>,
     dependencies: SiteNoteDependencies,
 }
 
@@ -2200,6 +2202,7 @@ struct SiteRenderOutcome {
     rendered_notes: Vec<RenderedNote>,
     search_text_by_path: HashMap<String, String>,
     next_state: Option<SiteBuildState>,
+    rendered_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2325,7 +2328,8 @@ where
     let SiteRenderOutcome {
         mut rendered_notes,
         search_text_by_path,
-        next_state,
+        mut next_state,
+        rendered_count,
     } = render_site_notes(paths, &plan, cached_state.as_ref(), &mut progress)?;
     rendered_notes.sort_by(|left, right| left.route.url_path.cmp(&right.route.url_path));
 
@@ -2367,12 +2371,42 @@ where
     let folder_index = build_folder_index(&rendered_notes);
     let home_note = resolve_home_note(&plan.profile, &rendered_notes);
     let navigation_tree = build_navigation_tree(&context.deploy_path, &rendered_notes);
+    let next_state_note_indices = next_state.as_ref().map(|state| {
+        state
+            .notes
+            .iter()
+            .enumerate()
+            .map(|(index, note)| (note.source_path.clone(), index))
+            .collect::<HashMap<_, _>>()
+    });
+    let can_reuse_note_page_outputs = rendered_count == 0 && !request.dry_run;
 
     for (index, note) in rendered_notes.iter().enumerate() {
         let previous = index
             .checked_sub(1)
             .and_then(|value| rendered_notes.get(value));
         let next = rendered_notes.get(index + 1);
+        let state_note_index = next_state_note_indices
+            .as_ref()
+            .and_then(|indices| indices.get(&note.source_path))
+            .copied();
+        let path = output_dir.join(&note.route.output_path);
+        let cached_output_signature = state_note_index.and_then(|note_index| {
+            next_state
+                .as_ref()
+                .and_then(|state| state.notes.get(note_index))
+                .and_then(|state_note| state_note.page_output_signature.clone())
+        });
+        if can_reuse_note_page_outputs
+            && match cached_output_signature.as_ref() {
+                Some(cached_signature) => site_path_signature_matches(&path, cached_signature)?,
+                None => false,
+            }
+        {
+            files.insert(note.route.output_path.clone());
+            continue;
+        }
+
         let html = render_note_document(
             &context,
             note,
@@ -2385,11 +2419,21 @@ where
             &folder_index,
             home_note,
         );
-        if !request.dry_run {
-            let path = output_dir.join(&note.route.output_path);
+        let output_signature = if request.dry_run {
+            None
+        } else {
             if write_output_file(&path, &html)? {
                 changed_files.insert(note.route.output_path.clone());
             }
+            Some(site_input_signature_for_path(&path)?.ok_or_else(|| {
+                AppError::operation(format!(
+                    "note page disappeared before it could be tracked: {}",
+                    path.display()
+                ))
+            })?)
+        };
+        if let (Some(note_index), Some(state)) = (state_note_index, next_state.as_mut()) {
+            state.notes[note_index].page_output_signature = output_signature;
         }
         files.insert(note.route.output_path.clone());
     }
@@ -2703,6 +2747,7 @@ pub fn build_frontend_bundle(
         mut rendered_notes,
         search_text_by_path,
         next_state: _,
+        rendered_count: _,
     } = render_site_notes(paths, &plan, None, &mut |_| {})?;
     rendered_notes.sort_by(|left, right| left.route.url_path.cmp(&right.route.url_path));
     let cached_asset_state = load_site_asset_copy_state(paths, &plan.profile)?;
@@ -3677,6 +3722,7 @@ where
             all_note_signatures: plan.all_note_signatures.clone(),
             notes: next_state_notes,
         }),
+        rendered_count: processed,
     })
 }
 
@@ -3816,6 +3862,7 @@ fn render_site_plan_note(
         signature: site_input_signature_for_note(&note.note),
         rendered: rendered_note,
         search_text,
+        page_output_signature: None,
         dependencies,
     })
 }
@@ -4187,6 +4234,13 @@ fn site_input_signature_for_relative_path(
     relative: &Path,
 ) -> Result<Option<SiteInputSignature>, AppError> {
     site_input_signature_for_path(&paths.vault_root().join(relative))
+}
+
+fn site_path_signature_matches(
+    path: &Path,
+    expected: &SiteInputSignature,
+) -> Result<bool, AppError> {
+    Ok(site_input_signature_for_path(path)?.as_ref() == Some(expected))
 }
 
 fn system_time_to_nanos(time: std::time::SystemTime) -> Option<i64> {
@@ -8717,6 +8771,71 @@ logo = "site/logo.png"
         assert_eq!(
             fs::read(&output_asset).expect("repaired asset should read"),
             b"source-data"
+        );
+    }
+
+    #[test]
+    fn site_build_repairs_drifted_note_output_when_no_notes_need_rerendering() {
+        let temp_dir = TempDir::new().expect("temp dir should exist");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+        fs::write(vault_root.join("Home.md"), "# Home\n\nLanding page.\n")
+            .expect("home note should write");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            r#"[site.profiles.public]
+title = "Public Notes"
+home = "Home"
+output_dir = ".vulcan/site/public"
+include_paths = ["Home.md"]
+search = false
+graph = false
+"#,
+        )
+        .expect("config should write");
+        scan_fixture(&vault_root);
+
+        let paths = VaultPaths::new(&vault_root);
+        let first = build_site(
+            &paths,
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: true,
+                dry_run: false,
+            },
+        )
+        .expect("first build should succeed");
+
+        let note_output_relative = note_output_path(&first, "Home.md");
+        let note_output = vault_root
+            .join(".vulcan/site/public")
+            .join(&note_output_relative);
+        let original = fs::read_to_string(&note_output).expect("note output should read");
+
+        fs::write(&note_output, "broken note output").expect("drifted note output should write");
+        let second = build_site(
+            &paths,
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: false,
+                dry_run: false,
+            },
+        )
+        .expect("second build should succeed");
+
+        assert!(
+            second
+                .changed_files
+                .iter()
+                .any(|path| path == &note_output_relative),
+            "the drifted note output should be repaired: {:?}",
+            second.changed_files
+        );
+        assert_eq!(
+            fs::read_to_string(&note_output).expect("repaired note output should read"),
+            original
         );
     }
 

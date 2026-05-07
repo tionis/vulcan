@@ -103,6 +103,53 @@ wikilinks, embeds, callouts, task lists, headings, backlinks, and publication di
 The shared contracts exposed by the builder are `RenderContext`, `RenderedNote`, `RenderedEmbed`, and
 `SiteRoute`; later note pages should reuse those structures instead of defining parallel HTML/page models.
 
+## Published search
+
+When `search = true`, the site build emits a static `/assets/search-index.json` payload plus a
+`/search/` page and shared search dialog UI.
+
+Current behavior:
+
+- Search is fully client-side and only sees the published subset for the active site profile.
+- The build indexes note titles, aliases, tags, excerpts, and source-derived note text.
+- Ranking is lightweight BM25-style scoring with bounded prefix expansion in the browser.
+- The website search contract is intentionally simpler than `vulcan search`; it does not yet expose
+  the full CLI/operator/filter syntax from `vulcan-core`.
+
+### Richer Search Reuse Sketch
+
+If Vulcan upgrades published-site search to reuse the richer `vulcan-core` model, keep these design
+constraints:
+
+- Preserve the current no-daemon path.
+  Static sites must still work from plain emitted assets on any dumb file host.
+- Reuse `vulcan-core` semantics instead of reimplementing them in theme JS.
+  Tokenization, query parsing, filter semantics, and ranking rules should come from one shared
+  search contract below the CLI boundary.
+- Keep one published-search contract across static site, frontend bundle, and future daemon/wiki
+  search endpoints.
+  The browser should not need separate query/result models depending on deployment mode.
+- Keep publish filtering authoritative.
+  Excluded notes/chunks/properties must not leak into emitted search assets, client snippets, or
+  future daemon-backed responses.
+
+Practical implementation shape:
+
+1. Add a reusable app/core-layer "published search export" builder that starts from the existing
+   `SearchQuery`/search index machinery instead of the current site-only term map.
+2. Emit a structured static asset that stores note-level metadata plus compact chunk/posting data
+   needed for richer snippets, scopes, and filters, rather than only a client-local term frequency
+   map.
+3. Move query parsing/matching into a shared library boundary that can be compiled for:
+   static precomputation during `site build`, optional browser-side evaluation for static hosting,
+   and future daemon-backed `/search` endpoints.
+4. Keep a progressive-enhancement ladder:
+   pure static client search first, optional richer browser query execution second, daemon-backed
+   search later using the same request/response contract.
+5. Treat the current client BM25/prefix search as the fast fallback/reference mode until the shared
+   richer contract is proven small enough for published assets and deterministic enough for static
+   builds.
+
 ## Theme contract
 
 `theme = "default"` uses the built-in CSS/JS shell. Any other theme name resolves to either:
