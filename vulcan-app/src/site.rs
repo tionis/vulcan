@@ -40,89 +40,89 @@ const SITE_BUILD_STATE_VERSION: u32 = 1;
 const DEFAULT_THEME_CSS: &str = r"
 :root {
   color-scheme: light dark;
-  --bg: #f6f2e8;
-  --bg-strong: #efe8da;
-  --bg-elevated: rgba(250, 246, 239, 0.96);
-  --surface: rgba(255, 252, 248, 0.86);
-  --surface-strong: rgba(255, 252, 248, 0.97);
-  --surface-soft: rgba(255, 255, 255, 0.44);
-  --text: #1d1a16;
-  --muted: #6a6155;
-  --accent: #1f6f82;
-  --accent-strong: #154f5c;
-  --accent-soft: rgba(31, 111, 130, 0.12);
-  --border: rgba(29, 26, 22, 0.1);
-  --border-strong: rgba(29, 26, 22, 0.16);
-  --shadow: 0 16px 42px rgba(44, 34, 21, 0.08);
-  --code-bg: rgba(29, 26, 22, 0.06);
-  --link: #0d5e9b;
-  --left-rail-width: 18rem;
-  --right-rail-width: 17.25rem;
-  --content-max: 46rem;
-  --radius-lg: 1.15rem;
-  --radius-md: 0.85rem;
-  --rail-gap: 0.95rem;
+  --bg: #faf8f3;
+  --bg-strong: #f2efe7;
+  --bg-elevated: rgba(250, 248, 243, 0.97);
+  --surface: #f6f4ee;
+  --surface-strong: #fffdf8;
+  --surface-soft: rgba(39, 49, 61, 0.035);
+  --text: #27313d;
+  --muted: #617184;
+  --accent: #356ca5;
+  --accent-strong: #244f7a;
+  --accent-soft: rgba(53, 108, 165, 0.12);
+  --border: rgba(39, 49, 61, 0.1);
+  --border-strong: rgba(39, 49, 61, 0.18);
+  --shadow: 0 1px 2px rgba(39, 49, 61, 0.06), 0 8px 24px rgba(39, 49, 61, 0.04);
+  --code-bg: rgba(39, 49, 61, 0.06);
+  --link: #245d99;
+  --left-rail-width: 20rem;
+  --right-rail-width: 19.5rem;
+  --content-max: 48rem;
+  --radius-lg: 0.85rem;
+  --radius-md: 0.65rem;
+  --rail-gap: 1.4rem;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #111312;
-    --bg-strong: #171a19;
-    --bg-elevated: rgba(22, 25, 24, 0.95);
-    --surface: rgba(24, 28, 27, 0.88);
-    --surface-strong: rgba(30, 34, 33, 0.96);
+    --bg: #16181d;
+    --bg-strong: #111319;
+    --bg-elevated: rgba(19, 22, 28, 0.96);
+    --surface: #1b2028;
+    --surface-strong: #202632;
     --surface-soft: rgba(255, 255, 255, 0.04);
-    --text: #ece6dc;
-    --muted: #b2a797;
-    --accent: #86c5ca;
-    --accent-strong: #9ddce0;
-    --accent-soft: rgba(134, 197, 202, 0.14);
-    --border: rgba(236, 230, 220, 0.12);
-    --border-strong: rgba(236, 230, 220, 0.2);
-    --shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
-    --code-bg: rgba(236, 230, 220, 0.08);
-    --link: #8ec9ff;
+    --text: #e8edf6;
+    --muted: #a8b3c3;
+    --accent: #8fc1ff;
+    --accent-strong: #bdd8ff;
+    --accent-soft: rgba(143, 193, 255, 0.14);
+    --border: rgba(232, 237, 246, 0.1);
+    --border-strong: rgba(232, 237, 246, 0.18);
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 12px 32px rgba(0, 0, 0, 0.22);
+    --code-bg: rgba(232, 237, 246, 0.08);
+    --link: #98c7ff;
   }
 }
 
 html[data-theme='light'] {
   color-scheme: light;
-  --bg: #f6f2e8;
-  --bg-strong: #efe8da;
-  --bg-elevated: rgba(250, 246, 239, 0.96);
-  --surface: rgba(255, 252, 248, 0.86);
-  --surface-strong: rgba(255, 252, 248, 0.97);
-  --surface-soft: rgba(255, 255, 255, 0.44);
-  --text: #1d1a16;
-  --muted: #6a6155;
-  --accent: #1f6f82;
-  --accent-strong: #154f5c;
-  --accent-soft: rgba(31, 111, 130, 0.12);
-  --border: rgba(29, 26, 22, 0.1);
-  --border-strong: rgba(29, 26, 22, 0.16);
-  --shadow: 0 16px 42px rgba(44, 34, 21, 0.08);
-  --code-bg: rgba(29, 26, 22, 0.06);
-  --link: #0d5e9b;
+  --bg: #faf8f3;
+  --bg-strong: #f2efe7;
+  --bg-elevated: rgba(250, 248, 243, 0.97);
+  --surface: #f6f4ee;
+  --surface-strong: #fffdf8;
+  --surface-soft: rgba(39, 49, 61, 0.035);
+  --text: #27313d;
+  --muted: #617184;
+  --accent: #356ca5;
+  --accent-strong: #244f7a;
+  --accent-soft: rgba(53, 108, 165, 0.12);
+  --border: rgba(39, 49, 61, 0.1);
+  --border-strong: rgba(39, 49, 61, 0.18);
+  --shadow: 0 1px 2px rgba(39, 49, 61, 0.06), 0 8px 24px rgba(39, 49, 61, 0.04);
+  --code-bg: rgba(39, 49, 61, 0.06);
+  --link: #245d99;
 }
 
 html[data-theme='dark'] {
   color-scheme: dark;
-  --bg: #111312;
-  --bg-strong: #171a19;
-  --bg-elevated: rgba(22, 25, 24, 0.95);
-  --surface: rgba(24, 28, 27, 0.88);
-  --surface-strong: rgba(30, 34, 33, 0.96);
+  --bg: #16181d;
+  --bg-strong: #111319;
+  --bg-elevated: rgba(19, 22, 28, 0.96);
+  --surface: #1b2028;
+  --surface-strong: #202632;
   --surface-soft: rgba(255, 255, 255, 0.04);
-  --text: #ece6dc;
-  --muted: #b2a797;
-  --accent: #86c5ca;
-  --accent-strong: #9ddce0;
-  --accent-soft: rgba(134, 197, 202, 0.14);
-  --border: rgba(236, 230, 220, 0.12);
-  --border-strong: rgba(236, 230, 220, 0.2);
-  --shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
-  --code-bg: rgba(236, 230, 220, 0.08);
-  --link: #8ec9ff;
+  --text: #e8edf6;
+  --muted: #a8b3c3;
+  --accent: #8fc1ff;
+  --accent-strong: #bdd8ff;
+  --accent-soft: rgba(143, 193, 255, 0.14);
+  --border: rgba(232, 237, 246, 0.1);
+  --border-strong: rgba(232, 237, 246, 0.18);
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 12px 32px rgba(0, 0, 0, 0.22);
+  --code-bg: rgba(232, 237, 246, 0.08);
+  --link: #98c7ff;
 }
 
 html { scroll-padding-top: 2rem; }
@@ -132,12 +132,9 @@ body {
   margin: 0;
   min-height: 100vh;
   font-family: 'IBM Plex Sans', 'Avenir Next', 'Segoe UI', sans-serif;
-  background:
-    radial-gradient(circle at top left, rgba(29, 107, 125, 0.11), transparent 34rem),
-    radial-gradient(circle at top right, rgba(184, 146, 77, 0.1), transparent 28rem),
-    linear-gradient(180deg, var(--bg-strong), var(--bg));
+  background: var(--bg);
   color: var(--text);
-  line-height: 1.65;
+  line-height: 1.55;
 }
 
 a {
@@ -145,6 +142,8 @@ a {
   text-decoration-thickness: 0.08em;
   text-underline-offset: 0.18em;
 }
+
+a:hover { color: var(--accent-strong); }
 
 img, video {
   max-width: 100%;
@@ -164,9 +163,9 @@ pre {
 }
 
 .site-shell {
-  max-width: 1660px;
+  max-width: 1680px;
   margin: 0 auto;
-  padding: 1rem 1.15rem 2.75rem;
+  padding: 0 1.25rem 3rem;
 }
 
 .site-skip-link {
@@ -189,13 +188,10 @@ pre {
 .site-listing,
 .site-search-card,
 .site-graph-card,
-.site-main,
 .site-panel,
 .site-search-dialog-panel,
-.site-left-rail,
-.site-right-rail,
 .site-mobile-dock {
-  background: var(--surface);
+  background: var(--surface-strong);
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
 }
@@ -211,7 +207,7 @@ pre {
   justify-content: center;
   padding: 0.55rem;
   border-radius: 999px;
-  backdrop-filter: blur(18px);
+  backdrop-filter: blur(12px);
   transform: translateX(-50%);
 }
 
@@ -278,15 +274,16 @@ pre {
 .site-control-button[aria-pressed='true'],
 .site-toolbar-toggle[aria-expanded='true'] {
   background: var(--accent-soft);
-  border-color: rgba(29, 107, 125, 0.3);
+  border-color: var(--accent);
   color: var(--accent-strong);
 }
 
 .site-layout {
   display: grid;
   gap: var(--rail-gap);
-  grid-template-columns: var(--left-rail-width) minmax(0, 1fr) var(--right-rail-width);
+  grid-template-columns: minmax(15rem, var(--left-rail-width)) minmax(0, var(--content-max)) minmax(15rem, var(--right-rail-width));
   align-items: start;
+  justify-content: center;
 }
 
 body[data-left-rail-state='closed'][data-right-rail-state='closed'] .site-layout,
@@ -308,13 +305,14 @@ body[data-left-rail-enabled='true'][data-left-rail-state='open'][data-right-rail
 .site-left-rail,
 .site-right-rail {
   position: sticky;
-  top: 1rem;
+  top: 0;
   align-self: start;
-  max-height: calc(100vh - 2rem);
+  max-height: 100vh;
   overflow: auto;
   padding: 0;
-  border-radius: var(--radius-lg);
-  backdrop-filter: blur(12px);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
 }
 
 .site-left-rail.is-disabled,
@@ -334,16 +332,17 @@ body[data-reader-mode='true'] .site-right-rail {
 .site-graph-card,
 .site-panel,
 .site-brand-card,
-.site-left-rail,
-.site-right-rail {
+.site-mobile-dock {
   border-radius: var(--radius-lg);
 }
 
 .site-main {
-  max-width: min(100%, var(--content-max));
-  margin: 0 auto;
-  padding: clamp(1.25rem, 2vw, 1.9rem);
-  background: var(--surface-strong);
+  max-width: 100%;
+  margin: 0;
+  padding: 2.5rem 0 2rem;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
 }
 
 .site-main > :first-child { margin-top: 0; }
@@ -363,8 +362,7 @@ body[data-reader-mode='true'] .site-right-rail {
 .site-main p,
 .site-main li,
 .site-main blockquote {
-  font-family: 'Charter', 'Iowan Old Style', 'Palatino Linotype', serif;
-  font-size: 1rem;
+  font-size: 0.98rem;
 }
 
 .site-breadcrumbs,
@@ -387,14 +385,17 @@ body[data-reader-mode='true'] .site-right-rail {
 .site-listing,
 .site-search-card,
 .site-graph-card {
-  padding: 0.9rem 0.95rem;
+  padding: 0.9rem 1rem;
 }
 
 .site-brand-card {
   display: flex;
   gap: 0.8rem;
   align-items: center;
-  background: linear-gradient(180deg, var(--surface-strong), rgba(255, 255, 255, 0.12));
+  padding: 0;
+  background: transparent;
+  border: 0;
+  box-shadow: none;
 }
 
 .site-brand-title {
@@ -411,8 +412,8 @@ body[data-reader-mode='true'] .site-right-rail {
 
 .site-rail-shell {
   display: grid;
-  gap: 0.9rem;
-  padding: 0.95rem;
+  gap: 1rem;
+  padding: 2.5rem 0 1.5rem;
 }
 
 .site-rail-header {
@@ -451,13 +452,13 @@ body[data-reader-mode='true'] .site-right-rail {
 
 .site-primary-nav {
   display: grid;
-  gap: 0.25rem;
+  gap: 0.15rem;
 }
 
 .site-nav-link {
   display: block;
-  padding: 0.45rem 0.55rem;
-  border-radius: 0.75rem;
+  padding: 0.42rem 0.55rem;
+  border-radius: 0.55rem;
   color: inherit;
   text-decoration: none;
   border: 1px solid transparent;
@@ -466,7 +467,7 @@ body[data-reader-mode='true'] .site-right-rail {
 
 .site-nav-link:hover {
   background: var(--accent-soft);
-  border-color: rgba(29, 107, 125, 0.16);
+  border-color: var(--border-strong);
 }
 
 .site-rail-section-title {
@@ -479,10 +480,10 @@ body[data-reader-mode='true'] .site-right-rail {
 }
 
 .site-explorer-panel {
-  padding: 0.8rem 0.85rem;
-  border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  background: rgba(255, 255, 255, 0.03);
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
 }
 
 .site-explorer-tree,
@@ -498,41 +499,45 @@ body[data-reader-mode='true'] .site-right-rail {
 .site-explorer-tree,
 .site-explorer-children {
   display: grid;
-  gap: 0.12rem;
+  gap: 0;
 }
 
 .site-explorer-children {
-  margin-left: 0.7rem;
-  padding-left: 0.7rem;
+  margin-left: 0.95rem;
+  padding-left: 0.65rem;
   border-left: 1px solid var(--border);
 }
 
 .site-explorer-folder-row {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 0.25rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 0.15rem;
   align-items: center;
 }
 
 .site-explorer-folder-toggle {
-  width: 1.4rem;
-  min-width: 1.4rem;
-  padding: 0.2rem 0;
-  border-radius: 0.5rem;
-  font-size: 0.8rem;
+  width: 1.1rem;
+  min-width: 1.1rem;
+  padding: 0.15rem 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 0.4rem;
+  font-size: 0.76rem;
 }
 
 .site-explorer-folder-toggle[aria-expanded='true'] {
   transform: rotate(90deg);
 }
 
+.site-explorer-folder-open,
 .site-explorer-folder-link,
 .site-explorer-link,
 .site-explorer-folder-label {
   min-width: 0;
   display: block;
-  padding: 0.32rem 0.45rem;
-  border-radius: 0.65rem;
+  padding: 0.3rem 0.45rem;
+  border-radius: 0.5rem;
   color: inherit;
   text-decoration: none;
   font-size: 0.9rem;
@@ -540,21 +545,35 @@ body[data-reader-mode='true'] .site-right-rail {
 }
 
 .site-explorer-folder-label {
-  border-radius: 0.8rem;
+  border: 0;
+  background: transparent;
   text-align: left;
+}
+
+.site-explorer-folder-open {
+  padding-inline: 0.5rem;
+  font-size: 0.78rem;
+  color: var(--muted);
 }
 
 .site-explorer-folder-link:hover,
 .site-explorer-link:hover,
+.site-explorer-folder-open:hover,
 .site-explorer-folder-label:hover,
 .site-explorer-link.is-active,
 .site-explorer-folder-link.is-active,
+.site-explorer-folder-open.is-active,
 .site-explorer-folder-label.is-active {
   background: var(--accent-soft);
 }
 
 .site-module-toolbar {
-  margin-bottom: 0.7rem;
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin-bottom: 0.8rem;
+  padding-bottom: 0.4rem;
+  background: var(--bg);
 }
 
 .site-panel {
@@ -570,7 +589,7 @@ body[data-reader-mode='true'] .site-right-rail {
   border: 0;
   border-bottom: 1px solid var(--border);
   background: transparent;
-  padding: 0.75rem 0.9rem;
+  padding: 0.68rem 0.82rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -581,7 +600,7 @@ body[data-reader-mode='true'] .site-right-rail {
 .site-panel.is-collapsed .site-panel-chevron { transform: rotate(-90deg); }
 
 .site-panel-body {
-  padding: 0.8rem 0.9rem 0.9rem;
+  padding: 0.75rem 0.82rem 0.85rem;
 }
 
 .site-panel-list {
@@ -614,9 +633,9 @@ body[data-reader-mode='true'] .site-right-rail {
 
 .site-card {
   border: 1px solid var(--border);
-  border-radius: 1.2rem;
-  padding: 1rem;
-  background: var(--surface-soft);
+  border-radius: 0.9rem;
+  padding: 0.95rem;
+  background: var(--surface);
 }
 
 .site-card h3 {
@@ -631,8 +650,8 @@ body[data-reader-mode='true'] .site-right-rail {
 
 .site-search-input {
   width: 100%;
-  padding: 0.85rem 1rem;
-  border-radius: 1rem;
+  padding: 0.82rem 0.95rem;
+  border-radius: 0.8rem;
   border: 1px solid var(--border);
   background: var(--surface-strong);
   color: var(--text);
@@ -652,7 +671,7 @@ body[data-reader-mode='true'] .site-right-rail {
 
 .site-search-dialog-panel {
   max-width: 46rem;
-  margin: 2rem auto 0;
+  margin: 4rem auto 0;
   border-radius: var(--radius-lg);
   padding: 1rem;
   background: var(--bg-elevated);
@@ -673,9 +692,9 @@ body[data-reader-mode='true'] .site-right-rail {
 
 .site-search-results li {
   border: 1px solid var(--border);
-  border-radius: 1rem;
-  padding: 0.9rem 1rem;
-  background: var(--surface-soft);
+  border-radius: 0.8rem;
+  padding: 0.85rem 0.95rem;
+  background: var(--surface);
 }
 
 .site-search-results a {
@@ -684,7 +703,7 @@ body[data-reader-mode='true'] .site-right-rail {
 }
 
 .site-search-results mark {
-  background: rgba(29, 107, 125, 0.18);
+  background: var(--accent-soft);
   color: inherit;
   padding: 0 0.15em;
   border-radius: 0.2rem;
@@ -692,12 +711,10 @@ body[data-reader-mode='true'] .site-right-rail {
 
 .site-graph-stage {
   position: relative;
-  min-height: 15rem;
+  min-height: 14rem;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background:
-    radial-gradient(circle at top, rgba(31, 111, 130, 0.08), transparent 60%),
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent);
+  background: var(--surface-soft);
   overflow: hidden;
 }
 
@@ -806,10 +823,23 @@ body[data-reader-mode='true'] .site-right-rail {
   transform: translateY(0.08rem);
 }
 
+.site-main li:has(> input[type='checkbox']) {
+  list-style: none;
+  padding-left: 0;
+}
+
+.site-main li:has(> input[type='checkbox']:checked) {
+  color: var(--muted);
+  text-decoration: line-through;
+  text-decoration-color: var(--border-strong);
+}
+
 .site-callout {
   margin-top: 1rem;
-  border-left: 4px solid var(--accent);
-  padding-left: 1rem;
+  border-left: 3px solid var(--accent);
+  padding: 0.7rem 0.9rem;
+  border-radius: 0.7rem;
+  background: var(--surface);
   color: var(--muted);
 }
 
@@ -849,7 +879,18 @@ body[data-reader-mode='true'] [data-site-search-open] {
 }
 
 body[data-reader-mode='true'] .site-main {
-  box-shadow: none;
+  padding-top: 1rem;
+}
+
+body[data-reader-mode='true'] .site-content {
+  width: min(100%, 46rem);
+  margin: 0 auto;
+}
+
+body[data-reader-mode='true'] .site-main p,
+body[data-reader-mode='true'] .site-main li {
+  font-size: 1.02rem;
+  line-height: 1.72;
 }
 
 a:focus-visible,
@@ -861,8 +902,8 @@ input:focus-visible {
 
 @media (max-width: 1240px) {
   :root {
-    --left-rail-width: 16.5rem;
-    --right-rail-width: 16rem;
+    --left-rail-width: 17.25rem;
+    --right-rail-width: 17rem;
   }
 }
 
@@ -881,11 +922,11 @@ input:focus-visible {
   .site-right-rail {
     display: block;
     position: fixed;
-    top: 0.75rem;
-    bottom: 0.75rem;
+    top: 0;
+    bottom: 0;
     width: min(18rem, calc(100vw - 1.5rem));
     max-height: none;
-    padding: 0;
+    padding: 0 0.8rem;
     background: var(--bg-elevated);
     box-shadow: 0 28px 60px rgba(0, 0, 0, 0.28);
     overflow: auto;
@@ -896,12 +937,12 @@ input:focus-visible {
   }
 
   .site-left-rail {
-    left: 0.75rem;
+    left: 0;
     transform: translateX(-110%);
   }
 
   .site-right-rail {
-    right: 0.75rem;
+    right: 0;
     transform: translateX(110%);
   }
 
@@ -1222,7 +1263,7 @@ const DEFAULT_THEME_JS: &str = r#"(() => {
         searchDocuments = payload?.documents || [];
         searchDocumentsById = new Map(searchDocuments.map((document) => [document.id, document]));
         searchTerms = payload?.terms || {};
-        searchTermList = Object.keys(searchTerms);
+        searchTermList = Object.keys(searchTerms).sort();
         averageLength = payload?.average_length || 1;
         searchReady = true;
         renderSearchResults();
@@ -1234,12 +1275,33 @@ const DEFAULT_THEME_JS: &str = r#"(() => {
     const searchHits = (query) => {
       const tokens = tokenizeSearchQuery(query);
       if (!tokens.length || !searchDocuments.length) return [];
+      const lowerBound = (prefix) => {
+        let low = 0;
+        let high = searchTermList.length;
+        while (low < high) {
+          const middle = Math.floor((low + high) / 2);
+          if (searchTermList[middle] < prefix) low = middle + 1;
+          else high = middle;
+        }
+        return low;
+      };
+      const prefixMatches = new Map();
+      const termsForToken = (token) => {
+        if (searchTerms[token]) return [token];
+        if (prefixMatches.has(token)) return prefixMatches.get(token);
+        const matches = [];
+        for (let index = lowerBound(token); index < searchTermList.length; index += 1) {
+          const term = searchTermList[index];
+          if (!term.startsWith(token) || matches.length >= 32) break;
+          matches.push(term);
+        }
+        prefixMatches.set(token, matches);
+        return matches;
+      };
       const scores = new Map();
       const matchCounts = new Map();
       for (const token of tokens) {
-        const candidateTerms = searchTerms[token]
-          ? [token]
-          : searchTermList.filter((term) => term.startsWith(token)).slice(0, 32);
+        const candidateTerms = termsForToken(token);
         const matchedDocuments = new Set();
         for (const term of candidateTerms) {
           const postings = searchTerms[term];
@@ -1336,69 +1398,85 @@ const DEFAULT_THEME_JS: &str = r#"(() => {
     }
     return degrees;
   };
-  const buildGraphLayout = (nodes, edges, width, height, pinnedPath) => {
-    const positions = new Map();
-    const nodeCount = Math.max(nodes.length, 1);
-    const radius = Math.min(width, height) * 0.34;
-    nodes.forEach((node, index) => {
-      const angle = (index / nodeCount) * Math.PI * 2;
-      positions.set(node.path, {
-        x: width / 2 + Math.cos(angle) * radius,
-        y: height / 2 + Math.sin(angle) * radius,
-      });
-    });
-    if (pinnedPath && positions.has(pinnedPath)) {
-      positions.set(pinnedPath, { x: width / 2, y: height / 2 });
+  const adjacencyForGraph = (nodes, edges) => {
+    const adjacency = new Map(nodes.map((node) => [node.path, new Set()]));
+    for (const edge of edges) {
+      adjacency.get(edge.source)?.add(edge.target);
+      adjacency.get(edge.target)?.add(edge.source);
     }
-    for (let step = 0; step < 70; step += 1) {
-      const forces = new Map(nodes.map((node) => [node.path, { x: 0, y: 0 }]));
-      for (let i = 0; i < nodes.length; i += 1) {
-        for (let j = i + 1; j < nodes.length; j += 1) {
-          const left = positions.get(nodes[i].path);
-          const right = positions.get(nodes[j].path);
-          if (!left || !right) continue;
-          const dx = right.x - left.x;
-          const dy = right.y - left.y;
-          const distanceSquared = Math.max(dx * dx + dy * dy, 0.01);
-          const force = 1200 / distanceSquared;
-          const distance = Math.sqrt(distanceSquared);
-          const ux = dx / distance;
-          const uy = dy / distance;
-          forces.get(nodes[i].path).x -= ux * force;
-          forces.get(nodes[i].path).y -= uy * force;
-          forces.get(nodes[j].path).x += ux * force;
-          forces.get(nodes[j].path).y += uy * force;
+    return adjacency;
+  };
+  const buildGraphLayout = (nodes, edges, width, height, pinnedPath) => {
+    // Prefer a deterministic ring layout over a client-side force simulation. It is cheaper for
+    // large published graphs and avoids the "slow on every page load" cost of repeated O(n^2)
+    // relaxation loops in the browser.
+    const positions = new Map();
+    if (!nodes.length) return positions;
+
+    const center = { x: width / 2, y: height / 2 };
+    const degrees = degreesForGraph(nodes, edges);
+    const adjacency = adjacencyForGraph(nodes, edges);
+    const primaryPath =
+      (pinnedPath && adjacency.has(pinnedPath) ? pinnedPath : null) ||
+      [...nodes].sort((left, right) => {
+        const degreeDelta = (degrees.get(right.path) || 0) - (degrees.get(left.path) || 0);
+        if (degreeDelta !== 0) return degreeDelta;
+        return (left.title || left.path).localeCompare(right.title || right.path);
+      })[0]?.path;
+
+    const orderedPaths = [];
+    const visited = new Set();
+    if (primaryPath) {
+      const queue = [primaryPath];
+      visited.add(primaryPath);
+      while (queue.length) {
+        const path = queue.shift();
+        if (!path) continue;
+        orderedPaths.push(path);
+        const neighbors = [...(adjacency.get(path) || [])].sort((left, right) => {
+          const degreeDelta = (degrees.get(right) || 0) - (degrees.get(left) || 0);
+          if (degreeDelta !== 0) return degreeDelta;
+          return left.localeCompare(right);
+        });
+        for (const neighbor of neighbors) {
+          if (visited.has(neighbor)) continue;
+          visited.add(neighbor);
+          queue.push(neighbor);
         }
       }
-      for (const edge of edges) {
-        const source = positions.get(edge.source);
-        const target = positions.get(edge.target);
-        if (!source || !target) continue;
-        const dx = target.x - source.x;
-        const dy = target.y - source.y;
-        const distance = Math.max(Math.sqrt(dx * dx + dy * dy), 0.01);
-        const spring = (distance - 88) * 0.018;
-        const ux = dx / distance;
-        const uy = dy / distance;
-        forces.get(edge.source).x += ux * spring;
-        forces.get(edge.source).y += uy * spring;
-        forces.get(edge.target).x -= ux * spring;
-        forces.get(edge.target).y -= uy * spring;
-      }
-      for (const node of nodes) {
-        if (node.path === pinnedPath) {
-          positions.set(node.path, { x: width / 2, y: height / 2 });
-          continue;
-        }
-        const force = forces.get(node.path);
-        const current = positions.get(node.path);
-        const centerX = (width / 2 - current.x) * 0.015;
-        const centerY = (height / 2 - current.y) * 0.015;
-        positions.set(node.path, {
-          x: clamp(current.x + force.x + centerX, 20, width - 20),
-          y: clamp(current.y + force.y + centerY, 20, height - 20),
+    }
+
+    for (const node of [...nodes].sort((left, right) => {
+      const degreeDelta = (degrees.get(right.path) || 0) - (degrees.get(left.path) || 0);
+      if (degreeDelta !== 0) return degreeDelta;
+      return (left.title || left.path).localeCompare(right.title || right.path);
+    })) {
+      if (!visited.has(node.path)) orderedPaths.push(node.path);
+    }
+
+    const rootPath = orderedPaths[0];
+    if (!rootPath) return positions;
+    positions.set(rootPath, center);
+
+    let index = 1;
+    let ring = 1;
+    let capacity = pinnedPath ? 10 : 18;
+    while (index < orderedPaths.length) {
+      const count = Math.min(capacity, orderedPaths.length - index);
+      const radius =
+        Math.min(width, height) * (pinnedPath ? 0.16 + ring * 0.16 : 0.18 + ring * 0.12);
+      const offset = ring * 0.32;
+      for (let slot = 0; slot < count; slot += 1) {
+        const path = orderedPaths[index + slot];
+        const angle = -Math.PI / 2 + (slot / count) * Math.PI * 2 + offset;
+        positions.set(path, {
+          x: clamp(center.x + Math.cos(angle) * radius, 20, width - 20),
+          y: clamp(center.y + Math.sin(angle) * radius, 20, height - 20),
         });
       }
+      index += count;
+      ring += 1;
+      capacity += pinnedPath ? 8 : 12;
     }
     return positions;
   };
@@ -1469,7 +1547,7 @@ const DEFAULT_THEME_JS: &str = r#"(() => {
                 if (degreeDelta !== 0) return degreeDelta;
                 return (left.title || left.path).localeCompare(right.title || right.path);
               })
-              .slice(0, 180);
+              .slice(0, 140);
             const selectedPaths = new Set(selectedNodes.map((node) => node.path));
             const selectedEdges = edges.filter(
               (edge) => selectedPaths.has(edge.source) && selectedPaths.has(edge.target)
@@ -2075,6 +2153,8 @@ struct SiteBuildStateNote {
     source_path: String,
     signature: SiteInputSignature,
     rendered: RenderedNote,
+    #[serde(default)]
+    search_text: String,
     dependencies: SiteNoteDependencies,
 }
 
@@ -2103,6 +2183,7 @@ struct SiteRenderShared<'a> {
 
 struct SiteRenderOutcome {
     rendered_notes: Vec<RenderedNote>,
+    search_text_by_path: HashMap<String, String>,
     next_state: Option<SiteBuildState>,
 }
 
@@ -2213,6 +2294,7 @@ where
     let output_dir = plan.profile.output_dir.clone();
     let SiteRenderOutcome {
         mut rendered_notes,
+        search_text_by_path,
         next_state,
     } = render_site_notes(paths, &plan, cached_state.as_ref(), &mut progress)?;
     rendered_notes.sort_by(|left, right| left.route.url_path.cmp(&right.route.url_path));
@@ -2422,7 +2504,7 @@ where
             0,
             None,
         );
-        let search_index = build_search_index(&rendered_notes);
+        let search_index = build_search_index(&rendered_notes, &search_text_by_path);
         let search_json =
             serde_json::to_string_pretty(&search_index).map_err(AppError::operation)?;
         let search_path = output_dir.join("assets/search-index.json");
@@ -2638,7 +2720,11 @@ pub fn build_frontend_bundle(
     }
 
     let output_dir = plan.profile.output_dir.clone();
-    let mut rendered_notes = render_site_notes(paths, &plan, None, &mut |_| {})?.rendered_notes;
+    let SiteRenderOutcome {
+        mut rendered_notes,
+        search_text_by_path,
+        next_state: _,
+    } = render_site_notes(paths, &plan, None, &mut |_| {})?;
     rendered_notes.sort_by(|left, right| left.route.url_path.cmp(&right.route.url_path));
 
     let context = RenderContext {
@@ -2854,7 +2940,7 @@ pub fn build_frontend_bundle(
 
     let search_index_path = if plan.profile.search {
         let relative_path = "assets/search-index.json".to_string();
-        let search_index = build_search_index(&rendered_notes);
+        let search_index = build_search_index(&rendered_notes, &search_text_by_path);
         write_serialized_json_output(
             &output_dir,
             &relative_path,
@@ -3125,7 +3211,7 @@ fn resolve_site_profile(
         folder_click: raw
             .navigation
             .folder_click
-            .unwrap_or(SiteFolderClickBehaviorConfig::Link),
+            .unwrap_or(SiteFolderClickBehaviorConfig::Collapse),
         default_folder_state: raw
             .navigation
             .default_folder_state
@@ -3593,6 +3679,7 @@ where
     let vault_config = (!notes_to_render.is_empty()).then(|| load_vault_config(paths).config);
     let mut rendered_notes = Vec::with_capacity(plan.notes.len());
     let mut next_state_notes = Vec::with_capacity(plan.notes.len());
+    let mut search_text_by_path = HashMap::with_capacity(plan.notes.len());
     let mut processed = 0_usize;
 
     for note in &plan.notes {
@@ -3604,6 +3691,7 @@ where
                 .and_then(|cached| cached.get(source_path))
             {
                 rendered_notes.push(cached.rendered.clone());
+                search_text_by_path.insert(cached.source_path.clone(), cached.search_text.clone());
                 next_state_notes.push((*cached).clone());
                 continue;
             }
@@ -3635,12 +3723,14 @@ where
             Some(source_path.to_string()),
         );
         rendered_notes.push(rendered.rendered.clone());
+        search_text_by_path.insert(rendered.source_path.clone(), rendered.search_text.clone());
         next_state_notes.push(rendered);
     }
 
     next_state_notes.sort_by(|left, right| left.source_path.cmp(&right.source_path));
     Ok(SiteRenderOutcome {
         rendered_notes,
+        search_text_by_path,
         next_state: (!plan.transforms_active).then_some(SiteBuildState {
             version: SITE_BUILD_STATE_VERSION,
             config_signature: plan.config_signature.clone(),
@@ -3744,6 +3834,7 @@ fn render_site_plan_note(
     let diagnostics = rendered.diagnostics.clone();
     let title = note_title(&note.note, &plan.profile.name, rendered.title.as_deref());
     let excerpt = excerpt_from_markdown(adjusted.as_ref());
+    let search_text = search_text_from_markdown(adjusted.as_ref());
     let description = frontmatter_override(&note.note, &plan.profile.name, "description")
         .unwrap_or_else(|| excerpt.clone());
     let canonical_url = frontmatter_override(&note.note, &plan.profile.name, "canonical_url");
@@ -3784,6 +3875,7 @@ fn render_site_plan_note(
         source_path: note.note.document_path.clone(),
         signature: site_input_signature_for_note(&note.note),
         rendered: rendered_note,
+        search_text,
         dependencies,
     })
 }
@@ -4380,6 +4472,19 @@ fn render_navigation_node_html(
             let open = navigation.default_folder_state == SiteExplorerFolderStateConfig::Open
                 || navigation_node_contains_current(node, current_note_path);
             let folder_path = node.folder_path.as_deref().unwrap_or_default();
+            let folder_open_link = if navigation.folder_click
+                == SiteFolderClickBehaviorConfig::Collapse
+                && node.source_path.is_some()
+            {
+                format!(
+                    "<a class=\"site-explorer-folder-open{}\" href=\"{}\" aria-label=\"Open {} overview\">Open</a>",
+                    if active { " is-active" } else { "" },
+                    escape_html(&node.url),
+                    escape_html(&node.title)
+                )
+            } else {
+                String::new()
+            };
             let title_html = if navigation.folder_click == SiteFolderClickBehaviorConfig::Link {
                 format!(
                     "<a class=\"site-explorer-folder-link{}\" href=\"{}\">{}</a>",
@@ -4400,7 +4505,7 @@ fn render_navigation_node_html(
                     "<li class=\"site-explorer-folder\" data-site-explorer-folder=\"{}\">",
                     "<div class=\"site-explorer-folder-row\">",
                     "<button class=\"site-explorer-folder-toggle\" type=\"button\" data-site-explorer-folder-toggle=\"{}\" aria-expanded=\"{}\">▸</button>",
-                    "{}",
+                    "{}{}",
                     "</div>",
                     "<ul class=\"site-explorer-children\" data-site-explorer-folder-body=\"{}\" {}>{}</ul>",
                     "</li>"
@@ -4409,6 +4514,7 @@ fn render_navigation_node_html(
                 escape_html(folder_path),
                 if open { "true" } else { "false" },
                 title_html,
+                folder_open_link,
                 escape_html(folder_path),
                 if open { "" } else { "hidden" },
                 node.children
@@ -5661,25 +5767,33 @@ fn build_related_manifest(
         .collect()
 }
 
-fn build_search_index(rendered_notes: &[RenderedNote]) -> Value {
+fn build_search_index(
+    rendered_notes: &[RenderedNote],
+    search_text_by_path: &HashMap<String, String>,
+) -> Value {
     let mut documents = Vec::with_capacity(rendered_notes.len());
     let mut terms = BTreeMap::<String, BTreeMap<usize, u16>>::new();
     let mut total_length = 0usize;
 
     for (id, note) in rendered_notes.iter().enumerate() {
-        let plain_text = strip_html_to_text(&note.html);
+        // Reuse source-derived search text from the render pipeline so site builds do not need to
+        // strip or tokenize rendered HTML again just to produce the client search asset.
+        let search_text = search_text_by_path
+            .get(&note.source_path)
+            .filter(|value| !value.is_empty())
+            .map_or(note.excerpt.as_str(), String::as_str);
         let preview = if note.excerpt.trim().is_empty() {
-            plain_text.chars().take(240).collect::<String>()
+            search_text.chars().take(240).collect::<String>()
         } else {
             note.excerpt.clone()
         };
-        let length = tokenize_search_text(&plain_text).len().max(1);
-        total_length += length;
 
         let mut frequencies = BTreeMap::<String, u16>::new();
         accumulate_search_terms(&mut frequencies, &note.title, 4);
         accumulate_search_terms(&mut frequencies, &note.excerpt, 2);
-        accumulate_search_terms(&mut frequencies, &plain_text, 1);
+        accumulate_search_terms(&mut frequencies, &note.aliases.join(" "), 3);
+        let length = accumulate_search_terms(&mut frequencies, search_text, 1).max(1);
+        total_length += length;
         for tag in &note.tags {
             accumulate_search_terms(&mut frequencies, tag, 3);
         }
@@ -6921,66 +7035,115 @@ fn excerpt_from_markdown(source: &str) -> String {
     simplified.chars().take(220).collect::<String>()
 }
 
-fn strip_html_to_text(html: &str) -> String {
+fn search_text_from_markdown(source: &str) -> String {
+    // This keeps the search corpus close to the original note wording while staying much cheaper
+    // than reparsing emitted HTML during asset generation.
     let mut text = String::new();
-    let mut in_tag = false;
+    let mut in_frontmatter = false;
+    let mut frontmatter_boundary_count = 0usize;
+    let mut in_fenced_block = false;
+    let mut in_inline_code = false;
     let mut previous_was_space = true;
-    for ch in html.chars() {
-        match ch {
-            '<' => {
-                in_tag = true;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed == "---" && frontmatter_boundary_count < 2 && text.is_empty() && !in_fenced_block
+        {
+            in_frontmatter = !in_frontmatter;
+            frontmatter_boundary_count += 1;
+            continue;
+        }
+        if in_frontmatter {
+            continue;
+        }
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            in_fenced_block = !in_fenced_block;
+            continue;
+        }
+        if in_fenced_block {
+            continue;
+        }
+        for ch in line.chars() {
+            if ch == '`' {
+                in_inline_code = !in_inline_code;
                 if !previous_was_space {
                     text.push(' ');
                     previous_was_space = true;
                 }
+                continue;
             }
-            '>' => in_tag = false,
-            _ if in_tag => {}
-            _ if ch.is_whitespace() => {
+            if !in_inline_code
+                && matches!(
+                    ch,
+                    '[' | ']' | '(' | ')' | '<' | '>' | '#' | '*' | '_' | '!' | '|' | ':' | '-'
+                )
+            {
                 if !previous_was_space {
                     text.push(' ');
                     previous_was_space = true;
                 }
+                continue;
             }
-            _ => {
-                text.push(ch);
-                previous_was_space = false;
+            if ch == '&' {
+                if !previous_was_space {
+                    text.push(' ');
+                    previous_was_space = true;
+                }
+                continue;
             }
+            if ch.is_whitespace() {
+                if !previous_was_space {
+                    text.push(' ');
+                    previous_was_space = true;
+                }
+                continue;
+            }
+            text.push(ch);
+            previous_was_space = false;
+        }
+        if !previous_was_space {
+            text.push(' ');
+            previous_was_space = true;
         }
     }
-    text.replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .trim()
-        .to_string()
+    text.trim()
+        .replace(" .", ".")
+        .replace(" ,", ",")
+        .replace(" !", "!")
+        .replace(" ?", "?")
 }
 
-fn tokenize_search_text(text: &str) -> Vec<String> {
-    let mut tokens = Vec::new();
+fn for_each_search_token(text: &str, mut visit: impl FnMut(&str)) {
     let mut current = String::new();
     for ch in text.chars() {
-        if ch.is_alphanumeric() {
-            current.extend(ch.to_lowercase());
-        } else if !current.is_empty() {
-            tokens.push(std::mem::take(&mut current));
+        match ch {
+            _ if ch.is_alphanumeric() => current.extend(ch.to_lowercase()),
+            _ if !current.is_empty() => {
+                visit(&current);
+                current.clear();
+            }
+            _ => {}
         }
     }
     if !current.is_empty() {
-        tokens.push(current);
+        visit(&current);
     }
-    tokens
 }
 
-fn accumulate_search_terms(frequencies: &mut BTreeMap<String, u16>, text: &str, weight: u16) {
+fn accumulate_search_terms(
+    frequencies: &mut BTreeMap<String, u16>,
+    text: &str,
+    weight: u16,
+) -> usize {
     if weight == 0 {
-        return;
+        return 0;
     }
-    for token in tokenize_search_text(text) {
-        let entry = frequencies.entry(token).or_insert(0);
+    let mut count = 0usize;
+    for_each_search_token(text, |token| {
+        count += 1;
+        let entry = frequencies.entry(token.to_string()).or_insert(0);
         *entry = entry.saturating_add(weight);
-    }
+    });
+    count
 }
 
 fn escape_html(text: &str) -> String {
@@ -8947,12 +9110,81 @@ backlinks = false
         assert!(home_html.contains(r#"href="/notes/projects/alpha/""#));
         assert!(home_html.contains(r#"href="/notes/guides/""#));
         assert!(home_html.contains(r#"type="checkbox""#));
+        assert!(home_html.contains(r#"data-site-folder-click="collapse""#));
+        assert!(home_html.contains(r#"class="site-explorer-folder-open""#));
         assert_eq!(folder_note_route.url_path, "/notes/guides/");
         assert_eq!(guides_node["source_path"], "Guides/Guides.md");
         assert_eq!(guides_node["url"], "/notes/guides/");
         assert!(guides_node["children"]
             .as_array()
             .is_some_and(|children| children.iter().any(|child| child["title"] == "Intro")));
+    }
+
+    #[test]
+    fn search_text_from_markdown_strips_frontmatter_and_markdown_chrome() {
+        let text = search_text_from_markdown(concat!(
+            "---\n",
+            "title: Demo\n",
+            "---\n\n",
+            "# Heading\n\n",
+            "Text with [[Wiki Links]] and [aliases](Target.md).\n\n",
+            "- [ ] Task item\n",
+            "```rust\n",
+            "fn demo() {}\n",
+            "```\n",
+        ));
+
+        assert_eq!(
+            text,
+            "Heading Text with Wiki Links and aliases Target.md. Task item"
+        );
+    }
+
+    #[test]
+    fn build_search_index_uses_source_search_text_and_aliases() {
+        let rendered_notes = vec![RenderedNote {
+            source_path: "Guides/Intro.md".to_string(),
+            title: "Intro".to_string(),
+            excerpt: "Short summary.".to_string(),
+            description: "Short summary.".to_string(),
+            canonical_url: None,
+            summary_image: None,
+            route: SiteRoute {
+                kind: "note".to_string(),
+                source_path: Some("Guides/Intro.md".to_string()),
+                title: "Intro".to_string(),
+                slug: "guides/intro".to_string(),
+                url_path: "/notes/guides/intro/".to_string(),
+                output_path: "notes/guides/intro/index.html".to_string(),
+            },
+            html: "<p>Rendered HTML should not control search text.</p>".to_string(),
+            headings: Vec::new(),
+            tags: vec!["docs".to_string()],
+            aliases: vec!["Getting Started".to_string()],
+            outgoing_links: Vec::new(),
+            backlinks: Vec::new(),
+            breadcrumbs: Vec::new(),
+            asset_paths: Vec::new(),
+            embeds: Vec::new(),
+            diagnostics: Vec::new(),
+            file_mtime: 0,
+        }];
+        let search_text_by_path = HashMap::from([(
+            "Guides/Intro.md".to_string(),
+            "markdown source terms and getting started body".to_string(),
+        )]);
+
+        let index = build_search_index(&rendered_notes, &search_text_by_path);
+        let documents = index["documents"]
+            .as_array()
+            .expect("documents should serialize");
+        let terms = index["terms"].as_object().expect("terms should serialize");
+
+        assert_eq!(documents.len(), 1);
+        assert_eq!(documents[0]["preview"], "Short summary.");
+        assert!(terms.contains_key("markdown"));
+        assert!(terms.contains_key("getting"));
+        assert!(terms.contains_key("started"));
     }
 
     #[test]
