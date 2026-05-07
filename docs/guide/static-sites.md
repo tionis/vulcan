@@ -176,7 +176,7 @@ right_rail = true
 
 [site.profiles.public.navigation]
 explorer = true
-folder_click = "link"      # link | collapse
+folder_click = "collapse"  # collapse | link
 default_folder_state = "collapsed"
 use_saved_state = true
 show_home = true
@@ -198,8 +198,11 @@ Current defaults and semantics:
   browser storage per site profile
 - `shell.default_palette` chooses the default `system` / `light` / `dark` palette before any stored
   user preference is applied
-- `navigation.folder_click = "link"` makes folder rows prefer folder notes such as `Guides/index.md`
-  when present, otherwise they fall back to generated folder listing pages
+- `navigation.folder_click = "collapse"` is the built-in default and makes folder rows behave like a
+  collapsible explorer; when a folder note such as `Guides/index.md` or `Guides/Guides.md` exists,
+  the built-in shell also renders a separate `Open` affordance for that folder landing page
+- `navigation.folder_click = "link"` makes folder rows navigate directly to folder notes or generated
+  folder listing pages instead of using the row label as the collapse toggle
 - `navigation.default_folder_state` seeds the explorer's initial collapse state; the built-in shell
   restores saved folder open/closed state when `use_saved_state = true`
 - `modules.*` control which right-rail panels are available in the built-in shell; the shell still
@@ -300,7 +303,8 @@ The builder currently emits a profile-scoped site with:
 - `assets/route-manifest.json`
 - `assets/navigation-tree.json`
 - `assets/search-index.json` — note-level search documents plus BM25-style term postings for the
-  built-in client-side full-text search
+  built-in client-side full-text search; the index is derived from source note text so incremental
+  rebuilds do not need to strip rendered HTML again
 - `assets/graph.json` — published nodes/edges reused by the graph page, local graph modules, and
   frontend-bundle consumers
 - `assets/hover-previews.json`
@@ -314,13 +318,16 @@ primary navigation, and a folder-note-aware explorer; a centered reading surface
 for TOC, local graph, backlinks, and outgoing links. It includes `system` / `light` / `dark`
 palette controls, a reader mode that hides most chrome, persisted rail/module state, keyboard-first
 search (`/`), a skip link plus landmarked page shell, a global mobile-friendly search dialog backed
-by a note-level BM25-style full-text index, client-rendered local/global graph views backed by the
-shared published graph asset, profile-scoped `extra_css` / `extra_js`, favicon injection, and logo
-rendering from the site profile. The default desktop shell no longer uses a wide top bar; search,
-palette, reader-mode, and panel controls live in the left rail, while a compact mobile utility dock
-handles rail toggles on narrow screens. When a deploy path is configured, the default shell,
-manifests, and preview server all emit prefix-aware URLs so the built output can be hosted under
-that subpath unchanged.
+by a note-level BM25-style full-text index with prefix lookup, client-rendered local/global graph
+views backed by the shared published graph asset, profile-scoped `extra_css` / `extra_js`, favicon
+injection, and logo rendering from the site profile. The default desktop shell no longer uses a
+wide top bar; search, palette, reader-mode, and panel controls live in the left rail, while a
+compact mobile utility dock handles rail toggles on narrow screens. The default explorer now
+behaves closer to Obsidian/Quartz: folder rows collapse by default, folder notes stay available via
+an explicit `Open` affordance, and the built-in shell remembers rail, module, and folder state
+across full-page navigations. When a deploy path is configured, the default shell, manifests, and
+preview server all emit prefix-aware URLs so the built output can be hosted under that subpath
+unchanged.
 
 ## Frontend bundle mode
 
