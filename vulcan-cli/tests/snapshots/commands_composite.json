@@ -6166,7 +6166,7 @@
       },
       {
         "about": "List and read bundled or vault-defined assistant skills",
-        "after_help": "Subcommands:\n  list       enumerate visible bundled and vault-defined skills\n  get        read one skill's metadata plus Markdown body\n\nPlanned subcommands:\n  show       read one skill's metadata plus SKILL.md body (alias for get)\n  commands   list Vulcan-declared commands exported by one skill\n  run        run a skill command with validated JSON input\n  validate   validate skills, command metadata, schemas, scripts, and permission profile references\n  init       scaffold a new skill directory with optional starter command\n\nNotes:\n  Skill visibility follows the active permission profile's read filter.\n  External runtimes should call `skill list` up front and `skill get <name>` on demand.\n  Skill names are normalized from folder names, but `skill get` also accepts the relative path.\n  Currently only `list` and `get` are implemented; the remaining subcommands are planned.\n\nExamples:\n  vulcan skill list\n  vulcan --output json skill list\n  vulcan skill get note-operations\n  vulcan skill get weekly-review\n  // TODO: vulcan skill show daily-review\n  // TODO: vulcan skill commands daily-review\n  // TODO: vulcan skill run daily-review prepare-day --input-json '{\"date\":\"2026-05-05\",\"dryRun\":true}'\n  // TODO: vulcan skill validate\n  // TODO: vulcan skill init my-skill --starter-command hello",
+        "after_help": "Subcommands:\n  list       enumerate visible bundled and vault-defined skills\n  get        read one skill's metadata plus Markdown body\n  show       read one skill's metadata plus SKILL.md body (alias for get)\n  commands   list Vulcan-declared commands exported by one skill\n  run        run a skill command with validated JSON input\n  validate   validate skills, command metadata, schemas, scripts, and permission profile references\n  init       scaffold a new skill directory with optional starter command\n\nNotes:\n  Skill visibility follows the active permission profile's read filter.\n  External runtimes should call `skill list` up front and `skill get <name>` on demand.\n  Skill names are normalized from folder names, but `skill get` also accepts the relative path.\n  Skill command execution requires a trusted vault: `vulcan trust add`.\n\nExamples:\n  vulcan skill list\n  vulcan --output json skill list\n  vulcan skill get note-operations\n  vulcan skill get weekly-review\n  vulcan skill show daily-review\n  vulcan skill commands daily-review\n  vulcan skill run daily-review prepare-day --input-json '{\"date\":\"2026-05-05\",\"dryRun\":true}'\n  vulcan skill validate\n  vulcan skill init my-skill --starter-command hello",
         "name": "skill",
         "options": [],
         "subcommands": [
@@ -6234,6 +6234,125 @@
             "about": "Validate visible skill files and command metadata",
             "name": "validate",
             "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Run one Vulcan-declared skill command",
+            "name": "run",
+            "options": [
+              {
+                "help": "Skill name or relative path",
+                "id": "skill",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "SKILL"
+                ]
+              },
+              {
+                "help": "Command id declared under metadata.vulcan.commands",
+                "id": "command",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "COMMAND"
+                ]
+              },
+              {
+                "help": "JSON input object",
+                "id": "input_json",
+                "long": "input-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "INPUT_JSON"
+                ]
+              },
+              {
+                "help": "Read JSON input from a file",
+                "id": "input_file",
+                "long": "input-file",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Scaffold a new Agent Skills-compatible skill",
+            "name": "init",
+            "options": [
+              {
+                "help": "Skill directory name",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              },
+              {
+                "help": "Skill description",
+                "id": "description",
+                "long": "description",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DESCRIPTION"
+                ]
+              },
+              {
+                "help": "Also scaffold a command with this id",
+                "id": "starter_command",
+                "long": "starter-command",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "STARTER_COMMAND"
+                ]
+              },
+              {
+                "help": "Preview without writing files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Replace existing scaffold files",
+                "id": "overwrite",
+                "long": "overwrite",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "OVERWRITE"
+                ]
+              }
+            ],
             "subcommands": []
           }
         ]

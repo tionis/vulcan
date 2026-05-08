@@ -30,12 +30,14 @@ use ulid::Ulid;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_core::properties::load_note_index;
 use vulcan_core::{
-    assistant_config_summary, assistant_prompts_root, assistant_skills_root, assistant_tools_root,
-    list_assistant_prompts, list_assistant_skills, load_assistant_prompt, load_assistant_skill,
-    load_vault_config, read_vault_agents_file, render_assistant_prompt, resolve_permission_profile,
-    scan_vault_with_progress, search_vault_with_filter, ConfigPermissionMode, PermissionGuard,
-    PermissionMode, PermissionProfile, PluginEvent, ProfilePermissionGuard, ScanMode, ScanSummary,
-    SearchQuery, SearchSort, VaultPaths,
+    accept_link_suggestion, assistant_config_summary, assistant_prompts_root,
+    assistant_skills_root, assistant_tools_root, list_assistant_prompts, list_assistant_skills,
+    load_assistant_prompt, load_assistant_skill, load_vault_config,
+    query_graph_communities_with_filter, read_vault_agents_file, reject_link_suggestion,
+    render_assistant_prompt, resolve_permission_profile, scan_vault_with_progress,
+    search_vault_with_filter, suggest_links, ConfigPermissionMode, LinkSuggestionStatus,
+    PermissionGuard, PermissionMode, PermissionProfile, PluginEvent, ProfilePermissionGuard,
+    ScanMode, ScanSummary, SearchQuery, SearchSort, VaultPaths,
 };
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -143,6 +145,8 @@ enum McpToolId {
     ConfigShow,
     ConfigSet,
     IndexScan,
+    GraphCommunities,
+    SuggestLinks,
     ToolPackList,
     ToolPackEnable,
     ToolPackDisable,
@@ -194,6 +198,7 @@ const PACK_SEARCH: &[McpToolPack] = &[McpToolPack::Search];
 const PACK_STATUS: &[McpToolPack] = &[McpToolPack::Status];
 const PACK_CUSTOM: &[McpToolPack] = &[McpToolPack::Custom];
 const PACK_NOTES_WRITE: &[McpToolPack] = &[McpToolPack::NotesWrite];
+const PACK_NOTES_READ_WRITE: &[McpToolPack] = &[McpToolPack::NotesRead, McpToolPack::NotesWrite];
 const PACK_NOTES_MANAGE: &[McpToolPack] = &[McpToolPack::NotesManage];
 const PACK_WEB: &[McpToolPack] = &[McpToolPack::Web];
 const PACK_CONFIG: &[McpToolPack] = &[McpToolPack::Config];
@@ -257,6 +262,30 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         input_schema: empty_object_schema,
         output_schema: Some(status_output_schema),
         examples: &["vulcan status --output json"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::GraphCommunities,
+        name: "graph_communities",
+        title: "Inspect Graph Communities",
+        description: "Compute note-graph communities, orphan placement hints, and bridge notes.",
+        packs: PACK_NOTES_READ,
+        visibility: McpVisibilityRequirement::Read,
+        annotations: mcp_annotations(true, false, false, false),
+        input_schema: graph_communities_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["vulcan graph communities --output json"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::SuggestLinks,
+        name: "suggest_links",
+        title: "Suggest Links",
+        description: "Read ranked link suggestions, or accept/reject one suggestion when write permissions are available.",
+        packs: PACK_NOTES_READ_WRITE,
+        visibility: McpVisibilityRequirement::Read,
+        annotations: mcp_annotations(false, false, false, false),
+        input_schema: suggest_links_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["vulcan suggest links --output json"],
     },
     McpToolCatalogEntry {
         id: McpToolId::NoteCreate,
@@ -735,6 +764,36 @@ struct McpSearchArgs {
     fuzzy: bool,
     #[serde(default)]
     explain: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpGraphCommunitiesArgs {
+    #[serde(default)]
+    community: Option<usize>,
+    #[serde(default)]
+    orphans: bool,
+    #[serde(default)]
+    bridges: bool,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpSuggestLinksArgs {
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default = "default_suggest_min_score")]
+    min_score: f64,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    accept: Option<String>,
+    #[serde(default)]
+    reject: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2196,6 +2255,71 @@ impl McpServerCore {
                 let report = run_status_command(&self.paths).map_err(cli_tool_error)?;
                 self.serialize_tool_report(tool.name, &report)
             }
+            McpToolId::GraphCommunities => {
+                let args: McpGraphCommunitiesArgs = parse_tool_arguments(arguments)?;
+                let report = query_graph_communities_with_filter(
+                    &self.paths,
+                    Some(&self.guard.read_filter()),
+                    !args.dry_run,
+                )
+                .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                let mut value = serde_json::to_value(report)
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                if let Value::Object(object) = &mut value {
+                    object.insert("selected_community".to_string(), args.community.into());
+                    object.insert("include_orphans".to_string(), args.orphans.into());
+                    object.insert("include_bridges".to_string(), args.bridges.into());
+                }
+                Ok(self.tool_success_response(tool.name, value))
+            }
+            McpToolId::SuggestLinks => {
+                let args: McpSuggestLinksArgs = parse_tool_arguments(arguments)?;
+                if args.accept.is_some() && args.reject.is_some() {
+                    return Err(McpMethodError::invalid_params(
+                        "`suggest_links` accepts either `accept` or `reject`, not both",
+                    ));
+                }
+                if let Some(id) = args.accept.as_deref() {
+                    self.guard
+                        .check_write_path(".vulcan/cache.db")
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                    let suggestion = accept_link_suggestion(&self.paths, id)
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                    return self.serialize_tool_report(
+                        tool.name,
+                        &vulcan_core::LinkSuggestionsReport {
+                            suggestions: vec![suggestion],
+                        },
+                    );
+                }
+                if let Some(id) = args.reject.as_deref() {
+                    self.guard
+                        .check_write_path(".vulcan/cache.db")
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                    let suggestion = reject_link_suggestion(&self.paths, id)
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                    return self.serialize_tool_report(
+                        tool.name,
+                        &vulcan_core::LinkSuggestionsReport {
+                            suggestions: vec![suggestion],
+                        },
+                    );
+                }
+                let status = args
+                    .status
+                    .as_deref()
+                    .map(parse_link_suggestion_status)
+                    .transpose()?;
+                let report = suggest_links(
+                    &self.paths,
+                    args.note.as_deref(),
+                    args.limit,
+                    args.min_score,
+                    status,
+                )
+                .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                self.serialize_tool_report(tool.name, &report)
+            }
             McpToolId::NoteCreate => {
                 let args: McpNoteCreateArgs = parse_tool_arguments(arguments)?;
                 let normalized_path = normalize_note_path(&args.path).map_err(cli_tool_error)?;
@@ -3415,6 +3539,17 @@ fn parse_search_sort(sort: Option<String>) -> Result<Option<SearchSort>, McpMeth
     Ok(Some(value))
 }
 
+fn parse_link_suggestion_status(value: &str) -> Result<LinkSuggestionStatus, McpMethodError> {
+    match value {
+        "pending" => Ok(LinkSuggestionStatus::Pending),
+        "accepted" => Ok(LinkSuggestionStatus::Accepted),
+        "rejected" => Ok(LinkSuggestionStatus::Rejected),
+        other => Err(McpMethodError::invalid_params(format!(
+            "unsupported `suggest_links.status`: {other}"
+        ))),
+    }
+}
+
 fn parse_search_backend(
     backend: Option<String>,
 ) -> Result<Option<SearchBackendArg>, McpMethodError> {
@@ -3601,6 +3736,10 @@ fn default_search_limit() -> usize {
 
 fn default_search_context_size() -> usize {
     18
+}
+
+fn default_suggest_min_score() -> f64 {
+    0.0
 }
 
 fn default_web_limit() -> usize {
@@ -4196,6 +4335,56 @@ fn index_scan_input_schema() -> Value {
                 "no_commit",
                 schema_boolean("Suppress scan auto-commit behavior."),
             ),
+        ],
+        &[],
+    )
+}
+
+fn graph_communities_input_schema() -> Value {
+    schema_object(
+        vec![
+            (
+                "community",
+                schema_integer("Optional community id to focus in client displays."),
+            ),
+            ("orphans", schema_boolean("Include orphan placement hints.")),
+            ("bridges", schema_boolean("Include bridge-note rankings.")),
+            (
+                "dry_run",
+                schema_boolean("Compute communities without persisting assignments."),
+            ),
+        ],
+        &[],
+    )
+}
+
+fn suggest_links_input_schema() -> Value {
+    schema_object(
+        vec![
+            (
+                "note",
+                schema_string("Optional note identifier to scope suggestions."),
+            ),
+            (
+                "min_score",
+                serde_json::json!({
+                    "type": "number",
+                    "description": "Minimum composite score to include."
+                }),
+            ),
+            (
+                "limit",
+                schema_integer("Maximum number of suggestions to return."),
+            ),
+            (
+                "status",
+                schema_string_enum(
+                    "Feedback status filter.",
+                    &["pending", "accepted", "rejected"],
+                ),
+            ),
+            ("accept", schema_string("Suggestion id to accept.")),
+            ("reject", schema_string("Suggestion id to reject.")),
         ],
         &[],
     )

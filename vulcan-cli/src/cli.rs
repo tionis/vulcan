@@ -66,8 +66,6 @@ const SKILL_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   list       enumerate visible bundled and vault-defined skills
   get        read one skill's metadata plus Markdown body
-
-Planned subcommands:
   show       read one skill's metadata plus SKILL.md body (alias for get)
   commands   list Vulcan-declared commands exported by one skill
   run        run a skill command with validated JSON input
@@ -78,18 +76,18 @@ Notes:
   Skill visibility follows the active permission profile's read filter.
   External runtimes should call `skill list` up front and `skill get <name>` on demand.
   Skill names are normalized from folder names, but `skill get` also accepts the relative path.
-  Currently only `list` and `get` are implemented; the remaining subcommands are planned.
+  Skill command execution requires a trusted vault: `vulcan trust add`.
 
 Examples:
   vulcan skill list
   vulcan --output json skill list
   vulcan skill get note-operations
   vulcan skill get weekly-review
-  // TODO: vulcan skill show daily-review
-  // TODO: vulcan skill commands daily-review
-  // TODO: vulcan skill run daily-review prepare-day --input-json '{\"date\":\"2026-05-05\",\"dryRun\":true}'
-  // TODO: vulcan skill validate
-  // TODO: vulcan skill init my-skill --starter-command hello";
+  vulcan skill show daily-review
+  vulcan skill commands daily-review
+  vulcan skill run daily-review prepare-day --input-json '{\"date\":\"2026-05-05\",\"dryRun\":true}'
+  vulcan skill validate
+  vulcan skill init my-skill --starter-command hello";
 
 const TOOL_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
@@ -2071,6 +2069,19 @@ pub enum SuggestCommand {
         reject: Option<String>,
         #[arg(long, value_enum, help = "Filter by feedback status")]
         status: Option<SuggestLinkStatusArg>,
+        #[arg(long, help = "Alias for --status accepted")]
+        accepted: bool,
+        #[arg(
+            long,
+            help = "Accept all pending suggestions above --min-score after previewing the queue"
+        )]
+        apply: bool,
+        #[arg(
+            long,
+            requires = "apply",
+            help = "Preview --apply without accepting suggestions"
+        )]
+        dry_run: bool,
         #[command(flatten)]
         export: ExportArgs,
     },
@@ -3007,6 +3018,30 @@ pub enum SkillCommand {
     },
     #[command(about = "Validate visible skill files and command metadata")]
     Validate,
+    #[command(about = "Run one Vulcan-declared skill command")]
+    Run {
+        #[arg(help = "Skill name or relative path")]
+        skill: String,
+        #[arg(help = "Command id declared under metadata.vulcan.commands")]
+        command: String,
+        #[arg(long, conflicts_with = "input_file", help = "JSON input object")]
+        input_json: Option<String>,
+        #[arg(long, value_name = "PATH", help = "Read JSON input from a file")]
+        input_file: Option<std::path::PathBuf>,
+    },
+    #[command(about = "Scaffold a new Agent Skills-compatible skill")]
+    Init {
+        #[arg(help = "Skill directory name")]
+        name: String,
+        #[arg(long, help = "Skill description")]
+        description: Option<String>,
+        #[arg(long, help = "Also scaffold a command with this id")]
+        starter_command: Option<String>,
+        #[arg(long, help = "Preview without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Replace existing scaffold files")]
+        overwrite: bool,
+    },
 }
 
 #[allow(clippy::struct_excessive_bools)]

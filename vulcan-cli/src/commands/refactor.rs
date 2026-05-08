@@ -329,9 +329,17 @@ pub(crate) fn handle_suggest_command(
             accept,
             reject,
             status,
+            accepted,
+            apply,
+            dry_run,
             export,
         } => {
             let export = crate::resolve_cli_export(export)?;
+            if *accepted && status.is_some() {
+                return Err(CliError::operation(
+                    "`suggest links` accepts either --accepted or --status, not both",
+                ));
+            }
             if let Some(id) = accept {
                 let suggestion = accept_link_suggestion(paths, id).map_err(CliError::operation)?;
                 return crate::print_link_suggestions_report(
@@ -368,15 +376,21 @@ pub(crate) fn handle_suggest_command(
             } else {
                 None
             };
-            let status = status.map(|status| match status {
-                SuggestLinkStatusArg::Pending => LinkSuggestionStatus::Pending,
-                SuggestLinkStatusArg::Accepted => LinkSuggestionStatus::Accepted,
-                SuggestLinkStatusArg::Rejected => LinkSuggestionStatus::Rejected,
-            });
+            let status = if *accepted {
+                Some(LinkSuggestionStatus::Accepted)
+            } else if *apply {
+                Some(LinkSuggestionStatus::Pending)
+            } else {
+                status.map(|status| match status {
+                    SuggestLinkStatusArg::Pending => LinkSuggestionStatus::Pending,
+                    SuggestLinkStatusArg::Accepted => LinkSuggestionStatus::Accepted,
+                    SuggestLinkStatusArg::Rejected => LinkSuggestionStatus::Rejected,
+                })
+            };
             let min_score = min_score.parse::<f64>().map_err(|error| {
                 CliError::operation(format!("invalid --min-score `{min_score}`: {error}"))
             })?;
-            let report = suggest_links(
+            let mut report = suggest_links(
                 paths,
                 note.as_deref(),
                 list_controls.limit,
@@ -384,6 +398,18 @@ pub(crate) fn handle_suggest_command(
                 status,
             )
             .map_err(CliError::operation)?;
+            if *apply && !*dry_run {
+                let mut accepted = Vec::new();
+                for suggestion in &report.suggestions {
+                    accepted.push(
+                        accept_link_suggestion(paths, &suggestion.id)
+                            .map_err(CliError::operation)?,
+                    );
+                }
+                report = vulcan_core::LinkSuggestionsReport {
+                    suggestions: accepted,
+                };
+            }
             crate::print_link_suggestions_report(
                 cli.output,
                 &report,
