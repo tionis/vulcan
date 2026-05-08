@@ -7591,6 +7591,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref oauth_jwks_url,
             ref oauth_allowed_sub,
             ref oauth_allowed_email,
+            ref oauth_local_client_id,
+            ref oauth_local_client_secret,
+            ref oauth_local_approval_token,
+            ref oauth_local_subject,
+            ref oauth_local_email,
         } => mcp::run_mcp(
             &paths,
             cli.permissions.as_deref(),
@@ -7607,6 +7612,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 oauth_jwks_url: oauth_jwks_url.clone(),
                 oauth_allowed_sub: oauth_allowed_sub.clone(),
                 oauth_allowed_email: oauth_allowed_email.clone(),
+                oauth_local_client_id: oauth_local_client_id.clone(),
+                oauth_local_client_secret: oauth_local_client_secret.clone(),
+                oauth_local_approval_token: oauth_local_approval_token.clone(),
+                oauth_local_subject: oauth_local_subject.clone(),
+                oauth_local_email: oauth_local_email.clone(),
             },
         ),
         Command::Trust { ref command } => handle_trust_command(cli, &paths, command.as_ref()),
@@ -23754,6 +23764,11 @@ mod tests {
                 oauth_jwks_url: None,
                 oauth_allowed_sub: Vec::new(),
                 oauth_allowed_email: Vec::new(),
+                oauth_local_client_id: None,
+                oauth_local_client_secret: None,
+                oauth_local_approval_token: None,
+                oauth_local_subject: Some("local-user".to_string()),
+                oauth_local_email: None,
             }
         );
         assert_eq!(mcp.permissions.as_deref(), Some("readonly"));

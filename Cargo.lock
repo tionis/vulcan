@@ -3606,6 +3606,7 @@ name = "vulcan-cli"
 version = "0.1.0"
 dependencies = [
  "assert_cmd",
+ "base64",
  "clap",
  "clap_complete",
  "crossterm 0.28.1",
@@ -3634,6 +3635,7 @@ version = "0.1.0"
 dependencies = [
  "aho-corasick",
  "ammonia",
+ "base64",
  "blake3",
  "csv",
  "fs2",
@@ -3653,6 +3655,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
  "tempfile",
  "toml",
  "ulid",

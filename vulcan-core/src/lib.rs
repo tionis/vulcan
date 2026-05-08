@@ -159,7 +159,10 @@ pub use note::{
     NoteOutlineSection, NoteOutlineSelection, NoteReadOptions, NoteReadSelection, NoteSelectedLine,
     NoteSelectionError,
 };
-pub use oauth::{OAuthError, OAuthResourceServer, OAuthResourceServerConfig};
+pub use oauth::{
+    LocalOAuthIssuer, LocalOAuthIssuerConfig, OAuthError, OAuthResourceServer,
+    OAuthResourceServerConfig,
+};
 pub use parser::{
     parse_document, ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind,
     ParsedDocument, RawBlockRef, RawDataviewBlock, RawHeading, RawInlineExpression, RawInlineField,

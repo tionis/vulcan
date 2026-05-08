@@ -21,6 +21,7 @@ js_runtime = ["dep:rquickjs", "vulcan-app/js_runtime", "vulcan-core/js_runtime"]
 [dependencies]
 clap.workspace = true
 clap_complete.workspace = true
+base64.workspace = true
 crossterm.workspace = true
 csv.workspace = true
 ratatui.workspace = true

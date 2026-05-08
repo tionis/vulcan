@@ -40,9 +40,10 @@ use vulcan_core::{
     query_graph_communities_with_filter, query_notes_with_filter, read_vault_agents_file,
     reject_link_suggestion, render_assistant_prompt, resolve_permission_profile,
     scan_vault_with_progress, search_vault_with_filter, suggest_links, ConfigPermissionMode,
-    LinkSuggestionStatus, NoteQuery, OAuthResourceServer, OAuthResourceServerConfig,
-    PermissionGuard, PermissionMode, PermissionProfile, PluginEvent, ProfilePermissionGuard,
-    QueryAst, QueryReport, ScanMode, ScanSummary, SearchQuery, SearchSort, VaultPaths,
+    LinkSuggestionStatus, LocalOAuthIssuer, LocalOAuthIssuerConfig, NoteQuery, OAuthResourceServer,
+    OAuthResourceServerConfig, PermissionGuard, PermissionMode, PermissionProfile, PluginEvent,
+    ProfilePermissionGuard, QueryAst, QueryReport, ScanMode, ScanSummary, SearchQuery, SearchSort,
+    VaultPaths,
 };
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -63,6 +64,11 @@ pub(crate) struct McpHttpOptions {
     pub oauth_jwks_url: Option<String>,
     pub oauth_allowed_sub: Vec<String>,
     pub oauth_allowed_email: Vec<String>,
+    pub oauth_local_client_id: Option<String>,
+    pub oauth_local_client_secret: Option<String>,
+    pub oauth_local_approval_token: Option<String>,
+    pub oauth_local_subject: Option<String>,
+    pub oauth_local_email: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -687,6 +693,7 @@ impl McpHttpSession {
 struct McpHttpRequest {
     method: String,
     path: String,
+    query: String,
     headers: BTreeMap<String, String>,
     body: Vec<u8>,
 }
@@ -697,6 +704,20 @@ struct McpHttpResponse {
     content_type: Option<&'static str>,
     body: Vec<u8>,
     extra_headers: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+enum McpOAuthMode {
+    External(Arc<OAuthResourceServer>),
+    Local(Arc<LocalOAuthIssuer>),
+}
+
+#[derive(Debug, Clone)]
+struct LocalOAuthCode {
+    client_id: String,
+    redirect_uri: String,
+    code_challenge: String,
+    expires_at: std::time::Instant,
 }
 
 #[derive(Debug)]
@@ -714,9 +735,10 @@ struct McpHttpServerContext {
     tool_pack_mode_arg: McpToolPackModeArg,
     endpoint: String,
     auth_token: Option<String>,
-    oauth: Option<Arc<OAuthResourceServer>>,
+    oauth: Option<McpOAuthMode>,
     bind_addr: SocketAddr,
     sessions: Arc<Mutex<BTreeMap<String, Arc<McpHttpSession>>>>,
+    oauth_codes: Arc<Mutex<BTreeMap<String, LocalOAuthCode>>>,
 }
 
 #[derive(Debug)]
@@ -1298,6 +1320,7 @@ fn run_mcp_http_server(
         oauth,
         bind_addr: addr,
         sessions: Arc::new(Mutex::new(BTreeMap::new())),
+        oauth_codes: Arc::new(Mutex::new(BTreeMap::new())),
     };
 
     loop {
@@ -1623,7 +1646,7 @@ fn validate_mcp_http_security(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
 ) -> Option<McpHttpResponse> {
-    if let Some(oauth) = context.oauth.as_deref() {
+    if let Some(oauth) = context.oauth.as_ref() {
         let Some(token) = bearer_token(&request.headers) else {
             return Some(oauth_error_response(
                 oauth,
@@ -1631,7 +1654,7 @@ fn validate_mcp_http_security(
                 "invalid_token",
             ));
         };
-        if let Err(error) = oauth.validate_bearer_token(&token) {
+        if let Err(error) = validate_oauth_bearer_token(oauth, &token) {
             eprintln!("MCP OAuth bearer token rejected: {error}");
             return Some(oauth_error_response(
                 oauth,
@@ -1660,6 +1683,16 @@ fn validate_mcp_http_security(
         }
     }
     None
+}
+
+fn validate_oauth_bearer_token(
+    oauth: &McpOAuthMode,
+    token: &str,
+) -> Result<(), vulcan_core::OAuthError> {
+    match oauth {
+        McpOAuthMode::External(external) => external.validate_bearer_token(token),
+        McpOAuthMode::Local(local) => local.validate_bearer_token(token),
+    }
 }
 
 impl McpServerCore {
@@ -3671,9 +3704,56 @@ fn parse_mcp_http_bind_addr(bind: &str, allow_remote: bool) -> Result<SocketAddr
     Ok(addr)
 }
 
-fn build_mcp_oauth_validator(
-    options: &McpHttpOptions,
-) -> Result<Option<Arc<OAuthResourceServer>>, CliError> {
+fn build_mcp_oauth_validator(options: &McpHttpOptions) -> Result<Option<McpOAuthMode>, CliError> {
+    let local_requested = options.oauth_local_client_id.is_some()
+        || options.oauth_local_client_secret.is_some()
+        || options.oauth_local_approval_token.is_some();
+    if local_requested {
+        if options.oauth_issuer.is_some() || options.auth_token.is_some() {
+            return Err(CliError::operation(
+                "local MCP OAuth issuer is mutually exclusive with --oauth-issuer and --auth-token",
+            ));
+        }
+        let public_url = options.public_url.as_deref().ok_or_else(|| {
+            CliError::operation("--public-url is required when using local MCP OAuth issuer")
+        })?;
+        let client_id = options.oauth_local_client_id.as_deref().ok_or_else(|| {
+            CliError::operation("--oauth-local-client-id is required for local MCP OAuth issuer")
+        })?;
+        let client_secret = options
+            .oauth_local_client_secret
+            .as_deref()
+            .ok_or_else(|| {
+                CliError::operation(
+                    "--oauth-local-client-secret is required for local MCP OAuth issuer",
+                )
+            })?;
+        let approval_token = options
+            .oauth_local_approval_token
+            .as_deref()
+            .ok_or_else(|| {
+                CliError::operation(
+                    "--oauth-local-approval-token is required for local MCP OAuth issuer",
+                )
+            })?;
+        let subject = options
+            .oauth_local_subject
+            .as_deref()
+            .unwrap_or("local-user");
+        return LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: public_url.to_string(),
+            client_id: client_id.to_string(),
+            client_secret: client_secret.to_string(),
+            approval_token: approval_token.to_string(),
+            subject: subject.to_string(),
+            email: options.oauth_local_email.clone(),
+        })
+        .map(Arc::new)
+        .map(McpOAuthMode::Local)
+        .map(Some)
+        .map_err(CliError::operation);
+    }
+
     let Some(issuer) = options.oauth_issuer.as_deref() else {
         if options.public_url.is_some()
             || !options.oauth_audience.is_empty()
@@ -3721,6 +3801,7 @@ fn build_mcp_oauth_validator(
         public_url: public_url.to_string(),
     })
     .map(Arc::new)
+    .map(McpOAuthMode::External)
     .map(Some)
     .map_err(CliError::operation)
 }
@@ -3729,7 +3810,15 @@ fn handle_mcp_oauth_metadata(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
 ) -> Option<McpHttpResponse> {
-    let oauth = context.oauth.as_deref()?;
+    let oauth = context.oauth.as_ref()?;
+    if let McpOAuthMode::Local(local) = oauth {
+        if request.path == "/oauth/authorize" {
+            return Some(handle_local_oauth_authorize(context, local, request));
+        }
+        if request.path == "/oauth/token" {
+            return Some(handle_local_oauth_token(context, local, request));
+        }
+    }
     if request.method != "GET" {
         return None;
     }
@@ -3737,25 +3826,262 @@ fn handle_mcp_oauth_metadata(
         return Some(McpHttpResponse {
             status: 200,
             content_type: Some("application/json"),
-            body: serde_json::to_vec(oauth.authorization_server_metadata())
+            body: serde_json::to_vec(oauth_authorization_server_metadata(oauth))
                 .expect("json should serialize"),
             extra_headers: Vec::new(),
         });
     }
     if is_protected_resource_metadata_path(&request.path, &context.endpoint) {
-        let body = serde_json::json!({
-            "resource": oauth.public_url(),
-            "authorization_servers": [oauth.authorization_server_issuer()],
-            "bearer_methods_supported": ["header"],
-        });
-        return Some(McpHttpResponse {
-            status: 200,
-            content_type: Some("application/json"),
-            body: serde_json::to_vec(&body).expect("json should serialize"),
-            extra_headers: Vec::new(),
-        });
+        return Some(oauth_protected_resource_response(oauth));
     }
     None
+}
+
+fn oauth_authorization_server_metadata(oauth: &McpOAuthMode) -> &Value {
+    match oauth {
+        McpOAuthMode::External(external) => external.authorization_server_metadata(),
+        McpOAuthMode::Local(local) => local.authorization_server_metadata(),
+    }
+}
+
+fn oauth_protected_resource_response(oauth: &McpOAuthMode) -> McpHttpResponse {
+    let body = match oauth {
+        McpOAuthMode::External(external) => serde_json::json!({
+            "resource": external.public_url(),
+            "authorization_servers": [external.authorization_server_issuer()],
+            "bearer_methods_supported": ["header"],
+        }),
+        McpOAuthMode::Local(local) => serde_json::json!({
+            "resource": local.public_url(),
+            "authorization_servers": [local.public_url()],
+            "bearer_methods_supported": ["header"],
+        }),
+    };
+    McpHttpResponse {
+        status: 200,
+        content_type: Some("application/json"),
+        body: serde_json::to_vec(&body).expect("json should serialize"),
+        extra_headers: Vec::new(),
+    }
+}
+
+fn handle_local_oauth_authorize(
+    context: &McpHttpServerContext,
+    issuer: &LocalOAuthIssuer,
+    request: &McpHttpRequest,
+) -> McpHttpResponse {
+    if request.method != "GET" {
+        return oauth_plain_response(405, "method not allowed");
+    }
+    let params = parse_query_params(&request.query);
+    let client_id = params.get("client_id").cloned().unwrap_or_default();
+    let redirect_uri = params.get("redirect_uri").cloned().unwrap_or_default();
+    let response_type = params.get("response_type").cloned().unwrap_or_default();
+    let code_challenge = params.get("code_challenge").cloned().unwrap_or_default();
+    let code_challenge_method = params
+        .get("code_challenge_method")
+        .cloned()
+        .unwrap_or_default();
+    if client_id != issuer.client_id()
+        || redirect_uri.is_empty()
+        || response_type != "code"
+        || code_challenge.is_empty()
+        || code_challenge_method != "S256"
+    {
+        return oauth_plain_response(400, "invalid OAuth authorization request");
+    }
+    let approval_token = params.get("approval_token").cloned().unwrap_or_default();
+    if !issuer.verify_approval_token(&approval_token) {
+        return local_oauth_approval_form(&params);
+    }
+    let code = Ulid::new().to_string();
+    context
+        .oauth_codes
+        .lock()
+        .expect("oauth code lock should not be poisoned")
+        .insert(
+            code.clone(),
+            LocalOAuthCode {
+                client_id,
+                redirect_uri: redirect_uri.clone(),
+                code_challenge,
+                expires_at: std::time::Instant::now() + Duration::from_secs(300),
+            },
+        );
+    let mut location = format!("{}?code={}", redirect_uri, percent_encode(&code));
+    if let Some(state) = params.get("state") {
+        location.push_str("&state=");
+        location.push_str(&percent_encode(state));
+    }
+    McpHttpResponse {
+        status: 302,
+        content_type: None,
+        body: Vec::new(),
+        extra_headers: vec![("Location".to_string(), location)],
+    }
+}
+
+fn handle_local_oauth_token(
+    context: &McpHttpServerContext,
+    issuer: &LocalOAuthIssuer,
+    request: &McpHttpRequest,
+) -> McpHttpResponse {
+    if request.method != "POST" {
+        return oauth_json_error_response(405, "invalid_request", "method not allowed");
+    }
+    let params = parse_form_params(&request.body);
+    let Some((client_id, client_secret)) = oauth_client_credentials(request, &params) else {
+        return oauth_json_error_response(
+            401,
+            "invalid_client",
+            "missing OAuth client credentials",
+        );
+    };
+    if !issuer.verify_client(&client_id, &client_secret) {
+        return oauth_json_error_response(
+            401,
+            "invalid_client",
+            "invalid OAuth client credentials",
+        );
+    }
+    if params.get("grant_type").map(String::as_str) != Some("authorization_code") {
+        return oauth_json_error_response(400, "unsupported_grant_type", "unsupported grant type");
+    }
+    let Some(code) = params.get("code") else {
+        return oauth_json_error_response(400, "invalid_request", "missing authorization code");
+    };
+    let Some(code_verifier) = params.get("code_verifier") else {
+        return oauth_json_error_response(400, "invalid_request", "missing PKCE verifier");
+    };
+    let code_record = context
+        .oauth_codes
+        .lock()
+        .expect("oauth code lock should not be poisoned")
+        .remove(code);
+    let Some(code_record) = code_record else {
+        return oauth_json_error_response(400, "invalid_grant", "unknown authorization code");
+    };
+    if code_record.expires_at < std::time::Instant::now() {
+        return oauth_json_error_response(400, "invalid_grant", "expired authorization code");
+    }
+    if code_record.client_id != client_id {
+        return oauth_json_error_response(
+            400,
+            "invalid_grant",
+            "authorization code client mismatch",
+        );
+    }
+    if params.get("redirect_uri") != Some(&code_record.redirect_uri) {
+        return oauth_json_error_response(
+            400,
+            "invalid_grant",
+            "authorization code redirect mismatch",
+        );
+    }
+    if !issuer.verify_pkce_s256(code_verifier, &code_record.code_challenge) {
+        return oauth_json_error_response(400, "invalid_grant", "invalid PKCE verifier");
+    }
+    match issuer.issue_access_token() {
+        Ok(access_token) => {
+            let body = serde_json::json!({
+                "access_token": access_token,
+                "token_type": "Bearer",
+                "expires_in": 3600,
+                "scope": "openid email profile",
+            });
+            McpHttpResponse {
+                status: 200,
+                content_type: Some("application/json"),
+                body: serde_json::to_vec(&body).expect("json should serialize"),
+                extra_headers: vec![("Cache-Control".to_string(), "no-store".to_string())],
+            }
+        }
+        Err(error) => oauth_json_error_response(500, "server_error", error.to_string()),
+    }
+}
+
+fn local_oauth_approval_form(params: &BTreeMap<String, String>) -> McpHttpResponse {
+    let mut action = "/oauth/authorize?".to_string();
+    let mut first = true;
+    for (key, value) in params
+        .iter()
+        .filter(|(key, _)| key.as_str() != "approval_token")
+    {
+        if !first {
+            action.push('&');
+        }
+        first = false;
+        action.push_str(&percent_encode(key));
+        action.push('=');
+        action.push_str(&percent_encode(value));
+    }
+    let html = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Authorize Vulcan MCP</title></head>\
+         <body><main><h1>Authorize Vulcan MCP</h1>\
+         <form method=\"get\" action=\"{}\">\
+         <label>Approval token <input name=\"approval_token\" type=\"password\" autocomplete=\"one-time-code\" autofocus></label>\
+         <button type=\"submit\">Authorize</button>\
+         </form></main></body></html>",
+        html_escape(&action)
+    );
+    McpHttpResponse {
+        status: 200,
+        content_type: Some("text/html; charset=utf-8"),
+        body: html.into_bytes(),
+        extra_headers: Vec::new(),
+    }
+}
+
+fn oauth_client_credentials(
+    request: &McpHttpRequest,
+    params: &BTreeMap<String, String>,
+) -> Option<(String, String)> {
+    if let Some(credentials) = request
+        .headers
+        .get("authorization")
+        .and_then(|value| value.strip_prefix("Basic "))
+        .and_then(decode_basic_credentials)
+    {
+        return Some(credentials);
+    }
+    let client_id = params.get("client_id")?.clone();
+    let client_secret = params.get("client_secret")?.clone();
+    Some((client_id, client_secret))
+}
+
+fn decode_basic_credentials(value: &str) -> Option<(String, String)> {
+    use base64::prelude::{Engine, BASE64_STANDARD};
+
+    let decoded = BASE64_STANDARD.decode(value).ok()?;
+    let decoded = String::from_utf8(decoded).ok()?;
+    let (client_id, client_secret) = decoded.split_once(':')?;
+    Some((client_id.to_string(), client_secret.to_string()))
+}
+
+fn oauth_plain_response(status: u16, message: &str) -> McpHttpResponse {
+    McpHttpResponse {
+        status,
+        content_type: Some("text/plain; charset=utf-8"),
+        body: message.as_bytes().to_vec(),
+        extra_headers: Vec::new(),
+    }
+}
+
+fn oauth_json_error_response(
+    status: u16,
+    error: &str,
+    error_description: impl Into<String>,
+) -> McpHttpResponse {
+    let body = serde_json::json!({
+        "error": error,
+        "error_description": error_description.into(),
+    });
+    McpHttpResponse {
+        status,
+        content_type: Some("application/json"),
+        body: serde_json::to_vec(&body).expect("json should serialize"),
+        extra_headers: vec![("Cache-Control".to_string(), "no-store".to_string())],
+    }
 }
 
 fn is_protected_resource_metadata_path(path: &str, endpoint: &str) -> bool {
@@ -3771,7 +4097,7 @@ fn is_authorization_server_metadata_path(path: &str, endpoint: &str) -> bool {
 }
 
 fn oauth_error_response(
-    oauth: &OAuthResourceServer,
+    oauth: &McpOAuthMode,
     message: impl Into<String>,
     error: &str,
 ) -> McpHttpResponse {
@@ -3783,10 +4109,17 @@ fn oauth_error_response(
         format!(
             "Bearer error=\"{error}\", error_description=\"{}\", resource_metadata=\"{}\"",
             error_description,
-            oauth.protected_resource_metadata_url(),
+            oauth_protected_resource_metadata_url(oauth),
         ),
     ));
     response
+}
+
+fn oauth_protected_resource_metadata_url(oauth: &McpOAuthMode) -> &str {
+    match oauth {
+        McpOAuthMode::External(external) => external.protected_resource_metadata_url(),
+        McpOAuthMode::Local(local) => local.protected_resource_metadata_url(),
+    }
 }
 
 fn escape_www_authenticate_value(value: &str) -> String {
@@ -3882,10 +4215,11 @@ fn read_mcp_http_request(stream: &mut TcpStream) -> Result<McpHttpRequest, Strin
     let target = request_parts
         .next()
         .ok_or_else(|| "missing HTTP request target".to_string())?;
-    let path = target
+    let (path, query) = target
         .split_once('?')
-        .map_or(target, |(path, _)| path)
-        .to_string();
+        .map_or((target, ""), |(path, query)| (path, query));
+    let path = path.to_string();
+    let query = query.to_string();
 
     let headers = lines
         .take_while(|line| !line.trim().is_empty())
@@ -3918,6 +4252,7 @@ fn read_mcp_http_request(stream: &mut TcpStream) -> Result<McpHttpRequest, Strin
     Ok(McpHttpRequest {
         method,
         path,
+        query,
         headers,
         body,
     })
@@ -3930,6 +4265,7 @@ fn write_mcp_http_response(
     let status_text = match response.status {
         200 => "OK",
         202 => "Accepted",
+        302 => "Found",
         204 => "No Content",
         400 => "Bad Request",
         401 => "Unauthorized",
@@ -3998,6 +4334,78 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack
         .windows(needle.len())
         .position(|window| window == needle)
+}
+
+fn parse_query_params(query: &str) -> BTreeMap<String, String> {
+    query
+        .split('&')
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| {
+            let (key, value) = part.split_once('=').unwrap_or((part, ""));
+            Some((percent_decode(key)?, percent_decode(value)?))
+        })
+        .collect()
+}
+
+fn parse_form_params(body: &[u8]) -> BTreeMap<String, String> {
+    std::str::from_utf8(body).map_or_else(|_| BTreeMap::new(), parse_query_params)
+}
+
+fn percent_decode(value: &str) -> Option<String> {
+    let mut output = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                output.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                let high = hex_value(bytes[index + 1])?;
+                let low = hex_value(bytes[index + 2])?;
+                output.push(high * 16 + low);
+                index += 3;
+            }
+            b'%' => return None,
+            byte => {
+                output.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(output).ok()
+}
+
+fn percent_encode(value: &str) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    for byte in value.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            output.push(char::from(byte));
+        } else {
+            write!(output, "%{byte:02X}").expect("writing to a String should not fail");
+        }
+    }
+    output
+}
+
+const fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
 
 fn tool_by_name(name: &str) -> Option<&'static McpToolCatalogEntry> {
@@ -5491,6 +5899,11 @@ mod tests {
             ),
             oauth_allowed_sub: vec!["user-id".to_string()],
             oauth_allowed_email: Vec::new(),
+            oauth_local_client_id: None,
+            oauth_local_client_secret: None,
+            oauth_local_approval_token: None,
+            oauth_local_subject: Some("local-user".to_string()),
+            oauth_local_email: None,
         }
     }
 
