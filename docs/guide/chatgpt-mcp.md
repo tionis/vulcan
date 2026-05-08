@@ -20,14 +20,14 @@ Preferred direct ChatGPT shape:
      --oauth-indieauth-me https://example.com/ \
      --oauth-local-subject fallback \
      --oauth-local-user https://example.com/=daily-wiki-agent,you@example.com \
-     --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom
+     --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom,index
    ```
 
 2. Publish `https://wiki.example.com/mcp` through an HTTPS reverse proxy to the local Vulcan bind. Also proxy `https://wiki.example.com/.well-known/oauth-protected-resource/mcp`, `https://wiki.example.com/.well-known/oauth-authorization-server/mcp`, and `https://wiki.example.com/oauth/*` to the same Vulcan server.
 3. Configure ChatGPT Developer Mode with the public MCP URL.
 4. Keep shell, host execution, git mutation, unrestricted network, broad refactor, and config writes out of the selected permission profile.
 
-`daily-wiki-agent` is the built-in pilot profile for this shape. It allows full vault note/task edits, config reads, and no shell, host execution, git mutation, refactor, network, or explicit index maintenance.
+`daily-wiki-agent` is the built-in pilot profile for this shape. It allows full vault note/task edits, config reads, and explicit index maintenance, with no shell, host execution, git mutation, refactor, or network access.
 
 The recommended ChatGPT path is Vulcan's built-in MCP OAuth issuer. Vulcan owns ChatGPT-facing authorization-code + PKCE, dynamic client registration, short-lived MCP access tokens, and bearer-token validation. Human login can be delegated to an upstream IndieAuth server by setting `--oauth-indieauth-me` to your identity URL; Vulcan discovers `indieauth-metadata` from that profile URL and falls back to legacy `authorization_endpoint` / `token_endpoint` links. Vulcan maps the returned IndieAuth subject to a permission profile with `--oauth-local-user <subject>=<profile>[,<email>]`.
 
@@ -60,6 +60,7 @@ For daily workflow questions, prefer:
 - `daily_list` for week or month summaries.
 - `task_list` or `task_query` for task summaries.
 - `task_create`, `task_complete`, and `task_reschedule` for task changes.
+- `index_scan` with `full: false` to refresh stale search/query results, or `full: true` to force a full reindex.
 - `note_append --periodic daily` as a low-risk log fallback.
 
 Use generic note edits only when the task/daily tools do not model the requested change. MCP `note_set` requires `confirm: true`, and `note_delete` requires either `dry_run: true` or `confirm: true`.
