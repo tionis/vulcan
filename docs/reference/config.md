@@ -107,12 +107,33 @@ api_key_env = "BRAVE_API_KEY"
 
 Top-level vault configuration not covered by a more specific section.
 
+- `assistant.model` — type: `string`; target: `shared|local`; default: ``
+  Edit `assistant.model` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set assistant.model <value>`
+- `assistant.permissions` — type: `string`; target: `shared|local`; default: `readonly`
+  Edit `assistant.permissions` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set assistant.permissions <value>`
+- `assistant.pi_binary` — type: `string`; target: `shared|local`; default: `pi`
+  Edit `assistant.pi_binary` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set assistant.pi_binary <value>`
 - `assistant.prompts_folder` — type: `string`; target: `shared|local`; default: `AI/Prompts`
   Edit `assistant.prompts_folder` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set assistant.prompts_folder <value>`
+- `assistant.provider` — type: `string`; target: `shared|local`; default: ``
+  Edit `assistant.provider` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set assistant.provider <value>`
+- `assistant.runtime` — type: `enum`; target: `shared|local`; default: `pi`; values: `pi`, `none`
+  Edit `assistant.runtime` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set assistant.runtime <value>`
+- `assistant.sessions_dir` — type: `string`; target: `shared|local`; default: `AI/Sessions`
+  Edit `assistant.sessions_dir` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set assistant.sessions_dir <value>`
 - `assistant.skills_folder` — type: `string`; target: `shared|local`; default: `.agents/skills`
   Edit `assistant.skills_folder` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set assistant.skills_folder <value>`
+- `assistant.thinking_level` — type: `enum`; target: `shared|local`; default: `medium`; values: `off`, `minimal`, `low`, `medium`, `high`, `xhigh`
+  Edit `assistant.thinking_level` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set assistant.thinking_level <value>`
 - `assistant.tools_folder` — type: `string`; target: `shared|local`; default: `.agents/tools`
   Edit `assistant.tools_folder` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set assistant.tools_folder <value>`

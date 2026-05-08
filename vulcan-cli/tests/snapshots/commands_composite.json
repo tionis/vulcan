@@ -6358,6 +6358,201 @@
         ]
       },
       {
+        "about": "Run an optional embedded assistant engine against this vault",
+        "after_help": "Modes:\n  --doctor         Check managed-engine availability and launch configuration\n  --print-context  Print the vault context that would be sent to the engine\n  --list-sessions  List local assistant session files\n  PROMPT           Run one prompt through the managed RPC engine\n\nNotes:\n  `assistant` is an optional embedded host mode. Vulcan owns vault context, MCP tool exposure,\n  and permission-profile selection; the engine is a JSONL RPC subprocess.\n  The initial runtime is `pi` via `pi --mode rpc --cwd <vault>`.\n  Defaults live under `[assistant]` in `.vulcan/config.toml`.\n  Use `--assistant-permissions <profile>` to bind the assistant to a permission profile.\n  Use `--tool-pack` to expose the same curated tool packs as MCP.\n\nExamples:\n  vulcan assistant --doctor\n  vulcan assistant --print-context --tool-pack notes-read,search,status\n  vulcan assistant --list-sessions\n  vulcan assistant \"Summarize today's routine\"",
+        "name": "assistant",
+        "options": [
+          {
+            "help": "Prompt text; if omitted and stdin is piped, stdin is used",
+            "id": "prompt",
+            "long": null,
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "PROMPT"
+            ]
+          },
+          {
+            "help": "Check the configured managed engine without starting a session",
+            "id": "doctor",
+            "long": "doctor",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "DOCTOR"
+            ]
+          },
+          {
+            "help": "Print the context payload that would be sent to the engine",
+            "id": "print_context",
+            "long": "print-context",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "PRINT_CONTEXT"
+            ]
+          },
+          {
+            "help": "List assistant session files from the configured sessions directory",
+            "id": "list_sessions",
+            "long": "list-sessions",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "LIST_SESSIONS"
+            ]
+          },
+          {
+            "help": "Override [assistant].provider for this run",
+            "id": "provider",
+            "long": "provider",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "PROVIDER"
+            ]
+          },
+          {
+            "help": "Override [assistant].model for this run",
+            "id": "model",
+            "long": "model",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "MODEL"
+            ]
+          },
+          {
+            "help": "Override [assistant].thinking_level for this run",
+            "id": "thinking",
+            "long": "thinking",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "THINKING"
+            ]
+          },
+          {
+            "help": "Show thinking deltas emitted by the engine",
+            "id": "show_thinking",
+            "long": "show-thinking",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "SHOW_THINKING"
+            ]
+          },
+          {
+            "help": "Override [assistant].pi_binary for this run",
+            "id": "assistant_pi_binary",
+            "long": "assistant-pi-binary",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "ASSISTANT_PI_BINARY"
+            ]
+          },
+          {
+            "help": "Permission profile used to filter assistant tool access",
+            "id": "assistant_permissions",
+            "long": "assistant-permissions",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "ASSISTANT_PERMISSIONS"
+            ]
+          },
+          {
+            "help": "Do not persist assistant session state",
+            "id": "ephemeral",
+            "long": "ephemeral",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "EPHEMERAL"
+            ]
+          },
+          {
+            "help": "Do not inject Vulcan tools into the managed engine context",
+            "id": "no_tools",
+            "long": "no-tools",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "NO_TOOLS"
+            ]
+          },
+          {
+            "help": null,
+            "id": "tool_pack",
+            "long": "tool-pack",
+            "possible_values": [
+              "notes-read",
+              "search",
+              "status",
+              "custom",
+              "daily",
+              "tasks",
+              "notes-write",
+              "notes-manage",
+              "web",
+              "config",
+              "index"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "TOOL_PACK"
+            ]
+          },
+          {
+            "help": null,
+            "id": "tool_pack_mode",
+            "long": "tool-pack-mode",
+            "possible_values": [
+              "static",
+              "adaptive"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "TOOL_PACK_MODE"
+            ]
+          }
+        ],
+        "subcommands": []
+      },
+      {
         "about": "Open, inspect, and append to daily notes",
         "after_help": "Subcommands:\n  today       open or create today's daily note\n  show        display one daily note's contents\n  list        list daily notes and extracted schedule events\n  export-ics  export extracted daily-note events as an ICS calendar\n  append      append text to one daily note\n\nNotes:\n  `list --week` and `list --month` expand around the current date using the configured periodic week start.\n  `show` defaults to today. `append` creates the daily note first when it does not exist.\n\nExamples:\n  vulcan daily today\n  vulcan daily today --no-edit\n  vulcan daily show 2026-04-03\n  vulcan daily list --week\n  vulcan daily export-ics --month --path Journal.ics\n  vulcan daily append \"Called Alice\" --heading \"## Log\"",
         "name": "daily",
