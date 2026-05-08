@@ -40,11 +40,11 @@ use vulcan_core::{
     load_assistant_prompt, load_assistant_skill, load_vault_config,
     query_graph_communities_with_filter, query_notes_with_filter, read_vault_agents_file,
     reject_link_suggestion, render_assistant_prompt, resolve_permission_profile,
-    scan_vault_with_progress, search_vault_with_filter, suggest_links, ConfigPermissionMode,
-    LinkSuggestionStatus, LocalOAuthIssuer, LocalOAuthIssuerConfig, NoteQuery, OAuthResourceServer,
-    OAuthResourceServerConfig, PermissionGuard, PermissionMode, PermissionProfile, PluginEvent,
-    ProfilePermissionGuard, QueryAst, QueryReport, ScanMode, ScanSummary, SearchQuery, SearchSort,
-    VaultPaths,
+    scan_vault_with_progress, search_vault_with_filter, suggest_links, watch_vault,
+    ConfigPermissionMode, LinkSuggestionStatus, LocalOAuthIssuer, LocalOAuthIssuerConfig,
+    NoteQuery, OAuthResourceServer, OAuthResourceServerConfig, PermissionGuard, PermissionMode,
+    PermissionProfile, PluginEvent, ProfilePermissionGuard, QueryAst, QueryReport, ScanMode,
+    ScanSummary, SearchQuery, SearchSort, VaultPaths, WatchOptions,
 };
 use vulcan_core::{discover_indieauth_endpoints, exchange_indieauth_code, pkce_s256_challenge};
 
@@ -1358,6 +1358,7 @@ fn run_mcp_http_server(
         .map_err(CliError::operation)?;
     let addr = listener.local_addr().map_err(CliError::operation)?;
     eprintln!("MCP HTTP server listening on http://{addr}{endpoint}");
+    spawn_mcp_index_watcher(paths.clone(), WatchOptions::default());
     let context = McpHttpServerContext {
         paths: paths.clone(),
         requested_profile: requested_profile.map(ToOwned::to_owned),
@@ -1401,6 +1402,33 @@ fn run_mcp_http_server(
             Err(error) => return Err(CliError::operation(error)),
         }
     }
+}
+
+fn spawn_mcp_index_watcher(paths: VaultPaths, options: WatchOptions) {
+    thread::spawn(move || {
+        if let Err(error) = watch_vault(&paths, &options, |report| -> Result<(), String> {
+            if report.startup {
+                eprintln!(
+                    "MCP index watcher initialized: {} added, {} updated, {} unchanged, {} deleted",
+                    report.summary.added,
+                    report.summary.updated,
+                    report.summary.unchanged,
+                    report.summary.deleted
+                );
+            } else if report.summary.added + report.summary.updated + report.summary.deleted > 0 {
+                eprintln!(
+                    "MCP index watcher refreshed {} paths: {} added, {} updated, {} deleted",
+                    report.paths.len(),
+                    report.summary.added,
+                    report.summary.updated,
+                    report.summary.deleted
+                );
+            }
+            Ok(())
+        }) {
+            eprintln!("MCP index watcher stopped: {error}");
+        }
+    });
 }
 
 fn handle_mcp_http_connection(
@@ -6614,5 +6642,31 @@ mod tests {
             .expect("redirect location should be set");
         assert!(location.contains("code_challenge=challenge-value"));
         assert!(location.contains("code_challenge_method=S256"));
+    }
+
+    #[test]
+    fn daily_wiki_agent_can_use_index_scan_when_index_pack_is_selected() {
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let paths = VaultPaths::new(tmp.path());
+        vulcan_core::initialize_vulcan_dir(&paths).expect("vault should initialize");
+        fs::write(tmp.path().join("Home.md"), "# Home\n").expect("note should write");
+        let mut core = McpServerCore::new(
+            &paths,
+            Some("daily-wiki-agent"),
+            &[McpToolPackArg::Index],
+            McpToolPackModeArg::Static,
+        )
+        .expect("MCP core should initialize");
+
+        let tools = core.visible_tools();
+        assert!(
+            tools.iter().any(|tool| tool.name == "index_scan"),
+            "index pack should expose index_scan under daily-wiki-agent"
+        );
+        let result = core
+            .call_tool("index_scan", &Map::new())
+            .expect("daily-wiki-agent should be allowed to scan");
+        assert_eq!(result["isError"].as_bool(), Some(false));
+        assert_eq!(result["structuredContent"]["added"].as_u64(), Some(1));
     }
 }

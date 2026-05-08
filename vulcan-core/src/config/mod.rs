@@ -187,7 +187,7 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # refactor = "none"
 # git = "deny"
 # network = "deny"
-# index = "deny"
+# index = "allow"
 # config = "read"
 # execute = "deny"
 # shell = "deny"
@@ -2333,6 +2333,7 @@ impl PermissionProfile {
         Self {
             read: PathPermissionConfig::Keyword(PathPermissionKeyword::All),
             write: PathPermissionConfig::Keyword(PathPermissionKeyword::All),
+            index: PermissionMode::Allow,
             config: ConfigPermissionMode::Read,
             cpu_limit_ms: PermissionLimit::Value(5000),
             memory_limit_mb: PermissionLimit::Value(64),
