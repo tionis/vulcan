@@ -115,4 +115,14 @@ mod tests {
             "notes-read,status".to_string()
         )));
     }
+
+    #[test]
+    fn bundled_extension_enforces_profile_boundary() {
+        assert!(EXTENSION_INDEX.contains("VULCAN_ASSISTANT_PERMISSIONS"));
+        assert!(EXTENSION_INDEX.contains("--permissions"));
+        assert!(EXTENSION_INDEX.contains("readonly"));
+        assert!(EXTENSION_INDEX.contains("bash"));
+        assert!(EXTENSION_INDEX.contains("edit"));
+        assert!(EXTENSION_INDEX.contains("write"));
+    }
 }

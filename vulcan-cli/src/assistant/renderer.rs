@@ -2,7 +2,10 @@ use crate::assistant::rpc::AssistantEvent;
 use crate::CliError;
 use serde::Serialize;
 use serde_json::Value;
+use std::fmt::Write as _;
 use std::io::Write;
+
+const MAX_SUMMARY_CHARS: usize = 500;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RenderOptions {
@@ -15,11 +18,15 @@ pub(crate) struct AssistantRenderReport {
     pub(crate) text: String,
     pub(crate) event_count: usize,
     pub(crate) tool_calls: Vec<AssistantToolCallSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) final_stats: Option<Value>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct AssistantToolCallSummary {
     pub(crate) name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) output_summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) error: Option<String>,
 }
@@ -30,6 +37,7 @@ pub(crate) struct AssistantRenderer<W> {
     text: String,
     event_count: usize,
     tool_calls: Vec<AssistantToolCallSummary>,
+    final_stats: Option<Value>,
 }
 
 impl<W: Write> AssistantRenderer<W> {
@@ -40,6 +48,7 @@ impl<W: Write> AssistantRenderer<W> {
             text: String::new(),
             event_count: 0,
             tool_calls: Vec::new(),
+            final_stats: None,
         }
     }
 
@@ -62,24 +71,37 @@ impl<W: Write> AssistantRenderer<W> {
                 self.writer.flush().map_err(CliError::operation)?;
             }
             AssistantEvent::ThinkingDelta { text } if self.options.show_thinking => {
-                write!(self.writer, "{text}").map_err(CliError::operation)?;
+                writeln!(self.writer, "[thinking] {text}").map_err(CliError::operation)?;
                 self.writer.flush().map_err(CliError::operation)?;
             }
-            AssistantEvent::ToolExecutionStart { name, .. } => {
-                writeln!(self.writer, "\n[tool:{name}]").map_err(CliError::operation)?;
+            AssistantEvent::ToolExecutionStart { name, input } => {
+                let input = summarize_value(input);
+                writeln!(self.writer, "\n  -> {name}: {input}").map_err(CliError::operation)?;
             }
-            AssistantEvent::ToolExecutionEnd { name, error, .. } => {
+            AssistantEvent::ToolExecutionEnd {
+                name,
+                output,
+                error,
+            } => {
+                let output_summary = summarize_value(output);
+                writeln!(self.writer, "     {output_summary}").map_err(CliError::operation)?;
                 self.tool_calls.push(AssistantToolCallSummary {
                     name: name.clone(),
+                    output_summary: Some(output_summary),
                     error: error.clone(),
                 });
+            }
+            AssistantEvent::AgentEnd { data } => {
+                self.final_stats = Some(data.clone());
+                if !data.is_null() {
+                    writeln!(self.writer, "\n[stats] {}", summarize_value(data))
+                        .map_err(CliError::operation)?;
+                }
             }
             AssistantEvent::Error { message } => {
                 writeln!(self.writer, "\nerror: {message}").map_err(CliError::operation)?;
             }
-            AssistantEvent::ThinkingDelta { .. }
-            | AssistantEvent::AgentEnd { .. }
-            | AssistantEvent::Unknown => {}
+            AssistantEvent::ThinkingDelta { .. } | AssistantEvent::Unknown => {}
         }
         Ok(())
     }
@@ -92,7 +114,31 @@ impl<W: Write> AssistantRenderer<W> {
             text: self.text,
             event_count: self.event_count,
             tool_calls: self.tool_calls,
+            final_stats: self.final_stats,
         })
+    }
+}
+
+fn summarize_value(value: &Value) -> String {
+    if value.is_null() {
+        return "null".to_string();
+    }
+    let raw = value
+        .as_str()
+        .map_or_else(|| value.to_string(), ToString::to_string);
+    let lines = raw.lines().collect::<Vec<_>>();
+    if lines.len() > 6 {
+        let mut summary = lines.iter().take(6).copied().collect::<Vec<_>>().join("\n");
+        write!(summary, "\n[...{} lines]", lines.len() - 6)
+            .expect("writing to string should not fail");
+        return summary;
+    }
+    if raw.chars().count() > MAX_SUMMARY_CHARS {
+        let mut truncated = raw.chars().take(MAX_SUMMARY_CHARS).collect::<String>();
+        truncated.push_str("...");
+        truncated
+    } else {
+        raw
     }
 }
 
@@ -140,9 +186,11 @@ mod tests {
             report.tool_calls,
             vec![AssistantToolCallSummary {
                 name: "search".to_string(),
+                output_summary: Some("null".to_string()),
                 error: None
             }]
         );
+        assert!(report.final_stats.is_none());
     }
 
     #[test]

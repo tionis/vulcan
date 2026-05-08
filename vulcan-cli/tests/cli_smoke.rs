@@ -9780,6 +9780,13 @@ fn init_json_output_creates_default_config() {
     assert!(vault_root.join(".vulcan/config.toml").exists());
     assert!(vault_root.join(".vulcan/cache.db").exists());
     assert!(vault_root.join(".vulcan/.gitignore").exists());
+    assert!(vault_root.join("AI/Sessions").is_dir());
+    assert!(vault_root
+        .join(".vulcan/assistant/extension/vulcan-tools/index.ts")
+        .exists());
+    assert!(vault_root
+        .join(".vulcan/assistant/extension/vulcan-tools/package.json")
+        .exists());
     assert_eq!(
         fs::read_to_string(vault_root.join(".vulcan/.gitignore"))
             .expect("gitignore should be readable"),
@@ -10629,6 +10636,11 @@ fn assistant_list_sessions_reads_configured_session_dir() {
     fs::write(vault_root.join("Support/Sessions/one.jsonl"), "{}\n")
         .expect("session should be written");
     fs::write(
+        vault_root.join("Support/Sessions/two.jsonl"),
+        r#"{"session":{"id":"session-two","title":"Daily Review","message_count":7}}"#,
+    )
+    .expect("session should be written");
+    fs::write(
         vault_root.join(".vulcan/config.toml"),
         "[assistant]\nsessions_dir = \"Support/Sessions\"\n",
     )
@@ -10656,6 +10668,14 @@ fn assistant_list_sessions_reads_configured_session_dir() {
     assert!(json["sessions"].as_array().is_some_and(|sessions| sessions
         .iter()
         .any(|session| session["path"] == "one.jsonl")));
+    assert!(json["sessions"]
+        .as_array()
+        .is_some_and(
+            |sessions| sessions.iter().any(|session| session["path"] == "two.jsonl"
+                && session["session_id"] == "session-two"
+                && session["title"] == "Daily Review"
+                && session["message_count"] == 7)
+        ));
 }
 
 #[test]

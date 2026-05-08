@@ -11123,6 +11123,7 @@ fn run_init_command(paths: &VaultPaths, args: &InitArgs) -> Result<InitReport, C
     } else {
         None
     };
+    initialize_assistant_runtime(paths)?;
 
     Ok(InitReport {
         summary,
@@ -11130,6 +11131,23 @@ fn run_init_command(paths: &VaultPaths, args: &InitArgs) -> Result<InitReport, C
         support_files,
         imported,
     })
+}
+
+fn initialize_assistant_runtime(paths: &VaultPaths) -> Result<(), CliError> {
+    let assistant = load_vault_config(paths).config.assistant;
+    if assistant.runtime != "pi" {
+        return Ok(());
+    }
+    if !assistant.sessions_dir.as_os_str().is_empty() {
+        let sessions_dir = if assistant.sessions_dir.is_absolute() {
+            assistant.sessions_dir
+        } else {
+            paths.vault_root().join(assistant.sessions_dir)
+        };
+        fs::create_dir_all(sessions_dir).map_err(CliError::operation)?;
+    }
+    crate::assistant::extension::materialize_extension(paths.vault_root())?;
+    Ok(())
 }
 
 pub(crate) fn run_agent_install_command(
