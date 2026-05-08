@@ -9781,6 +9781,7 @@ fn init_json_output_creates_default_config() {
     assert!(vault_root.join(".vulcan/cache.db").exists());
     assert!(vault_root.join(".vulcan/.gitignore").exists());
     assert!(vault_root.join("AI/Sessions").is_dir());
+    assert!(vault_root.join("AI/Assistant Sessions").is_dir());
     assert!(vault_root
         .join(".vulcan/assistant/extension/vulcan-tools/index.ts")
         .exists());
@@ -10419,21 +10420,33 @@ fn write_mock_pi_binary(path: &Path) {
     fs::write(
         path,
         r#"#!/bin/sh
-if [ "$1" = "--version" ]; then
-  printf 'pi-mock 1.0.0\n'
-  exit 0
-fi
-while IFS= read -r line; do
-  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-  cmd=$(printf '%s' "$line" | sed -n 's/.*"command":"\([^"]*\)".*/\1/p')
+	if [ "$1" = "--version" ]; then
+	  printf 'pi-mock 1.0.0\n'
+	  exit 0
+	fi
+	session_dir=
+	while [ "$#" -gt 0 ]; do
+	  if [ "$1" = "--session-dir" ]; then
+	    shift
+	    session_dir=$1
+	  fi
+	  shift || true
+	done
+	while IFS= read -r line; do
+	  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+	  cmd=$(printf '%s' "$line" | sed -n 's/.*"command":"\([^"]*\)".*/\1/p')
   case "$cmd" in
     configure)
       printf '{"type":"response","id":"%s","command":"configure","success":true,"data":{}}\n' "$id"
       ;;
-    prompt)
-      printf '{"type":"message_update","assistant_event":{"type":"text_delta","text":"mock answer"}}\n'
-      printf '{"type":"agent_end","messages":[]}\n'
-      printf '{"type":"response","id":"%s","command":"prompt","success":true,"data":{"ok":true}}\n' "$id"
+	    prompt)
+	      if [ -n "$session_dir" ]; then
+	        mkdir -p "$session_dir"
+	        printf '%s\n%s\n' '{"session":{"id":"mock-session","title":"Mock Session","created":"2026-05-09T10:00:00Z"}}' '{"role":"assistant","content":"mock answer"}' > "$session_dir/mock-session.jsonl"
+	      fi
+	      printf '{"type":"message_update","assistant_event":{"type":"text_delta","text":"mock answer"}}\n'
+	      printf '{"type":"agent_end","messages":[]}\n'
+	      printf '{"type":"response","id":"%s","command":"prompt","success":true,"data":{"ok":true}}\n' "$id"
       ;;
     get_state)
       printf '{"type":"response","id":"%s","command":"get_state","success":true,"data":{"model":"mock","message_count":1}}\n' "$id"
@@ -10544,6 +10557,11 @@ fn assistant_one_shot_round_trips_through_mock_engine() {
     assert!(vault_root
         .join(".vulcan/assistant/extension/vulcan-tools/index.ts")
         .exists());
+    let export_path = vault_root.join("AI/Assistant Sessions/Mock-Session.md");
+    assert!(export_path.exists());
+    let exported = fs::read_to_string(export_path).expect("session export should be readable");
+    assert!(exported.contains("> [!assistant]+"));
+    assert!(exported.contains("> mock answer"));
 }
 
 #[cfg(unix)]

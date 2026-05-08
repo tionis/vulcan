@@ -1,6 +1,6 @@
 use crate::assistant::engine;
 use crate::assistant::renderer::{AssistantRenderReport, AssistantRenderer, RenderOptions};
-use crate::assistant::{AssistantHostContext, AssistantHostOptions};
+use crate::assistant::{export_session_after_run, AssistantHostContext, AssistantHostOptions};
 use crate::{CliError, OutputFormat};
 use rustyline::error::ReadlineError;
 use rustyline::DefaultEditor;
@@ -43,7 +43,9 @@ pub(crate) fn run_chat(
                 send_and_render(&mut process.client, line, show_thinking, output)?;
             }
         }
-        return process.shutdown();
+        process.shutdown()?;
+        export_session_after_run(paths, host)?;
+        return Ok(());
     }
 
     let mut editor = DefaultEditor::new().map_err(CliError::operation)?;
@@ -71,7 +73,8 @@ pub(crate) fn run_chat(
             Err(error) => return Err(CliError::operation(error)),
         }
     }
-    process.shutdown()
+    process.shutdown()?;
+    export_session_after_run(paths, host)
 }
 
 fn configure_engine<R: std::io::BufRead, W: std::io::Write>(

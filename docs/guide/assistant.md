@@ -33,11 +33,25 @@ model = ""
 thinking_level = "medium"
 permissions = "readonly"
 sessions_dir = "AI/Sessions"
+session_export = "on_exit"
+session_exports_dir = "AI/Assistant Sessions"
 ```
 
 Empty `provider` and `model` values let the managed engine use its own defaults.
 An empty `sessions_dir` or `--ephemeral` starts the engine without session
 persistence.
+
+`session_export` controls the Markdown archive layer:
+
+- `manual`: keep only the managed engine session files.
+- `on_exit`: export the latest managed session to an Obsidian-readable Markdown
+  note when `vulcan assistant` exits. This is the default.
+- `always`: currently behaves like `on_exit` in the CLI host; daemon mode may
+  use it for after-each-turn exports later.
+
+Exports go to `session_exports_dir` as normal notes with YAML frontmatter and
+`[!user]`, `[!assistant]`, and `[!tool]` callouts. The raw pi session remains
+the source used for resume/continue.
 
 ## Usage
 
@@ -104,10 +118,11 @@ vulcan assistant \
 For exploration, prefer `readonly`. For note edits, use a profile that grants
 the smallest write surface needed for the workflow.
 
-`vulcan init` creates `AI/Sessions/` and writes the bundled pi extension under
-`.vulcan/assistant/extension/vulcan-tools/` when `[assistant].runtime = "pi"`.
-The extension passes the active permission profile to nested `vulcan` calls and
-blocks pi built-in shell/edit/write tools in readonly mode.
+`vulcan init` creates `AI/Sessions/`, `AI/Assistant Sessions/`, and writes the
+bundled pi extension under `.vulcan/assistant/extension/vulcan-tools/` when
+`[assistant].runtime = "pi"`. The extension passes the active permission profile
+to nested `vulcan` calls and blocks pi built-in shell/edit/write tools in
+readonly mode.
 
 ## Integration Models
 

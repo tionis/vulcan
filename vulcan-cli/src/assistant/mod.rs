@@ -8,6 +8,7 @@ use std::fs;
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
+use vulcan_app::assistant_session_export::export_assistant_session_file;
 use vulcan_core::{
     list_assistant_skills, load_vault_config, read_vault_agents_file, AssistantSkillSummary,
     VaultPaths,
@@ -55,6 +56,8 @@ pub(crate) struct AssistantHostOptions {
     pub(crate) extension_entrypoint: Option<PathBuf>,
     pub(crate) extension_env: Vec<(String, String)>,
     pub(crate) resume_session: Option<PathBuf>,
+    pub(crate) session_export: String,
+    pub(crate) session_exports_dir: Option<PathBuf>,
 }
 
 impl AssistantHostOptions {
@@ -76,11 +79,27 @@ impl AssistantHostOptions {
             extension_entrypoint: None,
             extension_env: Vec::new(),
             resume_session: None,
+            session_export: config.session_export,
+            session_exports_dir: if config.session_exports_dir.as_os_str().is_empty() {
+                None
+            } else {
+                Some(config.session_exports_dir)
+            },
         }
     }
 
     pub(crate) fn resolved_sessions_dir(&self, vault_root: &Path) -> Option<PathBuf> {
         self.sessions_dir.as_ref().map(|path| {
+            if path.is_absolute() {
+                path.clone()
+            } else {
+                vault_root.join(path)
+            }
+        })
+    }
+
+    pub(crate) fn resolved_session_exports_dir(&self, vault_root: &Path) -> Option<PathBuf> {
+        self.session_exports_dir.as_ref().map(|path| {
             if path.is_absolute() {
                 path.clone()
             } else {
@@ -258,6 +277,7 @@ pub(crate) fn handle_assistant_command(
     let result = process.client.prompt(&prompt)?;
     ensure_success(&result.response)?;
     process.shutdown()?;
+    export_session_after_run(paths, &host)?;
 
     if output == OutputFormat::Json {
         let report = render_events_to_report(&result.events, args.show_thinking, true)?;
@@ -276,6 +296,29 @@ pub(crate) fn handle_assistant_command(
     if output == OutputFormat::Markdown && !report.text.is_empty() {
         println!();
     }
+    Ok(())
+}
+
+pub(crate) fn export_session_after_run(
+    paths: &VaultPaths,
+    host: &AssistantHostOptions,
+) -> Result<(), CliError> {
+    if !matches!(host.session_export.as_str(), "on_exit" | "always") {
+        return Ok(());
+    }
+    let Some(session_path) = host
+        .resume_session
+        .clone()
+        .or_else(|| newest_session_path(paths, host).ok().flatten())
+    else {
+        return Ok(());
+    };
+    let Some(export_dir) = host.resolved_session_exports_dir(paths.vault_root()) else {
+        return Err(CliError::operation(
+            "assistant session export is enabled but session_exports_dir is empty",
+        ));
+    };
+    export_assistant_session_file(paths.vault_root(), &session_path, &export_dir)?;
     Ok(())
 }
 

@@ -11140,11 +11140,19 @@ fn initialize_assistant_runtime(paths: &VaultPaths) -> Result<(), CliError> {
     }
     if !assistant.sessions_dir.as_os_str().is_empty() {
         let sessions_dir = if assistant.sessions_dir.is_absolute() {
-            assistant.sessions_dir
+            assistant.sessions_dir.clone()
         } else {
-            paths.vault_root().join(assistant.sessions_dir)
+            paths.vault_root().join(&assistant.sessions_dir)
         };
         fs::create_dir_all(sessions_dir).map_err(CliError::operation)?;
+    }
+    if !assistant.session_exports_dir.as_os_str().is_empty() {
+        let session_exports_dir = if assistant.session_exports_dir.is_absolute() {
+            assistant.session_exports_dir
+        } else {
+            paths.vault_root().join(assistant.session_exports_dir)
+        };
+        fs::create_dir_all(session_exports_dir).map_err(CliError::operation)?;
     }
     crate::assistant::extension::materialize_extension(paths.vault_root())?;
     Ok(())
