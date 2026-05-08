@@ -10381,6 +10381,31 @@ fn help_assistant_integration_topic_is_available() {
 }
 
 #[test]
+fn help_assistant_topic_is_available() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "help",
+            "assistant",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    assert_eq!(json["name"].as_str(), Some("assistant"));
+    assert!(json["body"]
+        .as_str()
+        .is_some_and(|body| body.contains("vulcan assistant --doctor")));
+}
+
+#[test]
 fn assistant_doctor_reports_managed_engine_configuration() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
