@@ -1243,7 +1243,8 @@ Notes:
   `--tool-pack-mode static|adaptive` keeps packs fixed for the session or exposes bootstrap tools that can expand packs later.
   `--bind`, `--auth-token`, and `--oauth-*` flags are only used for HTTP transport.
   Non-loopback HTTP binds require `--auth-token` or OAuth.
-  OAuth mode validates bearer tokens from an external OIDC provider such as Authentik; Vulcan does not issue tokens.
+  Local OAuth mode makes Vulcan the ChatGPT-facing issuer for authorization-code + PKCE and bearer-token validation.
+  External OAuth mode validates bearer tokens from an external OIDC provider such as Authentik.
   Available packs include `notes-read`, `search`, `status`, `custom`, `daily`, `tasks`, `notes-write`, `notes-manage`, `web`, `config`, and `index`.
   `adaptive` mode auto-exposes MCP tool-pack bootstrap tools and relies on `notifications/tools/list_changed` for clients that refresh tools dynamically.
   Interactive commands such as browse, edit, open, TUI surfaces, and nested MCP helpers are never exposed.
@@ -1257,6 +1258,7 @@ Examples:
   vulcan mcp --vault ~/notes --tool-pack custom
   vulcan mcp --vault ~/notes --tool-pack-mode adaptive
   vulcan mcp --transport http --bind 127.0.0.1:8765
+  vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-local-client-id vulcan-mcp --oauth-local-client-secret \"$VULCAN_MCP_OAUTH_CLIENT_SECRET\" --oauth-local-approval-token \"$VULCAN_MCP_OAUTH_APPROVAL_TOKEN\"
   vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-issuer https://auth.example.com/application/o/vulcan/ --oauth-audience vulcan-mcp --oauth-allowed-email you@example.com
   vulcan mcp | jq .";
 
@@ -5465,6 +5467,37 @@ Examples:
             help = "Allowed OAuth email claim; repeat to allow multiple users"
         )]
         oauth_allowed_email: Vec<String>,
+        #[arg(
+            long,
+            env = "VULCAN_MCP_OAUTH_CLIENT_ID",
+            help = "Static OAuth client id for Vulcan's built-in MCP OAuth issuer"
+        )]
+        oauth_local_client_id: Option<String>,
+        #[arg(
+            long,
+            env = "VULCAN_MCP_OAUTH_CLIENT_SECRET",
+            hide_env_values = true,
+            help = "Static OAuth client secret for Vulcan's built-in MCP OAuth issuer"
+        )]
+        oauth_local_client_secret: Option<String>,
+        #[arg(
+            long,
+            env = "VULCAN_MCP_OAUTH_APPROVAL_TOKEN",
+            hide_env_values = true,
+            help = "Browser approval token required by Vulcan's built-in MCP OAuth issuer"
+        )]
+        oauth_local_approval_token: Option<String>,
+        #[arg(
+            long,
+            default_value = "local-user",
+            help = "Subject claim used by Vulcan's built-in MCP OAuth issuer"
+        )]
+        oauth_local_subject: Option<String>,
+        #[arg(
+            long,
+            help = "Optional email claim used by Vulcan's built-in MCP OAuth issuer"
+        )]
+        oauth_local_email: Option<String>,
     },
 }
 

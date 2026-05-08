@@ -16,9 +16,11 @@ Preferred direct ChatGPT shape:
      --bind 127.0.0.1:8765 \
      --endpoint /mcp \
      --public-url https://wiki.example.com/mcp \
-     --oauth-issuer https://auth.example.com/application/o/vulcan/ \
-     --oauth-audience vulcan-mcp \
-     --oauth-allowed-email you@example.com \
+     --oauth-local-client-id vulcan-mcp \
+     --oauth-local-client-secret "$VULCAN_MCP_OAUTH_CLIENT_SECRET" \
+     --oauth-local-approval-token "$VULCAN_MCP_OAUTH_APPROVAL_TOKEN" \
+     --oauth-local-subject eric \
+     --oauth-local-email you@example.com \
      --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom
    ```
 
@@ -28,9 +30,9 @@ Preferred direct ChatGPT shape:
 
 `daily-wiki-agent` is the built-in pilot profile for this shape. It allows full vault note/task edits, config reads, and no shell, host execution, git mutation, refactor, network, or explicit index maintenance.
 
-`--oauth-issuer` makes Vulcan validate incoming `Authorization: Bearer ...` access tokens against the issuer JWKS. Vulcan does not implement OAuth login, consent, authorization-code handling, refresh tokens, or dynamic client registration; Authentik owns those pieces. Vulcan acts as the protected MCP resource server, publishes OAuth protected-resource metadata, returns `WWW-Authenticate` challenges that point clients at that metadata, and serves an RFC8414-compatible authorization-server metadata shim on the MCP host for clients that cannot consume Authentik's OIDC-only discovery path directly.
+The recommended ChatGPT path is Vulcan's built-in MCP OAuth issuer. Vulcan owns the ChatGPT-facing authorization-code + PKCE flow, issues short-lived MCP access tokens, and validates those tokens directly. The browser authorization page asks for `--oauth-local-approval-token`, which should be a high-entropy secret.
 
-For Authentik, create an OAuth2/OpenID provider for the MCP endpoint, use the provider issuer URL as `--oauth-issuer`, configure an audience such as `vulcan-mcp`, and restrict access with `--oauth-allowed-email` or `--oauth-allowed-sub`. If Authentik's issuer discovery does not expose the desired key set, pass `--oauth-jwks-url` explicitly.
+For external OIDC resource-server mode, use `--oauth-issuer`, `--oauth-audience`, and an allowed subject or email. This keeps Authentik as the token issuer, but ChatGPT compatibility can vary by provider metadata and token-exchange behavior.
 
 `--auth-token` remains useful for private/internal clients that can set a shared bearer token or `x-vulcan-token`. It is mutually exclusive with direct OAuth mode and is not a ChatGPT-compatible public auth mechanism.
 

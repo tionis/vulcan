@@ -1,6 +1,11 @@
-use jsonwebtoken::{decode, decode_header, jwk::JwkSet, Algorithm, DecodingKey, Validation};
-use serde::Deserialize;
+use base64::prelude::{Engine, BASE64_URL_SAFE_NO_PAD};
+use jsonwebtoken::{
+    decode, decode_header, encode, jwk::JwkSet, Algorithm, DecodingKey, EncodingKey, Header,
+    Validation,
+};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt;
@@ -16,6 +21,16 @@ pub struct OAuthResourceServerConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct LocalOAuthIssuerConfig {
+    pub public_url: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub approval_token: String,
+    pub subject: String,
+    pub email: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct OAuthResourceServer {
     issuer: String,
     audiences: Vec<String>,
@@ -26,6 +41,18 @@ pub struct OAuthResourceServer {
     authorization_server_metadata: Value,
     protected_resource_metadata_url: String,
     jwks: JwkSet,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalOAuthIssuer {
+    public_url: String,
+    client_id: String,
+    client_secret: String,
+    approval_token: String,
+    subject: String,
+    email: Option<String>,
+    protected_resource_metadata_url: String,
+    authorization_server_metadata: Value,
 }
 
 impl OAuthResourceServer {
@@ -141,6 +168,122 @@ impl OAuthResourceServer {
     }
 }
 
+impl LocalOAuthIssuer {
+    pub fn from_config(config: LocalOAuthIssuerConfig) -> Result<Self, OAuthError> {
+        if !config.public_url.starts_with("https://") {
+            return Err(OAuthError::Config(
+                "public OAuth resource URL must use HTTPS".to_string(),
+            ));
+        }
+        if config.client_id.is_empty()
+            || config.client_secret.is_empty()
+            || config.approval_token.is_empty()
+            || config.subject.is_empty()
+        {
+            return Err(OAuthError::Config(
+                "local OAuth issuer requires non-empty client id, client secret, approval token, and subject"
+                    .to_string(),
+            ));
+        }
+        let protected_resource_metadata_url = protected_resource_metadata_url(&config.public_url)?;
+        let origin = public_url_origin(&config.public_url)?;
+        let authorization_server_metadata = serde_json::json!({
+            "issuer": config.public_url,
+            "authorization_endpoint": format!("{origin}/oauth/authorize"),
+            "token_endpoint": format!("{origin}/oauth/token"),
+            "response_types_supported": ["code"],
+            "grant_types_supported": ["authorization_code"],
+            "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
+            "code_challenge_methods_supported": ["S256"],
+            "scopes_supported": ["openid", "email", "profile"],
+        });
+        Ok(Self {
+            public_url: config.public_url,
+            client_id: config.client_id,
+            client_secret: config.client_secret,
+            approval_token: config.approval_token,
+            subject: config.subject,
+            email: config.email,
+            protected_resource_metadata_url,
+            authorization_server_metadata,
+        })
+    }
+
+    pub fn validate_bearer_token(&self, token: &str) -> Result<(), OAuthError> {
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.set_issuer(&[self.public_url.as_str()]);
+        validation.set_audience(&[self.public_url.as_str()]);
+        validation.leeway = 60;
+        let token = decode::<LocalOAuthClaims>(
+            token,
+            &DecodingKey::from_secret(self.client_secret.as_bytes()),
+            &validation,
+        )
+        .map_err(|error| OAuthError::Token(format!("invalid local OAuth bearer token: {error}")))?;
+        if token.claims.sub == self.subject {
+            Ok(())
+        } else {
+            Err(OAuthError::Token(
+                "local OAuth token subject is not allowed".to_string(),
+            ))
+        }
+    }
+
+    pub fn issue_access_token(&self) -> Result<String, OAuthError> {
+        let now = unix_timestamp();
+        let claims = LocalOAuthClaims {
+            iss: self.public_url.clone(),
+            sub: self.subject.clone(),
+            aud: vec![self.public_url.clone()],
+            exp: now + 3600,
+            iat: now,
+            email: self.email.clone(),
+        };
+        encode(
+            &Header::new(Algorithm::HS256),
+            &claims,
+            &EncodingKey::from_secret(self.client_secret.as_bytes()),
+        )
+        .map_err(|error| OAuthError::Token(format!("failed to issue OAuth token: {error}")))
+    }
+
+    #[must_use]
+    pub fn verify_client(&self, client_id: &str, client_secret: &str) -> bool {
+        client_id == self.client_id && client_secret == self.client_secret
+    }
+
+    #[must_use]
+    pub fn verify_approval_token(&self, approval_token: &str) -> bool {
+        approval_token == self.approval_token
+    }
+
+    #[must_use]
+    pub fn verify_pkce_s256(&self, verifier: &str, challenge: &str) -> bool {
+        let digest = Sha256::digest(verifier.as_bytes());
+        BASE64_URL_SAFE_NO_PAD.encode(digest) == challenge
+    }
+
+    #[must_use]
+    pub fn client_id(&self) -> &str {
+        &self.client_id
+    }
+
+    #[must_use]
+    pub fn public_url(&self) -> &str {
+        &self.public_url
+    }
+
+    #[must_use]
+    pub fn authorization_server_metadata(&self) -> &Value {
+        &self.authorization_server_metadata
+    }
+
+    #[must_use]
+    pub fn protected_resource_metadata_url(&self) -> &str {
+        &self.protected_resource_metadata_url
+    }
+}
+
 #[derive(Debug)]
 pub enum OAuthError {
     Config(String),
@@ -169,6 +312,17 @@ struct OidcDiscoveryDocument {
 #[derive(Debug, Deserialize)]
 struct OAuthClaims {
     sub: String,
+    email: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct LocalOAuthClaims {
+    iss: String,
+    sub: String,
+    aud: Vec<String>,
+    exp: u64,
+    iat: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     email: Option<String>,
 }
 
@@ -218,6 +372,22 @@ pub fn protected_resource_metadata_url(public_url: &str) -> Result<String, OAuth
             "{scheme}://{host}/.well-known/oauth-protected-resource/{path}"
         ))
     }
+}
+
+fn public_url_origin(public_url: &str) -> Result<String, OAuthError> {
+    let Some((scheme, rest)) = public_url.split_once("://") else {
+        return Err(OAuthError::Config(
+            "public OAuth resource URL must be absolute".to_string(),
+        ));
+    };
+    let host = rest.split('/').next().unwrap_or(rest);
+    Ok(format!("{scheme}://{host}"))
+}
+
+fn unix_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 fn authorization_server_metadata(issuer: &str, discovery: Value) -> Result<Value, OAuthError> {
@@ -295,6 +465,27 @@ mod tests {
         assert_eq!(
             metadata["code_challenge_methods_supported"],
             serde_json::json!(["S256"])
+        );
+    }
+
+    #[test]
+    fn local_oauth_issuer_issues_and_validates_tokens() {
+        let issuer = LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://wiki.example.test/mcp".to_string(),
+            client_id: "vulcan-mcp".to_string(),
+            client_secret: "secret".to_string(),
+            approval_token: "approve".to_string(),
+            subject: "eric".to_string(),
+            email: Some("eric@example.test".to_string()),
+        })
+        .unwrap();
+        assert!(issuer.verify_client("vulcan-mcp", "secret"));
+        assert!(issuer.verify_approval_token("approve"));
+        let token = issuer.issue_access_token().unwrap();
+        issuer.validate_bearer_token(&token).unwrap();
+        assert_eq!(
+            issuer.authorization_server_metadata()["issuer"],
+            issuer.public_url()
         );
     }
 }
