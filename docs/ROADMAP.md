@@ -5956,7 +5956,7 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 - [x] `vulcan graph communities --community C` — show detail for one community: full member list, boundary notes (linking to other communities), cross-community edges
 - [x] `vulcan graph communities --orphans` — list orphaned notes (no incoming or outgoing links) with their closest community by tag overlap and shortest-path distance if any non-zero path exists
 - [x] `vulcan graph communities --bridges` — list boundary notes (notes connecting communities), ranked by betweenness
-- [ ] Add `graph_communities` MCP tool to the notes-read pack (read-only, no mutation)
+- [x] Add `graph_communities` MCP tool to the notes-read pack (read-only, no mutation)
 - [x] JSON output for all CLI surfaces with `--output json`
 - [x] `--dry-run` for community computation (report without persisting to cache)
 
@@ -6006,14 +6006,14 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 - [x] On accepted suggestions: create a real link in the `links` table with `confidence = 'INFERRED'` and `confidence_score = score`
 - [x] On rejected suggestions: set status to 'rejected' and deprioritize the same (source, target) pair from future suggestion runs (halve the score)
 - [x] `vulcan suggest links --accept ID` and `vulcan suggest links --reject ID` for explicit user feedback
-- [ ] `vulcan suggest links --accepted` to list accepted suggestions that were auto-converted to links
+- [x] `vulcan suggest links --accepted` to list accepted suggestions that were auto-converted to links
 
 ### 9.26.3 CLI and MCP surfaces
 
 - [x] `vulcan suggest links [--note PATH] [--limit N] [--min-score S]` — ranked suggestion queue, scoped to one note or vault-wide
 - [x] `vulcan suggest links --status pending|accepted|rejected` — filter by feedback state
-- [ ] `vulcan suggest links --apply [--dry-run]` — apply all pending suggestions above a configurable min-score threshold (default 0.6); respects auto-commit and `--no-commit`
-- [ ] Add `suggest_links` MCP tool to the notes-read pack (reading suggestions) and notes-write pack (accepting/rejecting)
+- [x] `vulcan suggest links --apply [--dry-run]` — apply all pending suggestions above a configurable min-score threshold (default 0.6); accepts cache-backed inferred links without filesystem mutation
+- [x] Add `suggest_links` MCP tool to the notes-read pack (reading suggestions) and notes-write pack (accepting/rejecting)
 - [x] JSON output: each suggestion includes score breakdown (`embedding_score`, `graph_score`, `mention_score`, `tag_score`, `cross_community_bonus`)
 
 ### 9.26.4 Integration testing
@@ -6085,8 +6085,8 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Discover Agent Skills-compatible directories from `.agents/skills/<name>/SKILL.md` and configured skill roots.
 - [x] Parse official skill frontmatter fields: `name`, `description`, `license`, `compatibility`, `allowed-tools`, and `metadata`.
 - [x] Parse `metadata.vulcan.commands` as Vulcan-specific command declarations.
-- [ ] Validate command IDs, script paths, input/output schemas, sandbox values, permission-profile references, pack names, and exposure flags (command IDs and script paths implemented; remaining validation stays open)
-- [ ] Add `vulcan skill list|show|commands|run|validate|init` (list/show/commands/validate implemented; run/init remain)
+- [x] Validate command IDs, script paths, input/output schemas, sandbox values, permission-profile references, pack names, and exposure flags
+- [x] Add `vulcan skill list|show|commands|run|validate|init`
 - [ ] Project trusted skill commands into the shared registry used by CLI, `describe`, MCP, and internal JS APIs.
 - [ ] Expose projected skill commands as first-class MCP tools and add MCP resources for skill index, skill content, command metadata, and resource listings.
 - [ ] Update `vulcan index init --agent-files --example-tool` and `vulcan agent install --example-tool` to scaffold an Agent Skills-compatible example with a command under `scripts/`.

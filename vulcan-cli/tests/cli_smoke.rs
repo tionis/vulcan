@@ -10053,6 +10053,83 @@ shell = "deny"
 }
 
 #[test]
+fn skill_init_and_run_execute_agent_skill_command() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "init",
+            "--no-import",
+        ])
+        .assert()
+        .success();
+
+    let init_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "skill",
+            "init",
+            "math",
+            "--starter-command",
+            "echo",
+            "--description",
+            "Echo input.",
+        ])
+        .assert()
+        .success();
+    let init_json = parse_stdout_json(&init_assert);
+    assert_eq!(
+        init_json["manifest_path"].as_str(),
+        Some(".agents/skills/math/SKILL.md")
+    );
+    assert_eq!(
+        init_json["script_path"].as_str(),
+        Some(".agents/skills/math/scripts/echo.js")
+    );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "trust",
+            "add",
+        ])
+        .assert()
+        .success();
+
+    let run_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "skill",
+            "run",
+            "math",
+            "echo",
+            "--input-json",
+            "{\"value\":7}",
+        ])
+        .assert()
+        .success();
+    let run_json = parse_stdout_json(&run_assert);
+    assert_eq!(run_json["skill"].as_str(), Some("math"));
+    assert_eq!(run_json["command"].as_str(), Some("echo"));
+    assert_eq!(run_json["result"]["input"]["value"].as_i64(), Some(7));
+}
+
+#[test]
 fn agent_print_config_reports_runtime_contract() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

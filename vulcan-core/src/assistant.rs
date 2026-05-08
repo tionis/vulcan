@@ -94,13 +94,17 @@ pub struct AssistantSkillCommandSummary {
     pub id: String,
     pub script: String,
     #[serde(default)]
-    pub sandbox: Option<String>,
+    pub sandbox: Option<JsRuntimeSandbox>,
     #[serde(default)]
     pub permission_profile: Option<String>,
     #[serde(default)]
     pub packs: Vec<String>,
     #[serde(default)]
     pub expose: bool,
+    #[serde(default = "default_object_schema")]
+    pub input_schema: JsonValue,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_schema: Option<JsonValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -557,9 +561,25 @@ fn normalize_skill_commands(
                 summary.id
             )));
         }
+        normalize_schema_value(
+            Some(summary.input_schema.clone()),
+            Path::new("SKILL.md"),
+            "input_schema",
+        )?;
+        if let Some(output_schema) = &summary.output_schema {
+            normalize_schema_value(
+                Some(output_schema.clone()),
+                Path::new("SKILL.md"),
+                "output_schema",
+            )?;
+        }
         parsed.push(summary);
     }
     Ok(parsed)
+}
+
+fn default_object_schema() -> JsonValue {
+    serde_json::json!({ "type": "object" })
 }
 
 fn is_valid_skill_command_id(value: &str) -> bool {

@@ -137,6 +137,13 @@ mod tools {
             .map_err(CliError::operation)
     }
 
+    pub(crate) fn require_trusted_tool_execution(
+        paths: &VaultPaths,
+        name: Option<&str>,
+    ) -> Result<(), CliError> {
+        vulcan_app::tools::require_trusted_tool_execution(paths, name).map_err(CliError::operation)
+    }
+
     pub(crate) fn tool_sandbox(value: JsRuntimeSandbox) -> &'static str {
         match value {
             JsRuntimeSandbox::Strict => "strict",
@@ -21546,6 +21553,54 @@ mod tests {
             Command::Skill {
                 command: SkillCommand::Get {
                     name: "note-operations".to_string(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_skill_run_and_init_commands() {
+        let run = Cli::try_parse_from([
+            "vulcan",
+            "skill",
+            "run",
+            "daily-review",
+            "prepare-day",
+            "--input-json",
+            "{\"date\":\"2026-05-08\"}",
+        ])
+        .expect("skill run should parse");
+        let init = Cli::try_parse_from([
+            "vulcan",
+            "skill",
+            "init",
+            "daily-review",
+            "--starter-command",
+            "prepare-day",
+            "--dry-run",
+        ])
+        .expect("skill init should parse");
+
+        assert_eq!(
+            run.command,
+            Command::Skill {
+                command: SkillCommand::Run {
+                    skill: "daily-review".to_string(),
+                    command: "prepare-day".to_string(),
+                    input_json: Some("{\"date\":\"2026-05-08\"}".to_string()),
+                    input_file: None,
+                },
+            }
+        );
+        assert_eq!(
+            init.command,
+            Command::Skill {
+                command: SkillCommand::Init {
+                    name: "daily-review".to_string(),
+                    description: None,
+                    starter_command: Some("prepare-day".to_string()),
+                    dry_run: true,
+                    overwrite: false,
                 },
             }
         );
