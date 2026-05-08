@@ -5939,7 +5939,7 @@ Louvain performs as well as Leiden on typical wikilink graphs while being simple
 - [x] Implement deterministic community detection in `vulcan-core/src/graph.rs` on `GraphAdjacency.undirected()`, returning stable per-run community IDs when persisted to the `graph_clusters` table
 - [x] Re-use the same BFS-based connected-component infrastructure (`build_graph_components_report`) as the fallback for graphs with <2 edges per node on average
 - [ ] For large graphs, partition into sub-graphs of ≤1000 nodes via connected-component splitting before running Louvain; this avoids unnecessary super-node aggregation passes while preserving correctness on sparse vault graphs
-- [x] Unit tests: known community structure (two cliques bridged by a single edge), empty graph, single-node graph, fully-disconnected graph
+- [ ] Unit tests: known community structure (two cliques bridged by a single edge), empty graph, single-node graph, fully-disconnected graph (dense bridged-clique persistence coverage implemented; explicit empty/single/disconnected cases remain)
 - [ ] Benchmark: <500ms for a 500-node, 2000-edge graph on a warm cache
 
 ### 9.25.2 Community summary and labeling
@@ -5975,7 +5975,7 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 
 ### 9.25.6 Skill and AGENTS.md update
 
-- [x] Add `graph_communities` to the `graph-exploration` skill in `docs/assistant/skills/graph-exploration.md` frontmatter `tools:` list
+- [x] Add `graph_communities` guidance to the `graph-exploration` skill in `docs/assistant/skills/graph-exploration.md` (MCP tool exposure remains tracked in 9.25.3)
 - [x] Add example move: "Find which topic cluster an orphaned note belongs to, then suggest a bridge link."
 - [x] Update the `graph-exploration` skill’s Recommended Flow to include community detection when the task is about understanding vault topology at scale.
 
@@ -6025,7 +6025,7 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 
 ### 9.26.5 Skill and AGENTS.md update
 
-- [x] Add `suggest_links` to the `graph-exploration` skill in `docs/assistant/skills/graph-exploration.md` frontmatter `tools:` list once the MCP tool ships in 9.26.3, or create a new `link-curation` skill if the flow warrants a separate teaching surface.
+- [x] Add `suggest_links` guidance to the `graph-exploration` skill in `docs/assistant/skills/graph-exploration.md` (MCP tool exposure remains tracked in 9.26.3)
 - [x] Add example move: "Discover and review a ranked list of suggested connections for an orphan note, then accept the ones that make sense."
 - [x] Update the `graph-exploration` skill’s Recommended Flow to include `suggest links` as a way to find connections when a note feels isolated in the graph.
 - [ ] If a new `link-curation` skill is created, add it to the AGENTS.md template so new vaults ship with it.
@@ -6078,7 +6078,7 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 
 No skill changes required. Confidence tagging is internal metadata that enriches existing CLI output (`vulcan graph hubs`, `vulcan graph path`, `vulcan graph export`) and MCP tool responses (`graph_hubs`, `graph_path`, `graph_export` in the `graph-exploration` skill) without changing the tool surface. The skill's example moves and guardrails remain valid because these surfaces automatically include confidence context in their JSON output once this phase ships.
 
-### 9.28 Agent Skills-compatible skill commands
+## Phase 9.28: Agent Skills-compatible skill commands
 
 **Goal:** Align Vulcan's executable assistant assets with the Agent Skills package format while preserving the shared registry, permission profiles, MCP exposure, and JS runtime.
 
