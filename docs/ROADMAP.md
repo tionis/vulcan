@@ -4206,6 +4206,8 @@ Do the structural pieces before visual polish:
 
 **Status:** Complete for the optional CLI-hosted managed-engine pilot. Shipped: assistant config, `vulcan assistant` CLI, pi process lifecycle management, synchronous JSONL RPC client, typed pi event parsing, context payload injection, bundled pi extension materialization, permission-profile propagation, one-shot prompts, non-interactive prompt stdin, interactive chat, resume/continue via newest session, session listing with header metadata, doctor/context inspection, renderer hardening, mock-engine integration tests, and user docs. Deferred items are explicitly scoped to richer terminal UI, extension UI prompts, selectable session picker, real-pi CI smoke tests, daemon-managed async transport, and native chat adapters.
 
+**Completion scope:** The checked `[x]` items define the completed 9.21 CLI-hosted pilot. `[-]` items in this phase are non-blocking follow-ons that were deliberately cut from the pilot because they depend on stable pi CI, daemon process supervision, richer terminal UI, or native chat transport decisions. They should not be read as unfinished requirements for the 9.21 milestone.
+
 **Why this phase exists separately:** Phase 9.12 defines the contract for external agent runtimes shelling out to Vulcan. Phase 9.21 flips the host/runtime relationship: Vulcan embeds a managed agent engine. The phases intentionally share the same prompts, skills, permission profiles, and mutation rules, but they are different deliverables:
 
 - **9.12:** bring-your-own runtime (Codex, Claude Code, Gemini CLI, `pi`, etc.); Vulcan is the tool provider
@@ -4588,7 +4590,7 @@ The RPC client (9.21.2) is the key investment. When the daemon exists:
 - **Multi-vault:** The daemon can manage one pi process per registered vault instead of one per CLI invocation.
 - **No wasted work:** The typed command/event structs, the event dispatcher, and the extension UI handler are all transport-agnostic and carry forward directly.
 
-### 9.21.12 Cross-platform chat transport contract (Deferred native chat)
+### 9.21.12 Cross-platform chat transport contract (Deferred follow-on: native chat)
 
 Do not make Telegram the architecture. If native chat is revived, start by defining the reusable assistant/chat boundary that all platforms plug into.
 
@@ -4667,7 +4669,7 @@ Do not make Telegram the architecture. If native chat is revived, start by defin
   profile = "edit"
   ```
 
-### 9.21.13 Telegram adapter (Deferred native chat)
+### 9.21.13 Telegram adapter (Deferred follow-on: native chat)
 
 Implement Telegram on top of the cross-platform contract from 9.21.12 rather than letting Telegram-specific concerns leak into the assistant core.
 
@@ -4680,7 +4682,7 @@ Implement Telegram on top of the cross-platform contract from 9.21.12 rather tha
 - [-] Batch streaming message edits to respect Telegram API rate limits without making the assistant renderer Telegram-aware
 - [-] Enforce security at the Rust boundary by resolving the effective profile from the transport contract, then spawning pi with the corresponding `--permissions` profile
 
-### 9.21.14 Matrix adapter research and viability gate (Deferred native chat)
+### 9.21.14 Matrix adapter research and viability gate (Deferred follow-on: native chat)
 
 Matrix is explicitly more complex than Telegram because it brings sync loops, room state, media handling, and E2EE key management. Treat it as a separate design gate, not as "Telegram but different IDs."
 
