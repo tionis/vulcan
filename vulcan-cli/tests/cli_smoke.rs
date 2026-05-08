@@ -10381,6 +10381,142 @@ fn help_assistant_integration_topic_is_available() {
 }
 
 #[test]
+fn assistant_doctor_reports_managed_engine_configuration() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    let pi_binary = temp_dir.path().join("pi");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vault dir should be created");
+    fs::write(&pi_binary, "#!/bin/sh\n").expect("mock pi binary should be written");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        format!(
+            "[assistant]\npi_binary = {:?}\nprovider = \"openai\"\nmodel = \"gpt-5.2\"\npermissions = \"readonly\"\n",
+            pi_binary.display().to_string()
+        ),
+    )
+    .expect("config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "assistant",
+            "--doctor",
+            "--thinking",
+            "high",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["runtime"].as_str(), Some("pi"));
+    assert_eq!(
+        json["resolved_binary"].as_str(),
+        Some(pi_binary.to_str().expect("utf-8"))
+    );
+    assert_eq!(json["available"].as_bool(), Some(true));
+    assert!(json["launch_args"].as_array().is_some_and(|args| args
+        .iter()
+        .any(|arg| arg == "--mode")
+        && args.iter().any(|arg| arg == "gpt-5.2")
+        && args.iter().any(|arg| arg == "high")));
+}
+
+#[test]
+fn assistant_print_context_uses_permissions_and_tool_packs() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    fs::create_dir_all(vault_root.join(".agents/skills/daily-review"))
+        .expect("skill dir should be created");
+    fs::write(
+        vault_root.join("AGENTS.md"),
+        "# Rules\n\nUse the daily routine.\n",
+    )
+    .expect("agents file should be written");
+    fs::write(
+        vault_root.join(".agents/skills/daily-review/SKILL.md"),
+        "---\nname: daily-review\ntitle: Daily Review\ndescription: Review the day.\n---\n# Daily Review\n",
+    )
+    .expect("skill should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "assistant",
+            "--print-context",
+            "--assistant-permissions",
+            "readonly",
+            "--tool-pack",
+            "notes-read,status",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["permission_profile"].as_str(), Some("readonly"));
+    assert!(json["agents_file"]
+        .as_str()
+        .is_some_and(|body| body.contains("daily routine")));
+    assert!(json["skills"]
+        .as_array()
+        .is_some_and(|skills| skills.iter().any(|skill| skill["name"] == "daily-review")));
+    assert!(json["tools"]["tools"]
+        .as_array()
+        .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "note_get")
+            && !tools.iter().any(|tool| tool["destructive"] == true)));
+}
+
+#[test]
+fn assistant_list_sessions_reads_configured_session_dir() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vault dir should be created");
+    fs::create_dir_all(vault_root.join("Support/Sessions")).expect("sessions dir should exist");
+    fs::write(vault_root.join("Support/Sessions/one.jsonl"), "{}\n")
+        .expect("session should be written");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[assistant]\nsessions_dir = \"Support/Sessions\"\n",
+    )
+    .expect("config should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "assistant",
+            "--list-sessions",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert!(json["sessions_dir"]
+        .as_str()
+        .is_some_and(|path| path.ends_with("Support/Sessions")));
+    assert!(json["sessions"].as_array().is_some_and(|sessions| sessions
+        .iter()
+        .any(|session| session["path"] == "one.jsonl")));
+}
+
+#[test]
 fn agent_install_overwrite_refreshes_bundled_skill_contents() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

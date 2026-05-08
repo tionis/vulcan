@@ -1221,6 +1221,27 @@ Examples:
   vulcan status
   vulcan status --output json";
 
+const ASSISTANT_COMMAND_AFTER_HELP: &str = "\
+Modes:
+  --doctor         Check managed-engine availability and launch configuration
+  --print-context  Print the vault context that would be sent to the engine
+  --list-sessions  List local assistant session files
+  PROMPT           Run one prompt through the managed RPC engine
+
+Notes:
+  `assistant` is an optional embedded host mode. Vulcan owns vault context, MCP tool exposure,
+  and permission-profile selection; the engine is a JSONL RPC subprocess.
+  The initial runtime is `pi` via `pi --mode rpc --cwd <vault>`.
+  Defaults live under `[assistant]` in `.vulcan/config.toml`.
+  Use `--assistant-permissions <profile>` to bind the assistant to a permission profile.
+  Use `--tool-pack` to expose the same curated tool packs as MCP.
+
+Examples:
+  vulcan assistant --doctor
+  vulcan assistant --print-context --tool-pack notes-read,search,status
+  vulcan assistant --list-sessions
+  vulcan assistant \"Summarize today's routine\"";
+
 const MCP_COMMAND_AFTER_HELP: &str = "\
 Protocols:
   stdio reads JSON-RPC 2.0 messages from stdin and writes them to stdout.
@@ -4753,6 +4774,57 @@ pub enum Command {
     Skill {
         #[command(subcommand)]
         command: SkillCommand,
+    },
+    #[command(
+        about = "Run an optional embedded assistant engine against this vault",
+        after_help = ASSISTANT_COMMAND_AFTER_HELP
+    )]
+    Assistant {
+        #[arg(help = "Prompt text; if omitted and stdin is piped, stdin is used")]
+        prompt: Vec<String>,
+        #[arg(
+            long,
+            help = "Check the configured managed engine without starting a session"
+        )]
+        doctor: bool,
+        #[arg(
+            long,
+            help = "Print the context payload that would be sent to the engine"
+        )]
+        print_context: bool,
+        #[arg(
+            long,
+            help = "List assistant session files from the configured sessions directory"
+        )]
+        list_sessions: bool,
+        #[arg(long, help = "Override [assistant].provider for this run")]
+        provider: Option<String>,
+        #[arg(long, help = "Override [assistant].model for this run")]
+        model: Option<String>,
+        #[arg(long, help = "Override [assistant].thinking_level for this run")]
+        thinking: Option<String>,
+        #[arg(long, help = "Show thinking deltas emitted by the engine")]
+        show_thinking: bool,
+        #[arg(long, help = "Override [assistant].pi_binary for this run")]
+        assistant_pi_binary: Option<String>,
+        #[arg(long, help = "Permission profile used to filter assistant tool access")]
+        assistant_permissions: Option<String>,
+        #[arg(long, help = "Do not persist assistant session state")]
+        ephemeral: bool,
+        #[arg(
+            long,
+            help = "Do not inject Vulcan tools into the managed engine context"
+        )]
+        no_tools: bool,
+        #[arg(
+            long,
+            value_enum,
+            value_delimiter = ',',
+            default_value = "notes-read,search,status"
+        )]
+        tool_pack: Vec<McpToolPackArg>,
+        #[arg(long, value_enum, default_value_t = McpToolPackModeArg::Static)]
+        tool_pack_mode: McpToolPackModeArg,
     },
     #[command(
         about = "Open, inspect, and append to daily notes",

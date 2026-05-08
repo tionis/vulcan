@@ -4,6 +4,7 @@
 //! `vulcan-core`; this crate owns argument parsing, TUI state, interactive I/O,
 //! terminal rendering, and other CLI-specific behavior.
 
+mod assistant;
 mod bases_tui;
 mod browse_tui;
 mod bundle_server;
@@ -2014,7 +2015,8 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Refactor { .. }
         | Command::Checkpoint { .. }
         | Command::Export { .. }
-        | Command::Site { .. } => true,
+        | Command::Site { .. }
+        | Command::Assistant { .. } => true,
         Command::Daily { command } => matches!(
             command,
             DailyCommand::Show { .. } | DailyCommand::List { .. } | DailyCommand::ExportIcs { .. }
@@ -7573,6 +7575,40 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         }
         Command::Skill { ref command } => {
             commands::skill::handle_skill_command(cli, &paths, command)
+        }
+        Command::Assistant {
+            ref prompt,
+            doctor,
+            print_context,
+            list_sessions,
+            ref provider,
+            ref model,
+            ref thinking,
+            show_thinking,
+            ref assistant_pi_binary,
+            ref assistant_permissions,
+            ephemeral,
+            no_tools,
+            ref tool_pack,
+            tool_pack_mode,
+        } => {
+            let options = assistant::AssistantCommandOptions {
+                prompt: prompt.clone(),
+                doctor,
+                print_context,
+                list_sessions,
+                provider: provider.clone(),
+                model: model.clone(),
+                thinking: thinking.clone(),
+                show_thinking,
+                assistant_pi_binary: assistant_pi_binary.clone(),
+                assistant_permissions: assistant_permissions.clone(),
+                ephemeral,
+                no_tools,
+                tool_pack: tool_pack.clone(),
+                tool_pack_mode,
+            };
+            assistant::handle_assistant_command(&paths, cli.output, &options)
         }
         Command::Status => {
             let report = run_status_command(&paths)?;
