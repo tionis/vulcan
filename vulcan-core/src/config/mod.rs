@@ -24,6 +24,15 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # default_mode = "blocking"   # off | blocking | background
 # browse_mode = "background"  # off | blocking | background
 
+# [assistant]
+# runtime = "pi"               # pi | none
+# pi_binary = "pi"             # binary name or full path
+# provider = ""                # empty = managed engine default
+# model = ""                   # empty = managed engine default
+# thinking_level = "medium"    # off | minimal | low | medium | high | xhigh
+# permissions = "readonly"     # permission profile for assistant tool calls
+# sessions_dir = "AI/Sessions" # relative to vault root; empty = ephemeral
+
 # [chunking]
 # strategy = "heading"
 # target_size = 4000
@@ -823,6 +832,20 @@ pub struct AssistantConfig {
     pub skills_folder: PathBuf,
     #[serde(default = "default_assistant_tools_folder")]
     pub tools_folder: PathBuf,
+    #[serde(default = "default_assistant_runtime")]
+    pub runtime: String,
+    #[serde(default = "default_assistant_pi_binary")]
+    pub pi_binary: String,
+    #[serde(default)]
+    pub provider: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default = "default_assistant_thinking_level")]
+    pub thinking_level: String,
+    #[serde(default = "default_assistant_permissions")]
+    pub permissions: String,
+    #[serde(default = "default_assistant_sessions_dir")]
+    pub sessions_dir: PathBuf,
 }
 
 impl Default for AssistantConfig {
@@ -831,6 +854,13 @@ impl Default for AssistantConfig {
             prompts_folder: default_assistant_prompts_folder(),
             skills_folder: default_assistant_skills_folder(),
             tools_folder: default_assistant_tools_folder(),
+            runtime: default_assistant_runtime(),
+            pi_binary: default_assistant_pi_binary(),
+            provider: String::new(),
+            model: String::new(),
+            thinking_level: default_assistant_thinking_level(),
+            permissions: default_assistant_permissions(),
+            sessions_dir: default_assistant_sessions_dir(),
         }
     }
 }
@@ -845,6 +875,26 @@ fn default_assistant_skills_folder() -> PathBuf {
 
 fn default_assistant_tools_folder() -> PathBuf {
     PathBuf::from(".agents/tools")
+}
+
+fn default_assistant_runtime() -> String {
+    "pi".to_string()
+}
+
+fn default_assistant_pi_binary() -> String {
+    "pi".to_string()
+}
+
+fn default_assistant_thinking_level() -> String {
+    "medium".to_string()
+}
+
+fn default_assistant_permissions() -> String {
+    "readonly".to_string()
+}
+
+fn default_assistant_sessions_dir() -> PathBuf {
+    PathBuf::from("AI/Sessions")
 }
 
 /// Which HTTP-based search provider to use.
@@ -3017,6 +3067,13 @@ struct PartialAssistantConfig {
     prompts_folder: Option<PathBuf>,
     skills_folder: Option<PathBuf>,
     tools_folder: Option<PathBuf>,
+    runtime: Option<String>,
+    pi_binary: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    thinking_level: Option<String>,
+    permissions: Option<String>,
+    sessions_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -8217,6 +8274,28 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
             config.assistant.tools_folder =
                 normalize_template_pathbuf(&tools_folder).unwrap_or_default();
         }
+        if let Some(runtime) = assistant.runtime {
+            config.assistant.runtime = runtime;
+        }
+        if let Some(pi_binary) = assistant.pi_binary {
+            config.assistant.pi_binary = pi_binary;
+        }
+        if let Some(provider) = assistant.provider {
+            config.assistant.provider = provider;
+        }
+        if let Some(model) = assistant.model {
+            config.assistant.model = model;
+        }
+        if let Some(thinking_level) = assistant.thinking_level {
+            config.assistant.thinking_level = thinking_level;
+        }
+        if let Some(permissions) = assistant.permissions {
+            config.assistant.permissions = permissions;
+        }
+        if let Some(sessions_dir) = assistant.sessions_dir {
+            config.assistant.sessions_dir =
+                normalize_template_pathbuf(&sessions_dir).unwrap_or_default();
+        }
     }
 
     if let Some(web) = overrides.web {
@@ -9944,16 +10023,37 @@ intellisense_render = 2
             defaults.assistant.tools_folder,
             PathBuf::from(".agents/tools")
         );
+        assert_eq!(defaults.assistant.runtime, "pi");
+        assert_eq!(defaults.assistant.pi_binary, "pi");
+        assert_eq!(defaults.assistant.provider, "");
+        assert_eq!(defaults.assistant.model, "");
+        assert_eq!(defaults.assistant.thinking_level, "medium");
+        assert_eq!(defaults.assistant.permissions, "readonly");
+        assert_eq!(
+            defaults.assistant.sessions_dir,
+            PathBuf::from("AI/Sessions")
+        );
     }
 
     #[test]
-    fn vulcan_config_can_override_assistant_paths() {
+    fn vulcan_config_can_override_assistant_settings() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path();
         fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
         fs::write(
             vault_root.join(".vulcan/config.toml"),
-            "[assistant]\nprompts_folder = \"Shared/Prompts\"\nskills_folder = \"Shared/Skills\"\ntools_folder = \"Shared/Tools\"\n",
+            r#"[assistant]
+prompts_folder = "Shared/Prompts"
+skills_folder = "Shared/Skills"
+tools_folder = "Shared/Tools"
+runtime = "pi"
+pi_binary = "/opt/pi/bin/pi"
+provider = "openai"
+model = "gpt-5.2"
+thinking_level = "high"
+permissions = "daily-wiki-agent"
+sessions_dir = "Shared/Sessions"
+"#,
         )
         .expect("config should be written");
 
@@ -9970,6 +10070,16 @@ intellisense_render = 2
         assert_eq!(
             loaded.config.assistant.tools_folder,
             PathBuf::from("Shared/Tools")
+        );
+        assert_eq!(loaded.config.assistant.runtime, "pi");
+        assert_eq!(loaded.config.assistant.pi_binary, "/opt/pi/bin/pi");
+        assert_eq!(loaded.config.assistant.provider, "openai");
+        assert_eq!(loaded.config.assistant.model, "gpt-5.2");
+        assert_eq!(loaded.config.assistant.thinking_level, "high");
+        assert_eq!(loaded.config.assistant.permissions, "daily-wiki-agent");
+        assert_eq!(
+            loaded.config.assistant.sessions_dir,
+            PathBuf::from("Shared/Sessions")
         );
     }
 
@@ -11938,6 +12048,11 @@ include_paths = ["Docs/Intro.md"]
         assert!(template.contains("prompts_folder = \"AI/Prompts\""));
         assert!(template.contains("skills_folder = \".agents/skills\""));
         assert!(template.contains("tools_folder = \".agents/tools\""));
+        assert!(template.contains("runtime = \"pi\""));
+        assert!(template.contains("pi_binary = \"pi\""));
+        assert!(template.contains("thinking_level = \"medium\""));
+        assert!(template.contains("permissions = \"readonly\""));
+        assert!(template.contains("sessions_dir = \"AI/Sessions\""));
     }
 
     #[test]
