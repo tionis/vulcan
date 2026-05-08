@@ -1,6 +1,8 @@
 use rusqlite::Transaction;
 
 pub const TABLES_TO_CLEAR: &[&str] = &[
+    "link_suggestions",
+    "graph_clusters",
     "kanban_boards",
     "events",
     "tasknotes_tasks",
@@ -715,6 +717,49 @@ pub fn apply_schema_v16(transaction: &Transaction<'_>) -> Result<(), rusqlite::E
             ON tasknotes_tasks(scheduled);
         CREATE INDEX IF NOT EXISTS idx_tasknotes_tasks_archived
             ON tasknotes_tasks(archived);
+        ",
+    )?;
+
+    Ok(())
+}
+
+pub fn apply_schema_v17(transaction: &Transaction<'_>) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "
+        ALTER TABLE links ADD COLUMN confidence TEXT NOT NULL DEFAULT 'EXTRACTED'
+            CHECK (confidence IN ('EXTRACTED', 'INFERRED', 'AMBIGUOUS'));
+        ALTER TABLE links ADD COLUMN confidence_score REAL NOT NULL DEFAULT 1.0
+            CHECK (confidence_score >= 0.0 AND confidence_score <= 1.0);
+
+        CREATE TABLE IF NOT EXISTS graph_clusters (
+            document_id TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+            community_id INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            cohesion REAL NOT NULL,
+            computed_at TEXT NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_graph_clusters_community_id
+            ON graph_clusters(community_id);
+
+        CREATE TABLE IF NOT EXISTS link_suggestions (
+            id TEXT PRIMARY KEY,
+            source_document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            target_document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            score REAL NOT NULL,
+            signals TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'accepted', 'rejected')),
+            created_at TEXT NOT NULL,
+            accepted_at TEXT,
+            rejected_at TEXT,
+            UNIQUE(source_document_id, target_document_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_link_suggestions_status
+            ON link_suggestions(status);
+        CREATE INDEX IF NOT EXISTS idx_link_suggestions_source
+            ON link_suggestions(source_document_id);
         ",
     )?;
 

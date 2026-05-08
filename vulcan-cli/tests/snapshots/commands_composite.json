@@ -502,6 +502,91 @@
             "subcommands": []
           },
           {
+            "about": "Detect dense communities in the note graph",
+            "name": "communities",
+            "options": [
+              {
+                "help": "Show one community by id",
+                "id": "community",
+                "long": "community",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "COMMUNITY"
+                ]
+              },
+              {
+                "help": "List orphan notes with closest community hints",
+                "id": "orphans",
+                "long": "orphans",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ORPHANS"
+                ]
+              },
+              {
+                "help": "List notes that bridge communities",
+                "id": "bridges",
+                "long": "bridges",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "BRIDGES"
+                ]
+              },
+              {
+                "help": "Compute communities without persisting graph_clusters",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Write query rows to a CSV or JSONL file",
+                "id": "export",
+                "long": "export",
+                "possible_values": [
+                  "csv",
+                  "jsonl"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT"
+                ]
+              },
+              {
+                "help": "Destination file for CSV or JSONL exports",
+                "id": "export_path",
+                "long": "export-path",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPORT_PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "Summarize note-graph and vault analytics",
             "name": "stats",
             "options": [
@@ -6107,6 +6192,48 @@
                 ]
               }
             ],
+            "subcommands": []
+          },
+          {
+            "about": "Read one skill's metadata and Markdown body",
+            "name": "show",
+            "options": [
+              {
+                "help": "Skill name or relative path",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "List Vulcan command declarations from skills",
+            "name": "commands",
+            "options": [
+              {
+                "help": "Optional skill name or relative path",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Validate visible skill files and command metadata",
+            "name": "validate",
+            "options": [],
             "subcommands": []
           }
         ]

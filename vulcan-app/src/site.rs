@@ -6482,6 +6482,25 @@ fn copy_file_from_vault_with_cache(
         if cached.source_signature == source_signature
             && cached.output_signature == *current_output_signature
         {
+            let contents = fs::read(&source).map_err(AppError::operation)?;
+            if fs::read(destination).ok().as_deref() != Some(contents.as_slice()) {
+                let changed = write_output_bytes_if_changed(destination, &contents)?;
+                let output_signature =
+                    site_input_signature_for_path(destination)?.ok_or_else(|| {
+                        AppError::operation(format!(
+                            "copied site asset disappeared before it could be tracked: {}",
+                            destination.display()
+                        ))
+                    })?;
+                return Ok(SiteAssetCopyResult {
+                    changed,
+                    state: SiteCopiedAssetState {
+                        source_path: display_path(relative),
+                        source_signature,
+                        output_signature,
+                    },
+                });
+            }
             return Ok(SiteAssetCopyResult {
                 changed: false,
                 state: SiteCopiedAssetState {

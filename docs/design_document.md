@@ -1131,6 +1131,14 @@ That means Vulcan should treat MCP as a **server-native discovery surface**, not
 
 This keeps the subprocess harness story and the MCP story aligned in spirit while acknowledging that they have different discovery constraints.
 
+### Graph intelligence surfaces
+
+Graph queries expose whether each edge was extracted directly from vault Markdown or inferred by Vulcan workflows. Extracted links use `confidence = EXTRACTED` and score `1.0`; accepted composite link suggestions insert cache-local `INFERRED` edges with the accepted suggestion score. This keeps the vault as source of truth while allowing graph algorithms, MCP clients, and JSON exports to distinguish found structure from curated recommendations.
+
+`graph communities` detects dense note clusters from the resolved link graph without requiring embeddings. Community reports include labels from shared tags, cohesion, top internal nodes, boundary notes, bridge candidates, and orphan-to-community hints. `suggest links` builds a ranked queue from graph proximity, text mentions, tag overlap, and community boundaries; user feedback is stored in `link_suggestions` so accepted suggestions become inferred graph edges and rejected pairs are deprioritized on later runs.
+
+Agent Skills-compatible `SKILL.md` files may declare Vulcan command metadata under `metadata.vulcan.commands`. The `skill` command group lists, shows, validates, and reports those command declarations so external harnesses can discover executable skill knowledge without preloading every skill body.
+
 ### Single-note CRUD design
 
 The `note` command group fills the gap of having no way to read or write individual note content from the CLI. Key design decisions:

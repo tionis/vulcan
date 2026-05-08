@@ -100,6 +100,11 @@ impl MigrationRegistry {
                 "add tasknotes task index projection",
                 schema::apply_schema_v16,
             ),
+            Migration::new(
+                17,
+                "add graph confidence, clusters, and link suggestions",
+                schema::apply_schema_v17,
+            ),
         ])
     }
 

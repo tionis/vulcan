@@ -4,18 +4,19 @@ use crate::refactor::{RefactorChange, RefactorFileReport, RefactorReport};
 use crate::scan::{scan_vault_unlocked, ScanError, ScanMode};
 use crate::write_lock::acquire_write_lock;
 use crate::{
-    load_vault_config, query_notes, CacheError, LinkResolutionMode, LinkStylePreference, NoteQuery,
-    VaultPaths,
+    load_vault_config, query_notes, CacheError, LinkConfidence, LinkResolutionMode,
+    LinkStylePreference, NoteQuery, VaultPaths,
 };
 use aho_corasick::AhoCorasick;
-use rusqlite::Connection;
-use serde::Serialize;
+use rusqlite::{params, Connection};
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::ops::Range;
 use std::path::{Component, Path};
+use ulid::Ulid;
 
 #[derive(Debug)]
 pub enum SuggestionError {
@@ -132,9 +133,65 @@ struct MentionCandidate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NoteIdentity {
+    id: String,
     path: String,
     filename: String,
     aliases: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkSuggestionStatus {
+    Pending,
+    Accepted,
+    Rejected,
+}
+
+impl LinkSuggestionStatus {
+    fn from_db(value: &str) -> Self {
+        match value {
+            "accepted" => Self::Accepted,
+            "rejected" => Self::Rejected,
+            _ => Self::Pending,
+        }
+    }
+
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Accepted => "accepted",
+            Self::Rejected => "rejected",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub struct LinkSuggestionSignals {
+    pub embedding_score: f64,
+    pub graph_score: f64,
+    pub mention_score: f64,
+    pub tag_score: f64,
+    pub cross_community_bonus: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LinkSuggestion {
+    pub id: String,
+    pub source_path: String,
+    pub target_path: String,
+    pub score: f64,
+    pub display_score: f64,
+    pub signals: LinkSuggestionSignals,
+    pub status: LinkSuggestionStatus,
+    pub created_at: String,
+    pub accepted_at: Option<String>,
+    pub rejected_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct LinkSuggestionsReport {
+    pub suggestions: Vec<LinkSuggestion>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -270,6 +327,328 @@ pub fn suggest_mentions(
             .then(left.matched_text.cmp(&right.matched_text))
     });
     Ok(MentionSuggestionsReport { suggestions })
+}
+
+pub fn suggest_links(
+    paths: &VaultPaths,
+    note_identifier: Option<&str>,
+    limit: Option<usize>,
+    min_score: f64,
+    status: Option<LinkSuggestionStatus>,
+) -> Result<LinkSuggestionsReport, SuggestionError> {
+    let connection = open_existing_cache(paths)?;
+    let notes = load_note_identities(&connection)?;
+    compute_and_persist_link_suggestions(paths, &connection, note_identifier, min_score)?;
+    load_link_suggestions(
+        &connection,
+        &notes,
+        note_identifier,
+        limit,
+        min_score,
+        status,
+    )
+}
+
+pub fn accept_link_suggestion(
+    paths: &VaultPaths,
+    id: &str,
+) -> Result<LinkSuggestion, SuggestionError> {
+    update_link_suggestion_status(paths, id, LinkSuggestionStatus::Accepted)
+}
+
+pub fn reject_link_suggestion(
+    paths: &VaultPaths,
+    id: &str,
+) -> Result<LinkSuggestion, SuggestionError> {
+    update_link_suggestion_status(paths, id, LinkSuggestionStatus::Rejected)
+}
+
+fn compute_and_persist_link_suggestions(
+    paths: &VaultPaths,
+    connection: &Connection,
+    note_identifier: Option<&str>,
+    min_score: f64,
+) -> Result<(), SuggestionError> {
+    let notes = load_note_identities(connection)?;
+    let note_by_path = notes
+        .iter()
+        .map(|note| (note.path.clone(), note))
+        .collect::<HashMap<_, _>>();
+    let selected_paths = selected_note_paths(paths, &notes, note_identifier)?;
+    let mention_pairs = suggest_mentions(paths, note_identifier)?
+        .suggestions
+        .into_iter()
+        .filter_map(|suggestion| {
+            suggestion
+                .target_path
+                .map(|target| ((suggestion.source_path, target), 0.2))
+        })
+        .collect::<HashMap<_, _>>();
+    let tag_map = load_tag_map(connection)?;
+    let existing_edges = load_existing_link_pairs(connection)?;
+    let graph_distances = graph_proximity_candidates(connection)?;
+    let communities = load_graph_community_map(connection)?;
+
+    for source_path in selected_paths {
+        let Some(source) = note_by_path.get(&source_path) else {
+            continue;
+        };
+        for target in &notes {
+            if source.id == target.id
+                || existing_edges.contains(&(source.id.clone(), target.id.clone()))
+            {
+                continue;
+            }
+            let mention_score = mention_pairs
+                .get(&(source.path.clone(), target.path.clone()))
+                .copied()
+                .unwrap_or(0.0);
+            let graph_score = graph_distances
+                .get(&(source.id.clone(), target.id.clone()))
+                .map_or(0.0, |distance| 0.3 / f64::from(*distance));
+            let empty_tags = BTreeSet::new();
+            let tag_score = jaccard_tags(
+                tag_map.get(&source.id).unwrap_or(&empty_tags),
+                tag_map.get(&target.id).unwrap_or(&empty_tags),
+            ) * 0.1;
+            let cross_community_bonus =
+                match (communities.get(&source.id), communities.get(&target.id)) {
+                    (Some(left), Some(right)) if left != right => 1.15,
+                    _ => 1.0,
+                };
+            let signals = LinkSuggestionSignals {
+                embedding_score: 0.0,
+                graph_score,
+                mention_score,
+                tag_score,
+                cross_community_bonus,
+            };
+            let base_score = signals.embedding_score
+                + signals.graph_score
+                + signals.mention_score
+                + signals.tag_score;
+            let mut score = base_score * cross_community_bonus;
+            if let Some(existing_status) =
+                existing_suggestion_status(connection, &source.id, &target.id)?
+            {
+                if existing_status == LinkSuggestionStatus::Rejected {
+                    score *= 0.5;
+                }
+            }
+            if score < min_score || score <= 0.0 {
+                continue;
+            }
+            let signals_json = serde_json::to_string(&signals)
+                .map_err(|error| SuggestionError::InvalidRewrite(error.to_string()))?;
+            connection.execute(
+                "
+                INSERT INTO link_suggestions (
+                    id, source_document_id, target_document_id, score, signals, status, created_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, 'pending', strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+                ON CONFLICT(source_document_id, target_document_id) DO UPDATE SET
+                    score = excluded.score,
+                    signals = excluded.signals
+                WHERE link_suggestions.status = 'pending'
+                ",
+                params![
+                    Ulid::new().to_string(),
+                    &source.id,
+                    &target.id,
+                    score,
+                    signals_json,
+                ],
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn update_link_suggestion_status(
+    paths: &VaultPaths,
+    id: &str,
+    status: LinkSuggestionStatus,
+) -> Result<LinkSuggestion, SuggestionError> {
+    let connection = open_existing_cache(paths)?;
+    let notes = load_note_identities(&connection)?;
+    let (source_id, target_id, score) = connection.query_row(
+        "SELECT source_document_id, target_document_id, score FROM link_suggestions WHERE id = ?1",
+        params![id],
+        |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, f64>(2)?,
+            ))
+        },
+    )?;
+    match status {
+        LinkSuggestionStatus::Accepted => {
+            connection.execute(
+                "
+                UPDATE link_suggestions
+                SET status = 'accepted', accepted_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?1
+                ",
+                params![id],
+            )?;
+            insert_inferred_link(&connection, &source_id, &target_id, score)?;
+        }
+        LinkSuggestionStatus::Rejected => {
+            connection.execute(
+                "
+                UPDATE link_suggestions
+                SET status = 'rejected', rejected_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                WHERE id = ?1
+                ",
+                params![id],
+            )?;
+        }
+        LinkSuggestionStatus::Pending => {}
+    }
+    load_link_suggestions(&connection, &notes, None, None, 0.0, None)?
+        .suggestions
+        .into_iter()
+        .find(|suggestion| suggestion.id == id)
+        .ok_or_else(|| SuggestionError::InvalidRewrite(format!("suggestion not found: {id}")))
+}
+
+fn insert_inferred_link(
+    connection: &Connection,
+    source_id: &str,
+    target_id: &str,
+    score: f64,
+) -> Result<(), SuggestionError> {
+    let target_path: String = connection.query_row(
+        "SELECT path FROM documents WHERE id = ?1",
+        params![target_id],
+        |row| row.get(0),
+    )?;
+    connection.execute(
+        "
+        INSERT INTO links (
+            id, source_document_id, raw_text, link_kind, display_text, target_path_candidate,
+            target_heading, target_block, resolved_target_id, origin_context, byte_offset,
+            confidence, confidence_score
+        )
+        SELECT ?1, ?2, ?3, 'inferred', NULL, ?3, NULL, NULL, ?4, 'inferred', 0, ?5, ?6
+        WHERE NOT EXISTS (
+            SELECT 1 FROM links
+            WHERE source_document_id = ?2 AND resolved_target_id = ?4
+        )
+        ",
+        params![
+            Ulid::new().to_string(),
+            source_id,
+            target_path,
+            target_id,
+            LinkConfidence::Inferred.as_str(),
+            score.clamp(0.0, 1.0),
+        ],
+    )?;
+    Ok(())
+}
+
+fn load_link_suggestions(
+    connection: &Connection,
+    notes: &[NoteIdentity],
+    note_identifier: Option<&str>,
+    limit: Option<usize>,
+    min_score: f64,
+    status: Option<LinkSuggestionStatus>,
+) -> Result<LinkSuggestionsReport, SuggestionError> {
+    let id_to_path = notes
+        .iter()
+        .map(|note| (note.id.clone(), note.path.clone()))
+        .collect::<HashMap<_, _>>();
+    let selected_ids = if let Some(identifier) = note_identifier {
+        selected_note_paths_from_loaded(notes, identifier)?
+            .into_iter()
+            .filter_map(|path| {
+                notes
+                    .iter()
+                    .find(|note| note.path == path)
+                    .map(|note| note.id.clone())
+            })
+            .collect::<BTreeSet<_>>()
+    } else {
+        BTreeSet::new()
+    };
+    let mut statement = connection.prepare(
+        "
+        SELECT id, source_document_id, target_document_id, score, signals, status, created_at, accepted_at, rejected_at
+        FROM link_suggestions
+        ORDER BY score DESC, created_at ASC, id ASC
+        ",
+    )?;
+    let rows = statement.query_map([], |row| {
+        let signals_json: String = row.get(4)?;
+        let signals = serde_json::from_str::<LinkSuggestionSignals>(&signals_json).unwrap_or(
+            LinkSuggestionSignals {
+                embedding_score: 0.0,
+                graph_score: 0.0,
+                mention_score: 0.0,
+                tag_score: 0.0,
+                cross_community_bonus: 1.0,
+            },
+        );
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+            row.get::<_, f64>(3)?,
+            signals,
+            LinkSuggestionStatus::from_db(&row.get::<_, String>(5)?),
+            row.get::<_, String>(6)?,
+            row.get::<_, Option<String>>(7)?,
+            row.get::<_, Option<String>>(8)?,
+        ))
+    })?;
+    let mut suggestions = Vec::new();
+    for row in rows {
+        let (
+            id,
+            source_id,
+            target_id,
+            score,
+            signals,
+            row_status,
+            created_at,
+            accepted_at,
+            rejected_at,
+        ) = row?;
+        if score < min_score {
+            continue;
+        }
+        if status.as_ref().is_some_and(|status| status != &row_status) {
+            continue;
+        }
+        if !selected_ids.is_empty() && !selected_ids.contains(&source_id) {
+            continue;
+        }
+        let Some(source_path) = id_to_path.get(&source_id).cloned() else {
+            continue;
+        };
+        let Some(target_path) = id_to_path.get(&target_id).cloned() else {
+            continue;
+        };
+        suggestions.push(LinkSuggestion {
+            id,
+            source_path,
+            target_path,
+            score,
+            display_score: score.min(1.0),
+            signals,
+            status: row_status,
+            created_at,
+            accepted_at,
+            rejected_at,
+        });
+        if limit.is_some_and(|limit| suggestions.len() >= limit) {
+            break;
+        }
+    }
+    Ok(LinkSuggestionsReport { suggestions })
 }
 
 pub fn link_mentions(
@@ -480,6 +859,7 @@ fn load_note_identities(connection: &Connection) -> Result<Vec<NoteIdentity>, Su
     let rows = statement.query_map([], |row| {
         let document_id = row.get::<_, String>(0)?;
         Ok(NoteIdentity {
+            id: document_id.clone(),
             path: row.get(1)?,
             filename: row.get(2)?,
             aliases: aliases_by_document.remove(&document_id).unwrap_or_default(),
@@ -487,6 +867,150 @@ fn load_note_identities(connection: &Connection) -> Result<Vec<NoteIdentity>, Su
     })?;
     rows.collect::<Result<Vec<_>, _>>()
         .map_err(SuggestionError::from)
+}
+
+fn selected_note_paths_from_loaded(
+    notes: &[NoteIdentity],
+    note_identifier: &str,
+) -> Result<Vec<String>, SuggestionError> {
+    let lower = note_identifier.to_ascii_lowercase();
+    let matches = notes
+        .iter()
+        .filter(|note| {
+            note.path.eq_ignore_ascii_case(&lower)
+                || note.filename.eq_ignore_ascii_case(&lower)
+                || note
+                    .aliases
+                    .iter()
+                    .any(|alias| alias.eq_ignore_ascii_case(&lower))
+        })
+        .map(|note| note.path.clone())
+        .collect::<Vec<_>>();
+    if matches.is_empty() {
+        return Err(GraphQueryError::NoteNotFound {
+            identifier: note_identifier.to_string(),
+        }
+        .into());
+    }
+    Ok(matches)
+}
+
+fn load_tag_map(
+    connection: &Connection,
+) -> Result<HashMap<String, BTreeSet<String>>, SuggestionError> {
+    let mut map = HashMap::<String, BTreeSet<String>>::new();
+    let mut statement = connection
+        .prepare("SELECT document_id, tag_text FROM tags ORDER BY document_id, tag_text")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    for row in rows {
+        let (document_id, tag) = row?;
+        map.entry(document_id).or_default().insert(tag);
+    }
+    Ok(map)
+}
+
+fn load_existing_link_pairs(
+    connection: &Connection,
+) -> Result<BTreeSet<(String, String)>, SuggestionError> {
+    let mut statement = connection.prepare(
+        "SELECT source_document_id, resolved_target_id FROM links WHERE resolved_target_id IS NOT NULL",
+    )?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    })?;
+    rows.collect::<Result<BTreeSet<_>, _>>()
+        .map_err(SuggestionError::from)
+}
+
+fn graph_proximity_candidates(
+    connection: &Connection,
+) -> Result<HashMap<(String, String), u32>, SuggestionError> {
+    let existing = load_existing_link_pairs(connection)?;
+    let mut undirected = HashMap::<String, BTreeSet<String>>::new();
+    for (source_id, target_id) in &existing {
+        undirected
+            .entry(source_id.clone())
+            .or_default()
+            .insert(target_id.clone());
+        undirected
+            .entry(target_id.clone())
+            .or_default()
+            .insert(source_id.clone());
+    }
+    let mut candidates = HashMap::new();
+    for source in undirected.keys() {
+        let mut queue = std::collections::VecDeque::from([(source.clone(), 0u32)]);
+        let mut seen = BTreeSet::from([source.clone()]);
+        while let Some((current, distance)) = queue.pop_front() {
+            if distance >= 3 {
+                continue;
+            }
+            for neighbor in undirected.get(&current).into_iter().flatten() {
+                if !seen.insert(neighbor.clone()) {
+                    continue;
+                }
+                let next_distance = distance + 1;
+                if next_distance > 1
+                    && !existing.contains(&(source.clone(), neighbor.clone()))
+                    && source != neighbor
+                {
+                    candidates.insert((source.clone(), neighbor.clone()), next_distance);
+                }
+                queue.push_back((neighbor.clone(), next_distance));
+            }
+        }
+    }
+    Ok(candidates)
+}
+
+fn load_graph_community_map(
+    connection: &Connection,
+) -> Result<HashMap<String, i64>, SuggestionError> {
+    let mut map = HashMap::new();
+    let mut statement =
+        connection.prepare("SELECT document_id, community_id FROM graph_clusters")?;
+    let rows = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    })?;
+    for row in rows {
+        let (document_id, community_id) = row?;
+        map.insert(document_id, community_id);
+    }
+    Ok(map)
+}
+
+fn existing_suggestion_status(
+    connection: &Connection,
+    source_id: &str,
+    target_id: &str,
+) -> Result<Option<LinkSuggestionStatus>, SuggestionError> {
+    let mut statement = connection.prepare(
+        "SELECT status FROM link_suggestions WHERE source_document_id = ?1 AND target_document_id = ?2",
+    )?;
+    let mut rows = statement.query(params![source_id, target_id])?;
+    if let Some(row) = rows.next()? {
+        Ok(Some(LinkSuggestionStatus::from_db(
+            &row.get::<_, String>(0)?,
+        )))
+    } else {
+        Ok(None)
+    }
+}
+
+fn jaccard_tags(left: &BTreeSet<String>, right: &BTreeSet<String>) -> f64 {
+    if left.is_empty() && right.is_empty() {
+        return 0.0;
+    }
+    let intersection = left.intersection(right).count();
+    let union = left.union(right).count();
+    if union == 0 {
+        0.0
+    } else {
+        f64::from(u32::try_from(intersection).unwrap_or(u32::MAX))
+            / f64::from(u32::try_from(union).unwrap_or(u32::MAX))
+    }
 }
 
 fn build_mention_candidates(notes: &[NoteIdentity]) -> Vec<MentionCandidate> {
@@ -1102,6 +1626,67 @@ mod tests {
     }
 
     #[test]
+    fn suggest_links_accepts_and_rejects_persisted_suggestions() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::write(vault_root.join("A.md"), "# A\n\n[[B]]\n").expect("write A");
+        fs::write(vault_root.join("B.md"), "# B\n\n[[Charlie]]\n").expect("write B");
+        fs::write(vault_root.join("Charlie.md"), "# Charlie\n").expect("write Charlie");
+        fs::write(
+            vault_root.join("D.md"),
+            "# D\n\nCharlie is mentioned here.\n",
+        )
+        .expect("write D");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let report =
+            suggest_links(&paths, None, None, 0.0, None).expect("link suggestions should compute");
+
+        let graph_suggestion = report
+            .suggestions
+            .iter()
+            .find(|suggestion| {
+                suggestion.source_path == "A.md" && suggestion.target_path == "Charlie.md"
+            })
+            .expect("A -> Charlie should be suggested through graph proximity");
+        assert!(graph_suggestion.signals.graph_score > 0.0);
+        let mention_suggestion = report
+            .suggestions
+            .iter()
+            .find(|suggestion| {
+                suggestion.source_path == "D.md" && suggestion.target_path == "Charlie.md"
+            })
+            .expect("D -> Charlie should be suggested through mention text");
+        assert!(mention_suggestion.signals.mention_score > 0.0);
+
+        let accepted =
+            accept_link_suggestion(&paths, &graph_suggestion.id).expect("accept should succeed");
+        assert_eq!(accepted.status, LinkSuggestionStatus::Accepted);
+        let rejected =
+            reject_link_suggestion(&paths, &mention_suggestion.id).expect("reject should succeed");
+        assert_eq!(rejected.status, LinkSuggestionStatus::Rejected);
+
+        let connection = Connection::open(paths.cache_db()).expect("cache should open");
+        let inferred: (String, f64) = connection
+            .query_row(
+                "
+                SELECT confidence, confidence_score
+                FROM links
+                JOIN documents AS source ON source.id = links.source_document_id
+                JOIN documents AS target ON target.id = links.resolved_target_id
+                WHERE source.path = 'A.md' AND target.path = 'Charlie.md'
+                ",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("inferred link should exist");
+        assert_eq!(inferred.0, "INFERRED");
+        assert!(inferred.1 > 0.0);
+    }
+
+    #[test]
     fn suggest_duplicates_reports_titles_aliases_and_merge_candidates() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
@@ -1130,16 +1715,19 @@ mod tests {
     fn merge_candidates_compares_adjacent_filename_length_buckets() {
         let notes = vec![
             NoteIdentity {
+                id: "1".to_string(),
                 path: "Docs/Guide.md".to_string(),
                 filename: "Guide".to_string(),
                 aliases: Vec::new(),
             },
             NoteIdentity {
+                id: "2".to_string(),
                 path: "Docs/Guides.md".to_string(),
                 filename: "Guides".to_string(),
                 aliases: Vec::new(),
             },
             NoteIdentity {
+                id: "3".to_string(),
                 path: "Docs/Guidebook.md".to_string(),
                 filename: "Guidebook".to_string(),
                 aliases: Vec::new(),
@@ -1159,21 +1747,25 @@ mod tests {
     fn merge_candidates_bk_tree_finds_single_edit_prefix_changes() {
         let notes = vec![
             NoteIdentity {
+                id: "1".to_string(),
                 path: "Docs/Guide.md".to_string(),
                 filename: "Guide".to_string(),
                 aliases: Vec::new(),
             },
             NoteIdentity {
+                id: "2".to_string(),
                 path: "Docs/Quide.md".to_string(),
                 filename: "Quide".to_string(),
                 aliases: Vec::new(),
             },
             NoteIdentity {
+                id: "3".to_string(),
                 path: "Docs/AGuide.md".to_string(),
                 filename: "AGuide".to_string(),
                 aliases: Vec::new(),
             },
             NoteIdentity {
+                id: "4".to_string(),
                 path: "Docs/Guidebook.md".to_string(),
                 filename: "Guidebook".to_string(),
                 aliases: Vec::new(),

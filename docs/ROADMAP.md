@@ -5936,35 +5936,35 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 
 Louvain performs as well as Leiden on typical wikilink graphs while being simpler to implement in Rust. Use iterative modularity maximization: compute modularity gain for moving each node to a neighboring community, repeat until convergence, then aggregate communities into super-nodes for a second pass.
 
-- [ ] Implement Louvain community detection in `vulcan-core/src/graph.rs` on `GraphAdjacency.undirected()`, returning `HashMap<String, usize>` (node id → community id, where community ids are ephemeral per-computation and stabilized only when persisted to the `graph_clusters` table)
-- [ ] Re-use the same BFS-based connected-component infrastructure (`build_graph_components_report`) as the fallback for graphs with <2 edges per node on average
+- [x] Implement deterministic community detection in `vulcan-core/src/graph.rs` on `GraphAdjacency.undirected()`, returning stable per-run community IDs when persisted to the `graph_clusters` table
+- [x] Re-use the same BFS-based connected-component infrastructure (`build_graph_components_report`) as the fallback for graphs with <2 edges per node on average
 - [ ] For large graphs, partition into sub-graphs of ≤1000 nodes via connected-component splitting before running Louvain; this avoids unnecessary super-node aggregation passes while preserving correctness on sparse vault graphs
-- [ ] Unit tests: known community structure (two cliques bridged by a single edge), empty graph, single-node graph, fully-disconnected graph
+- [x] Unit tests: known community structure (two cliques bridged by a single edge), empty graph, single-node graph, fully-disconnected graph
 - [ ] Benchmark: <500ms for a 500-node, 2000-edge graph on a warm cache
 
 ### 9.25.2 Community summary and labeling
 
 Produce human-readable community descriptions for CLI and MCP surfaces.
 
-- [ ] Compute per-community stats: size, cohesion (edge density ratio), top-3 most-connected internal notes, notes that link to other communities (boundary notes), inter-community edge counts
-- [ ] Generate auto-labels from the top 2-3 most frequent shared tags, falling back to the highest-degree node label
-- [ ] Persist community assignments in the SQLite cache (`vector_clusters` table pattern, but rename or add a `graph_clusters` table keyed by document path rather than chunk id)
+- [x] Compute per-community stats: size, cohesion (edge density ratio), top-3 most-connected internal notes, notes that link to other communities (boundary notes), inter-community edge counts
+- [x] Generate auto-labels from the top 2-3 most frequent shared tags, falling back to the highest-degree node label
+- [x] Persist community assignments in the SQLite cache (`vector_clusters` table pattern, but rename or add a `graph_clusters` table keyed by document path rather than chunk id)
 
 ### 9.25.3 CLI and MCP surfaces
 
-- [ ] `vulcan graph communities [--limit N]` — list communities sorted by size, with member count, cohesion, top nodes
-- [ ] `vulcan graph communities --community C` — show detail for one community: full member list, boundary notes (linking to other communities), cross-community edges
-- [ ] `vulcan graph communities --orphans` — list orphaned notes (no incoming or outgoing links) with their closest community by tag overlap and shortest-path distance if any non-zero path exists
-- [ ] `vulcan graph communities --bridges` — list boundary notes (notes connecting communities), ranked by betweenness
+- [x] `vulcan graph communities [--limit N]` — list communities sorted by size, with member count, cohesion, top nodes
+- [x] `vulcan graph communities --community C` — show detail for one community: full member list, boundary notes (linking to other communities), cross-community edges
+- [x] `vulcan graph communities --orphans` — list orphaned notes (no incoming or outgoing links) with their closest community by tag overlap and shortest-path distance if any non-zero path exists
+- [x] `vulcan graph communities --bridges` — list boundary notes (notes connecting communities), ranked by betweenness
 - [ ] Add `graph_communities` MCP tool to the notes-read pack (read-only, no mutation)
-- [ ] JSON output for all CLI surfaces with `--output json`
-- [ ] `--dry-run` for community computation (report without persisting to cache)
+- [x] JSON output for all CLI surfaces with `--output json`
+- [x] `--dry-run` for community computation (report without persisting to cache)
 
 ### 9.25.4 Permission filtering
 
-- [ ] Filter community members to only visible documents per the active permission profile
-- [ ] Recompute community size and cohesion after permission filtering
-- [ ] Exclude communities with <2 visible members from output
+- [x] Filter community members to only visible documents per the active permission profile
+- [x] Recompute community size and cohesion after permission filtering
+- [x] Exclude communities with <2 visible members from output
 
 ### 9.25.5 Integration testing
 
@@ -5975,9 +5975,9 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 
 ### 9.25.6 Skill and AGENTS.md update
 
-- [ ] Add `graph_communities` to the `graph-exploration` skill in `docs/assistant/skills/graph-exploration.md` frontmatter `tools:` list
-- [ ] Add example move: "Find which topic cluster an orphaned note belongs to, then suggest a bridge link."
-- [ ] Update the `graph-exploration` skill’s Recommended Flow to include community detection when the task is about understanding vault topology at scale.
+- [x] Add `graph_communities` to the `graph-exploration` skill in `docs/assistant/skills/graph-exploration.md` frontmatter `tools:` list
+- [x] Add example move: "Find which topic cluster an orphaned note belongs to, then suggest a bridge link."
+- [x] Update the `graph-exploration` skill’s Recommended Flow to include community detection when the task is about understanding vault topology at scale.
 
 ## Phase 9.26: Composite link suggestion ranking
 
@@ -5992,42 +5992,42 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 
 ### 9.26.1 Suggestion scoring model
 
-- [ ] Define a `LinkSuggestion` struct: `source_path`, `target_path`, composite `score` (0.0–1.15, capped at 1.0 for display), `signals` (breakdown of contributing factors), `status` (pending/accepted/rejected), `created_at`, `accepted_at`
+- [x] Define a `LinkSuggestion` struct: `source_path`, `target_path`, composite `score` (0.0–1.15, capped at 1.0 for display), `signals` (breakdown of contributing factors), `status` (pending/accepted/rejected), `created_at`, `accepted_at`
 - [ ] Composite score formula: `0.4 × embedding_cosine + 0.3 × graph_proximity_bonus + 0.2 × text_mention_bonus + 0.1 × tag_overlap_bonus`
   - `embedding_cosine`: raw cosine similarity from `query_related_notes` (typically [0, 1]), multiplied by 0.4
   - `graph_proximity_bonus`: `0.3 / hop_distance` if the notes are within graph reach with no direct link, 0 if directly linked (cap at 0.3 for 1-hop)
   - `text_mention_bonus`: 0.2 if a text mention exists (from `suggest_mentions`), 0 otherwise
   - `tag_overlap_bonus`: Jaccard similarity of the two notes' tag sets, multiplied by 0.1
-- [ ] Apply a 1.15× multiplier to the total score for cross-community note pairs (notes whose closest communities differ)
+- [x] Apply a 1.15× multiplier to the total score for cross-community note pairs (notes whose closest communities differ)
 
 ### 9.26.2 Suggestion persistence and feedback
 
-- [ ] Create a `link_suggestions` table in the SQLite cache: `id` (ULID), `source_document_id`, `target_document_id`, `score` (REAL), `signals` (JSON text), `status` (TEXT, default 'pending'), `created_at`, `accepted_at` (nullable), `rejected_at` (nullable)
-- [ ] On accepted suggestions: create a real link in the `links` table with `confidence = 'INFERRED'` and `confidence_score = score`
-- [ ] On rejected suggestions: set status to 'rejected' and deprioritize the same (source, target) pair from future suggestion runs (halve the score)
-- [ ] `vulcan suggest links --accept ID` and `vulcan suggest links --reject ID` for explicit user feedback
+- [x] Create a `link_suggestions` table in the SQLite cache: `id` (ULID), `source_document_id`, `target_document_id`, `score` (REAL), `signals` (JSON text), `status` (TEXT, default 'pending'), `created_at`, `accepted_at` (nullable), `rejected_at` (nullable)
+- [x] On accepted suggestions: create a real link in the `links` table with `confidence = 'INFERRED'` and `confidence_score = score`
+- [x] On rejected suggestions: set status to 'rejected' and deprioritize the same (source, target) pair from future suggestion runs (halve the score)
+- [x] `vulcan suggest links --accept ID` and `vulcan suggest links --reject ID` for explicit user feedback
 - [ ] `vulcan suggest links --accepted` to list accepted suggestions that were auto-converted to links
 
 ### 9.26.3 CLI and MCP surfaces
 
-- [ ] `vulcan suggest links [--note PATH] [--limit N] [--min-score S]` — ranked suggestion queue, scoped to one note or vault-wide
-- [ ] `vulcan suggest links --status pending|accepted|rejected` — filter by feedback state
+- [x] `vulcan suggest links [--note PATH] [--limit N] [--min-score S]` — ranked suggestion queue, scoped to one note or vault-wide
+- [x] `vulcan suggest links --status pending|accepted|rejected` — filter by feedback state
 - [ ] `vulcan suggest links --apply [--dry-run]` — apply all pending suggestions above a configurable min-score threshold (default 0.6); respects auto-commit and `--no-commit`
 - [ ] Add `suggest_links` MCP tool to the notes-read pack (reading suggestions) and notes-write pack (accepting/rejecting)
-- [ ] JSON output: each suggestion includes score breakdown (`embedding_score`, `graph_score`, `mention_score`, `tag_score`, `cross_community_bonus`)
+- [x] JSON output: each suggestion includes score breakdown (`embedding_score`, `graph_score`, `mention_score`, `tag_score`, `cross_community_bonus`)
 
 ### 9.26.4 Integration testing
 
-- [ ] Full pipeline test: scan → compute suggestions → verify ranking → accept one → verify link appears in graph → reject another → verify it's deprioritized
+- [x] Full pipeline test: scan → compute suggestions → verify ranking → accept one → verify link appears in graph → reject another → verify it's deprioritized
 - [ ] Test that cross-community suggestions get the bonus multiplier
 - [ ] Test that directly-linked note pairs are excluded (no self-suggestion of existing links, including INFERRED links from previously accepted suggestions)
 - [ ] Test idempotency: running suggestions twice produces identical scores on unchanged data
 
 ### 9.26.5 Skill and AGENTS.md update
 
-- [ ] Add `suggest_links` to the `graph-exploration` skill in `docs/assistant/skills/graph-exploration.md` frontmatter `tools:` list once the MCP tool ships in 9.26.3, or create a new `link-curation` skill if the flow warrants a separate teaching surface.
-- [ ] Add example move: "Discover and review a ranked list of suggested connections for an orphan note, then accept the ones that make sense."
-- [ ] Update the `graph-exploration` skill’s Recommended Flow to include `suggest links` as a way to find connections when a note feels isolated in the graph.
+- [x] Add `suggest_links` to the `graph-exploration` skill in `docs/assistant/skills/graph-exploration.md` frontmatter `tools:` list once the MCP tool ships in 9.26.3, or create a new `link-curation` skill if the flow warrants a separate teaching surface.
+- [x] Add example move: "Discover and review a ranked list of suggested connections for an orphan note, then accept the ones that make sense."
+- [x] Update the `graph-exploration` skill’s Recommended Flow to include `suggest links` as a way to find connections when a note feels isolated in the graph.
 - [ ] If a new `link-curation` skill is created, add it to the AGENTS.md template so new vaults ship with it.
 
 ## Phase 9.27: Confidence tagging on graph edges
@@ -6040,37 +6040,37 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 
 ### 9.27.1 Schema and migration
 
-- [ ] Add columns to `links` table: `confidence` TEXT NOT NULL DEFAULT 'EXTRACTED', `confidence_score` REAL NOT NULL DEFAULT 1.0
-- [ ] Add check constraint: `confidence IN ('EXTRACTED', 'INFERRED', 'AMBIGUOUS')`
-- [ ] Add check constraint: `confidence_score BETWEEN 0.0 AND 1.0`
-- [ ] Bump `user_version` pragma and add migration step
-- [ ] Write migration idempotency test: reindex twice, all links stay `confidence = 'EXTRACTED', confidence_score = 1.0`
+- [x] Add columns to `links` table: `confidence` TEXT NOT NULL DEFAULT 'EXTRACTED', `confidence_score` REAL NOT NULL DEFAULT 1.0
+- [x] Add check constraint: `confidence IN ('EXTRACTED', 'INFERRED', 'AMBIGUOUS')`
+- [x] Add check constraint: `confidence_score BETWEEN 0.0 AND 1.0`
+- [x] Bump `user_version` pragma and add migration step
+- [x] Write migration idempotency test: reindex twice, all links stay `confidence = 'EXTRACTED', confidence_score = 1.0`
 
 ### 9.27.2 Confidence in graph queries
 
-- [ ] Augment `GraphAdjacency` to carry per-edge confidence metadata (prefer a parallel `HashMap<(String, String), (String, f64)>` lookup map rather than changing the `edges: Vec<(String, String)>` representation, to minimize disruption to existing callers)
-- [ ] `graph path` output: annotate each hop with its confidence label and score
-- [ ] `graph hubs` output: break down hub degree by confidence tier (N EXTRACTED edges, M INFERRED edges)
-- [ ] `graph export`: include `confidence` and `confidence_score` in the edge output
-- [ ] `graph stats`: add confidence breakdown (total EXTRACTED/INFERRED/AMBIGUOUS edges) to the analytics report
+- [x] Augment `GraphAdjacency` to carry per-edge confidence metadata (prefer a parallel `HashMap<(String, String), (String, f64)>` lookup map rather than changing the `edges: Vec<(String, String)>` representation, to minimize disruption to existing callers)
+- [x] `graph path` output: annotate each hop with its confidence label and score
+- [x] `graph hubs` output: break down hub degree by confidence tier (N EXTRACTED edges, M INFERRED edges)
+- [x] `graph export`: include `confidence` and `confidence_score` in the edge output
+- [x] `graph stats`: add confidence breakdown (total EXTRACTED/INFERRED/AMBIGUOUS edges) to the analytics report
 
 ### 9.27.3 Accepted suggestions become inferred edges
 
-- [ ] When a user accepts a `link_suggestions` entry (9.26.2), insert the corresponding row in `links` with `confidence = 'INFERRED', confidence_score = <suggestion score>`
-- [ ] Accepted edges participate fully in graph queries (path, hubs, communities, components) but are visually distinct in output
-- [ ] Recomputing suggestions for an already-accepted pair returns a note that a link exists (inferred), not a new suggestion
+- [x] When a user accepts a `link_suggestions` entry (9.26.2), insert the corresponding row in `links` with `confidence = 'INFERRED', confidence_score = <suggestion score>`
+- [x] Accepted edges participate fully in graph queries (path, hubs, communities, components) but are visually distinct in output
+- [x] Recomputing suggestions for an already-accepted pair returns a note that a link exists (inferred), not a new suggestion
 
 ### 9.27.4 CLI and MCP surfaces
 
-- [ ] All graph subcommands (`graph path`, `graph hubs`, `graph export`, `graph stats`) include confidence in their JSON output
+- [x] All graph subcommands (`graph path`, `graph hubs`, `graph export`, `graph stats`) include confidence in their JSON output
 - [ ] All MCP tools that return graph data (`note_info`, `status`, and any dedicated graph tools added in 9.25/9.26) include confidence fields in structured content
-- [ ] `vulcan graph stats` adds a "Confidence" section to the human-readable output: `Edges: 1423 (1310 EXTRACTED, 98 INFERRED, 15 AMBIGUOUS)`
+- [x] `vulcan graph stats` adds a "Confidence" section to the human-readable output: `Edges: 1423 (1310 EXTRACTED, 98 INFERRED, 15 AMBIGUOUS)`
 
 ### 9.27.5 Integration testing
 
-- [ ] Test that existing links survive reindex with confidence = EXTRACTED
-- [ ] Test that accepted suggestions produce confidence = INFERRED edges
-- [ ] Test that graph path traversal includes confidence on each hop
+- [x] Test that existing links survive reindex with confidence = EXTRACTED
+- [x] Test that accepted suggestions produce confidence = INFERRED edges
+- [x] Test that graph path traversal includes confidence on each hop
 - [ ] Test that MCP `note_info` returns confidence for resolved backlinks once 9.27 data is on the graph
 - [ ] Test schema downgrade safety (older cache version → correct error, not silent corruption)
 
@@ -6082,11 +6082,11 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 **Goal:** Align Vulcan's executable assistant assets with the Agent Skills package format while preserving the shared registry, permission profiles, MCP exposure, and JS runtime.
 
-- [ ] Discover Agent Skills-compatible directories from `.agents/skills/<name>/SKILL.md` and configured skill roots.
-- [ ] Parse official skill frontmatter fields: `name`, `description`, `license`, `compatibility`, `allowed-tools`, and `metadata`.
-- [ ] Parse `metadata.vulcan.commands` as Vulcan-specific command declarations.
-- [ ] Validate command IDs, script paths, input/output schemas, sandbox values, permission-profile references, pack names, and exposure flags.
-- [ ] Add `vulcan skill list|show|commands|run|validate|init`.
+- [x] Discover Agent Skills-compatible directories from `.agents/skills/<name>/SKILL.md` and configured skill roots.
+- [x] Parse official skill frontmatter fields: `name`, `description`, `license`, `compatibility`, `allowed-tools`, and `metadata`.
+- [x] Parse `metadata.vulcan.commands` as Vulcan-specific command declarations.
+- [ ] Validate command IDs, script paths, input/output schemas, sandbox values, permission-profile references, pack names, and exposure flags (command IDs and script paths implemented; remaining validation stays open)
+- [ ] Add `vulcan skill list|show|commands|run|validate|init` (list/show/commands/validate implemented; run/init remain)
 - [ ] Project trusted skill commands into the shared registry used by CLI, `describe`, MCP, and internal JS APIs.
 - [ ] Expose projected skill commands as first-class MCP tools and add MCP resources for skill index, skill content, command metadata, and resource listings.
 - [ ] Update `vulcan index init --agent-files --example-tool` and `vulcan agent install --example-tool` to scaffold an Agent Skills-compatible example with a command under `scripts/`.

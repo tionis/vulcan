@@ -3,11 +3,13 @@ use crate::resolve::resolve_note_argument;
 use crate::{selected_read_permission_filter, Cli, CliError, GraphCommand};
 use vulcan_core::{
     export_graph_with_filter, query_graph_analytics_with_filter,
-    query_graph_components_with_filter, query_graph_dead_ends_with_filter,
-    query_graph_hubs_with_filter, query_graph_moc_candidates_with_filter,
-    query_graph_path_with_filter, query_graph_trends, VaultPaths,
+    query_graph_communities_with_filter, query_graph_components_with_filter,
+    query_graph_dead_ends_with_filter, query_graph_hubs_with_filter,
+    query_graph_moc_candidates_with_filter, query_graph_path_with_filter, query_graph_trends,
+    VaultPaths,
 };
 
+#[allow(clippy::too_many_lines)]
 pub(crate) fn handle_graph_command(
     cli: &Cli,
     paths: &VaultPaths,
@@ -82,6 +84,29 @@ pub(crate) fn handle_graph_command(
             crate::print_graph_components_report(
                 cli.output,
                 &report,
+                list_controls,
+                stdout_is_tty,
+                use_stdout_color,
+                export.as_ref(),
+            )
+        }
+        GraphCommand::Communities {
+            community,
+            orphans,
+            bridges,
+            dry_run,
+            export,
+        } => {
+            let read_filter = selected_read_permission_filter(cli, paths)?;
+            let report = query_graph_communities_with_filter(paths, read_filter.as_ref(), !dry_run)
+                .map_err(CliError::operation)?;
+            let export = crate::resolve_cli_export(export)?;
+            crate::print_graph_communities_report(
+                cli.output,
+                &report,
+                *community,
+                *orphans,
+                *bridges,
                 list_controls,
                 stdout_is_tty,
                 use_stdout_color,
