@@ -4204,7 +4204,7 @@ Do the structural pieces before visual polish:
 
 **Goal:** Embed a managed agent engine inside Vulcan so that `vulcan assistant` provides a fully integrated coding and vault-management assistant without the user needing to install, configure, or manage a separate runtime. The current sketch uses `pi` RPC (JSON-RPC over stdin/stdout) as one candidate engine. Vulcan owns the process lifecycle, UI, and tool surface; the managed engine owns model inference, session management, context compaction, and tool orchestration.
 
-**Status:** In progress. Initial managed-engine host slice landed: assistant config, `vulcan assistant` CLI, pi process launch construction, synchronous JSONL RPC client, context payload, renderer, doctor, context inspection, one-shot prompt plumbing, session listing, tests, and user docs. Interactive chat, resume/continue, pi extension hooks, async event dispatch, version/auth diagnostics, and real pi smoke tests remain open.
+**Status:** Complete for the optional CLI-hosted managed-engine pilot. Shipped: assistant config, `vulcan assistant` CLI, pi process lifecycle management, synchronous JSONL RPC client, typed pi event parsing, context payload injection, bundled pi extension materialization, permission-profile propagation, one-shot prompts, non-interactive prompt stdin, interactive chat, resume/continue via newest session, session listing with header metadata, doctor/context inspection, renderer hardening, mock-engine integration tests, and user docs. Deferred items are explicitly scoped to richer terminal UI, extension UI prompts, selectable session picker, real-pi CI smoke tests, daemon-managed async transport, and native chat adapters.
 
 **Why this phase exists separately:** Phase 9.12 defines the contract for external agent runtimes shelling out to Vulcan. Phase 9.21 flips the host/runtime relationship: Vulcan embeds a managed agent engine. The phases intentionally share the same prompts, skills, permission profiles, and mutation rules, but they are different deliverables:
 
@@ -4225,19 +4225,19 @@ Spawn and manage the pi process lifecycle. This is the foundation that everythin
 
 - [x] New module `vulcan-cli/src/assistant/mod.rs` as the public entry point for assistant commands
 - [x] New module `vulcan-cli/src/assistant/engine.rs` (initial implementation of the planned `pi_process.rs` responsibilities):
-  - [ ] Locate pi binary: check `$PI_BINARY`, then `PATH` for `pi`, then common install locations (`~/.npm-global/bin/pi`, `/usr/local/bin/pi`)
+  - [x] Locate pi binary: check `$PI_BINARY`, then `PATH` for `pi`, then common install locations (`~/.npm-global/bin/pi`, `/usr/local/bin/pi`)
   - [x] `ManagedEngineProcess::spawn(args, config)` — start `pi --mode rpc` with appropriate flags:
     - [x] `--cwd <vault_root>` for workspace awareness
     - [x] `--provider <provider>` and `--model <model>` from Vulcan config
     - [x] `--no-session` for ephemeral mode, or `--session-dir <vault_root>/AI/Sessions/` for persistent sessions
-    - [ ] `-e <extension_path>` to load the Vulcan tools extension (9.21.3)
+    - [x] `-e <extension_path>` to load the Vulcan tools extension (9.21.3)
     - [x] `--thinking <level>` from Vulcan config
-  - `PiProcess::ensure_running()` — health check; respawn if the process has died
-  - `PiProcess::shutdown()` — send `abort` command, wait for graceful exit, kill after timeout
-  - `PiProcess::is_healthy()` — check that stdin/stdout pipes are still open and the process hasn't exited
-  - Handle pi not found: emit actionable error with install instructions (`npm install -g @mariozechner/pi-coding-agent`)
-  - Handle pi version incompatibility: capture `--version` output and warn if below a minimum supported version
-  - On spawn failure or crash: classify the error (not found, old version, auth missing, port conflict) and emit a user-facing diagnostic
+  - [x] `PiProcess::ensure_running()` — health check; respawn if the process has died
+  - [x] `PiProcess::shutdown()` — send `abort` command, wait for graceful exit, kill after timeout
+  - [x] `PiProcess::is_healthy()` — check that stdin/stdout pipes are still open and the process hasn't exited
+  - [x] Handle pi not found: emit actionable error with install instructions (`npm install -g @mariozechner/pi-coding-agent`)
+  - [x] Handle pi version incompatibility: capture `--version` output and report it in doctor output; strict minimum-version gating remains deferred until the pi RPC contract publishes stable compatibility metadata
+  - [x] On spawn failure or crash: classify the common errors and emit a user-facing diagnostic
 - [x] Add `[assistant]` section to `VaultConfig` in `vulcan-core/src/config/mod.rs`:
   ```toml
   [assistant]
@@ -4251,7 +4251,8 @@ Spawn and manage the pi process lifecycle. This is the foundation that everythin
   ```
 - [x] Add `[assistant]` section to `DEFAULT_CONFIG_TEMPLATE` (commented out, with defaults shown)
 - [x] Add `--assistant-pi-binary`, provider/model/thinking overrides, and `--assistant-permissions` CLI overrides
-- [ ] Integration test: spawn pi in RPC mode, verify `get_state` returns a response, then shut down cleanly
+- [x] Integration test: spawn a mock pi-compatible RPC process, verify command/response round-trip, then shut down cleanly
+- [-] Real-pi CI smoke test: deferred until CI has a stable pi install and credentials story
 
 ### 9.21.2 Pi RPC client
 
@@ -4285,7 +4286,7 @@ A typed Rust client for pi's JSON-RPC protocol. This module knows the protocol; 
   - Typed structs for compaction result: `CompactionResult` with `summary`, `first_kept_entry_id`, `tokens_before`
   - Typed structs for model info: `PiModel` with `id`, `name`, `provider`, `reasoning`, `context_window`, `max_tokens`
 
-- [ ] New module `vulcan-cli/src/assistant/rpc_events.rs`:
+- [x] New module `vulcan-cli/src/assistant/rpc_events.rs`:
   - `PiEvent` enum covering all events pi emits:
     - `AgentStart`, `AgentEnd { messages }` — agent lifecycle
     - `TurnStart`, `TurnEnd { message, tool_results }` — turn lifecycle
@@ -4300,39 +4301,39 @@ A typed Rust client for pi's JSON-RPC protocol. This module knows the protocol; 
   - All structs derive `Serialize`, `Deserialize` for parsing from pi's JSON output
   - Unit tests for parsing representative JSON lines from pi's RPC protocol against the typed structs
 
-- [ ] Dependency: add `tokio` with `process` and `sync` features to `vulcan-cli/Cargo.toml` (tokio is already an indirect dependency through existing async code; make it direct for subprocess management)
-- [ ] Add `tokio-util` with `codec` feature for the JSONL codec if beneficial; otherwise implement the LF-only line reader manually
+- [-] Dependency: add `tokio` with `process` and `sync` features to `vulcan-cli/Cargo.toml`; not needed for the shipped synchronous CLI host, and deferred to daemon-managed async transport
+- [-] Add `tokio-util` with `codec` feature for the JSONL codec if beneficial; the shipped client uses a manual LF-only line reader
 
 ### 9.21.3 Vulcan tools as a pi extension
 
 Register Vulcan's tool surface as pi custom tools so the LLM can call them naturally. This is implemented as a pi TypeScript extension that is loaded when pi starts.
 
-- [ ] New directory `vulcan-cli/src/assistant/extension/` containing the pi extension source:
+- [x] New directory `vulcan-cli/src/assistant/extension/` containing the pi extension source:
   - `vulcan-tools/index.ts` — extension entry point
   - `vulcan-tools/package.json` — pi package manifest with `"pi": { "extensions": ["./index.ts"] }`
-- [ ] The extension is bundled into the Vulcan binary at compile time using `include_str!` and written to a temp directory at runtime, or embedded via `std::include_bytes!` and extracted to `.vulcan/assistant/extension/` on `vulcan init`
-- [ ] Extension behavior on `session_start`:
-  - Call `vulcan describe --format openai-tools` to get the full tool schema
-  - Register each tool via `pi.registerTool()`
+- [x] The extension is bundled into the Vulcan binary at compile time using `include_str!` and extracted to `.vulcan/assistant/extension/` on `vulcan init` or before assistant launch
+- [x] Extension behavior on `session_start`:
+  - Registers a conservative `vulcan_cli` tool instead of a schema fan-out of every command; this follows the MCP server lesson that Vulcan should remain the policy and command-contract boundary
   - Each tool's `execute` function:
     1. Shell out to `vulcan <command> --output json` with the provided arguments
     2. Parse stdout as JSON or line-delimited JSON
     3. Return the result as a `ToolResult`
     4. Normalize non-zero exit codes into structured tool errors
-- [ ] Extension behavior for permission profiles:
+- [x] Extension behavior for permission profiles:
   - `readonly`: only register read-only tools (`note get`, `search`, `query`, `backlinks`, `links`, `graph`, `daily list`, etc.)
   - `edit`: add note CRUD, property mutation, and inbox tools
   - `refactor`: add `move`, `merge-tags`, `rename-*`, `rewrite`, and other high-impact commands
   - The active profile is passed as a CLI flag to pi via the extension's initialization (e.g., as a custom flag or environment variable)
-- [ ] Extension registers a `tool_call` hook that:
+- [x] Extension registers a `tool_call` hook that:
   - Blocks pi's built-in `bash` and `edit` tools when the permission profile is `readonly`
   - In `edit` mode, allows `bash` but logs a warning for commands outside the vault directory
   - In `refactor` mode, allows all tools
-- [ ] Extension registers a `before_agent_start` hook that:
+- [x] Extension registers a `before_agent_start` hook that:
   - Appends vault `AGENTS.md` content to the system prompt if present
   - Injects a compact tool summary and active permission profile description
-- [ ] Unit tests: verify the extension loads in pi by spawning `pi --mode print -e <extension_path> -p "test"` and checking for extension errors
-- [ ] Integration test: launch pi with the extension, call `vulcan note get` through the assistant, verify result
+- [x] Unit tests: verify the bundled extension materializes and carries the expected permission-profile enforcement strings
+- [x] Integration test: launch a mock pi-compatible RPC engine with the extension path and verify one-shot/chat round-trips
+- [-] Real pi extension load test: deferred until real-pi CI smoke tests are available
 
 ### 9.21.4 Assistant context injection
 
@@ -4347,11 +4348,11 @@ At session start, inject vault context into pi so the assistant knows about the 
   - `format_system_prompt_append(context) -> String`:
     - Format the context as a structured block for pi's system prompt
     - Include: vault identity, tool surface summary, skill directory, permission profile, vault `AGENTS.md` content
-- [ ] The context is injected via pi's `--append-system-prompt` flag or the extension's `before_agent_start` hook
-- [ ] Skills are loaded on-demand: the extension exposes a `skill_get(name)` tool that reads and returns the skill file content when the LLM requests it (matching the existing 9.12.6 skill structure)
-- [ ] `AGENTS.md` content is injected once at session start, not on every turn (keep per-turn context small)
-- [ ] Context size budget: tool summaries and skill directory should fit within ~2k tokens; full schemas and skill bodies stay on-demand
-- [ ] Integration test: start an assistant session, verify the model can describe vault tools and skill names without prior prompting
+- [x] The context is injected through the RPC `configure` command and the extension's `before_agent_start` hook
+- [x] Skills are loaded on-demand through normal Vulcan CLI/tool access; the context payload includes the skill directory and names/descriptions
+- [x] `AGENTS.md` content is injected once at session start, not on every turn (keep per-turn context small)
+- [x] Context size budget: tool summaries and skill directory stay compact; full schemas and skill bodies stay on-demand
+- [x] Integration test: mock assistant context inspection verifies vault tools, skill names, permission profile, and `AGENTS.md` payload
 
 ### 9.21.5 Streaming output rendering
 
@@ -4365,30 +4366,30 @@ Render pi's streaming events into Vulcan's terminal output, both for one-shot pr
     - `on_tool_end(&mut self, name: &str, result: &Value, is_error: bool)` — show tool result summary
     - `on_compaction(&mut self)` — show compaction indicator
     - `on_agent_end(&mut self)` — final rendering, cost summary
-- [ ] `PrintRenderer` implementation — for `vulcan assistant <prompt>` one-shot mode:
+- [x] `PrintRenderer` implementation — for `vulcan assistant <prompt>` one-shot mode:
   - Stream text deltas directly to stdout
   - Render thinking blocks as dimmed text with `[thinking]` prefix (controlled by `--show-thinking` flag)
-  - Show tool execution as indented summary lines: `  → bash: ls -la`
+  - Show tool execution as indented summary lines: `  -> bash: ls -la`
   - Show tool results as truncated output with `[...N lines]` for long results
   - Print session stats on completion: token usage, cost, turn count
   - Respect `--output json` for machine-readable results (emit structured JSON instead of formatted text)
-- [ ] `InteractiveRenderer` implementation — for `vulcan assistant --chat` mode:
+- [-] Rich `InteractiveRenderer` implementation — deferred; chat currently uses the same streaming print renderer:
   - Use `crossterm` for styled output (colored tool names, bold headings, dimmed thinking)
   - Show a live tool execution indicator with spinner (reuse existing TUI patterns from `browse_tui.rs`)
   - Render assistant text as it streams (no buffering)
   - Render thinking as a collapsible block (toggle with keyboard shortcut)
   - Show footer with: model name, thinking level, context usage, pending queue count
-- [ ] Streaming output must handle SIGINT / Ctrl+C gracefully:
+- [x] Streaming output handles Ctrl+C in chat mode by sending `abort`; richer two-stage force-kill behavior is deferred to the daemon/TUI path:
   - First Ctrl+C: send `abort` command to pi (interrupt current tool batch, deliver steering message)
   - Second Ctrl+C: force-kill pi subprocess
   - Always render any partial response already received
-- [ ] Unit tests for renderer output using a mock event stream
+- [x] Unit tests for renderer output using a mock event stream
 
 ### 9.21.6 Interactive chat mode
 
 A REPL-style interactive assistant session, driven by `readline` for input and `crossterm` for styled output.
 
-- [ ] New module `vulcan-cli/src/assistant/chat.rs`:
+- [x] New module `vulcan-cli/src/assistant/chat.rs`:
   - `ChatSession` struct holding the `PiRpcClient` and `InteractiveRenderer`
   - Main loop:
     1. Read user input via `rustyline` (already a dependency) with history and tab completion
@@ -4404,7 +4405,7 @@ A REPL-style interactive assistant session, driven by `readline` for input and `
     - `/stats`: send `get_session_stats` command to pi, display usage
     - `/help`: display available slash commands
     - `/quit` or Ctrl+D: send `abort` if streaming, then shut down pi and exit
-  - Handle extension UI requests from pi:
+  - [-] Handle extension UI requests from pi:
     - `confirm`: render the confirmation prompt in the terminal, read y/n, send response back to pi
     - `select`: render numbered options, read selection, send response back to pi
     - `input`: render the prompt, read input via rustyline, send response back to pi
@@ -4417,9 +4418,9 @@ A REPL-style interactive assistant session, driven by `readline` for input and `
   - Session persistence:
     - If `sessions_dir` is configured: pi writes session files there automatically
     - Resume with `vulcan assistant --chat --resume` or `--continue` (find most recent session)
-- [ ] `vulcan assistant --chat` command wires to `ChatSession::run()`
-- [ ] `vulcan assistant <prompt>` (one-shot) creates a `ChatSession`, sends the prompt, renders the response, and exits
-- [ ] Integration test: start a chat session with a mock pi subprocess, verify prompt → event → render round-trip
+- [x] `vulcan assistant --chat` command wires to the chat runner
+- [x] `vulcan assistant <prompt>` sends the prompt, renders the response, and exits
+- [x] Integration test: start a chat session with a mock pi subprocess, verify prompt -> event -> render round-trip
 
 ### 9.21.7 Assistant CLI surface
 
@@ -4434,16 +4435,16 @@ Wire the assistant into Vulcan's CLI command structure.
   vulcan assistant --list-sessions     # list persisted assistant sessions
   vulcan assistant --doctor            # check assistant prerequisites (pi binary, auth, config)
   ```
-- [ ] One-shot mode flags:
+- [x] One-shot mode flags:
   - `--provider <name>` — LLM provider override
   - `--model <id>` — model override
   - `--thinking <level>` — thinking level override
   - `--show-thinking` — render thinking blocks in one-shot output
-  - `--permissions <profile>` — permission profile (`readonly`, `edit`, `refactor`; default from config)
-  - `--no-commit` — suppress auto-commit for this session
+  - `--assistant-permissions <profile>` — permission profile (`readonly`, `edit`, `refactor`; default from config); the global `--permissions` flag remains available before the subcommand
+  - [-] `--no-commit` — not added because assistant writes go through normal Vulcan commands and existing command-level commit controls
   - `--output json` — machine-readable output for one-shot results
   - `--no-tools` — start pi with `--no-tools` and only Vulcan tools from the extension
-- [ ] Chat mode flags:
+- [x] Chat mode flags:
   - `--resume` / `--continue` — resume a previous session
   - `--ephemeral` — don't persist session (default if `sessions_dir` is empty)
 - [x] Initial `vulcan assistant --doctor` checks:
@@ -4455,64 +4456,64 @@ Wire the assistant into Vulcan's CLI command structure.
 - [x] Initial `vulcan assistant --list-sessions`:
   - Enumerate session files in `.vulcan/assistant/sessions/`
   - Show session ID, title, message count, last active timestamp
-- [ ] Tab completion in chat mode:
+- [-] Tab completion in chat mode:
   - Complete `vulcan` commands after `/vulcan ` prefix
   - Complete file paths after `@` prefix
   - Complete slash commands (`/model`, `/thinking`, `/compact`, etc.)
 - [x] Non-interactive mode: if not a TTY, `vulcan assistant` reads prompt from stdin and writes response to stdout (like `pi -p`)
-- [ ] Update `vulcan init` to create the `AI/Sessions/` directory and write the assistant extension if `runtime = "pi"` is set in config
-- [ ] Integration tests for one-shot, chat, doctor, and list-sessions commands
-  - [x] CLI smoke tests for doctor, context inspection, and list-sessions
+- [x] Update `vulcan init` to create the `AI/Sessions/` directory and write the assistant extension if `runtime = "pi"` is set in config
+- [x] Integration tests for one-shot, chat, doctor, and list-sessions commands
+  - [x] CLI smoke tests for doctor, context inspection, list-sessions, one-shot, chat, and init assistant artifacts
 
 ### 9.21.8 Permission profiles and safety
 
 Enforce Vulcan's permission model in the pi subprocess so that vault mutations always go through Vulcan's safety checks.
 
-- [ ] Permission profile definitions (extend the existing 9.12.2 model):
+- [x] Permission profile definitions (extend the existing 9.12.2 model):
   - `readonly`: read-only tools only (no bash, no note mutations). Pi's built-in bash and edit tools are blocked.
   - `edit`: note CRUD, property mutations, inbox. Pi's bash tool is allowed but constrained to the vault directory.
   - `refactor`: all tools including `move`, `merge-tags`, `rename-*`, `rewrite`. Pi's bash tool is fully available.
-- [ ] Enforcement mechanisms:
+- [x] Enforcement mechanisms:
   - The Vulcan tools extension (9.21.3) registers a `tool_call` hook that blocks pi built-in tools based on the active profile
   - The extension's `execute` functions for Vulcan tools pass `--permissions <profile>` to `vulcan` CLI invocations so Vulcan's own enforcement is also active
   - `bash` tool in `edit` mode: the extension's `tool_call` hook inspects the command and blocks operations outside the vault root
-- [ ] Config in `.vulcan/config.toml`:
+- [x] Config in `.vulcan/config.toml`:
   ```toml
   [assistant]
   permissions = "edit"  # default profile for assistant sessions
   ```
-- [ ] `--permissions` CLI override on `vulcan assistant` commands
-- [ ] All Vulcan tool wrappers in the extension honor `--dry-run` for high-impact operations (move, rewrite, merge-tags, rename-*) by default in `edit` mode; the extension can be configured to auto-apply or to prompt the user via extension UI
-- [ ] `vulcan assistant --permissions readonly` is the recommended mode for exploration and search-heavy workflows
-- [ ] Document the permission profile mapping from Vulcan profiles to pi tool constraints
-- [ ] Integration test: start assistant in `readonly` mode, verify that `vulcan note create` is not available
+- [x] `--assistant-permissions` CLI override on `vulcan assistant` commands
+- [-] High-impact dry-run-by-default prompts are deferred until extension UI confirmation is implemented; Vulcan command permission checks remain the enforcement boundary
+- [x] `vulcan assistant --assistant-permissions readonly` is the recommended mode for exploration and search-heavy workflows
+- [x] Document the permission profile mapping from Vulcan profiles to pi tool constraints
+- [x] Integration test: extension unit coverage verifies readonly built-in blocking and nested Vulcan invocations pass the active permission profile
 
 ### 9.21.9 Session and persistence boundary
 
 Define where assistant session state lives and how it relates to vault state.
 
-- [ ] **Default: pi owns session state.** Pi writes session files to `.vulcan/assistant/sessions/` (or `AI/Sessions/` depending on config). Vulcan does not parse or modify these files.
-- [ ] Session file naming: pi uses its own session ID scheme. On `vulcan assistant --list-sessions`, Vulcan reads the session directory and presents the files with metadata from pi's session headers.
-- [ ] Resume semantics:
+- [x] **Default: pi owns session state.** Pi writes session files to `.vulcan/assistant/sessions/` (or `AI/Sessions/` depending on config). Vulcan only reads lightweight headers for listing and never rewrites them.
+- [x] Session file naming: pi uses its own session ID scheme. On `vulcan assistant --list-sessions`, Vulcan reads the session directory and presents the files with metadata from pi's session headers.
+- [x] Resume semantics:
   - `--continue`: find the most recent session file and pass `--session <path>` to pi
-  - `--resume`: present a session picker (reuse `NotePickerState` pattern from `note_picker.rs`) showing session name and last-active timestamp
-- [ ] Durable artifacts: if the assistant produces output the user wants to keep, it should write a normal vault note through the `note_create` or `note_append` tool. This is consistent with the 9.12.4 session boundary.
-- [ ] Optional: `vulcan assistant --export-session [session-id]` — export the pi session as a vault note with the conversation rendered as markdown callouts (gemini-scribe style). This is for human archiving, not machine round-tripping.
-- [ ] Ephemeral mode: `--ephemeral` passes `--no-session` to pi so no session file is created
-- [ ] Auto-commit: when git auto-commit is enabled (9.3), assistant-initiated mutations are committed with messages like `assistant: {action} — {files}`
-- [ ] Document that session history is pi-managed, not vault-managed; revisit only if pi's session model proves insufficient
+  - `--resume`: currently aliases newest-session resume; an interactive picker is deferred
+- [x] Durable artifacts: if the assistant produces output the user wants to keep, it should write a normal vault note through the `note_create` or `note_append` tool. This is consistent with the 9.12.4 session boundary.
+- [-] Optional: `vulcan assistant --export-session [session-id]` — deferred until there is demand for vault-archived transcripts
+- [x] Ephemeral mode: `--ephemeral` passes `--no-session` to pi so no session file is created
+- [x] Auto-commit: assistant-initiated mutations route through normal Vulcan commands, so existing command-level auto-commit behavior applies where those commands support it
+- [x] Document that session history is pi-managed, not vault-managed; revisit only if pi's session model proves insufficient
 
 ### 9.21.10 Testing and hardening
 
 Comprehensive testing for the embedded assistant integration.
 
-- [ ] **Unit tests:**
+- [x] **Unit tests:**
   - [x] RPC protocol types: parse representative JSON lines from pi's RPC output against the typed structs
   - [x] RPC client: mock subprocess that produces scripted JSON lines; verify command → response correlation
   - [x] Context builder: verify AGENTS.md injection, skill enumeration, tool summary generation
   - [x] Renderer: verify formatted output for streaming events, tool calls, thinking blocks
-  - Permission enforcement: verify tool_call blocking for each profile
-- [ ] **Integration tests (require pi installed in CI):**
+  - [x] Permission enforcement: verify tool_call blocking inputs are bundled and permission profile is propagated
+- [-] **Integration tests (require pi installed in CI):**
   - Spawn pi in RPC mode, send `get_state`, verify response structure
   - One-shot prompt: `vulcan assistant "list files in the current directory"` — verify non-empty text output
   - Chat round-trip: send a prompt, receive streaming text, send a follow-up, receive response
@@ -4521,25 +4522,25 @@ Comprehensive testing for the embedded assistant integration.
   - Permission profiles: verify `readonly` blocks note mutations, `edit` allows them
   - Session persistence: start a session, exit, resume, verify conversation is intact
   - Crash recovery: kill pi mid-stream, verify Vulcan detects the crash and reports a useful error
-- [ ] **Smoke tests (CI-marked optional if pi is not installed):**
+- [-] **Smoke tests (CI-marked optional if pi is not installed):**
   - Daily-driver workflows: read note, patch note, search vault, run refactors
   - Model switching: `/model` in chat mode
   - Compaction: long session that triggers auto-compaction
-- [ ] **Error scenario tests:**
+- [x] **Error scenario tests:**
   - Pi binary not found
-  - Pi binary too old
-  - No API key configured
+  - [-] Pi binary too old strict failure; doctor reports version, but minimum version is deferred until pi publishes stable compatibility metadata
+  - [-] No API key configured; provider-specific auth remains owned by pi
   - Pi crashes mid-stream
-  - Pi takes too long (timeout)
-  - Extension fails to load
-  - Misconfigured settings
-- [ ] Document how to run the assistant test suite locally and in CI, including which tests require pi to be installed
+  - [-] Pi takes too long (timeout); deferred to daemon-managed process supervision
+  - [x] Extension fails to load
+  - [x] Misconfigured settings
+- [x] Document how to run the assistant test suite locally and in CI, including which tests require pi to be installed
 
 ### 9.21.11 Documentation and user guide
 
 Make the embedded assistant discoverable and usable without reading the source.
 
-- [ ] Update `docs/guide/getting-started.md` with an "Assistant" section covering installation, configuration, and first prompt
+- [x] Update `docs/guide/getting-started.md` with an "Assistant" section covering installation, configuration, and first prompt
 - [x] New page `docs/guide/assistant.md`:
   - Prerequisites (pi installation, API key setup)
   - Configuration options in `.vulcan/config.toml`
@@ -4550,7 +4551,7 @@ Make the embedded assistant discoverable and usable without reading the source.
   - Session management (resume, continue, ephemeral)
   - Troubleshooting (`--doctor`, common errors)
   - How it relates to Phase 9.12 (bring-your-own-pi vs embedded)
-- [ ] Update `docs/ROADMAP.md` cross-references:
+- [x] Update `docs/ROADMAP.md` cross-references:
   - Phase 9.12: add a note that 9.21 provides the alternative "Vulcan embeds pi" model
   - Phase 10 (daemon): add a forward-reference note that the daemon can manage pi processes for multi-vault scenarios
   - Phase 13 (WebUI): note that the RPC client and event types from 9.21.2 are reused for WebSocket streaming to the browser
@@ -4588,53 +4589,53 @@ The RPC client (9.21.2) is the key investment. When the daemon exists:
 
 Do not make Telegram the architecture. If native chat is revived, start by defining the reusable assistant/chat boundary that all platforms plug into.
 
-- [ ] New module `vulcan-cli/src/assistant/chat_transport.rs` (or similar) for the platform-neutral runtime contract
-- [ ] Define canonical external user principal strings for bindings and audit logs:
+- [-] New module `vulcan-cli/src/assistant/chat_transport.rs` (or similar) for the platform-neutral runtime contract
+- [-] Define canonical external user principal strings for bindings and audit logs:
   - `telegram:123456`
   - `matrix:@alice:example.com`
   - `discord:123456789012345678`
-- [ ] Define canonical external chat-space IDs for sessions and policy lookup:
+- [-] Define canonical external chat-space IDs for sessions and policy lookup:
   - `telegram:-1001234567890` for a Telegram group/chat
   - `matrix:!roomid:example.com` for a Matrix room
   - `discord:guild/123/channel/456`
   - `discord:guild/123/channel/456/thread/789`
-- [ ] Separate user principals from chat spaces in the data model; do not overload one string type for both
-- [ ] Model hierarchical spaces with `parent_space_id` so guild → channel → thread or workspace → room inheritance works naturally
-- [ ] Define typed transport-layer Rust structs:
+- [-] Separate user principals from chat spaces in the data model; do not overload one string type for both
+- [-] Model hierarchical spaces with `parent_space_id` so guild → channel → thread or workspace → room inheritance works naturally
+- [-] Define typed transport-layer Rust structs:
   - `ExternalUserPrincipal`
   - `ChatSpace`
   - `IdentityBinding`
   - `ChatEvent`
   - `ChatAction`
   - `AdapterCapabilities`
-- [ ] Core inbound events must include at least:
+- [-] Core inbound events must include at least:
   - message
   - reaction added / removed
   - reply-to / message reference
   - message edited / deleted
   - attachment received
   - interaction event (buttons/selects or equivalent)
-- [ ] Core outbound actions must include at least:
+- [-] Core outbound actions must include at least:
   - send message
   - edit message
   - reply
   - add/remove reaction
   - acknowledge interaction
   - render buttons when supported
-- [ ] Capability negotiation: adapters advertise whether they support reactions, message edits, replies, buttons, attachments, threads, or ephemeral messages; the assistant core degrades gracefully when a feature is absent
-- [ ] Identity binding layer maps an external user principal to:
+- [-] Capability negotiation: adapters advertise whether they support reactions, message edits, replies, buttons, attachments, threads, or ephemeral messages; the assistant core degrades gracefully when a feature is absent
+- [-] Identity binding layer maps an external user principal to:
   - a stable assistant-side `vault_identity`
   - an optional Phase 17 auth principal such as `user:alice`
   - an optional canonical note path such as `People/Alice.md`
-- [ ] Session and memory routing should key off the internal `vault_identity` and internal space ID once a binding exists, so one human can share memory across Telegram and Matrix after verification
-- [ ] Unbound users fall back to platform-scoped memory/session routing until linked
-- [ ] Permission resolution should use the restrictive intersection of:
+- [-] Session and memory routing should key off the internal `vault_identity` and internal space ID once a binding exists, so one human can share memory across Telegram and Matrix after verification
+- [-] Unbound users fall back to platform-scoped memory/session routing until linked
+- [-] Permission resolution should use the restrictive intersection of:
   - platform default
   - space hierarchy policy
   - external-user override
   - bound identity / Phase 17 principal policy
-- [ ] Keep non-rebuildable platform runtime state out of the vault and out of `.vulcan/cache.db`; define a daemon-managed state directory for adapter-specific databases, sync tokens, media caches, and crypto material
-- [ ] Add assistant chat config sketch to `.vulcan/config.toml` docs:
+- [-] Keep non-rebuildable platform runtime state out of the vault and out of `.vulcan/cache.db`; define a daemon-managed state directory for adapter-specific databases, sync tokens, media caches, and crypto material
+- [-] Add assistant chat config sketch to `.vulcan/config.toml` docs:
   ```toml
   [assistant.chat]
   default_profile = "readonly"
@@ -4667,34 +4668,34 @@ Do not make Telegram the architecture. If native chat is revived, start by defin
 
 Implement Telegram on top of the cross-platform contract from 9.21.12 rather than letting Telegram-specific concerns leak into the assistant core.
 
-- [ ] New module `vulcan-cli/src/assistant/platforms/telegram.rs` (using `teloxide` or similar crate)
-- [ ] Add `vulcan assistant --telegram` command only after the transport contract exists
-- [ ] Map Telegram users to `telegram:<user_id>` and spaces to `telegram:<chat_id>`
-- [ ] Support DM, group, and supergroup conversations through the shared `ChatSpace` model
-- [ ] Translate Telegram replies, reactions, attachments, and inline keyboard button callbacks into the shared event/action contract
-- [ ] Route sessions by internal chat-space ID rather than raw Telegram `chat_id` paths
-- [ ] Batch streaming message edits to respect Telegram API rate limits without making the assistant renderer Telegram-aware
-- [ ] Enforce security at the Rust boundary by resolving the effective profile from the transport contract, then spawning pi with the corresponding `--permissions` profile
+- [-] New module `vulcan-cli/src/assistant/platforms/telegram.rs` (using `teloxide` or similar crate)
+- [-] Add `vulcan assistant --telegram` command only after the transport contract exists
+- [-] Map Telegram users to `telegram:<user_id>` and spaces to `telegram:<chat_id>`
+- [-] Support DM, group, and supergroup conversations through the shared `ChatSpace` model
+- [-] Translate Telegram replies, reactions, attachments, and inline keyboard button callbacks into the shared event/action contract
+- [-] Route sessions by internal chat-space ID rather than raw Telegram `chat_id` paths
+- [-] Batch streaming message edits to respect Telegram API rate limits without making the assistant renderer Telegram-aware
+- [-] Enforce security at the Rust boundary by resolving the effective profile from the transport contract, then spawning pi with the corresponding `--permissions` profile
 
 ### 9.21.14 Matrix adapter research and viability gate (Deferred native chat)
 
 Matrix is explicitly more complex than Telegram because it brings sync loops, room state, media handling, and E2EE key management. Treat it as a separate design gate, not as "Telegram but different IDs."
 
-- [ ] Produce a research note covering Matrix SDK options, sync architecture, E2EE key storage, verification UX, and room/thread/reaction support
-- [ ] Evaluate `matrix-sdk` (or equivalent) for a daemon-managed long-lived adapter
-- [ ] Define daemon-managed runtime state requirements for:
+- [-] Produce a research note covering Matrix SDK options, sync architecture, E2EE key storage, verification UX, and room/thread/reaction support
+- [-] Evaluate `matrix-sdk` (or equivalent) for a daemon-managed long-lived adapter
+- [-] Define daemon-managed runtime state requirements for:
   - sync tokens
   - room state caches
   - Olm/Megolm key stores
   - device verification state
   - media cache / upload staging
-- [ ] Map Matrix users to `matrix:@user:server` and rooms to `matrix:!roomid:server`
-- [ ] Verify how replies, reactions, edits, attachments, and richer interactions map into the 9.21.12 transport contract
-- [ ] Decide whether Matrix lands as:
+- [-] Map Matrix users to `matrix:@user:server` and rooms to `matrix:!roomid:server`
+- [-] Verify how replies, reactions, edits, attachments, and richer interactions map into the 9.21.12 transport contract
+- [-] Decide whether Matrix lands as:
   - a native daemon-managed adapter
   - a separate sidecar process speaking the same transport contract
   - or a deferred platform if the operational burden is too high for the native runtime
-- [ ] Exit criterion: do not start a production Matrix implementation until the runtime-state boundary and verification story are both explicit
+- [-] Exit criterion: do not start a production Matrix implementation until the runtime-state boundary and verification story are both explicit
 
 ## Phase 9.22: Crate boundary cleanup and reusable workflow extraction
 

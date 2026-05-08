@@ -71,6 +71,22 @@ List locally persisted session files:
 vulcan assistant --list-sessions
 ```
 
+Start an interactive chat:
+
+```sh
+vulcan assistant --chat
+```
+
+Resume the newest persisted session:
+
+```sh
+vulcan assistant --chat --continue
+```
+
+Chat slash commands include `/model`, `/models`, `/thinking`, `/compact`,
+`/new`, `/stats`, `/state`, `/steer <text>`, `/follow-up <text>`,
+`/set-model <provider> <model>`, `/help`, and `/quit`.
+
 ## Permissions And Tools
 
 Use `--assistant-permissions <profile>` to bind a run to a permission profile.
@@ -88,6 +104,11 @@ vulcan assistant \
 For exploration, prefer `readonly`. For note edits, use a profile that grants
 the smallest write surface needed for the workflow.
 
+`vulcan init` creates `AI/Sessions/` and writes the bundled pi extension under
+`.vulcan/assistant/extension/vulcan-tools/` when `[assistant].runtime = "pi"`.
+The extension passes the active permission profile to nested `vulcan` calls and
+blocks pi built-in shell/edit/write tools in readonly mode.
+
 ## Integration Models
 
 Vulcan supports two assistant integration models:
@@ -102,7 +123,7 @@ packs, and the rule that durable artifacts are normal vault notes.
 
 ## Current Limits
 
-The current embedded host has doctor, context inspection, one-shot prompt, and
-session listing support. Interactive chat, resume/continue, pi extension
-tool-hook enforcement, richer session metadata, and real pi-version checks are
-still later 9.21 work.
+The embedded host uses a synchronous JSONL RPC client in the CLI process. Rich
+extension UI prompts, a session picker for choosing anything other than the
+newest session, tab completion in chat mode, and always-on real-pi CI smoke
+tests remain deferred until the daemon/WebUI shape needs them.
