@@ -24,7 +24,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -1345,7 +1345,7 @@ fn run_mcp_http_server(
     tool_pack_mode_arg: McpToolPackModeArg,
     options: &McpHttpOptions,
 ) -> Result<(), CliError> {
-    let oauth = build_mcp_oauth_validator(options)?;
+    let oauth = build_mcp_oauth_validator(paths, options)?;
     let bind_addr = parse_mcp_http_bind_addr(
         &options.bind,
         options.auth_token.is_some() || oauth.is_some(),
@@ -3779,7 +3779,10 @@ fn parse_mcp_http_bind_addr(bind: &str, allow_remote: bool) -> Result<SocketAddr
 }
 
 #[allow(clippy::too_many_lines)]
-fn build_mcp_oauth_validator(options: &McpHttpOptions) -> Result<Option<McpOAuthMode>, CliError> {
+fn build_mcp_oauth_validator(
+    paths: &VaultPaths,
+    options: &McpHttpOptions,
+) -> Result<Option<McpOAuthMode>, CliError> {
     let local_requested = options.oauth_local_client_id.is_some()
         || options.oauth_local_client_secret.is_some()
         || options.oauth_local_approval_token.is_some()
@@ -3800,14 +3803,15 @@ fn build_mcp_oauth_validator(options: &McpHttpOptions) -> Result<Option<McpOAuth
             .oauth_local_client_id
             .as_deref()
             .unwrap_or("vulcan-mcp");
-        let client_secret = options
-            .oauth_local_client_secret
-            .as_deref()
-            .ok_or_else(|| {
-                CliError::operation(
-                    "--oauth-local-client-secret is required for local MCP OAuth issuer",
-                )
-            })?;
+        let client_secret = match options.oauth_local_client_secret.as_deref() {
+            Some(secret) => secret.to_string(),
+            None if options.oauth_dcr => load_or_create_local_oauth_issuer_secret(paths)?,
+            None => {
+                return Err(CliError::operation(
+                    "--oauth-local-client-secret is required unless --oauth-dcr is enabled",
+                ))
+            }
+        };
         let approval_token = options.oauth_local_approval_token.as_deref().unwrap_or("");
         if approval_token.is_empty()
             && options.oauth_indieauth_authorization_endpoint.is_none()
@@ -3824,7 +3828,7 @@ fn build_mcp_oauth_validator(options: &McpHttpOptions) -> Result<Option<McpOAuth
         return LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
             public_url: public_url.to_string(),
             client_id: client_id.to_string(),
-            client_secret: client_secret.to_string(),
+            client_secret,
             approval_token: approval_token.to_string(),
             subject: subject.to_string(),
             email: options.oauth_local_email.clone(),
@@ -4382,6 +4386,58 @@ fn local_oauth_redirect_host_allowed(context: &McpHttpServerContext, redirect_ur
 
 fn oauth_clients_path(paths: &VaultPaths) -> std::path::PathBuf {
     paths.vulcan_dir().join("mcp-oauth-clients.json")
+}
+
+fn oauth_issuer_secret_path(paths: &VaultPaths) -> PathBuf {
+    paths.vulcan_dir().join("mcp-oauth-issuer-secret")
+}
+
+fn load_or_create_local_oauth_issuer_secret(paths: &VaultPaths) -> Result<String, CliError> {
+    let path = oauth_issuer_secret_path(paths);
+    if path.exists() {
+        let secret = fs::read_to_string(&path).map_err(CliError::operation)?;
+        let secret = secret.trim().to_string();
+        if secret.is_empty() {
+            return Err(CliError::operation(format!(
+                "{} is empty; remove it so Vulcan can regenerate the OAuth issuer secret",
+                path.display()
+            )));
+        }
+        return Ok(secret);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(CliError::operation)?;
+    }
+    let secret = format!(
+        "{}{}{}{}",
+        Ulid::new(),
+        Ulid::new(),
+        Ulid::new(),
+        Ulid::new()
+    );
+    write_secret_file(&path, &secret)?;
+    Ok(secret)
+}
+
+#[cfg(unix)]
+fn write_secret_file(path: &Path, secret: &str) -> Result<(), CliError> {
+    use std::fs::OpenOptions;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+        .map_err(CliError::operation)?;
+    file.write_all(secret.as_bytes())
+        .map_err(CliError::operation)?;
+    file.write_all(b"\n").map_err(CliError::operation)
+}
+
+#[cfg(not(unix))]
+fn write_secret_file(path: &Path, secret: &str) -> Result<(), CliError> {
+    fs::write(path, format!("{secret}\n")).map_err(CliError::operation)
 }
 
 fn load_oauth_registered_clients(
@@ -6456,16 +6512,17 @@ mod tests {
 
     #[test]
     fn oauth_options_reject_shared_token_and_plain_http_public_url() {
+        let paths = VaultPaths::new(".");
         let mut with_shared_token = oauth_options();
         with_shared_token.auth_token = Some("secret".to_string());
-        assert!(build_mcp_oauth_validator(&with_shared_token)
+        assert!(build_mcp_oauth_validator(&paths, &with_shared_token)
             .unwrap_err()
             .to_string()
             .contains("mutually exclusive"));
 
         let mut plain_http = oauth_options();
         plain_http.public_url = Some("http://wiki.example.test/mcp".to_string());
-        assert!(build_mcp_oauth_validator(&plain_http)
+        assert!(build_mcp_oauth_validator(&paths, &plain_http)
             .unwrap_err()
             .to_string()
             .contains("HTTPS"));
@@ -6473,9 +6530,10 @@ mod tests {
 
     #[test]
     fn oauth_options_require_audience_and_allowed_principal() {
+        let paths = VaultPaths::new(".");
         let mut missing_audience = oauth_options();
         missing_audience.oauth_audience.clear();
-        assert!(build_mcp_oauth_validator(&missing_audience)
+        assert!(build_mcp_oauth_validator(&paths, &missing_audience)
             .unwrap_err()
             .to_string()
             .contains("--oauth-audience"));
@@ -6483,9 +6541,47 @@ mod tests {
         let mut missing_principal = oauth_options();
         missing_principal.oauth_allowed_sub.clear();
         missing_principal.oauth_allowed_email.clear();
-        assert!(build_mcp_oauth_validator(&missing_principal)
+        assert!(build_mcp_oauth_validator(&paths, &missing_principal)
             .unwrap_err()
             .to_string()
             .contains("--oauth-allowed-sub"));
+    }
+
+    #[test]
+    fn local_oauth_dcr_generates_and_reuses_issuer_secret() {
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let paths = VaultPaths::new(tmp.path());
+        let mut options = oauth_options();
+        options.oauth_issuer = None;
+        options.oauth_audience.clear();
+        options.oauth_jwks_url = None;
+        options.oauth_allowed_sub.clear();
+        options.oauth_dcr = true;
+        options.oauth_indieauth_me = Some("https://example.test/".to_string());
+
+        assert!(build_mcp_oauth_validator(&paths, &options)
+            .expect("DCR local issuer should initialize")
+            .is_some());
+        let secret_path = oauth_issuer_secret_path(&paths);
+        let first_secret =
+            fs::read_to_string(&secret_path).expect("issuer secret should be persisted");
+        assert!(!first_secret.trim().is_empty());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&secret_path)
+                .expect("issuer secret metadata should be readable")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600);
+        }
+
+        assert!(build_mcp_oauth_validator(&paths, &options)
+            .expect("DCR local issuer should reuse persisted secret")
+            .is_some());
+        let second_secret =
+            fs::read_to_string(&secret_path).expect("issuer secret should still exist");
+        assert_eq!(first_secret, second_secret);
     }
 }
