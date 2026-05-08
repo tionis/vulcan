@@ -31,7 +31,9 @@ use std::thread;
 use std::time::Duration;
 use ulid::Ulid;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
+use vulcan_core::exchange_indieauth_code;
 use vulcan_core::properties::load_note_index;
+use vulcan_core::LocalOAuthUserConfig;
 use vulcan_core::{
     accept_link_suggestion, assistant_config_summary, assistant_prompts_root,
     assistant_skills_root, assistant_tools_root, evaluate_dql_with_filter,
@@ -69,6 +71,14 @@ pub(crate) struct McpHttpOptions {
     pub oauth_local_approval_token: Option<String>,
     pub oauth_local_subject: Option<String>,
     pub oauth_local_email: Option<String>,
+    pub oauth_dcr: bool,
+    pub oauth_dcr_allowed_redirect_host: Vec<String>,
+    pub oauth_indieauth_authorization_endpoint: Option<String>,
+    pub oauth_indieauth_token_endpoint: Option<String>,
+    pub oauth_indieauth_client_id: Option<String>,
+    pub oauth_indieauth_redirect_uri: Option<String>,
+    pub oauth_indieauth_me: Option<String>,
+    pub oauth_local_user: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -717,7 +727,38 @@ struct LocalOAuthCode {
     client_id: String,
     redirect_uri: String,
     code_challenge: String,
+    subject: String,
+    email: Option<String>,
+    permission_profile: Option<String>,
     expires_at: std::time::Instant,
+}
+
+#[derive(Debug, Clone, Deserialize, serde::Serialize)]
+struct LocalOAuthRegisteredClient {
+    client_id: String,
+    client_secret: String,
+    redirect_uris: Vec<String>,
+    client_name: Option<String>,
+    token_endpoint_auth_method: String,
+    client_id_issued_at: u64,
+}
+
+#[derive(Debug, Clone)]
+struct LocalOAuthPendingIndieAuth {
+    client_id: String,
+    redirect_uri: String,
+    code_challenge: String,
+    state: Option<String>,
+    expires_at: std::time::Instant,
+}
+
+#[derive(Debug, Clone)]
+struct LocalOAuthIndieAuthConfig {
+    authorization_endpoint: String,
+    token_endpoint: String,
+    client_id: String,
+    redirect_uri: String,
+    me: Option<String>,
 }
 
 #[derive(Debug)]
@@ -739,6 +780,12 @@ struct McpHttpServerContext {
     bind_addr: SocketAddr,
     sessions: Arc<Mutex<BTreeMap<String, Arc<McpHttpSession>>>>,
     oauth_codes: Arc<Mutex<BTreeMap<String, LocalOAuthCode>>>,
+    oauth_clients: Arc<Mutex<BTreeMap<String, LocalOAuthRegisteredClient>>>,
+    oauth_pending_indieauth: Arc<Mutex<BTreeMap<String, LocalOAuthPendingIndieAuth>>>,
+    oauth_dcr_enabled: bool,
+    oauth_dcr_allowed_redirect_hosts: Vec<String>,
+    oauth_indieauth: Option<LocalOAuthIndieAuthConfig>,
+    oauth_clients_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug)]
@@ -1321,6 +1368,16 @@ fn run_mcp_http_server(
         bind_addr: addr,
         sessions: Arc::new(Mutex::new(BTreeMap::new())),
         oauth_codes: Arc::new(Mutex::new(BTreeMap::new())),
+        oauth_clients: Arc::new(Mutex::new(load_oauth_registered_clients(paths)?)),
+        oauth_pending_indieauth: Arc::new(Mutex::new(BTreeMap::new())),
+        oauth_dcr_enabled: options.oauth_dcr,
+        oauth_dcr_allowed_redirect_hosts: if options.oauth_dcr_allowed_redirect_host.is_empty() {
+            vec!["chatgpt.com".to_string()]
+        } else {
+            options.oauth_dcr_allowed_redirect_host.clone()
+        },
+        oauth_indieauth: build_indieauth_config(options)?,
+        oauth_clients_path: Some(oauth_clients_path(paths)),
     };
 
     loop {
@@ -1506,9 +1563,14 @@ fn resolve_mcp_http_session(
 
     if is_initialize {
         let session_id = Ulid::new().to_string();
+        let bound_profile = request_bound_permission_profile(context, request);
+        let requested_profile = context
+            .requested_profile
+            .as_deref()
+            .or(bound_profile.as_deref());
         let core = McpServerCore::new(
             &context.paths,
-            context.requested_profile.as_deref(),
+            requested_profile,
             &context.tool_pack_args,
             context.tool_pack_mode_arg,
         )
@@ -1691,8 +1753,20 @@ fn validate_oauth_bearer_token(
 ) -> Result<(), vulcan_core::OAuthError> {
     match oauth {
         McpOAuthMode::External(external) => external.validate_bearer_token(token),
-        McpOAuthMode::Local(local) => local.validate_bearer_token(token),
+        McpOAuthMode::Local(local) => local.validate_bearer_token(token).map(|_| ()),
     }
+}
+
+fn request_bound_permission_profile(
+    context: &McpHttpServerContext,
+    request: &McpHttpRequest,
+) -> Option<String> {
+    let McpOAuthMode::Local(local) = context.oauth.as_ref()? else {
+        return None;
+    };
+    let token = bearer_token(&request.headers)?;
+    let identity = local.validate_bearer_token(&token).ok()?;
+    identity.permission_profile
 }
 
 impl McpServerCore {
@@ -3704,10 +3778,14 @@ fn parse_mcp_http_bind_addr(bind: &str, allow_remote: bool) -> Result<SocketAddr
     Ok(addr)
 }
 
+#[allow(clippy::too_many_lines)]
 fn build_mcp_oauth_validator(options: &McpHttpOptions) -> Result<Option<McpOAuthMode>, CliError> {
     let local_requested = options.oauth_local_client_id.is_some()
         || options.oauth_local_client_secret.is_some()
-        || options.oauth_local_approval_token.is_some();
+        || options.oauth_local_approval_token.is_some()
+        || options.oauth_dcr
+        || options.oauth_indieauth_authorization_endpoint.is_some()
+        || options.oauth_indieauth_token_endpoint.is_some();
     if local_requested {
         if options.oauth_issuer.is_some() || options.auth_token.is_some() {
             return Err(CliError::operation(
@@ -3717,9 +3795,10 @@ fn build_mcp_oauth_validator(options: &McpHttpOptions) -> Result<Option<McpOAuth
         let public_url = options.public_url.as_deref().ok_or_else(|| {
             CliError::operation("--public-url is required when using local MCP OAuth issuer")
         })?;
-        let client_id = options.oauth_local_client_id.as_deref().ok_or_else(|| {
-            CliError::operation("--oauth-local-client-id is required for local MCP OAuth issuer")
-        })?;
+        let client_id = options
+            .oauth_local_client_id
+            .as_deref()
+            .unwrap_or("vulcan-mcp");
         let client_secret = options
             .oauth_local_client_secret
             .as_deref()
@@ -3728,14 +3807,12 @@ fn build_mcp_oauth_validator(options: &McpHttpOptions) -> Result<Option<McpOAuth
                     "--oauth-local-client-secret is required for local MCP OAuth issuer",
                 )
             })?;
-        let approval_token = options
-            .oauth_local_approval_token
-            .as_deref()
-            .ok_or_else(|| {
-                CliError::operation(
-                    "--oauth-local-approval-token is required for local MCP OAuth issuer",
-                )
-            })?;
+        let approval_token = options.oauth_local_approval_token.as_deref().unwrap_or("");
+        if approval_token.is_empty() && options.oauth_indieauth_authorization_endpoint.is_none() {
+            return Err(CliError::operation(
+                "--oauth-local-approval-token is required unless IndieAuth is configured",
+            ));
+        }
         let subject = options
             .oauth_local_subject
             .as_deref()
@@ -3747,6 +3824,8 @@ fn build_mcp_oauth_validator(options: &McpHttpOptions) -> Result<Option<McpOAuth
             approval_token: approval_token.to_string(),
             subject: subject.to_string(),
             email: options.oauth_local_email.clone(),
+            users: parse_local_oauth_users(&options.oauth_local_user)?,
+            dcr_enabled: options.oauth_dcr,
         })
         .map(Arc::new)
         .map(McpOAuthMode::Local)
@@ -3812,11 +3891,19 @@ fn handle_mcp_oauth_metadata(
 ) -> Option<McpHttpResponse> {
     let oauth = context.oauth.as_ref()?;
     if let McpOAuthMode::Local(local) = oauth {
+        if request.path == "/oauth/register" {
+            return Some(handle_local_oauth_register(context, request));
+        }
         if request.path == "/oauth/authorize" {
             return Some(handle_local_oauth_authorize(context, local, request));
         }
         if request.path == "/oauth/token" {
             return Some(handle_local_oauth_token(context, local, request));
+        }
+        if request.path == "/oauth/indieauth/callback" {
+            return Some(handle_local_oauth_indieauth_callback(
+                context, local, request,
+            ));
         }
     }
     if request.method != "GET" {
@@ -3882,19 +3969,37 @@ fn handle_local_oauth_authorize(
         .get("code_challenge_method")
         .cloned()
         .unwrap_or_default();
-    if client_id != issuer.client_id()
-        || redirect_uri.is_empty()
+    if !local_oauth_client_redirect_allowed(context, issuer, &client_id, &redirect_uri)
         || response_type != "code"
         || code_challenge.is_empty()
         || code_challenge_method != "S256"
     {
         return oauth_plain_response(400, "invalid OAuth authorization request");
     }
+    if let Some(indieauth) = context.oauth_indieauth.as_ref() {
+        let state = Ulid::new().to_string();
+        context
+            .oauth_pending_indieauth
+            .lock()
+            .expect("oauth pending indieauth lock should not be poisoned")
+            .insert(
+                state.clone(),
+                LocalOAuthPendingIndieAuth {
+                    client_id,
+                    redirect_uri,
+                    code_challenge,
+                    state: params.get("state").cloned(),
+                    expires_at: std::time::Instant::now() + Duration::from_secs(600),
+                },
+            );
+        return local_oauth_redirect_to_indieauth(indieauth, &state);
+    }
     let approval_token = params.get("approval_token").cloned().unwrap_or_default();
     if !issuer.verify_approval_token(&approval_token) {
         return local_oauth_approval_form(&params);
     }
     let code = Ulid::new().to_string();
+    let user = issuer.default_user();
     context
         .oauth_codes
         .lock()
@@ -3905,6 +4010,9 @@ fn handle_local_oauth_authorize(
                 client_id,
                 redirect_uri: redirect_uri.clone(),
                 code_challenge,
+                subject: user.subject,
+                email: user.email,
+                permission_profile: user.permission_profile,
                 expires_at: std::time::Instant::now() + Duration::from_secs(300),
             },
         );
@@ -3918,6 +4026,89 @@ fn handle_local_oauth_authorize(
         content_type: None,
         body: Vec::new(),
         extra_headers: vec![("Location".to_string(), location)],
+    }
+}
+
+fn handle_local_oauth_register(
+    context: &McpHttpServerContext,
+    request: &McpHttpRequest,
+) -> McpHttpResponse {
+    if !context.oauth_dcr_enabled {
+        return oauth_json_error_response(404, "invalid_request", "DCR is not enabled");
+    }
+    if request.method != "POST" {
+        return oauth_json_error_response(405, "invalid_request", "method not allowed");
+    }
+    let Ok(payload) = serde_json::from_slice::<Value>(&request.body) else {
+        return oauth_json_error_response(400, "invalid_client_metadata", "invalid JSON");
+    };
+    let redirect_uris = payload
+        .get("redirect_uris")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .map(ToOwned::to_owned)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if redirect_uris.is_empty()
+        || !redirect_uris
+            .iter()
+            .all(|uri| local_oauth_redirect_host_allowed(context, uri))
+    {
+        return oauth_json_error_response(
+            400,
+            "invalid_redirect_uri",
+            "redirect URI is not allowed",
+        );
+    }
+    let auth_method = payload
+        .get("token_endpoint_auth_method")
+        .and_then(Value::as_str)
+        .unwrap_or("client_secret_basic");
+    if !matches!(auth_method, "client_secret_basic" | "client_secret_post") {
+        return oauth_json_error_response(
+            400,
+            "invalid_client_metadata",
+            "unsupported token endpoint auth method",
+        );
+    }
+    let client = LocalOAuthRegisteredClient {
+        client_id: format!("vulcan-dcr-{}", Ulid::new()),
+        client_secret: Ulid::new().to_string(),
+        redirect_uris,
+        client_name: payload
+            .get("client_name")
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned),
+        token_endpoint_auth_method: auth_method.to_string(),
+        client_id_issued_at: current_unix_timestamp(),
+    };
+    context
+        .oauth_clients
+        .lock()
+        .expect("oauth clients lock should not be poisoned")
+        .insert(client.client_id.clone(), client.clone());
+    if let Err(error) = save_oauth_registered_clients(context) {
+        return oauth_json_error_response(500, "server_error", error.to_string());
+    }
+    let body = serde_json::json!({
+        "client_id": client.client_id,
+        "client_secret": client.client_secret,
+        "client_id_issued_at": client.client_id_issued_at,
+        "client_secret_expires_at": 0,
+        "redirect_uris": client.redirect_uris,
+        "grant_types": ["authorization_code"],
+        "response_types": ["code"],
+        "token_endpoint_auth_method": client.token_endpoint_auth_method,
+    });
+    McpHttpResponse {
+        status: 201,
+        content_type: Some("application/json"),
+        body: serde_json::to_vec(&body).expect("json should serialize"),
+        extra_headers: vec![("Cache-Control".to_string(), "no-store".to_string())],
     }
 }
 
@@ -3937,7 +4128,9 @@ fn handle_local_oauth_token(
             "missing OAuth client credentials",
         );
     };
-    if !issuer.verify_client(&client_id, &client_secret) {
+    if !issuer.verify_client(&client_id, &client_secret)
+        && !local_oauth_registered_client_valid(context, &client_id, &client_secret)
+    {
         return oauth_json_error_response(
             401,
             "invalid_client",
@@ -3981,7 +4174,11 @@ fn handle_local_oauth_token(
     if !issuer.verify_pkce_s256(code_verifier, &code_record.code_challenge) {
         return oauth_json_error_response(400, "invalid_grant", "invalid PKCE verifier");
     }
-    match issuer.issue_access_token() {
+    match issuer.issue_access_token_for(
+        &code_record.subject,
+        code_record.email,
+        code_record.permission_profile,
+    ) {
         Ok(access_token) => {
             let body = serde_json::json!({
                 "access_token": access_token,
@@ -3997,6 +4194,103 @@ fn handle_local_oauth_token(
             }
         }
         Err(error) => oauth_json_error_response(500, "server_error", error.to_string()),
+    }
+}
+
+fn handle_local_oauth_indieauth_callback(
+    context: &McpHttpServerContext,
+    issuer: &LocalOAuthIssuer,
+    request: &McpHttpRequest,
+) -> McpHttpResponse {
+    if request.method != "GET" {
+        return oauth_plain_response(405, "method not allowed");
+    }
+    let Some(indieauth) = context.oauth_indieauth.as_ref() else {
+        return oauth_plain_response(404, "not found");
+    };
+    let params = parse_query_params(&request.query);
+    if let Some(error) = params.get("error") {
+        return oauth_plain_response(400, &format!("IndieAuth failed: {error}"));
+    }
+    let Some(state) = params.get("state") else {
+        return oauth_plain_response(400, "missing IndieAuth state");
+    };
+    let pending = context
+        .oauth_pending_indieauth
+        .lock()
+        .expect("oauth pending indieauth lock should not be poisoned")
+        .remove(state);
+    let Some(pending) = pending else {
+        return oauth_plain_response(400, "unknown IndieAuth state");
+    };
+    if pending.expires_at < std::time::Instant::now() {
+        return oauth_plain_response(400, "expired IndieAuth state");
+    }
+    let Some(code) = params.get("code") else {
+        return oauth_plain_response(400, "missing IndieAuth code");
+    };
+    let subject = match exchange_indieauth_code(
+        &indieauth.token_endpoint,
+        code,
+        &indieauth.redirect_uri,
+        &indieauth.client_id,
+    ) {
+        Ok(subject) => subject,
+        Err(error) => return oauth_plain_response(400, &error.to_string()),
+    };
+    let Some(user) = issuer.user_for_subject(&subject) else {
+        return oauth_plain_response(403, "IndieAuth subject is not allowed");
+    };
+    let code = Ulid::new().to_string();
+    context
+        .oauth_codes
+        .lock()
+        .expect("oauth code lock should not be poisoned")
+        .insert(
+            code.clone(),
+            LocalOAuthCode {
+                client_id: pending.client_id,
+                redirect_uri: pending.redirect_uri.clone(),
+                code_challenge: pending.code_challenge,
+                subject: user.subject,
+                email: user.email,
+                permission_profile: user.permission_profile,
+                expires_at: std::time::Instant::now() + Duration::from_secs(300),
+            },
+        );
+    let mut location = format!("{}?code={}", pending.redirect_uri, percent_encode(&code));
+    if let Some(state) = pending.state {
+        location.push_str("&state=");
+        location.push_str(&percent_encode(&state));
+    }
+    McpHttpResponse {
+        status: 302,
+        content_type: None,
+        body: Vec::new(),
+        extra_headers: vec![("Location".to_string(), location)],
+    }
+}
+
+fn local_oauth_redirect_to_indieauth(
+    indieauth: &LocalOAuthIndieAuthConfig,
+    state: &str,
+) -> McpHttpResponse {
+    let mut location = format!(
+        "{}?response_type=code&client_id={}&redirect_uri={}&state={}",
+        indieauth.authorization_endpoint,
+        percent_encode(&indieauth.client_id),
+        percent_encode(&indieauth.redirect_uri),
+        percent_encode(state)
+    );
+    if let Some(me) = indieauth.me.as_ref() {
+        location.push_str("&me=");
+        location.push_str(&percent_encode(me));
+    }
+    McpHttpResponse {
+        status: 302,
+        content_type: None,
+        body: Vec::new(),
+        extra_headers: vec![("Location".to_string(), location)],
     }
 }
 
@@ -4030,6 +4324,168 @@ fn local_oauth_approval_form(params: &BTreeMap<String, String>) -> McpHttpRespon
         body: html.into_bytes(),
         extra_headers: Vec::new(),
     }
+}
+
+fn local_oauth_client_redirect_allowed(
+    context: &McpHttpServerContext,
+    issuer: &LocalOAuthIssuer,
+    client_id: &str,
+    redirect_uri: &str,
+) -> bool {
+    if client_id == issuer.client_id() && !redirect_uri.is_empty() {
+        return true;
+    }
+    context
+        .oauth_clients
+        .lock()
+        .expect("oauth clients lock should not be poisoned")
+        .get(client_id)
+        .is_some_and(|client| client.redirect_uris.iter().any(|uri| uri == redirect_uri))
+}
+
+fn local_oauth_registered_client_valid(
+    context: &McpHttpServerContext,
+    client_id: &str,
+    client_secret: &str,
+) -> bool {
+    context
+        .oauth_clients
+        .lock()
+        .expect("oauth clients lock should not be poisoned")
+        .get(client_id)
+        .is_some_and(|client| client.client_secret == client_secret)
+}
+
+fn local_oauth_redirect_host_allowed(context: &McpHttpServerContext, redirect_uri: &str) -> bool {
+    let Some((scheme, rest)) = redirect_uri.split_once("://") else {
+        return false;
+    };
+    if scheme != "https" {
+        return false;
+    }
+    let host = rest
+        .split('/')
+        .next()
+        .unwrap_or_default()
+        .split(':')
+        .next()
+        .unwrap_or_default();
+    context
+        .oauth_dcr_allowed_redirect_hosts
+        .iter()
+        .any(|allowed| host == allowed || host.ends_with(&format!(".{allowed}")))
+}
+
+fn oauth_clients_path(paths: &VaultPaths) -> std::path::PathBuf {
+    paths.vulcan_dir().join("mcp-oauth-clients.json")
+}
+
+fn load_oauth_registered_clients(
+    paths: &VaultPaths,
+) -> Result<BTreeMap<String, LocalOAuthRegisteredClient>, CliError> {
+    let path = oauth_clients_path(paths);
+    if !path.exists() {
+        return Ok(BTreeMap::new());
+    }
+    let content = fs::read_to_string(path).map_err(CliError::operation)?;
+    let clients = serde_json::from_str::<Vec<LocalOAuthRegisteredClient>>(&content)
+        .map_err(CliError::operation)?;
+    Ok(clients
+        .into_iter()
+        .map(|client| (client.client_id.clone(), client))
+        .collect())
+}
+
+fn save_oauth_registered_clients(context: &McpHttpServerContext) -> Result<(), CliError> {
+    let Some(path) = context.oauth_clients_path.as_ref() else {
+        return Ok(());
+    };
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(CliError::operation)?;
+    }
+    let clients = context
+        .oauth_clients
+        .lock()
+        .expect("oauth clients lock should not be poisoned")
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    let serialized = serde_json::to_string_pretty(&clients).map_err(CliError::operation)?;
+    fs::write(path, serialized).map_err(CliError::operation)
+}
+
+fn build_indieauth_config(
+    options: &McpHttpOptions,
+) -> Result<Option<LocalOAuthIndieAuthConfig>, CliError> {
+    let Some(authorization_endpoint) = options.oauth_indieauth_authorization_endpoint.clone()
+    else {
+        if options.oauth_indieauth_token_endpoint.is_some() {
+            return Err(CliError::operation(
+                "--oauth-indieauth-authorization-endpoint is required with IndieAuth options",
+            ));
+        }
+        return Ok(None);
+    };
+    let token_endpoint = options
+        .oauth_indieauth_token_endpoint
+        .clone()
+        .ok_or_else(|| CliError::operation("--oauth-indieauth-token-endpoint is required"))?;
+    let public_url = options
+        .public_url
+        .as_deref()
+        .ok_or_else(|| CliError::operation("--public-url is required with IndieAuth options"))?;
+    let origin = public_url_origin_for_cli(public_url)?;
+    let client_id = options
+        .oauth_indieauth_client_id
+        .clone()
+        .unwrap_or_else(|| origin.clone());
+    let redirect_uri = options
+        .oauth_indieauth_redirect_uri
+        .clone()
+        .unwrap_or_else(|| format!("{origin}/oauth/indieauth/callback"));
+    Ok(Some(LocalOAuthIndieAuthConfig {
+        authorization_endpoint,
+        token_endpoint,
+        client_id,
+        redirect_uri,
+        me: options.oauth_indieauth_me.clone(),
+    }))
+}
+
+fn public_url_origin_for_cli(public_url: &str) -> Result<String, CliError> {
+    let Some((scheme, rest)) = public_url.split_once("://") else {
+        return Err(CliError::operation("--public-url must be absolute"));
+    };
+    let host = rest.split('/').next().unwrap_or(rest);
+    Ok(format!("{scheme}://{host}"))
+}
+
+fn parse_local_oauth_users(users: &[String]) -> Result<Vec<LocalOAuthUserConfig>, CliError> {
+    users
+        .iter()
+        .map(|entry| {
+            let (subject, rest) = entry
+                .split_once('=')
+                .ok_or_else(|| CliError::operation("OAuth users must be subject=profile"))?;
+            if subject.is_empty() || rest.is_empty() {
+                return Err(CliError::operation("OAuth users must be subject=profile"));
+            }
+            let (profile, email) = rest
+                .split_once(',')
+                .map_or((rest, None), |(profile, email)| (profile, Some(email)));
+            Ok(LocalOAuthUserConfig {
+                subject: subject.to_string(),
+                email: email.map(ToOwned::to_owned),
+                permission_profile: Some(profile.to_string()),
+            })
+        })
+        .collect()
+}
+
+fn current_unix_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
 }
 
 fn oauth_client_credentials(
@@ -4264,6 +4720,7 @@ fn write_mcp_http_response(
 ) -> Result<(), io::Error> {
     let status_text = match response.status {
         200 => "OK",
+        201 => "Created",
         202 => "Accepted",
         302 => "Found",
         204 => "No Content",
@@ -5904,6 +6361,14 @@ mod tests {
             oauth_local_approval_token: None,
             oauth_local_subject: Some("local-user".to_string()),
             oauth_local_email: None,
+            oauth_dcr: false,
+            oauth_dcr_allowed_redirect_host: Vec::new(),
+            oauth_indieauth_authorization_endpoint: None,
+            oauth_indieauth_token_endpoint: None,
+            oauth_indieauth_client_id: None,
+            oauth_indieauth_redirect_uri: None,
+            oauth_indieauth_me: None,
+            oauth_local_user: Vec::new(),
         }
     }
 
@@ -5941,6 +6406,24 @@ mod tests {
             "/.well-known/openid-configuration/mcp",
             "/mcp"
         ));
+    }
+
+    #[test]
+    fn local_oauth_user_bindings_parse_profile_and_email() {
+        let users = parse_local_oauth_users(&[
+            "https://tionis.dev/=daily-wiki-agent,eric@example.test".to_string(),
+            "guest=readonly".to_string(),
+        ])
+        .unwrap();
+        assert_eq!(users[0].subject, "https://tionis.dev/");
+        assert_eq!(
+            users[0].permission_profile.as_deref(),
+            Some("daily-wiki-agent")
+        );
+        assert_eq!(users[0].email.as_deref(), Some("eric@example.test"));
+        assert_eq!(users[1].subject, "guest");
+        assert_eq!(users[1].permission_profile.as_deref(), Some("readonly"));
+        assert!(parse_local_oauth_users(&["missing-profile".to_string()]).is_err());
     }
 
     #[test]

@@ -11,26 +11,32 @@ Preferred direct ChatGPT shape:
 1. Run Vulcan on a private bind:
 
    ```sh
-   vulcan --permissions daily-wiki-agent mcp \
+   vulcan mcp \
      --transport http \
      --bind 127.0.0.1:8765 \
      --endpoint /mcp \
      --public-url https://wiki.example.com/mcp \
-     --oauth-local-client-id vulcan-mcp \
      --oauth-local-client-secret "$VULCAN_MCP_OAUTH_CLIENT_SECRET" \
-     --oauth-local-approval-token "$VULCAN_MCP_OAUTH_APPROVAL_TOKEN" \
-     --oauth-local-subject eric \
-     --oauth-local-email you@example.com \
+     --oauth-dcr \
+     --oauth-indieauth-authorization-endpoint https://indieauth.example.com/auth \
+     --oauth-indieauth-token-endpoint https://indieauth.example.com/token \
+     --oauth-indieauth-me https://example.com/ \
+     --oauth-local-subject fallback \
+     --oauth-local-user https://example.com/=daily-wiki-agent,you@example.com \
      --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom
    ```
 
-2. Publish `https://wiki.example.com/mcp` through an HTTPS reverse proxy to the local Vulcan bind. Also proxy `https://wiki.example.com/.well-known/oauth-protected-resource/mcp` and `https://wiki.example.com/.well-known/oauth-authorization-server/mcp` to the same Vulcan server.
+2. Publish `https://wiki.example.com/mcp` through an HTTPS reverse proxy to the local Vulcan bind. Also proxy `https://wiki.example.com/.well-known/oauth-protected-resource/mcp`, `https://wiki.example.com/.well-known/oauth-authorization-server/mcp`, and `https://wiki.example.com/oauth/*` to the same Vulcan server.
 3. Configure ChatGPT Developer Mode with the public MCP URL.
 4. Keep shell, host execution, git mutation, unrestricted network, broad refactor, and config writes out of the selected permission profile.
 
 `daily-wiki-agent` is the built-in pilot profile for this shape. It allows full vault note/task edits, config reads, and no shell, host execution, git mutation, refactor, network, or explicit index maintenance.
 
-The recommended ChatGPT path is Vulcan's built-in MCP OAuth issuer. Vulcan owns the ChatGPT-facing authorization-code + PKCE flow, issues short-lived MCP access tokens, and validates those tokens directly. The browser authorization page asks for `--oauth-local-approval-token`, which should be a high-entropy secret.
+The recommended ChatGPT path is Vulcan's built-in MCP OAuth issuer. Vulcan owns ChatGPT-facing authorization-code + PKCE, dynamic client registration, short-lived MCP access tokens, and bearer-token validation. Human login can be delegated to an upstream IndieAuth server with `--oauth-indieauth-authorization-endpoint` and `--oauth-indieauth-token-endpoint`; Vulcan maps the returned IndieAuth subject to a permission profile with `--oauth-local-user <subject>=<profile>[,<email>]`.
+
+For per-user permission binding, omit the process-level `--permissions` flag and bind each allowed IndieAuth subject with `--oauth-local-user`. If `--permissions` is provided, it remains the process-wide profile for all MCP sessions.
+
+`--oauth-local-client-secret` is the local issuer signing secret and should be high entropy. When `--oauth-dcr` is enabled, ChatGPT can register dynamically instead of being configured with static client credentials. `--oauth-local-approval-token` remains available as a simple fallback when IndieAuth is not configured.
 
 For external OIDC resource-server mode, use `--oauth-issuer`, `--oauth-audience`, and an allowed subject or email. This keeps Authentik as the token issuer, but ChatGPT compatibility can vary by provider metadata and token-exchange behavior.
 
