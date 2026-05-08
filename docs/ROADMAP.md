@@ -2856,7 +2856,7 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.17.6 (batch commands)  ← 9.17.1      │── Wave 3
 9.17.7 (init integration)← 9.17.6      │── Wave 3+
                                         │
---- AI path (CLI first, then external runtime, then embedded host mode only if needed) ---
+--- AI path (CLI first, then external runtime, then optional embedded host pilot) ---
 9.18.2 (note CRUD)       ← 7, 2        │── Wave 5 (CLI for LLMs)
 9.18.3 (query enhance)   ← 7.12        │── Wave 5
 9.18.6 (web tools)       ← standalone  │── Wave 5
@@ -2866,7 +2866,7 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
                                         │
 9.12.1-6 (pi integration) ← 9.18.2,6,7,8│── Wave 6 (after CLI tools)
                                         │
-9.21 (embedded assistant host mode)← 9.12,9.19.13,10│── revisit later only if needed
+9.21 (embedded assistant host mode)← 9.12,9.19.13 │── complete CLI-hosted pilot; daemon/chat follow-ons deferred
                                         │
 9.18.4 (refactor group)  ← 7           │── Wave 6+ (with 9.18.1)
 9.18.5 (JS runtime/REPL) ← 9.8.8       │── Wave 6+ (after DataviewJS)
@@ -2909,7 +2909,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 5. **Wave 5 — CLI for LLMs (parallel):** **9.18.2 (note CRUD)**, **9.18.3 (query enhancements)**, **9.18.6 (web tools)**, **9.18.7 (help/describe polish)**, **9.18.8 (git ops)**, 9.15 (TaskNotes). This wave makes the CLI usable as a tool surface by any LLM harness (Claude Code, Codex, Gemini CLI, `pi`, etc.) without a Vulcan-native runtime. Deliverables include: note CRUD commands, `describe --format` for tool schema export, `help --output json` for structured command docs, default skills (bundled), vault AGENTS.md template, and consistent JSON error output. Can proceed in parallel with Wave 4.
 6. **Wave 6 — External agent integration (sequential):** **9.12.1–9.12.6 as one coherent deliverable.** `pi` package/extension contract → tool boundary and trust model → AGENTS/skills-driven prompting → session/persistence boundary → rollout guidance and revisit criteria. Depends on Wave 5 for the tool surface.
 7. **Wave 6+ (sequential after prerequisites):** **9.18.5 (JS runtime/REPL)** ← requires 9.8.8; **9.18.9 (task mutations)** ← requires 9.10; **9.18.4 (refactor group)** ← with 9.18.1.
-8. **Wave 7 — Optional embedded host mode:** revisit **9.21** only if external runtimes cannot cover the workflow and after permissions + daemon foundations are mature. Treat 9.12.8 as the deferral gate and 9.21 as the implementation bucket.
+8. **Wave 7 — Optional embedded host mode:** **9.21** has shipped as the CLI-hosted managed-engine pilot. Remaining deferred work is limited to richer terminal UI, real-pi CI, daemon-managed async transport, and native chat adapters.
 9. **Wave 8:** 9.13 (QuickAdd) — capture format compatibility and settings import. Benefits from 9.7 (template variables) and 9.16 (periodic notes) being in place. QuickAdd importer (9.13.2) uses `PluginImporter`.
 10. **Wave 9+:** 9.19.15 → 9.23 → 9.24 for the protocol-native programmable tool surface. Build the MCP-native registry first, then pack negotiation, then vault-defined custom tools on top of that shared registry.
 11. **Wave 9+ — Link graph intelligence (after Wave 9+ MCP foundation):** **9.25 → 9.26 → 9.27** sequenced because each builds on the output of the prior phase. Community detection (9.25) on the existing link graph enables cross-community scoring in link suggestions (9.26), which in turn feeds INFERRED edges into the confidence-tagged graph (9.27). 9.25 and 9.26 are additive (new features); 9.27 is a structural schema change that wires through all existing graph surfaces.
