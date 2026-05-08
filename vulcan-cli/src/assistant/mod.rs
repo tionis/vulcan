@@ -30,7 +30,9 @@ pub(crate) struct AssistantCommandOptions {
     pub(crate) list_sessions: bool,
     pub(crate) chat: bool,
     pub(crate) resume: bool,
+    pub(crate) resume_session: Option<String>,
     pub(crate) continue_session: bool,
+    pub(crate) export_session: Option<String>,
     pub(crate) provider: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) thinking: Option<String>,
@@ -245,7 +247,14 @@ pub(crate) fn handle_assistant_command(
         return print_session_report(output, &report);
     }
 
-    if args.resume || args.continue_session {
+    if let Some(target) = &args.export_session {
+        let report = export_session_by_target(paths, &host, target)?;
+        return print_session_export_report(output, &report);
+    }
+
+    if let Some(target) = &args.resume_session {
+        host.resume_session = Some(resolve_session_target(paths, &host, target)?);
+    } else if args.resume || args.continue_session {
         host.resume_session = newest_session_path(paths, &host)?;
     }
 
@@ -320,6 +329,100 @@ pub(crate) fn export_session_after_run(
     };
     export_assistant_session_file(paths.vault_root(), &session_path, &export_dir)?;
     Ok(())
+}
+
+fn export_session_by_target(
+    paths: &VaultPaths,
+    host: &AssistantHostOptions,
+    target: &str,
+) -> Result<vulcan_app::assistant_session_export::AssistantSessionExportReport, CliError> {
+    let Some(export_dir) = host.resolved_session_exports_dir(paths.vault_root()) else {
+        return Err(CliError::operation(
+            "assistant session export requires [assistant].session_exports_dir",
+        ));
+    };
+    let session_path = if target == "latest" {
+        newest_session_path(paths, host)?.ok_or_else(|| {
+            CliError::operation("no assistant sessions found in the configured sessions directory")
+        })?
+    } else {
+        resolve_session_target(paths, host, target)?
+    };
+    export_assistant_session_file(paths.vault_root(), &session_path, &export_dir)
+        .map_err(CliError::operation)
+}
+
+fn resolve_session_target(
+    paths: &VaultPaths,
+    host: &AssistantHostOptions,
+    target: &str,
+) -> Result<PathBuf, CliError> {
+    let target_path = PathBuf::from(target);
+    if target_path.is_absolute() {
+        if target_path.is_file() {
+            return Ok(target_path);
+        }
+        return Err(CliError::operation(format!(
+            "assistant session path does not exist: {}",
+            target_path.display()
+        )));
+    }
+    let vault_relative = paths.vault_root().join(&target_path);
+    if vault_relative.is_file() {
+        return Ok(vault_relative);
+    }
+
+    let sessions = list_sessions(paths, host)?;
+    let Some(sessions_dir) = sessions.sessions_dir else {
+        return Err(CliError::operation(
+            "assistant sessions are disabled; configure [assistant].sessions_dir",
+        ));
+    };
+    let sessions_dir = PathBuf::from(sessions_dir);
+    let direct = sessions_dir.join(&target_path);
+    if direct.is_file() {
+        return Ok(direct);
+    }
+
+    let mut matches = sessions
+        .sessions
+        .iter()
+        .filter(|session| session_matches_target(session, target))
+        .map(|session| sessions_dir.join(&session.path))
+        .collect::<Vec<_>>();
+    matches.sort();
+    matches.dedup();
+    match matches.as_slice() {
+        [path] => Ok(path.clone()),
+        [] => Err(CliError::operation(format!(
+            "assistant session not found: {target}"
+        ))),
+        _ => Err(CliError::operation(format!(
+            "assistant session target is ambiguous: {target}"
+        ))),
+    }
+}
+
+fn session_matches_target(session: &AssistantSessionSummary, target: &str) -> bool {
+    if session.path == target {
+        return true;
+    }
+    let path = Path::new(&session.path);
+    if path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name == target)
+    {
+        return true;
+    }
+    if path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .is_some_and(|stem| stem == target)
+    {
+        return true;
+    }
+    session.session_id.as_deref() == Some(target) || session.title.as_deref() == Some(target)
 }
 
 fn apply_cli_overrides(host: &mut AssistantHostOptions, args: &AssistantCommandOptions) {
@@ -598,6 +701,21 @@ fn print_session_report(
                     .map_or_else(|| "?".to_string(), |count| count.to_string());
                 println!("{label} [{} messages; {} bytes]", count, session.bytes);
             }
+            Ok(())
+        }
+    }
+}
+
+fn print_session_export_report(
+    output: OutputFormat,
+    report: &vulcan_app::assistant_session_export::AssistantSessionExportReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!("exported: {}", report.export_path);
+            println!("source: {}", report.source_path);
+            println!("messages: {}", report.message_count);
             Ok(())
         }
     }

@@ -53,6 +53,14 @@ Exports go to `session_exports_dir` as normal notes with YAML frontmatter and
 `[!user]`, `[!assistant]`, and `[!tool]` callouts. The raw pi session remains
 the source used for resume/continue.
 
+You can also export a session directly:
+
+```sh
+vulcan assistant --export-session latest
+vulcan assistant --export-session session-id
+vulcan assistant --export-session AI/Sessions/session.jsonl
+```
+
 ## Usage
 
 Inspect the launch configuration:
@@ -95,6 +103,13 @@ Resume the newest persisted session:
 
 ```sh
 vulcan assistant --chat --continue
+```
+
+Resume a specific session by path, file name, file stem, title, or session ID:
+
+```sh
+vulcan assistant --chat --resume-session session-id
+vulcan assistant --resume-session AI/Sessions/session.jsonl "Continue the summary"
 ```
 
 Chat slash commands include `/model`, `/models`, `/thinking`, `/compact`,

@@ -4204,7 +4204,7 @@ Do the structural pieces before visual polish:
 
 **Goal:** Embed a managed agent engine inside Vulcan so that `vulcan assistant` provides a fully integrated coding and vault-management assistant without the user needing to install, configure, or manage a separate runtime. The current sketch uses `pi` RPC (JSON-RPC over stdin/stdout) as one candidate engine. Vulcan owns the process lifecycle, UI, and tool surface; the managed engine owns model inference, session management, context compaction, and tool orchestration.
 
-**Status:** Complete for the optional CLI-hosted managed-engine pilot. Shipped: assistant config, `vulcan assistant` CLI, pi process lifecycle management, synchronous JSONL RPC client, typed pi event parsing, context payload injection, bundled pi extension materialization, permission-profile propagation, one-shot prompts, non-interactive prompt stdin, interactive chat, resume/continue via newest session, session listing with header metadata, doctor/context inspection, renderer hardening, mock-engine integration tests, and user docs. Deferred items are explicitly scoped to richer terminal UI, extension UI prompts, selectable session picker, real-pi CI smoke tests, daemon-managed async transport, and native chat adapters.
+**Status:** Complete for the optional CLI-hosted managed-engine pilot. Shipped: assistant config, `vulcan assistant` CLI, pi process lifecycle management, synchronous JSONL RPC client, typed pi event parsing, context payload injection, bundled pi extension materialization, permission-profile propagation, one-shot prompts, non-interactive prompt stdin, interactive chat, resume/continue via newest session, explicit resume target selection, session listing with header metadata, manual/on-exit Markdown session exports, doctor/context inspection, renderer hardening, mock-engine integration tests, and user docs. Deferred items are explicitly scoped to richer terminal UI, extension UI prompts, real-pi CI smoke tests, daemon-managed async transport, and native chat adapters.
 
 **Completion scope:** The checked `[x]` items define the completed 9.21 CLI-hosted pilot. `[-]` items in this phase are non-blocking follow-ons that were deliberately cut from the pilot because they depend on stable pi CI, daemon process supervision, richer terminal UI, or native chat transport decisions. They should not be read as unfinished requirements for the 9.21 milestone.
 
@@ -4499,11 +4499,12 @@ Define where assistant session state lives and how it relates to vault state.
 - [x] **Default: pi owns session state.** Pi writes session files to `.vulcan/assistant/sessions/` (or `AI/Sessions/` depending on config). Vulcan only reads lightweight headers for listing and never rewrites them.
 - [x] Session file naming: pi uses its own session ID scheme. On `vulcan assistant --list-sessions`, Vulcan reads the session directory and presents the files with metadata from pi's session headers.
 - [x] Resume semantics:
-  - `--continue`: find the most recent session file and pass `--session <path>` to pi
-  - `--resume`: currently aliases newest-session resume; an interactive picker is deferred
+  - [x] `--continue`: find the most recent session file and pass `--session <path>` to pi
+  - [x] `--resume`: alias newest-session resume for non-interactive use
+  - [x] `--resume-session <path|file|stem|session-id|title>`: resolve an explicit session target and pass it to pi
 - [x] Durable artifacts: if the assistant produces output the user wants to keep, it should write a normal vault note through the `note_create` or `note_append` tool. This is consistent with the 9.12.4 session boundary.
 - [x] Optional Markdown export layer: `session_export = "on_exit"` exports managed session files into Obsidian-readable notes with YAML frontmatter and `[!user]` / `[!assistant]` / `[!tool]` callouts
-- [-] Manual `vulcan assistant --export-session [session-id]` CLI — deferred until there is demand for ad hoc transcript export by ID/path
+- [x] Manual `vulcan assistant --export-session <path|file|stem|session-id|title|latest>` CLI for ad hoc transcript export by ID/path
 - [x] Ephemeral mode: `--ephemeral` passes `--no-session` to pi so no session file is created
 - [x] Auto-commit: assistant-initiated mutations route through normal Vulcan commands, so existing command-level auto-commit behavior applies where those commands support it
 - [x] Document that session history is pi-managed, not vault-managed; revisit only if pi's session model proves insufficient
@@ -4525,7 +4526,7 @@ Comprehensive testing for the embedded assistant integration.
   - Tool execution: prompt the assistant to call a Vulcan tool, verify the result flows back
   - Extension loading: verify the Vulcan tools extension loads without errors
   - Permission profiles: verify `readonly` blocks note mutations, `edit` allows them
-  - Session persistence: start a session, exit, resume, verify conversation is intact
+  - [x] Session persistence with mock engine: start a session, exit, resume a selected session, and verify the resolved session is passed back to the engine
   - Crash recovery: kill pi mid-stream, verify Vulcan detects the crash and reports a useful error
 - [-] **Smoke tests (CI-marked optional if pi is not installed):**
   - Daily-driver workflows: read note, patch note, search vault, run refactors
@@ -4540,6 +4541,7 @@ Comprehensive testing for the embedded assistant integration.
   - [x] Extension fails to load
   - [x] Misconfigured settings
 - [x] Document how to run the assistant test suite locally and in CI, including which tests require pi to be installed
+- [x] Exporter regression tests cover JSONL messages/events, interrupted sessions with truncated final JSONL lines, malformed middle lines, Obsidian callout transcripts, and Markdown export output
 
 ### 9.21.11 Documentation and user guide
 

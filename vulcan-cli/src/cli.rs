@@ -1226,6 +1226,8 @@ Modes:
   --doctor         Check managed-engine availability and launch configuration
   --print-context  Print the vault context that would be sent to the engine
   --list-sessions  List local assistant session files
+  --export-session SESSION
+                   Export a session transcript to Markdown
   --chat           Start a REPL-style chat session
   PROMPT           Run one prompt through the managed RPC engine
 
@@ -1241,7 +1243,9 @@ Examples:
   vulcan assistant --doctor
   vulcan assistant --print-context --tool-pack notes-read,search,status
   vulcan assistant --list-sessions
+  vulcan assistant --export-session latest
   vulcan assistant --chat --continue
+  vulcan assistant --chat --resume-session session-id
   vulcan assistant \"Summarize today's routine\"";
 
 const MCP_COMMAND_AFTER_HELP: &str = "\
@@ -4822,10 +4826,22 @@ pub enum Command {
         #[arg(long, help = "Resume the most recent assistant session")]
         resume: bool,
         #[arg(
+            long,
+            value_name = "SESSION",
+            help = "Resume a specific assistant session by path, file name, stem, or session id"
+        )]
+        resume_session: Option<String>,
+        #[arg(
             long = "continue",
             help = "Continue the most recent assistant session without prompting"
         )]
         continue_session: bool,
+        #[arg(
+            long,
+            value_name = "SESSION",
+            help = "Export a session by path, file name, stem, session id, or 'latest'"
+        )]
+        export_session: Option<String>,
         #[arg(long, help = "Override [assistant].provider for this run")]
         provider: Option<String>,
         #[arg(long, help = "Override [assistant].model for this run")]
