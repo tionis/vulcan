@@ -20083,7 +20083,7 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
         .and_then(|response| response["result"]["tools"].as_array())
         .expect("tools/list should return a tool array");
 
-    for expected in ["note_get", "note_outline", "search", "status"] {
+    for expected in ["note_get", "note_outline", "search", "query", "status"] {
         assert!(
             tools.iter().any(|tool| tool["name"] == expected),
             "default pack selection should expose `{expected}`"
@@ -20096,6 +20096,13 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
         "note_info",
         "note_set",
         "note_delete",
+        "daily_show",
+        "daily_list",
+        "task_list",
+        "task_query",
+        "task_create",
+        "task_complete",
+        "task_reschedule",
         "web_search",
         "web_fetch",
         "config_show",
@@ -20609,6 +20616,128 @@ fn mcp_server_composes_requested_canonical_tool_packs() {
             .as_u64()
             .is_some_and(|count| count > 0),
         "note_info should expose link confidence in structured MCP content"
+    );
+
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_daily_tasks_and_query_tools_support_wiki_workflows() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("tasknotes", &vault_root);
+    fs::create_dir_all(vault_root.join("Journal/Daily")).expect("daily dir");
+    fs::write(
+        vault_root.join("Journal/Daily/2026-05-08.md"),
+        "# 2026-05-08\n\n## Routine\n\n- Review open tasks\n",
+    )
+    .expect("daily note");
+    run_scan(&vault_root);
+
+    let mut session = McpSession::start(&vault_root, &["--tool-pack", "search,daily,tasks"]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+
+    let tools = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list"
+    }));
+    let tools = tools
+        .last()
+        .and_then(|response| response["result"]["tools"].as_array())
+        .expect("tools/list should return a tool array");
+    for expected in [
+        "search",
+        "query",
+        "daily_show",
+        "daily_list",
+        "task_list",
+        "task_query",
+        "task_create",
+        "task_complete",
+        "task_reschedule",
+    ] {
+        assert!(
+            tools.iter().any(|tool| tool["name"] == expected),
+            "wiki packs should expose `{expected}`"
+        );
+    }
+
+    let daily = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "daily_show",
+            "arguments": { "date": "2026-05-08" }
+        }
+    }));
+    let daily = &daily.last().expect("daily_show response")["result"]["structuredContent"];
+    assert_eq!(daily["path"].as_str(), Some("Journal/Daily/2026-05-08.md"));
+    assert!(
+        daily["content"]
+            .as_str()
+            .is_some_and(|content| content.contains("Review open tasks")),
+        "daily_show should return daily note content"
+    );
+
+    let query = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "query",
+            "arguments": { "filters": ["file.path starts_with \"TaskNotes/\""] }
+        }
+    }));
+    let query = &query.last().expect("query response")["result"]["structuredContent"];
+    assert!(
+        query["notes"]
+            .as_array()
+            .is_some_and(|notes| !notes.is_empty()),
+        "query should return filtered note rows"
+    );
+
+    let tasks = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "tools/call",
+        "params": {
+            "name": "task_list",
+            "arguments": { "source": "tasknotes" }
+        }
+    }));
+    let tasks = &tasks.last().expect("task_list response")["result"]["structuredContent"];
+    assert!(
+        tasks["tasks"]
+            .as_array()
+            .is_some_and(|tasks| !tasks.is_empty()),
+        "task_list should return task rows"
+    );
+
+    let complete = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "tools/call",
+        "params": {
+            "name": "task_complete",
+            "arguments": {
+                "task": "TaskNotes/Tasks/Write Docs.md",
+                "date": "2026-05-08",
+                "dry_run": true
+            }
+        }
+    }));
+    let complete = &complete.last().expect("task_complete response")["result"];
+    assert_eq!(complete["isError"].as_bool(), Some(false));
+    assert_eq!(
+        complete["structuredContent"]["action"].as_str(),
+        Some("complete")
     );
 
     assert!(session.finish().is_empty());

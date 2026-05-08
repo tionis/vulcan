@@ -16970,6 +16970,13 @@ fn builtin_help_topics() -> Vec<HelpTopicReport> {
             &["agent", "skill", "describe", "help"],
         ),
         static_help_topic(
+            "chatgpt-mcp",
+            HelpTopicKind::Guide,
+            "Private ChatGPT Developer Mode MCP setup for daily wiki workflows.",
+            include_str!("../../docs/guide/chatgpt-mcp.md"),
+            &["mcp", "permissions", "daily", "tasks", "agent"],
+        ),
+        static_help_topic(
             "getting-started",
             HelpTopicKind::Guide,
             "Quick orientation for the CLI and its main workflows.",
