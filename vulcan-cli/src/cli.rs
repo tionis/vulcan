@@ -1258,7 +1258,7 @@ Examples:
   vulcan mcp --vault ~/notes --tool-pack custom
   vulcan mcp --vault ~/notes --tool-pack-mode adaptive
   vulcan mcp --transport http --bind 127.0.0.1:8765
-  vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-local-client-secret \"$VULCAN_MCP_OAUTH_CLIENT_SECRET\" --oauth-dcr --oauth-indieauth-me https://example.com/ --oauth-local-user https://example.com/=daily-wiki-agent
+  vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-dcr --oauth-indieauth-me https://example.com/ --oauth-local-user https://example.com/=daily-wiki-agent
   vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-issuer https://auth.example.com/application/o/vulcan/ --oauth-audience vulcan-mcp --oauth-allowed-email you@example.com
   vulcan mcp | jq .";
 
@@ -5478,7 +5478,7 @@ Examples:
             long,
             env = "VULCAN_MCP_OAUTH_CLIENT_SECRET",
             hide_env_values = true,
-            help = "Static OAuth client secret for Vulcan's built-in MCP OAuth issuer"
+            help = "Optional static OAuth client/signing secret override for Vulcan's built-in MCP OAuth issuer"
         )]
         oauth_local_client_secret: Option<String>,
         #[arg(

@@ -16,7 +16,6 @@ Preferred direct ChatGPT shape:
      --bind 127.0.0.1:8765 \
      --endpoint /mcp \
      --public-url https://wiki.example.com/mcp \
-     --oauth-local-client-secret "$VULCAN_MCP_OAUTH_CLIENT_SECRET" \
      --oauth-dcr \
      --oauth-indieauth-me https://example.com/ \
      --oauth-local-subject fallback \
@@ -34,7 +33,7 @@ The recommended ChatGPT path is Vulcan's built-in MCP OAuth issuer. Vulcan owns 
 
 For per-user permission binding, omit the process-level `--permissions` flag and bind each allowed IndieAuth subject with `--oauth-local-user`. If `--permissions` is provided, it remains the process-wide profile for all MCP sessions.
 
-`--oauth-local-client-secret` is the local issuer signing secret and should be high entropy. When `--oauth-dcr` is enabled, ChatGPT can register dynamically instead of being configured with static client credentials. `--oauth-local-approval-token` remains available as a simple fallback when IndieAuth is not configured.
+When `--oauth-dcr` is enabled, ChatGPT can register dynamically instead of being configured with static client credentials. Vulcan generates and stores the local issuer signing secret in `.vulcan/mcp-oauth-issuer-secret` unless `--oauth-local-client-secret` is provided as an explicit override. `--oauth-local-approval-token` remains available as a simple fallback when IndieAuth is not configured.
 
 For external OIDC resource-server mode, use `--oauth-issuer`, `--oauth-audience`, and an allowed subject or email. This keeps Authentik as the token issuer, but ChatGPT compatibility can vary by provider metadata and token-exchange behavior.
 
