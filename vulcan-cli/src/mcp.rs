@@ -3739,7 +3739,6 @@ fn handle_mcp_oauth_metadata(
         "resource": oauth.public_url(),
         "authorization_servers": [oauth.issuer()],
         "bearer_methods_supported": ["header"],
-        "scopes_supported": ["mcp"],
     });
     Some(McpHttpResponse {
         status: 200,
