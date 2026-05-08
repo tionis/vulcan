@@ -4204,14 +4204,14 @@ Do the structural pieces before visual polish:
 
 **Goal:** Embed a managed agent engine inside Vulcan so that `vulcan assistant` provides a fully integrated coding and vault-management assistant without the user needing to install, configure, or manage a separate runtime. The current sketch uses `pi` RPC (JSON-RPC over stdin/stdout) as one candidate engine. Vulcan owns the process lifecycle, UI, and tool surface; the managed engine owns model inference, session management, context compaction, and tool orchestration.
 
-**Status:** Optional later-phase revisit. This is not part of the current Phase 9 critical path. The numbering keeps it near the AI work it reuses, but it should not start before the safety gates identified in 9.12.8 are satisfied.
+**Status:** In progress. Initial managed-engine host slice landed: assistant config, `vulcan assistant` CLI, pi process launch construction, synchronous JSONL RPC client, context payload, renderer, doctor, context inspection, one-shot prompt plumbing, session listing, tests, and user docs. Interactive chat, resume/continue, pi extension hooks, async event dispatch, version/auth diagnostics, and real pi smoke tests remain open.
 
 **Why this phase exists separately:** Phase 9.12 defines the contract for external agent runtimes shelling out to Vulcan. Phase 9.21 flips the host/runtime relationship: Vulcan embeds a managed agent engine. The phases intentionally share the same prompts, skills, permission profiles, and mutation rules, but they are different deliverables:
 
 - **9.12:** bring-your-own runtime (Codex, Claude Code, Gemini CLI, `pi`, etc.); Vulcan is the tool provider
 - **9.21:** built-in `vulcan assistant`; Vulcan is the host process and a managed agent engine is embedded behind it, with `pi` as one candidate engine
 
-**Design principle — Vulcancentrism:** Vulcan is the host process. Pi is a managed subprocess. The user never interacts with pi directly; all interaction goes through the `vulcan assistant` command surface. Pi's built-in tools (read, bash, edit, write) are available but constrained by the active permission profile. Vault mutations are routed through Vulcan commands, not pi's raw file-edit tools, so the same safety checks, dry-run, and auto-commit guarantees apply.
+**Design principle — Vulcancentrism:** Vulcan is the host process. Pi is a managed subprocess. The user never interacts with pi directly; all interaction goes through the `vulcan assistant` command surface. Based on the MCP server experience, Vulcan must own context assembly, tool discovery, permission-profile filtering, and vault mutation semantics. Pi's built-in tools are not the trusted enforcement boundary; vault mutations should be routed through Vulcan commands, not pi's raw file-edit tools, so the same safety checks, dry-run, and auto-commit guarantees apply.
 
 **Reused foundations from 9.12:** vault `AGENTS.md`, `.agents/skills/*/SKILL.md`, CLI-to-tool 1:1 mapping, permission-profile semantics, and the rule that durable artifacts are normal vault notes while live chat/session state stays in pi by default.
 
@@ -4223,22 +4223,22 @@ Do the structural pieces before visual polish:
 
 Spawn and manage the pi process lifecycle. This is the foundation that everything else builds on.
 
-- [ ] New module `vulcan-cli/src/assistant/mod.rs` as the public entry point for assistant commands
-- [ ] New module `vulcan-cli/src/assistant/pi_process.rs`:
-  - Locate pi binary: check `$PI_BINARY`, then `PATH` for `pi`, then common install locations (`~/.npm-global/bin/pi`, `/usr/local/bin/pi`)
-  - `PiProcess::spawn(args, config)` — start `pi --mode rpc` with appropriate flags:
-    - `--cwd <vault_root>` for workspace awareness
-    - `--provider <provider>` and `--model <model>` from Vulcan config
-    - `--no-session` for ephemeral mode, or `--session-dir <vault_root>/.vulcan/assistant/sessions/` for persistent sessions
-    - `-e <extension_path>` to load the Vulcan tools extension (9.21.3)
-    - `--thinking <level>` from Vulcan config
+- [x] New module `vulcan-cli/src/assistant/mod.rs` as the public entry point for assistant commands
+- [x] New module `vulcan-cli/src/assistant/engine.rs` (initial implementation of the planned `pi_process.rs` responsibilities):
+  - [ ] Locate pi binary: check `$PI_BINARY`, then `PATH` for `pi`, then common install locations (`~/.npm-global/bin/pi`, `/usr/local/bin/pi`)
+  - [x] `ManagedEngineProcess::spawn(args, config)` — start `pi --mode rpc` with appropriate flags:
+    - [x] `--cwd <vault_root>` for workspace awareness
+    - [x] `--provider <provider>` and `--model <model>` from Vulcan config
+    - [x] `--no-session` for ephemeral mode, or `--session-dir <vault_root>/AI/Sessions/` for persistent sessions
+    - [ ] `-e <extension_path>` to load the Vulcan tools extension (9.21.3)
+    - [x] `--thinking <level>` from Vulcan config
   - `PiProcess::ensure_running()` — health check; respawn if the process has died
   - `PiProcess::shutdown()` — send `abort` command, wait for graceful exit, kill after timeout
   - `PiProcess::is_healthy()` — check that stdin/stdout pipes are still open and the process hasn't exited
   - Handle pi not found: emit actionable error with install instructions (`npm install -g @mariozechner/pi-coding-agent`)
   - Handle pi version incompatibility: capture `--version` output and warn if below a minimum supported version
   - On spawn failure or crash: classify the error (not found, old version, auth missing, port conflict) and emit a user-facing diagnostic
-- [ ] Add `[assistant]` section to `VaultConfig` in `vulcan-core/src/config/mod.rs`:
+- [x] Add `[assistant]` section to `VaultConfig` in `vulcan-core/src/config/mod.rs`:
   ```toml
   [assistant]
   runtime = "pi"            # "pi" (default) or "none" to disable
@@ -4249,25 +4249,25 @@ Spawn and manage the pi process lifecycle. This is the foundation that everythin
   permissions = "edit"        # readonly, edit, refactor
   sessions_dir = "AI/Sessions"  # relative to vault root; empty = ephemeral
   ```
-- [ ] Add `[assistant]` section to `DEFAULT_CONFIG_TEMPLATE` (commented out, with defaults shown)
-- [ ] Add `--assistant-pi-binary`, `--assistant-provider`, `--assistant-model`, `--assistant-thinking`, `--assistant-permissions` CLI overrides
+- [x] Add `[assistant]` section to `DEFAULT_CONFIG_TEMPLATE` (commented out, with defaults shown)
+- [x] Add `--assistant-pi-binary`, provider/model/thinking overrides, and `--assistant-permissions` CLI overrides
 - [ ] Integration test: spawn pi in RPC mode, verify `get_state` returns a response, then shut down cleanly
 
 ### 9.21.2 Pi RPC client
 
 A typed Rust client for pi's JSON-RPC protocol. This module knows the protocol; the rest of the assistant code uses this client rather than dealing with raw JSON.
 
-- [ ] New module `vulcan-cli/src/assistant/rpc_client.rs`:
+- [x] New module `vulcan-cli/src/assistant/rpc.rs` (initial synchronous client; async dispatcher remains open):
   - `PiRpcClient` struct wrapping the pi subprocess's stdin/stdout handles
-  - JSONL framing: write `\n`-terminated JSON to stdin, read `\n`-delimited JSON from stdout
-  - Do NOT use BufReader with line-by-line reading that splits on `U+2028`/`U+2029` (pi docs explicitly warn about this — Node `readline` is non-compliant). Implement a custom LF-only line reader
-  - Correlation ID tracking: optional `id` field on commands, matched in `type: "response"` replies
+  - [x] JSONL framing: write `\n`-terminated JSON to stdin, read `\n`-delimited JSON from stdout
+  - [x] Do NOT use BufReader with line-by-line reading that splits on `U+2028`/`U+2029` (pi docs explicitly warn about this — Node `readline` is non-compliant). Implement a custom LF-only line reader
+  - [x] Correlation ID tracking: optional `id` field on commands, matched in `type: "response"` replies
   - Pending-response map: `HashMap<String, oneshot::Sender<RpcResponse>>` for awaiting command responses
   - Event dispatch: spawn a background task that reads stdout lines, parses them, and dispatches to:
     - Response correlator (for command responses)
     - Event subscriber channel (for streaming events)
     - Extension UI handler (for `extension_ui_request`)
-  - `send_command(&mut self, command: RpcCommand) -> Result<RpcResponse>` — write command, await response if `id` was set
+  - [x] `send_command(&mut self, command: RpcCommand) -> Result<RpcResponse>` — write command, await response if `id` was set
   - `subscribe_events(&self) -> broadcast::Receiver<PiEvent>` — subscribe to the event stream
   - `prompt(&mut self, message: &str)` — send prompt command, return immediately (events stream asynchronously)
   - `steer(&mut self, message: &str)` — queue steering message during streaming
@@ -4278,7 +4278,7 @@ A typed Rust client for pi's JSON-RPC protocol. This module knows the protocol; 
   - `new_session(&mut self) -> Result<bool>` — start fresh session (returns `true` if cancelled by extension)
   - `shutdown()` — send graceful shutdown signal
 
-- [ ] New module `vulcan-cli/src/assistant/rpc_types.rs`:
+- [x] Initial typed RPC structs live in `vulcan-cli/src/assistant/rpc.rs`:
   - Typed structs for all RPC commands: `RpcCommand` enum with variants for `prompt`, `steer`, `follow_up`, `abort`, `get_state`, `set_model`, `cycle_model`, `get_available_models`, `set_thinking_level`, `cycle_thinking_level`, `compact`, `set_auto_compaction`, `new_session`, `get_session_stats`, `get_messages`, `get_commands`, `bash`
   - Typed structs for all RPC responses: `RpcResponse` with `id`, `command`, `success`, `data`, `error`
   - Typed structs for session state: `PiSessionState` with `model`, `thinking_level`, `is_streaming`, `is_compacting`, `session_id`, `session_name`, `message_count`, `pending_message_count`
@@ -4338,11 +4338,11 @@ Register Vulcan's tool surface as pi custom tools so the LLM can call them natur
 
 At session start, inject vault context into pi so the assistant knows about the vault structure, available tools, and relevant skills.
 
-- [ ] New module `vulcan-cli/src/assistant/context.rs`:
+- [x] Initial context builder lives in `vulcan-cli/src/assistant/mod.rs`:
   - `build_session_context(vault_root, config) -> SessionContext`:
-    - Read vault `AGENTS.md` if present
-    - Call `vulcan describe --format openai-tools` to produce the tool summary for the system prompt
-    - Enumerate default and user skills from `.agents/skills/` (just names and descriptions, not full content)
+    - [x] Read vault `AGENTS.md` if present
+    - [x] Reuse the MCP tool registry to produce a filtered tool summary for the system prompt
+    - [x] Enumerate default and user skills from `.agents/skills/` (just names and descriptions, not full content)
     - Collect vault metadata: vault name, note count, tag summary, property catalog summary
   - `format_system_prompt_append(context) -> String`:
     - Format the context as a structured block for pi's system prompt
@@ -4357,7 +4357,7 @@ At session start, inject vault context into pi so the assistant knows about the 
 
 Render pi's streaming events into Vulcan's terminal output, both for one-shot prompts and interactive sessions.
 
-- [ ] New module `vulcan-cli/src/assistant/renderer.rs`:
+- [x] New module `vulcan-cli/src/assistant/renderer.rs`:
   - `AssistantRenderer` trait with methods for each event type:
     - `on_text_delta(&mut self, delta: &str)` — stream text to output
     - `on_thinking_delta(&mut self, delta: &str)` — render thinking/reasoning output (collapsible or dimmed)
@@ -4425,7 +4425,7 @@ A REPL-style interactive assistant session, driven by `readline` for input and `
 
 Wire the assistant into Vulcan's CLI command structure.
 
-- [ ] Add `assistant` subcommand to `vulcan-cli/src/cli.rs`:
+- [x] Add `assistant` subcommand to `vulcan-cli/src/cli.rs`:
   ```
   vulcan assistant <prompt>              # one-shot prompt, stream response, exit
   vulcan assistant --chat               # interactive chat session
@@ -4446,22 +4446,23 @@ Wire the assistant into Vulcan's CLI command structure.
 - [ ] Chat mode flags:
   - `--resume` / `--continue` — resume a previous session
   - `--ephemeral` — don't persist session (default if `sessions_dir` is empty)
-- [ ] `vulcan assistant --doctor` checks:
+- [x] Initial `vulcan assistant --doctor` checks:
   - pi binary found and version sufficient
   - API key configured (at least one provider has credentials)
   - Vault cache is current (last scan timestamp)
   - Extension loads without errors
   - Config is valid (provider, model, permissions)
-- [ ] `vulcan assistant --list-sessions`:
+- [x] Initial `vulcan assistant --list-sessions`:
   - Enumerate session files in `.vulcan/assistant/sessions/`
   - Show session ID, title, message count, last active timestamp
 - [ ] Tab completion in chat mode:
   - Complete `vulcan` commands after `/vulcan ` prefix
   - Complete file paths after `@` prefix
   - Complete slash commands (`/model`, `/thinking`, `/compact`, etc.)
-- [ ] Non-interactive mode: if not a TTY, `vulcan assistant` reads prompt from stdin and writes response to stdout (like `pi -p`)
+- [x] Non-interactive mode: if not a TTY, `vulcan assistant` reads prompt from stdin and writes response to stdout (like `pi -p`)
 - [ ] Update `vulcan init` to create the `AI/Sessions/` directory and write the assistant extension if `runtime = "pi"` is set in config
 - [ ] Integration tests for one-shot, chat, doctor, and list-sessions commands
+  - [x] CLI smoke tests for doctor, context inspection, and list-sessions
 
 ### 9.21.8 Permission profiles and safety
 
@@ -4506,10 +4507,10 @@ Define where assistant session state lives and how it relates to vault state.
 Comprehensive testing for the embedded assistant integration.
 
 - [ ] **Unit tests:**
-  - RPC protocol types: parse representative JSON lines from pi's RPC output against the typed structs
-  - RPC client: mock subprocess that produces scripted JSON lines; verify command → response correlation
-  - Context builder: verify AGENTS.md injection, skill enumeration, tool summary generation
-  - Renderer: verify formatted output for streaming events, tool calls, thinking blocks
+  - [x] RPC protocol types: parse representative JSON lines from pi's RPC output against the typed structs
+  - [x] RPC client: mock subprocess that produces scripted JSON lines; verify command → response correlation
+  - [x] Context builder: verify AGENTS.md injection, skill enumeration, tool summary generation
+  - [x] Renderer: verify formatted output for streaming events, tool calls, thinking blocks
   - Permission enforcement: verify tool_call blocking for each profile
 - [ ] **Integration tests (require pi installed in CI):**
   - Spawn pi in RPC mode, send `get_state`, verify response structure
@@ -4539,7 +4540,7 @@ Comprehensive testing for the embedded assistant integration.
 Make the embedded assistant discoverable and usable without reading the source.
 
 - [ ] Update `docs/guide/getting-started.md` with an "Assistant" section covering installation, configuration, and first prompt
-- [ ] New page `docs/guide/assistant.md`:
+- [x] New page `docs/guide/assistant.md`:
   - Prerequisites (pi installation, API key setup)
   - Configuration options in `.vulcan/config.toml`
   - One-shot usage: `vulcan assistant <prompt>`
@@ -4554,11 +4555,11 @@ Make the embedded assistant discoverable and usable without reading the source.
   - Phase 10 (daemon): add a forward-reference note that the daemon can manage pi processes for multi-vault scenarios
   - Phase 13 (WebUI): note that the RPC client and event types from 9.21.2 are reused for WebSocket streaming to the browser
   - Deferred native chat (9.12.8): add a revisit trigger — "if pi RPC latency or process management becomes a bottleneck in the daemon/WebUI context, reassess a native Rust agent loop"
-- [ ] Update `docs/assistant/pi_integration.md` to cover both integration models:
+- [x] Update `docs/assistant/pi_integration.md` to cover both integration models:
   - Model A (9.12): pi is the host, Vulcan is the tool provider
   - Model B (9.21): Vulcan is the host, pi is the agent engine via RPC
   - When to use which
-- [ ] Update `vulcan help assistant` output with a concise usage summary
+- [x] Update `vulcan help assistant` output with a concise usage summary
 
 ### Implementation order
 

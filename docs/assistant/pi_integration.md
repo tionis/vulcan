@@ -1,10 +1,25 @@
-# External Harness Integration Sketch
+# Assistant Runtime Integration Models
 
 Current recommendation for Phase 9.12: use an external agent runtime instead of building an in-process Rust assistant. `pi` is a useful reference implementation, but it is not the architectural center of the design.
 
 This document is specifically about **subprocess-style runtimes** that can preload vault files such as `AGENTS.md`, the configured prompts folder, and `.agents/skills/`. It is not the MCP integration design by itself. Generic MCP clients do not get that same out-of-band bootstrap, so MCP needs its own server-native discovery surface (`resources`, `prompts`, filtered tool exposure, and later HTTP transport) rather than assuming the exact same pattern.
 
 The older native assistant and chat-runtime steering was not discarded; it was moved to [`native_runtime_deferred.md`](./native_runtime_deferred.md) so the runtime-agnostic decision does not erase those ideas.
+
+Vulcan now has two supported integration shapes:
+
+- **Model A: external runtime host.** The runtime hosts the conversation and
+  shells out to Vulcan commands in JSON mode. This is the Phase 9.12 contract
+  described below.
+- **Model B: embedded managed-engine host.** `vulcan assistant` hosts the CLI
+  UX and starts a managed JSONL RPC engine such as `pi --mode rpc`. Vulcan
+  sends vault context, filtered tools, and the active permission profile to the
+  engine. See [`../guide/assistant.md`](../guide/assistant.md).
+
+The MCP server work reinforced the key boundary for both models: Vulcan owns
+tool discovery, permission profiles, and vault mutation semantics. Remote or
+embedded runtimes can orchestrate model turns, but they must not become a
+parallel note-editing authority.
 
 Vulcan remains responsible for:
 

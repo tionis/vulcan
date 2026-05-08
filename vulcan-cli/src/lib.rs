@@ -17038,6 +17038,13 @@ fn static_help_topic(
 fn builtin_help_topics() -> Vec<HelpTopicReport> {
     vec![
         static_help_topic(
+            "assistant",
+            HelpTopicKind::Guide,
+            "Embedded managed-engine assistant host for vault-aware one-shot prompts.",
+            include_str!("../../docs/guide/assistant.md"),
+            &["assistant", "agent", "mcp", "skill", "permissions"],
+        ),
+        static_help_topic(
             "assistant-integration",
             HelpTopicKind::Guide,
             "External runtime contract for AGENTS.md, skill discovery, permissions, and wrappers.",
