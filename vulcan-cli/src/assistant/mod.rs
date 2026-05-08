@@ -384,6 +384,12 @@ pub(crate) struct AssistantSessionSummary {
     path: String,
     modified_unix: Option<u64>,
     bytes: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    message_count: Option<u64>,
 }
 
 fn list_sessions(
@@ -439,11 +445,53 @@ fn session_summary(root: &Path, path: &Path) -> Result<Option<AssistantSessionSu
         .ok()
         .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_secs());
+    let header = read_session_header(path);
     Ok(Some(AssistantSessionSummary {
         path: relative.display().to_string(),
         modified_unix,
         bytes: metadata.len(),
+        session_id: header
+            .as_ref()
+            .and_then(|header| string_field(header, &["session_id", "id"])),
+        title: header
+            .as_ref()
+            .and_then(|header| string_field(header, &["title", "name", "session_name"])),
+        message_count: header
+            .as_ref()
+            .and_then(|header| u64_field(header, &["message_count", "messages_count"])),
     }))
+}
+
+fn read_session_header(path: &Path) -> Option<Value> {
+    let contents = fs::read_to_string(path).ok()?;
+    contents
+        .lines()
+        .take(20)
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find_map(|value| {
+            value
+                .get("session")
+                .filter(|session| session.is_object())
+                .cloned()
+                .or_else(|| value.is_object().then_some(value))
+        })
+}
+
+fn string_field(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_str))
+        .map(ToString::to_string)
+}
+
+fn u64_field(value: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter()
+        .find_map(|key| value.get(*key).and_then(Value::as_u64))
+        .or_else(|| {
+            value
+                .get("messages")
+                .and_then(Value::as_array)
+                .map(|messages| messages.len() as u64)
+        })
 }
 
 fn print_doctor_report(
@@ -501,7 +549,11 @@ fn print_session_report(
                 report.sessions_dir.as_deref().unwrap_or("(ephemeral)")
             );
             for session in &report.sessions {
-                println!("{} ({} bytes)", session.path, session.bytes);
+                let label = session.title.as_deref().unwrap_or(&session.path);
+                let count = session
+                    .message_count
+                    .map_or_else(|| "?".to_string(), |count| count.to_string());
+                println!("{label} [{} messages; {} bytes]", count, session.bytes);
             }
             Ok(())
         }
