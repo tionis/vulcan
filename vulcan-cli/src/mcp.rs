@@ -1632,6 +1632,7 @@ fn validate_mcp_http_security(
             ));
         };
         if let Err(error) = oauth.validate_bearer_token(&token) {
+            eprintln!("MCP OAuth bearer token rejected: {error}");
             return Some(oauth_error_response(
                 oauth,
                 error.to_string(),
@@ -3758,15 +3759,22 @@ fn oauth_error_response(
     message: impl Into<String>,
     error: &str,
 ) -> McpHttpResponse {
+    let message = message.into();
+    let error_description = escape_www_authenticate_value(&message);
     let mut response = mcp_http_json_error_response(401, message, Value::Null);
     response.extra_headers.push((
         "WWW-Authenticate".to_string(),
         format!(
-            "Bearer error=\"{error}\", resource_metadata=\"{}\"",
-            oauth.protected_resource_metadata_url()
+            "Bearer error=\"{error}\", error_description=\"{}\", resource_metadata=\"{}\"",
+            error_description,
+            oauth.protected_resource_metadata_url(),
         ),
     ));
     response
+}
+
+fn escape_www_authenticate_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn normalize_mcp_http_endpoint(endpoint: &str) -> String {
