@@ -6359,7 +6359,7 @@
       },
       {
         "about": "Run an optional embedded assistant engine against this vault",
-        "after_help": "Modes:\n  --doctor         Check managed-engine availability and launch configuration\n  --print-context  Print the vault context that would be sent to the engine\n  --list-sessions  List local assistant session files\n  --chat           Start a REPL-style chat session\n  PROMPT           Run one prompt through the managed RPC engine\n\nNotes:\n  `assistant` is an optional embedded host mode. Vulcan owns vault context, MCP tool exposure,\n  and permission-profile selection; the engine is a JSONL RPC subprocess.\n  The initial runtime is `pi` via `pi --mode rpc --cwd <vault>`.\n  Defaults live under `[assistant]` in `.vulcan/config.toml`.\n  Use `--assistant-permissions <profile>` to bind the assistant to a permission profile.\n  Use `--tool-pack` to expose the same curated tool packs as MCP.\n\nExamples:\n  vulcan assistant --doctor\n  vulcan assistant --print-context --tool-pack notes-read,search,status\n  vulcan assistant --list-sessions\n  vulcan assistant --chat --continue\n  vulcan assistant \"Summarize today's routine\"",
+        "after_help": "Modes:\n  --doctor         Check managed-engine availability and launch configuration\n  --print-context  Print the vault context that would be sent to the engine\n  --list-sessions  List local assistant session files\n  --export-session SESSION\n                   Export a session transcript to Markdown\n  --chat           Start a REPL-style chat session\n  PROMPT           Run one prompt through the managed RPC engine\n\nNotes:\n  `assistant` is an optional embedded host mode. Vulcan owns vault context, MCP tool exposure,\n  and permission-profile selection; the engine is a JSONL RPC subprocess.\n  The initial runtime is `pi` via `pi --mode rpc --cwd <vault>`.\n  Defaults live under `[assistant]` in `.vulcan/config.toml`.\n  Use `--assistant-permissions <profile>` to bind the assistant to a permission profile.\n  Use `--tool-pack` to expose the same curated tool packs as MCP.\n\nExamples:\n  vulcan assistant --doctor\n  vulcan assistant --print-context --tool-pack notes-read,search,status\n  vulcan assistant --list-sessions\n  vulcan assistant --export-session latest\n  vulcan assistant --chat --continue\n  vulcan assistant --chat --resume-session session-id\n  vulcan assistant \"Summarize today's routine\"",
         "name": "assistant",
         "options": [
           {
@@ -6444,6 +6444,17 @@
             ]
           },
           {
+            "help": "Resume a specific assistant session by path, file name, stem, or session id",
+            "id": "resume_session",
+            "long": "resume-session",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "SESSION"
+            ]
+          },
+          {
             "help": "Continue the most recent assistant session without prompting",
             "id": "continue_session",
             "long": "continue",
@@ -6455,6 +6466,17 @@
             "short": null,
             "value_names": [
               "CONTINUE_SESSION"
+            ]
+          },
+          {
+            "help": "Export a session by path, file name, stem, session id, or 'latest'",
+            "id": "export_session",
+            "long": "export-session",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "SESSION"
             ]
           },
           {

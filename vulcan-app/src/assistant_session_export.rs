@@ -131,12 +131,42 @@ fn json_values(contents: &str) -> Result<Vec<Value>, AppError> {
     if let Ok(value) = serde_json::from_str::<Value>(contents) {
         return Ok(vec![value]);
     }
-    contents
+    let lines = contents
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
-        .map(|line| serde_json::from_str::<Value>(line).map_err(AppError::operation))
-        .collect()
+        .collect::<Vec<_>>();
+    let mut values = Vec::new();
+    for (index, line) in lines.iter().enumerate() {
+        match serde_json::from_str::<Value>(line) {
+            Ok(value) => values.push(value),
+            Err(error) if index + 1 == lines.len() => {
+                if !looks_like_complete_json_line(line) {
+                    break;
+                }
+                return Err(AppError::operation(format!(
+                    "invalid assistant session JSONL line {}: {error}",
+                    index + 1
+                )));
+            }
+            Err(error) => {
+                return Err(AppError::operation(format!(
+                    "invalid assistant session JSONL line {}: {error}",
+                    index + 1
+                )));
+            }
+        }
+    }
+    Ok(values)
+}
+
+fn looks_like_complete_json_line(line: &str) -> bool {
+    matches!(
+        line.chars()
+            .rev()
+            .find(|character| !character.is_whitespace()),
+        Some('}' | ']')
+    )
 }
 
 fn collect_metadata(metadata: &mut BTreeMap<String, String>, value: &Value) {
@@ -486,6 +516,34 @@ mod tests {
         assert_eq!(session.messages.len(), 2);
         assert_eq!(session.messages[0].role, MessageRole::User);
         assert_eq!(session.messages[1].content, "A lot");
+    }
+
+    #[test]
+    fn ignores_truncated_final_jsonl_line() {
+        let contents = r#"{"session":{"id":"s1","title":"Interrupted"}}
+{"role":"user","content":"Start"}
+{"type":"message_update","assistant_event":{"type":"text_delta","text":"Partial"}}
+{"type":"message_update","assistant_event":{"type":"text_delta","text":" cut"#;
+        let session = parse_session(contents).expect("partial trailing line should be ignored");
+
+        assert_eq!(
+            session.metadata.get("title").map(String::as_str),
+            Some("Interrupted")
+        );
+        assert_eq!(session.messages.len(), 2);
+        assert_eq!(session.messages[1].content, "Partial");
+    }
+
+    #[test]
+    fn rejects_malformed_middle_jsonl_line() {
+        let contents = r#"{"session":{"id":"s1"}}
+{"role":"user","content":"Start"
+{"role":"assistant","content":"Done"}"#;
+        let error = parse_session(contents).expect_err("middle malformed line should fail");
+
+        assert!(error
+            .message()
+            .contains("invalid assistant session JSONL line 2"));
     }
 
     #[test]

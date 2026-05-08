@@ -10425,10 +10425,14 @@ fn write_mock_pi_binary(path: &Path) {
 	  exit 0
 	fi
 	session_dir=
+	session_file=
 	while [ "$#" -gt 0 ]; do
 	  if [ "$1" = "--session-dir" ]; then
 	    shift
 	    session_dir=$1
+	  elif [ "$1" = "--session" ]; then
+	    shift
+	    session_file=$1
 	  fi
 	  shift || true
 	done
@@ -10444,7 +10448,11 @@ fn write_mock_pi_binary(path: &Path) {
 	        mkdir -p "$session_dir"
 	        printf '%s\n%s\n' '{"session":{"id":"mock-session","title":"Mock Session","created":"2026-05-09T10:00:00Z"}}' '{"role":"assistant","content":"mock answer"}' > "$session_dir/mock-session.jsonl"
 	      fi
-	      printf '{"type":"message_update","assistant_event":{"type":"text_delta","text":"mock answer"}}\n'
+	      if [ -n "$session_file" ]; then
+	        printf '{"type":"message_update","assistant_event":{"type":"text_delta","text":"resumed session"}}\n'
+	      else
+	        printf '{"type":"message_update","assistant_event":{"type":"text_delta","text":"mock answer"}}\n'
+	      fi
 	      printf '{"type":"agent_end","messages":[]}\n'
 	      printf '{"type":"response","id":"%s","command":"prompt","success":true,"data":{"ok":true}}\n' "$id"
       ;;
@@ -10478,6 +10486,55 @@ done
     let mut permissions = fs::metadata(path).expect("mock pi metadata").permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(path, permissions).expect("mock pi should be executable");
+}
+
+#[test]
+fn assistant_export_session_exports_named_session() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vault dir should be created");
+    fs::create_dir_all(vault_root.join("Support/Sessions")).expect("sessions dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[assistant]\nsessions_dir = \"Support/Sessions\"\nsession_exports_dir = \"Support/Exports\"\n",
+    )
+    .expect("config should be written");
+    fs::write(
+        vault_root.join("Support/Sessions/daily.jsonl"),
+        r#"{"session":{"id":"session-daily","title":"Daily Export","created":"2026-05-09T10:00:00Z"}}"#.to_string()
+            + "\n"
+            + r#"{"role":"user","content":"Summarize today"}"#
+            + "\n"
+            + r#"{"type":"message_update","assistant_event":{"type":"text_delta","text":"Done"}}"#,
+    )
+    .expect("session should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "assistant",
+            "--export-session",
+            "session-daily",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["message_count"].as_u64(), Some(2));
+    assert_eq!(
+        json["export_path"].as_str(),
+        Some("Support/Exports/Daily-Export.md")
+    );
+    let exported = fs::read_to_string(vault_root.join("Support/Exports/Daily-Export.md"))
+        .expect("export should be readable");
+    assert!(exported.contains("> [!user]+"));
+    assert!(exported.contains("> [!assistant]+"));
 }
 
 #[test]
@@ -10562,6 +10619,43 @@ fn assistant_one_shot_round_trips_through_mock_engine() {
     let exported = fs::read_to_string(export_path).expect("session export should be readable");
     assert!(exported.contains("> [!assistant]+"));
     assert!(exported.contains("> mock answer"));
+}
+
+#[cfg(unix)]
+#[test]
+fn assistant_resume_session_accepts_explicit_session_id() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    let pi_binary = temp_dir.path().join("pi-mock");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vault dir should be created");
+    fs::create_dir_all(vault_root.join("AI/Sessions")).expect("sessions dir should exist");
+    write_mock_pi_binary(&pi_binary);
+    fs::write(
+        vault_root.join("AI/Sessions/specific.jsonl"),
+        r#"{"session":{"id":"session-specific","title":"Specific Session"}}"#,
+    )
+    .expect("session should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "assistant",
+            "--assistant-pi-binary",
+            pi_binary.to_str().expect("pi path should be utf-8"),
+            "--resume-session",
+            "session-specific",
+            "hello",
+        ])
+        .assert()
+        .success();
+    let stdout =
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be utf-8");
+
+    assert!(stdout.contains("resumed session"));
 }
 
 #[cfg(unix)]
