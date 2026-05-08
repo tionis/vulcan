@@ -9,11 +9,13 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use vulcan_core::{
     assistant_tools_root, default_assistant_tool_reserved_names, evaluate_dataview_js_with_options,
-    list_assistant_tool_manifest_paths, list_assistant_tools, load_assistant_tool,
-    load_assistant_tool_manifest, resolve_permission_profile, validate_json_value_against_schema,
-    AssistantTool, AssistantToolRuntime, AssistantToolSecretSpec, AssistantToolSummary,
-    AssistantToolValidationOptions, DataviewJsEvalOptions, DataviewJsToolDefinition,
-    DataviewJsToolDescriptor, DataviewJsToolRegistry, JsRuntimeSandbox, VaultPaths,
+    list_assistant_skills, list_assistant_tool_manifest_paths, list_assistant_tools,
+    load_assistant_skill, load_assistant_tool, load_assistant_tool_manifest, load_vault_config,
+    resolve_permission_profile, validate_json_value_against_schema, AssistantSkill,
+    AssistantSkillCommandSummary, AssistantSkillSummary, AssistantTool, AssistantToolRuntime,
+    AssistantToolSecretSpec, AssistantToolSummary, AssistantToolValidationOptions,
+    DataviewJsEvalOptions, DataviewJsToolDefinition, DataviewJsToolDescriptor,
+    DataviewJsToolRegistry, JsRuntimeSandbox, VaultPaths,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -256,7 +258,7 @@ pub fn list_custom_tools(
 ) -> Result<Vec<CustomToolDescriptor>, AppError> {
     let tools = list_assistant_tools(paths, &assistant_tool_validation_options(options))
         .map_err(AppError::operation)?;
-    Ok(tools
+    let mut descriptors = tools
         .into_iter()
         .map(|summary| CustomToolDescriptor {
             callable: custom_tool_is_callable(
@@ -267,7 +269,14 @@ pub fn list_custom_tools(
             ),
             summary,
         })
-        .collect())
+        .collect::<Vec<_>>();
+    descriptors.extend(skill_command_tool_descriptors(
+        paths,
+        active_permission_profile,
+        options,
+    )?);
+    descriptors.sort_by(|left, right| left.summary.name.cmp(&right.summary.name));
+    Ok(descriptors)
 }
 
 pub fn show_custom_tool(
@@ -276,8 +285,11 @@ pub fn show_custom_tool(
     name: &str,
     options: &CustomToolRegistryOptions,
 ) -> Result<CustomToolShowReport, AppError> {
-    let tool = load_assistant_tool(paths, name, &assistant_tool_validation_options(options))
-        .map_err(AppError::operation)?;
+    let tool = match load_assistant_tool(paths, name, &assistant_tool_validation_options(options)) {
+        Ok(tool) => tool,
+        Err(tool_error) => skill_command_tool(paths, name, options)
+            .map_err(|skill_error| AppError::operation(format!("{tool_error}; {skill_error}")))?,
+    };
     Ok(CustomToolShowReport {
         callable: custom_tool_is_callable(
             paths,
@@ -351,12 +363,20 @@ fn run_custom_tool_with_context(
     run_options: &CustomToolRunOptions,
 ) -> Result<CustomToolRunReport, AppError> {
     require_trusted_tool_execution(paths, Some(name))?;
-    let tool = load_assistant_tool(
+    let Ok(tool) = load_assistant_tool(
         paths,
         name,
         &assistant_tool_validation_options(registry_options),
-    )
-    .map_err(AppError::operation)?;
+    ) else {
+        return run_skill_command_tool_with_context(
+            paths,
+            context,
+            name,
+            input,
+            registry_options,
+            run_options,
+        );
+    };
     validate_json_value_against_schema(input, &tool.summary.input_schema).map_err(|error| {
         AppError::operation(format!("tool `{name}` input validation failed: {error}"))
     })?;
@@ -421,6 +441,281 @@ fn run_custom_tool_with_context(
         input: input.clone(),
         result,
         text,
+    })
+}
+
+fn skill_command_tool_descriptors(
+    paths: &VaultPaths,
+    active_permission_profile: Option<&str>,
+    options: &CustomToolRegistryOptions,
+) -> Result<Vec<CustomToolDescriptor>, AppError> {
+    let skills = list_assistant_skills(paths).map_err(AppError::operation)?;
+    Ok(skills
+        .into_iter()
+        .flat_map(|skill| {
+            skill
+                .commands
+                .clone()
+                .into_iter()
+                .filter(|command| command.expose)
+                .filter(|command| command_matches_allowed_packs(&command.packs, options))
+                .map(move |command| CustomToolDescriptor {
+                    callable: custom_tool_is_callable(
+                        paths,
+                        active_permission_profile,
+                        &skill_command_tool_name(&skill.name, &command.id),
+                        command.permission_profile.as_deref(),
+                    ),
+                    summary: skill_command_tool_summary(paths, &skill, &command),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect())
+}
+
+fn skill_command_tool(
+    paths: &VaultPaths,
+    name: &str,
+    options: &CustomToolRegistryOptions,
+) -> Result<AssistantTool, AppError> {
+    for skill in list_assistant_skills(paths).map_err(AppError::operation)? {
+        for command in skill.commands.iter().filter(|command| command.expose) {
+            if skill_command_tool_name(&skill.name, &command.id) == name {
+                if !command_matches_allowed_packs(&command.packs, options) {
+                    return Err(AppError::operation(format!(
+                        "skill command tool `{name}` is not in an allowed tool pack"
+                    )));
+                }
+                let loaded =
+                    load_assistant_skill(paths, &skill.name).map_err(AppError::operation)?;
+                return Ok(AssistantTool {
+                    summary: skill_command_tool_summary(paths, &loaded.summary, command),
+                    body: loaded.body,
+                });
+            }
+        }
+    }
+    Err(AppError::operation(format!(
+        "unknown skill command tool `{name}`"
+    )))
+}
+
+fn skill_command_tool_summary(
+    paths: &VaultPaths,
+    skill: &AssistantSkillSummary,
+    command: &AssistantSkillCommandSummary,
+) -> AssistantToolSummary {
+    let script_path = skill_command_script_relative_path(paths, skill, command);
+    AssistantToolSummary {
+        name: skill_command_tool_name(&skill.name, &command.id),
+        title: Some(format!("{}:{}", skill.name, command.id)),
+        description: skill.description.clone().unwrap_or_else(|| {
+            format!(
+                "Run Agent Skill command `{}` from skill `{}`.",
+                command.id, skill.name
+            )
+        }),
+        version: None,
+        runtime: AssistantToolRuntime::Quickjs,
+        entrypoint: command.script.clone(),
+        entrypoint_path: script_path,
+        tags: skill.tags.clone(),
+        sandbox: command.sandbox.unwrap_or(JsRuntimeSandbox::Strict),
+        permission_profile: command.permission_profile.clone(),
+        timeout_ms: None,
+        packs: if command.packs.is_empty() {
+            vec!["custom".to_string()]
+        } else {
+            command.packs.clone()
+        },
+        secrets: Vec::new(),
+        read_only: !matches!(command.sandbox, Some(JsRuntimeSandbox::None)),
+        destructive: false,
+        input_schema: command.input_schema.clone(),
+        output_schema: command.output_schema.clone(),
+        path: skill.path.clone(),
+    }
+}
+
+fn run_skill_command_tool_with_context(
+    paths: &VaultPaths,
+    context: &CustomToolJsRegistryContext,
+    name: &str,
+    input: &Value,
+    registry_options: &CustomToolRegistryOptions,
+    run_options: &CustomToolRunOptions,
+) -> Result<CustomToolRunReport, AppError> {
+    let _ = run_options;
+    let (skill, command) = resolve_skill_command_tool(paths, name, registry_options)?;
+    validate_json_value_against_schema(input, &command.input_schema).map_err(|error| {
+        AppError::operation(format!(
+            "skill command tool `{name}` input validation failed: {error}"
+        ))
+    })?;
+    let effective_permission_profile = effective_tool_permission_profile(
+        paths,
+        context.active_permission_profile.as_deref(),
+        name,
+        command.permission_profile.as_deref(),
+    )?;
+    let runtime_context = context.runtime_scope(name, effective_permission_profile.clone());
+    let script_path = skill_command_script_path(paths, &skill.summary, &command)?;
+    let source = fs::read_to_string(&script_path).map_err(AppError::operation)?;
+    let source = build_skill_command_invocation_source(&skill, &command, input, &source)?;
+    let current_file = script_path
+        .strip_prefix(paths.vault_root())
+        .ok()
+        .map(|path| path.to_string_lossy().replace('\\', "/"));
+    let evaluation = evaluate_dataview_js_with_options(
+        paths,
+        &source,
+        current_file.as_deref(),
+        DataviewJsEvalOptions {
+            sandbox: Some(command.sandbox.unwrap_or(JsRuntimeSandbox::Strict)),
+            permission_profile: effective_permission_profile,
+            tool_registry: Some(build_custom_tool_js_registry_with_context(
+                paths,
+                registry_options,
+                runtime_context,
+            )),
+            ..DataviewJsEvalOptions::default()
+        },
+    )
+    .map_err(AppError::operation)?;
+    let result = evaluation.value.ok_or_else(|| {
+        AppError::operation(format!(
+            "skill command tool `{name}` did not return a JSON-serializable value"
+        ))
+    })?;
+    if let Some(output_schema) = &command.output_schema {
+        validate_json_value_against_schema(&result, output_schema).map_err(|error| {
+            AppError::operation(format!(
+                "skill command tool `{name}` output validation failed: {error}"
+            ))
+        })?;
+    }
+    Ok(CustomToolRunReport {
+        name: name.to_string(),
+        entrypoint_path: skill_command_script_relative_path(paths, &skill.summary, &command),
+        path: skill.summary.path,
+        input: input.clone(),
+        result,
+        text: None,
+    })
+}
+
+fn resolve_skill_command_tool(
+    paths: &VaultPaths,
+    name: &str,
+    options: &CustomToolRegistryOptions,
+) -> Result<(AssistantSkill, AssistantSkillCommandSummary), AppError> {
+    for summary in list_assistant_skills(paths).map_err(AppError::operation)? {
+        for command in summary.commands.iter().filter(|command| command.expose) {
+            if skill_command_tool_name(&summary.name, &command.id) == name {
+                if !command_matches_allowed_packs(&command.packs, options) {
+                    return Err(AppError::operation(format!(
+                        "skill command tool `{name}` is not in an allowed tool pack"
+                    )));
+                }
+                let skill =
+                    load_assistant_skill(paths, &summary.name).map_err(AppError::operation)?;
+                return Ok((skill, command.clone()));
+            }
+        }
+    }
+    Err(AppError::operation(format!("unknown custom tool `{name}`")))
+}
+
+fn build_skill_command_invocation_source(
+    skill: &AssistantSkill,
+    command: &AssistantSkillCommandSummary,
+    input: &Value,
+    source: &str,
+) -> Result<String, AppError> {
+    let input = serde_json::to_string(input).map_err(AppError::operation)?;
+    let context = serde_json::to_string(&json!({
+        "skill": {
+            "name": skill.summary.name,
+            "path": skill.summary.path,
+            "description": skill.summary.description,
+        },
+        "command": command,
+    }))
+    .map_err(AppError::operation)?;
+    Ok(format!(
+        "const __vulcanSkillInput = {input};\n\
+const __vulcanSkillContext = {context};\n\
+{source}\n\
+if (typeof main !== 'function') {{\n\
+  throw new Error('skill command script must export `main(input, ctx)`');\n\
+}}\n\
+main(__vulcanSkillInput, __vulcanSkillContext);\n"
+    ))
+}
+
+fn skill_command_script_path(
+    paths: &VaultPaths,
+    skill: &AssistantSkillSummary,
+    command: &AssistantSkillCommandSummary,
+) -> Result<PathBuf, AppError> {
+    let config = load_vault_config(paths).config;
+    Ok(paths
+        .vault_root()
+        .join(config.assistant.skills_folder)
+        .join(&skill.path)
+        .parent()
+        .ok_or_else(|| AppError::operation("invalid skill path"))?
+        .join(&command.script))
+}
+
+fn skill_command_script_relative_path(
+    paths: &VaultPaths,
+    skill: &AssistantSkillSummary,
+    command: &AssistantSkillCommandSummary,
+) -> String {
+    skill_command_script_path(paths, skill, command)
+        .and_then(|path| {
+            path.strip_prefix(paths.vault_root())
+                .map(|path| path.to_string_lossy().replace('\\', "/"))
+                .map_err(AppError::operation)
+        })
+        .unwrap_or_else(|_| command.script.clone())
+}
+
+fn skill_command_tool_name(skill_name: &str, command_id: &str) -> String {
+    format!(
+        "skill_{}_{}",
+        normalize_tool_name_component(skill_name),
+        normalize_tool_name_component(command_id)
+    )
+}
+
+fn normalize_tool_name_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() {
+                character.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string()
+}
+
+fn command_matches_allowed_packs(packs: &[String], options: &CustomToolRegistryOptions) -> bool {
+    let packs = if packs.is_empty() {
+        vec!["custom".to_string()]
+    } else {
+        packs.to_vec()
+    };
+    packs.iter().all(|pack| {
+        options
+            .allowed_pack_names
+            .iter()
+            .any(|allowed| allowed == pack)
     })
 }
 

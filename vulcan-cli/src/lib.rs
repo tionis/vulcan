@@ -718,6 +718,12 @@ const BUNDLED_SKILL_FILES: &[BundledTextFile] = &[
     },
     BundledTextFile {
         kind: "skill",
+        relative_path: "link-curation/SKILL.md",
+        contents: include_str!("../../docs/assistant/skills/link-curation.md"),
+        target: BundledFileTarget::SkillsFolder,
+    },
+    BundledTextFile {
+        kind: "skill",
         relative_path: "daily-notes/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/daily-notes.md"),
         target: BundledFileTarget::SkillsFolder,
@@ -17060,6 +17066,13 @@ fn builtin_help_topics() -> Vec<HelpTopicReport> {
             "Registry-backed custom tool discovery, invocation, and runtime context.",
             include_str!("../../docs/reference/js-api/tools.md"),
             &["tool", "js.host", "automation-surfaces"],
+        ),
+        static_help_topic(
+            "js.skills",
+            HelpTopicKind::Concept,
+            "Agent Skills-compatible command discovery and invocation from the JS runtime.",
+            include_str!("../../docs/reference/js-api/skills.md"),
+            &["skill", "skill-command", "js.tools", "tools.call"],
         ),
         static_help_topic(
             "js.host",

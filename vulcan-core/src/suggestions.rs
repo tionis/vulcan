@@ -17,6 +17,7 @@ use std::fs;
 use std::ops::Range;
 use std::path::{Component, Path};
 use ulid::Ulid;
+use vulcan_embed::{SqliteVecStore, VectorStore};
 
 #[derive(Debug)]
 pub enum SuggestionError {
@@ -388,6 +389,7 @@ fn compute_and_persist_link_suggestions(
     let existing_edges = load_existing_link_pairs(connection)?;
     let graph_distances = graph_proximity_candidates(connection)?;
     let communities = load_graph_community_map(connection)?;
+    let embedding_scores = load_embedding_similarity_scores(connection);
 
     for source_path in selected_paths {
         let Some(source) = note_by_path.get(&source_path) else {
@@ -401,6 +403,10 @@ fn compute_and_persist_link_suggestions(
             }
             let mention_score = mention_pairs
                 .get(&(source.path.clone(), target.path.clone()))
+                .copied()
+                .unwrap_or(0.0);
+            let embedding_score = embedding_scores
+                .get(&(source.id.clone(), target.id.clone()))
                 .copied()
                 .unwrap_or(0.0);
             let graph_score = graph_distances
@@ -417,7 +423,7 @@ fn compute_and_persist_link_suggestions(
                     _ => 1.0,
                 };
             let signals = LinkSuggestionSignals {
-                embedding_score: 0.0,
+                embedding_score,
                 graph_score,
                 mention_score,
                 tag_score,
@@ -462,6 +468,90 @@ fn compute_and_persist_link_suggestions(
         }
     }
     Ok(())
+}
+
+fn load_embedding_similarity_scores(connection: &Connection) -> HashMap<(String, String), f64> {
+    let Ok(store) = SqliteVecStore::new(connection) else {
+        return HashMap::new();
+    };
+    let Ok(Some(_model)) = store.current_model() else {
+        return HashMap::new();
+    };
+    let Ok(vectors) = store.load_vectors() else {
+        return HashMap::new();
+    };
+    if vectors.len() < 2 {
+        return HashMap::new();
+    }
+
+    let Ok(mut statement) = connection.prepare("SELECT id, document_id FROM chunks") else {
+        return HashMap::new();
+    };
+    let Ok(rows) = statement.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+    }) else {
+        return HashMap::new();
+    };
+    let chunk_documents = rows
+        .filter_map(Result::ok)
+        .collect::<HashMap<String, String>>();
+
+    let mut scores = HashMap::new();
+    for (left_index, left) in vectors.iter().enumerate() {
+        let Some(left_document) = chunk_documents.get(&left.chunk_id) else {
+            continue;
+        };
+        for right in vectors.iter().skip(left_index + 1) {
+            let Some(right_document) = chunk_documents.get(&right.chunk_id) else {
+                continue;
+            };
+            if left_document == right_document {
+                continue;
+            }
+            let similarity = cosine_similarity(&left.embedding, &right.embedding);
+            let weighted = f64::from(similarity.clamp(0.0, 1.0)) * 0.4;
+            if weighted <= 0.0 {
+                continue;
+            }
+            update_embedding_score(&mut scores, left_document, right_document, weighted);
+            update_embedding_score(&mut scores, right_document, left_document, weighted);
+        }
+    }
+    scores
+}
+
+fn update_embedding_score(
+    scores: &mut HashMap<(String, String), f64>,
+    source_document: &str,
+    target_document: &str,
+    score: f64,
+) {
+    scores
+        .entry((source_document.to_string(), target_document.to_string()))
+        .and_modify(|current| {
+            if score > *current {
+                *current = score;
+            }
+        })
+        .or_insert(score);
+}
+
+fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
+    if left.len() != right.len() || left.is_empty() {
+        return 0.0;
+    }
+    let mut dot = 0.0_f32;
+    let mut left_norm = 0.0_f32;
+    let mut right_norm = 0.0_f32;
+    for (left, right) in left.iter().zip(right) {
+        dot += left * right;
+        left_norm += left * left;
+        right_norm += right * right;
+    }
+    if left_norm == 0.0 || right_norm == 0.0 {
+        return 0.0;
+    }
+    dot / (left_norm.sqrt() * right_norm.sqrt())
 }
 
 fn update_link_suggestion_status(
@@ -1576,6 +1666,7 @@ mod tests {
     use std::path::Path;
     use std::time::Instant;
     use tempfile::TempDir;
+    use vulcan_embed::{SqliteVecStore, StoredModel, StoredVector, VectorStore};
 
     #[test]
     fn suggest_mentions_reports_unambiguous_and_ambiguous_candidates() {
@@ -1773,6 +1864,96 @@ mod tests {
         assert!(!first.suggestions.iter().any(|suggestion| {
             suggestion.source_path == "Direct.md" && suggestion.target_path == "Beta.md"
         }));
+    }
+
+    #[test]
+    fn suggest_links_uses_stored_embedding_similarity() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::write(
+            vault_root.join("Source.md"),
+            "# Source\n\nSemantic source.\n",
+        )
+        .expect("write source");
+        fs::write(
+            vault_root.join("Target.md"),
+            "# Target\n\nSemantic target.\n",
+        )
+        .expect("write target");
+        fs::write(vault_root.join("Other.md"), "# Other\n\nUnrelated.\n").expect("write other");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let connection = Connection::open(paths.cache_db()).expect("cache should open");
+        let chunks = connection
+            .prepare(
+                "
+                SELECT documents.path, chunks.id
+                FROM chunks
+                JOIN documents ON documents.id = chunks.document_id
+                ORDER BY documents.path
+                ",
+            )
+            .expect("chunk query")
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .expect("chunk rows")
+            .map(|row| row.expect("chunk row"))
+            .collect::<HashMap<_, _>>();
+        let model = StoredModel {
+            cache_key: "test".to_string(),
+            provider_name: "test".to_string(),
+            model_name: "test".to_string(),
+            dimensions: 2,
+            normalized: true,
+        };
+        let mut store = SqliteVecStore::new(&connection).expect("vector store");
+        store.replace_model(&model).expect("model should store");
+        store
+            .upsert(&[
+                StoredVector {
+                    chunk_id: chunks["Source.md"].clone(),
+                    provider_name: model.provider_name.clone(),
+                    model_name: model.model_name.clone(),
+                    dimensions: model.dimensions,
+                    normalized: model.normalized,
+                    content_hash: "source".to_string(),
+                    embedding: vec![1.0, 0.0],
+                },
+                StoredVector {
+                    chunk_id: chunks["Target.md"].clone(),
+                    provider_name: model.provider_name.clone(),
+                    model_name: model.model_name.clone(),
+                    dimensions: model.dimensions,
+                    normalized: model.normalized,
+                    content_hash: "target".to_string(),
+                    embedding: vec![0.9, 0.1],
+                },
+                StoredVector {
+                    chunk_id: chunks["Other.md"].clone(),
+                    provider_name: model.provider_name.clone(),
+                    model_name: model.model_name.clone(),
+                    dimensions: model.dimensions,
+                    normalized: model.normalized,
+                    content_hash: "other".to_string(),
+                    embedding: vec![0.0, 1.0],
+                },
+            ])
+            .expect("vectors should store");
+
+        let report =
+            suggest_links(&paths, Some("Source.md"), None, 0.0, None).expect("suggestions");
+        let target = report
+            .suggestions
+            .iter()
+            .find(|suggestion| suggestion.target_path == "Target.md")
+            .expect("embedding-only pair should be suggested");
+
+        assert!(target.signals.embedding_score > 0.39);
+        assert!(target.signals.graph_score.abs() < f64::EPSILON);
+        assert!(target.signals.mention_score.abs() < f64::EPSILON);
     }
 
     #[test]

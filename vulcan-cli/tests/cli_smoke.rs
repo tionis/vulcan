@@ -10127,6 +10127,58 @@ fn skill_init_and_run_execute_agent_skill_command() {
     assert_eq!(run_json["skill"].as_str(), Some("math"));
     assert_eq!(run_json["command"].as_str(), Some("echo"));
     assert_eq!(run_json["result"]["input"]["value"].as_i64(), Some(7));
+
+    let describe_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "describe",
+            "--format",
+            "openai-tools",
+        ])
+        .assert()
+        .success();
+    let describe_json = parse_stdout_json(&describe_assert);
+    assert!(describe_json["tools"]
+        .as_array()
+        .expect("tools")
+        .iter()
+        .any(|tool| tool["function"]["name"] == "skill_math_echo"));
+
+    let js_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "run",
+            "-e",
+            r#"({
+                listed: skills.list().map((tool) => tool.name),
+                commands: skills.commands("math").map((tool) => tool.name),
+                called: skills.run("math", "echo", { value: 11 })
+            })"#,
+        ])
+        .assert()
+        .success();
+    let js_json = parse_stdout_json(&js_assert);
+    assert!(js_json["value"]["listed"]
+        .as_array()
+        .expect("listed")
+        .iter()
+        .any(|name| name == "skill_math_echo"));
+    assert_eq!(
+        js_json["value"]["commands"],
+        serde_json::json!(["skill_math_echo"])
+    );
+    assert_eq!(
+        js_json["value"]["called"]["input"]["value"].as_i64(),
+        Some(11)
+    );
 }
 
 #[test]
@@ -17690,6 +17742,212 @@ fn run_incremental_scan(vault_root: &Path) {
         .success();
 }
 
+#[test]
+fn graph_communities_fixture_covers_surfaces_idempotency_permissions_and_incremental_updates() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("graph-communities", &vault_root);
+    run_scan(&vault_root);
+
+    let communities = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "graph",
+            "communities",
+        ])
+        .assert()
+        .success();
+    let community_rows = parse_stdout_json_lines(&communities);
+    assert!(!community_rows.is_empty());
+    assert!(community_rows.iter().any(|row| row["notes"]
+        .as_array()
+        .is_some_and(|notes| notes.iter().any(|note| note == "TopicA/Alpha.md"))));
+    let first_ids = community_rows
+        .iter()
+        .filter_map(|row| {
+            Some((
+                row["id"].as_u64()?,
+                row["notes"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>(),
+            ))
+        })
+        .collect::<Vec<_>>();
+
+    let detail = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "graph",
+            "communities",
+            "--community",
+            &first_ids[0].0.to_string(),
+        ])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json_lines(&detail).len(), 1);
+
+    let orphans = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "graph",
+            "communities",
+            "--orphans",
+        ])
+        .assert()
+        .success();
+    let orphan_rows = parse_stdout_json_lines(&orphans);
+    assert!(orphan_rows
+        .iter()
+        .any(|row| row["document_path"] == "Orphans/Lone.md"));
+
+    let bridges = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "graph",
+            "communities",
+            "--bridges",
+        ])
+        .assert()
+        .success();
+    let _bridge_rows = parse_stdout_json_lines(&bridges);
+
+    let second = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "graph",
+            "communities",
+        ])
+        .assert()
+        .success();
+    let second_ids = parse_stdout_json_lines(&second)
+        .iter()
+        .filter_map(|row| {
+            Some((
+                row["id"].as_u64()?,
+                row["notes"]
+                    .as_array()?
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>(),
+            ))
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(first_ids, second_ids);
+
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[permissions.profiles.visible]
+read = { allow = ["folder:TopicA/**", "folder:Orphans/**"] }
+write = "none"
+refactor = "none"
+git = "deny"
+network = "deny"
+index = "allow"
+config = "read"
+execute = "deny"
+shell = "deny"
+"#,
+    )
+    .expect("config should write");
+    let filtered = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--permissions",
+            "visible",
+            "--output",
+            "json",
+            "graph",
+            "communities",
+        ])
+        .assert()
+        .success();
+    let filtered_rows = parse_stdout_json_lines(&filtered);
+    assert!(filtered_rows
+        .iter()
+        .all(|row| row["notes"]
+            .as_array()
+            .expect("notes")
+            .iter()
+            .all(|note| note
+                .as_str()
+                .is_some_and(|path| !path.starts_with("TopicB/")))));
+
+    fs::write(
+        vault_root.join("TopicA/Newcomer.md"),
+        "---\ntags: [topic-a]\n---\n# Newcomer\n\n[[Alpha]] [[Beta]]\n",
+    )
+    .expect("newcomer should write");
+    run_incremental_scan(&vault_root);
+    let updated = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "graph",
+            "communities",
+        ])
+        .assert()
+        .success();
+    let updated_rows = parse_stdout_json_lines(&updated);
+    assert!(updated_rows.iter().any(|row| row["notes"]
+        .as_array()
+        .is_some_and(|notes| notes.iter().any(|note| note == "TopicA/Newcomer.md"))));
+    assert!(updated_rows.iter().any(|row| row["notes"]
+        .as_array()
+        .is_some_and(|notes| notes.iter().any(|note| note == "TopicB/Delta.md"))));
+}
+
+#[test]
+fn cache_schema_downgrade_is_reported_by_cli_without_mutating_cache() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+    let connection = Connection::open(vault_root.join(".vulcan/cache.db")).expect("cache open");
+    connection
+        .pragma_update(None, "user_version", 9999)
+        .expect("user_version should update");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["--vault", vault_root.to_str().expect("utf-8"), "status"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("newer than application schema"));
+    let version: u32 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("user_version should remain readable");
+    assert_eq!(version, 9999);
+}
+
 fn write_note_crud_sample(vault_root: &Path) {
     fs::create_dir_all(vault_root).expect("vault root should be created");
     fs::write(
@@ -20017,6 +20275,137 @@ Summarize tool documentation.
         result["content"][0]["text"].as_str(),
         Some("summarized Projects/Alpha.md")
     );
+    assert!(session.finish().is_empty());
+}
+
+#[test]
+fn mcp_server_projects_agent_skill_commands_as_custom_tools_and_resources() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::create_dir_all(vault_root.join(".agents/skills/summarize-note/scripts"))
+        .expect("skill dir should exist");
+    fs::write(
+        vault_root.join(".agents/skills/summarize-note/SKILL.md"),
+        r"---
+name: summarize-note
+description: Summarize one note.
+license: UNLICENSED
+compatibility:
+  - vulcan
+metadata:
+  vulcan:
+    commands:
+      - id: summarize
+        script: scripts/summarize.js
+        sandbox: strict
+        packs: [custom]
+        expose: true
+        input_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            note:
+              type: string
+          required:
+            - note
+---
+
+# Summarize Note
+
+Skill command documentation.
+",
+    )
+    .expect("skill file should write");
+    fs::write(
+        vault_root.join(".agents/skills/summarize-note/scripts/summarize.js"),
+        "function main(input, ctx) {\n  return { note: input.note, skill: ctx.skill.name, command: ctx.command.id };\n}\n",
+    )
+    .expect("script should write");
+
+    let config_home = temp_dir.path().join("config");
+    fs::create_dir_all(&config_home).expect("config home should exist");
+    let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
+    let config_home_str = config_home.to_str().expect("utf-8").to_string();
+    trust_and_scan_vault(&config_home_str, &vault_root_str);
+
+    let mut session =
+        start_mcp_session_with_xdg(&vault_root, &config_home_str, &["--tool-pack", "custom"]);
+    let _ = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": { "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": { "name": "test", "version": "0.0.1" } }
+    }));
+
+    let tools = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/list"
+    }));
+    let tools = tools
+        .last()
+        .and_then(|response| response["result"]["tools"].as_array())
+        .expect("tools/list should return tools");
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "skill_summarize_note_summarize"));
+
+    let result = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "skill_summarize_note_summarize",
+            "arguments": { "note": "Projects/Alpha.md" }
+        }
+    }));
+    let result = &result.last().expect("tools/call response")["result"];
+    assert_eq!(result["isError"].as_bool(), Some(false));
+    assert_eq!(
+        result["structuredContent"]["skill"].as_str(),
+        Some("summarize-note")
+    );
+    assert_eq!(
+        result["structuredContent"]["command"].as_str(),
+        Some("summarize")
+    );
+
+    let resources = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "resources/list"
+    }));
+    let resources = resources
+        .last()
+        .and_then(|response| response["result"]["resources"].as_array())
+        .expect("resources/list should return resources");
+    assert!(resources
+        .iter()
+        .any(|resource| resource["uri"] == "vulcan://assistant/skill-commands/index"));
+
+    let index = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "resources/read",
+        "params": { "uri": "vulcan://assistant/skill-commands/index" }
+    }));
+    assert!(index
+        .last()
+        .and_then(|response| response["result"]["contents"][0]["text"].as_str())
+        .is_some_and(|text| text.contains("skill_summarize_note_summarize")));
+
+    let detail = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "resources/read",
+        "params": { "uri": "vulcan://assistant/skill-commands/skill_summarize_note_summarize" }
+    }));
+    assert!(detail
+        .last()
+        .and_then(|response| response["result"]["contents"][0]["text"].as_str())
+        .is_some_and(|text| text.contains("Skill command documentation.")));
+
     assert!(session.finish().is_empty());
 }
 

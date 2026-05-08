@@ -5968,10 +5968,10 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 
 ### 9.25.5 Integration testing
 
-- [ ] Add integration tests with the `graph-communities` fixture vault covering all CLI surfaces
-- [ ] Test permission filtering on a mixed-visibility community (some docs hidden)
-- [ ] Test idempotency: clustering twice on the same graph produces identical community IDs
-- [ ] Test incremental update: adding a new linked note to a community doesn't reshuffle unrelated communities
+- [x] Add integration tests with the `graph-communities` fixture vault covering all CLI surfaces
+- [x] Test permission filtering on a mixed-visibility community (some docs hidden)
+- [x] Test idempotency: clustering twice on the same graph produces identical community IDs
+- [x] Test incremental update: adding a new linked note to a community doesn't reshuffle unrelated communities
 
 ### 9.25.6 Skill and AGENTS.md update
 
@@ -5993,7 +5993,7 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 ### 9.26.1 Suggestion scoring model
 
 - [x] Define a `LinkSuggestion` struct: `source_path`, `target_path`, composite `score` (0.0–1.15, capped at 1.0 for display), `signals` (breakdown of contributing factors), `status` (pending/accepted/rejected), `created_at`, `accepted_at`
-- [ ] Composite score formula: `0.4 × embedding_cosine + 0.3 × graph_proximity_bonus + 0.2 × text_mention_bonus + 0.1 × tag_overlap_bonus`
+- [x] Composite score formula: `0.4 × embedding_cosine + 0.3 × graph_proximity_bonus + 0.2 × text_mention_bonus + 0.1 × tag_overlap_bonus`
   - `embedding_cosine`: raw cosine similarity from `query_related_notes` (typically [0, 1]), multiplied by 0.4
   - `graph_proximity_bonus`: `0.3 / hop_distance` if the notes are within graph reach with no direct link, 0 if directly linked (cap at 0.3 for 1-hop)
   - `text_mention_bonus`: 0.2 if a text mention exists (from `suggest_mentions`), 0 otherwise
@@ -6028,7 +6028,7 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 - [x] Add `suggest_links` guidance to the `graph-exploration` skill in `docs/assistant/skills/graph-exploration.md` (MCP tool exposure remains tracked in 9.26.3)
 - [x] Add example move: "Discover and review a ranked list of suggested connections for an orphan note, then accept the ones that make sense."
 - [x] Update the `graph-exploration` skill’s Recommended Flow to include `suggest links` as a way to find connections when a note feels isolated in the graph.
-- [ ] If a new `link-curation` skill is created, add it to the AGENTS.md template so new vaults ship with it.
+- [x] If a new `link-curation` skill is created, add it to the AGENTS.md template so new vaults ship with it.
 
 ## Phase 9.27: Confidence tagging on graph edges
 
@@ -6072,7 +6072,7 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 - [x] Test that accepted suggestions produce confidence = INFERRED edges
 - [x] Test that graph path traversal includes confidence on each hop
 - [x] Test that MCP `note_info` returns confidence for resolved backlinks once 9.27 data is on the graph
-- [ ] Test schema downgrade safety (older cache version → correct error, not silent corruption)
+- [x] Test schema downgrade safety (older cache version → correct error, not silent corruption)
 
 ### 9.27.6 Skill and AGENTS.md update
 
@@ -6087,11 +6087,11 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Parse `metadata.vulcan.commands` as Vulcan-specific command declarations.
 - [x] Validate command IDs, script paths, input/output schemas, sandbox values, permission-profile references, pack names, and exposure flags
 - [x] Add `vulcan skill list|show|commands|run|validate|init`
-- [ ] Project trusted skill commands into the shared registry used by CLI, `describe`, MCP, and internal JS APIs.
-- [ ] Expose projected skill commands as first-class MCP tools and add MCP resources for skill index, skill content, command metadata, and resource listings.
+- [x] Project trusted skill commands into the shared registry used by CLI, `describe`, MCP, and internal JS APIs.
+- [x] Expose projected skill commands as first-class MCP tools and add MCP resources for skill index, skill content, command metadata, and resource listings.
 - [x] Update `vulcan index init --agent-files --example-tool` and `vulcan agent install --example-tool` to scaffold an Agent Skills-compatible example with a command under `scripts/`.
-- [ ] Keep legacy standalone custom-tool loading, if implemented, as a compatibility path or migrate it into skill-command scaffolding.
-- [ ] Add docs and integrated help topics for `skill`, `skill-command`, `js.skills`, and the skills-vs-commands-vs-plugins decision model.
+- [x] Keep legacy standalone custom-tool loading, if implemented, as a compatibility path or migrate it into skill-command scaffolding.
+- [x] Add docs and integrated help topics for `skill`, `skill-command`, `js.skills`, and the skills-vs-commands-vs-plugins decision model.
 
 ---
 
