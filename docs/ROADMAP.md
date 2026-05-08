@@ -4248,6 +4248,8 @@ Spawn and manage the pi process lifecycle. This is the foundation that everythin
   thinking_level = "medium"  # off, minimal, low, medium, high, xhigh
   permissions = "edit"        # readonly, edit, refactor
   sessions_dir = "AI/Sessions"  # relative to vault root; empty = ephemeral
+  session_export = "on_exit"    # manual, on_exit, always
+  session_exports_dir = "AI/Assistant Sessions"
   ```
 - [x] Add `[assistant]` section to `DEFAULT_CONFIG_TEMPLATE` (commented out, with defaults shown)
 - [x] Add `--assistant-pi-binary`, provider/model/thinking overrides, and `--assistant-permissions` CLI overrides
@@ -4498,7 +4500,8 @@ Define where assistant session state lives and how it relates to vault state.
   - `--continue`: find the most recent session file and pass `--session <path>` to pi
   - `--resume`: currently aliases newest-session resume; an interactive picker is deferred
 - [x] Durable artifacts: if the assistant produces output the user wants to keep, it should write a normal vault note through the `note_create` or `note_append` tool. This is consistent with the 9.12.4 session boundary.
-- [-] Optional: `vulcan assistant --export-session [session-id]` — deferred until there is demand for vault-archived transcripts
+- [x] Optional Markdown export layer: `session_export = "on_exit"` exports managed session files into Obsidian-readable notes with YAML frontmatter and `[!user]` / `[!assistant]` / `[!tool]` callouts
+- [-] Manual `vulcan assistant --export-session [session-id]` CLI — deferred until there is demand for ad hoc transcript export by ID/path
 - [x] Ephemeral mode: `--ephemeral` passes `--no-session` to pi so no session file is created
 - [x] Auto-commit: assistant-initiated mutations route through normal Vulcan commands, so existing command-level auto-commit behavior applies where those commands support it
 - [x] Document that session history is pi-managed, not vault-managed; revisit only if pi's session model proves insufficient

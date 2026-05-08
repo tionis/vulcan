@@ -249,6 +249,8 @@ mod tests {
             extension_entrypoint: None,
             extension_env: Vec::new(),
             resume_session: None,
+            session_export: "manual".to_string(),
+            session_exports_dir: Some(PathBuf::from("AI/Assistant Sessions")),
         }
     }
 

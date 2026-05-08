@@ -125,6 +125,12 @@ Top-level vault configuration not covered by a more specific section.
 - `assistant.runtime` — type: `enum`; target: `shared|local`; default: `pi`; values: `pi`, `none`
   Edit `assistant.runtime` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set assistant.runtime <value>`
+- `assistant.session_export` — type: `enum`; target: `shared|local`; default: `on_exit`; values: `manual`, `on_exit`, `always`
+  Edit `assistant.session_export` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set assistant.session_export <value>`
+- `assistant.session_exports_dir` — type: `string`; target: `shared|local`; default: `AI/Assistant Sessions`
+  Edit `assistant.session_exports_dir` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
+  Example: `vulcan config set assistant.session_exports_dir <value>`
 - `assistant.sessions_dir` — type: `string`; target: `shared|local`; default: `AI/Sessions`
   Edit `assistant.sessions_dir` in `.vulcan/config.toml` or `.vulcan/config.local.toml`.
   Example: `vulcan config set assistant.sessions_dir <value>`

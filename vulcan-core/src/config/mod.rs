@@ -32,6 +32,8 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # thinking_level = "medium"    # off | minimal | low | medium | high | xhigh
 # permissions = "readonly"     # permission profile for assistant tool calls
 # sessions_dir = "AI/Sessions" # relative to vault root; empty = ephemeral
+# session_export = "on_exit"    # manual | on_exit | always
+# session_exports_dir = "AI/Assistant Sessions"
 
 # [chunking]
 # strategy = "heading"
@@ -846,6 +848,10 @@ pub struct AssistantConfig {
     pub permissions: String,
     #[serde(default = "default_assistant_sessions_dir")]
     pub sessions_dir: PathBuf,
+    #[serde(default = "default_assistant_session_export")]
+    pub session_export: String,
+    #[serde(default = "default_assistant_session_exports_dir")]
+    pub session_exports_dir: PathBuf,
 }
 
 impl Default for AssistantConfig {
@@ -861,6 +867,8 @@ impl Default for AssistantConfig {
             thinking_level: default_assistant_thinking_level(),
             permissions: default_assistant_permissions(),
             sessions_dir: default_assistant_sessions_dir(),
+            session_export: default_assistant_session_export(),
+            session_exports_dir: default_assistant_session_exports_dir(),
         }
     }
 }
@@ -895,6 +903,14 @@ fn default_assistant_permissions() -> String {
 
 fn default_assistant_sessions_dir() -> PathBuf {
     PathBuf::from("AI/Sessions")
+}
+
+fn default_assistant_session_export() -> String {
+    "on_exit".to_string()
+}
+
+fn default_assistant_session_exports_dir() -> PathBuf {
+    PathBuf::from("AI/Assistant Sessions")
 }
 
 /// Which HTTP-based search provider to use.
@@ -3074,6 +3090,8 @@ struct PartialAssistantConfig {
     thinking_level: Option<String>,
     permissions: Option<String>,
     sessions_dir: Option<PathBuf>,
+    session_export: Option<String>,
+    session_exports_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -8296,6 +8314,13 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
             config.assistant.sessions_dir =
                 normalize_template_pathbuf(&sessions_dir).unwrap_or_default();
         }
+        if let Some(session_export) = assistant.session_export {
+            config.assistant.session_export = session_export;
+        }
+        if let Some(session_exports_dir) = assistant.session_exports_dir {
+            config.assistant.session_exports_dir =
+                normalize_template_pathbuf(&session_exports_dir).unwrap_or_default();
+        }
     }
 
     if let Some(web) = overrides.web {
@@ -10053,6 +10078,8 @@ model = "gpt-5.2"
 thinking_level = "high"
 permissions = "daily-wiki-agent"
 sessions_dir = "Shared/Sessions"
+session_export = "manual"
+session_exports_dir = "Shared/Session Exports"
 "#,
         )
         .expect("config should be written");
@@ -10080,6 +10107,11 @@ sessions_dir = "Shared/Sessions"
         assert_eq!(
             loaded.config.assistant.sessions_dir,
             PathBuf::from("Shared/Sessions")
+        );
+        assert_eq!(loaded.config.assistant.session_export, "manual");
+        assert_eq!(
+            loaded.config.assistant.session_exports_dir,
+            PathBuf::from("Shared/Session Exports")
         );
     }
 
@@ -12053,6 +12085,8 @@ include_paths = ["Docs/Intro.md"]
         assert!(template.contains("thinking_level = \"medium\""));
         assert!(template.contains("permissions = \"readonly\""));
         assert!(template.contains("sessions_dir = \"AI/Sessions\""));
+        assert!(template.contains("session_export = \"on_exit\""));
+        assert!(template.contains("session_exports_dir = \"AI/Assistant Sessions\""));
     }
 
     #[test]
