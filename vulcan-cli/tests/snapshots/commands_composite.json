@@ -11579,7 +11579,7 @@
       },
       {
         "about": "Start an MCP (Model Context Protocol) server over stdio or Streamable HTTP",
-        "after_help": "Protocols:\n  stdio reads JSON-RPC 2.0 messages from stdin and writes them to stdout.\n  http serves the same curated MCP registry over Streamable HTTP at one endpoint path.\n\nSupported methods:\n  initialize               Negotiate protocol version and report server capabilities\n  tools/list               Return the curated headless MCP tool registry\n  tools/call               Execute one MCP tool and return structuredContent + text fallback\n  prompts/list|get         Discover and render vault prompt files\n  resources/list|read      Read help docs, AGENTS.md, assistant summaries, and skill content\n  resources/templates/list Enumerate parameterized help and skill resource URIs\n  completion/complete      Return prompt-argument and resource-template completions\n\nNotes:\n  Start with `--vault <path>` so all tool calls operate on the correct vault.\n  `--permissions <profile>` filters the exposed tool set before requests are handled.\n  `--transport stdio|http` selects local subprocess stdio or networked Streamable HTTP.\n  `--tool-pack <name>` may be repeated or comma-separated to compose the exposed tool surface.\n  `--tool-pack-mode static|adaptive` keeps packs fixed for the session or exposes bootstrap tools that can expand packs later.\n  `--bind`, `--auth-token`, and `--oauth-*` flags are only used for HTTP transport.\n  Non-loopback HTTP binds require `--auth-token` or OAuth.\n  Local OAuth mode makes Vulcan the ChatGPT-facing issuer for authorization-code + PKCE and bearer-token validation.\n  External OAuth mode validates bearer tokens from an external OIDC provider such as Authentik.\n  Available packs include `notes-read`, `search`, `status`, `custom`, `daily`, `tasks`, `notes-write`, `notes-manage`, `web`, `config`, and `index`.\n  `adaptive` mode auto-exposes MCP tool-pack bootstrap tools and relies on `notifications/tools/list_changed` for clients that refresh tools dynamically.\n  Interactive commands such as browse, edit, open, TUI surfaces, and nested MCP helpers are never exposed.\n  Tool output uses structured JSON reports that match the corresponding CLI `--output json` payloads.\n\nExamples:\n  vulcan mcp --vault ~/notes\n  vulcan mcp --vault ~/notes --permissions readonly\n  vulcan mcp --vault ~/notes --tool-pack notes-read,search,daily,tasks\n  vulcan mcp --vault ~/notes --permissions daily-wiki-agent --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom\n  vulcan mcp --vault ~/notes --tool-pack custom\n  vulcan mcp --vault ~/notes --tool-pack-mode adaptive\n  vulcan mcp --transport http --bind 127.0.0.1:8765\n  vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-local-client-id vulcan-mcp --oauth-local-client-secret \"$VULCAN_MCP_OAUTH_CLIENT_SECRET\" --oauth-local-approval-token \"$VULCAN_MCP_OAUTH_APPROVAL_TOKEN\"\n  vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-issuer https://auth.example.com/application/o/vulcan/ --oauth-audience vulcan-mcp --oauth-allowed-email you@example.com\n  vulcan mcp | jq .",
+        "after_help": "Protocols:\n  stdio reads JSON-RPC 2.0 messages from stdin and writes them to stdout.\n  http serves the same curated MCP registry over Streamable HTTP at one endpoint path.\n\nSupported methods:\n  initialize               Negotiate protocol version and report server capabilities\n  tools/list               Return the curated headless MCP tool registry\n  tools/call               Execute one MCP tool and return structuredContent + text fallback\n  prompts/list|get         Discover and render vault prompt files\n  resources/list|read      Read help docs, AGENTS.md, assistant summaries, and skill content\n  resources/templates/list Enumerate parameterized help and skill resource URIs\n  completion/complete      Return prompt-argument and resource-template completions\n\nNotes:\n  Start with `--vault <path>` so all tool calls operate on the correct vault.\n  `--permissions <profile>` filters the exposed tool set before requests are handled.\n  `--transport stdio|http` selects local subprocess stdio or networked Streamable HTTP.\n  `--tool-pack <name>` may be repeated or comma-separated to compose the exposed tool surface.\n  `--tool-pack-mode static|adaptive` keeps packs fixed for the session or exposes bootstrap tools that can expand packs later.\n  `--bind`, `--auth-token`, and `--oauth-*` flags are only used for HTTP transport.\n  Non-loopback HTTP binds require `--auth-token` or OAuth.\n  Local OAuth mode makes Vulcan the ChatGPT-facing issuer for authorization-code + PKCE, DCR, IndieAuth-backed login, and bearer-token validation.\n  External OAuth mode validates bearer tokens from an external OIDC provider such as Authentik.\n  Available packs include `notes-read`, `search`, `status`, `custom`, `daily`, `tasks`, `notes-write`, `notes-manage`, `web`, `config`, and `index`.\n  `adaptive` mode auto-exposes MCP tool-pack bootstrap tools and relies on `notifications/tools/list_changed` for clients that refresh tools dynamically.\n  Interactive commands such as browse, edit, open, TUI surfaces, and nested MCP helpers are never exposed.\n  Tool output uses structured JSON reports that match the corresponding CLI `--output json` payloads.\n\nExamples:\n  vulcan mcp --vault ~/notes\n  vulcan mcp --vault ~/notes --permissions readonly\n  vulcan mcp --vault ~/notes --tool-pack notes-read,search,daily,tasks\n  vulcan mcp --vault ~/notes --permissions daily-wiki-agent --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom\n  vulcan mcp --vault ~/notes --tool-pack custom\n  vulcan mcp --vault ~/notes --tool-pack-mode adaptive\n  vulcan mcp --transport http --bind 127.0.0.1:8765\n  vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-local-client-secret \"$VULCAN_MCP_OAUTH_CLIENT_SECRET\" --oauth-dcr --oauth-indieauth-authorization-endpoint https://indieauth.example.com/auth --oauth-indieauth-token-endpoint https://indieauth.example.com/token --oauth-local-user https://example.com/=daily-wiki-agent\n  vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-issuer https://auth.example.com/application/o/vulcan/ --oauth-audience vulcan-mcp --oauth-allowed-email you@example.com\n  vulcan mcp | jq .",
         "name": "mcp",
         "options": [
           {
@@ -11785,6 +11785,97 @@
             "short": null,
             "value_names": [
               "OAUTH_LOCAL_EMAIL"
+            ]
+          },
+          {
+            "help": "Enable dynamic client registration for Vulcan's built-in MCP OAuth issuer",
+            "id": "oauth_dcr",
+            "long": "oauth-dcr",
+            "possible_values": [
+              "true",
+              "false"
+            ],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "OAUTH_DCR"
+            ]
+          },
+          {
+            "help": "Allowed redirect host for dynamically registered OAuth clients; repeat for multiple hosts",
+            "id": "oauth_dcr_allowed_redirect_host",
+            "long": "oauth-dcr-allowed-redirect-host",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "OAUTH_DCR_ALLOWED_REDIRECT_HOST"
+            ]
+          },
+          {
+            "help": "Upstream IndieAuth authorization endpoint used for local MCP OAuth login",
+            "id": "oauth_indieauth_authorization_endpoint",
+            "long": "oauth-indieauth-authorization-endpoint",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "OAUTH_INDIEAUTH_AUTHORIZATION_ENDPOINT"
+            ]
+          },
+          {
+            "help": "Upstream IndieAuth token endpoint used for local MCP OAuth login",
+            "id": "oauth_indieauth_token_endpoint",
+            "long": "oauth-indieauth-token-endpoint",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "OAUTH_INDIEAUTH_TOKEN_ENDPOINT"
+            ]
+          },
+          {
+            "help": "Client id Vulcan uses when authenticating users with the upstream IndieAuth server",
+            "id": "oauth_indieauth_client_id",
+            "long": "oauth-indieauth-client-id",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "OAUTH_INDIEAUTH_CLIENT_ID"
+            ]
+          },
+          {
+            "help": "Redirect URI registered with the upstream IndieAuth server; defaults to /oauth/indieauth/callback on --public-url origin",
+            "id": "oauth_indieauth_redirect_uri",
+            "long": "oauth-indieauth-redirect-uri",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "OAUTH_INDIEAUTH_REDIRECT_URI"
+            ]
+          },
+          {
+            "help": "Optional IndieAuth identity URL to pass as the me parameter",
+            "id": "oauth_indieauth_me",
+            "long": "oauth-indieauth-me",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "OAUTH_INDIEAUTH_ME"
+            ]
+          },
+          {
+            "help": "Allowed local OAuth user binding as subject=permission-profile or subject=permission-profile,email; repeat for multiple users",
+            "id": "oauth_local_user",
+            "long": "oauth-local-user",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "OAUTH_LOCAL_USER"
             ]
           }
         ],

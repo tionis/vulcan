@@ -28,6 +28,15 @@ pub struct LocalOAuthIssuerConfig {
     pub approval_token: String,
     pub subject: String,
     pub email: Option<String>,
+    pub users: Vec<LocalOAuthUserConfig>,
+    pub dcr_enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalOAuthUserConfig {
+    pub subject: String,
+    pub email: Option<String>,
+    pub permission_profile: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -51,6 +60,7 @@ pub struct LocalOAuthIssuer {
     approval_token: String,
     subject: String,
     email: Option<String>,
+    users: Vec<LocalOAuthUserConfig>,
     protected_resource_metadata_url: String,
     authorization_server_metadata: Value,
 }
@@ -177,17 +187,16 @@ impl LocalOAuthIssuer {
         }
         if config.client_id.is_empty()
             || config.client_secret.is_empty()
-            || config.approval_token.is_empty()
             || config.subject.is_empty()
         {
             return Err(OAuthError::Config(
-                "local OAuth issuer requires non-empty client id, client secret, approval token, and subject"
+                "local OAuth issuer requires non-empty client id, client secret, and subject"
                     .to_string(),
             ));
         }
         let protected_resource_metadata_url = protected_resource_metadata_url(&config.public_url)?;
         let origin = public_url_origin(&config.public_url)?;
-        let authorization_server_metadata = serde_json::json!({
+        let mut authorization_server_metadata = serde_json::json!({
             "issuer": config.public_url,
             "authorization_endpoint": format!("{origin}/oauth/authorize"),
             "token_endpoint": format!("{origin}/oauth/token"),
@@ -197,6 +206,10 @@ impl LocalOAuthIssuer {
             "code_challenge_methods_supported": ["S256"],
             "scopes_supported": ["openid", "email", "profile"],
         });
+        if config.dcr_enabled {
+            authorization_server_metadata["registration_endpoint"] =
+                Value::String(format!("{origin}/oauth/register"));
+        }
         Ok(Self {
             public_url: config.public_url,
             client_id: config.client_id,
@@ -204,12 +217,16 @@ impl LocalOAuthIssuer {
             approval_token: config.approval_token,
             subject: config.subject,
             email: config.email,
+            users: config.users,
             protected_resource_metadata_url,
             authorization_server_metadata,
         })
     }
 
-    pub fn validate_bearer_token(&self, token: &str) -> Result<(), OAuthError> {
+    pub fn validate_bearer_token(
+        &self,
+        token: &str,
+    ) -> Result<LocalOAuthTokenIdentity, OAuthError> {
         let mut validation = Validation::new(Algorithm::HS256);
         validation.set_issuer(&[self.public_url.as_str()]);
         validation.set_audience(&[self.public_url.as_str()]);
@@ -220,8 +237,12 @@ impl LocalOAuthIssuer {
             &validation,
         )
         .map_err(|error| OAuthError::Token(format!("invalid local OAuth bearer token: {error}")))?;
-        if token.claims.sub == self.subject {
-            Ok(())
+        if self.subject_allowed(&token.claims.sub) {
+            Ok(LocalOAuthTokenIdentity {
+                subject: token.claims.sub,
+                email: token.claims.email,
+                permission_profile: token.claims.permission_profile,
+            })
         } else {
             Err(OAuthError::Token(
                 "local OAuth token subject is not allowed".to_string(),
@@ -230,14 +251,29 @@ impl LocalOAuthIssuer {
     }
 
     pub fn issue_access_token(&self) -> Result<String, OAuthError> {
+        self.issue_access_token_for(&self.subject, self.email.clone(), None)
+    }
+
+    pub fn issue_access_token_for(
+        &self,
+        subject: &str,
+        email: Option<String>,
+        permission_profile: Option<String>,
+    ) -> Result<String, OAuthError> {
+        if !self.subject_allowed(subject) {
+            return Err(OAuthError::Token(
+                "local OAuth token subject is not allowed".to_string(),
+            ));
+        }
         let now = unix_timestamp();
         let claims = LocalOAuthClaims {
             iss: self.public_url.clone(),
-            sub: self.subject.clone(),
+            sub: subject.to_string(),
             aud: vec![self.public_url.clone()],
             exp: now + 3600,
             iat: now,
-            email: self.email.clone(),
+            email,
+            permission_profile,
         };
         encode(
             &Header::new(Algorithm::HS256),
@@ -255,6 +291,35 @@ impl LocalOAuthIssuer {
     #[must_use]
     pub fn verify_approval_token(&self, approval_token: &str) -> bool {
         approval_token == self.approval_token
+    }
+
+    #[must_use]
+    pub fn user_for_subject(&self, subject: &str) -> Option<LocalOAuthUserConfig> {
+        self.users
+            .iter()
+            .find(|user| user.subject == subject)
+            .cloned()
+            .or_else(|| {
+                (subject == self.subject).then(|| LocalOAuthUserConfig {
+                    subject: self.subject.clone(),
+                    email: self.email.clone(),
+                    permission_profile: None,
+                })
+            })
+    }
+
+    #[must_use]
+    pub fn default_user(&self) -> LocalOAuthUserConfig {
+        LocalOAuthUserConfig {
+            subject: self.subject.clone(),
+            email: self.email.clone(),
+            permission_profile: None,
+        }
+    }
+
+    #[must_use]
+    fn subject_allowed(&self, subject: &str) -> bool {
+        subject == self.subject || self.users.iter().any(|user| user.subject == subject)
     }
 
     #[must_use]
@@ -324,6 +389,109 @@ struct LocalOAuthClaims {
     iat: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    permission_profile: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalOAuthTokenIdentity {
+    pub subject: String,
+    pub email: Option<String>,
+    pub permission_profile: Option<String>,
+}
+
+pub fn exchange_indieauth_code(
+    token_endpoint: &str,
+    code: &str,
+    redirect_uri: &str,
+    client_id: &str,
+) -> Result<String, OAuthError> {
+    let response = reqwest::blocking::Client::new()
+        .post(token_endpoint)
+        .header("Accept", "application/json")
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", redirect_uri),
+            ("client_id", client_id),
+        ])
+        .send()
+        .map_err(|error| OAuthError::Network(format!("IndieAuth token request failed: {error}")))?
+        .error_for_status()
+        .map_err(|error| OAuthError::Network(format!("IndieAuth token request failed: {error}")))?;
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let body = response.text().map_err(|error| {
+        OAuthError::Network(format!("IndieAuth token response read failed: {error}"))
+    })?;
+    if content_type.contains("application/json") {
+        let value = serde_json::from_str::<Value>(&body).map_err(|error| {
+            OAuthError::Network(format!("invalid IndieAuth token JSON: {error}"))
+        })?;
+        return value
+            .get("me")
+            .or_else(|| value.get("sub"))
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| {
+                OAuthError::Token("IndieAuth token response did not include me or sub".to_string())
+            });
+    }
+    parse_form_body(&body)
+        .remove("me")
+        .or_else(|| parse_form_body(&body).remove("sub"))
+        .ok_or_else(|| {
+            OAuthError::Token("IndieAuth token response did not include me or sub".to_string())
+        })
+}
+
+fn parse_form_body(body: &str) -> std::collections::BTreeMap<String, String> {
+    body.split('&')
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| {
+            let (key, value) = part.split_once('=').unwrap_or((part, ""));
+            Some((percent_decode_form(key)?, percent_decode_form(value)?))
+        })
+        .collect()
+}
+
+fn percent_decode_form(value: &str) -> Option<String> {
+    let mut output = Vec::with_capacity(value.len());
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    while index < bytes.len() {
+        match bytes[index] {
+            b'+' => {
+                output.push(b' ');
+                index += 1;
+            }
+            b'%' if index + 2 < bytes.len() => {
+                let high = hex_value(bytes[index + 1])?;
+                let low = hex_value(bytes[index + 2])?;
+                output.push(high * 16 + low);
+                index += 3;
+            }
+            b'%' => return None,
+            byte => {
+                output.push(byte);
+                index += 1;
+            }
+        }
+    }
+    String::from_utf8(output).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 fn discover_oidc_metadata(issuer: &str) -> Result<(OidcDiscoveryDocument, Value), OAuthError> {
@@ -477,15 +645,48 @@ mod tests {
             approval_token: "approve".to_string(),
             subject: "eric".to_string(),
             email: Some("eric@example.test".to_string()),
+            users: Vec::new(),
+            dcr_enabled: false,
         })
         .unwrap();
         assert!(issuer.verify_client("vulcan-mcp", "secret"));
         assert!(issuer.verify_approval_token("approve"));
         let token = issuer.issue_access_token().unwrap();
-        issuer.validate_bearer_token(&token).unwrap();
+        let identity = issuer.validate_bearer_token(&token).unwrap();
+        assert_eq!(identity.subject, "eric");
         assert_eq!(
             issuer.authorization_server_metadata()["issuer"],
             issuer.public_url()
+        );
+    }
+
+    #[test]
+    fn local_oauth_issuer_embeds_bound_permission_profile() {
+        let issuer = LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://wiki.example.test/mcp".to_string(),
+            client_id: "vulcan-mcp".to_string(),
+            client_secret: "secret".to_string(),
+            approval_token: String::new(),
+            subject: "fallback".to_string(),
+            email: None,
+            users: vec![LocalOAuthUserConfig {
+                subject: "https://tionis.dev/".to_string(),
+                email: Some("eric@example.test".to_string()),
+                permission_profile: Some("daily-wiki-agent".to_string()),
+            }],
+            dcr_enabled: true,
+        })
+        .unwrap();
+        assert!(issuer.authorization_server_metadata()["registration_endpoint"].is_string());
+        let user = issuer.user_for_subject("https://tionis.dev/").unwrap();
+        let token = issuer
+            .issue_access_token_for(&user.subject, user.email, user.permission_profile)
+            .unwrap();
+        let identity = issuer.validate_bearer_token(&token).unwrap();
+        assert_eq!(identity.subject, "https://tionis.dev/");
+        assert_eq!(
+            identity.permission_profile.as_deref(),
+            Some("daily-wiki-agent")
         );
     }
 }

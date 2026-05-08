@@ -1243,7 +1243,7 @@ Notes:
   `--tool-pack-mode static|adaptive` keeps packs fixed for the session or exposes bootstrap tools that can expand packs later.
   `--bind`, `--auth-token`, and `--oauth-*` flags are only used for HTTP transport.
   Non-loopback HTTP binds require `--auth-token` or OAuth.
-  Local OAuth mode makes Vulcan the ChatGPT-facing issuer for authorization-code + PKCE and bearer-token validation.
+  Local OAuth mode makes Vulcan the ChatGPT-facing issuer for authorization-code + PKCE, DCR, IndieAuth-backed login, and bearer-token validation.
   External OAuth mode validates bearer tokens from an external OIDC provider such as Authentik.
   Available packs include `notes-read`, `search`, `status`, `custom`, `daily`, `tasks`, `notes-write`, `notes-manage`, `web`, `config`, and `index`.
   `adaptive` mode auto-exposes MCP tool-pack bootstrap tools and relies on `notifications/tools/list_changed` for clients that refresh tools dynamically.
@@ -1258,7 +1258,7 @@ Examples:
   vulcan mcp --vault ~/notes --tool-pack custom
   vulcan mcp --vault ~/notes --tool-pack-mode adaptive
   vulcan mcp --transport http --bind 127.0.0.1:8765
-  vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-local-client-id vulcan-mcp --oauth-local-client-secret \"$VULCAN_MCP_OAUTH_CLIENT_SECRET\" --oauth-local-approval-token \"$VULCAN_MCP_OAUTH_APPROVAL_TOKEN\"
+  vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-local-client-secret \"$VULCAN_MCP_OAUTH_CLIENT_SECRET\" --oauth-dcr --oauth-indieauth-authorization-endpoint https://indieauth.example.com/auth --oauth-indieauth-token-endpoint https://indieauth.example.com/token --oauth-local-user https://example.com/=daily-wiki-agent
   vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-issuer https://auth.example.com/application/o/vulcan/ --oauth-audience vulcan-mcp --oauth-allowed-email you@example.com
   vulcan mcp | jq .";
 
@@ -4480,6 +4480,7 @@ pub struct TemplateRenderArgs {
 }
 
 #[derive(Debug, Clone, PartialEq, Subcommand)]
+#[allow(clippy::large_enum_variant)]
 pub enum Command {
     #[command(about = "Initialize, scan, rebuild, repair, watch, and serve index state")]
     Index {
@@ -5498,6 +5499,46 @@ Examples:
             help = "Optional email claim used by Vulcan's built-in MCP OAuth issuer"
         )]
         oauth_local_email: Option<String>,
+        #[arg(
+            long,
+            help = "Enable dynamic client registration for Vulcan's built-in MCP OAuth issuer"
+        )]
+        oauth_dcr: bool,
+        #[arg(
+            long,
+            help = "Allowed redirect host for dynamically registered OAuth clients; repeat for multiple hosts"
+        )]
+        oauth_dcr_allowed_redirect_host: Vec<String>,
+        #[arg(
+            long,
+            help = "Upstream IndieAuth authorization endpoint used for local MCP OAuth login"
+        )]
+        oauth_indieauth_authorization_endpoint: Option<String>,
+        #[arg(
+            long,
+            help = "Upstream IndieAuth token endpoint used for local MCP OAuth login"
+        )]
+        oauth_indieauth_token_endpoint: Option<String>,
+        #[arg(
+            long,
+            help = "Client id Vulcan uses when authenticating users with the upstream IndieAuth server"
+        )]
+        oauth_indieauth_client_id: Option<String>,
+        #[arg(
+            long,
+            help = "Redirect URI registered with the upstream IndieAuth server; defaults to /oauth/indieauth/callback on --public-url origin"
+        )]
+        oauth_indieauth_redirect_uri: Option<String>,
+        #[arg(
+            long,
+            help = "Optional IndieAuth identity URL to pass as the me parameter"
+        )]
+        oauth_indieauth_me: Option<String>,
+        #[arg(
+            long,
+            help = "Allowed local OAuth user binding as subject=permission-profile or subject=permission-profile,email; repeat for multiple users"
+        )]
+        oauth_local_user: Vec<String>,
     },
 }
 
