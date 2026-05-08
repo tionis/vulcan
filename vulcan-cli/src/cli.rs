@@ -1241,8 +1241,9 @@ Notes:
   `--transport stdio|http` selects local subprocess stdio or networked Streamable HTTP.
   `--tool-pack <name>` may be repeated or comma-separated to compose the exposed tool surface.
   `--tool-pack-mode static|adaptive` keeps packs fixed for the session or exposes bootstrap tools that can expand packs later.
-  `--bind` and `--auth-token` are only used for HTTP transport.
-  Non-loopback HTTP binds require `--auth-token`.
+  `--bind`, `--auth-token`, and `--oauth-*` flags are only used for HTTP transport.
+  Non-loopback HTTP binds require `--auth-token` or OAuth.
+  OAuth mode validates bearer tokens from an external OIDC provider such as Authentik; Vulcan does not issue tokens.
   Available packs include `notes-read`, `search`, `status`, `custom`, `daily`, `tasks`, `notes-write`, `notes-manage`, `web`, `config`, and `index`.
   `adaptive` mode auto-exposes MCP tool-pack bootstrap tools and relies on `notifications/tools/list_changed` for clients that refresh tools dynamically.
   Interactive commands such as browse, edit, open, TUI surfaces, and nested MCP helpers are never exposed.
@@ -1256,6 +1257,7 @@ Examples:
   vulcan mcp --vault ~/notes --tool-pack custom
   vulcan mcp --vault ~/notes --tool-pack-mode adaptive
   vulcan mcp --transport http --bind 127.0.0.1:8765
+  vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-issuer https://auth.example.com/application/o/vulcan/ --oauth-audience vulcan-mcp --oauth-allowed-email you@example.com
   vulcan mcp | jq .";
 
 const REFACTOR_COMMAND_AFTER_HELP: &str = "\
@@ -5433,6 +5435,36 @@ Examples:
             help = "Optional bearer/shared token required for HTTP transport requests"
         )]
         auth_token: Option<String>,
+        #[arg(
+            long,
+            help = "Public HTTPS URL for this MCP endpoint, used in OAuth protected-resource metadata"
+        )]
+        public_url: Option<String>,
+        #[arg(
+            long,
+            help = "OIDC issuer URL for HTTP OAuth bearer-token validation, e.g. an Authentik provider issuer"
+        )]
+        oauth_issuer: Option<String>,
+        #[arg(
+            long,
+            help = "Expected OAuth access-token audience; repeat for multiple accepted audiences"
+        )]
+        oauth_audience: Vec<String>,
+        #[arg(
+            long,
+            help = "Override JWKS URL; defaults to issuer OpenID configuration discovery"
+        )]
+        oauth_jwks_url: Option<String>,
+        #[arg(
+            long,
+            help = "Allowed OAuth subject claim; repeat to allow multiple users"
+        )]
+        oauth_allowed_sub: Vec<String>,
+        #[arg(
+            long,
+            help = "Allowed OAuth email claim; repeat to allow multiple users"
+        )]
+        oauth_allowed_email: Vec<String>,
     },
 }
 

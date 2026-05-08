@@ -40,9 +40,9 @@ use vulcan_core::{
     query_graph_communities_with_filter, query_notes_with_filter, read_vault_agents_file,
     reject_link_suggestion, render_assistant_prompt, resolve_permission_profile,
     scan_vault_with_progress, search_vault_with_filter, suggest_links, ConfigPermissionMode,
-    LinkSuggestionStatus, NoteQuery, PermissionGuard, PermissionMode, PermissionProfile,
-    PluginEvent, ProfilePermissionGuard, QueryAst, QueryReport, ScanMode, ScanSummary, SearchQuery,
-    SearchSort, VaultPaths,
+    LinkSuggestionStatus, NoteQuery, OAuthResourceServer, OAuthResourceServerConfig,
+    PermissionGuard, PermissionMode, PermissionProfile, PluginEvent, ProfilePermissionGuard,
+    QueryAst, QueryReport, ScanMode, ScanSummary, SearchQuery, SearchSort, VaultPaths,
 };
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -57,6 +57,12 @@ pub(crate) struct McpHttpOptions {
     pub bind: String,
     pub endpoint: String,
     pub auth_token: Option<String>,
+    pub public_url: Option<String>,
+    pub oauth_issuer: Option<String>,
+    pub oauth_audience: Vec<String>,
+    pub oauth_jwks_url: Option<String>,
+    pub oauth_allowed_sub: Vec<String>,
+    pub oauth_allowed_email: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -708,6 +714,7 @@ struct McpHttpServerContext {
     tool_pack_mode_arg: McpToolPackModeArg,
     endpoint: String,
     auth_token: Option<String>,
+    oauth: Option<Arc<OAuthResourceServer>>,
     bind_addr: SocketAddr,
     sessions: Arc<Mutex<BTreeMap<String, Arc<McpHttpSession>>>>,
 }
@@ -1269,7 +1276,11 @@ fn run_mcp_http_server(
     tool_pack_mode_arg: McpToolPackModeArg,
     options: &McpHttpOptions,
 ) -> Result<(), CliError> {
-    let bind_addr = parse_mcp_http_bind_addr(&options.bind, options.auth_token.is_some())?;
+    let oauth = build_mcp_oauth_validator(options)?;
+    let bind_addr = parse_mcp_http_bind_addr(
+        &options.bind,
+        options.auth_token.is_some() || oauth.is_some(),
+    )?;
     let endpoint = normalize_mcp_http_endpoint(&options.endpoint);
     let listener = TcpListener::bind(bind_addr).map_err(CliError::operation)?;
     listener
@@ -1284,6 +1295,7 @@ fn run_mcp_http_server(
         tool_pack_mode_arg,
         endpoint,
         auth_token: options.auth_token.clone(),
+        oauth,
         bind_addr: addr,
         sessions: Arc::new(Mutex::new(BTreeMap::new())),
     };
@@ -1322,6 +1334,11 @@ fn handle_mcp_http_connection(
             return Ok(());
         }
     };
+
+    if let Some(response) = handle_mcp_oauth_metadata(context, &request) {
+        write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+        return Ok(());
+    }
 
     if request.path != context.endpoint {
         let response = mcp_http_json_error_response(404, "Not Found", Value::Null);
@@ -1606,6 +1623,22 @@ fn validate_mcp_http_security(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
 ) -> Option<McpHttpResponse> {
+    if let Some(oauth) = context.oauth.as_deref() {
+        let Some(token) = bearer_token(&request.headers) else {
+            return Some(oauth_error_response(
+                oauth,
+                "missing OAuth bearer token",
+                "invalid_token",
+            ));
+        };
+        if let Err(error) = oauth.validate_bearer_token(&token) {
+            return Some(oauth_error_response(
+                oauth,
+                error.to_string(),
+                "invalid_token",
+            ));
+        }
+    }
     if let Some(expected_token) = context.auth_token.as_deref() {
         let actual_token = bearer_or_shared_token(&request.headers);
         if actual_token.as_deref() != Some(expected_token) {
@@ -3637,6 +3670,106 @@ fn parse_mcp_http_bind_addr(bind: &str, allow_remote: bool) -> Result<SocketAddr
     Ok(addr)
 }
 
+fn build_mcp_oauth_validator(
+    options: &McpHttpOptions,
+) -> Result<Option<Arc<OAuthResourceServer>>, CliError> {
+    let Some(issuer) = options.oauth_issuer.as_deref() else {
+        if options.public_url.is_some()
+            || !options.oauth_audience.is_empty()
+            || options.oauth_jwks_url.is_some()
+            || !options.oauth_allowed_sub.is_empty()
+            || !options.oauth_allowed_email.is_empty()
+        {
+            return Err(CliError::operation(
+                "--oauth-issuer is required when using MCP OAuth options",
+            ));
+        }
+        return Ok(None);
+    };
+    if options.auth_token.is_some() {
+        return Err(CliError::operation(
+            "--auth-token and --oauth-issuer are mutually exclusive for direct MCP HTTP auth",
+        ));
+    }
+    let public_url = options
+        .public_url
+        .as_deref()
+        .ok_or_else(|| CliError::operation("--public-url is required when using --oauth-issuer"))?;
+    if !public_url.starts_with("https://") {
+        return Err(CliError::operation(
+            "--public-url must be an HTTPS URL for MCP OAuth",
+        ));
+    }
+    if options.oauth_audience.is_empty() {
+        return Err(CliError::operation(
+            "--oauth-audience is required when using --oauth-issuer",
+        ));
+    }
+    if options.oauth_allowed_sub.is_empty() && options.oauth_allowed_email.is_empty() {
+        return Err(CliError::operation(
+            "at least one --oauth-allowed-sub or --oauth-allowed-email is required",
+        ));
+    }
+
+    OAuthResourceServer::from_config(OAuthResourceServerConfig {
+        issuer: issuer.to_string(),
+        audiences: options.oauth_audience.clone(),
+        jwks_url: options.oauth_jwks_url.clone(),
+        allowed_subs: options.oauth_allowed_sub.clone(),
+        allowed_emails: options.oauth_allowed_email.clone(),
+        public_url: public_url.to_string(),
+    })
+    .map(Arc::new)
+    .map(Some)
+    .map_err(CliError::operation)
+}
+
+fn handle_mcp_oauth_metadata(
+    context: &McpHttpServerContext,
+    request: &McpHttpRequest,
+) -> Option<McpHttpResponse> {
+    let oauth = context.oauth.as_deref()?;
+    if request.method != "GET" {
+        return None;
+    }
+    if !is_protected_resource_metadata_path(&request.path, &context.endpoint) {
+        return None;
+    }
+    let body = serde_json::json!({
+        "resource": oauth.public_url(),
+        "authorization_servers": [oauth.issuer()],
+        "bearer_methods_supported": ["header"],
+        "scopes_supported": ["mcp"],
+    });
+    Some(McpHttpResponse {
+        status: 200,
+        content_type: Some("application/json"),
+        body: serde_json::to_vec(&body).expect("json should serialize"),
+        extra_headers: Vec::new(),
+    })
+}
+
+fn is_protected_resource_metadata_path(path: &str, endpoint: &str) -> bool {
+    path == "/.well-known/oauth-protected-resource"
+        || path == format!("/.well-known/oauth-protected-resource{endpoint}")
+}
+
+fn oauth_error_response(
+    oauth: &OAuthResourceServer,
+    message: impl Into<String>,
+    error: &str,
+) -> McpHttpResponse {
+    let mut response = mcp_http_json_error_response(401, message, Value::Null);
+    response.extra_headers.push((
+        "WWW-Authenticate".to_string(),
+        format!(
+            "Bearer error=\"{error}\", resource_metadata=\"{}\"",
+            oauth.protected_resource_metadata_url()
+        ),
+    ));
+    response
+}
+
 fn normalize_mcp_http_endpoint(endpoint: &str) -> String {
     if endpoint.is_empty() || endpoint == "/" {
         "/mcp".to_string()
@@ -3661,12 +3794,19 @@ fn validate_mcp_protocol_version(request: &McpHttpRequest) -> Option<McpHttpResp
 }
 
 fn bearer_or_shared_token(headers: &BTreeMap<String, String>) -> Option<String> {
+    if let Some(token) = bearer_token(headers) {
+        return Some(token);
+    }
+    headers.get("x-vulcan-token").cloned()
+}
+
+fn bearer_token(headers: &BTreeMap<String, String>) -> Option<String> {
     if let Some(value) = headers.get("authorization") {
         if let Some(token) = value.strip_prefix("Bearer ") {
             return Some(token.to_string());
         }
     }
-    headers.get("x-vulcan-token").cloned()
+    None
 }
 
 fn origin_allowed(origin: &str, bind_addr: SocketAddr) -> bool {
@@ -5309,4 +5449,76 @@ fn config_set_output_schema() -> Value {
 
 fn index_scan_output_schema() -> Value {
     generic_report_output_schema()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn oauth_options() -> McpHttpOptions {
+        McpHttpOptions {
+            bind: "127.0.0.1:8765".to_string(),
+            endpoint: "/mcp".to_string(),
+            auth_token: None,
+            public_url: Some("https://wiki.example.test/mcp".to_string()),
+            oauth_issuer: Some("https://auth.example.test/application/o/vulcan/".to_string()),
+            oauth_audience: vec!["vulcan-mcp".to_string()],
+            oauth_jwks_url: Some(
+                "https://auth.example.test/application/o/vulcan/jwks/".to_string(),
+            ),
+            oauth_allowed_sub: vec!["user-id".to_string()],
+            oauth_allowed_email: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn protected_resource_metadata_path_accepts_root_and_endpoint_forms() {
+        assert!(is_protected_resource_metadata_path(
+            "/.well-known/oauth-protected-resource",
+            "/mcp"
+        ));
+        assert!(is_protected_resource_metadata_path(
+            "/.well-known/oauth-protected-resource/mcp",
+            "/mcp"
+        ));
+        assert!(!is_protected_resource_metadata_path(
+            "/.well-known/oauth-authorization-server",
+            "/mcp"
+        ));
+    }
+
+    #[test]
+    fn oauth_options_reject_shared_token_and_plain_http_public_url() {
+        let mut with_shared_token = oauth_options();
+        with_shared_token.auth_token = Some("secret".to_string());
+        assert!(build_mcp_oauth_validator(&with_shared_token)
+            .unwrap_err()
+            .to_string()
+            .contains("mutually exclusive"));
+
+        let mut plain_http = oauth_options();
+        plain_http.public_url = Some("http://wiki.example.test/mcp".to_string());
+        assert!(build_mcp_oauth_validator(&plain_http)
+            .unwrap_err()
+            .to_string()
+            .contains("HTTPS"));
+    }
+
+    #[test]
+    fn oauth_options_require_audience_and_allowed_principal() {
+        let mut missing_audience = oauth_options();
+        missing_audience.oauth_audience.clear();
+        assert!(build_mcp_oauth_validator(&missing_audience)
+            .unwrap_err()
+            .to_string()
+            .contains("--oauth-audience"));
+
+        let mut missing_principal = oauth_options();
+        missing_principal.oauth_allowed_sub.clear();
+        missing_principal.oauth_allowed_email.clear();
+        assert!(build_mcp_oauth_validator(&missing_principal)
+            .unwrap_err()
+            .to_string()
+            .contains("--oauth-allowed-sub"));
+    }
 }

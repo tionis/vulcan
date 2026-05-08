@@ -26,6 +26,7 @@ pub mod kanban;
 pub mod maintenance;
 pub mod move_rewrite;
 pub mod note;
+pub mod oauth;
 pub mod parser;
 pub mod paths;
 pub mod periodic;
@@ -158,6 +159,7 @@ pub use note::{
     NoteOutlineSection, NoteOutlineSelection, NoteReadOptions, NoteReadSelection, NoteSelectedLine,
     NoteSelectionError,
 };
+pub use oauth::{OAuthError, OAuthResourceServer, OAuthResourceServerConfig};
 pub use parser::{
     parse_document, ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind,
     ParsedDocument, RawBlockRef, RawDataviewBlock, RawHeading, RawInlineExpression, RawInlineField,
