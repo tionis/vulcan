@@ -31,7 +31,6 @@ use std::thread;
 use std::time::Duration;
 use ulid::Ulid;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
-use vulcan_core::exchange_indieauth_code;
 use vulcan_core::properties::load_note_index;
 use vulcan_core::LocalOAuthUserConfig;
 use vulcan_core::{
@@ -47,6 +46,7 @@ use vulcan_core::{
     ProfilePermissionGuard, QueryAst, QueryReport, ScanMode, ScanSummary, SearchQuery, SearchSort,
     VaultPaths,
 };
+use vulcan_core::{discover_indieauth_endpoints, exchange_indieauth_code};
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_INLINE_TEXT_LIMIT: usize = 4_096;
@@ -3785,7 +3785,8 @@ fn build_mcp_oauth_validator(options: &McpHttpOptions) -> Result<Option<McpOAuth
         || options.oauth_local_approval_token.is_some()
         || options.oauth_dcr
         || options.oauth_indieauth_authorization_endpoint.is_some()
-        || options.oauth_indieauth_token_endpoint.is_some();
+        || options.oauth_indieauth_token_endpoint.is_some()
+        || options.oauth_indieauth_me.is_some();
     if local_requested {
         if options.oauth_issuer.is_some() || options.auth_token.is_some() {
             return Err(CliError::operation(
@@ -3808,7 +3809,10 @@ fn build_mcp_oauth_validator(options: &McpHttpOptions) -> Result<Option<McpOAuth
                 )
             })?;
         let approval_token = options.oauth_local_approval_token.as_deref().unwrap_or("");
-        if approval_token.is_empty() && options.oauth_indieauth_authorization_endpoint.is_none() {
+        if approval_token.is_empty()
+            && options.oauth_indieauth_authorization_endpoint.is_none()
+            && options.oauth_indieauth_me.is_none()
+        {
             return Err(CliError::operation(
                 "--oauth-local-approval-token is required unless IndieAuth is configured",
             ));
@@ -4417,19 +4421,43 @@ fn save_oauth_registered_clients(context: &McpHttpServerContext) -> Result<(), C
 fn build_indieauth_config(
     options: &McpHttpOptions,
 ) -> Result<Option<LocalOAuthIndieAuthConfig>, CliError> {
-    let Some(authorization_endpoint) = options.oauth_indieauth_authorization_endpoint.clone()
-    else {
-        if options.oauth_indieauth_token_endpoint.is_some() {
-            return Err(CliError::operation(
-                "--oauth-indieauth-authorization-endpoint is required with IndieAuth options",
-            ));
-        }
+    if options.oauth_indieauth_authorization_endpoint.is_none()
+        && options.oauth_indieauth_token_endpoint.is_none()
+        && options.oauth_indieauth_me.is_none()
+    {
         return Ok(None);
+    }
+    let discovered = match (
+        options.oauth_indieauth_authorization_endpoint.as_ref(),
+        options.oauth_indieauth_token_endpoint.as_ref(),
+        options.oauth_indieauth_me.as_ref(),
+    ) {
+        (Some(_), Some(_), _) => None,
+        (_, _, Some(me)) => Some(discover_indieauth_endpoints(me).map_err(CliError::operation)?),
+        _ => {
+            return Err(CliError::operation(
+                "--oauth-indieauth-me is required unless both IndieAuth endpoints are provided",
+            ))
+        }
     };
+    let authorization_endpoint = options
+        .oauth_indieauth_authorization_endpoint
+        .clone()
+        .or_else(|| {
+            discovered
+                .as_ref()
+                .map(|endpoints| endpoints.authorization_endpoint.clone())
+        })
+        .ok_or_else(|| CliError::operation("IndieAuth authorization endpoint is required"))?;
     let token_endpoint = options
         .oauth_indieauth_token_endpoint
         .clone()
-        .ok_or_else(|| CliError::operation("--oauth-indieauth-token-endpoint is required"))?;
+        .or_else(|| {
+            discovered
+                .as_ref()
+                .map(|endpoints| endpoints.token_endpoint.clone())
+        })
+        .ok_or_else(|| CliError::operation("IndieAuth token endpoint is required"))?;
     let public_url = options
         .public_url
         .as_deref()

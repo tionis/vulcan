@@ -3,6 +3,7 @@ use jsonwebtoken::{
     decode, decode_header, encode, jwk::JwkSet, Algorithm, DecodingKey, EncodingKey, Header,
     Validation,
 };
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -400,6 +401,70 @@ pub struct LocalOAuthTokenIdentity {
     pub permission_profile: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndieAuthEndpoints {
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+}
+
+pub fn discover_indieauth_endpoints(me: &str) -> Result<IndieAuthEndpoints, OAuthError> {
+    let response = reqwest::blocking::Client::new()
+        .get(me)
+        .header("Accept", "text/html, application/xhtml+xml, */*")
+        .send()
+        .map_err(|error| OAuthError::Network(format!("IndieAuth profile fetch failed: {error}")))?
+        .error_for_status()
+        .map_err(|error| OAuthError::Network(format!("IndieAuth profile fetch failed: {error}")))?;
+    let final_url = response.url().clone();
+    let headers = response.headers().clone();
+    let content_type = headers
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let body = response.text().map_err(|error| {
+        OAuthError::Network(format!("IndieAuth profile response read failed: {error}"))
+    })?;
+    let base_url = final_url.as_str();
+    if let Some(metadata_url) = discover_link_header_rel(&headers, "indieauth-metadata")
+        .and_then(|url| resolve_url(base_url, &url))
+        .or_else(|| {
+            content_type
+                .contains("html")
+                .then(|| discover_html_link_rel(&body, "indieauth-metadata"))
+                .flatten()
+                .and_then(|url| resolve_url(base_url, &url))
+        })
+    {
+        return fetch_indieauth_metadata(&metadata_url);
+    }
+    let authorization_endpoint = discover_link_header_rel(&headers, "authorization_endpoint")
+        .or_else(|| {
+            content_type
+                .contains("html")
+                .then(|| discover_html_link_rel(&body, "authorization_endpoint"))
+                .flatten()
+        })
+        .and_then(|url| resolve_url(base_url, &url));
+    let token_endpoint = discover_link_header_rel(&headers, "token_endpoint")
+        .or_else(|| {
+            content_type
+                .contains("html")
+                .then(|| discover_html_link_rel(&body, "token_endpoint"))
+                .flatten()
+        })
+        .and_then(|url| resolve_url(base_url, &url));
+    match (authorization_endpoint, token_endpoint) {
+        (Some(authorization_endpoint), Some(token_endpoint)) => Ok(IndieAuthEndpoints {
+            authorization_endpoint,
+            token_endpoint,
+        }),
+        _ => Err(OAuthError::Network(
+            "IndieAuth discovery did not find authorization and token endpoints".to_string(),
+        )),
+    }
+}
+
 pub fn exchange_indieauth_code(
     token_endpoint: &str,
     code: &str,
@@ -447,6 +512,89 @@ pub fn exchange_indieauth_code(
         .ok_or_else(|| {
             OAuthError::Token("IndieAuth token response did not include me or sub".to_string())
         })
+}
+
+#[derive(Debug, Deserialize)]
+struct IndieAuthMetadata {
+    authorization_endpoint: String,
+    token_endpoint: String,
+}
+
+fn fetch_indieauth_metadata(metadata_url: &str) -> Result<IndieAuthEndpoints, OAuthError> {
+    let metadata = reqwest::blocking::get(metadata_url)
+        .map_err(|error| OAuthError::Network(format!("IndieAuth metadata fetch failed: {error}")))?
+        .error_for_status()
+        .map_err(|error| OAuthError::Network(format!("IndieAuth metadata fetch failed: {error}")))?
+        .json::<IndieAuthMetadata>()
+        .map_err(|error| {
+            OAuthError::Network(format!("invalid IndieAuth metadata JSON: {error}"))
+        })?;
+    Ok(IndieAuthEndpoints {
+        authorization_endpoint: metadata.authorization_endpoint,
+        token_endpoint: metadata.token_endpoint,
+    })
+}
+
+fn discover_link_header_rel(
+    headers: &reqwest::header::HeaderMap,
+    target_rel: &str,
+) -> Option<String> {
+    headers
+        .get_all(reqwest::header::LINK)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .find_map(|value| discover_link_header_value_rel(value, target_rel))
+}
+
+fn discover_link_header_value_rel(value: &str, target_rel: &str) -> Option<String> {
+    value.split(',').find_map(|part| {
+        let part = part.trim();
+        let (url_part, params) = part.split_once('>')?;
+        let url = url_part.trim().strip_prefix('<')?.trim();
+        params
+            .split(';')
+            .filter_map(|param| param.trim().split_once('='))
+            .any(|(name, value)| {
+                name.eq_ignore_ascii_case("rel")
+                    && value
+                        .trim_matches('"')
+                        .split_whitespace()
+                        .any(|rel| rel == target_rel)
+            })
+            .then(|| url.to_string())
+    })
+}
+
+fn discover_html_link_rel(html: &str, target_rel: &str) -> Option<String> {
+    let link_re = Regex::new(r"(?is)<link\b[^>]*>").expect("link regex should compile");
+    let result = link_re.find_iter(html).find_map(|link| {
+        let tag = link.as_str();
+        let rel = html_attribute(tag, "rel")?;
+        rel.split_whitespace()
+            .any(|candidate| candidate == target_rel)
+            .then(|| html_attribute(tag, "href"))
+            .flatten()
+    });
+    result
+}
+
+fn html_attribute(tag: &str, name: &str) -> Option<String> {
+    let pattern = format!(r#"(?is)\b{name}\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))"#);
+    let re = Regex::new(&pattern).expect("attribute regex should compile");
+    let captures = re.captures(tag)?;
+    captures
+        .get(2)
+        .or_else(|| captures.get(3))
+        .or_else(|| captures.get(4))
+        .map(|value| value.as_str().to_string())
+}
+
+fn resolve_url(base_url: &str, url: &str) -> Option<String> {
+    reqwest::Url::parse(base_url)
+        .ok()?
+        .join(url)
+        .ok()
+        .map(Into::into)
 }
 
 fn parse_form_body(body: &str) -> std::collections::BTreeMap<String, String> {
@@ -687,6 +835,40 @@ mod tests {
         assert_eq!(
             identity.permission_profile.as_deref(),
             Some("daily-wiki-agent")
+        );
+    }
+
+    #[test]
+    fn indieauth_link_header_discovery_prefers_requested_rel() {
+        let value = r#"<https://example.test/metadata>; rel="indieauth-metadata", <https://example.test/auth>; rel="authorization_endpoint""#;
+        assert_eq!(
+            discover_link_header_value_rel(value, "indieauth-metadata").as_deref(),
+            Some("https://example.test/metadata")
+        );
+        assert_eq!(
+            discover_link_header_value_rel(value, "authorization_endpoint").as_deref(),
+            Some("https://example.test/auth")
+        );
+    }
+
+    #[test]
+    fn indieauth_html_link_discovery_accepts_attribute_ordering() {
+        let html = r#"
+            <link href="/metadata" rel="indieauth-metadata">
+            <link rel="authorization_endpoint" href="/auth">
+            <link rel="token_endpoint" href="/token">
+        "#;
+        assert_eq!(
+            discover_html_link_rel(html, "indieauth-metadata").as_deref(),
+            Some("/metadata")
+        );
+        assert_eq!(
+            discover_html_link_rel(html, "authorization_endpoint").as_deref(),
+            Some("/auth")
+        );
+        assert_eq!(
+            resolve_url("https://eric.wendland.dev/profile", "/auth").as_deref(),
+            Some("https://eric.wendland.dev/auth")
         );
     }
 }

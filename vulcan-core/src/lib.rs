@@ -160,8 +160,9 @@ pub use note::{
     NoteSelectionError,
 };
 pub use oauth::{
-    exchange_indieauth_code, LocalOAuthIssuer, LocalOAuthIssuerConfig, LocalOAuthTokenIdentity,
-    LocalOAuthUserConfig, OAuthError, OAuthResourceServer, OAuthResourceServerConfig,
+    discover_indieauth_endpoints, exchange_indieauth_code, IndieAuthEndpoints, LocalOAuthIssuer,
+    LocalOAuthIssuerConfig, LocalOAuthTokenIdentity, LocalOAuthUserConfig, OAuthError,
+    OAuthResourceServer, OAuthResourceServerConfig,
 };
 pub use parser::{
     parse_document, ChunkText, LinkKind, OriginContext, ParseDiagnostic, ParseDiagnosticKind,
