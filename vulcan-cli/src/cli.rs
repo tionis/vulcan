@@ -1226,6 +1226,7 @@ Modes:
   --doctor         Check managed-engine availability and launch configuration
   --print-context  Print the vault context that would be sent to the engine
   --list-sessions  List local assistant session files
+  --chat           Start a REPL-style chat session
   PROMPT           Run one prompt through the managed RPC engine
 
 Notes:
@@ -1240,6 +1241,7 @@ Examples:
   vulcan assistant --doctor
   vulcan assistant --print-context --tool-pack notes-read,search,status
   vulcan assistant --list-sessions
+  vulcan assistant --chat --continue
   vulcan assistant \"Summarize today's routine\"";
 
 const MCP_COMMAND_AFTER_HELP: &str = "\
@@ -3286,6 +3288,24 @@ pub enum McpToolPackArg {
     Index,
 }
 
+impl McpToolPackArg {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::NotesRead => "notes-read",
+            Self::Search => "search",
+            Self::Status => "status",
+            Self::Custom => "custom",
+            Self::Daily => "daily",
+            Self::Tasks => "tasks",
+            Self::NotesWrite => "notes-write",
+            Self::NotesManage => "notes-manage",
+            Self::Web => "web",
+            Self::Config => "config",
+            Self::Index => "index",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
 pub enum McpToolPackModeArg {
     #[default]
@@ -4797,6 +4817,15 @@ pub enum Command {
             help = "List assistant session files from the configured sessions directory"
         )]
         list_sessions: bool,
+        #[arg(long, help = "Start a REPL-style assistant chat session")]
+        chat: bool,
+        #[arg(long, help = "Resume the most recent assistant session")]
+        resume: bool,
+        #[arg(
+            long = "continue",
+            help = "Continue the most recent assistant session without prompting"
+        )]
+        continue_session: bool,
         #[arg(long, help = "Override [assistant].provider for this run")]
         provider: Option<String>,
         #[arg(long, help = "Override [assistant].model for this run")]
@@ -4807,7 +4836,10 @@ pub enum Command {
         show_thinking: bool,
         #[arg(long, help = "Override [assistant].pi_binary for this run")]
         assistant_pi_binary: Option<String>,
-        #[arg(long, help = "Permission profile used to filter assistant tool access")]
+        #[arg(
+            long = "assistant-permissions",
+            help = "Permission profile used to filter assistant tool access"
+        )]
         assistant_permissions: Option<String>,
         #[arg(long, help = "Do not persist assistant session state")]
         ephemeral: bool,

@@ -13,9 +13,12 @@ use vulcan_core::{
     VaultPaths,
 };
 
+pub(crate) mod chat;
 pub(crate) mod engine;
+pub(crate) mod extension;
 pub(crate) mod renderer;
 pub(crate) mod rpc;
+pub(crate) mod rpc_events;
 
 #[derive(Debug, Clone)]
 #[allow(clippy::struct_excessive_bools)]
@@ -24,6 +27,9 @@ pub(crate) struct AssistantCommandOptions {
     pub(crate) doctor: bool,
     pub(crate) print_context: bool,
     pub(crate) list_sessions: bool,
+    pub(crate) chat: bool,
+    pub(crate) resume: bool,
+    pub(crate) continue_session: bool,
     pub(crate) provider: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) thinking: Option<String>,
@@ -46,6 +52,9 @@ pub(crate) struct AssistantHostOptions {
     pub(crate) permission_profile: Option<String>,
     pub(crate) sessions_dir: Option<PathBuf>,
     pub(crate) no_tools: bool,
+    pub(crate) extension_entrypoint: Option<PathBuf>,
+    pub(crate) extension_env: Vec<(String, String)>,
+    pub(crate) resume_session: Option<PathBuf>,
 }
 
 impl AssistantHostOptions {
@@ -64,6 +73,9 @@ impl AssistantHostOptions {
                 Some(config.sessions_dir)
             },
             no_tools: false,
+            extension_entrypoint: None,
+            extension_env: Vec::new(),
+            resume_session: None,
         }
     }
 
@@ -214,9 +226,27 @@ pub(crate) fn handle_assistant_command(
         return print_session_report(output, &report);
     }
 
+    if args.resume || args.continue_session {
+        host.resume_session = newest_session_path(paths, &host)?;
+    }
+
+    prepare_extension(paths, &mut host, &args.tool_pack)?;
+    if args.chat {
+        let context = build_host_context(paths, &host, &args.tool_pack, args.tool_pack_mode)?;
+        return chat::run_chat(
+            paths,
+            &host,
+            &context,
+            &args.prompt,
+            args.show_thinking,
+            output,
+        );
+    }
+
     let prompt = prompt_text(&args.prompt)?;
     let context = build_host_context(paths, &host, &args.tool_pack, args.tool_pack_mode)?;
     let mut process = engine::spawn_pi_rpc(&host, paths.vault_root())?;
+    process.ensure_running()?;
     let mut configure = Map::new();
     configure.insert(
         "context".to_string(),
@@ -225,10 +255,9 @@ pub(crate) fn handle_assistant_command(
     let configure_result = process.client.command("configure", configure)?;
     ensure_success(&configure_result.response)?;
 
-    let mut data = Map::new();
-    data.insert("prompt".to_string(), Value::String(prompt));
-    let result = process.client.command("prompt", data)?;
+    let result = process.client.prompt(&prompt)?;
     ensure_success(&result.response)?;
+    process.shutdown()?;
 
     if output == OutputFormat::Json {
         let report = render_events_to_report(&result.events, args.show_thinking, true)?;
@@ -272,6 +301,20 @@ fn apply_cli_overrides(host: &mut AssistantHostOptions, args: &AssistantCommandO
     if args.no_tools {
         host.no_tools = true;
     }
+}
+
+fn prepare_extension(
+    paths: &VaultPaths,
+    host: &mut AssistantHostOptions,
+    tool_packs: &[McpToolPackArg],
+) -> Result<(), CliError> {
+    if host.no_tools || host.runtime != "pi" {
+        return Ok(());
+    }
+    let install = extension::materialize_extension(paths.vault_root())?;
+    host.extension_entrypoint = Some(install.entrypoint);
+    host.extension_env = extension::extension_environment(host, paths.vault_root(), tool_packs);
+    Ok(())
 }
 
 fn prompt_text(args: &[String]) -> Result<String, CliError> {
@@ -369,6 +412,20 @@ fn list_sessions(
         sessions_dir: Some(sessions_dir.display().to_string()),
         sessions,
     })
+}
+
+fn newest_session_path(
+    paths: &VaultPaths,
+    host: &AssistantHostOptions,
+) -> Result<Option<PathBuf>, CliError> {
+    let sessions = list_sessions(paths, host)?;
+    let Some(sessions_dir) = sessions.sessions_dir else {
+        return Ok(None);
+    };
+    Ok(sessions
+        .sessions
+        .first()
+        .map(|session| PathBuf::from(&sessions_dir).join(&session.path)))
 }
 
 fn session_summary(root: &Path, path: &Path) -> Result<Option<AssistantSessionSummary>, CliError> {

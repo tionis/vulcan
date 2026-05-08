@@ -10405,6 +10405,61 @@ fn help_assistant_topic_is_available() {
         .is_some_and(|body| body.contains("vulcan assistant --doctor")));
 }
 
+#[cfg(unix)]
+fn write_mock_pi_binary(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::write(
+        path,
+        r#"#!/bin/sh
+if [ "$1" = "--version" ]; then
+  printf 'pi-mock 1.0.0\n'
+  exit 0
+fi
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
+  cmd=$(printf '%s' "$line" | sed -n 's/.*"command":"\([^"]*\)".*/\1/p')
+  case "$cmd" in
+    configure)
+      printf '{"type":"response","id":"%s","command":"configure","success":true,"data":{}}\n' "$id"
+      ;;
+    prompt)
+      printf '{"type":"message_update","assistant_event":{"type":"text_delta","text":"mock answer"}}\n'
+      printf '{"type":"agent_end","messages":[]}\n'
+      printf '{"type":"response","id":"%s","command":"prompt","success":true,"data":{"ok":true}}\n' "$id"
+      ;;
+    get_state)
+      printf '{"type":"response","id":"%s","command":"get_state","success":true,"data":{"model":"mock","message_count":1}}\n' "$id"
+      ;;
+    get_session_stats)
+      printf '{"type":"response","id":"%s","command":"get_session_stats","success":true,"data":{"turns":1}}\n' "$id"
+      ;;
+    compact)
+      printf '{"type":"response","id":"%s","command":"compact","success":true,"data":{"summary":"short","tokens_before":10}}\n' "$id"
+      ;;
+    new_session)
+      printf '{"type":"response","id":"%s","command":"new_session","success":true,"data":{"cancelled":false}}\n' "$id"
+      ;;
+    cycle_model|cycle_thinking_level|steer|follow_up|set_model|get_available_models)
+      printf '{"type":"response","id":"%s","command":"%s","success":true,"data":{}}\n' "$id" "$cmd"
+      ;;
+    abort)
+      printf '{"type":"response","id":"%s","command":"abort","success":true,"data":{}}\n' "$id"
+      exit 0
+      ;;
+    *)
+      printf '{"type":"response","id":"%s","command":"%s","success":false,"error":"unknown command"}\n' "$id" "$cmd"
+      ;;
+  esac
+done
+"#,
+    )
+    .expect("mock pi should write");
+    let mut permissions = fs::metadata(path).expect("mock pi metadata").permissions();
+    permissions.set_mode(0o755);
+    fs::set_permissions(path, permissions).expect("mock pi should be executable");
+}
+
 #[test]
 fn assistant_doctor_reports_managed_engine_configuration() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -10450,6 +10505,68 @@ fn assistant_doctor_reports_managed_engine_configuration() {
         .any(|arg| arg == "--mode")
         && args.iter().any(|arg| arg == "gpt-5.2")
         && args.iter().any(|arg| arg == "high")));
+}
+
+#[cfg(unix)]
+#[test]
+fn assistant_one_shot_round_trips_through_mock_engine() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    let pi_binary = temp_dir.path().join("pi-mock");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vault dir should be created");
+    write_mock_pi_binary(&pi_binary);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "assistant",
+            "--assistant-pi-binary",
+            pi_binary.to_str().expect("pi path should be utf-8"),
+            "hello",
+        ])
+        .assert()
+        .success();
+    let stdout =
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be utf-8");
+
+    assert!(stdout.contains("mock answer"));
+    assert!(vault_root
+        .join(".vulcan/assistant/extension/vulcan-tools/index.ts")
+        .exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn assistant_chat_reads_piped_prompts_with_mock_engine() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    let pi_binary = temp_dir.path().join("pi-mock");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vault dir should be created");
+    write_mock_pi_binary(&pi_binary);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "assistant",
+            "--chat",
+            "--assistant-pi-binary",
+            pi_binary.to_str().expect("pi path should be utf-8"),
+        ])
+        .write_stdin("hello\n/quit\n")
+        .assert()
+        .success();
+    let stdout =
+        String::from_utf8(assert.get_output().stdout.clone()).expect("stdout should be utf-8");
+
+    assert!(stdout.contains("mock answer"));
 }
 
 #[test]

@@ -1,3 +1,4 @@
+use crate::assistant::rpc_events::PiEvent;
 use crate::CliError;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -35,6 +36,51 @@ pub(crate) struct RpcResponse {
     pub(crate) data: Value,
     #[serde(default)]
     pub(crate) error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub(crate) struct PiSessionState {
+    #[serde(default)]
+    pub(crate) model: Option<String>,
+    #[serde(default)]
+    pub(crate) thinking_level: Option<String>,
+    #[serde(default)]
+    pub(crate) is_streaming: bool,
+    #[serde(default)]
+    pub(crate) is_compacting: bool,
+    #[serde(default)]
+    pub(crate) session_id: Option<String>,
+    #[serde(default)]
+    pub(crate) session_name: Option<String>,
+    #[serde(default)]
+    pub(crate) message_count: Option<u64>,
+    #[serde(default)]
+    pub(crate) pending_message_count: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub(crate) struct CompactionResult {
+    #[serde(default)]
+    pub(crate) summary: Option<String>,
+    #[serde(default)]
+    pub(crate) first_kept_entry_id: Option<String>,
+    #[serde(default)]
+    pub(crate) tokens_before: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
+pub(crate) struct PiModel {
+    pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) name: Option<String>,
+    #[serde(default)]
+    pub(crate) provider: Option<String>,
+    #[serde(default)]
+    pub(crate) reasoning: Option<bool>,
+    #[serde(default)]
+    pub(crate) context_window: Option<u64>,
+    #[serde(default)]
+    pub(crate) max_tokens: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
@@ -103,6 +149,102 @@ impl<R: BufRead, W: Write> ManagedRpcClient<R, W> {
         self.read_until_response(&id)
     }
 
+    pub(crate) fn prompt(&mut self, message: &str) -> Result<RpcCommandResult, CliError> {
+        self.command(
+            "prompt",
+            map_with("prompt", Value::String(message.to_string())),
+        )
+    }
+
+    pub(crate) fn steer(&mut self, message: &str) -> Result<RpcCommandResult, CliError> {
+        self.command(
+            "steer",
+            map_with("message", Value::String(message.to_string())),
+        )
+    }
+
+    pub(crate) fn follow_up(&mut self, message: &str) -> Result<RpcCommandResult, CliError> {
+        self.command(
+            "follow_up",
+            map_with("message", Value::String(message.to_string())),
+        )
+    }
+
+    pub(crate) fn abort(&mut self) -> Result<RpcCommandResult, CliError> {
+        self.command("abort", Map::new())
+    }
+
+    pub(crate) fn get_state(&mut self) -> Result<PiSessionState, CliError> {
+        let result = self.command("get_state", Map::new())?;
+        if !result.response.success {
+            return Err(CliError::operation(
+                result
+                    .response
+                    .error
+                    .unwrap_or_else(|| "get_state failed".to_string()),
+            ));
+        }
+        serde_json::from_value(result.response.data).map_err(CliError::operation)
+    }
+
+    pub(crate) fn set_model(
+        &mut self,
+        provider: &str,
+        model_id: &str,
+    ) -> Result<RpcCommandResult, CliError> {
+        self.command(
+            "set_model",
+            map_from_pairs([
+                ("provider", Value::String(provider.to_string())),
+                ("model_id", Value::String(model_id.to_string())),
+            ]),
+        )
+    }
+
+    pub(crate) fn get_available_models(&mut self) -> Result<Vec<PiModel>, CliError> {
+        let result = self.command("get_available_models", Map::new())?;
+        if !result.response.success {
+            return Err(CliError::operation(
+                result
+                    .response
+                    .error
+                    .unwrap_or_else(|| "get_available_models failed".to_string()),
+            ));
+        }
+        serde_json::from_value(result.response.data).map_err(CliError::operation)
+    }
+
+    pub(crate) fn compact(&mut self) -> Result<CompactionResult, CliError> {
+        let result = self.command("compact", Map::new())?;
+        if !result.response.success {
+            return Err(CliError::operation(
+                result
+                    .response
+                    .error
+                    .unwrap_or_else(|| "compact failed".to_string()),
+            ));
+        }
+        serde_json::from_value(result.response.data).map_err(CliError::operation)
+    }
+
+    pub(crate) fn new_session(&mut self) -> Result<bool, CliError> {
+        let result = self.command("new_session", Map::new())?;
+        if !result.response.success {
+            return Err(CliError::operation(
+                result
+                    .response
+                    .error
+                    .unwrap_or_else(|| "new_session failed".to_string()),
+            ));
+        }
+        Ok(result
+            .response
+            .data
+            .get("cancelled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false))
+    }
+
     pub(crate) fn send(&mut self, command: &RpcCommand) -> Result<(), CliError> {
         serde_json::to_writer(&mut self.writer, command).map_err(CliError::operation)?;
         self.writer.write_all(b"\n").map_err(CliError::operation)?;
@@ -126,6 +268,19 @@ impl<R: BufRead, W: Write> ManagedRpcClient<R, W> {
             }
         }
     }
+}
+
+fn map_with(key: &str, value: Value) -> Map<String, Value> {
+    let mut map = Map::new();
+    map.insert(key.to_string(), value);
+    map
+}
+
+fn map_from_pairs<const N: usize>(pairs: [(&str, Value); N]) -> Map<String, Value> {
+    pairs
+        .into_iter()
+        .map(|(key, value)| (key.to_string(), value))
+        .collect()
 }
 
 pub(crate) fn read_message(reader: &mut impl BufRead) -> Result<Option<RpcMessage>, CliError> {
@@ -158,6 +313,11 @@ fn parse_message(value: Value) -> RpcMessage {
         return serde_json::from_value::<RpcResponse>(value)
             .map(RpcMessage::Response)
             .unwrap_or(RpcMessage::Unknown(fallback));
+    }
+    if let Ok(pi_event) = serde_json::from_value::<PiEvent>(value.clone()) {
+        if let Some(event) = pi_event.assistant_event() {
+            return RpcMessage::Event(event);
+        }
     }
     if let Some(event) = value.get("event").cloned() {
         let fallback = event.clone();
@@ -221,5 +381,50 @@ mod tests {
             }]
         );
         assert!(result.response.success);
+    }
+
+    #[test]
+    fn parses_pi_message_update_events() {
+        let raw = br#"{"type":"message_update","assistant_event":{"type":"text_delta","text":"hi"}}
+"#;
+        let mut reader = BufReader::new(Cursor::new(raw));
+
+        assert_eq!(
+            read_message(&mut reader).expect("message should parse"),
+            Some(RpcMessage::Event(AssistantEvent::TextDelta {
+                text: "hi".to_string()
+            }))
+        );
+    }
+
+    #[test]
+    fn typed_payloads_parse_state_model_and_compaction() {
+        let state: PiSessionState = serde_json::from_value(serde_json::json!({
+            "model": "gpt",
+            "thinking_level": "high",
+            "is_streaming": false,
+            "message_count": 3
+        }))
+        .expect("state should parse");
+        assert_eq!(state.model.as_deref(), Some("gpt"));
+        assert_eq!(state.message_count, Some(3));
+
+        let compaction: CompactionResult = serde_json::from_value(serde_json::json!({
+            "summary": "short",
+            "tokens_before": 100
+        }))
+        .expect("compaction should parse");
+        assert_eq!(compaction.summary.as_deref(), Some("short"));
+        assert_eq!(compaction.tokens_before, Some(100));
+
+        let model: PiModel = serde_json::from_value(serde_json::json!({
+            "id": "gpt",
+            "provider": "openai",
+            "reasoning": true,
+            "context_window": 128_000
+        }))
+        .expect("model should parse");
+        assert_eq!(model.id, "gpt");
+        assert_eq!(model.provider.as_deref(), Some("openai"));
     }
 }
