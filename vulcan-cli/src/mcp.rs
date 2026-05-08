@@ -3733,25 +3733,41 @@ fn handle_mcp_oauth_metadata(
     if request.method != "GET" {
         return None;
     }
-    if !is_protected_resource_metadata_path(&request.path, &context.endpoint) {
-        return None;
+    if is_authorization_server_metadata_path(&request.path, &context.endpoint) {
+        return Some(McpHttpResponse {
+            status: 200,
+            content_type: Some("application/json"),
+            body: serde_json::to_vec(oauth.authorization_server_metadata())
+                .expect("json should serialize"),
+            extra_headers: Vec::new(),
+        });
     }
-    let body = serde_json::json!({
-        "resource": oauth.public_url(),
-        "authorization_servers": [oauth.issuer()],
-        "bearer_methods_supported": ["header"],
-    });
-    Some(McpHttpResponse {
-        status: 200,
-        content_type: Some("application/json"),
-        body: serde_json::to_vec(&body).expect("json should serialize"),
-        extra_headers: Vec::new(),
-    })
+    if is_protected_resource_metadata_path(&request.path, &context.endpoint) {
+        let body = serde_json::json!({
+            "resource": oauth.public_url(),
+            "authorization_servers": [oauth.authorization_server_issuer()],
+            "bearer_methods_supported": ["header"],
+        });
+        return Some(McpHttpResponse {
+            status: 200,
+            content_type: Some("application/json"),
+            body: serde_json::to_vec(&body).expect("json should serialize"),
+            extra_headers: Vec::new(),
+        });
+    }
+    None
 }
 
 fn is_protected_resource_metadata_path(path: &str, endpoint: &str) -> bool {
     path == "/.well-known/oauth-protected-resource"
         || path == format!("/.well-known/oauth-protected-resource{endpoint}")
+}
+
+fn is_authorization_server_metadata_path(path: &str, endpoint: &str) -> bool {
+    path == "/.well-known/oauth-authorization-server"
+        || path == format!("/.well-known/oauth-authorization-server{endpoint}")
+        || path == "/.well-known/openid-configuration"
+        || path == format!("/.well-known/openid-configuration{endpoint}")
 }
 
 fn oauth_error_response(
@@ -5490,6 +5506,26 @@ mod tests {
         ));
         assert!(!is_protected_resource_metadata_path(
             "/.well-known/oauth-authorization-server",
+            "/mcp"
+        ));
+    }
+
+    #[test]
+    fn authorization_server_metadata_path_accepts_root_endpoint_and_oidc_forms() {
+        assert!(is_authorization_server_metadata_path(
+            "/.well-known/oauth-authorization-server",
+            "/mcp"
+        ));
+        assert!(is_authorization_server_metadata_path(
+            "/.well-known/oauth-authorization-server/mcp",
+            "/mcp"
+        ));
+        assert!(is_authorization_server_metadata_path(
+            "/.well-known/openid-configuration",
+            "/mcp"
+        ));
+        assert!(is_authorization_server_metadata_path(
+            "/.well-known/openid-configuration/mcp",
             "/mcp"
         ));
     }
