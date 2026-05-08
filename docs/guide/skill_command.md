@@ -20,21 +20,9 @@ vulcan skill run daily-review prepare-day --input-json '{"date":"2026-05-05"}'
 ```
 
 Projected skill commands may also appear as normal tools in `vulcan describe --format mcp` and in the MCP server.
-```
 
-Suggested help topic: `help js.skills`
+Projected tool names are normalized as `skill_<skill_name>_<command_id>`, for example `skill_daily_review_prepare_day`.
 
-```markdown
-# JS skills API
-
-The `skills` namespace lets JavaScript running inside Vulcan inspect and call Agent Skills-compatible skill commands through the same permission model used by CLI and MCP.
-
-Available helpers:
-
-- `skills.list()`
-- `skills.get(name)`
-- `skills.commands(name)`
-- `skills.activate(name)`
-- `skills.run(name, command, input, opts?)`
+JavaScript can call skill commands through either `tools.call("skill_daily_review_prepare_day", input)` or `skills.run("daily-review", "prepare-day", input)`.
 
 Nested calls preserve the current effective permission ceiling. A script cannot use `skills.run()` to escape its own sandbox or permission profile.

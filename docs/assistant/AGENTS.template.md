@@ -21,6 +21,7 @@ Documentation workflow:
 
 - Read `.agents/skills/*/SKILL.md` for task-specific usage patterns.
 - Use `vulcan skill list` to discover bundled and vault-defined skills, and `vulcan skill get <name>` to load one on demand.
+- Use `link-curation` when reviewing ranked link suggestions, inferred graph edges, or orphan-note bridge candidates.
 - Read `.agents/tools/*/TOOL.md` when a vault-native custom tool exists for the workflow.
 - Use `vulcan help <topic>` for integrated documentation.
 - Use `vulcan help assistant-integration` for the external-runtime contract and `vulcan agent print-config --runtime <name>` for wrapper snippets.

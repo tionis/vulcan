@@ -2312,6 +2312,30 @@ const tools = {
   },
 };
 
+function __vulcanSkillToolName(skillName, commandId) {
+  const normalize = (value) => String(value)
+    .replace(/[^A-Za-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .toLowerCase();
+  return "skill_" + normalize(skillName) + "_" + normalize(commandId);
+}
+
+const skills = {
+  list() {
+    return tools.list().filter((tool) => String(tool.name ?? "").startsWith("skill_"));
+  },
+  get(name) {
+    return tools.get(String(name));
+  },
+  commands(skillName = undefined) {
+    const prefix = skillName == null ? "skill_" : "skill_" + __vulcanSkillToolName(skillName, "").slice(6);
+    return skills.list().filter((tool) => String(tool.name ?? "").startsWith(prefix));
+  },
+  run(skillName, commandId, input = {}, opts = undefined) {
+    return tools.call(__vulcanSkillToolName(skillName, commandId), input, opts);
+  },
+};
+
 const host = {
   exec(argv, opts = {}) {
     return JSON.parse(
@@ -2715,6 +2739,19 @@ Use help(tools.call) for execution details and nested-call limits.`
 );
 
 __vulcanRegisterHelp(
+  skills,
+  `skills — Agent Skills-compatible command registry
+
+  skills.list()                    — list projected skill-command tools
+  skills.get(toolName)             — read one projected skill-command tool definition
+  skills.commands(skillName?)      — list commands, optionally scoped to one skill
+  skills.run(skill, command, input?) — invoke a skill command via the shared tool registry
+
+Skill commands are permission-checked like tools.call() and use names such as
+skill_daily_review_prepare_day on tool surfaces.`
+);
+
+__vulcanRegisterHelp(
   host.exec,
   `host.exec(argv: string[], opts?: { cwd?: string, env?: object, timeout_ms?: number, max_output_bytes?: number }): HostProcessReport
 
@@ -2858,6 +2895,7 @@ Prefer vault.* over app.vault.* for full Vulcan-native functionality.`
 globalThis.dv = dv;
 globalThis.vault = vault;
 globalThis.tools = tools;
+globalThis.skills = skills;
 globalThis.host = host;
 globalThis.web = web;
 globalThis.console = console;

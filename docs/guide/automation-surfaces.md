@@ -57,7 +57,7 @@ Examples:
 - `gmail.triage`: read recent email and propose inbox items or tasks
 - `forgejo.project-status`: read issues/PRs and update a project status note
 
-Projected command names may be normalized for tool surfaces, for example `daily_review_prepare_day`.
+Projected command names are normalized for tool surfaces, for example `skill_daily_review_prepare_day`.
 
 ## Plugins
 

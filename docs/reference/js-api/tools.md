@@ -1,6 +1,6 @@
 # JS Tools Namespace
 
-The `tools` namespace is the runtime-facing entrypoint for vault-native custom tools.
+The `tools` namespace is the runtime-facing entrypoint for vault-native custom tools and projected Agent Skills-compatible command tools.
 
 Use it when JavaScript running inside Vulcan should inspect or call a registry-backed custom tool
 instead of reimplementing logic inline.
@@ -29,7 +29,7 @@ Why this exists:
 
 Runtime behavior:
 
-- `tools.list()` returns visible custom tools plus `callable`
+- `tools.list()` returns visible custom tools and projected skill-command tools plus `callable`
 - `tools.get(name)` returns static metadata and the Markdown body from `TOOL.md`
 - `tools.call(name, input, opts?)` returns the callee's JSON result
 - if the callee returned `{ result, text }`, the same envelope is returned to the caller
@@ -51,6 +51,7 @@ Return contract:
 See also:
 
 - `help tool`
+- `help js.skills`
 - `help js.host`
 - `help js.plugins`
 - `help automation-surfaces`

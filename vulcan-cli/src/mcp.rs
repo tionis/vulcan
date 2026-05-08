@@ -1819,6 +1819,19 @@ impl McpServerCore {
                 "description": "Visible skills loaded from the configured assistant skills folder.",
                 "mimeType": "application/json",
             }));
+            if self
+                .visible_custom_tools()?
+                .iter()
+                .any(|tool| tool.summary.name.starts_with("skill_"))
+            {
+                resources.push(serde_json::json!({
+                    "uri": "vulcan://assistant/skill-commands/index",
+                    "name": "Assistant Skill Command Index",
+                    "title": "Vault Skill Command Index",
+                    "description": "Visible Agent Skills-compatible command tools projected into the shared tool registry.",
+                    "mimeType": "application/json",
+                }));
+            }
             if !self.visible_custom_tools()?.is_empty() {
                 resources.push(serde_json::json!({
                     "uri": "vulcan://assistant/tools/index",
@@ -1871,6 +1884,13 @@ impl McpServerCore {
                 "name": "Assistant Skills",
                 "title": "Assistant Skill Resource",
                 "description": "Read one visible assistant skill as structured JSON.",
+                "mimeType": "application/json",
+            }));
+            templates.push(serde_json::json!({
+                "uriTemplate": "vulcan://assistant/skill-commands/{name}",
+                "name": "Assistant Skill Commands",
+                "title": "Assistant Skill Command Resource",
+                "description": "Read one visible projected skill command as structured JSON.",
                 "mimeType": "application/json",
             }));
             if self.selected_tool_packs.contains(&McpToolPack::Custom) {
@@ -1939,6 +1959,20 @@ impl McpServerCore {
             "vulcan://assistant/skills/index" => {
                 return Self::json_resource(uri, &self.visible_skills()?);
             }
+            "vulcan://assistant/skill-commands/index" => {
+                let commands = self
+                    .visible_custom_tools()?
+                    .into_iter()
+                    .filter(|tool| tool.summary.name.starts_with("skill_"))
+                    .collect::<Vec<_>>();
+                if commands.is_empty() {
+                    return Err(resource_not_found_error(
+                        uri,
+                        "Resource not found".to_string(),
+                    ));
+                }
+                return Self::json_resource(uri, &commands);
+            }
             "vulcan://assistant/tools/index" => {
                 let tools = self.visible_custom_tools()?;
                 if tools.is_empty() {
@@ -2005,6 +2039,26 @@ impl McpServerCore {
                 ));
             }
             return Self::json_resource(uri, &skill);
+        }
+
+        if let Some(name) = uri.strip_prefix("vulcan://assistant/skill-commands/") {
+            let report = crate::tools::show_custom_tool(
+                &self.paths,
+                Some(self.selection.name.as_str()),
+                name,
+                &crate::custom_tool_registry_options(),
+            )
+            .map_err(|error| resource_not_found_error(uri, error.to_string()))?;
+            if !report.callable || !report.tool.summary.name.starts_with("skill_") {
+                return Err(resource_not_found_error(
+                    uri,
+                    format!(
+                        "permission denied: resource `{uri}` is not available under profile `{}`",
+                        self.selection.name
+                    ),
+                ));
+            }
+            return Self::json_resource(uri, &report);
         }
 
         if let Some(name) = uri.strip_prefix("vulcan://assistant/tools/") {

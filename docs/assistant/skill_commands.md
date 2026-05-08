@@ -315,8 +315,8 @@ Required behavior:
 - add resources:
   - `vulcan://assistant/skills/index`
   - `vulcan://assistant/skills/{name}`
-  - `vulcan://assistant/skills/{name}/commands`
-  - `vulcan://assistant/skills/{name}/resources`
+  - `vulcan://assistant/skill-commands/index`
+  - `vulcan://assistant/skill-commands/{name}`
 
 The generic meta-tools remain useful:
 
@@ -333,7 +333,6 @@ Expose a `tools` namespace and a `skills` namespace in the shared JS runtime use
 - `skills.list()`
 - `skills.get(name)`
 - `skills.commands(name)`
-- `skills.activate(name)`
 - `skills.run(name, command, input, opts?)`
 - `tools.list()`
 - `tools.get(name)`
