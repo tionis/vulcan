@@ -9910,22 +9910,22 @@ fn init_agent_files_optionally_scaffolds_example_tool() {
         .success();
     let json = parse_stdout_json(&assert);
 
-    let manifest_path = vault_root.join(".agents/tools/summarize_note/TOOL.md");
-    let entrypoint_path = vault_root.join(".agents/tools/summarize_note/main.js");
+    let manifest_path = vault_root.join(".agents/skills/summarize-note/SKILL.md");
+    let entrypoint_path = vault_root.join(".agents/skills/summarize-note/scripts/summarize.js");
     assert!(manifest_path.exists());
     assert!(entrypoint_path.exists());
     assert!(fs::read_to_string(&manifest_path)
         .expect("example tool manifest should be readable")
-        .contains("name: summarize_note"));
+        .contains("metadata:\n  vulcan:\n    commands:"));
     assert!(fs::read_to_string(&entrypoint_path)
         .expect("example tool entrypoint should be readable")
-        .contains("vault.note"));
+        .contains("function main"));
     assert!(json["support_files"].as_array().is_some_and(|items| items
         .iter()
-        .any(|item| item["path"] == ".agents/tools/summarize_note/TOOL.md")
+        .any(|item| item["path"] == ".agents/skills/summarize-note/SKILL.md")
         && items
             .iter()
-            .any(|item| item["path"] == ".agents/tools/summarize_note/main.js")));
+            .any(|item| item["path"] == ".agents/skills/summarize-note/scripts/summarize.js")));
 }
 
 #[test]
@@ -10457,7 +10457,7 @@ fn agent_install_uses_configured_assistant_folders() {
 }
 
 #[test]
-fn agent_install_example_tool_uses_configured_tools_folder() {
+fn agent_install_example_tool_uses_configured_skills_folder() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(vault_root.join(".vulcan")).expect("vault dir should be created");
@@ -10485,17 +10485,17 @@ fn agent_install_example_tool_uses_configured_tools_folder() {
     let json = parse_stdout_json(&assert);
 
     assert!(vault_root
-        .join("Support/Tools/summarize_note/TOOL.md")
+        .join("Support/Skills/summarize-note/SKILL.md")
         .exists());
     assert!(vault_root
-        .join("Support/Tools/summarize_note/main.js")
+        .join("Support/Skills/summarize-note/scripts/summarize.js")
         .exists());
     assert!(json["support_files"].as_array().is_some_and(|items| items
         .iter()
-        .any(|item| item["path"] == "Support/Tools/summarize_note/TOOL.md")
+        .any(|item| item["path"] == "Support/Skills/summarize-note/SKILL.md")
         && items
             .iter()
-            .any(|item| item["path"] == "Support/Tools/summarize_note/main.js")));
+            .any(|item| item["path"] == "Support/Skills/summarize-note/scripts/summarize.js")));
 }
 
 #[test]
@@ -19885,6 +19885,23 @@ fn mcp_server_exposes_default_read_search_status_tools_and_structured_results() 
         Some("Projects/Alpha.md")
     );
     assert_eq!(result["content"][0]["type"].as_str(), Some("text"));
+    let messages = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": "status",
+            "arguments": {}
+        }
+    }));
+    let status = &messages.last().expect("tools/call response")["result"];
+    assert_eq!(status["isError"].as_bool(), Some(false));
+    assert!(
+        status["structuredContent"]["graph_confidence"]["extracted"]
+            .as_u64()
+            .is_some(),
+        "status should expose graph confidence in structured MCP content"
+    );
     assert!(session.finish().is_empty());
 }
 
@@ -20186,6 +20203,24 @@ fn mcp_server_composes_requested_canonical_tool_packs() {
             "unselected packs should keep `{hidden}` hidden"
         );
     }
+
+    let note_info = session.send(serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "note_info",
+            "arguments": { "note": "Projects/Alpha.md" }
+        }
+    }));
+    let result = &note_info.last().expect("tools/call response")["result"];
+    assert_eq!(result["isError"].as_bool(), Some(false));
+    assert!(
+        result["structuredContent"]["link_confidence"]["extracted"]
+            .as_u64()
+            .is_some_and(|count| count > 0),
+        "note_info should expose link confidence in structured MCP content"
+    );
 
     assert!(session.finish().is_empty());
 }
