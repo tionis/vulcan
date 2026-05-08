@@ -435,7 +435,7 @@ impl LinkConfidence {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub struct GraphConfidenceBreakdown {
     pub extracted: usize,
     pub inferred: usize,
@@ -452,7 +452,7 @@ impl GraphConfidenceBreakdown {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 struct GraphAdjacency {
     edges: Vec<(String, String)>,
     counts: HashMap<String, (usize, usize)>,
@@ -1495,6 +1495,68 @@ fn detect_graph_communities(
     notes: &IndexedNoteSet,
     adjacency: &GraphAdjacency,
 ) -> HashMap<String, usize> {
+    if notes.notes.len() > 1000 {
+        return detect_graph_communities_partitioned(notes, adjacency);
+    }
+    detect_graph_communities_unpartitioned(notes, adjacency)
+}
+
+fn detect_graph_communities_partitioned(
+    notes: &IndexedNoteSet,
+    adjacency: &GraphAdjacency,
+) -> HashMap<String, usize> {
+    let undirected = adjacency.undirected();
+    let components = connected_component_note_ids(notes, &undirected);
+    let mut assignments = HashMap::new();
+    let mut next_community = 1usize;
+    for component in components {
+        let component_notes = notes
+            .notes
+            .iter()
+            .filter(|note| component.contains(&note.id))
+            .cloned()
+            .collect::<Vec<_>>();
+        let component_set = IndexedNoteSet::build(component_notes);
+        let component_adjacency = GraphAdjacency {
+            edges: adjacency
+                .edges
+                .iter()
+                .filter(|(source, target)| component.contains(source) && component.contains(target))
+                .cloned()
+                .collect(),
+            counts: adjacency
+                .counts
+                .iter()
+                .filter(|(document_id, _)| component.contains(*document_id))
+                .map(|(document_id, counts)| (document_id.clone(), *counts))
+                .collect(),
+            confidence: adjacency
+                .confidence
+                .iter()
+                .filter(|((source, target), _)| {
+                    component.contains(source) && component.contains(target)
+                })
+                .map(|(edge, confidence)| (edge.clone(), *confidence))
+                .collect(),
+        };
+        let local = detect_graph_communities_unpartitioned(&component_set, &component_adjacency);
+        let mut remap = HashMap::<usize, usize>::new();
+        for (document_id, local_community) in local {
+            let community = *remap.entry(local_community).or_insert_with(|| {
+                let current = next_community;
+                next_community += 1;
+                current
+            });
+            assignments.insert(document_id, community);
+        }
+    }
+    assignments
+}
+
+fn detect_graph_communities_unpartitioned(
+    notes: &IndexedNoteSet,
+    adjacency: &GraphAdjacency,
+) -> HashMap<String, usize> {
     let undirected = adjacency.undirected();
     if adjacency.edges.len() < notes.notes.len().saturating_mul(2) {
         return component_assignments(notes, &undirected);
@@ -1539,6 +1601,32 @@ fn detect_graph_communities(
         }
     }
     labels
+}
+
+fn connected_component_note_ids(
+    notes: &IndexedNoteSet,
+    undirected: &HashMap<String, BTreeSet<String>>,
+) -> Vec<BTreeSet<String>> {
+    let mut remaining = notes
+        .notes
+        .iter()
+        .map(|note| note.id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut components = Vec::new();
+    while let Some(start) = remaining.pop_first() {
+        let mut component = BTreeSet::from([start.clone()]);
+        let mut queue = VecDeque::from([start]);
+        while let Some(current) = queue.pop_front() {
+            for neighbor in undirected.get(&current).into_iter().flatten() {
+                if remaining.remove(neighbor) {
+                    component.insert(neighbor.clone());
+                    queue.push_back(neighbor.clone());
+                }
+            }
+        }
+        components.push(component);
+    }
+    components
 }
 
 fn bridge_pruned_adjacency(
@@ -2245,6 +2333,87 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM graph_clusters", [], |row| row.get(0))
             .expect("cluster count should query");
         assert_eq!(persisted, 7);
+    }
+
+    #[test]
+    fn graph_communities_handle_empty_single_and_disconnected_graphs() {
+        let empty = IndexedNoteSet::build(Vec::new());
+        let empty_adjacency = GraphAdjacency::default();
+        assert!(detect_graph_communities(&empty, &empty_adjacency).is_empty());
+
+        let single = IndexedNoteSet::build(vec![IndexedNote {
+            id: "single".to_string(),
+            path: "Single.md".to_string(),
+            filename: "Single".to_string(),
+            aliases: Vec::new(),
+        }]);
+        let single_assignments = detect_graph_communities(&single, &GraphAdjacency::default());
+        assert_eq!(single_assignments.get("single"), Some(&1));
+
+        let disconnected = IndexedNoteSet::build(vec![
+            IndexedNote {
+                id: "a".to_string(),
+                path: "A.md".to_string(),
+                filename: "A".to_string(),
+                aliases: Vec::new(),
+            },
+            IndexedNote {
+                id: "b".to_string(),
+                path: "B.md".to_string(),
+                filename: "B".to_string(),
+                aliases: Vec::new(),
+            },
+            IndexedNote {
+                id: "c".to_string(),
+                path: "C.md".to_string(),
+                filename: "C".to_string(),
+                aliases: Vec::new(),
+            },
+        ]);
+        let disconnected_assignments =
+            detect_graph_communities(&disconnected, &GraphAdjacency::default());
+        assert_eq!(
+            disconnected_assignments
+                .values()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                .len(),
+            3
+        );
+    }
+
+    #[test]
+    #[ignore = "benchmark-style regression test; run manually with --ignored --nocapture"]
+    fn graph_communities_benchmark_large_synthetic_graph() {
+        let notes = (0..500)
+            .map(|index| IndexedNote {
+                id: format!("n{index}"),
+                path: format!("N{index}.md"),
+                filename: format!("N{index}"),
+                aliases: Vec::new(),
+            })
+            .collect::<Vec<_>>();
+        let note_set = IndexedNoteSet::build(notes);
+        let mut adjacency = GraphAdjacency::default();
+        for community in 0..10 {
+            let base = community * 50;
+            for offset in 0..50 {
+                for step in 1..=4 {
+                    adjacency.edges.push((
+                        format!("n{}", base + offset),
+                        format!("n{}", base + ((offset + step) % 50)),
+                    ));
+                }
+            }
+        }
+        let started = std::time::Instant::now();
+        let assignments = detect_graph_communities(&note_set, &adjacency);
+        let elapsed = started.elapsed();
+        assert_eq!(assignments.len(), 500);
+        assert!(
+            elapsed.as_millis() < 500,
+            "community detection took {elapsed:?}"
+        );
     }
 
     #[test]

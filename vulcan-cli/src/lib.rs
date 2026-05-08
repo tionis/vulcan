@@ -536,28 +536,29 @@ use vulcan_core::{
     resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
     step_period_start, verify_cache, watch_vault, AssistantToolSecretSpec, AutoScanMode,
     BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport, BasesViewEditReport,
-    BulkMutationReport, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport,
-    ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterReport,
-    ConfigImportReport, CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput,
-    DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
-    DqlQueryResult, DuplicateSuggestionsReport, GitBlameLine, GitCommitReport, GitLogEntry,
-    GraphAnalyticsReport, GraphCommunitiesReport, GraphComponentsReport, GraphDeadEndsReport,
-    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
-    GraphTrendsReport, HtmlRenderOptions, ImportTarget, InitSummary, JsRuntimeSandbox,
-    KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter,
-    KanbanMoveReport, KanbanTaskStatus, LinkSuggestion, LinkSuggestionsReport, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
-    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig,
-    PeriodicNotesImporter, PermissionFilter, PermissionGuard, PluginEvent, PluginImporter,
-    ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport, RefactorChange,
-    RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport,
-    ResolvedPermissionProfile, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport, SearchSort,
-    StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult, TemplaterImporter,
-    VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
-    VectorIndexReport, VectorNeighborHit, VectorNeighborsReport, VectorQueueReport,
-    VectorRepairReport, WatchOptions, WatchReport,
+    BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport,
+    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
+    ClusterReport, ConfigImportReport, CoreImporter, DataviewImporter, DataviewJsEvalOptions,
+    DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue,
+    DoctorReport, DqlQueryResult, DuplicateSuggestionsReport, GitBlameLine, GitCommitReport,
+    GitLogEntry, GraphAnalyticsReport, GraphCommunitiesReport, GraphComponentsReport,
+    GraphConfidenceBreakdown, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate,
+    GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport, HtmlRenderOptions,
+    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
+    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
+    LinkSuggestion, LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport,
+    MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport,
+    OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter,
+    PermissionFilter, PermissionGuard, PluginEvent, PluginImporter, ProfilePermissionGuard,
+    QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit,
+    RelatedNotesReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchBackendKind,
+    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
+    TasksImporter, TasksQueryResult, TemplaterImporter, VaultPaths, VectorDuplicatePair,
+    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
+    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
+    WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -681,7 +682,6 @@ enum BundledFileTarget {
     VaultRoot,
     SkillsFolder,
     PromptsFolder,
-    ToolsFolder,
 }
 
 const BUNDLED_AGENT_TEMPLATE: BundledTextFile = BundledTextFile {
@@ -771,16 +771,52 @@ const BUNDLED_PROMPT_FILES: &[BundledTextFile] = &[
 
 const BUNDLED_TOOL_FILES: &[BundledTextFile] = &[
     BundledTextFile {
-        kind: "tool",
-        relative_path: "summarize_note/TOOL.md",
-        contents: include_str!("../../docs/assistant/tools/summarize_note/TOOL.md"),
-        target: BundledFileTarget::ToolsFolder,
+        kind: "skill",
+        relative_path: "summarize-note/SKILL.md",
+        contents: r"---
+name: summarize-note
+description: Summarize one vault note.
+license: UNLICENSED
+compatibility:
+  - vulcan
+allowed-tools:
+  - note_get
+metadata:
+  vulcan:
+    commands:
+      - id: summarize
+        script: scripts/summarize.js
+        sandbox: fs
+        permission_profile: readonly
+        packs: [custom]
+        expose: true
+        input_schema:
+          type: object
+          required: [note]
+          properties:
+            note:
+              type: string
+        output_schema:
+          type: object
+          required: [note, summary]
+          properties:
+            note:
+              type: string
+            summary:
+              type: string
+---
+
+# Summarize Note
+
+Use this skill command as a minimal Agent Skills-compatible executable example.
+",
+        target: BundledFileTarget::SkillsFolder,
     },
     BundledTextFile {
-        kind: "tool",
-        relative_path: "summarize_note/main.js",
-        contents: include_str!("../../docs/assistant/tools/summarize_note/main.js"),
-        target: BundledFileTarget::ToolsFolder,
+        kind: "skill",
+        relative_path: "summarize-note/scripts/summarize.js",
+        contents: "function main(input) {\n  return {\n    note: input.note,\n    summary: `TODO: summarize ${input.note}`,\n  };\n}\n",
+        target: BundledFileTarget::SkillsFolder,
     },
 ];
 
@@ -1643,6 +1679,7 @@ struct NoteInfoReport {
     created_at: Option<String>,
     modified_at_ms: Option<i64>,
     modified_at: Option<String>,
+    link_confidence: GraphConfidenceBreakdown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -6161,6 +6198,7 @@ fn run_note_info_command(paths: &VaultPaths, note: &str) -> Result<NoteInfoRepor
         .or(modified_at_ms);
 
     Ok(NoteInfoReport {
+        link_confidence: link_confidence_for_note(paths, &resolved.path)?,
         path: resolved.path,
         matched_by: resolved.matched_by,
         word_count: note_word_count(&source),
@@ -6177,6 +6215,42 @@ fn run_note_info_command(paths: &VaultPaths, note: &str) -> Result<NoteInfoRepor
         modified_at_ms,
         modified_at: modified_at_ms.map(format_utc_timestamp_ms),
     })
+}
+
+fn link_confidence_for_note(
+    paths: &VaultPaths,
+    note_path: &str,
+) -> Result<GraphConfidenceBreakdown, CliError> {
+    let database = CacheDatabase::open(paths).map_err(CliError::operation)?;
+    let mut statement = database
+        .connection()
+        .prepare(
+            "
+            SELECT links.confidence, COUNT(*)
+            FROM links
+            JOIN documents AS source ON source.id = links.source_document_id
+            LEFT JOIN documents AS target ON target.id = links.resolved_target_id
+            WHERE source.path = ?1 OR target.path = ?1
+            GROUP BY links.confidence
+            ",
+        )
+        .map_err(CliError::operation)?;
+    let rows = statement
+        .query_map([note_path], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, usize>(1)?))
+        })
+        .map_err(CliError::operation)?;
+    let mut confidence = GraphConfidenceBreakdown::default();
+    for row in rows {
+        let (label, count) = row.map_err(CliError::operation)?;
+        match label.as_str() {
+            "EXTRACTED" => confidence.extracted += count,
+            "INFERRED" => confidence.inferred += count,
+            "AMBIGUOUS" => confidence.ambiguous += count,
+            _ => {}
+        }
+    }
+    Ok(confidence)
 }
 
 fn run_note_history_command(
@@ -11130,10 +11204,6 @@ fn bundled_text_file_destination(paths: &VaultPaths, file: &BundledTextFile) -> 
         BundledFileTarget::PromptsFolder => paths
             .vault_root()
             .join(config.prompts_folder)
-            .join(file.relative_path),
-        BundledFileTarget::ToolsFolder => paths
-            .vault_root()
-            .join(config.tools_folder)
             .join(file.relative_path),
     }
 }
@@ -18935,6 +19005,12 @@ fn print_status_report(
                 println!("Last scan:  {last_scan}");
             } else {
                 println!("Last scan:  {}", palette.dim("never"));
+            }
+            if let Some(confidence) = &report.graph_confidence {
+                println!(
+                    "Confidence: {} EXTRACTED, {} INFERRED, {} AMBIGUOUS",
+                    confidence.extracted, confidence.inferred, confidence.ambiguous
+                );
             }
             if let Some(branch) = &report.git_branch {
                 let dirty_flag = if report.git_dirty {

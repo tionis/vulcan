@@ -4486,6 +4486,7 @@ fn status_output_schema() -> Value {
                 "git_dirty",
                 schema_boolean("Whether the git working tree is dirty."),
             ),
+            ("graph_confidence", generic_report_output_schema()),
         ],
         &[
             "vault_root",

@@ -5938,9 +5938,9 @@ Louvain performs as well as Leiden on typical wikilink graphs while being simple
 
 - [x] Implement deterministic community detection in `vulcan-core/src/graph.rs` on `GraphAdjacency.undirected()`, returning stable per-run community IDs when persisted to the `graph_clusters` table
 - [x] Re-use the same BFS-based connected-component infrastructure (`build_graph_components_report`) as the fallback for graphs with <2 edges per node on average
-- [ ] For large graphs, partition into sub-graphs of ≤1000 nodes via connected-component splitting before running Louvain; this avoids unnecessary super-node aggregation passes while preserving correctness on sparse vault graphs
-- [ ] Unit tests: known community structure (two cliques bridged by a single edge), empty graph, single-node graph, fully-disconnected graph (dense bridged-clique persistence coverage implemented; explicit empty/single/disconnected cases remain)
-- [ ] Benchmark: <500ms for a 500-node, 2000-edge graph on a warm cache
+- [x] For large graphs, partition into sub-graphs of ≤1000 nodes via connected-component splitting before running Louvain; this avoids unnecessary super-node aggregation passes while preserving correctness on sparse vault graphs
+- [x] Unit tests: known community structure (two cliques bridged by a single edge), empty graph, single-node graph, fully-disconnected graph
+- [x] Benchmark: <500ms for a 500-node, 2000-edge graph on a warm cache
 
 ### 9.25.2 Community summary and labeling
 
@@ -6019,9 +6019,9 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 ### 9.26.4 Integration testing
 
 - [x] Full pipeline test: scan → compute suggestions → verify ranking → accept one → verify link appears in graph → reject another → verify it's deprioritized
-- [ ] Test that cross-community suggestions get the bonus multiplier
-- [ ] Test that directly-linked note pairs are excluded (no self-suggestion of existing links, including INFERRED links from previously accepted suggestions)
-- [ ] Test idempotency: running suggestions twice produces identical scores on unchanged data
+- [x] Test that cross-community suggestions get the bonus multiplier
+- [x] Test that directly-linked note pairs are excluded (no self-suggestion of existing links, including INFERRED links from previously accepted suggestions)
+- [x] Test idempotency: running suggestions twice produces identical scores on unchanged data
 
 ### 9.26.5 Skill and AGENTS.md update
 
@@ -6063,7 +6063,7 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 ### 9.27.4 CLI and MCP surfaces
 
 - [x] All graph subcommands (`graph path`, `graph hubs`, `graph export`, `graph stats`) include confidence in their JSON output
-- [ ] All MCP tools that return graph data (`note_info`, `status`, and any dedicated graph tools added in 9.25/9.26) include confidence fields in structured content
+- [x] All MCP tools that return graph data (`note_info`, `status`, and any dedicated graph tools added in 9.25/9.26) include confidence fields in structured content
 - [x] `vulcan graph stats` adds a "Confidence" section to the human-readable output: `Edges: 1423 (1310 EXTRACTED, 98 INFERRED, 15 AMBIGUOUS)`
 
 ### 9.27.5 Integration testing
@@ -6071,7 +6071,7 @@ Produce human-readable community descriptions for CLI and MCP surfaces.
 - [x] Test that existing links survive reindex with confidence = EXTRACTED
 - [x] Test that accepted suggestions produce confidence = INFERRED edges
 - [x] Test that graph path traversal includes confidence on each hop
-- [ ] Test that MCP `note_info` returns confidence for resolved backlinks once 9.27 data is on the graph
+- [x] Test that MCP `note_info` returns confidence for resolved backlinks once 9.27 data is on the graph
 - [ ] Test schema downgrade safety (older cache version → correct error, not silent corruption)
 
 ### 9.27.6 Skill and AGENTS.md update
@@ -6089,7 +6089,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add `vulcan skill list|show|commands|run|validate|init`
 - [ ] Project trusted skill commands into the shared registry used by CLI, `describe`, MCP, and internal JS APIs.
 - [ ] Expose projected skill commands as first-class MCP tools and add MCP resources for skill index, skill content, command metadata, and resource listings.
-- [ ] Update `vulcan index init --agent-files --example-tool` and `vulcan agent install --example-tool` to scaffold an Agent Skills-compatible example with a command under `scripts/`.
+- [x] Update `vulcan index init --agent-files --example-tool` and `vulcan agent install --example-tool` to scaffold an Agent Skills-compatible example with a command under `scripts/`.
 - [ ] Keep legacy standalone custom-tool loading, if implemented, as a compatibility path or migrate it into skill-command scaffolding.
 - [ ] Add docs and integrated help topics for `skill`, `skill-command`, `js.skills`, and the skills-vs-commands-vs-plugins decision model.
 

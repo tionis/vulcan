@@ -1684,6 +1684,95 @@ mod tests {
             .expect("inferred link should exist");
         assert_eq!(inferred.0, "INFERRED");
         assert!(inferred.1 > 0.0);
+
+        let after_accept =
+            suggest_links(&paths, None, None, 0.0, Some(LinkSuggestionStatus::Pending))
+                .expect("suggestions should recompute");
+        assert!(!after_accept.suggestions.iter().any(|suggestion| {
+            suggestion.source_path == "A.md" && suggestion.target_path == "Charlie.md"
+        }));
+    }
+
+    #[test]
+    fn suggest_links_scores_cross_community_and_is_idempotent() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::write(
+            vault_root.join("Alpha.md"),
+            "# Alpha\n\nBeta is relevant.\n",
+        )
+        .expect("write alpha");
+        fs::write(vault_root.join("Beta.md"), "# Beta\n").expect("write beta");
+        fs::write(vault_root.join("Direct.md"), "# Direct\n\n[[Beta]]\n").expect("write direct");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let connection = Connection::open(paths.cache_db()).expect("cache should open");
+        let alpha_id: String = connection
+            .query_row(
+                "SELECT id FROM documents WHERE path = 'Alpha.md'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("alpha id");
+        let beta_id: String = connection
+            .query_row(
+                "SELECT id FROM documents WHERE path = 'Beta.md'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("beta id");
+        connection
+            .execute(
+                "INSERT INTO graph_clusters (document_id, community_id, label, cohesion, computed_at)
+                 VALUES (?1, 1, 'alpha', 1.0, 'now'), (?2, 2, 'beta', 1.0, 'now')",
+                params![alpha_id, beta_id],
+            )
+            .expect("clusters should insert");
+
+        let first =
+            suggest_links(&paths, None, None, 0.0, None).expect("suggestions should compute");
+        let second =
+            suggest_links(&paths, None, None, 0.0, None).expect("suggestions should recompute");
+        let first_summary = first
+            .suggestions
+            .iter()
+            .map(|suggestion| {
+                (
+                    suggestion.source_path.clone(),
+                    suggestion.target_path.clone(),
+                    format!("{:.6}", suggestion.score),
+                    suggestion.status,
+                )
+            })
+            .collect::<Vec<_>>();
+        let second_summary = second
+            .suggestions
+            .iter()
+            .map(|suggestion| {
+                (
+                    suggestion.source_path.clone(),
+                    suggestion.target_path.clone(),
+                    format!("{:.6}", suggestion.score),
+                    suggestion.status,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(first_summary, second_summary);
+
+        let alpha_beta = first
+            .suggestions
+            .iter()
+            .find(|suggestion| {
+                suggestion.source_path == "Alpha.md" && suggestion.target_path == "Beta.md"
+            })
+            .expect("cross-community mention should be suggested");
+        assert!((alpha_beta.signals.cross_community_bonus - 1.15).abs() < f64::EPSILON);
+        assert!(alpha_beta.score > alpha_beta.signals.mention_score);
+        assert!(!first.suggestions.iter().any(|suggestion| {
+            suggestion.source_path == "Direct.md" && suggestion.target_path == "Beta.md"
+        }));
     }
 
     #[test]
