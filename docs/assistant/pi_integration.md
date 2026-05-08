@@ -194,14 +194,16 @@ Recommended profiles:
 
 ## Session and persistence boundary
 
-Default assumption: session history lives in the external runtime, not in the vault.
+Default assumption: session history lives in the external runtime or managed
+engine, not in ordinary vault notes. In Model B, `vulcan assistant --chat`
+delegates session persistence to pi's session files under the configured
+`assistant.sessions_dir`.
 
-That means Vulcan does not initially need:
+That means Vulcan still does not need:
 
-- `vulcan assistant --chat`
-- gemini-scribe transcript files
+- gemini-scribe transcript files as the primary session store
 - assistant-specific memory notes
-- transcript compaction logic
+- transcript compaction logic inside Vulcan
 
 If the user wants durable output, the agent should write a normal note through Vulcan tools.
 
@@ -275,12 +277,13 @@ The default mode is preview-only. Conflicting source files that would target the
 
 ## Revisit Criteria For A Native Runtime
 
-Re-open the embedded assistant only if one of these remains painful after the external-runtime contract lands:
+Re-open a native Rust agent loop only if one of these remains painful after the
+external-runtime and managed-engine contracts land:
 
 - vault-native transcripts are essential
 - the runtime cannot express the required permission model
 - confirmation UX must be enforced inside Vulcan, not in the host runtime
 - mobile or chat transports need tighter control than an external runtime can provide
-- the cost of keeping runtime logic outside Vulcan becomes higher than owning it
+- the cost of keeping model/runtime logic outside Vulcan becomes higher than owning it
 
 Until then, keep Vulcan opinionated about tools and permissive about runtimes.

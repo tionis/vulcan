@@ -7,7 +7,7 @@ Core workflows:
 - `vulcan note get|create|append|patch` for precise note edits.
 - `vulcan export ...` for publication output; `markdown`, `json`, `epub`, and `zip` can apply publication transforms without modifying source notes.
 - `vulcan doctor` to surface unresolved links and parser diagnostics.
-- `vulcan assistant --doctor` to check the optional embedded assistant host; see `docs/guide/assistant.md`.
+- `vulcan assistant --doctor`, `vulcan assistant "..."`, and `vulcan assistant --chat` for the optional embedded assistant host; see `docs/guide/assistant.md`.
 
 Automation conventions:
 
