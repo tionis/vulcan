@@ -470,6 +470,7 @@ pub fn exchange_indieauth_code(
     code: &str,
     redirect_uri: &str,
     client_id: &str,
+    code_verifier: &str,
 ) -> Result<String, OAuthError> {
     let response = reqwest::blocking::Client::new()
         .post(token_endpoint)
@@ -479,6 +480,7 @@ pub fn exchange_indieauth_code(
             ("code", code),
             ("redirect_uri", redirect_uri),
             ("client_id", client_id),
+            ("code_verifier", code_verifier),
         ])
         .send()
         .map_err(|error| OAuthError::Network(format!("IndieAuth token request failed: {error}")))?
@@ -512,6 +514,12 @@ pub fn exchange_indieauth_code(
         .ok_or_else(|| {
             OAuthError::Token("IndieAuth token response did not include me or sub".to_string())
         })
+}
+
+#[must_use]
+pub fn pkce_s256_challenge(verifier: &str) -> String {
+    let digest = Sha256::digest(verifier.as_bytes());
+    BASE64_URL_SAFE_NO_PAD.encode(digest)
 }
 
 #[derive(Debug, Deserialize)]
@@ -781,6 +789,14 @@ mod tests {
         assert_eq!(
             metadata["code_challenge_methods_supported"],
             serde_json::json!(["S256"])
+        );
+    }
+
+    #[test]
+    fn pkce_s256_challenge_matches_rfc_vector() {
+        assert_eq!(
+            pkce_s256_challenge("dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk"),
+            "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"
         );
     }
 

@@ -46,7 +46,7 @@ use vulcan_core::{
     ProfilePermissionGuard, QueryAst, QueryReport, ScanMode, ScanSummary, SearchQuery, SearchSort,
     VaultPaths,
 };
-use vulcan_core::{discover_indieauth_endpoints, exchange_indieauth_code};
+use vulcan_core::{discover_indieauth_endpoints, exchange_indieauth_code, pkce_s256_challenge};
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_INLINE_TEXT_LIMIT: usize = 4_096;
@@ -748,6 +748,7 @@ struct LocalOAuthPendingIndieAuth {
     client_id: String,
     redirect_uri: String,
     code_challenge: String,
+    indieauth_code_verifier: String,
     state: Option<String>,
     expires_at: std::time::Instant,
 }
@@ -3986,6 +3987,8 @@ fn handle_local_oauth_authorize(
     }
     if let Some(indieauth) = context.oauth_indieauth.as_ref() {
         let state = Ulid::new().to_string();
+        let indieauth_code_verifier = generate_pkce_verifier();
+        let indieauth_code_challenge = pkce_s256_challenge(&indieauth_code_verifier);
         context
             .oauth_pending_indieauth
             .lock()
@@ -3996,11 +3999,12 @@ fn handle_local_oauth_authorize(
                     client_id,
                     redirect_uri,
                     code_challenge,
+                    indieauth_code_verifier,
                     state: params.get("state").cloned(),
                     expires_at: std::time::Instant::now() + Duration::from_secs(600),
                 },
             );
-        return local_oauth_redirect_to_indieauth(indieauth, &state);
+        return local_oauth_redirect_to_indieauth(indieauth, &state, &indieauth_code_challenge);
     }
     let approval_token = params.get("approval_token").cloned().unwrap_or_default();
     if !issuer.verify_approval_token(&approval_token) {
@@ -4242,6 +4246,7 @@ fn handle_local_oauth_indieauth_callback(
         code,
         &indieauth.redirect_uri,
         &indieauth.client_id,
+        &pending.indieauth_code_verifier,
     ) {
         Ok(subject) => subject,
         Err(error) => return oauth_plain_response(400, &error.to_string()),
@@ -4282,13 +4287,15 @@ fn handle_local_oauth_indieauth_callback(
 fn local_oauth_redirect_to_indieauth(
     indieauth: &LocalOAuthIndieAuthConfig,
     state: &str,
+    code_challenge: &str,
 ) -> McpHttpResponse {
     let mut location = format!(
-        "{}?response_type=code&client_id={}&redirect_uri={}&state={}",
+        "{}?response_type=code&client_id={}&redirect_uri={}&state={}&code_challenge={}&code_challenge_method=S256",
         indieauth.authorization_endpoint,
         percent_encode(&indieauth.client_id),
         percent_encode(&indieauth.redirect_uri),
-        percent_encode(state)
+        percent_encode(state),
+        percent_encode(code_challenge)
     );
     if let Some(me) = indieauth.me.as_ref() {
         location.push_str("&me=");
@@ -4392,6 +4399,16 @@ fn oauth_issuer_secret_path(paths: &VaultPaths) -> PathBuf {
     paths.vulcan_dir().join("mcp-oauth-issuer-secret")
 }
 
+fn generate_pkce_verifier() -> String {
+    format!(
+        "{}{}{}{}",
+        Ulid::new(),
+        Ulid::new(),
+        Ulid::new(),
+        Ulid::new()
+    )
+}
+
 fn load_or_create_local_oauth_issuer_secret(paths: &VaultPaths) -> Result<String, CliError> {
     let path = oauth_issuer_secret_path(paths);
     if path.exists() {
@@ -4408,13 +4425,7 @@ fn load_or_create_local_oauth_issuer_secret(paths: &VaultPaths) -> Result<String
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).map_err(CliError::operation)?;
     }
-    let secret = format!(
-        "{}{}{}{}",
-        Ulid::new(),
-        Ulid::new(),
-        Ulid::new(),
-        Ulid::new()
-    );
+    let secret = generate_pkce_verifier();
     write_secret_file(&path, &secret)?;
     Ok(secret)
 }
@@ -6583,5 +6594,25 @@ mod tests {
         let second_secret =
             fs::read_to_string(&secret_path).expect("issuer secret should still exist");
         assert_eq!(first_secret, second_secret);
+    }
+
+    #[test]
+    fn indieauth_redirect_includes_pkce_challenge() {
+        let indieauth = LocalOAuthIndieAuthConfig {
+            authorization_endpoint: "https://indieauth.example.test/authorize".to_string(),
+            token_endpoint: "https://indieauth.example.test/token".to_string(),
+            client_id: "https://wiki.example.test".to_string(),
+            redirect_uri: "https://wiki.example.test/oauth/indieauth/callback".to_string(),
+            me: Some("https://example.test/".to_string()),
+        };
+        let response =
+            local_oauth_redirect_to_indieauth(&indieauth, "state-value", "challenge-value");
+        let location = response
+            .extra_headers
+            .iter()
+            .find_map(|(name, value)| (name == "Location").then_some(value.as_str()))
+            .expect("redirect location should be set");
+        assert!(location.contains("code_challenge=challenge-value"));
+        assert!(location.contains("code_challenge_method=S256"));
     }
 }
