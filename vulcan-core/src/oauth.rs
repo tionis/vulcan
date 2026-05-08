@@ -42,10 +42,11 @@ impl OAuthResourceServer {
                 "at least one allowed OAuth subject or email is required".to_string(),
             ));
         }
-        let issuer = trim_trailing_slash(&config.issuer);
+        let discovery = discover_oidc_metadata(&config.issuer)?;
+        let issuer = discovery.issuer;
         let jwks_url = match config.jwks_url.as_deref() {
             Some(url) => url.to_string(),
-            None => discover_oidc_jwks_uri(&issuer)?,
+            None => discovery.jwks_uri,
         };
         let jwks = fetch_jwks(&jwks_url)?;
         let protected_resource_metadata_url = protected_resource_metadata_url(&config.public_url)?;
@@ -143,6 +144,7 @@ impl Error for OAuthError {}
 
 #[derive(Debug, Deserialize)]
 struct OidcDiscoveryDocument {
+    issuer: String,
     jwks_uri: String,
 }
 
@@ -152,15 +154,17 @@ struct OAuthClaims {
     email: Option<String>,
 }
 
-fn discover_oidc_jwks_uri(issuer: &str) -> Result<String, OAuthError> {
-    let discovery_url = format!("{issuer}/.well-known/openid-configuration");
-    let document = reqwest::blocking::get(&discovery_url)
+fn discover_oidc_metadata(issuer: &str) -> Result<OidcDiscoveryDocument, OAuthError> {
+    let discovery_url = format!(
+        "{}/.well-known/openid-configuration",
+        issuer.trim_end_matches('/')
+    );
+    reqwest::blocking::get(&discovery_url)
         .map_err(|error| OAuthError::Network(format!("failed to fetch OIDC discovery: {error}")))?
         .error_for_status()
         .map_err(|error| OAuthError::Network(format!("OIDC discovery failed: {error}")))?
         .json::<OidcDiscoveryDocument>()
-        .map_err(|error| OAuthError::Network(format!("invalid OIDC discovery JSON: {error}")))?;
-    Ok(document.jwks_uri)
+        .map_err(|error| OAuthError::Network(format!("invalid OIDC discovery JSON: {error}")))
 }
 
 fn fetch_jwks(jwks_url: &str) -> Result<JwkSet, OAuthError> {
@@ -170,10 +174,6 @@ fn fetch_jwks(jwks_url: &str) -> Result<JwkSet, OAuthError> {
         .map_err(|error| OAuthError::Network(format!("OAuth JWKS fetch failed: {error}")))?
         .json::<JwkSet>()
         .map_err(|error| OAuthError::Network(format!("invalid OAuth JWKS JSON: {error}")))
-}
-
-fn trim_trailing_slash(value: &str) -> String {
-    value.trim_end_matches('/').to_string()
 }
 
 pub fn protected_resource_metadata_url(public_url: &str) -> Result<String, OAuthError> {
