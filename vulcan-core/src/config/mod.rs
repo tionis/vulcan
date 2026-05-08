@@ -181,6 +181,20 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # stack_limit_kb = 256
 # policy_hook = ".vulcan/plugins/agent-policy.js"
 
+# [permissions.profiles.daily-wiki-agent]
+# read = "all"
+# write = "all"
+# refactor = "none"
+# git = "deny"
+# network = "deny"
+# index = "deny"
+# config = "read"
+# execute = "deny"
+# shell = "deny"
+# cpu_limit_ms = 5000
+# memory_limit_mb = 64
+# stack_limit_kb = 256
+
 # [permissions.profiles.readonly]
 # read = "all"
 # write = "none"
@@ -2310,6 +2324,19 @@ impl PermissionProfile {
         Self {
             read: PathPermissionConfig::Keyword(PathPermissionKeyword::All),
             config: ConfigPermissionMode::Read,
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn daily_wiki_agent() -> Self {
+        Self {
+            read: PathPermissionConfig::Keyword(PathPermissionKeyword::All),
+            write: PathPermissionConfig::Keyword(PathPermissionKeyword::All),
+            config: ConfigPermissionMode::Read,
+            cpu_limit_ms: PermissionLimit::Value(5000),
+            memory_limit_mb: PermissionLimit::Value(64),
+            stack_limit_kb: PermissionLimit::Value(256),
             ..Self::default()
         }
     }
@@ -4888,6 +4915,10 @@ fn load_vault_config_base(paths: &VaultPaths) -> ConfigLoadResult {
 #[must_use]
 pub fn builtin_permission_profiles() -> BTreeMap<String, PermissionProfile> {
     let mut profiles = BTreeMap::new();
+    profiles.insert(
+        "daily-wiki-agent".to_string(),
+        PermissionProfile::daily_wiki_agent(),
+    );
     profiles.insert("readonly".to_string(), PermissionProfile::readonly());
     profiles.insert(
         "unrestricted".to_string(),
@@ -10307,6 +10338,10 @@ site_profile = "public-local"
             Some(&PermissionProfile::readonly())
         );
         assert_eq!(
+            loaded.profiles.get("daily-wiki-agent"),
+            Some(&PermissionProfile::daily_wiki_agent())
+        );
+        assert_eq!(
             loaded.profiles.get("unrestricted"),
             Some(&PermissionProfile::unrestricted())
         );
@@ -11886,8 +11921,10 @@ include_paths = ["Docs/Intro.md"]
         let template = default_config_template();
 
         assert!(template.contains("[permissions.profiles.agent]"));
+        assert!(template.contains("[permissions.profiles.daily-wiki-agent]"));
         assert!(template.contains("[permissions.profiles.readonly]"));
         assert!(template.contains("write = { allow = [\"folder:Projects/**\""));
+        assert!(template.contains("write = \"all\""));
         assert!(template.contains("network = { allow = true, domains = ["));
         assert!(template.contains("policy_hook = \".vulcan/plugins/agent-policy.js\""));
     }

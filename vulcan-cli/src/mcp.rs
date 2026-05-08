@@ -7,13 +7,16 @@ use crate::{
     cli_command_tree, collect_complete_candidates, collect_help_command_topics,
     config_set_changed_files, custom_tool_registry_entry, normalize_note_path,
     permission_error_to_cli, resolve_existing_markdown_target, resolve_existing_note_path,
-    resolve_help_topic, run_note_append_command, run_note_create_with_body,
-    run_note_delete_command, run_note_get_command, run_note_info_command, run_note_outline_command,
-    run_note_patch_command, run_note_set_with_content, run_status_command, run_web_fetch_command,
-    run_web_search_command, CliError, McpToolAnnotations, McpToolPackArg, McpToolPackModeArg,
-    McpToolsReport, McpTransportArg, NoteAppendMode, NoteAppendOptions, NoteAppendPeriodicArg,
-    NoteGetMode, NoteGetOptions, NotePatchOptions, OutputFormat, SearchBackendArg,
-    ToolRegistryEntry, WebFetchMode,
+    resolve_help_topic, run_daily_list_command, run_daily_show_command, run_note_append_command,
+    run_note_create_with_body, run_note_delete_command, run_note_get_command,
+    run_note_info_command, run_note_outline_command, run_note_patch_command,
+    run_note_set_with_content, run_status_command, run_tasks_complete_command,
+    run_tasks_create_command, run_tasks_list_command, run_tasks_query_command,
+    run_tasks_reschedule_command, run_web_fetch_command, run_web_search_command, CliError,
+    McpToolAnnotations, McpToolPackArg, McpToolPackModeArg, McpToolsReport, McpTransportArg,
+    NoteAppendMode, NoteAppendOptions, NoteAppendPeriodicArg, NoteGetMode, NoteGetOptions,
+    NotePatchOptions, OutputFormat, SearchBackendArg, TasksCreateOptions, TasksListOptions,
+    TasksListSourceArg, ToolRegistryEntry, WebFetchMode,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -31,13 +34,15 @@ use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_core::properties::load_note_index;
 use vulcan_core::{
     accept_link_suggestion, assistant_config_summary, assistant_prompts_root,
-    assistant_skills_root, assistant_tools_root, list_assistant_prompts, list_assistant_skills,
+    assistant_skills_root, assistant_tools_root, evaluate_dql_with_filter,
+    execute_query_report_with_filter, list_assistant_prompts, list_assistant_skills,
     load_assistant_prompt, load_assistant_skill, load_vault_config,
-    query_graph_communities_with_filter, read_vault_agents_file, reject_link_suggestion,
-    render_assistant_prompt, resolve_permission_profile, scan_vault_with_progress,
-    search_vault_with_filter, suggest_links, ConfigPermissionMode, LinkSuggestionStatus,
-    PermissionGuard, PermissionMode, PermissionProfile, PluginEvent, ProfilePermissionGuard,
-    ScanMode, ScanSummary, SearchQuery, SearchSort, VaultPaths,
+    query_graph_communities_with_filter, query_notes_with_filter, read_vault_agents_file,
+    reject_link_suggestion, render_assistant_prompt, resolve_permission_profile,
+    scan_vault_with_progress, search_vault_with_filter, suggest_links, ConfigPermissionMode,
+    LinkSuggestionStatus, NoteQuery, PermissionGuard, PermissionMode, PermissionProfile,
+    PluginEvent, ProfilePermissionGuard, QueryAst, QueryReport, ScanMode, ScanSummary, SearchQuery,
+    SearchSort, VaultPaths,
 };
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
@@ -84,6 +89,8 @@ enum McpToolPack {
     Search,
     Status,
     Custom,
+    Daily,
+    Tasks,
     NotesWrite,
     NotesManage,
     Web,
@@ -99,6 +106,8 @@ impl McpToolPack {
             Self::Search => "search",
             Self::Status => "status",
             Self::Custom => "custom",
+            Self::Daily => "daily",
+            Self::Tasks => "tasks",
             Self::NotesWrite => "notes-write",
             Self::NotesManage => "notes-manage",
             Self::Web => "web",
@@ -114,6 +123,12 @@ impl McpToolPack {
             Self::Search => "Search the vault with structured hits and snippets.",
             Self::Status => "Inspect vault status, cache metadata, and git summary.",
             Self::Custom => "Expose callable vault-native custom tools.",
+            Self::Daily => {
+                "Read daily notes and daily-note ranges with structured periodic metadata."
+            }
+            Self::Tasks => {
+                "Query and mutate Tasks plugin and TaskNotes task workflows with typed operations."
+            }
             Self::NotesWrite => "Create notes and apply targeted append/patch mutations.",
             Self::NotesManage => {
                 "Read advanced note metadata and perform replace/delete mutations."
@@ -133,7 +148,15 @@ enum McpToolId {
     NoteGet,
     NoteOutline,
     Search,
+    Query,
     Status,
+    DailyShow,
+    DailyList,
+    TaskList,
+    TaskQuery,
+    TaskCreate,
+    TaskComplete,
+    TaskReschedule,
     NoteCreate,
     NoteAppend,
     NotePatch,
@@ -197,6 +220,8 @@ const PACK_NOTES_READ: &[McpToolPack] = &[McpToolPack::NotesRead];
 const PACK_SEARCH: &[McpToolPack] = &[McpToolPack::Search];
 const PACK_STATUS: &[McpToolPack] = &[McpToolPack::Status];
 const PACK_CUSTOM: &[McpToolPack] = &[McpToolPack::Custom];
+const PACK_DAILY: &[McpToolPack] = &[McpToolPack::Daily];
+const PACK_TASKS: &[McpToolPack] = &[McpToolPack::Tasks];
 const PACK_NOTES_WRITE: &[McpToolPack] = &[McpToolPack::NotesWrite];
 const PACK_NOTES_READ_WRITE: &[McpToolPack] = &[McpToolPack::NotesRead, McpToolPack::NotesWrite];
 const PACK_NOTES_MANAGE: &[McpToolPack] = &[McpToolPack::NotesManage];
@@ -252,6 +277,21 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         ],
     },
     McpToolCatalogEntry {
+        id: McpToolId::Query,
+        name: "query",
+        title: "Query Vault",
+        description: "Run the structured Vulcan query surface. Use this for property, tag, path, and DQL-style note queries instead of raw full-text search.",
+        packs: PACK_SEARCH,
+        visibility: McpVisibilityRequirement::Read,
+        annotations: mcp_annotations(true, false, true, false),
+        input_schema: query_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &[
+            "query {\"filters\":[\"status = active\"],\"sort\":\"file.path\"}",
+            "query {\"query\":\"TABLE file.link, status WHERE status = \\\"active\\\"\",\"engine\":\"dql\"}",
+        ],
+    },
+    McpToolCatalogEntry {
         id: McpToolId::Status,
         name: "status",
         title: "Read Vault Status",
@@ -262,6 +302,30 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         input_schema: empty_object_schema,
         output_schema: Some(status_output_schema),
         examples: &["vulcan status --output json"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::DailyShow,
+        name: "daily_show",
+        title: "Show Daily Note",
+        description: "Read one daily note with its resolved periodic metadata and structured schedule events. Use this before generic note reads for daily-routine questions.",
+        packs: PACK_DAILY,
+        visibility: McpVisibilityRequirement::Read,
+        annotations: mcp_annotations(true, false, true, false),
+        input_schema: daily_show_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["daily_show {\"date\":\"today\"}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::DailyList,
+        name: "daily_list",
+        title: "List Daily Notes",
+        description: "List daily notes in a date window with event counts and extracted schedule events.",
+        packs: PACK_DAILY,
+        visibility: McpVisibilityRequirement::Read,
+        annotations: mcp_annotations(true, false, true, false),
+        input_schema: daily_list_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["daily_list {\"week\":true}"],
     },
     McpToolCatalogEntry {
         id: McpToolId::GraphCommunities,
@@ -286,6 +350,66 @@ const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         input_schema: suggest_links_input_schema,
         output_schema: Some(generic_report_output_schema),
         examples: &["vulcan suggest links --output json"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::TaskList,
+        name: "task_list",
+        title: "List Tasks",
+        description: "List open or filtered tasks through Vulcan's task model. Use this for task summaries instead of raw note search.",
+        packs: PACK_TASKS,
+        visibility: McpVisibilityRequirement::Read,
+        annotations: mcp_annotations(true, false, false, false),
+        input_schema: task_list_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["task_list {\"status\":\"open\",\"due_before\":\"2026-05-15\"}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::TaskQuery,
+        name: "task_query",
+        title: "Query Tasks",
+        description: "Run a Tasks plugin query source and return shaped task results. Use this when the user gives task-query semantics directly.",
+        packs: PACK_TASKS,
+        visibility: McpVisibilityRequirement::Read,
+        annotations: mcp_annotations(true, false, false, false),
+        input_schema: task_query_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["task_query {\"query\":\"not done\\ndue before tomorrow\"}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::TaskCreate,
+        name: "task_create",
+        title: "Create Task",
+        description: "Create a task using the configured task system. Prefer this over raw note edits for new tasks.",
+        packs: PACK_TASKS,
+        visibility: McpVisibilityRequirement::Write,
+        annotations: mcp_annotations(false, true, false, false),
+        input_schema: task_create_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["task_create {\"text\":\"Call Alex\",\"due\":\"tomorrow\"}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::TaskComplete,
+        name: "task_complete",
+        title: "Complete Task",
+        description: "Mark one resolved task complete using task-aware mutation rules. Prefer this over raw note patching for task completion.",
+        packs: PACK_TASKS,
+        visibility: McpVisibilityRequirement::Write,
+        annotations: mcp_annotations(false, true, false, false),
+        input_schema: task_complete_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["task_complete {\"task\":\"Tasks/Call Alex\",\"date\":\"today\"}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::TaskReschedule,
+        name: "task_reschedule",
+        title: "Reschedule Task",
+        description: "Update a task due date using task-aware mutation rules. Prefer this over raw note patching for due-date changes.",
+        packs: PACK_TASKS,
+        visibility: McpVisibilityRequirement::Write,
+        annotations: mcp_annotations(false, true, false, false),
+        input_schema: task_reschedule_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["task_reschedule {\"task\":\"Tasks/Call Alex\",\"due\":\"2026-05-09\"}"],
     },
     McpToolCatalogEntry {
         id: McpToolId::NoteCreate,
@@ -768,6 +892,115 @@ struct McpSearchArgs {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct McpQueryArgs {
+    #[serde(default)]
+    query: Option<String>,
+    #[serde(default)]
+    json: Option<String>,
+    #[serde(default)]
+    filters: Vec<String>,
+    #[serde(default)]
+    sort: Option<String>,
+    #[serde(default)]
+    desc: bool,
+    #[serde(default)]
+    engine: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpDailyShowArgs {
+    #[serde(default)]
+    date: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpDailyListArgs {
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    week: bool,
+    #[serde(default)]
+    month: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpTaskListArgs {
+    #[serde(default)]
+    filter: Option<String>,
+    #[serde(default)]
+    source: Option<String>,
+    #[serde(default)]
+    status: Option<String>,
+    #[serde(default)]
+    priority: Option<String>,
+    #[serde(default)]
+    due_before: Option<String>,
+    #[serde(default)]
+    due_after: Option<String>,
+    #[serde(default)]
+    project: Option<String>,
+    #[serde(default)]
+    context: Option<String>,
+    #[serde(default)]
+    group_by: Option<String>,
+    #[serde(default)]
+    sort_by: Option<String>,
+    #[serde(default)]
+    include_archived: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpTaskQueryArgs {
+    query: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpTaskCreateArgs {
+    text: String,
+    #[serde(default)]
+    note: Option<String>,
+    #[serde(default)]
+    due: Option<String>,
+    #[serde(default)]
+    priority: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+    #[serde(default)]
+    no_commit: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpTaskCompleteArgs {
+    task: String,
+    #[serde(default)]
+    date: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+    #[serde(default)]
+    no_commit: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct McpTaskRescheduleArgs {
+    task: String,
+    due: String,
+    #[serde(default)]
+    dry_run: bool,
+    #[serde(default)]
+    no_commit: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct McpGraphCommunitiesArgs {
     #[serde(default)]
     community: Option<usize>,
@@ -870,6 +1103,8 @@ struct McpNoteSetArgs {
     note: String,
     content: String,
     #[serde(default)]
+    confirm: bool,
+    #[serde(default)]
     preserve_frontmatter: bool,
     #[serde(default)]
     check: bool,
@@ -883,6 +1118,8 @@ struct McpNoteDeleteArgs {
     note: String,
     #[serde(default)]
     dry_run: bool,
+    #[serde(default)]
+    confirm: bool,
     #[serde(default)]
     no_commit: bool,
 }
@@ -2305,9 +2542,126 @@ impl McpServerCore {
                 .map_err(|error| McpMethodError::tool(error.to_string()))?;
                 self.serialize_tool_report(tool.name, &report)
             }
+            McpToolId::Query => {
+                let args: McpQueryArgs = parse_tool_arguments(arguments)?;
+                if args.query.is_some() && args.json.is_some() {
+                    return Err(McpMethodError::invalid_params(
+                        "`query` accepts either `query` or `json`, not both",
+                    ));
+                }
+                let use_dql = match args.engine.as_deref().unwrap_or("auto") {
+                    "dql" => true,
+                    "dsl" => false,
+                    "auto" => args.query.as_deref().is_some_and(|query| {
+                        query.trim_start().to_ascii_uppercase().starts_with("TABLE")
+                            || query.trim_start().to_ascii_uppercase().starts_with("LIST")
+                            || query.trim_start().to_ascii_uppercase().starts_with("TASK")
+                    }),
+                    other => {
+                        return Err(McpMethodError::invalid_params(format!(
+                            "unsupported `query.engine`: {other}"
+                        )));
+                    }
+                };
+                if use_dql {
+                    let dql = args.query.as_deref().ok_or_else(|| {
+                        McpMethodError::invalid_params("DQL queries require `query`")
+                    })?;
+                    if !args.filters.is_empty() || args.sort.is_some() || args.desc {
+                        return Err(McpMethodError::invalid_params(
+                            "`query.filters`, `sort`, and `desc` cannot be combined with DQL",
+                        ));
+                    }
+                    let result = evaluate_dql_with_filter(
+                        &self.paths,
+                        dql,
+                        None,
+                        Some(&self.guard.read_filter()),
+                    )
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                    return self.serialize_tool_report(tool.name, &result);
+                }
+                let report = match (args.query.as_deref(), args.json.as_deref()) {
+                    (Some(dsl), None) => {
+                        if !args.filters.is_empty() || args.sort.is_some() || args.desc {
+                            return Err(McpMethodError::invalid_params(
+                                "`query.filters`, `sort`, and `desc` cannot be combined with a DSL string or JSON query",
+                            ));
+                        }
+                        let ast = QueryAst::from_dsl(dsl)
+                            .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                        execute_query_report_with_filter(
+                            &self.paths,
+                            ast,
+                            Some(&self.guard.read_filter()),
+                        )
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?
+                    }
+                    (None, Some(json)) => {
+                        if !args.filters.is_empty() || args.sort.is_some() || args.desc {
+                            return Err(McpMethodError::invalid_params(
+                                "`query.filters`, `sort`, and `desc` cannot be combined with a DSL string or JSON query",
+                            ));
+                        }
+                        let ast = QueryAst::from_json(json)
+                            .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                        execute_query_report_with_filter(
+                            &self.paths,
+                            ast,
+                            Some(&self.guard.read_filter()),
+                        )
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?
+                    }
+                    (None, None) => {
+                        let note_query = NoteQuery {
+                            filters: args.filters,
+                            sort_by: args.sort,
+                            sort_descending: args.desc,
+                        };
+                        let notes_report = query_notes_with_filter(
+                            &self.paths,
+                            &note_query,
+                            Some(&self.guard.read_filter()),
+                        )
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                        let ast = QueryAst::from_note_query(&note_query)
+                            .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                        QueryReport {
+                            query: ast,
+                            notes: notes_report.notes,
+                        }
+                    }
+                    (Some(_), Some(_)) => unreachable!("checked above"),
+                };
+                self.serialize_tool_report(tool.name, &report)
+            }
             McpToolId::Status => {
                 let report = run_status_command(&self.paths).map_err(cli_tool_error)?;
                 self.serialize_tool_report(tool.name, &report)
+            }
+            McpToolId::DailyShow => {
+                let args: McpDailyShowArgs = parse_tool_arguments(arguments)?;
+                let report = run_daily_show_command(&self.paths, args.date.as_deref(), "daily")
+                    .map_err(cli_tool_error)?;
+                self.check_read_note_access(&report.path)
+                    .map_err(cli_tool_error)?;
+                self.serialize_tool_report(tool.name, &report)
+            }
+            McpToolId::DailyList => {
+                let args: McpDailyListArgs = parse_tool_arguments(arguments)?;
+                let report = run_daily_list_command(
+                    &self.paths,
+                    args.from.as_deref(),
+                    args.to.as_deref(),
+                    args.week,
+                    args.month,
+                )
+                .map_err(cli_tool_error)?;
+                let filtered = report
+                    .into_iter()
+                    .filter(|item| self.guard.check_read_path(&item.path).is_ok())
+                    .collect::<Vec<_>>();
+                self.serialize_tool_report(tool.name, &filtered)
             }
             McpToolId::GraphCommunities => {
                 let args: McpGraphCommunitiesArgs = parse_tool_arguments(arguments)?;
@@ -2372,6 +2726,161 @@ impl McpServerCore {
                     status,
                 )
                 .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                self.serialize_tool_report(tool.name, &report)
+            }
+            McpToolId::TaskList => {
+                let args: McpTaskListArgs = parse_tool_arguments(arguments)?;
+                let report = run_tasks_list_command(
+                    &self.paths,
+                    TasksListOptions {
+                        filter: args.filter.as_deref(),
+                        source: parse_tasks_default_source(args.source.as_deref())?,
+                        status: args.status.as_deref(),
+                        priority: args.priority.as_deref(),
+                        due_before: args.due_before.as_deref(),
+                        due_after: args.due_after.as_deref(),
+                        project: args.project.as_deref(),
+                        context: args.context.as_deref(),
+                        group_by: args.group_by.as_deref(),
+                        sort_by: args.sort_by.as_deref(),
+                        include_archived: args.include_archived,
+                    },
+                )
+                .map_err(cli_tool_error)?;
+                self.serialize_tool_report(tool.name, &report)
+            }
+            McpToolId::TaskQuery => {
+                let args: McpTaskQueryArgs = parse_tool_arguments(arguments)?;
+                let report =
+                    run_tasks_query_command(&self.paths, &args.query).map_err(cli_tool_error)?;
+                self.serialize_tool_report(tool.name, &report)
+            }
+            McpToolId::TaskCreate => {
+                let args: McpTaskCreateArgs = parse_tool_arguments(arguments)?;
+                if !args.dry_run {
+                    let planned = run_tasks_create_command(
+                        &self.paths,
+                        TasksCreateOptions {
+                            text: &args.text,
+                            note: args.note.as_deref(),
+                            due: args.due.as_deref(),
+                            priority: args.priority.as_deref(),
+                            dry_run: true,
+                        },
+                        OutputFormat::Json,
+                        false,
+                        true,
+                    )
+                    .map_err(cli_tool_error)?;
+                    for path in &planned.changed_paths {
+                        self.check_write_path_access(path).map_err(cli_tool_error)?;
+                    }
+                }
+                let report = run_tasks_create_command(
+                    &self.paths,
+                    TasksCreateOptions {
+                        text: &args.text,
+                        note: args.note.as_deref(),
+                        due: args.due.as_deref(),
+                        priority: args.priority.as_deref(),
+                        dry_run: args.dry_run,
+                    },
+                    OutputFormat::Json,
+                    false,
+                    true,
+                )
+                .map_err(cli_tool_error)?;
+                if !args.dry_run {
+                    AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
+                        .commit(
+                            &self.paths,
+                            "task-create",
+                            &report.changed_paths,
+                            Some(self.selection.name.as_str()),
+                            true,
+                        )
+                        .map_err(|error| McpMethodError::tool(error.clone()))?;
+                }
+                self.serialize_tool_report(tool.name, &report)
+            }
+            McpToolId::TaskComplete => {
+                let args: McpTaskCompleteArgs = parse_tool_arguments(arguments)?;
+                if !args.dry_run {
+                    let planned = run_tasks_complete_command(
+                        &self.paths,
+                        &args.task,
+                        args.date.as_deref(),
+                        true,
+                        OutputFormat::Json,
+                        false,
+                        true,
+                    )
+                    .map_err(cli_tool_error)?;
+                    for path in &planned.changed_paths {
+                        self.check_write_path_access(path).map_err(cli_tool_error)?;
+                    }
+                }
+                let report = run_tasks_complete_command(
+                    &self.paths,
+                    &args.task,
+                    args.date.as_deref(),
+                    args.dry_run,
+                    OutputFormat::Json,
+                    false,
+                    true,
+                )
+                .map_err(cli_tool_error)?;
+                if !args.dry_run {
+                    AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
+                        .commit(
+                            &self.paths,
+                            "task-complete",
+                            &report.changed_paths,
+                            Some(self.selection.name.as_str()),
+                            true,
+                        )
+                        .map_err(|error| McpMethodError::tool(error.clone()))?;
+                }
+                self.serialize_tool_report(tool.name, &report)
+            }
+            McpToolId::TaskReschedule => {
+                let args: McpTaskRescheduleArgs = parse_tool_arguments(arguments)?;
+                if !args.dry_run {
+                    let planned = run_tasks_reschedule_command(
+                        &self.paths,
+                        &args.task,
+                        &args.due,
+                        true,
+                        OutputFormat::Json,
+                        false,
+                        true,
+                    )
+                    .map_err(cli_tool_error)?;
+                    for path in &planned.changed_paths {
+                        self.check_write_path_access(path).map_err(cli_tool_error)?;
+                    }
+                }
+                let report = run_tasks_reschedule_command(
+                    &self.paths,
+                    &args.task,
+                    &args.due,
+                    args.dry_run,
+                    OutputFormat::Json,
+                    false,
+                    true,
+                )
+                .map_err(cli_tool_error)?;
+                if !args.dry_run {
+                    AutoCommitPolicy::for_mutation(&self.paths, args.no_commit)
+                        .commit(
+                            &self.paths,
+                            "task-reschedule",
+                            &report.changed_paths,
+                            Some(self.selection.name.as_str()),
+                            true,
+                        )
+                        .map_err(|error| McpMethodError::tool(error.clone()))?;
+                }
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::NoteCreate => {
@@ -2501,6 +3010,11 @@ impl McpServerCore {
             }
             McpToolId::NoteSet => {
                 let args: McpNoteSetArgs = parse_tool_arguments(arguments)?;
+                if !args.confirm {
+                    return Err(McpMethodError::invalid_params(
+                        "`note_set.confirm` must be true because this replaces the full note body",
+                    ));
+                }
                 self.check_write_note_access(&args.note)
                     .map_err(cli_tool_error)?;
                 let report = run_note_set_with_content(
@@ -2528,6 +3042,11 @@ impl McpServerCore {
             }
             McpToolId::NoteDelete => {
                 let args: McpNoteDeleteArgs = parse_tool_arguments(arguments)?;
+                if !args.dry_run && !args.confirm {
+                    return Err(McpMethodError::invalid_params(
+                        "`note_delete.confirm` must be true unless `dry_run` is true",
+                    ));
+                }
                 self.check_write_note_access(&args.note)
                     .map_err(cli_tool_error)?;
                 let report = run_note_delete_command(
@@ -3327,6 +3846,8 @@ const ALL_MCP_TOOL_PACKS: &[McpToolPack] = &[
     McpToolPack::Search,
     McpToolPack::Status,
     McpToolPack::Custom,
+    McpToolPack::Daily,
+    McpToolPack::Tasks,
     McpToolPack::NotesWrite,
     McpToolPack::NotesManage,
     McpToolPack::Web,
@@ -3341,6 +3862,8 @@ fn expand_tool_pack_arg(value: McpToolPackArg) -> &'static [McpToolPack] {
         McpToolPackArg::Search => PACK_SEARCH,
         McpToolPackArg::Status => PACK_STATUS,
         McpToolPackArg::Custom => PACK_CUSTOM,
+        McpToolPackArg::Daily => PACK_DAILY,
+        McpToolPackArg::Tasks => PACK_TASKS,
         McpToolPackArg::NotesWrite => PACK_NOTES_WRITE,
         McpToolPackArg::NotesManage => PACK_NOTES_MANAGE,
         McpToolPackArg::Web => PACK_WEB,
@@ -3388,6 +3911,8 @@ fn parse_tool_pack_selector(value: &str) -> Option<McpToolPackArg> {
         "search" => Some(McpToolPackArg::Search),
         "status" => Some(McpToolPackArg::Status),
         "custom" => Some(McpToolPackArg::Custom),
+        "daily" => Some(McpToolPackArg::Daily),
+        "tasks" => Some(McpToolPackArg::Tasks),
         "notes-write" => Some(McpToolPackArg::NotesWrite),
         "notes-manage" => Some(McpToolPackArg::NotesManage),
         "web" => Some(McpToolPackArg::Web),
@@ -3673,6 +4198,20 @@ fn parse_periodic_arg(
         }
     };
     Ok(Some(parsed))
+}
+
+fn parse_tasks_default_source(
+    value: Option<&str>,
+) -> Result<Option<TasksListSourceArg>, McpMethodError> {
+    match value {
+        None => Ok(None),
+        Some("all") => Ok(Some(TasksListSourceArg::All)),
+        Some("inline") => Ok(Some(TasksListSourceArg::Inline)),
+        Some("tasknotes" | "file") => Ok(Some(TasksListSourceArg::Tasknotes)),
+        Some(other) => Err(McpMethodError::invalid_params(format!(
+            "unsupported `task_list.source`: {other}"
+        ))),
+    }
 }
 
 fn paginated_result(
@@ -4135,6 +4674,172 @@ fn search_input_schema() -> Value {
     )
 }
 
+fn query_input_schema() -> Value {
+    schema_object(
+        vec![
+            (
+                "query",
+                schema_string("Optional Vulcan query DSL or Dataview DQL source."),
+            ),
+            (
+                "json",
+                schema_string("Optional JSON-encoded Vulcan QueryAst payload."),
+            ),
+            (
+                "filters",
+                schema_array(
+                    schema_string("Typed note filter."),
+                    "Typed `--where` filters for note-property queries.",
+                ),
+            ),
+            ("sort", schema_string("Optional note field to sort by.")),
+            ("desc", schema_boolean("Sort descending.")),
+            (
+                "engine",
+                schema_string_enum("Query parser.", &["auto", "dsl", "dql"]),
+            ),
+        ],
+        &[],
+    )
+}
+
+fn daily_show_input_schema() -> Value {
+    schema_object(
+        vec![(
+            "date",
+            schema_string("Reference date such as today, tomorrow, or YYYY-MM-DD."),
+        )],
+        &[],
+    )
+}
+
+fn daily_list_input_schema() -> Value {
+    schema_object(
+        vec![
+            (
+                "from",
+                schema_string("Start date for the daily-note window."),
+            ),
+            ("to", schema_string("End date for the daily-note window.")),
+            (
+                "week",
+                schema_boolean("Use the current configured week window."),
+            ),
+            (
+                "month",
+                schema_boolean("Use the current configured month window."),
+            ),
+        ],
+        &[],
+    )
+}
+
+fn task_list_input_schema() -> Value {
+    schema_object(
+        vec![
+            (
+                "filter",
+                schema_string("Optional Tasks query or DQL fallback filter."),
+            ),
+            (
+                "source",
+                schema_string_enum(
+                    "Task source model.",
+                    &["all", "inline", "tasknotes", "file"],
+                ),
+            ),
+            ("status", schema_string("Filter by status.")),
+            ("priority", schema_string("Filter by priority.")),
+            (
+                "due_before",
+                schema_string("Filter tasks due before this date."),
+            ),
+            (
+                "due_after",
+                schema_string("Filter tasks due after this date."),
+            ),
+            ("project", schema_string("Filter by project.")),
+            ("context", schema_string("Filter by context.")),
+            (
+                "group_by",
+                schema_string("Group result rows by task field."),
+            ),
+            ("sort_by", schema_string("Sort result rows by task field.")),
+            (
+                "include_archived",
+                schema_boolean("Include archived TaskNotes tasks."),
+            ),
+        ],
+        &[],
+    )
+}
+
+fn task_query_input_schema() -> Value {
+    schema_object(
+        vec![("query", schema_string("Tasks plugin query source."))],
+        &["query"],
+    )
+}
+
+fn task_create_input_schema() -> Value {
+    schema_object(
+        vec![
+            (
+                "text",
+                schema_string("Task text, optionally with NLP date/project/context hints."),
+            ),
+            (
+                "note",
+                schema_string("Optional note target for inline task creation."),
+            ),
+            ("due", schema_string("Optional due date.")),
+            ("priority", schema_string("Optional priority.")),
+            ("dry_run", schema_boolean("Preview without writing.")),
+            (
+                "no_commit",
+                schema_boolean("Suppress auto-commit for this mutation."),
+            ),
+        ],
+        &["text"],
+    )
+}
+
+fn task_complete_input_schema() -> Value {
+    schema_object(
+        vec![
+            (
+                "task",
+                schema_string("Task path, title, or inline task selector."),
+            ),
+            ("date", schema_string("Completion date.")),
+            ("dry_run", schema_boolean("Preview without writing.")),
+            (
+                "no_commit",
+                schema_boolean("Suppress auto-commit for this mutation."),
+            ),
+        ],
+        &["task"],
+    )
+}
+
+fn task_reschedule_input_schema() -> Value {
+    schema_object(
+        vec![
+            (
+                "task",
+                schema_string("Task path, title, or inline task selector."),
+            ),
+            ("due", schema_string("New due date.")),
+            ("dry_run", schema_boolean("Preview without writing.")),
+            (
+                "no_commit",
+                schema_boolean("Suppress auto-commit for this mutation."),
+            ),
+        ],
+        &["task", "due"],
+    )
+}
+
 fn note_create_input_schema() -> Value {
     schema_object(
         vec![
@@ -4275,6 +4980,10 @@ fn note_set_input_schema() -> Value {
             ("note", schema_string("Note identifier to replace.")),
             ("content", schema_string("Replacement markdown content.")),
             (
+                "confirm",
+                schema_boolean("Must be true because this replaces the full note body."),
+            ),
+            (
                 "preserve_frontmatter",
                 schema_boolean("Keep the existing frontmatter block and replace only the body."),
             ),
@@ -4298,6 +5007,10 @@ fn note_delete_input_schema() -> Value {
             (
                 "dry_run",
                 schema_boolean("Preview deletion and backlinks without removing the file."),
+            ),
+            (
+                "confirm",
+                schema_boolean("Must be true unless dry_run is true."),
             ),
             (
                 "no_commit",
@@ -4458,6 +5171,8 @@ fn tool_pack_mutation_input_schema() -> Value {
                         "search",
                         "status",
                         "custom",
+                        "daily",
+                        "tasks",
                         "notes-write",
                         "notes-manage",
                         "web",

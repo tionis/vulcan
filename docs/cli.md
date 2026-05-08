@@ -37,6 +37,7 @@ The CLI is designed to be self-describing at runtime.
 - `vulcan --output json describe` prints the runtime command schema in machine-oriented JSON.
 - `vulcan --output json describe --format openai-tools` exports OpenAI function-calling tool definitions.
 - `vulcan --output json describe --format mcp` exports MCP-style tool definitions.
+- `vulcan help chatgpt-mcp` documents the private ChatGPT Developer Mode setup, including the `daily-wiki-agent` profile and daily/task packs.
 - `vulcan completions <shell>` generates shell completions.
 
 Useful starting points:
