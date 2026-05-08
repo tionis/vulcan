@@ -298,10 +298,10 @@ impl LocalOAuthIssuer {
     pub fn user_for_subject(&self, subject: &str) -> Option<LocalOAuthUserConfig> {
         self.users
             .iter()
-            .find(|user| user.subject == subject)
+            .find(|user| subjects_match(&user.subject, subject))
             .cloned()
             .or_else(|| {
-                (subject == self.subject).then(|| LocalOAuthUserConfig {
+                subjects_match(&self.subject, subject).then(|| LocalOAuthUserConfig {
                     subject: self.subject.clone(),
                     email: self.email.clone(),
                     permission_profile: None,
@@ -320,7 +320,11 @@ impl LocalOAuthIssuer {
 
     #[must_use]
     fn subject_allowed(&self, subject: &str) -> bool {
-        subject == self.subject || self.users.iter().any(|user| user.subject == subject)
+        subjects_match(&self.subject, subject)
+            || self
+                .users
+                .iter()
+                .any(|user| subjects_match(&user.subject, subject))
     }
 
     #[must_use]
@@ -520,6 +524,35 @@ pub fn exchange_indieauth_code(
 pub fn pkce_s256_challenge(verifier: &str) -> String {
     let digest = Sha256::digest(verifier.as_bytes());
     BASE64_URL_SAFE_NO_PAD.encode(digest)
+}
+
+fn subjects_match(configured: &str, actual: &str) -> bool {
+    configured == actual
+        || normalized_url_subject(configured)
+            .zip(normalized_url_subject(actual))
+            .is_some_and(|(configured, actual)| configured == actual)
+}
+
+fn normalized_url_subject(value: &str) -> Option<String> {
+    let url = reqwest::Url::parse(value).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host_str()?.to_ascii_lowercase();
+    let mut normalized = format!("{}://{}", url.scheme(), host);
+    if let Some(port) = url.port() {
+        normalized.push(':');
+        normalized.push_str(&port.to_string());
+    }
+    let path = url.path().trim_end_matches('/');
+    if !path.is_empty() {
+        normalized.push_str(path);
+    }
+    if let Some(query) = url.query() {
+        normalized.push('?');
+        normalized.push_str(query);
+    }
+    Some(normalized)
 }
 
 #[derive(Debug, Deserialize)]
@@ -848,6 +881,43 @@ mod tests {
             .unwrap();
         let identity = issuer.validate_bearer_token(&token).unwrap();
         assert_eq!(identity.subject, "https://tionis.dev/");
+        assert_eq!(
+            identity.permission_profile.as_deref(),
+            Some("daily-wiki-agent")
+        );
+    }
+
+    #[test]
+    fn local_oauth_issuer_matches_indieauth_url_subjects_canonically() {
+        let issuer = LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://wiki.example.test/mcp".to_string(),
+            client_id: "vulcan-mcp".to_string(),
+            client_secret: "secret".to_string(),
+            approval_token: String::new(),
+            subject: "fallback".to_string(),
+            email: None,
+            users: vec![LocalOAuthUserConfig {
+                subject: "https://eric.wendland.dev".to_string(),
+                email: Some("eric@example.test".to_string()),
+                permission_profile: Some("daily-wiki-agent".to_string()),
+            }],
+            dcr_enabled: true,
+        })
+        .unwrap();
+
+        let user = issuer
+            .user_for_subject("https://eric.wendland.dev/")
+            .unwrap();
+        assert_eq!(user.subject, "https://eric.wendland.dev");
+        let token = issuer
+            .issue_access_token_for(
+                "https://eric.wendland.dev/",
+                user.email,
+                user.permission_profile,
+            )
+            .unwrap();
+        let identity = issuer.validate_bearer_token(&token).unwrap();
+        assert_eq!(identity.subject, "https://eric.wendland.dev/");
         assert_eq!(
             identity.permission_profile.as_deref(),
             Some("daily-wiki-agent")
