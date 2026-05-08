@@ -7585,6 +7585,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref bind,
             ref endpoint,
             ref auth_token,
+            ref public_url,
+            ref oauth_issuer,
+            ref oauth_audience,
+            ref oauth_jwks_url,
+            ref oauth_allowed_sub,
+            ref oauth_allowed_email,
         } => mcp::run_mcp(
             &paths,
             cli.permissions.as_deref(),
@@ -7595,6 +7601,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 bind: bind.clone(),
                 endpoint: endpoint.clone(),
                 auth_token: auth_token.clone(),
+                public_url: public_url.clone(),
+                oauth_issuer: oauth_issuer.clone(),
+                oauth_audience: oauth_audience.clone(),
+                oauth_jwks_url: oauth_jwks_url.clone(),
+                oauth_allowed_sub: oauth_allowed_sub.clone(),
+                oauth_allowed_email: oauth_allowed_email.clone(),
             },
         ),
         Command::Trust { ref command } => handle_trust_command(cli, &paths, command.as_ref()),
@@ -23736,6 +23748,12 @@ mod tests {
                 bind: "127.0.0.1:9123".to_string(),
                 endpoint: "/custom-mcp".to_string(),
                 auth_token: Some("secret-token".to_string()),
+                public_url: None,
+                oauth_issuer: None,
+                oauth_audience: Vec::new(),
+                oauth_jwks_url: None,
+                oauth_allowed_sub: Vec::new(),
+                oauth_allowed_email: Vec::new(),
             }
         );
         assert_eq!(mcp.permissions.as_deref(), Some("readonly"));

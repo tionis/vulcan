@@ -4,9 +4,9 @@ Use this setup for a private ChatGPT Developer Mode connection to a personal wik
 
 ## Recommended Server Shape
 
-Do not expose `vulcan mcp --auth-token` directly to the public internet. Run Vulcan on loopback or a private network, then place an HTTPS front door in front of it.
+Do not expose `vulcan mcp --auth-token` directly to the public internet. For ChatGPT, use MCP OAuth mode with an external OIDC provider such as Authentik, or keep Vulcan on loopback/private networking behind an OAuth-aware front door.
 
-Preferred production shape:
+Preferred direct ChatGPT shape:
 
 1. Run Vulcan on a private bind:
 
@@ -15,14 +15,24 @@ Preferred production shape:
      --transport http \
      --bind 127.0.0.1:8765 \
      --endpoint /mcp \
+     --public-url https://wiki.example.com/mcp \
+     --oauth-issuer https://auth.example.com/application/o/vulcan/ \
+     --oauth-audience vulcan-mcp \
+     --oauth-allowed-email you@example.com \
      --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom
    ```
 
-2. Terminate HTTPS and OAuth at a reverse proxy or thin adapter.
-3. Forward only authenticated requests to `http://127.0.0.1:8765/mcp`.
+2. Publish `https://wiki.example.com/mcp` through an HTTPS reverse proxy to the local Vulcan bind.
+3. Configure ChatGPT Developer Mode with the public MCP URL.
 4. Keep shell, host execution, git mutation, unrestricted network, broad refactor, and config writes out of the selected permission profile.
 
 `daily-wiki-agent` is the built-in pilot profile for this shape. It allows full vault note/task edits, config reads, and no shell, host execution, git mutation, refactor, network, or explicit index maintenance.
+
+`--oauth-issuer` makes Vulcan validate incoming `Authorization: Bearer ...` access tokens against the issuer JWKS. Vulcan does not implement OAuth login, consent, authorization-code handling, refresh tokens, or dynamic client registration; Authentik owns those pieces. Vulcan acts as the protected MCP resource server, publishes OAuth protected-resource metadata, and returns `WWW-Authenticate` challenges that point clients at that metadata.
+
+For Authentik, create an OAuth2/OpenID provider for the MCP endpoint, use the provider issuer URL as `--oauth-issuer`, configure an audience such as `vulcan-mcp`, and restrict access with `--oauth-allowed-email` or `--oauth-allowed-sub`. If Authentik's issuer discovery does not expose the desired key set, pass `--oauth-jwks-url` explicitly.
+
+`--auth-token` remains useful for private/internal clients that can set a shared bearer token or `x-vulcan-token`. It is mutually exclusive with direct OAuth mode and is not a ChatGPT-compatible public auth mechanism.
 
 ## ChatGPT Developer Mode
 
