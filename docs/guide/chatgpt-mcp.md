@@ -22,13 +22,13 @@ Preferred direct ChatGPT shape:
      --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom
    ```
 
-2. Publish `https://wiki.example.com/mcp` through an HTTPS reverse proxy to the local Vulcan bind.
+2. Publish `https://wiki.example.com/mcp` through an HTTPS reverse proxy to the local Vulcan bind. Also proxy `https://wiki.example.com/.well-known/oauth-protected-resource/mcp` and `https://wiki.example.com/.well-known/oauth-authorization-server/mcp` to the same Vulcan server.
 3. Configure ChatGPT Developer Mode with the public MCP URL.
 4. Keep shell, host execution, git mutation, unrestricted network, broad refactor, and config writes out of the selected permission profile.
 
 `daily-wiki-agent` is the built-in pilot profile for this shape. It allows full vault note/task edits, config reads, and no shell, host execution, git mutation, refactor, network, or explicit index maintenance.
 
-`--oauth-issuer` makes Vulcan validate incoming `Authorization: Bearer ...` access tokens against the issuer JWKS. Vulcan does not implement OAuth login, consent, authorization-code handling, refresh tokens, or dynamic client registration; Authentik owns those pieces. Vulcan acts as the protected MCP resource server, publishes OAuth protected-resource metadata, and returns `WWW-Authenticate` challenges that point clients at that metadata.
+`--oauth-issuer` makes Vulcan validate incoming `Authorization: Bearer ...` access tokens against the issuer JWKS. Vulcan does not implement OAuth login, consent, authorization-code handling, refresh tokens, or dynamic client registration; Authentik owns those pieces. Vulcan acts as the protected MCP resource server, publishes OAuth protected-resource metadata, returns `WWW-Authenticate` challenges that point clients at that metadata, and serves an RFC8414-compatible authorization-server metadata shim on the MCP host for clients that cannot consume Authentik's OIDC-only discovery path directly.
 
 For Authentik, create an OAuth2/OpenID provider for the MCP endpoint, use the provider issuer URL as `--oauth-issuer`, configure an audience such as `vulcan-mcp`, and restrict access with `--oauth-allowed-email` or `--oauth-allowed-sub`. If Authentik's issuer discovery does not expose the desired key set, pass `--oauth-jwks-url` explicitly.
 
