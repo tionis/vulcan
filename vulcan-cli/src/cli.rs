@@ -1258,7 +1258,7 @@ Examples:
   vulcan mcp --vault ~/notes --tool-pack custom
   vulcan mcp --vault ~/notes --tool-pack-mode adaptive
   vulcan mcp --transport http --bind 127.0.0.1:8765
-  vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-local-client-secret \"$VULCAN_MCP_OAUTH_CLIENT_SECRET\" --oauth-dcr --oauth-indieauth-authorization-endpoint https://indieauth.example.com/auth --oauth-indieauth-token-endpoint https://indieauth.example.com/token --oauth-local-user https://example.com/=daily-wiki-agent
+  vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-local-client-secret \"$VULCAN_MCP_OAUTH_CLIENT_SECRET\" --oauth-dcr --oauth-indieauth-me https://example.com/ --oauth-local-user https://example.com/=daily-wiki-agent
   vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-issuer https://auth.example.com/application/o/vulcan/ --oauth-audience vulcan-mcp --oauth-allowed-email you@example.com
   vulcan mcp | jq .";
 
@@ -5511,12 +5511,12 @@ Examples:
         oauth_dcr_allowed_redirect_host: Vec<String>,
         #[arg(
             long,
-            help = "Upstream IndieAuth authorization endpoint used for local MCP OAuth login"
+            help = "Override the discovered upstream IndieAuth authorization endpoint"
         )]
         oauth_indieauth_authorization_endpoint: Option<String>,
         #[arg(
             long,
-            help = "Upstream IndieAuth token endpoint used for local MCP OAuth login"
+            help = "Override the discovered upstream IndieAuth token endpoint"
         )]
         oauth_indieauth_token_endpoint: Option<String>,
         #[arg(
@@ -5531,7 +5531,7 @@ Examples:
         oauth_indieauth_redirect_uri: Option<String>,
         #[arg(
             long,
-            help = "Optional IndieAuth identity URL to pass as the me parameter"
+            help = "IndieAuth identity URL used to discover login endpoints and sent as the me parameter"
         )]
         oauth_indieauth_me: Option<String>,
         #[arg(

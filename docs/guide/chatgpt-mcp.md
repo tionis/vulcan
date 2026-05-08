@@ -18,8 +18,6 @@ Preferred direct ChatGPT shape:
      --public-url https://wiki.example.com/mcp \
      --oauth-local-client-secret "$VULCAN_MCP_OAUTH_CLIENT_SECRET" \
      --oauth-dcr \
-     --oauth-indieauth-authorization-endpoint https://indieauth.example.com/auth \
-     --oauth-indieauth-token-endpoint https://indieauth.example.com/token \
      --oauth-indieauth-me https://example.com/ \
      --oauth-local-subject fallback \
      --oauth-local-user https://example.com/=daily-wiki-agent,you@example.com \
@@ -32,7 +30,7 @@ Preferred direct ChatGPT shape:
 
 `daily-wiki-agent` is the built-in pilot profile for this shape. It allows full vault note/task edits, config reads, and no shell, host execution, git mutation, refactor, network, or explicit index maintenance.
 
-The recommended ChatGPT path is Vulcan's built-in MCP OAuth issuer. Vulcan owns ChatGPT-facing authorization-code + PKCE, dynamic client registration, short-lived MCP access tokens, and bearer-token validation. Human login can be delegated to an upstream IndieAuth server with `--oauth-indieauth-authorization-endpoint` and `--oauth-indieauth-token-endpoint`; Vulcan maps the returned IndieAuth subject to a permission profile with `--oauth-local-user <subject>=<profile>[,<email>]`.
+The recommended ChatGPT path is Vulcan's built-in MCP OAuth issuer. Vulcan owns ChatGPT-facing authorization-code + PKCE, dynamic client registration, short-lived MCP access tokens, and bearer-token validation. Human login can be delegated to an upstream IndieAuth server by setting `--oauth-indieauth-me` to your identity URL; Vulcan discovers `indieauth-metadata` from that profile URL and falls back to legacy `authorization_endpoint` / `token_endpoint` links. Vulcan maps the returned IndieAuth subject to a permission profile with `--oauth-local-user <subject>=<profile>[,<email>]`.
 
 For per-user permission binding, omit the process-level `--permissions` flag and bind each allowed IndieAuth subject with `--oauth-local-user`. If `--permissions` is provided, it remains the process-wide profile for all MCP sessions.
 
