@@ -380,10 +380,10 @@ pub use cli::{
     PluginSandboxArg, PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand,
     RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand, SavedCreateCommand,
     SearchBackendArg, SearchMode, SearchSortArg, SiteCommand, SkillCommand, SuggestCommand,
-    TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
-    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
-    TemplateSubcommand, ToolCommand, ToolInitExampleArg, ToolSandboxArg, TrustCommand,
-    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    SuggestLinkStatusArg, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
+    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
+    TemplateRenderArgs, TemplateSubcommand, ToolCommand, ToolInitExampleArg, ToolSandboxArg,
+    TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -534,22 +534,23 @@ use vulcan_core::{
     ConfigImportReport, CoreImporter, DataviewImporter, DataviewJsEvalOptions, DataviewJsOutput,
     DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
     DqlQueryResult, DuplicateSuggestionsReport, GitBlameLine, GitCommitReport, GitLogEntry,
-    GraphAnalyticsReport, GraphComponentsReport, GraphDeadEndsReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
-    HtmlRenderOptions, ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport,
-    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport,
-    KanbanTaskStatus, MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary,
-    NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
-    OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter, PermissionFilter, PermissionGuard,
-    PluginEvent, PluginImporter, ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport,
-    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
-    RepairFtsReport, ResolvedPermissionProfile, SavedExport, SavedExportFormat,
-    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
-    ScanPhase, ScanProgress, ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport,
-    SearchSort, StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult,
-    TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase,
-    VectorIndexProgress, VectorIndexReport, VectorNeighborHit, VectorNeighborsReport,
-    VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
+    GraphAnalyticsReport, GraphCommunitiesReport, GraphComponentsReport, GraphDeadEndsReport,
+    GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError,
+    GraphTrendsReport, HtmlRenderOptions, ImportTarget, InitSummary, JsRuntimeSandbox,
+    KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter,
+    KanbanMoveReport, KanbanTaskStatus, LinkSuggestion, LinkSuggestionsReport, MentionSuggestion,
+    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
+    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig,
+    PeriodicNotesImporter, PermissionFilter, PermissionGuard, PluginEvent, PluginImporter,
+    ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport, RefactorChange,
+    RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport,
+    ResolvedPermissionProfile, SavedExport, SavedExportFormat, SavedReportDefinition,
+    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
+    ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport, SearchSort,
+    StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult, TemplaterImporter,
+    VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
+    VectorIndexReport, VectorNeighborHit, VectorNeighborsReport, VectorQueueReport,
+    VectorRepairReport, WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -10735,6 +10736,52 @@ fn print_mention_suggestions_report(
     }
 }
 
+fn print_link_suggestions_report(
+    output: OutputFormat,
+    report: &LinkSuggestionsReport,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_color: bool,
+    export: Option<&ResolvedExport>,
+) -> Result<(), CliError> {
+    let visible_suggestions = paginated_items(&report.suggestions, list_controls);
+    let rows = link_suggestion_rows(visible_suggestions);
+    let palette = AnsiPalette::new(use_color);
+    match output {
+        OutputFormat::Human | OutputFormat::Markdown => {
+            if stdout_is_tty {
+                println!("{}", palette.cyan("Link suggestions"));
+            }
+            if visible_suggestions.is_empty() {
+                println!("No link suggestions.");
+                return Ok(());
+            }
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in &rows {
+                    print_selected_human_fields(row, fields);
+                }
+            } else {
+                for suggestion in visible_suggestions {
+                    println!(
+                        "- {} -> {} [{:.3}, {}, id {}]",
+                        suggestion.source_path,
+                        suggestion.target_path,
+                        suggestion.display_score,
+                        suggestion.status.as_str(),
+                        suggestion.id
+                    );
+                }
+            }
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            Ok(())
+        }
+        OutputFormat::Json => {
+            export_rows(&rows, list_controls.fields.as_deref(), export)?;
+            print_json_lines(rows, list_controls.fields.as_deref())
+        }
+    }
+}
+
 fn print_duplicate_suggestions_report(
     output: OutputFormat,
     report: &DuplicateSuggestionsReport,
@@ -13192,6 +13239,75 @@ fn print_graph_components_report(
     }
 }
 
+#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
+fn print_graph_communities_report(
+    output: OutputFormat,
+    report: &GraphCommunitiesReport,
+    community: Option<usize>,
+    orphans: bool,
+    bridges: bool,
+    list_controls: &ListOutputControls,
+    stdout_is_tty: bool,
+    use_color: bool,
+    export: Option<&ResolvedExport>,
+) -> Result<(), CliError> {
+    let palette = AnsiPalette::new(use_color);
+    let rows = graph_community_rows(report, community, orphans, bridges);
+    let visible_rows = paginated_items(&rows, list_controls);
+    match output {
+        OutputFormat::Human | OutputFormat::Markdown => {
+            if stdout_is_tty {
+                println!("{}", palette.cyan("Graph communities"));
+            }
+            if visible_rows.is_empty() {
+                println!("No graph communities.");
+                return Ok(());
+            }
+            if let Some(fields) = list_controls.fields.as_deref() {
+                for row in visible_rows {
+                    print_selected_human_fields(row, fields);
+                }
+            } else if orphans {
+                for row in visible_rows {
+                    println!(
+                        "- {} -> community {} [tag overlap {:.3}]",
+                        row["document_path"].as_str().unwrap_or(""),
+                        row["closest_community"]
+                            .as_u64()
+                            .map_or_else(|| "none".to_string(), |id| id.to_string()),
+                        row["tag_overlap"].as_f64().unwrap_or(0.0)
+                    );
+                }
+            } else if bridges {
+                for row in visible_rows {
+                    println!(
+                        "- {} [community {}, {} cross-community edges]",
+                        row["document_path"].as_str().unwrap_or(""),
+                        row["community_id"].as_u64().unwrap_or(0),
+                        row["cross_community_edges"].as_u64().unwrap_or(0)
+                    );
+                }
+            } else {
+                for row in visible_rows {
+                    println!(
+                        "- community {}: {} [{} notes, cohesion {:.3}]",
+                        row["id"].as_u64().unwrap_or(0),
+                        row["label"].as_str().unwrap_or(""),
+                        row["size"].as_u64().unwrap_or(0),
+                        row["cohesion"].as_f64().unwrap_or(0.0)
+                    );
+                }
+            }
+            export_rows(visible_rows, list_controls.fields.as_deref(), export)?;
+            Ok(())
+        }
+        OutputFormat::Json => {
+            export_rows(visible_rows, list_controls.fields.as_deref(), export)?;
+            print_json_lines(visible_rows.to_vec(), list_controls.fields.as_deref())
+        }
+    }
+}
+
 fn print_graph_analytics_report(
     output: OutputFormat,
     report: &GraphAnalyticsReport,
@@ -13204,6 +13320,12 @@ fn print_graph_analytics_report(
             println!("Attachments: {}", report.attachment_count);
             println!("Bases: {}", report.base_count);
             println!("Resolved note links: {}", report.resolved_note_links);
+            println!(
+                "Confidence: {} EXTRACTED, {} INFERRED, {} AMBIGUOUS",
+                report.confidence.extracted,
+                report.confidence.inferred,
+                report.confidence.ambiguous
+            );
             println!(
                 "Average outbound links: {:.3}",
                 report.average_outbound_links
@@ -15958,7 +16080,12 @@ fn render_graph_export_payload(
             for edge in &report.edges {
                 let source = edge.source.replace('"', "\\\"");
                 let target = edge.target.replace('"', "\\\"");
-                writeln!(rendered, "  \"{source}\" -> \"{target}\";")
+                writeln!(
+                    rendered,
+                    "  \"{source}\" -> \"{target}\" [confidence=\"{}\", confidence_score=\"{:.3}\"];",
+                    edge.confidence.as_str(),
+                    edge.confidence_score
+                )
                     .expect("writing to string cannot fail");
             }
             rendered.push_str("}\n");
@@ -15978,7 +16105,9 @@ fn render_graph_export_payload(
                 let target = edge.target.replace('"', "&quot;");
                 writeln!(
                     rendered,
-                    "    <edge id=\"e{index}\" source=\"{source}\" target=\"{target}\"/>"
+                    "    <edge id=\"e{index}\" source=\"{source}\" target=\"{target}\"><data key=\"confidence\">{}</data><data key=\"confidence_score\">{:.3}</data></edge>",
+                    edge.confidence.as_str(),
+                    edge.confidence_score
                 )
                 .expect("writing to string cannot fail");
             }
@@ -17865,6 +17994,31 @@ fn mention_suggestion_rows(suggestions: &[MentionSuggestion]) -> Vec<Value> {
         .collect()
 }
 
+fn link_suggestion_rows(suggestions: &[LinkSuggestion]) -> Vec<Value> {
+    suggestions
+        .iter()
+        .map(|suggestion| {
+            serde_json::json!({
+                "id": suggestion.id,
+                "source_path": suggestion.source_path,
+                "target_path": suggestion.target_path,
+                "score": suggestion.score,
+                "display_score": suggestion.display_score,
+                "status": suggestion.status.as_str(),
+                "created_at": suggestion.created_at,
+                "accepted_at": suggestion.accepted_at,
+                "rejected_at": suggestion.rejected_at,
+                "embedding_score": suggestion.signals.embedding_score,
+                "graph_score": suggestion.signals.graph_score,
+                "mention_score": suggestion.signals.mention_score,
+                "tag_score": suggestion.signals.tag_score,
+                "cross_community_bonus": suggestion.signals.cross_community_bonus,
+                "signals": suggestion.signals,
+            })
+        })
+        .collect()
+}
+
 fn duplicate_suggestion_rows(report: &DuplicateSuggestionsReport) -> Vec<Value> {
     let mut rows = Vec::new();
     rows.extend(report.duplicate_titles.iter().map(|group| {
@@ -18564,6 +18718,7 @@ fn graph_hub_rows(notes: &[vulcan_core::GraphNodeScore]) -> Vec<Value> {
                 "inbound": note.inbound,
                 "outbound": note.outbound,
                 "total": note.total,
+                "confidence": note.confidence,
             })
         })
         .collect()
@@ -18603,6 +18758,65 @@ fn graph_component_rows(components: &[vulcan_core::GraphComponent]) -> Vec<Value
         .collect()
 }
 
+fn graph_community_rows(
+    report: &GraphCommunitiesReport,
+    community: Option<usize>,
+    orphans: bool,
+    bridges: bool,
+) -> Vec<Value> {
+    if orphans {
+        return report
+            .orphans
+            .iter()
+            .map(|orphan| {
+                serde_json::json!({
+                    "kind": "orphan",
+                    "document_path": orphan.document_path,
+                    "closest_community": orphan.closest_community,
+                    "tag_overlap": orphan.tag_overlap,
+                })
+            })
+            .collect();
+    }
+    if bridges {
+        return report
+            .bridges
+            .iter()
+            .map(|bridge| {
+                serde_json::json!({
+                    "kind": "bridge",
+                    "document_path": bridge.document_path,
+                    "community_id": bridge.community_id,
+                    "cross_community_edges": bridge.cross_community_edges,
+                    "betweenness_score": bridge.betweenness_score,
+                })
+            })
+            .collect();
+    }
+    report
+        .communities
+        .iter()
+        .filter(|candidate| match community {
+            Some(id) => candidate.id == id,
+            None => true,
+        })
+        .map(|community| {
+            serde_json::json!({
+                "kind": "community",
+                "id": community.id,
+                "label": community.label,
+                "size": community.size,
+                "cohesion": community.cohesion,
+                "top_nodes": community.top_nodes,
+                "boundary_notes": community.boundary_notes,
+                "inter_community_edges": community.inter_community_edges,
+                "notes": community.notes,
+                "persisted": report.persisted,
+            })
+        })
+        .collect()
+}
+
 fn graph_analytics_rows(report: &GraphAnalyticsReport) -> Vec<Value> {
     vec![serde_json::json!({
         "note_count": report.note_count,
@@ -18611,6 +18825,7 @@ fn graph_analytics_rows(report: &GraphAnalyticsReport) -> Vec<Value> {
         "resolved_note_links": report.resolved_note_links,
         "average_outbound_links": report.average_outbound_links,
         "orphan_notes": report.orphan_notes,
+        "confidence": report.confidence,
         "top_tags": report.top_tags,
         "top_properties": report.top_properties,
     })]
@@ -18761,7 +18976,11 @@ fn print_graph_export_report(
                     for edge in &report.edges {
                         let src = edge.source.replace('"', "\\\"");
                         let tgt = edge.target.replace('"', "\\\"");
-                        println!("  \"{src}\" -> \"{tgt}\";");
+                        println!(
+                            "  \"{src}\" -> \"{tgt}\" [confidence=\"{}\", confidence_score=\"{:.3}\"];",
+                            edge.confidence.as_str(),
+                            edge.confidence_score
+                        );
                     }
                     println!("}}");
                 }
@@ -18776,7 +18995,11 @@ fn print_graph_export_report(
                     for (i, edge) in report.edges.iter().enumerate() {
                         let src = edge.source.replace('"', "&quot;");
                         let tgt = edge.target.replace('"', "&quot;");
-                        println!("    <edge id=\"e{i}\" source=\"{src}\" target=\"{tgt}\"/>");
+                        println!(
+                            "    <edge id=\"e{i}\" source=\"{src}\" target=\"{tgt}\"><data key=\"confidence\">{}</data><data key=\"confidence_score\">{:.3}</data></edge>",
+                            edge.confidence.as_str(),
+                            edge.confidence_score
+                        );
                     }
                     println!("  </graph>");
                     println!("</graphml>");

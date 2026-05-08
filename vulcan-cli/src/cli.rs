@@ -1653,6 +1653,19 @@ pub enum GraphCommand {
         #[command(flatten)]
         export: ExportArgs,
     },
+    #[command(about = "Detect dense communities in the note graph")]
+    Communities {
+        #[arg(long, help = "Show one community by id")]
+        community: Option<usize>,
+        #[arg(long, help = "List orphan notes with closest community hints")]
+        orphans: bool,
+        #[arg(long, help = "List notes that bridge communities")]
+        bridges: bool,
+        #[arg(long, help = "Compute communities without persisting graph_clusters")]
+        dry_run: bool,
+        #[command(flatten)]
+        export: ExportArgs,
+    },
     #[command(about = "Summarize note-graph and vault analytics")]
     Stats {
         #[command(flatten)]
@@ -2046,6 +2059,21 @@ pub enum CacheCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SuggestCommand {
+    #[command(about = "Rank composite link suggestions")]
+    Links {
+        #[arg(long, help = "Optional note path, filename, or alias to inspect")]
+        note: Option<String>,
+        #[arg(long, help = "Minimum score to include", default_value = "0.0")]
+        min_score: String,
+        #[arg(long, help = "Accept one suggestion by id")]
+        accept: Option<String>,
+        #[arg(long, help = "Reject one suggestion by id")]
+        reject: Option<String>,
+        #[arg(long, value_enum, help = "Filter by feedback status")]
+        status: Option<SuggestLinkStatusArg>,
+        #[command(flatten)]
+        export: ExportArgs,
+    },
     #[command(about = "Report plain-text note mentions that could become links")]
     Mentions {
         #[arg(help = "Optional note path, filename, or alias to inspect")]
@@ -2058,6 +2086,13 @@ pub enum SuggestCommand {
         #[command(flatten)]
         export: ExportArgs,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SuggestLinkStatusArg {
+    Pending,
+    Accepted,
+    Rejected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -2960,6 +2995,18 @@ pub enum SkillCommand {
         #[arg(help = "Skill name or relative path")]
         name: String,
     },
+    #[command(about = "Read one skill's metadata and Markdown body")]
+    Show {
+        #[arg(help = "Skill name or relative path")]
+        name: String,
+    },
+    #[command(about = "List Vulcan command declarations from skills")]
+    Commands {
+        #[arg(help = "Optional skill name or relative path")]
+        name: Option<String>,
+    },
+    #[command(about = "Validate visible skill files and command metadata")]
+    Validate,
 }
 
 #[allow(clippy::struct_excessive_bools)]

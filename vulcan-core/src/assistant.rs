@@ -79,10 +79,28 @@ pub struct AssistantSkillSummary {
     pub name: String,
     pub title: Option<String>,
     pub description: Option<String>,
+    pub license: Option<String>,
+    pub compatibility: Vec<String>,
+    pub allowed_tools: Vec<String>,
+    pub commands: Vec<AssistantSkillCommandSummary>,
     pub tags: Vec<String>,
     pub tools: Vec<String>,
     pub output_file: Option<String>,
     pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AssistantSkillCommandSummary {
+    pub id: String,
+    pub script: String,
+    #[serde(default)]
+    pub sandbox: Option<String>,
+    #[serde(default)]
+    pub permission_profile: Option<String>,
+    #[serde(default)]
+    pub packs: Vec<String>,
+    #[serde(default)]
+    pub expose: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -182,6 +200,13 @@ struct SkillFrontmatter {
     name: Option<String>,
     title: Option<String>,
     description: Option<String>,
+    license: Option<String>,
+    #[serde(default)]
+    compatibility: Vec<String>,
+    #[serde(rename = "allowed-tools", default)]
+    allowed_tools: Vec<String>,
+    #[serde(default)]
+    metadata: YamlValue,
     #[serde(default)]
     tags: Vec<String>,
     #[serde(default)]
@@ -483,6 +508,10 @@ fn parse_skill_file(root: &Path, path: &Path) -> Result<AssistantSkill, Assistan
             name: normalize_optional(frontmatter.name).unwrap_or(default_name),
             title: normalize_optional(frontmatter.title),
             description: normalize_optional(frontmatter.description),
+            license: normalize_optional(frontmatter.license),
+            compatibility: normalize_list(frontmatter.compatibility),
+            allowed_tools: normalize_list(frontmatter.allowed_tools),
+            commands: normalize_skill_commands(&frontmatter.metadata)?,
             tags: normalize_list(frontmatter.tags),
             tools: normalize_list(frontmatter.tools),
             output_file: normalize_optional(frontmatter.output_file),
@@ -491,6 +520,53 @@ fn parse_skill_file(root: &Path, path: &Path) -> Result<AssistantSkill, Assistan
         body: body.trim().to_string(),
     };
     Ok(skill)
+}
+
+fn normalize_skill_commands(
+    metadata: &YamlValue,
+) -> Result<Vec<AssistantSkillCommandSummary>, AssistantError> {
+    let Some(vulcan) = metadata.get("vulcan") else {
+        return Ok(Vec::new());
+    };
+    let Some(commands) = vulcan.get("commands") else {
+        return Ok(Vec::new());
+    };
+    let Some(sequence) = commands.as_sequence() else {
+        return Err(AssistantError::parse(
+            "`metadata.vulcan.commands` must be a list".to_string(),
+        ));
+    };
+    let mut parsed = Vec::new();
+    for command in sequence {
+        let summary: AssistantSkillCommandSummary = serde_yaml::from_value(command.clone())
+            .map_err(|error| {
+                AssistantError::parse(format!("invalid skill command metadata: {error}"))
+            })?;
+        if !is_valid_skill_command_id(&summary.id) {
+            return Err(AssistantError::parse(format!(
+                "invalid skill command id `{}`",
+                summary.id
+            )));
+        }
+        if summary.script.trim().is_empty()
+            || summary.script.contains("..")
+            || summary.script.starts_with('/')
+        {
+            return Err(AssistantError::parse(format!(
+                "invalid script path for skill command `{}`",
+                summary.id
+            )));
+        }
+        parsed.push(summary);
+    }
+    Ok(parsed)
+}
+
+fn is_valid_skill_command_id(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
 }
 
 fn parse_tool_file(
@@ -1101,6 +1177,52 @@ Use this skill for a daily summary.
 
         let skill = load_assistant_skill(&paths, "daily-review").expect("skill should load");
         assert!(skill.body.contains("daily summary"));
+    }
+
+    #[test]
+    fn skill_loader_reads_agent_skills_command_metadata() {
+        let (_dir, paths) = test_paths();
+        let skill_root = paths.vault_root().join(".agents/skills/link-curation");
+        fs::create_dir_all(skill_root.join("scripts")).expect("skill dirs");
+        fs::write(
+            skill_root.join("SKILL.md"),
+            r"---
+name: link-curation
+description: Curate graph links
+license: MIT
+compatibility:
+  - codex
+allowed-tools:
+  - graph_communities
+metadata:
+  vulcan:
+    commands:
+      - id: suggest-bridges
+        script: scripts/suggest-bridges.js
+        sandbox: strict
+        permission_profile: readonly
+        packs: [notes-read]
+        expose: true
+---
+Use this skill to curate links.
+",
+        )
+        .expect("skill file");
+
+        let skill = load_assistant_skill(&paths, "link-curation").expect("skill should load");
+        assert_eq!(skill.summary.license.as_deref(), Some("MIT"));
+        assert_eq!(skill.summary.compatibility, vec!["codex".to_string()]);
+        assert_eq!(
+            skill.summary.allowed_tools,
+            vec!["graph_communities".to_string()]
+        );
+        assert_eq!(skill.summary.commands.len(), 1);
+        assert_eq!(skill.summary.commands[0].id, "suggest-bridges");
+        assert_eq!(
+            skill.summary.commands[0].script,
+            "scripts/suggest-bridges.js"
+        );
+        assert!(skill.summary.commands[0].expose);
     }
 
     #[test]

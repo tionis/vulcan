@@ -3,12 +3,32 @@ use crate::{selected_permission_guard, Cli, CliError, OutputFormat, SkillCommand
 use serde::Serialize;
 use vulcan_core::{
     list_assistant_skills, load_assistant_skill, load_vault_config, AssistantSkill,
-    AssistantSkillSummary, PermissionGuard, VaultPaths,
+    AssistantSkillCommandSummary, AssistantSkillSummary, PermissionGuard, VaultPaths,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct SkillListReport {
     skills: Vec<AssistantSkillSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct SkillCommandsReport {
+    commands: Vec<SkillCommandRow>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct SkillCommandRow {
+    skill: String,
+    skill_path: String,
+    #[serde(flatten)]
+    command: AssistantSkillCommandSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct SkillValidateReport {
+    valid: bool,
+    skills: usize,
+    commands: usize,
 }
 
 pub(crate) fn handle_skill_command(
@@ -23,11 +43,60 @@ pub(crate) fn handle_skill_command(
             };
             print_skill_list_report(cli.output, &report)
         }
-        SkillCommand::Get { name } => {
+        SkillCommand::Get { name } | SkillCommand::Show { name } => {
             let skill = visible_skill(cli, paths, name)?;
             print_skill_report(cli.output, &skill)
         }
+        SkillCommand::Commands { name } => {
+            let rows = if let Some(name) = name {
+                let skill = visible_skill(cli, paths, name)?;
+                skill_command_rows(&skill)
+            } else {
+                visible_skills(cli, paths)?
+                    .into_iter()
+                    .flat_map(|summary| {
+                        let skill = summary.name.clone();
+                        let skill_path = summary.path.clone();
+                        summary
+                            .commands
+                            .into_iter()
+                            .map(move |command| SkillCommandRow {
+                                skill: skill.clone(),
+                                skill_path: skill_path.clone(),
+                                command,
+                            })
+                    })
+                    .collect()
+            };
+            print_skill_commands_report(cli.output, &SkillCommandsReport { commands: rows })
+        }
+        SkillCommand::Validate => {
+            let skills = visible_skills(cli, paths)?;
+            let commands = skills.iter().map(|skill| skill.commands.len()).sum();
+            print_skill_validate_report(
+                cli.output,
+                &SkillValidateReport {
+                    valid: true,
+                    skills: skills.len(),
+                    commands,
+                },
+            )
+        }
     }
+}
+
+fn skill_command_rows(skill: &AssistantSkill) -> Vec<SkillCommandRow> {
+    skill
+        .summary
+        .commands
+        .iter()
+        .cloned()
+        .map(|command| SkillCommandRow {
+            skill: skill.summary.name.clone(),
+            skill_path: skill.summary.path.clone(),
+            command,
+        })
+        .collect()
 }
 
 fn visible_skills(cli: &Cli, paths: &VaultPaths) -> Result<Vec<AssistantSkillSummary>, CliError> {
@@ -80,6 +149,44 @@ fn print_skill_list_report(output: OutputFormat, report: &SkillListReport) -> Re
                     None => println!("- {} [{}]", title, skill.path),
                 }
             }
+            Ok(())
+        }
+    }
+}
+
+fn print_skill_commands_report(
+    output: OutputFormat,
+    report: &SkillCommandsReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            if report.commands.is_empty() {
+                println!("No skill commands.");
+                return Ok(());
+            }
+            for row in &report.commands {
+                println!(
+                    "- {}:{} -> {}",
+                    row.skill, row.command.id, row.command.script
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_skill_validate_report(
+    output: OutputFormat,
+    report: &SkillValidateReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!(
+                "Valid skills: {} ({} skills, {} commands)",
+                report.valid, report.skills, report.commands
+            );
             Ok(())
         }
     }

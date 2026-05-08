@@ -5,12 +5,13 @@ use crate::output::ListOutputControls;
 use crate::resolve::resolve_note_argument;
 use crate::{
     resolve_bulk_note_selection, selected_permission_guard, warn_auto_commit_if_needed,
-    BulkNoteSelection, Cli, CliError, RefactorCommand, SuggestCommand,
+    BulkNoteSelection, Cli, CliError, RefactorCommand, SuggestCommand, SuggestLinkStatusArg,
 };
 use vulcan_core::{
-    bulk_replace_on_paths, link_mentions, merge_tags, move_note, query_notes_with_filter,
-    rename_alias, rename_block_ref, rename_heading, rename_property, suggest_duplicates,
-    suggest_mentions, NoteQuery, PermissionGuard, PluginEvent, VaultPaths,
+    accept_link_suggestion, bulk_replace_on_paths, link_mentions, merge_tags, move_note,
+    query_notes_with_filter, reject_link_suggestion, rename_alias, rename_block_ref,
+    rename_heading, rename_property, suggest_duplicates, suggest_links, suggest_mentions,
+    LinkSuggestionStatus, NoteQuery, PermissionGuard, PluginEvent, VaultPaths,
 };
 
 fn dispatch_refactor_plugin_hooks(
@@ -322,6 +323,76 @@ pub(crate) fn handle_suggest_command(
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
     match command {
+        SuggestCommand::Links {
+            note,
+            min_score,
+            accept,
+            reject,
+            status,
+            export,
+        } => {
+            let export = crate::resolve_cli_export(export)?;
+            if let Some(id) = accept {
+                let suggestion = accept_link_suggestion(paths, id).map_err(CliError::operation)?;
+                return crate::print_link_suggestions_report(
+                    cli.output,
+                    &vulcan_core::LinkSuggestionsReport {
+                        suggestions: vec![suggestion],
+                    },
+                    list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                    export.as_ref(),
+                );
+            }
+            if let Some(id) = reject {
+                let suggestion = reject_link_suggestion(paths, id).map_err(CliError::operation)?;
+                return crate::print_link_suggestions_report(
+                    cli.output,
+                    &vulcan_core::LinkSuggestionsReport {
+                        suggestions: vec![suggestion],
+                    },
+                    list_controls,
+                    stdout_is_tty,
+                    use_stdout_color,
+                    export.as_ref(),
+                );
+            }
+            let note = if note.is_some() || interactive_note_selection {
+                Some(resolve_note_argument(
+                    paths,
+                    note.as_deref(),
+                    interactive_note_selection,
+                    "note",
+                )?)
+            } else {
+                None
+            };
+            let status = status.map(|status| match status {
+                SuggestLinkStatusArg::Pending => LinkSuggestionStatus::Pending,
+                SuggestLinkStatusArg::Accepted => LinkSuggestionStatus::Accepted,
+                SuggestLinkStatusArg::Rejected => LinkSuggestionStatus::Rejected,
+            });
+            let min_score = min_score.parse::<f64>().map_err(|error| {
+                CliError::operation(format!("invalid --min-score `{min_score}`: {error}"))
+            })?;
+            let report = suggest_links(
+                paths,
+                note.as_deref(),
+                list_controls.limit,
+                min_score,
+                status,
+            )
+            .map_err(CliError::operation)?;
+            crate::print_link_suggestions_report(
+                cli.output,
+                &report,
+                list_controls,
+                stdout_is_tty,
+                use_stdout_color,
+                export.as_ref(),
+            )
+        }
         SuggestCommand::Mentions { note, export } => {
             let note = if note.is_some() || interactive_note_selection {
                 Some(resolve_note_argument(

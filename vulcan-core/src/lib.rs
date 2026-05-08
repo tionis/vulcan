@@ -53,8 +53,8 @@ pub use assistant::{
     load_assistant_skill, load_assistant_tool, load_assistant_tool_manifest,
     read_vault_agents_file, render_assistant_prompt, AssistantConfigSummary, AssistantError,
     AssistantPrompt, AssistantPromptArgument, AssistantPromptSummary, AssistantSkill,
-    AssistantSkillSummary, AssistantTool, AssistantToolRuntime, AssistantToolSecretSpec,
-    AssistantToolSummary, AssistantToolValidationOptions,
+    AssistantSkillCommandSummary, AssistantSkillSummary, AssistantTool, AssistantToolRuntime,
+    AssistantToolSecretSpec, AssistantToolSummary, AssistantToolValidationOptions,
 };
 pub use bases::{
     bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, evaluate_base_file,
@@ -114,16 +114,19 @@ pub use graph::{
     export_graph, export_graph_with_filter, list_note_identities, list_note_identities_with_filter,
     list_tagged_note_identities, list_tagged_note_identities_with_filter, list_tags,
     list_tags_with_filter, query_backlinks, query_backlinks_with_filter, query_graph_analytics,
-    query_graph_analytics_with_filter, query_graph_components, query_graph_components_with_filter,
-    query_graph_dead_ends, query_graph_dead_ends_with_filter, query_graph_hubs,
-    query_graph_hubs_with_filter, query_graph_moc_candidates,
+    query_graph_analytics_with_filter, query_graph_communities,
+    query_graph_communities_with_filter, query_graph_components,
+    query_graph_components_with_filter, query_graph_dead_ends, query_graph_dead_ends_with_filter,
+    query_graph_hubs, query_graph_hubs_with_filter, query_graph_moc_candidates,
     query_graph_moc_candidates_with_filter, query_graph_path, query_graph_path_with_filter,
     query_links, query_links_with_filter, resolve_note_reference,
     resolve_note_reference_with_filter, BacklinkRecord, BacklinksReport, GraphAnalyticsReport,
-    GraphComponent, GraphComponentsReport, GraphDeadEndsReport, GraphExportEdge, GraphExportNode,
+    GraphBridgeNote, GraphCommunitiesReport, GraphCommunity, GraphComponent, GraphComponentsReport,
+    GraphConfidenceBreakdown, GraphDeadEndsReport, GraphExportEdge, GraphExportNode,
     GraphExportReport, GraphHubsReport, GraphMocCandidate, GraphMocReport, GraphNodeScore,
-    GraphPathReport, GraphQueryError, LineContext, NamedCount, NoteIdentity, NoteMatchKind,
-    NoteReference, OutgoingLinkRecord, OutgoingLinksReport, ResolutionStatus,
+    GraphOrphanCommunityHint, GraphPathHop, GraphPathReport, GraphQueryError, LineContext,
+    LinkConfidence, NamedCount, NoteIdentity, NoteMatchKind, NoteReference, OutgoingLinkRecord,
+    OutgoingLinksReport, ResolutionStatus,
 };
 pub use history::{
     create_checkpoint, list_checkpoints, query_change_report, query_graph_trends, ChangeAnchor,
@@ -214,9 +217,11 @@ pub use search::{
     SearchSort, StaticSearchIndexEntry, StaticSearchIndexReport,
 };
 pub use suggestions::{
-    bulk_replace, bulk_replace_on_paths, link_mentions, suggest_duplicates, suggest_mentions,
-    DuplicateGroup, DuplicateSuggestionsReport, MentionSuggestion, MentionSuggestionsReport,
-    MergeCandidate, SuggestionError,
+    accept_link_suggestion, bulk_replace, bulk_replace_on_paths, link_mentions,
+    reject_link_suggestion, suggest_duplicates, suggest_links, suggest_mentions, DuplicateGroup,
+    DuplicateSuggestionsReport, LinkSuggestion, LinkSuggestionSignals, LinkSuggestionStatus,
+    LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    SuggestionError,
 };
 pub use tasknotes::{
     active_tasknote_time_entry, extract_tasknote, is_tasknote_document, parse_iso8601_duration_ms,
@@ -278,4 +283,4 @@ pub fn current_time_override_ms() -> Option<i64> {
 
 pub const PARSER_VERSION: u32 = 7;
 pub const EXTRACTION_VERSION: u32 = 1;
-pub const SCHEMA_VERSION: u32 = 16;
+pub const SCHEMA_VERSION: u32 = 17;
