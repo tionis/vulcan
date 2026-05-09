@@ -96,6 +96,7 @@ mod tests {
             sessions_dir: None,
             no_tools: false,
             extension_entrypoint: None,
+            context_prompt_path: None,
             extension_env: Vec::new(),
             resume_session: None,
             session_export: "manual".to_string(),

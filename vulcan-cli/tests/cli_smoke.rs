@@ -10438,11 +10438,8 @@ fn write_mock_pi_binary(path: &Path) {
 	done
 	while IFS= read -r line; do
 	  id=$(printf '%s' "$line" | sed -n 's/.*"id":"\([^"]*\)".*/\1/p')
-	  cmd=$(printf '%s' "$line" | sed -n 's/.*"command":"\([^"]*\)".*/\1/p')
+	  cmd=$(printf '%s' "$line" | sed -n 's/.*"type":"\([^"]*\)".*/\1/p')
   case "$cmd" in
-    configure)
-      printf '{"type":"response","id":"%s","command":"configure","success":true,"data":{}}\n' "$id"
-      ;;
 	    prompt)
 	      if [ -n "$session_dir" ]; then
 	        mkdir -p "$session_dir"

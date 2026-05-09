@@ -39,14 +39,13 @@ const CHAT_SLASH_COMMANDS: &[&str] = &[
 pub(crate) fn run_chat(
     paths: &VaultPaths,
     host: &AssistantHostOptions,
-    context: &AssistantHostContext,
+    _context: &AssistantHostContext,
     initial_prompt: &[String],
     show_thinking: bool,
     output: OutputFormat,
 ) -> Result<(), CliError> {
     let mut process = engine::spawn_pi_rpc(host, paths.vault_root())?;
     process.ensure_running()?;
-    configure_engine(&mut process.client, context)?;
 
     if !initial_prompt.is_empty() {
         send_and_render(
@@ -105,19 +104,6 @@ pub(crate) fn run_chat(
     }
     process.shutdown()?;
     export_session_after_run(paths, host)
-}
-
-fn configure_engine<R: std::io::BufRead, W: std::io::Write>(
-    client: &mut crate::assistant::rpc::ManagedRpcClient<R, W>,
-    context: &AssistantHostContext,
-) -> Result<(), CliError> {
-    let mut configure = Map::new();
-    configure.insert(
-        "context".to_string(),
-        serde_json::to_value(context).map_err(CliError::operation)?,
-    );
-    let result = client.command("configure", configure)?;
-    ensure_success(&result.response)
 }
 
 fn send_and_render<R: std::io::BufRead, W: std::io::Write>(

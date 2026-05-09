@@ -3,7 +3,7 @@ use crate::output::print_json;
 use crate::OutputFormat;
 use crate::{mcp, CliError, McpToolsReport};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
+use serde_json::Value;
 use std::fs;
 use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
@@ -57,6 +57,7 @@ pub(crate) struct AssistantHostOptions {
     pub(crate) sessions_dir: Option<PathBuf>,
     pub(crate) no_tools: bool,
     pub(crate) extension_entrypoint: Option<PathBuf>,
+    pub(crate) context_prompt_path: Option<PathBuf>,
     pub(crate) extension_env: Vec<(String, String)>,
     pub(crate) resume_session: Option<PathBuf>,
     pub(crate) session_export: String,
@@ -80,6 +81,7 @@ impl AssistantHostOptions {
             },
             no_tools: false,
             extension_entrypoint: None,
+            context_prompt_path: None,
             extension_env: Vec::new(),
             resume_session: None,
             session_export: config.session_export,
@@ -259,9 +261,10 @@ pub(crate) fn handle_assistant_command(
         host.resume_session = newest_session_path(paths, &host)?;
     }
 
+    let context = build_host_context(paths, &host, &args.tool_pack, args.tool_pack_mode)?;
+    prepare_context_prompt(paths, &mut host, &context)?;
     prepare_extension(paths, &mut host, &args.tool_pack)?;
     if args.chat {
-        let context = build_host_context(paths, &host, &args.tool_pack, args.tool_pack_mode)?;
         return chat::run_chat(
             paths,
             &host,
@@ -273,16 +276,8 @@ pub(crate) fn handle_assistant_command(
     }
 
     let prompt = prompt_text(&args.prompt)?;
-    let context = build_host_context(paths, &host, &args.tool_pack, args.tool_pack_mode)?;
     let mut process = engine::spawn_pi_rpc(&host, paths.vault_root())?;
     process.ensure_running()?;
-    let mut configure = Map::new();
-    configure.insert(
-        "context".to_string(),
-        serde_json::to_value(&context).map_err(CliError::operation)?,
-    );
-    let configure_result = process.client.command("configure", configure)?;
-    ensure_success(&configure_result.response)?;
 
     let result = process.client.prompt(&prompt)?;
     ensure_success(&result.response)?;
@@ -461,6 +456,28 @@ fn prepare_extension(
     let install = extension::materialize_extension(paths.vault_root())?;
     host.extension_entrypoint = Some(install.entrypoint);
     host.extension_env = extension::extension_environment(host, paths.vault_root(), tool_packs);
+    Ok(())
+}
+
+fn prepare_context_prompt(
+    paths: &VaultPaths,
+    host: &mut AssistantHostOptions,
+    context: &AssistantHostContext,
+) -> Result<(), CliError> {
+    if host.runtime != "pi" {
+        return Ok(());
+    }
+    let root = paths.vault_root().join(".vulcan/assistant");
+    fs::create_dir_all(&root).map_err(CliError::operation)?;
+    let path = root.join("context.md");
+    let context_json = serde_json::to_string_pretty(context).map_err(CliError::operation)?;
+    let contents = format!(
+        "# Vulcan Assistant Context\n\nUse this context when answering. Treat Vulcan as the authority for vault state, tool exposure, and permission checks.\n\n```json\n{context_json}\n```\n"
+    );
+    if !path.exists() || fs::read_to_string(&path).is_ok_and(|current| current != contents) {
+        fs::write(&path, contents).map_err(CliError::operation)?;
+    }
+    host.context_prompt_path = Some(path);
     Ok(())
 }
 

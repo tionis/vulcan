@@ -8,17 +8,15 @@ use ulid::Ulid;
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct RpcCommand {
     #[serde(rename = "type")]
-    pub(crate) kind: &'static str,
-    pub(crate) id: String,
     pub(crate) command: String,
-    #[serde(skip_serializing_if = "Map::is_empty")]
+    pub(crate) id: String,
+    #[serde(flatten)]
     pub(crate) data: Map<String, Value>,
 }
 
 impl RpcCommand {
     pub(crate) fn new(command: impl Into<String>, data: Map<String, Value>) -> Self {
         Self {
-            kind: "command",
             id: Ulid::new().to_string(),
             command: command.into(),
             data,
@@ -42,18 +40,25 @@ pub(crate) struct RpcResponse {
 pub(crate) struct PiSessionState {
     #[serde(default)]
     pub(crate) model: Option<String>,
+    #[serde(alias = "thinkingLevel")]
     #[serde(default)]
     pub(crate) thinking_level: Option<String>,
+    #[serde(alias = "isStreaming")]
     #[serde(default)]
     pub(crate) is_streaming: bool,
+    #[serde(alias = "isCompacting")]
     #[serde(default)]
     pub(crate) is_compacting: bool,
+    #[serde(alias = "sessionId")]
     #[serde(default)]
     pub(crate) session_id: Option<String>,
+    #[serde(alias = "sessionName")]
     #[serde(default)]
     pub(crate) session_name: Option<String>,
+    #[serde(alias = "messageCount")]
     #[serde(default)]
     pub(crate) message_count: Option<u64>,
+    #[serde(alias = "pendingMessageCount")]
     #[serde(default)]
     pub(crate) pending_message_count: Option<u64>,
 }
@@ -138,6 +143,10 @@ impl<R: BufRead, W: Write> ManagedRpcClient<R, W> {
         Self { reader, writer }
     }
 
+    pub(crate) fn into_parts(self) -> (R, W) {
+        (self.reader, self.writer)
+    }
+
     pub(crate) fn command(
         &mut self,
         command: impl Into<String>,
@@ -152,7 +161,7 @@ impl<R: BufRead, W: Write> ManagedRpcClient<R, W> {
     pub(crate) fn prompt(&mut self, message: &str) -> Result<RpcCommandResult, CliError> {
         self.command(
             "prompt",
-            map_with("prompt", Value::String(message.to_string())),
+            map_with("message", Value::String(message.to_string())),
         )
     }
 
@@ -196,7 +205,7 @@ impl<R: BufRead, W: Write> ManagedRpcClient<R, W> {
             "set_model",
             map_from_pairs([
                 ("provider", Value::String(provider.to_string())),
-                ("model_id", Value::String(model_id.to_string())),
+                ("modelId", Value::String(model_id.to_string())),
             ]),
         )
     }
@@ -211,7 +220,16 @@ impl<R: BufRead, W: Write> ManagedRpcClient<R, W> {
                     .unwrap_or_else(|| "get_available_models failed".to_string()),
             ));
         }
-        serde_json::from_value(result.response.data).map_err(CliError::operation)
+        result
+            .response
+            .data
+            .get("models")
+            .cloned()
+            .map_or_else(
+                || serde_json::from_value(result.response.data),
+                serde_json::from_value,
+            )
+            .map_err(CliError::operation)
     }
 
     pub(crate) fn compact(&mut self) -> Result<CompactionResult, CliError> {
@@ -363,7 +381,6 @@ mod tests {
         let writer = Vec::new();
         let mut client = ManagedRpcClient::new(reader, writer);
         let command = RpcCommand {
-            kind: "command",
             id: "01KTEST".to_string(),
             command: "prompt".to_string(),
             data: Map::new(),
@@ -381,6 +398,26 @@ mod tests {
             }]
         );
         assert!(result.response.success);
+    }
+
+    #[test]
+    fn rpc_command_serializes_current_pi_envelope() {
+        let command = RpcCommand {
+            id: "01KTEST".to_string(),
+            command: "prompt".to_string(),
+            data: map_with("message", Value::String("hello".to_string())),
+        };
+
+        let value = serde_json::to_value(command).expect("command should serialize");
+
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "id": "01KTEST",
+                "type": "prompt",
+                "message": "hello"
+            })
+        );
     }
 
     #[test]
