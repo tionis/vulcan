@@ -67,6 +67,7 @@ pub(crate) struct EngineDoctorReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EngineLaunch {
     pub(crate) program: PathBuf,
+    pub(crate) cwd: PathBuf,
     pub(crate) args: Vec<OsString>,
     pub(crate) env: Vec<(String, String)>,
 }
@@ -128,6 +129,7 @@ pub(crate) fn spawn_pi_rpc(
     let launch = build_pi_launch(options, vault_root);
     let mut child = Command::new(&launch.program)
         .args(&launch.args)
+        .current_dir(&launch.cwd)
         .envs(launch.env.iter().map(|(key, value)| (key, value)))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -151,12 +153,7 @@ pub(crate) fn spawn_pi_rpc(
 pub(crate) fn build_pi_launch(options: &AssistantHostOptions, vault_root: &Path) -> EngineLaunch {
     let program =
         resolve_binary(&options.pi_binary).unwrap_or_else(|| PathBuf::from(&options.pi_binary));
-    let mut args = vec![
-        OsString::from("--mode"),
-        OsString::from("rpc"),
-        OsString::from("--cwd"),
-        vault_root.as_os_str().to_os_string(),
-    ];
+    let mut args = vec![OsString::from("--mode"), OsString::from("rpc")];
     if let Some(provider) = options.provider.as_ref() {
         args.push(OsString::from("--provider"));
         args.push(OsString::from(provider));
@@ -185,6 +182,7 @@ pub(crate) fn build_pi_launch(options: &AssistantHostOptions, vault_root: &Path)
     }
     EngineLaunch {
         program,
+        cwd: vault_root.to_path_buf(),
         args,
         env: options.extension_env.clone(),
     }
@@ -255,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn pi_launch_includes_rpc_cwd_model_and_session_dir() {
+    fn pi_launch_uses_process_cwd_and_includes_rpc_model_and_session_dir() {
         let launch = build_pi_launch(&options(), Path::new("/vault"));
         let args = launch
             .args
@@ -263,7 +261,9 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
 
-        assert_eq!(args[0..4], ["--mode", "rpc", "--cwd", "/vault"]);
+        assert_eq!(launch.cwd, PathBuf::from("/vault"));
+        assert_eq!(args[0..2], ["--mode", "rpc"]);
+        assert!(!args.iter().any(|arg| arg == "--cwd"));
         assert!(args.windows(2).any(|pair| pair == ["--provider", "openai"]));
         assert!(args.windows(2).any(|pair| pair == ["--model", "gpt-5.2"]));
         assert!(args.windows(2).any(|pair| pair == ["--thinking", "high"]));
