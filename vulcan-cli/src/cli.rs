@@ -1284,6 +1284,7 @@ Examples:
   vulcan mcp --vault ~/notes --permissions daily-wiki-agent --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom
   vulcan mcp --vault ~/notes --tool-pack custom
   vulcan mcp --vault ~/notes --tool-pack-mode adaptive
+  vulcan mcp --vault ~/notes --request-timeout 30s
   vulcan mcp --transport http --bind 127.0.0.1:8765
   vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-dcr --oauth-indieauth-me https://example.com/ --oauth-local-user https://example.com/=daily-wiki-agent
   vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-issuer https://auth.example.com/application/o/vulcan/ --oauth-audience vulcan-mcp --oauth-allowed-email you@example.com
@@ -5541,6 +5542,12 @@ Examples:
         tool_pack_mode: McpToolPackModeArg,
         #[arg(long, value_enum, default_value_t = McpTransportArg::Stdio)]
         transport: McpTransportArg,
+        #[arg(
+            long,
+            default_value = "120s",
+            help = "Maximum time allowed for one MCP request, for example 500ms, 30s, or 2m"
+        )]
+        request_timeout: String,
         #[arg(
             long,
             default_value = "127.0.0.1:8765",

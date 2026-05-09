@@ -55,7 +55,10 @@ Important rules:
 - Profiles publish by omission. Excluded notes do not appear in HTML, search, graph assets, hover
   previews, feeds, or copied assets.
 - `content_transforms`, link policy, and asset policy reuse the same publication model as export
-  profiles.
+  profiles. `link_policy` accepts `error`, `warn`, `drop_link`, and `render_plain_text`;
+  `drop_link` removes unpublished embeds and renders normal links as text, while
+  `render_plain_text` renders unpublished note links as text. Asset policy currently copies
+  referenced assets and can fail missing assets with `mode = "error_on_missing"`.
 - `deploy_path` is optional and distinct from `base_url`. Use it when the built site will be hosted
   under a subpath such as `/garden/` or `/wiki/`.
 - Site profiles can be layered through `.vulcan/config.local.toml` when a local preview needs a
@@ -73,7 +76,9 @@ Important rules:
   blocks stay visible in the output as DataviewJS error callouts instead of disappearing silently.
 
 Per-note publish metadata can be overridden in frontmatter, including `title`, `slug`, `description`,
-`canonical_url`, and `summary_image`.
+`canonical_url`, `summary_image`, and `hide_modules`. `hide_modules` accepts `toc`, `graph`,
+`backlinks`, and `outgoing_links` to hide right-rail modules on one note without changing the
+profile defaults.
 
 Example:
 
@@ -87,6 +92,7 @@ site:
       description: Public-facing summary for the launch page.
       canonical_url: https://notes.example.com/start/
       summary_image: site/social/launch.png
+      hide_modules: ["toc", "graph"]
 ---
 ```
 
@@ -245,13 +251,16 @@ Current defaults and semantics:
   browser storage per site profile
 - `shell.default_palette` chooses the default `system` / `light` / `dark` palette before any stored
   user preference is applied
+- The explorer includes a local filter box; folder and note titles are matched client-side without
+  touching the published search index.
 - `navigation.folder_click = "collapse"` is the built-in default and makes folder rows behave like a
   collapsible explorer; when a folder note such as `Guides/index.md` or `Guides/Guides.md` exists,
   the built-in shell also renders a separate `Open` affordance for that folder landing page
 - `navigation.folder_click = "link"` makes folder rows navigate directly to folder notes or generated
   folder listing pages instead of using the row label as the collapse toggle
 - `navigation.default_folder_state` seeds the explorer's initial collapse state; the built-in shell
-  restores saved folder open/closed state when `use_saved_state = true`
+  restores saved folder open/closed state plus explorer scroll position when
+  `use_saved_state = true`
 - `modules.*` control which right-rail panels are available in the built-in shell; the shell still
   only renders modules whose source data exists on the current page, so TOC stays hidden when a page
   has no headings and local graph stays hidden when graph export is disabled
