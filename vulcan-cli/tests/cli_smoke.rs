@@ -10576,6 +10576,38 @@ fn bundled_conversation_export_skill_writes_callout_note() {
         Some("file reply")
     );
 
+    let tool_name_complete = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "complete",
+            "custom-tool",
+            "conversation",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8_lossy(&tool_name_complete.get_output().stdout).trim(),
+        "conversation-export"
+    );
+
+    let tool_flag_complete = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "complete",
+            "custom-tool-flag:conversation-export",
+            "--ass",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8_lossy(&tool_flag_complete.get_output().stdout).trim(),
+        "--assistant"
+    );
+
     Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([

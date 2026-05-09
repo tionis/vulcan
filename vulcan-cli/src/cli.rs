@@ -715,6 +715,10 @@ Examples:
   vulcan help --search graph";
 
 const COMPLETIONS_COMMAND_AFTER_HELP: &str = "\
+Notes:
+  Bash, Fish, and Zsh completions include vault-aware dynamic candidates.
+  Skill commands with metadata.vulcan.commands[].cli complete under `vulcan tool run`.
+
 Examples:
   vulcan completions bash > ~/.local/share/bash-completion/completions/vulcan
   vulcan completions fish > ~/.config/fish/completions/vulcan.fish";
@@ -5351,12 +5355,12 @@ Examples:
     },
     /// Return dynamic completion candidates for a given context (newline-separated).
     ///
-    /// Contexts: note, kanban-board, bases-view, daily-date, script, task-view, vault-path
+    /// Contexts: note, kanban-board, bases-view, daily-date, script, task-view, vault-path, custom-tool, custom-tool-flag:<tool>
     #[command(hide = true)]
     Complete {
         #[arg(help = "Completion context")]
         context: String,
-        #[arg(help = "Optional current token prefix")]
+        #[arg(help = "Optional current token prefix", allow_hyphen_values = true)]
         prefix: Option<String>,
     },
     #[command(

@@ -10695,7 +10695,7 @@
       },
       {
         "about": "Generate shell completion scripts",
-        "after_help": "Examples:\n  vulcan completions bash > ~/.local/share/bash-completion/completions/vulcan\n  vulcan completions fish > ~/.config/fish/completions/vulcan.fish",
+        "after_help": "Notes:\n  Bash, Fish, and Zsh completions include vault-aware dynamic candidates.\n  Skill commands with metadata.vulcan.commands[].cli complete under `vulcan tool run`.\n\nExamples:\n  vulcan completions bash > ~/.local/share/bash-completion/completions/vulcan\n  vulcan completions fish > ~/.config/fish/completions/vulcan.fish",
         "name": "completions",
         "options": [
           {

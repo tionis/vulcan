@@ -361,6 +361,54 @@ pub fn resolve_custom_tool_cli_name(
         .map(|(resolved_name, _, _)| resolved_name)
 }
 
+pub fn collect_custom_tool_cli_name_candidates(
+    paths: &VaultPaths,
+    registry_options: &CustomToolRegistryOptions,
+) -> Result<Vec<String>, AppError> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut candidates = Vec::new();
+    for summary in list_assistant_skills(paths).map_err(AppError::operation)? {
+        for command in summary.commands.iter().filter(|command| command.expose) {
+            if !command_matches_allowed_packs(&command.packs, registry_options) {
+                continue;
+            }
+            let tool_name = skill_command_tool_name(&summary.name, &command.id);
+            if seen.insert(tool_name.clone()) {
+                candidates.push(tool_name);
+            }
+            if let Some(cli) = &command.cli {
+                for alias in &cli.aliases {
+                    if seen.insert(alias.clone()) {
+                        candidates.push(alias.clone());
+                    }
+                }
+            }
+        }
+    }
+    Ok(candidates)
+}
+
+pub fn collect_custom_tool_cli_flag_candidates(
+    paths: &VaultPaths,
+    name: &str,
+    registry_options: &CustomToolRegistryOptions,
+) -> Result<Vec<String>, AppError> {
+    let (_resolved_name, _skill, command) =
+        resolve_skill_command_tool_identifier(paths, name, registry_options)?;
+    let Some(cli) = command.cli else {
+        return Ok(Vec::new());
+    };
+    let mut seen = std::collections::BTreeSet::new();
+    let mut candidates = Vec::new();
+    for arg in cli.args {
+        let flag = format!("--{}", arg.flag.trim_start_matches('-'));
+        if seen.insert(flag.clone()) {
+            candidates.push(flag);
+        }
+    }
+    Ok(candidates)
+}
+
 pub fn build_custom_tool_cli_input(
     paths: &VaultPaths,
     name: &str,
@@ -1853,6 +1901,20 @@ mod tests {
         fs::write(root.join("main.js"), source).expect("tool source should write");
     }
 
+    fn write_skill(
+        paths: &VaultPaths,
+        name: &str,
+        manifest: &str,
+        source_name: &str,
+        source: &str,
+    ) {
+        let root = paths.vault_root().join(".agents/skills").join(name);
+        let scripts = root.join("scripts");
+        fs::create_dir_all(&scripts).expect("skill scripts dir should exist");
+        fs::write(root.join("SKILL.md"), manifest).expect("skill manifest should write");
+        fs::write(scripts.join(source_name), source).expect("skill script should write");
+    }
+
     fn legacy_tool_options() -> CustomToolRegistryOptions {
         CustomToolRegistryOptions {
             include_standalone_tools: true,
@@ -1891,6 +1953,59 @@ input_schema:
             list_custom_tools(&paths, None, &legacy_tool_options()).expect("tools should load");
         assert_eq!(tools.len(), 1);
         assert!(!tools[0].callable);
+    }
+
+    #[test]
+    fn custom_tool_cli_completion_candidates_include_aliases_and_flags() {
+        let (_dir, paths) = test_paths();
+        write_skill(
+            &paths,
+            "conversation-export",
+            r"---
+name: conversation-export
+description: Export conversations.
+metadata:
+  vulcan:
+    commands:
+      - id: export
+        description: Export one conversation.
+        script: scripts/export.js
+        expose: true
+        cli:
+          aliases: [conversation-export]
+          args:
+            - flag: title
+              action: string
+              field: title
+            - flag: user
+              action: append_message
+              role: user
+        input_schema:
+          type: object
+---
+# Conversation Export
+",
+            "export.js",
+            "function main(input) { return input; }\n",
+        );
+
+        assert_eq!(
+            collect_custom_tool_cli_name_candidates(&paths, &CustomToolRegistryOptions::default())
+                .expect("name candidates"),
+            vec![
+                "skill_conversation_export_export".to_string(),
+                "conversation-export".to_string()
+            ]
+        );
+        assert_eq!(
+            collect_custom_tool_cli_flag_candidates(
+                &paths,
+                "conversation-export",
+                &CustomToolRegistryOptions::default(),
+            )
+            .expect("flag candidates"),
+            vec!["--title".to_string(), "--user".to_string()]
+        );
     }
 
     #[test]

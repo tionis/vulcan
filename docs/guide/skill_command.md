@@ -42,6 +42,11 @@ vulcan tool run conversation-export --title Chat --user Hello --assistant "Some 
 These custom flags only build the same JSON input object used by MCP and `tools.call()`;
 the normal schema validation and permission checks still run.
 
+Bash, Fish, and Zsh completions use the same `cli` metadata. `vulcan complete
+custom-tool <prefix>` lists projected tool names and aliases, while `vulcan
+complete custom-tool-flag:<tool-or-alias> --<prefix>` lists declared custom
+flags for one tool.
+
 JavaScript can call skill commands through either `tools.call("skill_daily_review_prepare_day", input)` or `skills.run("daily-review", "prepare-day", input)`.
 
 Nested calls preserve the current effective permission ceiling. A script cannot use `skills.run()` to escape its own sandbox or permission profile.
