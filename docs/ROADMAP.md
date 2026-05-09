@@ -2056,6 +2056,8 @@ The `vulcan tasks` command group is the unified interface for all task operation
 
 #### ~~9.15.10 Calendar sync~~ — deferred
 
+**Status:** Closed for Phase 9. This struck section has no remaining Phase 9 implementation items; the calendar work is parked as post-Phase 9 research in [Deferred enhancements — Calendar integration](#deferred-calendar-integration).
+
 Deferred to post-Phase 9 enhancements. Calendar integration needs deeper research into how the vault and assistant integrate with calendars holistically (not just TaskNotes). See [Deferred enhancements — Calendar integration](#deferred-calendar-integration).
 
 #### 9.15.11 Settings import
@@ -2077,6 +2079,8 @@ Deferred to post-Phase 9 enhancements. Calendar integration needs deeper researc
 - [x] Migrate `.base` view files: copy TaskNotes view definitions and validate they work with Vulcan's Bases evaluator
 
 #### ~~9.15.12 HTTP API compatibility~~ — deferred
+
+**Status:** Closed for Phase 9. Do not implement TaskNotes plugin API compatibility as a Phase 9 item; task HTTP work belongs to the unified Phase 10 daemon API tracked in [Deferred enhancements — Task daemon API](#deferred-task-daemon-api).
 
 Deferred. The Phase 10 daemon will expose task functionality through its own unified API design rather than replicating the TaskNotes plugin's REST endpoints. See [Deferred enhancements — Task daemon API](#deferred-task-daemon-api).
 
@@ -4790,19 +4794,19 @@ Matrix is explicitly more complex than Telegram because it brings sync loops, ro
 
 ## Deferred enhancements (post-Phase 9)
 
-Features removed from Phase 9 sub-phases that need deeper research, depend on later phases (WebUI, daemon, chat platforms), or will be implemented differently than their Obsidian plugin counterparts. These are not abandoned — they are intentionally deferred until their prerequisites and design constraints are better understood.
+Features removed from Phase 9 sub-phases that need deeper research, depend on later phases (WebUI, daemon, chat platforms), or will be implemented differently than their Obsidian plugin counterparts. These are not hidden open Phase 9 tasks. They are intentionally deferred until their prerequisites and design constraints are better understood, and any eventual implementation should move into the owning future phase before work starts.
 
 ### <a id="deferred-calendar-integration"></a>Calendar integration research
 
 **Deferred from:** 9.15.10
 
-Calendar integration should not be a TaskNotes-specific feature. It needs a holistic design covering how the vault and assistant interact with calendars in general — task scheduling, event creation from notes, daily note linkage, assistant-managed calendar entries. Requires research into:
+Calendar integration should not be a TaskNotes-specific feature. It needs a holistic design covering how the vault and assistant interact with calendars in general — task scheduling, event creation from notes, daily note linkage, assistant-managed calendar entries.
 
-- OAuth2 flows for Google Calendar and Microsoft Calendar
-- ICS import/export and subscription feeds
-- Bidirectional sync semantics (vault-as-source-of-truth vs calendar-as-source-of-truth)
-- How 9.12 external agent integrations should interact with calendar data, and whether any later native/chat runtime needs additional hooks
-- Timeblocking: creating calendar blocks from task schedules
+- [-] Research OAuth2 flows for Google Calendar and Microsoft Calendar — deferred from struck Phase 9.15.10 into a future calendar integration design
+- [-] Research ICS import/export and subscription feeds — deferred from struck Phase 9.15.10 into a future calendar integration design
+- [-] Define bidirectional sync semantics (vault-as-source-of-truth vs calendar-as-source-of-truth) — deferred from struck Phase 9.15.10 into a future calendar integration design
+- [-] Decide how 9.12 external agent integrations should interact with calendar data, and whether any later native/chat runtime needs additional hooks — deferred from struck Phase 9.15.10 into a future calendar integration design
+- [-] Design timeblocking flows that create calendar blocks from task schedules — deferred from struck Phase 9.15.10 into a future calendar integration design
 
 **Depends on:** Phase 9.15 (task data model), Phase 9.12 (external agent integration), Phase 10 (daemon for background sync)
 
@@ -4839,10 +4843,10 @@ Core reminder parsing and evaluation ship in 9.15.7. *Delivery* of reminders —
 
 The Phase 10 daemon will expose task CRUD, time tracking, and query operations through its own unified REST API rather than replicating the TaskNotes plugin's endpoint structure. Design considerations:
 
-- Unified API that covers both Tasks plugin (9.10) and TaskNotes (9.15) task models
-- MCP tool exposure for AI integration (cross-reference with 9.12)
-- Webhook support for task lifecycle events
-- API design that fits Vulcan's multi-vault architecture
+- [-] Design a unified API that covers both Tasks plugin (9.10) and TaskNotes (9.15) task models — deferred from struck Phase 9.15.12 to Phase 10 daemon API work
+- [-] Keep MCP tool exposure aligned with the task API surface for AI integration — deferred from struck Phase 9.15.12 to Phase 10 daemon API work
+- [-] Evaluate webhook support for task lifecycle events — deferred from struck Phase 9.15.12 to Phase 10 daemon API work
+- [-] Fit the task API into Vulcan's multi-vault daemon architecture — deferred from struck Phase 9.15.12 to Phase 10 daemon API work
 
 **Depends on:** Phase 10 (daemon)
 
