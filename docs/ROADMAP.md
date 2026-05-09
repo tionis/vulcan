@@ -3358,8 +3358,8 @@ The export surface now covers documents, datasets, archives, and static search i
 - [x] Extend `content_transforms` with section filtering (`exclude_headings`) so publication exports can drop whole heading sections and their subsections
 - [x] Extend `content_transforms` with metadata filtering (`exclude_frontmatter_keys`, `exclude_inline_fields`) so exported/public notes can remove sensitive structured data without hand-editing sources; transformed export metadata, links, and inline-expression evaluation must all be rebuilt from the rewritten note content
 - [x] Extend `content_transforms` with literal/regex replacement rules for publication redaction and normalization workflows; replacement order must be preserved and transformed metadata/attachment references must be rebuilt from rewritten content
-- [ ] Add publication link policy controls for transformed exports and future site builds (`error`, `warn`, `drop-link`, `render-plain-text`) when content transforms remove the target or anchor context
-- [ ] Add publication asset policy controls so transformed exports and future site builds can exclude/rewrite attachments based on path, extension, or whether they are only referenced from stripped content
+- [x] Add publication link policy controls for transformed exports and future site builds (`error`, `warn`, `drop-link`, `render-plain-text`) when content transforms remove the target or anchor context
+- [x] Add publication asset policy controls so transformed exports and future site builds can exclude/rewrite attachments based on path, extension, or whether they are only referenced from stripped content
 
 **`vulcan tasks` source selection**
 
@@ -3687,7 +3687,7 @@ The current Linux x86\_64 release binary is about 31.3MB unstripped and 26.0MB s
 - [x] Replace per-tool subprocess respawning with direct in-process dispatch to the same command handlers/serializers used by the CLI
 - [x] Preserve CLI/MCP parity for refresh behavior, permission checks, and JSON report structs while removing process spawn overhead
 - [x] Keep a single source of truth for MCP permission requirements, annotations, and output schemas so the registry does not drift from command behavior
-- [ ] Add cancellation/timeout handling where practical so long-running MCP calls fail predictably rather than hanging the client
+- [x] Add cancellation/timeout handling where practical so long-running MCP calls fail predictably rather than hanging the client
 
 **HTTP transport follow-through**
 
@@ -4132,8 +4132,8 @@ The left rail should be a real explorer, not just top-nav links.
 - [x] Add an explorer/navigation manifest derived from the published route set, suitable for both the built-in shell and frontend-bundle consumers
 - [x] Model folders as navigable nodes with configurable behavior: collapse-only, link-to-folder-page, or prefer folder-note/index-note when present
 - [x] Add explicit folder-note / section-index behavior for published sites, including rules for `index.md` / configured home notes / folder landing notes
-- [~] Support explorer sorting, filtering, and default collapse/open behavior with profile-scoped configuration
-- [~] Persist explorer collapse state and restore scroll position across navigation where possible
+- [x] Support explorer sorting, filtering, and default collapse/open behavior with profile-scoped configuration
+- [x] Persist explorer collapse state and restore scroll position across navigation where possible
 - [x] Ensure publish filters and route policy apply uniformly: excluded notes/folders must never leak into explorer manifests
 
 #### 9.20.10.3 Left rail search and controls
@@ -4152,9 +4152,9 @@ The right rail should be a module host, not one hardcoded sidebar.
 
 - [x] Turn TOC, local graph, backlinks, outgoing links, and similar surfaces into named right-rail modules with stable identifiers
 - [x] Add per-profile enable/disable settings for each module instead of only top-level booleans like `graph` and `backlinks`
-- [ ] Add per-page/per-note hide controls where appropriate, preferably via frontmatter metadata compatible with later WebUI/wiki reuse
+- [x] Add per-page/per-note hide controls where appropriate, preferably via frontmatter metadata compatible with later WebUI/wiki reuse
 - [x] Support collapsible modules with persisted open/closed state
-- [~] Add TOC behaviors inspired by Material/Quartz, including sticky follow behavior and automatic hiding when headings are absent
+- [x] Add TOC behaviors inspired by Material/Quartz, including sticky follow behavior and automatic hiding when headings are absent
 - [x] Keep graph/backlinks/search assets shared with frontend-bundle mode rather than generating separate UI-specific payloads
 
 #### 9.20.10.5 Profile/config surface expansion
@@ -4162,9 +4162,9 @@ The right rail should be a module host, not one hardcoded sidebar.
 The current site profile booleans are not expressive enough for the intended shell.
 
 - [x] Extend `[site.profiles.<name>]` with structured shell/navigation/module settings instead of adding many flat booleans
-- [~] Add config for left rail defaults: explorer enabled, folder click behavior, default collapse state, saved state behavior, mobile drawer behavior
-- [~] Add config for right rail defaults: which modules are shown, default order, collapse defaults, sticky/follow options
-- [~] Add config for appearance controls: palette mode defaults, user palette switching enabled/disabled, reader mode enabled/disabled
+- [x] Add config for left rail defaults: explorer enabled, folder click behavior, default collapse state, saved state behavior, mobile drawer behavior
+- [x] Add config for right rail defaults: which modules are shown, default order, collapse defaults, sticky/follow options
+- [x] Add config for appearance controls: palette mode defaults, user palette switching enabled/disabled, reader mode enabled/disabled
 - [x] Add config parsing/default tests and update the default config template/help text to document the new site-shell surface clearly
 
 #### 9.20.10.6 Default theme v2 and visual language
@@ -4173,7 +4173,7 @@ This is the visible payoff. The built-in theme should stop looking like a generi
 
 - [x] Redesign the default CSS/JS shell to use a denser Quartz-like layout with a persistent left rail, stronger typography, clearer hierarchy, and more intentional spacing
 - [x] Borrow Material-style polish for sticky sidebars, palette switching, responsive drawers, and hide/show affordances
-- [ ] Improve list/folder/tag/home pages so they feel like real knowledge-site landing pages instead of generic card dumps
+- [x] Improve list/folder/tag/home pages so they feel like real knowledge-site landing pages instead of generic card dumps
 - [x] Preserve the no-Node built-in delivery model: plain CSS and minimal JS emitted by the Rust build remain the default path
 - [x] Update the reference theme example to reflect the new shell contract and demonstrate custom left/right rail replacements
 
@@ -4182,8 +4182,8 @@ This is the visible payoff. The built-in theme should stop looking like a generi
 This follow-on changes a user-facing compatibility surface and needs stronger guidance than the baseline 9.20 docs.
 
 - [x] Expand `docs/guide/static-sites.md` with the new shell contract, config reference, module model, folder-note behavior, and migration notes for old theme partials
-- [~] Add screenshots or fixture-based examples for desktop/mobile layouts, palette modes, reader mode, hidden rails, and folder-note explorer behavior
-- [~] Add snapshot/smoke tests for landmark structure, keyboard navigation, responsive drawer behavior, reader mode, and module toggling
+- [x] Add screenshots or fixture-based examples for desktop/mobile layouts, palette modes, reader mode, hidden rails, and folder-note explorer behavior
+- [x] Add snapshot/smoke tests for landmark structure, keyboard navigation, responsive drawer behavior, reader mode, and module toggling
 - [x] Add integration tests covering folder-note routing + explorer manifests, per-profile shell config differences, and root-hosted vs subpath-hosted shell asset/state correctness
 - [x] Keep frontend-bundle contracts in sync: if the built-in shell gains a new typed navigation/module manifest, document and test the bundle shape at the same time
 

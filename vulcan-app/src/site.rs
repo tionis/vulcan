@@ -649,6 +649,52 @@ body[data-reader-mode='true'] .site-right-rail {
   color: var(--muted);
 }
 
+.site-explorer-filter {
+  width: 100%;
+  margin-bottom: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.45rem 0.7rem;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.site-listing-hero {
+  display: grid;
+  gap: 0.8rem;
+  padding-bottom: 1.25rem;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.site-listing-kicker {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.site-listing-hero h2 {
+  margin: 0;
+  font-size: clamp(1.35rem, 2.4vw, 2rem);
+}
+
+.site-listing-meta {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.site-listing-stat {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.25rem 0.65rem;
+  background: var(--surface);
+}
+
 .site-search-input {
   width: 100%;
   padding: 0.82rem 0.95rem;
@@ -1147,6 +1193,29 @@ const DEFAULT_THEME_JS: &str = r#"(() => {
       const expanded = typeof saved === 'boolean' ? saved : toggle.getAttribute('aria-expanded') === 'true';
       setExplorerFolderOpen(folderPath, expanded, false);
     });
+    const savedScroll = Number(readStorage(storageKey('explorer-scroll')) || '0');
+    if (savedScroll > 0) explorerTree.scrollTop = savedScroll;
+    explorerTree.addEventListener('scroll', () => {
+      if (explorerUsesSavedState) writeStorage(storageKey('explorer-scroll'), String(explorerTree.scrollTop));
+    }, { passive: true });
+  }
+
+  const explorerFilter = document.querySelector('[data-site-explorer-filter]');
+  const applyExplorerFilter = (query) => {
+    if (!explorerTree) return;
+    const needle = query.trim().toLocaleLowerCase();
+    explorerTree.querySelectorAll('[data-site-explorer-filter-text]').forEach((item) => {
+      item.hidden = Boolean(needle) && !item.getAttribute('data-site-explorer-filter-text').includes(needle);
+    });
+    explorerTree.querySelectorAll('[data-site-explorer-folder]').forEach((folder) => {
+      const folderMatches = folder.getAttribute('data-site-explorer-filter-text')?.includes(needle);
+      const matchingChildren = [...folder.querySelectorAll('[data-site-explorer-filter-text]')]
+        .some((item) => !item.hidden);
+      folder.hidden = Boolean(needle) && !folderMatches && !matchingChildren;
+    });
+  };
+  if (explorerFilter) {
+    explorerFilter.addEventListener('input', () => applyExplorerFilter(explorerFilter.value));
   }
 
   document.addEventListener('click', (event) => {
@@ -1758,6 +1827,8 @@ pub struct RenderedNote {
     pub aliases: Vec<String>,
     pub outgoing_links: Vec<String>,
     pub backlinks: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hidden_modules: Vec<String>,
     pub breadcrumbs: Vec<String>,
     pub asset_paths: Vec<String>,
     pub embeds: Vec<RenderedEmbed>,
@@ -3825,6 +3896,10 @@ fn render_site_plan_note(
         .unwrap_or_else(|| excerpt.clone());
     let canonical_url = frontmatter_override(&note.note, &plan.profile.name, "canonical_url");
     let summary_image = frontmatter_override(&note.note, &plan.profile.name, "summary_image");
+    let hidden_modules = frontmatter_string_list(&note.note, &plan.profile.name, "hide_modules")
+        .into_iter()
+        .map(|module| module.replace('-', "_"))
+        .collect::<Vec<_>>();
     let rendered_note = RenderedNote {
         source_path: note.note.document_path.clone(),
         title,
@@ -3843,6 +3918,7 @@ fn render_site_plan_note(
             .get(&note.note.document_path)
             .cloned()
             .unwrap_or_default(),
+        hidden_modules,
         breadcrumbs: breadcrumbs_for_path(&note.note.document_path),
         asset_paths: collect_note_asset_paths(source_links),
         embeds: collect_note_embeds(source_links, &note.note.document_path, shared),
@@ -4545,7 +4621,7 @@ fn render_navigation_node_html(
             };
             format!(
                 concat!(
-                    "<li class=\"site-explorer-folder\" data-site-explorer-folder=\"{}\">",
+                    "<li class=\"site-explorer-folder\" data-site-explorer-folder=\"{}\" data-site-explorer-filter-text=\"{}\">",
                     "<div class=\"site-explorer-folder-row\">",
                     "<button class=\"site-explorer-folder-toggle\" type=\"button\" data-site-explorer-folder-toggle=\"{}\" aria-expanded=\"{}\">▸</button>",
                     "{}{}",
@@ -4554,6 +4630,7 @@ fn render_navigation_node_html(
                     "</li>"
                 ),
                 escape_html(folder_path),
+                escape_html(&node.title.to_lowercase()),
                 escape_html(folder_path),
                 if open { "true" } else { "false" },
                 title_html,
@@ -4567,7 +4644,8 @@ fn render_navigation_node_html(
             )
         }
         _ => format!(
-            "<li class=\"site-explorer-note\"><a class=\"site-explorer-link{}\" href=\"{}\">{}</a></li>",
+            "<li class=\"site-explorer-note\" data-site-explorer-filter-text=\"{}\"><a class=\"site-explorer-link{}\" href=\"{}\">{}</a></li>",
+            escape_html(&node.title.to_lowercase()),
             if active { " is-active" } else { "" },
             escape_html(&node.url),
             escape_html(&node.title)
@@ -4661,16 +4739,21 @@ fn render_note_document(
     home_note: Option<&RenderedNote>,
 ) -> String {
     let breadcrumbs = render_breadcrumbs(&note.breadcrumbs);
+    let hidden_modules = note
+        .hidden_modules
+        .iter()
+        .map(String::as_str)
+        .collect::<HashSet<_>>();
     let mut modules = Vec::new();
-    if profile.modules.toc {
+    if profile.modules.toc && !hidden_modules.contains("toc") {
         if let Some(module) = render_toc_module(&note.headings) {
             modules.push(module);
         }
     }
-    if profile.modules.graph && profile.graph {
+    if profile.modules.graph && profile.graph && !hidden_modules.contains("graph") {
         modules.push(render_local_graph_module(note));
     }
-    if profile.modules.backlinks && profile.backlinks {
+    if profile.modules.backlinks && profile.backlinks && !hidden_modules.contains("backlinks") {
         if let Some(module) = render_note_links_module(
             &context.deploy_path,
             "backlinks",
@@ -4681,7 +4764,10 @@ fn render_note_document(
             modules.push(module);
         }
     }
-    if profile.modules.outgoing_links {
+    if profile.modules.outgoing_links
+        && !hidden_modules.contains("outgoing_links")
+        && !hidden_modules.contains("outgoing")
+    {
         if let Some(module) = render_note_links_module(
             &context.deploy_path,
             "outgoing",
@@ -4834,13 +4920,17 @@ fn render_recent_page(
         .into_iter()
         .map(|note| render_card(&note.title, &note.url, &note.excerpt))
         .collect::<String>();
+    let body = render_listing_section(
+        "Recently updated",
+        "Freshly changed notes from this published profile.",
+        &[format!("{} note(s)", notes.len())],
+        &cards,
+    );
     render_generic_page(
         context,
         "Recent notes",
         "Most recently updated published notes.",
-        &format!(
-            "<section class=\"site-listing\"><div class=\"site-card-grid\">{cards}</div></section>"
-        ),
+        &body,
         navigation_tree,
         profile,
         false,
@@ -4855,6 +4945,7 @@ fn render_folder_pages(
     profile: &ResolvedSiteProfile,
 ) -> Vec<(String, String)> {
     let mut pages = Vec::new();
+    let total_notes = folder_index.values().map(Vec::len).sum::<usize>();
     let overview = folder_index
         .iter()
         .map(|(folder, notes)| {
@@ -4871,7 +4962,15 @@ fn render_folder_pages(
             context,
             "Folders",
             "Folder-based views of the published subset.",
-            &format!("<section class=\"site-listing\"><div class=\"site-card-grid\">{overview}</div></section>"),
+            &render_listing_section(
+                "Folder explorer",
+                "Browse the published subset by folder.",
+                &[
+                    format!("{} folder(s)", folder_index.len()),
+                    format!("{total_notes} note(s)"),
+                ],
+                &overview,
+            ),
             navigation_tree,
             profile,
             false,
@@ -4892,7 +4991,12 @@ fn render_folder_pages(
                 context,
                 &format!("Folder: {folder}"),
                 "Published notes in this folder.",
-                &format!("<section class=\"site-listing\"><div class=\"site-card-grid\">{list}</div></section>"),
+                &render_listing_section(
+                    folder,
+                    "Published notes in this folder.",
+                    &[format!("{} note(s)", notes.len())],
+                    &list,
+                ),
                 navigation_tree,
                 profile,
                 false,
@@ -4910,6 +5014,7 @@ fn render_tag_pages(
     profile: &ResolvedSiteProfile,
 ) -> Vec<(String, String)> {
     let mut pages = Vec::new();
+    let total_tagged_notes = tag_index.values().map(Vec::len).sum::<usize>();
     let overview = tag_index
         .iter()
         .map(|(tag, notes)| {
@@ -4926,7 +5031,15 @@ fn render_tag_pages(
             context,
             "Tags",
             "Published tags across the current profile.",
-            &format!("<section class=\"site-listing\"><div class=\"site-card-grid\">{overview}</div></section>"),
+            &render_listing_section(
+                "Tag browser",
+                "Browse the published subset by tag.",
+                &[
+                    format!("{} tag(s)", tag_index.len()),
+                    format!("{total_tagged_notes} tagged note reference(s)"),
+                ],
+                &overview,
+            ),
             navigation_tree,
             profile,
             false,
@@ -4944,7 +5057,12 @@ fn render_tag_pages(
                 context,
                 &format!("Tag: #{tag}"),
                 "Published notes with this tag.",
-                &format!("<section class=\"site-listing\"><div class=\"site-card-grid\">{list}</div></section>"),
+                &render_listing_section(
+                    &format!("#{tag}"),
+                    "Published notes with this tag.",
+                    &[format!("{} note(s)", notes.len())],
+                    &list,
+                ),
                 navigation_tree,
                 profile,
                 false,
@@ -5286,7 +5404,14 @@ fn render_default_left_rail(
         String::new()
     } else {
         format!(
-            "<section class=\"site-rail-section site-explorer-panel\"><div class=\"site-rail-section-title\">Browse</div>{explorer}</section>"
+            concat!(
+                "<section class=\"site-rail-section site-explorer-panel\">",
+                "<div class=\"site-rail-section-title\">Browse</div>",
+                "<label class=\"site-visually-hidden\" for=\"site-explorer-filter\">Filter navigation</label>",
+                "<input id=\"site-explorer-filter\" class=\"site-explorer-filter\" data-site-explorer-filter type=\"search\" autocomplete=\"off\" spellcheck=\"false\" placeholder=\"Filter pages\" />",
+                "{}</section>"
+            ),
+            explorer
         )
     };
     format!(
@@ -5583,7 +5708,41 @@ fn render_listing_cards(notes: &[RenderedNote]) -> String {
         .iter()
         .map(|note| render_card(&note.title, &note.route.url_path, &note.excerpt))
         .collect::<String>();
-    format!("<section class=\"site-listing\"><div class=\"site-card-grid\">{cards}</div></section>")
+    render_listing_section(
+        "Published notes",
+        "Browse the notes available in this site profile.",
+        &[format!("{} note(s)", notes.len())],
+        &cards,
+    )
+}
+
+fn render_listing_section(title: &str, description: &str, stats: &[String], cards: &str) -> String {
+    let stats = stats
+        .iter()
+        .map(|stat| {
+            format!(
+                "<span class=\"site-listing-stat\">{}</span>",
+                escape_html(stat)
+            )
+        })
+        .collect::<String>();
+    format!(
+        concat!(
+            "<section class=\"site-listing\">",
+            "<header class=\"site-listing-hero\">",
+            "<p class=\"site-listing-kicker\">Index</p>",
+            "<h2>{}</h2>",
+            "<p>{}</p>",
+            "<div class=\"site-listing-meta\">{}</div>",
+            "</header>",
+            "<div class=\"site-card-grid\">{}</div>",
+            "</section>"
+        ),
+        escape_html(title),
+        escape_html(description),
+        stats,
+        cards
+    )
 }
 
 fn render_card(title: &str, href: &str, excerpt: &str) -> String {
@@ -6271,6 +6430,33 @@ fn frontmatter_override(note: &NoteRecord, profile_name: &str, key: &str) -> Opt
                 .and_then(Value::as_str)
                 .map(ToOwned::to_owned)
         })
+}
+
+fn frontmatter_string_list(note: &NoteRecord, profile_name: &str, key: &str) -> Vec<String> {
+    let Some(object) = note.frontmatter.as_object() else {
+        return Vec::new();
+    };
+    let profile_value = object
+        .get("site")
+        .and_then(Value::as_object)
+        .and_then(|site| {
+            site.get("profiles")
+                .and_then(Value::as_object)
+                .and_then(|profiles| profiles.get(profile_name))
+                .and_then(Value::as_object)
+                .and_then(|profile| profile.get(key))
+                .or_else(|| site.get(key))
+        })
+        .or_else(|| object.get(key));
+    match profile_value {
+        Some(Value::Array(values)) => values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(ToOwned::to_owned)
+            .collect(),
+        Some(Value::String(value)) => vec![value.clone()],
+        _ => Vec::new(),
+    }
 }
 
 fn path_matches_selector(path: &str, selector: &str) -> bool {
@@ -9010,17 +9196,18 @@ rss = true
         fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
         fs::write(
             vault_root.join("Guide.md"),
-            r"---
+            r#"---
 site:
   profiles:
     public:
       description: Guide summary.
+      hide_modules: ["toc"]
 ---
 
 # Guide
 
 Body text.
-",
+"#,
         )
         .expect("guide note should write");
         fs::write(
@@ -9081,8 +9268,8 @@ graph = false
         assert!(note_html.contains(r#"data-theme-mode="system""#));
         assert!(note_html.contains(r"data-reader-mode-toggle"));
         assert!(note_html.contains(r#"class="site-explorer-tree""#));
-        assert!(note_html.contains(r#"class="site-module-toolbar""#));
-        assert!(note_html.contains(r#"data-site-module="toc""#));
+        assert!(!note_html.contains(r#"class="site-module-toolbar""#));
+        assert!(!note_html.contains(r#"data-site-module="toc""#));
         assert!(note_html.contains(r"Guide.md"));
         assert!(note_html.contains(r#"<h1 id="guide">Guide</h1>"#));
     }
@@ -9127,6 +9314,8 @@ graph = false
         let output_root = vault_root.join(".vulcan/site/public");
         let home_html = read_site_text(&output_root, "index.html");
         let search_html = read_site_text(&output_root, "search/index.html");
+        let folders_html = read_site_text(&output_root, "folders/index.html");
+        let recent_html = read_site_text(&output_root, "recent/index.html");
         let guide_route = report
             .routes
             .iter()
@@ -9147,6 +9336,8 @@ graph = false
         assert_eq!(count_occurrences(&search_html, "<h1"), 1);
         assert_eq!(count_occurrences(&guide_html, "<h1"), 1);
         assert!(guide_html.contains(r#"aria-label="Breadcrumbs""#));
+        assert!(home_html.contains(r"data-site-explorer-filter"));
+        assert!(home_html.contains(r#"data-site-explorer-filter-text="notes""#));
         assert!(search_html.contains(
             r#"<label class="site-visually-hidden" for="site-search-dialog-input">Search published notes</label>"#
         ));
@@ -9155,6 +9346,10 @@ graph = false
         assert!(search_html.contains(r#"aria-describedby="site-search-dialog-hint""#));
         assert!(search_html.contains(r#"aria-keyshortcuts="/""#));
         assert!(search_html.contains(r#"aria-live="polite""#));
+        assert!(folders_html.contains(r#"class="site-listing-hero""#));
+        assert!(folders_html.contains("Folder explorer"));
+        assert!(folders_html.contains(r#"class="site-listing-stat""#));
+        assert!(recent_html.contains("Recently updated"));
     }
 
     #[test]
@@ -9473,6 +9668,7 @@ backlinks = false
             aliases: vec!["Getting Started".to_string()],
             outgoing_links: Vec::new(),
             backlinks: Vec::new(),
+            hidden_modules: Vec::new(),
             breadcrumbs: Vec::new(),
             asset_paths: Vec::new(),
             embeds: Vec::new(),

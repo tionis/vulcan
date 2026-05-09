@@ -15,6 +15,7 @@ Preferred direct ChatGPT shape:
      --transport http \
      --bind 127.0.0.1:8765 \
      --endpoint /mcp \
+     --request-timeout 120s \
      --public-url https://wiki.example.com/mcp \
      --oauth-dcr \
      --oauth-indieauth-me https://example.com/ \
@@ -39,7 +40,7 @@ For external OIDC resource-server mode, use `--oauth-issuer`, `--oauth-audience`
 
 `--auth-token` remains useful for private/internal clients that can set a shared bearer token or `x-vulcan-token`. It is mutually exclusive with direct OAuth mode and is not a ChatGPT-compatible public auth mechanism.
 
-HTTP MCP starts a background vault watcher and runs incremental scans after filesystem changes. Use `index_scan` when you want an explicit refresh or a full reindex.
+HTTP MCP starts a background vault watcher and runs incremental scans after filesystem changes. Use `index_scan` when you want an explicit refresh or a full reindex. Each request is bounded by `--request-timeout`, so long-running tool calls return a structured timeout error instead of leaving the client waiting indefinitely.
 
 ## ChatGPT Developer Mode
 

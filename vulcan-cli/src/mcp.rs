@@ -54,6 +54,8 @@ const MCP_PAGE_SIZE: usize = 100;
 const MCP_RESOURCE_NOT_FOUND: i64 = -32002;
 const MCP_HTTP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const MCP_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(250);
+pub(crate) const DEFAULT_MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const MCP_REQUEST_WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 pub(crate) struct McpHttpOptions {
@@ -79,6 +81,7 @@ pub(crate) struct McpHttpOptions {
     pub oauth_indieauth_redirect_uri: Option<String>,
     pub oauth_indieauth_me: Option<String>,
     pub oauth_local_user: Vec<String>,
+    pub request_timeout: Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -634,7 +637,7 @@ struct McpStoredResource {
     text: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct McpServerCore {
     paths: VaultPaths,
     selection: vulcan_core::ResolvedPermissionProfile,
@@ -787,6 +790,7 @@ struct McpHttpServerContext {
     oauth_dcr_allowed_redirect_hosts: Vec<String>,
     oauth_indieauth: Option<LocalOAuthIndieAuthConfig>,
     oauth_clients_path: Option<std::path::PathBuf>,
+    request_timeout: Duration,
 }
 
 #[derive(Debug)]
@@ -1291,9 +1295,13 @@ pub(crate) fn run_mcp(
     http_options: &McpHttpOptions,
 ) -> Result<(), CliError> {
     match transport_arg {
-        McpTransportArg::Stdio => {
-            run_mcp_stdio_server(paths, requested_profile, tool_pack_args, tool_pack_mode_arg)
-        }
+        McpTransportArg::Stdio => run_mcp_stdio_server(
+            paths,
+            requested_profile,
+            tool_pack_args,
+            tool_pack_mode_arg,
+            http_options.request_timeout,
+        ),
         McpTransportArg::Http => run_mcp_http_server(
             paths,
             requested_profile,
@@ -1309,6 +1317,7 @@ fn run_mcp_stdio_server(
     requested_profile: Option<&str>,
     tool_pack_args: &[McpToolPackArg],
     tool_pack_mode_arg: McpToolPackModeArg,
+    request_timeout: Duration,
 ) -> Result<(), CliError> {
     let mut server =
         McpServerCore::new(paths, requested_profile, tool_pack_args, tool_pack_mode_arg)?;
@@ -1331,7 +1340,7 @@ fn run_mcp_stdio_server(
             }
         };
 
-        for message in server.process_request(request) {
+        for message in server.process_request_with_timeout(request, request_timeout) {
             println!("{}", serde_json::to_string(&message).unwrap_or_default());
         }
     }
@@ -1380,6 +1389,7 @@ fn run_mcp_http_server(
         },
         oauth_indieauth: build_indieauth_config(options)?,
         oauth_clients_path: Some(oauth_clients_path(paths)),
+        request_timeout: options.request_timeout,
     };
 
     loop {
@@ -1503,7 +1513,7 @@ fn handle_mcp_http_post(
             .core
             .lock()
             .expect("mcp core lock should not be poisoned");
-        match core.process_http_request(&payload) {
+        match core.process_http_request_with_timeout(payload.clone(), context.request_timeout) {
             Ok(result) => result,
             Err(error_response) => {
                 if created_session {
@@ -1833,6 +1843,54 @@ impl McpServerCore {
         })
     }
 
+    fn process_request_with_timeout(&mut self, request: Value, timeout: Duration) -> Vec<Value> {
+        if timeout.is_zero() {
+            return timeout_response_for_request(&request, timeout)
+                .into_iter()
+                .collect();
+        }
+        let timeout_request = request.clone();
+        let mut worker = self.clone();
+        let (sender, receiver) = mpsc::channel();
+        if thread::Builder::new()
+            .name("vulcan-mcp-request".to_string())
+            .stack_size(MCP_REQUEST_WORKER_STACK_SIZE)
+            .spawn(move || {
+                let messages = worker.process_request(request);
+                let _ = sender.send((worker, messages));
+            })
+            .is_err()
+        {
+            let id = request_id(&timeout_request).unwrap_or(Value::Null);
+            return vec![jsonrpc_error(
+                id,
+                -32603,
+                "MCP request worker could not be started".to_string(),
+                None,
+            )];
+        }
+        match receiver.recv_timeout(timeout) {
+            Ok((next, messages)) => {
+                *self = next;
+                messages
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                timeout_response_for_request(&timeout_request, timeout)
+                    .into_iter()
+                    .collect()
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let id = request_id(&timeout_request).unwrap_or(Value::Null);
+                vec![jsonrpc_error(
+                    id,
+                    -32603,
+                    "MCP request worker stopped before producing a response".to_string(),
+                    None,
+                )]
+            }
+        }
+    }
+
     fn process_request(&mut self, request: Value) -> Vec<Value> {
         let Some(request_object) = request.as_object() else {
             return vec![jsonrpc_error(
@@ -1990,6 +2048,50 @@ impl McpServerCore {
             notifications,
             accepted_notification: is_notification,
         })
+    }
+
+    fn process_http_request_with_timeout(
+        &mut self,
+        request: Value,
+        timeout: Duration,
+    ) -> Result<McpHttpProcessResult, Value> {
+        if timeout.is_zero() {
+            return Ok(timeout_http_result(&request, timeout));
+        }
+        let timeout_request = request.clone();
+        let mut worker = self.clone();
+        let (sender, receiver) = mpsc::channel();
+        if thread::Builder::new()
+            .name("vulcan-mcp-http-request".to_string())
+            .stack_size(MCP_REQUEST_WORKER_STACK_SIZE)
+            .spawn(move || {
+                let result = worker.process_http_request(&request);
+                let _ = sender.send((worker, result));
+            })
+            .is_err()
+        {
+            return Err(jsonrpc_error(
+                request_id(&timeout_request).unwrap_or(Value::Null),
+                -32603,
+                "MCP request worker could not be started".to_string(),
+                None,
+            ));
+        }
+        match receiver.recv_timeout(timeout) {
+            Ok((next, result)) => {
+                *self = next;
+                result
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                Ok(timeout_http_result(&timeout_request, timeout))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(jsonrpc_error(
+                request_id(&timeout_request).unwrap_or(Value::Null),
+                -32603,
+                "MCP request worker stopped before producing a response".to_string(),
+                None,
+            )),
+        }
     }
 
     fn handle_method(
@@ -5427,6 +5529,58 @@ fn tool_error_response(id: Value, message: String, structured: Option<Value>) ->
     )
 }
 
+fn timeout_response_for_request(request: &Value, timeout: Duration) -> Option<Value> {
+    let id = request_id(request)?;
+    let message = format!(
+        "MCP request timed out after {}ms",
+        timeout.as_millis().max(1)
+    );
+    if request_method(request) == Some("tools/call") {
+        Some(tool_error_response(
+            id,
+            message.clone(),
+            Some(serde_json::json!({
+                "error": message,
+                "timed_out": true,
+                "timeout_ms": timeout.as_millis().max(1),
+            })),
+        ))
+    } else {
+        Some(jsonrpc_error(
+            id,
+            -32000,
+            message,
+            Some(serde_json::json!({
+                "timed_out": true,
+                "timeout_ms": timeout.as_millis().max(1),
+            })),
+        ))
+    }
+}
+
+fn timeout_http_result(request: &Value, timeout: Duration) -> McpHttpProcessResult {
+    let response = timeout_response_for_request(request, timeout);
+    McpHttpProcessResult {
+        accepted_notification: response.is_none(),
+        response,
+        notifications: Vec::new(),
+    }
+}
+
+fn request_id(request: &Value) -> Option<Value> {
+    request
+        .as_object()
+        .and_then(|object| object.get("id"))
+        .cloned()
+}
+
+fn request_method(request: &Value) -> Option<&str> {
+    request
+        .as_object()
+        .and_then(|object| object.get("method"))
+        .and_then(Value::as_str)
+}
+
 fn cli_tool_error(error: CliError) -> McpMethodError {
     McpMethodError::tool(error.message)
 }
@@ -6492,6 +6646,7 @@ mod tests {
             oauth_indieauth_redirect_uri: None,
             oauth_indieauth_me: None,
             oauth_local_user: Vec::new(),
+            request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,
         }
     }
 
@@ -6642,6 +6797,39 @@ mod tests {
             .expect("redirect location should be set");
         assert!(location.contains("code_challenge=challenge-value"));
         assert!(location.contains("code_challenge_method=S256"));
+    }
+
+    #[test]
+    fn mcp_tool_calls_return_structured_timeout_errors() {
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let paths = VaultPaths::new(tmp.path());
+        vulcan_core::initialize_vulcan_dir(&paths).expect("vault should initialize");
+        let mut core = McpServerCore::new(
+            &paths,
+            Some("daily-wiki-agent"),
+            &[McpToolPackArg::Index],
+            McpToolPackModeArg::Static,
+        )
+        .expect("MCP core should initialize");
+        let request = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 7,
+            "method": "tools/call",
+            "params": {
+                "name": "index_scan",
+                "arguments": {}
+            }
+        });
+
+        let messages = core.process_request_with_timeout(request, Duration::ZERO);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["id"].as_i64(), Some(7));
+        assert_eq!(
+            messages[0]["result"]["structuredContent"]["timed_out"].as_bool(),
+            Some(true)
+        );
+        assert_eq!(messages[0]["result"]["isError"].as_bool(), Some(true));
     }
 
     #[test]
