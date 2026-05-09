@@ -114,7 +114,47 @@ vulcan assistant --resume-session AI/Sessions/session.jsonl "Continue the summar
 
 Chat slash commands include `/model`, `/models`, `/thinking`, `/compact`,
 `/new`, `/stats`, `/state`, `/steer <text>`, `/follow-up <text>`,
-`/set-model <provider> <model>`, `/help`, and `/quit`.
+`/set-model <provider> <model>`, `/vulcan <command>`, `/help`, and `/quit`.
+Interactive chat has tab completion for slash commands, Vulcan command names
+after `/vulcan `, and vault paths after `@`.
+
+## Native Chat Transport Contract
+
+The CLI-hosted assistant does not run native Telegram, Matrix, or Discord
+adapters. It does define the shared transport data model those adapters should
+use later: external user principals such as `telegram:123456`, chat spaces such
+as `discord:guild/123/channel/456`, identity bindings, adapter capabilities,
+inbound chat events, outbound chat actions, and restrictive permission-profile
+resolution.
+
+The intended future config shape is:
+
+```toml
+[assistant.chat]
+default_profile = "readonly"
+session_root = "AI/Sessions"
+memory_root = "AI/Memory"
+
+[assistant.chat.identities.alice]
+principal = "user:alice"
+note = "People/Alice.md"
+
+[[assistant.chat.bindings]]
+external_user = "telegram:123456789"
+vault_identity = "alice"
+verification = "admin-confirmed"
+
+[assistant.chat.spaces."discord:guild/123"]
+profile = "readonly"
+
+[assistant.chat.spaces."discord:guild/123/channel/456"]
+parent = "discord:guild/123"
+profile = "edit"
+```
+
+Non-rebuildable adapter runtime state, such as sync tokens, media caches, and
+crypto material, belongs in a daemon-managed state directory, not in vault
+content and not in `.vulcan/cache.db`.
 
 ## Permissions And Tools
 
@@ -155,5 +195,5 @@ packs, and the rule that durable artifacts are normal vault notes.
 
 The embedded host uses a synchronous JSONL RPC client in the CLI process. Rich
 extension UI prompts, a session picker for choosing anything other than the
-newest session, tab completion in chat mode, and always-on real-pi CI smoke
-tests remain deferred until the daemon/WebUI shape needs them.
+newest session, native chat adapters, and always-on real-pi CI smoke tests
+remain deferred until the daemon/WebUI shape needs them.
