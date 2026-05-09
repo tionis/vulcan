@@ -1,4 +1,4 @@
-#!/usr/bin/env -S vulcan run --script
+#!/usr/bin/env -S vulcan skill exec
 function main(input) {
   const title = text(input.title).trim();
   const transcript = text(input.transcript);

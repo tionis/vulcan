@@ -71,6 +71,7 @@ Subcommands:
   show       read one skill's metadata plus SKILL.md body (alias for get)
   commands   list Vulcan-declared commands exported by one skill
   run        run a skill command with validated JSON input
+  exec       run a skill command script by path; this is the script shebang target
   validate   validate skills, command metadata, schemas, scripts, and permission profile references
   init       scaffold a new skill directory with optional starter command
 
@@ -79,6 +80,8 @@ Notes:
   External runtimes should call `skill list` up front and `skill get <name>` on demand.
   Skill names are normalized from folder names, but `skill get` also accepts the relative path.
   Skill command execution requires a trusted vault: `vulcan trust add`.
+  Generated skill command scripts use `#!/usr/bin/env -S vulcan skill exec`, so
+  `./scripts/name.js --help` shows the executable command contract.
 
 Examples:
   vulcan skill list
@@ -88,37 +91,31 @@ Examples:
   vulcan skill show daily-review
   vulcan skill commands daily-review
   vulcan skill run daily-review prepare-day --input-json '{\"date\":\"2026-05-05\",\"dryRun\":true}'
+  .agents/skills/daily-review/scripts/prepare-day.js --input-json '{\"date\":\"2026-05-05\"}'
   vulcan skill validate
   vulcan skill init my-skill --starter-command hello";
 
 const TOOL_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
-  list       inspect discovered custom tools
-  show       read one tool manifest plus its Markdown docs
-  run        validate JSON input and invoke one tool
-  validate   check one tool or the whole tools folder
-  init       scaffold `.agents/tools/<name>/TOOL.md` plus `main.js`
-  set        update common manifest fields without hand-editing YAML
+  list       inspect exposed skill command tools
+  show       read one exposed skill command tool definition
+  run        validate JSON input and invoke one exposed skill command tool
 
 Notes:
-  New reusable callable automation should be packaged as Agent Skills-compatible
-  skill commands under `.agents/skills/<skill-name>/` with command metadata declared
-  in `SKILL.md` under `metadata.vulcan.commands`.
+  Tools are the callable registry view over Agent Skills-compatible commands declared
+  in `SKILL.md` under `metadata.vulcan.commands` with `expose: true`.
+  Author tools with `vulcan skill init --starter-command` or by editing skill command
+  metadata directly.
   Tool execution requires a trusted vault: `vulcan trust add`.
   `tool run` defaults to `{}` input when no `--input-json` or `--input-file` is provided.
-  `tool set --secret name=ENV` replaces the full secret list for the tool.
-  `tool set --pack <name>` replaces the full pack list for the tool.
 
 Examples:
   vulcan tool list
-  vulcan tool show summarize_meeting
-  vulcan tool run summarize_meeting --input-json '{\"note\":\"Meetings/Weekly.md\"}'
-  vulcan tool init summarize_meeting --description \"Summarize one meeting note\"
-  vulcan tool set summarize_meeting --sandbox fs --read-only --timeout-ms 5000
-  vulcan tool validate
+  vulcan tool show skill_conversation_export_export
+  vulcan tool run skill_conversation_export_export --input-json '{\"title\":\"Chat\",\"transcript\":\"User: hi\"}'
 
 See also:
-  `vulcan skill` — Agent Skills-compatible skill commands (preferred for new automation)";
+  `vulcan skill` — author, validate, and execute skill commands";
 
 const RENDER_COMMAND_AFTER_HELP: &str = "\
 Notes:
@@ -2734,22 +2731,6 @@ pub enum PluginCommand {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum ToolSandboxArg {
-    #[value(name = "strict")]
-    Strict,
-    #[value(name = "fs")]
-    Fs,
-    #[value(name = "net")]
-    Net,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum ToolInitExampleArg {
-    #[value(name = "minimal")]
-    Minimal,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SiteCommand {
     #[command(about = "Build a static website from the current vault profile")]
@@ -2811,14 +2792,14 @@ pub enum SiteCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum ToolCommand {
-    #[command(about = "List discovered custom tools")]
+    #[command(about = "List exposed skill command tools")]
     List,
-    #[command(about = "Show one tool manifest plus its Markdown documentation")]
+    #[command(about = "Show one exposed skill command tool")]
     Show {
-        #[arg(help = "Tool name, directory name, or manifest path")]
+        #[arg(help = "Tool name, typically skill_<skill>_<command>")]
         name: String,
     },
-    #[command(about = "Run one custom tool with validated JSON input")]
+    #[command(about = "Run one exposed skill command tool with validated JSON input")]
     Run {
         #[arg(help = "Tool name to execute")]
         name: String,
@@ -2826,84 +2807,6 @@ pub enum ToolCommand {
         input_json: Option<String>,
         #[arg(long = "input-file", conflicts_with = "input_json")]
         input_file: Option<PathBuf>,
-    },
-    #[command(about = "Validate one tool or every tool manifest")]
-    Validate {
-        #[arg(help = "Optional tool name, directory name, or manifest path")]
-        name: Option<String>,
-    },
-    #[command(about = "Scaffold a new custom tool")]
-    Init {
-        #[arg(help = "Tool name and default directory name")]
-        name: String,
-        #[arg(long, help = "Optional human-readable title")]
-        title: Option<String>,
-        #[arg(long, help = "One-line tool description")]
-        description: Option<String>,
-        #[arg(long, value_enum, default_value_t = ToolSandboxArg::Strict)]
-        sandbox: ToolSandboxArg,
-        #[arg(long = "permission-profile")]
-        permission_profile: Option<String>,
-        #[arg(long = "timeout-ms")]
-        timeout_ms: Option<usize>,
-        #[arg(long, value_enum, default_value_t = ToolInitExampleArg::Minimal)]
-        example: ToolInitExampleArg,
-        #[arg(long, help = "Replace an existing scaffold if the tool already exists")]
-        overwrite: bool,
-        #[arg(long, help = "Preview the scaffold without writing files")]
-        dry_run: bool,
-        #[arg(long, help = "Suppress auto-commit for this invocation")]
-        no_commit: bool,
-    },
-    #[command(about = "Update common custom-tool manifest fields")]
-    Set {
-        #[arg(help = "Tool name, directory name, or manifest path")]
-        name: String,
-        #[arg(long, help = "Replace the title field")]
-        title: Option<String>,
-        #[arg(long, help = "Remove the title field")]
-        clear_title: bool,
-        #[arg(long, help = "Replace the description field")]
-        description: Option<String>,
-        #[arg(long, value_enum)]
-        sandbox: Option<ToolSandboxArg>,
-        #[arg(long = "permission-profile")]
-        permission_profile: Option<String>,
-        #[arg(long = "clear-permission-profile")]
-        clear_permission_profile: bool,
-        #[arg(long = "timeout-ms")]
-        timeout_ms: Option<usize>,
-        #[arg(long = "clear-timeout")]
-        clear_timeout: bool,
-        #[arg(long = "pack", help = "Replace the pack list; repeatable")]
-        pack: Vec<String>,
-        #[arg(long = "clear-packs")]
-        clear_packs: bool,
-        #[arg(
-            long = "secret",
-            help = "Replace the secret list with name=ENV bindings; repeatable"
-        )]
-        secret: Vec<String>,
-        #[arg(long = "clear-secrets")]
-        clear_secrets: bool,
-        #[arg(long, conflicts_with = "writable")]
-        read_only: bool,
-        #[arg(long, conflicts_with = "read_only")]
-        writable: bool,
-        #[arg(long, conflicts_with = "non_destructive")]
-        destructive: bool,
-        #[arg(long, conflicts_with = "destructive")]
-        non_destructive: bool,
-        #[arg(long = "input-schema-file")]
-        input_schema_file: Option<PathBuf>,
-        #[arg(long = "output-schema-file", conflicts_with = "clear_output_schema")]
-        output_schema_file: Option<PathBuf>,
-        #[arg(long = "clear-output-schema", conflicts_with = "output_schema_file")]
-        clear_output_schema: bool,
-        #[arg(long, help = "Preview manifest changes without writing files")]
-        dry_run: bool,
-        #[arg(long, help = "Suppress auto-commit for this invocation")]
-        no_commit: bool,
     },
 }
 
@@ -3032,6 +2935,18 @@ pub enum SkillCommand {
         skill: String,
         #[arg(help = "Command id declared under metadata.vulcan.commands")]
         command: String,
+        #[arg(long, conflicts_with = "input_file", help = "JSON input object")]
+        input_json: Option<String>,
+        #[arg(long, value_name = "PATH", help = "Read JSON input from a file")]
+        input_file: Option<std::path::PathBuf>,
+    },
+    #[command(
+        about = "Run a skill command script by path",
+        long_about = "Run a skill command script by path. This is the shebang target for scripts generated by `vulcan skill init --starter-command` and `vulcan agent install`."
+    )]
+    Exec {
+        #[arg(help = "Path to a script declared by a nearby SKILL.md")]
+        script: std::path::PathBuf,
         #[arg(long, conflicts_with = "input_file", help = "JSON input object")]
         input_json: Option<String>,
         #[arg(long, value_name = "PATH", help = "Read JSON input from a file")]
@@ -5388,7 +5303,7 @@ Examples:
         command: PluginCommand,
     },
     #[command(
-        about = "List, validate, scaffold, and run vault-native custom tools",
+        about = "List and run exposed skill command tools",
         after_help = TOOL_COMMAND_AFTER_HELP
     )]
     Tool {

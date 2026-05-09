@@ -80,6 +80,52 @@ fn write_plugin_file(vault_root: &Path, name: &str, source: &str) {
     fs::write(plugin_dir.join(format!("{name}.js")), source).expect("plugin file should write");
 }
 
+fn write_skill_command_tool(
+    vault_root: &Path,
+    skill_name: &str,
+    command_id: &str,
+    description: &str,
+    permission_profile: Option<&str>,
+    body: &str,
+    source: &str,
+) -> String {
+    let skill_dir = vault_root.join(".agents/skills").join(skill_name);
+    let scripts_dir = skill_dir.join("scripts");
+    fs::create_dir_all(&scripts_dir).expect("skill scripts dir should be created");
+    let permission_profile = permission_profile
+        .map(|profile| format!("        permission_profile: {profile}\n"))
+        .unwrap_or_default();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        format!(
+            r"---
+name: {skill_name}
+description: {description}
+metadata:
+  vulcan:
+    commands:
+      - id: {command_id}
+        description: {description}
+        script: scripts/{command_id}.js
+        expose: true
+{permission_profile}        input_schema:
+          type: object
+---
+
+{body}
+"
+        ),
+    )
+    .expect("skill manifest should write");
+    fs::write(scripts_dir.join(format!("{command_id}.js")), source)
+        .expect("skill command script should write");
+    format!(
+        "skill_{}_{}",
+        skill_name.replace('-', "_"),
+        command_id.replace('-', "_")
+    )
+}
+
 fn test_host_exec_argv(command: &str) -> Vec<String> {
     #[cfg(target_os = "windows")]
     {
@@ -825,8 +871,8 @@ fn help_topics_cover_custom_tools_host_execution_and_surface_comparison() {
         .success()
         .stdout(
             predicate::str::contains("tools.list()")
-                .and(predicate::str::contains("ctx.secrets.require(name)"))
-                .and(predicate::str::contains("result, text")),
+                .and(predicate::str::contains("ctx.skill"))
+                .and(predicate::str::contains("JSON-serializable value")),
         );
 
     Command::cargo_bin("vulcan")
@@ -928,41 +974,19 @@ fn custom_tool_commands_round_trip() {
     initialize_vulcan_dir(&vault_root);
     let config_home = temp_dir.path().join("config");
     fs::create_dir_all(&config_home).expect("config home should exist");
-    let schema_path = temp_dir.path().join("tool-input-schema.json");
-    fs::write(
-        &schema_path,
-        r#"{
-  "type": "object",
-  "additionalProperties": false,
-  "properties": {
-    "note": { "type": "string" }
-  },
-  "required": ["note"]
-}"#,
-    )
-    .expect("schema should be written");
     let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
 
-    let init_assert = cargo_vulcan_fixed_now()
+    cargo_vulcan_fixed_now()
         .env("XDG_CONFIG_HOME", &config_home)
         .args([
             "--vault",
             &vault_root_str,
-            "--output",
-            "json",
-            "tool",
-            "init",
-            "summarize_meeting",
-            "--description",
-            "Summarize one meeting note.",
+            "agent",
+            "install",
+            "--example-tool",
         ])
         .assert()
         .success();
-    let init_json = parse_stdout_json(&init_assert);
-    assert_eq!(
-        init_json["manifest_path"],
-        ".agents/tools/summarize_meeting/TOOL.md"
-    );
 
     let list_before_assert = cargo_vulcan_fixed_now()
         .env("XDG_CONFIG_HOME", &config_home)
@@ -980,9 +1004,11 @@ fn custom_tool_commands_round_trip() {
     let tools = list_before_json["tools"]
         .as_array()
         .expect("tools should be an array");
-    assert_eq!(tools.len(), 1);
-    assert_eq!(tools[0]["name"], "summarize_meeting");
-    assert_eq!(tools[0]["callable"], false);
+    let summarize_tool = tools
+        .iter()
+        .find(|tool| tool["name"] == "skill_summarize_note_summarize")
+        .expect("summarize tool should be exposed");
+    assert_eq!(summarize_tool["callable"], false);
 
     let show_assert = cargo_vulcan_fixed_now()
         .env("XDG_CONFIG_HOME", &config_home)
@@ -993,56 +1019,16 @@ fn custom_tool_commands_round_trip() {
             "json",
             "tool",
             "show",
-            "summarize_meeting",
+            "skill_summarize_note_summarize",
         ])
         .assert()
         .success();
     let show_json = parse_stdout_json(&show_assert);
-    assert_eq!(show_json["name"], "summarize_meeting");
+    assert_eq!(show_json["name"], "skill_summarize_note_summarize");
     assert!(show_json["body"]
         .as_str()
         .expect("body should be a string")
-        .contains("When to use"));
-
-    let set_assert = cargo_vulcan_fixed_now()
-        .env("XDG_CONFIG_HOME", &config_home)
-        .args([
-            "--vault",
-            &vault_root_str,
-            "--output",
-            "json",
-            "tool",
-            "set",
-            "summarize_meeting",
-            "--description",
-            "Summarize meeting notes into JSON.",
-            "--timeout-ms",
-            "2500",
-            "--read-only",
-            "--secret",
-            "api=MEETING_API_KEY",
-            "--input-schema-file",
-            schema_path.to_str().expect("schema path should be utf-8"),
-        ])
-        .assert()
-        .success();
-    let set_json = parse_stdout_json(&set_assert);
-    assert_eq!(set_json["updated"], true);
-
-    let validate_assert = cargo_vulcan_fixed_now()
-        .env("XDG_CONFIG_HOME", &config_home)
-        .args([
-            "--vault",
-            &vault_root_str,
-            "--output",
-            "json",
-            "tool",
-            "validate",
-        ])
-        .assert()
-        .success();
-    let validate_json = parse_stdout_json(&validate_assert);
-    assert_eq!(validate_json["valid"], true);
+        .contains("Summarize Note"));
 
     run_scan(&vault_root);
 
@@ -1065,11 +1051,16 @@ fn custom_tool_commands_round_trip() {
         .assert()
         .success();
     let list_after_json = parse_stdout_json(&list_after_assert);
-    assert_eq!(list_after_json["tools"][0]["callable"], true);
+    let summarize_tool = list_after_json["tools"]
+        .as_array()
+        .expect("tools should be an array")
+        .iter()
+        .find(|tool| tool["name"] == "skill_summarize_note_summarize")
+        .expect("summarize tool should be exposed");
+    assert_eq!(summarize_tool["callable"], true);
 
     let run_assert = cargo_vulcan_fixed_now()
         .env("XDG_CONFIG_HOME", &config_home)
-        .env("MEETING_API_KEY", "secret-token")
         .args([
             "--vault",
             &vault_root_str,
@@ -1077,69 +1068,49 @@ fn custom_tool_commands_round_trip() {
             "json",
             "tool",
             "run",
-            "summarize_meeting",
+            "skill_summarize_note_summarize",
             "--input-json",
             r#"{"note":"Meetings/Weekly.md"}"#,
         ])
         .assert()
         .success();
     let run_json = parse_stdout_json(&run_assert);
-    assert_eq!(run_json["name"], "summarize_meeting");
-    assert_eq!(run_json["result"]["ok"], true);
-    assert_eq!(run_json["result"]["tool"], "summarize_meeting");
-    assert_eq!(run_json["result"]["received"]["note"], "Meetings/Weekly.md");
-}
-
-#[test]
-fn custom_tool_init_rejects_builtin_and_reserved_meta_names() {
-    let temp_dir = TempDir::new().expect("temp dir should be created");
-    let vault_root = temp_dir.path().join("vault");
-    fs::create_dir_all(&vault_root).expect("vault root should exist");
-    initialize_vulcan_dir(&vault_root);
-    let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
-
-    for blocked_name in ["search", "tool_pack_enable"] {
-        let assert = Command::cargo_bin("vulcan")
-            .expect("binary should build")
-            .args([
-                "--vault",
-                &vault_root_str,
-                "tool",
-                "init",
-                blocked_name,
-                "--description",
-                "Should fail.",
-            ])
-            .assert()
-            .failure();
-        let stderr = String::from_utf8(assert.get_output().stderr.clone())
-            .expect("stderr should be valid utf-8");
-        assert!(
-            stderr.contains("collides with a reserved or built-in tool name"),
-            "tool init should reject `{blocked_name}`, got: {stderr}"
-        );
-    }
+    assert_eq!(run_json["name"], "skill_summarize_note_summarize");
+    assert_eq!(run_json["result"]["note"], "Meetings/Weekly.md");
+    assert_eq!(
+        run_json["result"]["summary"],
+        "TODO: summarize Meetings/Weekly.md"
+    );
 }
 
 #[test]
 fn run_js_runtime_can_list_get_and_call_custom_tools() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
-    fs::create_dir_all(vault_root.join(".agents/tools/echo")).expect("tool dir should exist");
+    fs::create_dir_all(vault_root.join(".agents/skills/echo/scripts"))
+        .expect("skill dir should exist");
     initialize_vulcan_dir(&vault_root);
     fs::write(
-        vault_root.join(".agents/tools/echo/TOOL.md"),
+        vault_root.join(".agents/skills/echo/SKILL.md"),
         r"---
 name: echo_tool
 description: Echo one value.
-input_schema:
-  type: object
-  additionalProperties: false
-  properties:
-    value:
-      type: string
-  required:
-    - value
+metadata:
+  vulcan:
+    commands:
+      - id: echo
+        script: scripts/echo.js
+        sandbox: strict
+        packs: [custom]
+        expose: true
+        input_schema:
+          type: object
+          additionalProperties: false
+          properties:
+            value:
+              type: string
+          required:
+            - value
 ---
 
 Echo docs for the JS runtime test.
@@ -1147,7 +1118,7 @@ Echo docs for the JS runtime test.
     )
     .expect("manifest should write");
     fs::write(
-        vault_root.join(".agents/tools/echo/main.js"),
+        vault_root.join(".agents/skills/echo/scripts/echo.js"),
         "function main(input) {\n  return { echoed: input.value, upper: String(input.value).toUpperCase() };\n}\n",
     )
     .expect("entrypoint should write");
@@ -1169,8 +1140,8 @@ Echo docs for the JS runtime test.
             "-e",
             r#"({
                 listed: tools.list().map((tool) => ({ name: tool.name, callable: tool.callable })),
-                described: tools.get("echo_tool").body.includes("Echo docs"),
-                called: tools.call("echo_tool", { value: "alpha" })
+                described: tools.get("skill_echo_tool_echo").body.includes("Echo docs"),
+                called: tools.call("skill_echo_tool_echo", { value: "alpha" })
             })"#,
         ])
         .assert()
@@ -1179,7 +1150,7 @@ Echo docs for the JS runtime test.
 
     assert_eq!(
         json["value"]["listed"],
-        serde_json::json!([{ "name": "echo_tool", "callable": true }])
+        serde_json::json!([{ "name": "skill_echo_tool_echo", "callable": true }])
     );
     assert_eq!(json["value"]["described"], true);
     assert_eq!(json["value"]["called"]["echoed"], "alpha");
@@ -1190,7 +1161,8 @@ Echo docs for the JS runtime test.
 fn tool_run_can_use_host_exec_with_permissions() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
-    fs::create_dir_all(vault_root.join(".agents/tools/env_echo")).expect("tool dir should exist");
+    fs::create_dir_all(vault_root.join(".agents/skills/env-echo/scripts"))
+        .expect("skill dir should exist");
     initialize_vulcan_dir(&vault_root);
     fs::write(
         vault_root.join(".vulcan/config.toml"),
@@ -1209,13 +1181,21 @@ shell = "deny"
     )
     .expect("config should write");
     fs::write(
-        vault_root.join(".agents/tools/env_echo/TOOL.md"),
+        vault_root.join(".agents/skills/env-echo/SKILL.md"),
         r"---
 name: env_echo_tool
 description: Echo one env var through host.exec.
-permission_profile: exec_only
-input_schema:
-  type: object
+metadata:
+  vulcan:
+    commands:
+      - id: run
+        script: scripts/run.js
+        sandbox: strict
+        permission_profile: exec_only
+        packs: [custom]
+        expose: true
+        input_schema:
+          type: object
 ---
 ",
     )
@@ -1223,7 +1203,7 @@ input_schema:
     let argv = serde_json::to_string(&test_host_exec_argv(&test_host_output_command("alpha")))
         .expect("argv json should serialize");
     fs::write(
-        vault_root.join(".agents/tools/env_echo/main.js"),
+        vault_root.join(".agents/skills/env-echo/scripts/run.js"),
         format!("function main() {{\n  return host.exec({argv});\n}}\n"),
     )
     .expect("entrypoint should write");
@@ -1243,14 +1223,14 @@ input_schema:
             "json",
             "tool",
             "run",
-            "env_echo_tool",
+            "skill_env_echo_tool_run",
             "--input-json",
             "{}",
         ])
         .assert()
         .success();
     let run_json = parse_stdout_json(&run_assert);
-    assert_eq!(run_json["name"], "env_echo_tool");
+    assert_eq!(run_json["name"], "skill_env_echo_tool_run");
     assert_eq!(run_json["result"]["success"], true);
     assert_eq!(run_json["result"]["stdout"], "alpha");
     assert_eq!(run_json["result"]["timed_out"], false);
@@ -9933,7 +9913,7 @@ fn init_agent_files_optionally_scaffolds_example_tool() {
         .contains("metadata:\n  vulcan:\n    commands:"));
     let entrypoint =
         fs::read_to_string(&entrypoint_path).expect("example tool entrypoint should be readable");
-    assert!(entrypoint.starts_with("#!/usr/bin/env -S vulcan run --script\n"));
+    assert!(entrypoint.starts_with("#!/usr/bin/env -S vulcan skill exec\n"));
     assert!(entrypoint.contains("function main"));
     assert_executable(&entrypoint_path);
     assert!(json["support_files"].as_array().is_some_and(|items| items
@@ -10113,7 +10093,7 @@ fn skill_init_and_run_execute_agent_skill_command() {
     );
     let script_path = vault_root.join(".agents/skills/math/scripts/echo.js");
     let script = fs::read_to_string(&script_path).expect("starter command script should exist");
-    assert!(script.starts_with("#!/usr/bin/env -S vulcan run --script\n"));
+    assert!(script.starts_with("#!/usr/bin/env -S vulcan skill exec\n"));
     assert_executable(&script_path);
 
     Command::cargo_bin("vulcan")
@@ -10147,6 +10127,38 @@ fn skill_init_and_run_execute_agent_skill_command() {
     assert_eq!(run_json["skill"].as_str(), Some("math"));
     assert_eq!(run_json["command"].as_str(), Some("echo"));
     assert_eq!(run_json["result"]["input"]["value"].as_i64(), Some(7));
+
+    let vulcan_bin = assert_cmd::cargo::cargo_bin("vulcan");
+    let bin_dir = vulcan_bin
+        .parent()
+        .expect("vulcan binary should have parent");
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let help_output = ProcessCommand::new(&script_path)
+        .current_dir(&vault_root)
+        .env("PATH", &path)
+        .arg("--help")
+        .output()
+        .expect("script help should launch through shebang");
+    assert!(help_output.status.success());
+    assert!(
+        String::from_utf8_lossy(&help_output.stdout).contains("Run a skill command script by path")
+    );
+
+    let direct_output = ProcessCommand::new(&script_path)
+        .current_dir(&vault_root)
+        .env("PATH", &path)
+        .arg("--input-json")
+        .arg("{\"value\":9}")
+        .output()
+        .expect("script should launch through shebang");
+    assert!(direct_output.status.success());
+    let direct_stdout = String::from_utf8_lossy(&direct_output.stdout);
+    assert!(direct_stdout.contains("math:echo"));
+    assert!(direct_stdout.contains("\"value\": 9"));
 
     let describe_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -10230,7 +10242,7 @@ fn bundled_conversation_export_skill_writes_callout_note() {
     let script_path =
         vault_root.join(".agents/skills/conversation-export/scripts/export-conversation.js");
     let script = fs::read_to_string(&script_path).expect("bundled script should be readable");
-    assert!(script.starts_with("#!/usr/bin/env -S vulcan run --script\n"));
+    assert!(script.starts_with("#!/usr/bin/env -S vulcan skill exec\n"));
     assert_executable(&script_path);
     Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -10628,7 +10640,7 @@ fn agent_install_example_tool_uses_configured_skills_folder() {
     fs::create_dir_all(vault_root.join(".vulcan")).expect("vault dir should be created");
     fs::write(
         vault_root.join(".vulcan/config.toml"),
-        "[assistant]\nprompts_folder = \"Support/Prompts\"\nskills_folder = \"Support/Skills\"\ntools_folder = \"Support/Tools\"\n",
+        "[assistant]\nprompts_folder = \"Support/Prompts\"\nskills_folder = \"Support/Skills\"\n",
     )
     .expect("config should be written");
 
@@ -16502,30 +16514,16 @@ fn web_cli_and_js_entrypoints_share_normalized_reports() {
 fn describe_openai_and_mcp_formats_export_tool_definitions() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
-    fs::create_dir_all(vault_root.join(".agents/tools/summarize")).expect("tool dir should exist");
     initialize_vulcan_dir(&vault_root);
-    fs::write(
-        vault_root.join(".agents/tools/summarize/TOOL.md"),
-        r"---
-name: summarize_tool
-description: Summarize one note.
-input_schema:
-  type: object
-  additionalProperties: false
-  properties:
-    note:
-      type: string
-  required:
-    - note
----
-",
-    )
-    .expect("manifest should write");
-    fs::write(
-        vault_root.join(".agents/tools/summarize/main.js"),
+    let summarize_tool = write_skill_command_tool(
+        &vault_root,
+        "summarize-tool",
+        "summarize",
+        "Summarize one note.",
+        None,
+        "Summarize tool documentation.",
         "function main(input) {\n  return { note: input.note };\n}\n",
-    )
-    .expect("entrypoint should write");
+    );
     let config_home = temp_dir.path().join("config");
     fs::create_dir_all(&config_home).expect("config home should exist");
     let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
@@ -16556,7 +16554,7 @@ input_schema:
         .any(|tool| tool["function"]["name"] == "note_get"));
     assert!(openai_tools
         .iter()
-        .any(|tool| tool["function"]["name"] == "summarize_tool"));
+        .any(|tool| tool["function"]["name"] == summarize_tool));
 
     let mcp_assert = cargo_vulcan_with_xdg_config(&config_home_str)
         .args([
@@ -16580,8 +16578,10 @@ input_schema:
     assert!(mcp_tools
         .iter()
         .any(|tool| tool["inputSchema"]["type"] == "object"));
-    assert!(mcp_tools.iter().any(|tool| tool["name"] == "summarize_tool"
-        && tool["toolPacks"] == serde_json::json!(["custom"])));
+    assert!(mcp_tools
+        .iter()
+        .any(|tool| tool["name"] == summarize_tool
+            && tool["toolPacks"] == serde_json::json!(["custom"])));
 }
 
 #[test]
@@ -20288,32 +20288,15 @@ fn mcp_server_exposes_custom_tools_and_tool_resources_when_custom_pack_selected(
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     copy_fixture_vault("basic", &vault_root);
-    fs::create_dir_all(vault_root.join(".agents/tools/summarize")).expect("tool dir should exist");
-    fs::write(
-        vault_root.join(".agents/tools/summarize/TOOL.md"),
-        r"---
-name: summarize_tool
-title: Summarize Tool
-description: Summarize one note.
-input_schema:
-  type: object
-  additionalProperties: false
-  properties:
-    note:
-      type: string
-  required:
-    - note
----
-
-Summarize tool documentation.
-",
-    )
-    .expect("manifest should write");
-    fs::write(
-        vault_root.join(".agents/tools/summarize/main.js"),
-        "function main(input) {\n  return { result: { note: input.note, upper: String(input.note).toUpperCase() }, text: `summarized ${input.note}` };\n}\n",
-    )
-    .expect("entrypoint should write");
+    let summarize_tool = write_skill_command_tool(
+        &vault_root,
+        "summarize-tool",
+        "summarize",
+        "Summarize one note.",
+        None,
+        "Summarize tool documentation.",
+        "function main(input) {\n  return { note: input.note, upper: String(input.note).toUpperCase() };\n}\n",
+    );
 
     let config_home = temp_dir.path().join("config");
     fs::create_dir_all(&config_home).expect("config home should exist");
@@ -20339,7 +20322,7 @@ Summarize tool documentation.
         .last()
         .and_then(|response| response["result"]["tools"].as_array())
         .expect("tools/list should return a tool array");
-    assert!(tools.iter().any(|tool| tool["name"] == "summarize_tool"));
+    assert!(tools.iter().any(|tool| tool["name"] == summarize_tool));
 
     let resources = session.send(serde_json::json!({
         "jsonrpc": "2.0",
@@ -20363,13 +20346,13 @@ Summarize tool documentation.
     assert!(index
         .last()
         .and_then(|response| response["result"]["contents"][0]["text"].as_str())
-        .is_some_and(|text| text.contains("summarize_tool")));
+        .is_some_and(|text| text.contains(&summarize_tool)));
 
     let detail = session.send(serde_json::json!({
         "jsonrpc": "2.0",
         "id": 5,
         "method": "resources/read",
-        "params": { "uri": "vulcan://assistant/tools/summarize_tool" }
+        "params": { "uri": format!("vulcan://assistant/tools/{summarize_tool}") }
     }));
     assert!(detail
         .last()
@@ -20381,7 +20364,7 @@ Summarize tool documentation.
         "id": 6,
         "method": "tools/call",
         "params": {
-            "name": "summarize_tool",
+            "name": summarize_tool,
             "arguments": { "note": "Projects/Alpha.md" }
         }
     }));
@@ -20391,10 +20374,9 @@ Summarize tool documentation.
         result["structuredContent"]["note"].as_str(),
         Some("Projects/Alpha.md")
     );
-    assert_eq!(
-        result["content"][0]["text"].as_str(),
-        Some("summarized Projects/Alpha.md")
-    );
+    assert!(result["content"][0]["text"]
+        .as_str()
+        .is_some_and(|text| text.contains("Projects/Alpha.md")));
     assert!(session.finish().is_empty());
 }
 
@@ -20534,7 +20516,6 @@ fn mcp_custom_pack_hides_profile_denied_custom_tools() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     copy_fixture_vault("basic", &vault_root);
-    fs::create_dir_all(vault_root.join(".agents/tools/shell")).expect("tool dir should exist");
     fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
     fs::write(
         vault_root.join(".vulcan/config.toml"),
@@ -20563,25 +20544,15 @@ shell = "allow"
 "#,
     )
     .expect("config should write");
-    fs::write(
-        vault_root.join(".agents/tools/shell/TOOL.md"),
-        r"---
-name: shell_tool
-description: Requires shell permission.
-permission_profile: sheller
-input_schema:
-  type: object
----
-
-Shell tool documentation.
-",
-    )
-    .expect("manifest should write");
-    fs::write(
-        vault_root.join(".agents/tools/shell/main.js"),
+    let shell_tool = write_skill_command_tool(
+        &vault_root,
+        "shell-tool",
+        "run",
+        "Requires shell permission.",
+        Some("sheller"),
+        "Shell tool documentation.",
         "function main() { return { ok: true }; }\n",
-    )
-    .expect("entrypoint should write");
+    );
 
     let config_home = temp_dir.path().join("config");
     fs::create_dir_all(&config_home).expect("config home should exist");
@@ -20611,7 +20582,7 @@ Shell tool documentation.
         .and_then(|response| response["result"]["tools"].as_array())
         .expect("tools/list should return a tool array");
     assert!(
-        !tools.iter().any(|tool| tool["name"] == "shell_tool"),
+        !tools.iter().any(|tool| tool["name"] == shell_tool),
         "custom pack should hide tools whose declared profile is broader than the active profile"
     );
 
@@ -20628,7 +20599,7 @@ Shell tool documentation.
         !resources
             .iter()
             .any(|resource| resource["uri"] == "vulcan://assistant/tools/index"),
-        "hidden custom tools should not expose the custom-tool index resource"
+        "hidden skill command tools should not expose the tool index resource"
     );
 
     let result = session.send(serde_json::json!({
@@ -20636,7 +20607,7 @@ Shell tool documentation.
         "id": 4,
         "method": "tools/call",
         "params": {
-            "name": "shell_tool",
+            "name": shell_tool,
             "arguments": {}
         }
     }));
@@ -20646,9 +20617,12 @@ Shell tool documentation.
         result["content"][0]["text"]
             .as_str()
             .is_some_and(|text| text.contains(
-                "permission denied: tool `shell_tool` is not available under profile `readonly`"
+                format!(
+                    "permission denied: tool `{shell_tool}` is not available under profile `readonly`"
+                )
+                .as_str()
             )),
-        "profile-denied custom tools should stay unavailable even when the custom pack is enabled"
+        "profile-denied skill command tools should stay unavailable even when the custom pack is enabled"
     );
     assert!(session.finish().is_empty());
 }
@@ -21010,7 +20984,7 @@ fn mcp_adaptive_pack_schema_includes_custom_selector() {
         describe_enum
             .iter()
             .any(|value| value.as_str() == Some("custom")),
-        "describe --format mcp should advertise the custom tool pack as a valid selector"
+        "describe --format mcp should advertise the custom pack as a valid selector"
     );
 
     let mut session = McpSession::start(&vault_root, &["--tool-pack-mode", "adaptive"]);
@@ -21512,24 +21486,16 @@ fn mcp_server_emits_tool_and_resource_list_changed_notifications_for_custom_tool
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     copy_fixture_vault("basic", &vault_root);
-    fs::create_dir_all(vault_root.join(".agents/tools/summarize")).expect("tool dir should exist");
-    let manifest_path = vault_root.join(".agents/tools/summarize/TOOL.md");
-    fs::write(
-        &manifest_path,
-        r"---
-name: summarize_tool
-description: Summarize one note.
-input_schema:
-  type: object
----
-",
-    )
-    .expect("manifest should write");
-    fs::write(
-        vault_root.join(".agents/tools/summarize/main.js"),
+    let _summarize_tool = write_skill_command_tool(
+        &vault_root,
+        "summarize-tool",
+        "summarize",
+        "Summarize one note.",
+        None,
+        "Summarize tool documentation.",
         "function main() { return { ok: true }; }\n",
-    )
-    .expect("entrypoint should write");
+    );
+    let manifest_path = vault_root.join(".agents/skills/summarize-tool/SKILL.md");
 
     let config_home = temp_dir.path().join("config");
     fs::create_dir_all(&config_home).expect("config home should exist");
@@ -21554,11 +21520,20 @@ input_schema:
     fs::write(
         &manifest_path,
         r"---
-name: summarize_tool
+name: summarize-tool
 description: Updated summary tool.
-input_schema:
-  type: object
+metadata:
+  vulcan:
+    commands:
+      - id: summarize
+        description: Updated summary tool.
+        script: scripts/summarize.js
+        expose: true
+        input_schema:
+          type: object
 ---
+
+Updated summary tool documentation.
 ",
     )
     .expect("updated manifest should write");
@@ -21572,13 +21547,13 @@ input_schema:
         messages
             .iter()
             .any(|message| message["method"] == "notifications/tools/list_changed"),
-        "custom tool changes should emit a tools/list_changed notification"
+        "skill command tool changes should emit a tools/list_changed notification"
     );
     assert!(
         messages
             .iter()
             .any(|message| message["method"] == "notifications/resources/list_changed"),
-        "custom tool documentation changes should emit a resources/list_changed notification"
+        "skill command tool documentation changes should emit a resources/list_changed notification"
     );
     assert!(session.finish().is_empty());
 }

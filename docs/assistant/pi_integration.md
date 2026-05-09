@@ -87,8 +87,8 @@ Recommended sequence:
 This keeps context small while preserving full surface area.
 
 Run `vulcan agent install` once per vault to scaffold `AGENTS.md`, the bundled `.agents/skills/`
-directory, and the default prompt files. Add `--example-tool` to also write a starter custom tool
-under `.agents/tools/`. Re-run with `--overwrite` after upgrading Vulcan if the bundled files
+directory, and the default prompt files. Add `--example-tool` to also write a starter exposed skill
+command under `.agents/skills/`. Re-run with `--overwrite` after upgrading Vulcan if the bundled files
 should be refreshed.
 
 ### 3. Tool execution

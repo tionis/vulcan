@@ -3,7 +3,7 @@
 The `host` namespace exposes permission-gated local process execution inside the shared Vulcan JS
 runtime.
 
-Use it when a script, plugin, or custom tool must call a local program and there is no safer
+Use it when a script, plugin, or skill command tool must call a local program and there is no safer
 built-in `vault.*`, `web.*`, or `tools.*` API for the job.
 
 Available entrypoints:
@@ -22,7 +22,7 @@ Current runtime surfaces:
 - `vulcan run`
 - the JS REPL (`vulcan run`)
 - `vulcan dataview query-js`
-- custom tool entrypoints
+- skill command entrypoints
 - plugin hooks executed through the shared JS runtime
 
 `opts` shape for both calls:

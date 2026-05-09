@@ -6,7 +6,7 @@ use std::fs;
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 use vulcan_core::{
     assistant_tools_root, default_assistant_tool_reserved_names, evaluate_dataview_js_with_options,
     list_assistant_skills, list_assistant_tool_manifest_paths, list_assistant_tools,
@@ -24,6 +24,7 @@ const CUSTOM_TOOL_SCRIPT_SHEBANG: &str = "#!/usr/bin/env -S vulcan run --script\
 pub struct CustomToolRegistryOptions {
     pub reserved_names: Vec<String>,
     pub allowed_pack_names: Vec<String>,
+    pub include_standalone_tools: bool,
 }
 
 impl Default for CustomToolRegistryOptions {
@@ -31,6 +32,7 @@ impl Default for CustomToolRegistryOptions {
         Self {
             reserved_names: default_assistant_tool_reserved_names(),
             allowed_pack_names: vec!["custom".to_string()],
+            include_standalone_tools: false,
         }
     }
 }
@@ -258,20 +260,23 @@ pub fn list_custom_tools(
     active_permission_profile: Option<&str>,
     options: &CustomToolRegistryOptions,
 ) -> Result<Vec<CustomToolDescriptor>, AppError> {
-    let tools = list_assistant_tools(paths, &assistant_tool_validation_options(options))
-        .map_err(AppError::operation)?;
-    let mut descriptors = tools
-        .into_iter()
-        .map(|summary| CustomToolDescriptor {
-            callable: custom_tool_is_callable(
-                paths,
-                active_permission_profile,
-                &summary.name,
-                summary.permission_profile.as_deref(),
-            ),
-            summary,
-        })
-        .collect::<Vec<_>>();
+    let mut descriptors = if options.include_standalone_tools {
+        list_assistant_tools(paths, &assistant_tool_validation_options(options))
+            .map_err(AppError::operation)?
+            .into_iter()
+            .map(|summary| CustomToolDescriptor {
+                callable: custom_tool_is_callable(
+                    paths,
+                    active_permission_profile,
+                    &summary.name,
+                    summary.permission_profile.as_deref(),
+                ),
+                summary,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     descriptors.extend(skill_command_tool_descriptors(
         paths,
         active_permission_profile,
@@ -287,10 +292,13 @@ pub fn show_custom_tool(
     name: &str,
     options: &CustomToolRegistryOptions,
 ) -> Result<CustomToolShowReport, AppError> {
-    let tool = match load_assistant_tool(paths, name, &assistant_tool_validation_options(options)) {
+    let tool = match skill_command_tool(paths, name, options) {
         Ok(tool) => tool,
-        Err(tool_error) => skill_command_tool(paths, name, options)
-            .map_err(|skill_error| AppError::operation(format!("{tool_error}; {skill_error}")))?,
+        Err(skill_error) if options.include_standalone_tools => {
+            load_assistant_tool(paths, name, &assistant_tool_validation_options(options))
+                .map_err(|tool_error| AppError::operation(format!("{skill_error}; {tool_error}")))?
+        }
+        Err(skill_error) => return Err(AppError::operation(skill_error)),
     };
     Ok(CustomToolShowReport {
         callable: custom_tool_is_callable(
@@ -365,6 +373,16 @@ fn run_custom_tool_with_context(
     run_options: &CustomToolRunOptions,
 ) -> Result<CustomToolRunReport, AppError> {
     require_trusted_tool_execution(paths, Some(name))?;
+    if !registry_options.include_standalone_tools {
+        return run_skill_command_tool_with_context(
+            paths,
+            context,
+            name,
+            input,
+            registry_options,
+            run_options,
+        );
+    }
     let Ok(tool) = load_assistant_tool(
         paths,
         name,
@@ -1239,8 +1257,8 @@ fn custom_tool_is_callable(
 }
 
 fn current_timestamp_millis() -> u128 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_millis())
 }
 
@@ -1696,6 +1714,13 @@ mod tests {
         fs::write(root.join("main.js"), source).expect("tool source should write");
     }
 
+    fn legacy_tool_options() -> CustomToolRegistryOptions {
+        CustomToolRegistryOptions {
+            include_standalone_tools: true,
+            ..CustomToolRegistryOptions::default()
+        }
+    }
+
     fn with_trusted_vault(paths: &VaultPaths) {
         trust::add_trust(paths.vault_root()).expect("trust should be added");
         assert!(trust::is_trusted(paths.vault_root()));
@@ -1723,8 +1748,8 @@ input_schema:
             "function main() { return null; }\n",
         );
 
-        let tools = list_custom_tools(&paths, None, &CustomToolRegistryOptions::default())
-            .expect("tools should load");
+        let tools =
+            list_custom_tools(&paths, None, &legacy_tool_options()).expect("tools should load");
         assert_eq!(tools.len(), 1);
         assert!(!tools[0].callable);
     }
@@ -1766,12 +1791,8 @@ input_schema:
             "function main() { return null; }\n",
         );
 
-        let tools = list_custom_tools(
-            &paths,
-            Some("blocked"),
-            &CustomToolRegistryOptions::default(),
-        )
-        .expect("tools should load");
+        let tools = list_custom_tools(&paths, Some("blocked"), &legacy_tool_options())
+            .expect("tools should load");
         assert_eq!(tools.len(), 1);
         assert!(!tools[0].callable);
 
@@ -1892,12 +1913,8 @@ input_schema:
             "function main() { return null; }\n",
         );
 
-        let tools = list_custom_tools(
-            &paths,
-            Some("readonly"),
-            &CustomToolRegistryOptions::default(),
-        )
-        .expect("tools should load");
+        let tools = list_custom_tools(&paths, Some("readonly"), &legacy_tool_options())
+            .expect("tools should load");
         assert_eq!(tools.len(), 4);
         for name in [
             "writer_tool",
@@ -1977,7 +1994,7 @@ output_schema:
             None,
             "remote_tool",
             &json!({ "note": "Projects/Alpha.md" }),
-            &CustomToolRegistryOptions::default(),
+            &legacy_tool_options(),
             &CustomToolRunOptions {
                 surface: "cli".to_string(),
             },
@@ -2029,7 +2046,7 @@ input_schema:
             None,
             "missing_profile_tool",
             &json!({}),
-            &CustomToolRegistryOptions::default(),
+            &legacy_tool_options(),
             &CustomToolRunOptions::default(),
         )
         .expect_err("missing tool profile should fail");
@@ -2071,7 +2088,7 @@ input_schema:
             None,
             "broken_tool",
             &json!({}),
-            &CustomToolRegistryOptions::default(),
+            &legacy_tool_options(),
             &CustomToolRunOptions::default(),
         )
         .expect_err("runtime failure should surface");
@@ -2119,7 +2136,7 @@ output_schema:
             None,
             "mismatch_tool",
             &json!({}),
-            &CustomToolRegistryOptions::default(),
+            &legacy_tool_options(),
             &CustomToolRunOptions::default(),
         )
         .expect_err("output schema mismatch should fail");
@@ -2189,19 +2206,15 @@ input_schema:
             Some("readonly"),
             "restricted_tool",
             &json!({}),
-            &CustomToolRegistryOptions::default(),
+            &legacy_tool_options(),
             &CustomToolRunOptions::default(),
         )
         .expect_err("broader requested profile should fail");
         assert!(error
             .to_string()
             .contains("tool `restricted_tool` requires permission profile `agent`"));
-        let listed = list_custom_tools(
-            &paths,
-            Some("readonly"),
-            &CustomToolRegistryOptions::default(),
-        )
-        .expect("tools should list");
+        let listed = list_custom_tools(&paths, Some("readonly"), &legacy_tool_options())
+            .expect("tools should list");
         assert_eq!(listed.len(), 1);
         assert!(!listed[0].callable);
         trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
@@ -2239,7 +2252,7 @@ input_schema:
             "function main() { return null; }\n",
         );
 
-        let report = validate_custom_tools(&paths, None, &CustomToolRegistryOptions::default())
+        let report = validate_custom_tools(&paths, None, &legacy_tool_options())
             .expect("validation should succeed");
         assert_eq!(report.checked, 2);
         assert!(!report.valid);
@@ -2260,7 +2273,7 @@ input_schema:
         let report = init_custom_tool(
             &paths,
             "meeting_summary",
-            &CustomToolRegistryOptions::default(),
+            &legacy_tool_options(),
             &CustomToolInitOptions {
                 description: Some("Summarize one meeting note.".to_string()),
                 ..CustomToolInitOptions::default()
@@ -2302,7 +2315,7 @@ input_schema:
         init_custom_tool(
             &paths,
             "meeting_summary",
-            &CustomToolRegistryOptions::default(),
+            &legacy_tool_options(),
             &CustomToolInitOptions {
                 description: Some("Summarize one meeting note.".to_string()),
                 ..CustomToolInitOptions::default()
@@ -2313,7 +2326,7 @@ input_schema:
         let report = set_custom_tool(
             &paths,
             "meeting_summary",
-            &CustomToolRegistryOptions::default(),
+            &legacy_tool_options(),
             &CustomToolSetOptions {
                 description: Some("Summarize one meeting note into JSON.".to_string()),
                 timeout_ms: Some(2500),
@@ -2393,7 +2406,7 @@ Outer tool documentation.
             None,
             "outer_tool",
             &json!({ "note": "alpha" }),
-            &CustomToolRegistryOptions::default(),
+            &legacy_tool_options(),
             &CustomToolRunOptions {
                 surface: "cli".to_string(),
             },
@@ -2480,7 +2493,7 @@ input_schema:
             None,
             "readonly_outer",
             &json!({}),
-            &CustomToolRegistryOptions::default(),
+            &legacy_tool_options(),
             &CustomToolRunOptions {
                 surface: "cli".to_string(),
             },
@@ -2524,7 +2537,7 @@ input_schema:
             None,
             "loop_tool",
             &json!({}),
-            &CustomToolRegistryOptions::default(),
+            &legacy_tool_options(),
             &CustomToolRunOptions {
                 surface: "cli".to_string(),
             },

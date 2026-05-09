@@ -248,7 +248,6 @@ const DEFAULT_CONFIG_TEMPLATE: &str = r###"# Vulcan configuration
 # [assistant]
 # prompts_folder = "AI/Prompts"
 # skills_folder = ".agents/skills"
-# tools_folder = ".agents/tools"
 
 # [site.profiles.public]
 # title = "My Notes"
@@ -11941,7 +11940,7 @@ include_paths = ["Docs/Intro.md"]
         assert!(template.contains("[assistant]"));
         assert!(template.contains("prompts_folder = \"AI/Prompts\""));
         assert!(template.contains("skills_folder = \".agents/skills\""));
-        assert!(template.contains("tools_folder = \".agents/tools\""));
+        assert!(!template.contains("tools_folder = \".agents/tools\""));
         assert!(!template.contains("pi_binary = \"pi\""));
         assert!(!template.contains("session_export = \"on_exit\""));
     }
