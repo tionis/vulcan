@@ -1028,29 +1028,16 @@ Supported shells:
 
 The core Wave 5 CLI surface is implemented: grouped commands, note CRUD, structured `help`, `describe --format ...`, bundled AGENTS/skills files, web tools, and git tools are all available today.
 
-### Phase B: Embedded Agent (Roadmap Wave 6)
+### Phase B: External Agent Runtime
 
-The full vault-native AI assistant with tiered tool exposure, vault-aware system prompt, conversation persistence, prompts, and skills.
-
-```
-vulcan assistant <prompt>                    # one-shot prompt
-vulcan assistant --chat                      # multi-turn conversation
-vulcan assistant --file <note> <prompt>      # prompt about a specific note
-vulcan assistant --prompt <name>             # use a named prompt
-vulcan assistant --skill <name>              # invoke a skill
-vulcan assistant --resume <session>          # resume a conversation
-vulcan assistant sessions                    # list saved sessions
-vulcan assistant prompts                     # list available prompts
-vulcan assistant skills                      # list available skills
-vulcan assistant init                        # write default skills + vault AGENTS.md
-```
-
-### Phase C: Chat Platforms (Roadmap Wave 7)
+The embedded `vulcan assistant` host was removed. Use MCP or an external runtime that shells out to Vulcan's JSON commands, loads `AGENTS.md`, and discovers bundled skills.
 
 ```
-vulcan assistant serve [--platform telegram|all]
-vulcan assistant platforms                   # list configured platforms
-vulcan assistant memory <platform> <user-id> # show user memory
+vulcan agent install                         # write AGENTS.md, default skills, and prompts
+vulcan agent print-config --runtime generic  # wrapper contract for external runtimes
+vulcan skill list                            # discover installed skills
+vulcan skill run conversation-export export  # archive a chat transcript as Markdown
+vulcan mcp --transport http                  # expose the curated MCP tool surface
 ```
 
 ### Runtime Status

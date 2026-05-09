@@ -6,21 +6,16 @@ This document is specifically about **subprocess-style runtimes** that can prelo
 
 The older native assistant and chat-runtime steering was not discarded; it was moved to [`native_runtime_deferred.md`](./native_runtime_deferred.md) so the runtime-agnostic decision does not erase those ideas.
 
-Vulcan now has two supported integration shapes:
+Vulcan supports one integration shape in the current roadmap:
 
-- **Model A: external runtime host.** The runtime hosts the conversation and
+- **External runtime host.** The runtime hosts the conversation and
   shells out to Vulcan commands in JSON mode. This is the Phase 9.12 contract
   described below.
-- **Model B: embedded managed-engine host.** `vulcan assistant` hosts the CLI
-  entrypoint and starts a managed engine such as `pi`. TTY chat uses pi's
-  native terminal UI; one-shot and piped runs use `pi --mode rpc`. Vulcan sends
-  vault context, filtered tools, and the active permission profile to the
-  engine. See [`../guide/assistant.md`](../guide/assistant.md).
 
-The MCP server work reinforced the key boundary for both models: Vulcan owns
+The MCP server work reinforced the key boundary: Vulcan owns
 tool discovery, permission profiles, and vault mutation semantics. Remote or
-embedded runtimes can orchestrate model turns, but they must not become a
-parallel note-editing authority.
+local runtimes can orchestrate model turns, but they must not become a parallel
+note-editing authority.
 
 Vulcan remains responsible for:
 
@@ -195,10 +190,8 @@ Recommended profiles:
 
 ## Session and persistence boundary
 
-Default assumption: session history lives in the external runtime or managed
-engine, not in ordinary vault notes. In Model B, `vulcan assistant --chat`
-delegates chat UX and session persistence to pi under the configured
-`assistant.sessions_dir`.
+Default assumption: session history lives in the external runtime, not in
+ordinary vault notes.
 
 That means Vulcan still does not need:
 
@@ -208,13 +201,11 @@ That means Vulcan still does not need:
 
 If the user wants durable output, the agent should write a normal note through Vulcan tools.
 
-Later, if needed, Vulcan can add optional export commands such as:
-
-- export current session summary to note
-- save selected turns to meeting log
-- materialize runtime memory into a vault note
-
-Those should be explicit exports, not the default storage model.
+For durable archives, install the bundled `conversation-export` skill and run
+its `export` command. It normalizes pasted transcripts into Markdown callouts
+under `AI/Conversations/` while still using Vulcan's normal permission and
+filesystem checks. Conversation export remains an explicit note-writing
+workflow, not the default session store.
 
 ## Suggested package structure
 

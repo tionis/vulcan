@@ -4,7 +4,6 @@
 //! `vulcan-core`; this crate owns argument parsing, TUI state, interactive I/O,
 //! terminal rendering, and other CLI-specific behavior.
 
-mod assistant;
 mod bases_tui;
 mod browse_tui;
 mod bundle_server;
@@ -757,6 +756,20 @@ const BUNDLED_SKILL_FILES: &[BundledTextFile] = &[
         kind: "skill",
         relative_path: "task-management/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/task-management.md"),
+        target: BundledFileTarget::SkillsFolder,
+    },
+    BundledTextFile {
+        kind: "skill",
+        relative_path: "conversation-export/SKILL.md",
+        contents: include_str!("../../docs/assistant/skills/conversation-export.md"),
+        target: BundledFileTarget::SkillsFolder,
+    },
+    BundledTextFile {
+        kind: "skill",
+        relative_path: "conversation-export/scripts/export-conversation.js",
+        contents: include_str!(
+            "../../docs/assistant/skills/conversation-export/export-conversation.js"
+        ),
         target: BundledFileTarget::SkillsFolder,
     },
 ];
@@ -2015,8 +2028,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Refactor { .. }
         | Command::Checkpoint { .. }
         | Command::Export { .. }
-        | Command::Site { .. }
-        | Command::Assistant { .. } => true,
+        | Command::Site { .. } => true,
         Command::Daily { command } => matches!(
             command,
             DailyCommand::Show { .. } | DailyCommand::List { .. } | DailyCommand::ExportIcs { .. }
@@ -7576,50 +7588,6 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Skill { ref command } => {
             commands::skill::handle_skill_command(cli, &paths, command)
         }
-        Command::Assistant {
-            ref prompt,
-            doctor,
-            print_context,
-            list_sessions,
-            chat,
-            resume,
-            ref resume_session,
-            continue_session,
-            ref export_session,
-            ref provider,
-            ref model,
-            ref thinking,
-            show_thinking,
-            ref assistant_pi_binary,
-            ref assistant_permissions,
-            ephemeral,
-            no_tools,
-            ref tool_pack,
-            tool_pack_mode,
-        } => {
-            let options = assistant::AssistantCommandOptions {
-                prompt: prompt.clone(),
-                doctor,
-                print_context,
-                list_sessions,
-                chat,
-                resume,
-                resume_session: resume_session.clone(),
-                continue_session,
-                export_session: export_session.clone(),
-                provider: provider.clone(),
-                model: model.clone(),
-                thinking: thinking.clone(),
-                show_thinking,
-                assistant_pi_binary: assistant_pi_binary.clone(),
-                assistant_permissions: assistant_permissions.clone(),
-                ephemeral,
-                no_tools,
-                tool_pack: tool_pack.clone(),
-                tool_pack_mode,
-            };
-            assistant::handle_assistant_command(&paths, cli.output, &options)
-        }
         Command::Status => {
             let report = run_status_command(&paths)?;
             print_status_report(cli.output, &report, use_stdout_color)
@@ -11133,39 +11101,12 @@ fn run_init_command(paths: &VaultPaths, args: &InitArgs) -> Result<InitReport, C
     } else {
         None
     };
-    initialize_assistant_runtime(paths)?;
-
     Ok(InitReport {
         summary,
         importable_sources,
         support_files,
         imported,
     })
-}
-
-fn initialize_assistant_runtime(paths: &VaultPaths) -> Result<(), CliError> {
-    let assistant = load_vault_config(paths).config.assistant;
-    if assistant.runtime != "pi" {
-        return Ok(());
-    }
-    if !assistant.sessions_dir.as_os_str().is_empty() {
-        let sessions_dir = if assistant.sessions_dir.is_absolute() {
-            assistant.sessions_dir.clone()
-        } else {
-            paths.vault_root().join(&assistant.sessions_dir)
-        };
-        fs::create_dir_all(sessions_dir).map_err(CliError::operation)?;
-    }
-    if !assistant.session_exports_dir.as_os_str().is_empty() {
-        let session_exports_dir = if assistant.session_exports_dir.is_absolute() {
-            assistant.session_exports_dir
-        } else {
-            paths.vault_root().join(assistant.session_exports_dir)
-        };
-        fs::create_dir_all(session_exports_dir).map_err(CliError::operation)?;
-    }
-    crate::assistant::extension::materialize_extension(paths.vault_root())?;
-    Ok(())
 }
 
 pub(crate) fn run_agent_install_command(
@@ -16974,16 +16915,10 @@ fn help_overview() -> HelpTopicReport {
         ),
         (
             "Assistant & Protocols",
-            &[
-                (
-                    "assistant",
-                    "Run an optional embedded managed-engine assistant against this vault",
-                ),
-                (
-                    "mcp",
-                    "Start a protocol-native MCP server over stdio or Streamable HTTP",
-                ),
-            ],
+            &[(
+                "mcp",
+                "Start a protocol-native MCP server over stdio or Streamable HTTP",
+            )],
         ),
         (
             "Automation & Export",
@@ -17099,13 +17034,6 @@ fn static_help_topic(
 #[allow(clippy::too_many_lines)]
 fn builtin_help_topics() -> Vec<HelpTopicReport> {
     vec![
-        static_help_topic(
-            "assistant",
-            HelpTopicKind::Guide,
-            "Embedded managed-engine assistant host for vault-aware one-shot prompts.",
-            include_str!("../../docs/guide/assistant.md"),
-            &["assistant", "agent", "mcp", "skill", "permissions"],
-        ),
         static_help_topic(
             "assistant-integration",
             HelpTopicKind::Guide,
@@ -24401,7 +24329,6 @@ done < "$record_path"
         let report = help_overview();
 
         for expected in [
-            "`assistant`",
             "`mcp`",
             "`describe`",
             "`completions`",

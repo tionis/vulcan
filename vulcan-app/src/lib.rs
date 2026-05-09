@@ -7,7 +7,6 @@
 
 mod error;
 
-pub mod assistant_session_export;
 pub mod browse;
 pub mod config;
 pub mod export;
