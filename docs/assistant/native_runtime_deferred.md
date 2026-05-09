@@ -273,12 +273,22 @@ Preserved default skill ideas:
 - `js-api-guide`
 - `skill-creator`
 - `graph-exploration`
+- `link-curation`
 - `daily-notes`
 - `properties-and-tags`
 - `refactoring`
 - `web-research`
 - `git-workflow`
 - `task-management`
+- `configuration-and-permissions`
+- `mcp-setup`
+- `index-maintenance`
+- `dataview-and-bases`
+- `templates-and-capture`
+- `publishing-and-export`
+- `plugin-authoring`
+- `diagnostics-and-repair`
+- `conversation-export`
 
 Preserved user-skill idea:
 

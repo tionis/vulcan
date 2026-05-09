@@ -1093,12 +1093,22 @@ Skills serve double duty: they teach external runtimes how to use Vulcan effecti
 - **js-api-guide** — vault JS API patterns, `vault.note()`, semantic note outlining/partial reads, `vault.query()`, collection chains, `vault.transaction()`
 - **skill-creator** — skill authoring and review, projected skill command metadata, direct script shebangs, schemas, sandboxing, permissions, and validation
 - **graph-exploration** — links, backlinks, graph paths, hubs, dead ends, when to use graph vs search
+- **link-curation** — ambiguous links, weak links, orphan notes, alias/tag cleanup, and suggested graph repairs
 - **daily-notes** — periodic note workflow, appending entries, reviewing date ranges, event syntax
 - **properties-and-tags** — metadata management, property types, tag conventions, querying by metadata
 - **refactoring** — rename, merge tags, rewrite, move — always `--dry-run` first, safety patterns
 - **web-research** — `web search`, `web fetch`, article extraction, combining web + vault content
 - **git-workflow** — checking changes, committing, reviewing diffs, auto-commit behavior
 - **task-management** — task syntax, querying tasks, creating/completing, priorities
+- **configuration-and-permissions** — config inspection, profiles, sandboxing, trust, and access-control troubleshooting
+- **mcp-setup** — MCP server setup, ChatGPT remote connectors, OAuth/IndieAuth, tool packs, and resource visibility
+- **index-maintenance** — scanning, reindexing, cache verification, vector index checks, and stale-index repair
+- **dataview-and-bases** — Dataview, DataviewJS, Bases, `.base` views, formulas, and compatibility debugging
+- **templates-and-capture** — templates, inbox capture, QuickAdd/Templater compatibility, and note scaffolding
+- **publishing-and-export** — static sites, render/export/package workflows, publish filters, and diagnostics
+- **plugin-authoring** — JavaScript lifecycle plugins, event hooks, plugin trust, and plugin-vs-skill decisions
+- **diagnostics-and-repair** — health checks, parser diagnostics, broken links, cache repair, and safe investigation flows
+- **conversation-export** — external assistant transcript conversion into stable vault Markdown
 
 Each skill includes: when to use it, core patterns with examples, common mistakes to avoid, and example interactions (input → tool calls → result). The "common mistakes" section encodes knowledge that otherwise takes multiple failed tool calls to learn.
 

@@ -1776,12 +1776,22 @@ Vulcan ships a standard library of skills that teach any external runtime how to
 - [x] **js-api-guide** — vault JS API patterns. `vault.note()`, `vault.notes().where().sortBy()`, `vault.query()`, `vault.graph`, `vault.transaction()` for atomic batch mutations. Examples for common operations: bulk property updates, cross-note analysis, generating summary tables.
 - [x] **skill-creator** — creating and reviewing Agent Skills-compatible skills for Vulcan vaults, including `metadata.vulcan.commands`, direct script shebangs, `main(input, ctx)`, schemas, sandboxing, permission profiles, and `vulcan skill validate`.
 - [x] **graph-exploration** — links, backlinks, shortest paths, hubs, dead ends, connected components. When to use graph traversal vs search. Common mistake: traversing large graphs without limiting depth.
+- [x] **link-curation** — finding weak links, ambiguous links, orphan notes, missing backlinks, and notes that need aliases or tags. Common mistake: bulk rewriting links before reviewing suggested targets.
 - [x] **daily-notes** — periodic note workflow: appending entries, reviewing date ranges, event syntax (`- [time] title [@key(value)] [#tag]`), querying events. Common mistake: creating duplicate daily notes instead of appending.
 - [x] **properties-and-tags** — metadata management with `update_property`/`unset_property`. Property types, tag conventions, querying by metadata via `query where`. Common mistake: setting properties on the wrong note when names are ambiguous.
 - [x] **refactoring** — rename aliases/headings/properties, merge tags, rewrite content, move notes. Always `--dry-run` first. Safety patterns for bulk operations. Common mistake: not checking backlinks before renaming.
 - [x] **web-research** — `web search` for finding information, `web fetch` for extracting article content. Combining web content with vault notes. Output modes (markdown vs raw).
 - [x] **git-workflow** — checking changes with `git status`/`git diff`, committing with descriptive messages, reviewing history with `git log`/`git blame`. Auto-commit behavior and `--no-commit` flag.
 - [x] **task-management** — task syntax in notes, querying tasks by status/priority/due date, creating and completing tasks. Task dependencies and recurring tasks.
+- [x] **configuration-and-permissions** — config inspection, profiles, access control, sandbox tiers, trust decisions, and denied-tool diagnosis.
+- [x] **mcp-setup** — MCP stdio/HTTP setup, ChatGPT remote connector setup, OAuth/IndieAuth flow debugging, tool packs, permission profiles, and resource visibility.
+- [x] **index-maintenance** — scan/reindex/cache maintenance, stale search repair, vector index checks, and derived-state diagnostics.
+- [x] **dataview-and-bases** — Dataview DQL, inline fields, DataviewJS, `.base` files, formulas, saved views, and compatibility troubleshooting.
+- [x] **templates-and-capture** — templates, inbox capture, Templater tags, QuickAdd-style capture flows, and note scaffolding.
+- [x] **publishing-and-export** — static site builds, rendered exports, package formats, route/link policy, and publish diagnostics.
+- [x] **plugin-authoring** — JavaScript lifecycle plugins, event hooks, trust and permissions, and deciding between plugins and skill commands.
+- [x] **diagnostics-and-repair** — health checks, parser diagnostics, broken links, cache verification, and safe repair planning.
+- [x] **conversation-export** — converting external assistant conversations into vault notes using a stable Markdown export format.
 
 **User-defined skills:**
 
