@@ -1,3 +1,4 @@
+#!/usr/bin/env -S vulcan run --script
 function main(input) {
   const title = text(input.title).trim();
   const transcript = text(input.transcript);

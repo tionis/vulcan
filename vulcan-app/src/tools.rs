@@ -563,7 +563,12 @@ fn run_skill_command_tool_with_context(
     let runtime_context = context.runtime_scope(name, effective_permission_profile.clone());
     let script_path = skill_command_script_path(paths, &skill.summary, &command)?;
     let source = fs::read_to_string(&script_path).map_err(AppError::operation)?;
-    let source = build_skill_command_invocation_source(&skill, &command, input, &source)?;
+    let source = build_skill_command_invocation_source(
+        &skill,
+        &command,
+        input,
+        strip_shebang_line(&source),
+    )?;
     let current_file = script_path
         .strip_prefix(paths.vault_root())
         .ok()

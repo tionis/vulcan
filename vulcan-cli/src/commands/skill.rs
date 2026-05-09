@@ -11,6 +11,8 @@ use vulcan_core::{
     JsRuntimeSandbox, PermissionGuard, VaultPaths,
 };
 
+const SKILL_COMMAND_SCRIPT_SHEBANG: &str = "#!/usr/bin/env -S vulcan run --script\n";
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct SkillListReport {
     skills: Vec<AssistantSkillSummary>,
@@ -206,7 +208,8 @@ fn run_skill_command(
     })?;
     let script_path = skill_script_path(paths, &skill.summary, command)?;
     let source = fs::read_to_string(&script_path).map_err(CliError::operation)?;
-    let invocation = build_skill_invocation_source(&skill, command, &input, &source)?;
+    let invocation =
+        build_skill_invocation_source(&skill, command, &input, strip_shebang_line(&source))?;
     let permission_profile = command
         .permission_profile
         .clone()
@@ -321,7 +324,9 @@ fn init_skill(
     }
     let description = description.unwrap_or("TODO: describe this skill.");
     let manifest = render_skill_manifest(&name, description, starter_command);
-    let script = "function main(input, ctx) {\n  return { input, skill: ctx.skill.name, command: ctx.command.id };\n}\n";
+    let script = format!(
+        "{SKILL_COMMAND_SCRIPT_SHEBANG}function main(input, ctx) {{\n  return {{ input, skill: ctx.skill.name, command: ctx.command.id }};\n}}\n"
+    );
     if !dry_run {
         fs::create_dir_all(&skill_root).map_err(CliError::operation)?;
         fs::write(&manifest_path, manifest).map_err(CliError::operation)?;
@@ -329,7 +334,7 @@ fn init_skill(
             if let Some(parent) = script_path.parent() {
                 fs::create_dir_all(parent).map_err(CliError::operation)?;
             }
-            fs::write(script_path, script).map_err(CliError::operation)?;
+            write_executable_script(script_path, &script)?;
         }
         load_assistant_skill(paths, &name).map_err(CliError::operation)?;
     }
@@ -344,6 +349,36 @@ fn init_skill(
             .transpose()?,
         operations: vec!["create skill scaffold".to_string()],
     })
+}
+
+fn write_executable_script(path: &Path, contents: &str) -> Result<(), CliError> {
+    fs::write(path, contents).map_err(CliError::operation)?;
+    set_executable_permissions(path)
+}
+
+#[cfg(unix)]
+fn set_executable_permissions(path: &Path) -> Result<(), CliError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::metadata(path).map_err(CliError::operation)?;
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(permissions.mode() | 0o111);
+    fs::set_permissions(path, permissions).map_err(CliError::operation)
+}
+
+#[cfg(not(unix))]
+fn set_executable_permissions(_path: &Path) -> Result<(), CliError> {
+    Ok(())
+}
+
+fn strip_shebang_line(source: &str) -> &str {
+    if let Some(stripped) = source.strip_prefix("#!") {
+        stripped
+            .split_once('\n')
+            .map_or("", |(_, remainder)| remainder)
+    } else {
+        source
+    }
 }
 
 fn render_skill_manifest(name: &str, description: &str, starter_command: Option<&str>) -> String {
