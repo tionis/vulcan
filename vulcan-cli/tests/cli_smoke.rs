@@ -10220,14 +10220,38 @@ fn skill_init_and_run_execute_agent_skill_command() {
     let direct_output = ProcessCommand::new(&script_path)
         .current_dir(&vault_root)
         .env("PATH", &path)
-        .arg("--input-json")
-        .arg("{\"value\":9}")
+        .arg("--arg-json")
+        .arg("value=9")
         .output()
         .expect("script should launch through shebang");
     assert!(direct_output.status.success());
     let direct_stdout = String::from_utf8_lossy(&direct_output.stdout);
     assert!(direct_stdout.contains("math:echo"));
     assert!(direct_stdout.contains("\"value\": 9"));
+
+    let arg_run_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "skill",
+            "run",
+            "math",
+            "echo",
+            "--arg",
+            "label=demo",
+            "--arg-json",
+            "value=10",
+        ])
+        .assert()
+        .success();
+    let arg_run_json = parse_stdout_json(&arg_run_assert);
+    assert_eq!(
+        arg_run_json["result"]["input"],
+        serde_json::json!({ "label": "demo", "value": 10 })
+    );
 
     let describe_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")

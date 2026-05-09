@@ -82,6 +82,8 @@ Notes:
   Skill command execution requires a trusted vault: `vulcan trust add`.
   Generated skill command scripts use `#!/usr/bin/env -S vulcan skill exec`, so
   `./scripts/name.js --help` shows the executable command contract.
+  `skill run` and `skill exec` accept `--arg key=value` for string fields and
+  `--arg-json key=json` for typed fields; these merge into the input object.
 
 Examples:
   vulcan skill list
@@ -91,7 +93,9 @@ Examples:
   vulcan skill show daily-review
   vulcan skill commands daily-review
   vulcan skill run daily-review prepare-day --input-json '{\"date\":\"2026-05-05\",\"dryRun\":true}'
+  vulcan skill run daily-review prepare-day --arg date=2026-05-05 --arg-json dryRun=true
   .agents/skills/daily-review/scripts/prepare-day.js --input-json '{\"date\":\"2026-05-05\"}'
+  .agents/skills/daily-review/scripts/prepare-day.js --arg date=2026-05-05 --arg-json dryRun=true
   vulcan skill validate
   vulcan skill init my-skill --starter-command hello";
 
@@ -2939,6 +2943,18 @@ pub enum SkillCommand {
         input_json: Option<String>,
         #[arg(long, value_name = "PATH", help = "Read JSON input from a file")]
         input_file: Option<std::path::PathBuf>,
+        #[arg(
+            long = "arg",
+            value_name = "KEY=VALUE",
+            help = "Add a string field to the input object"
+        )]
+        input_args: Vec<String>,
+        #[arg(
+            long = "arg-json",
+            value_name = "KEY=JSON",
+            help = "Add a JSON-valued field to the input object"
+        )]
+        input_json_args: Vec<String>,
     },
     #[command(
         about = "Run a skill command script by path",
@@ -2951,6 +2967,18 @@ pub enum SkillCommand {
         input_json: Option<String>,
         #[arg(long, value_name = "PATH", help = "Read JSON input from a file")]
         input_file: Option<std::path::PathBuf>,
+        #[arg(
+            long = "arg",
+            value_name = "KEY=VALUE",
+            help = "Add a string field to the input object"
+        )]
+        input_args: Vec<String>,
+        #[arg(
+            long = "arg-json",
+            value_name = "KEY=JSON",
+            help = "Add a JSON-valued field to the input object"
+        )]
+        input_json_args: Vec<String>,
     },
     #[command(about = "Scaffold a new Agent Skills-compatible skill")]
     Init {
