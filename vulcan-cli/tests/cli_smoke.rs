@@ -10359,6 +10359,29 @@ fn bundled_conversation_export_skill_writes_callout_note() {
     assert!(exported.contains("> [!assistant]+ Assistant"));
     assert!(exported.contains("> Saturday."));
 
+    let vulcan_bin = assert_cmd::cargo::cargo_bin("vulcan");
+    let bin_dir = vulcan_bin
+        .parent()
+        .expect("vulcan binary should have parent");
+    let path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let direct_output = ProcessCommand::new(&script_path)
+        .current_dir(temp_dir.path())
+        .env("PATH", &path)
+        .arg("--input-json")
+        .arg(
+            r#"{"title":"Dry Run Chat","source":"chatgpt","date":"2026-05-09","dry_run":true,"transcript":"User: Hello\nAssistant: Hi."}"#,
+        )
+        .output()
+        .expect("script should infer its vault through the shebang");
+    assert!(direct_output.status.success());
+    let direct_stdout = String::from_utf8_lossy(&direct_output.stdout);
+    assert!(direct_stdout.contains("conversation-export:export"));
+    assert!(direct_stdout.contains("AI/Conversations/2026-05-09-dry-run-chat.md"));
+
     let validate_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
