@@ -2713,6 +2713,27 @@ struct ToolListReport {
     tools: Vec<tools::CustomToolDescriptor>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ToolTestReport {
+    name: String,
+    checked: usize,
+    passed: bool,
+    examples: Vec<ToolTestExampleReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ToolTestExampleReport {
+    name: String,
+    input: Value,
+    passed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expected_output: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
 #[allow(clippy::too_many_lines)]
 fn handle_plugin_command(
     cli: &Cli,
@@ -2880,6 +2901,17 @@ fn handle_tool_command(
                 &registry_options,
             )?;
             print_tool_help_report(cli.output, &report)
+        }
+        ToolCommand::Test { name, example } => {
+            let report =
+                run_tool_examples(cli, paths, name, example.as_deref(), &registry_options)?;
+            let passed = report.passed;
+            print_tool_test_report(cli.output, &report)?;
+            if passed {
+                Ok(())
+            } else {
+                Err(CliError::operation("one or more tool examples failed"))
+            }
         }
         ToolCommand::Run {
             name,
@@ -3338,6 +3370,91 @@ fn read_tool_input(input_json: Option<&str>, input_file: Option<&Path>) -> Resul
     }
 }
 
+fn run_tool_examples(
+    cli: &Cli,
+    paths: &VaultPaths,
+    name: &str,
+    example_filter: Option<&str>,
+    registry_options: &tools::CustomToolRegistryOptions,
+) -> Result<ToolTestReport, CliError> {
+    let show = tools::show_custom_tool(paths, cli.permissions.as_deref(), name, registry_options)?;
+    let examples = show
+        .tool
+        .summary
+        .examples
+        .iter()
+        .filter(|example| example_filter.is_none_or(|filter| example.name == filter))
+        .map(|example| {
+            let input = if let Some(input) = &example.input {
+                Ok(input.clone())
+            } else {
+                tools::build_custom_tool_cli_input(paths, name, &example.cli_args, registry_options)
+                    .map(|(_, input)| input)
+            };
+            let input = match input {
+                Ok(input) => input,
+                Err(error) => {
+                    return ToolTestExampleReport {
+                        name: example.name.clone(),
+                        input: json!({}),
+                        passed: false,
+                        output: None,
+                        expected_output: example.expected_output.clone(),
+                        error: Some(error.to_string()),
+                    }
+                }
+            };
+            match tools::run_custom_tool(
+                paths,
+                cli.permissions.as_deref(),
+                &show.tool.summary.name,
+                &input,
+                registry_options,
+                &tools::CustomToolRunOptions {
+                    surface: "cli.tool.test".to_string(),
+                },
+            ) {
+                Ok(report) => {
+                    let expected_output = example.expected_output.clone();
+                    let passed = expected_output
+                        .as_ref()
+                        .is_none_or(|expected| expected == &report.result);
+                    ToolTestExampleReport {
+                        name: example.name.clone(),
+                        input,
+                        passed,
+                        output: Some(report.result),
+                        expected_output,
+                        error: None,
+                    }
+                }
+                Err(error) => ToolTestExampleReport {
+                    name: example.name.clone(),
+                    input,
+                    passed: false,
+                    output: None,
+                    expected_output: example.expected_output.clone(),
+                    error: Some(error.to_string()),
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    if examples.is_empty() {
+        let message = if let Some(example) = example_filter {
+            format!("tool `{name}` has no example named `{example}`")
+        } else {
+            format!("tool `{name}` declares no examples")
+        };
+        return Err(CliError::operation(message));
+    }
+    Ok(ToolTestReport {
+        name: show.tool.summary.name,
+        checked: examples.len(),
+        passed: examples.iter().all(|example| example.passed),
+        examples,
+    })
+}
+
 fn print_tool_list_report(output: OutputFormat, report: &ToolListReport) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => print_json(report),
@@ -3523,11 +3640,58 @@ fn print_tool_help_report(
                         }
                     }
                 }
+                if !report.tool.summary.examples.is_empty() {
+                    println!();
+                    println!("Examples:");
+                    for example in &report.tool.summary.examples {
+                        if !example.cli_args.is_empty() {
+                            println!(
+                                "  {}: vulcan tool run {name} {}",
+                                example.name,
+                                example.cli_args.join(" ")
+                            );
+                        } else if let Some(input) = &example.input {
+                            println!(
+                                "  {}: vulcan tool run {} --input-json '{}'",
+                                example.name,
+                                report.tool.summary.name,
+                                serde_json::to_string(input).map_err(CliError::operation)?
+                            );
+                        }
+                        if let Some(description) = &example.description {
+                            println!("    {description}");
+                        }
+                    }
+                }
             } else {
                 println!(
                     "  vulcan tool run {} --input-json '<json>'",
                     report.tool.summary.name
                 );
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_tool_test_report(output: OutputFormat, report: &ToolTestReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!(
+                "Tool examples: {} ({} checked)",
+                if report.passed { "passed" } else { "failed" },
+                report.checked
+            );
+            for example in &report.examples {
+                println!(
+                    "- {}: {}",
+                    example.name,
+                    if example.passed { "passed" } else { "failed" }
+                );
+                if let Some(error) = &example.error {
+                    println!("  error: {error}");
+                }
             }
             Ok(())
         }
@@ -24061,6 +24225,15 @@ mod tests {
             .expect("tool show should parse");
         let help = Cli::try_parse_from(["vulcan", "tool", "help", "meeting-summary"])
             .expect("tool help should parse");
+        let test = Cli::try_parse_from([
+            "vulcan",
+            "tool",
+            "test",
+            "meeting-summary",
+            "--example",
+            "smoke",
+        ])
+        .expect("tool test should parse");
         let run = Cli::try_parse_from([
             "vulcan",
             "tool",
@@ -24090,6 +24263,15 @@ mod tests {
             Command::Tool {
                 command: ToolCommand::Help {
                     name: "meeting-summary".to_string(),
+                },
+            }
+        );
+        assert_eq!(
+            test.command,
+            Command::Tool {
+                command: ToolCommand::Test {
+                    name: "meeting-summary".to_string(),
+                    example: Some("smoke".to_string()),
                 },
             }
         );

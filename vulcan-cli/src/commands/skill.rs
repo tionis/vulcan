@@ -37,6 +37,7 @@ struct SkillValidateReport {
     valid: bool,
     skills: usize,
     commands: usize,
+    warnings: Vec<String>,
     errors: Vec<String>,
 }
 
@@ -170,6 +171,7 @@ fn validate_visible_skills(cli: &Cli, paths: &VaultPaths) -> Result<SkillValidat
         .into_iter()
         .collect::<std::collections::BTreeSet<_>>();
     let mut errors = Vec::new();
+    let mut warnings = Vec::new();
     let mut command_count = 0;
     for summary in &skills {
         command_count += summary.commands.len();
@@ -197,12 +199,43 @@ fn validate_visible_skills(cli: &Cli, paths: &VaultPaths) -> Result<SkillValidat
                     ));
                 }
             }
+            if command.expose {
+                if command.output_schema.is_none() {
+                    warnings.push(format!(
+                        "{}:{} is exposed but does not declare an output_schema",
+                        summary.name, command.id
+                    ));
+                }
+                if command
+                    .cli
+                    .as_ref()
+                    .is_none_or(|cli| cli.aliases.is_empty())
+                {
+                    warnings.push(format!(
+                        "{}:{} is exposed but does not declare a CLI alias",
+                        summary.name, command.id
+                    ));
+                }
+                if command.examples.is_empty() {
+                    warnings.push(format!(
+                        "{}:{} is exposed but does not declare examples",
+                        summary.name, command.id
+                    ));
+                }
+                if matches!(command.sandbox, Some(JsRuntimeSandbox::Net)) {
+                    warnings.push(format!(
+                        "{}:{} uses net sandbox; keep exposed network-capable tools narrowly scoped",
+                        summary.name, command.id
+                    ));
+                }
+            }
         }
     }
     Ok(SkillValidateReport {
         valid: errors.is_empty(),
         skills: skills.len(),
         commands: command_count,
+        warnings,
         errors,
     })
 }
@@ -834,6 +867,12 @@ fn print_skill_validate_report(
                 "Valid skills: {} ({} skills, {} commands)",
                 report.valid, report.skills, report.commands
             );
+            for warning in &report.warnings {
+                println!("warning: {warning}");
+            }
+            for error in &report.errors {
+                println!("error: {error}");
+            }
             Ok(())
         }
     }

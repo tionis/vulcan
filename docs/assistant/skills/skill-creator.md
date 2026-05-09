@@ -81,6 +81,9 @@ metadata:
           required: [date]
         output_schema:
           type: object
+        examples:
+          - name: tomorrow
+            cli_args: [--date, tomorrow]
 ```
 
 Use `expose: true` only for stable commands that should appear in `vulcan tool list`, MCP, and
@@ -94,6 +97,10 @@ and schema validation remain the same. Supported flag actions are `string`, `jso
 may be a dotted path such as `options.dry_run`; repeated array flags append values.
 Use `choices` for choice flags and `completion` for dynamic value completion contexts
 such as `note`, `vault-path`, `daily-date`, or `task-view`.
+
+Add `examples` for smoke tests and help text. Each example must provide either
+`input` or `cli_args`; `expected_output` is optional and, when present, is compared
+exactly by `vulcan tool test`.
 
 ## Script Rules
 
@@ -143,6 +150,7 @@ schemas, permissions, or cross-harness execution matter.
 - `vulcan tool run <tool-name> --input-json '<json>'` returns the expected JSON.
 - `vulcan tool run <alias> --flag value` returns the same shape when CLI metadata is declared.
 - `vulcan tool help <alias>` shows a readable shell invocation.
+- `vulcan tool test <alias>` runs declared examples successfully.
 - `vulcan complete custom-tool <prefix>`, `vulcan complete custom-tool-flag:<alias> --<prefix>`, and `vulcan complete custom-tool-value:<alias>:<flag> <prefix>` list the expected shell completion candidates.
 - Any write, network, or host execution behavior is covered by sandbox and permission-profile choices.
 

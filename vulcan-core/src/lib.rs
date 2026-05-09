@@ -55,8 +55,9 @@ pub use assistant::{
     read_vault_agents_file, render_assistant_prompt, AssistantConfigSummary, AssistantError,
     AssistantPrompt, AssistantPromptArgument, AssistantPromptSummary, AssistantSkill,
     AssistantSkillCommandCli, AssistantSkillCommandCliArg, AssistantSkillCommandCliArgAction,
-    AssistantSkillCommandSummary, AssistantSkillSummary, AssistantTool, AssistantToolRuntime,
-    AssistantToolSecretSpec, AssistantToolSummary, AssistantToolValidationOptions,
+    AssistantSkillCommandExample, AssistantSkillCommandSummary, AssistantSkillSummary,
+    AssistantTool, AssistantToolRuntime, AssistantToolSecretSpec, AssistantToolSummary,
+    AssistantToolValidationOptions,
 };
 pub use bases::{
     bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, evaluate_base_file,

@@ -305,6 +305,8 @@ Behavior:
 - Trusted skill commands may be projected into `vulcan describe --format mcp|openai-tools|json-schema` and into the live MCP server as first-class tools.
 - Exposed tools may declare custom CLI aliases so `vulcan tool run <alias> --flag value` builds the same validated input JSON as MCP.
 - `vulcan tool help <alias>` prints the shell-friendly usage generated from that metadata.
+- `vulcan tool test <alias>` runs examples declared in command metadata and compares `expected_output` when present.
+- `vulcan skill validate` warns about exposed commands that are missing examples, output schemas, or CLI aliases.
 - Mutating commands should support dry-run/proposal output so Vulcan can preview diffs, require approval, and write audit records.
 - Skill-command permissions are the intersection of the active caller profile, the command's declared permission profile, its sandbox, and normal Vulcan path/network/execute checks.
 
@@ -319,6 +321,7 @@ vulcan skill run daily-review prepare-day --arg date=2026-05-05 --arg-json dryRu
 jq '.messages' chat.json | vulcan skill run conversation-export export --arg title=Chat --arg-json-file messages=-
 vulcan tool run conversation-export --title Chat --user Hello --assistant "Some message"
 vulcan tool help conversation-export
+vulcan tool test conversation-export --example dry-run-cli
 ```
 
 ### Plugin commands

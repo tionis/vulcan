@@ -107,6 +107,7 @@ Subcommands:
   list       inspect exposed skill command tools
   show       read one exposed skill command tool definition
   help       show shell-friendly usage for one exposed skill command tool
+  test       run declared examples for one exposed skill command tool
   run        validate JSON input and invoke one exposed skill command tool
 
 Notes:
@@ -124,6 +125,7 @@ Examples:
   vulcan tool list
   vulcan tool show skill_conversation_export_export
   vulcan tool help conversation-export
+  vulcan tool test conversation-export --example dry-run-cli
   vulcan tool run skill_conversation_export_export --input-json '{\"title\":\"Chat\",\"transcript\":\"User: hi\"}'
   vulcan tool run conversation-export --title Chat --user Hello --assistant 'Some message'
 
@@ -2820,6 +2822,13 @@ pub enum ToolCommand {
     Help {
         #[arg(help = "Tool name or CLI alias")]
         name: String,
+    },
+    #[command(about = "Run declared examples for one exposed skill command tool")]
+    Test {
+        #[arg(help = "Tool name or CLI alias")]
+        name: String,
+        #[arg(long = "example", help = "Run only the named example")]
+        example: Option<String>,
     },
     #[command(about = "Run one exposed skill command tool with validated JSON input")]
     Run {
