@@ -17,19 +17,215 @@ metadata:
         expose: true
         input_schema:
           type: object
+          required: [title]
+          anyOf:
+            - required: [transcript]
+            - required: [messages]
+            - required: [turns]
+          additionalProperties: false
           properties:
             title:
               type: string
+              minLength: 1
             transcript:
               type: string
+              minLength: 1
             messages:
               type: array
+              minItems: 1
               items:
                 type: object
+                required: [role]
+                anyOf:
+                  - required: [content]
+                  - required: [thinking]
+                  - required: [reasoning]
+                  - required: [tool_uses]
+                  - required: [tool_results]
+                additionalProperties: false
+                properties:
+                  role:
+                    type: string
+                    enum: [user, human, assistant, system, tool]
+                  content:
+                    anyOf:
+                      - type: string
+                      - type: array
+                        items:
+                          anyOf:
+                            - type: string
+                            - type: object
+                              required: [type]
+                              anyOf:
+                                - required: [text]
+                                - required: [content]
+                                - required: [value]
+                                - required: [input]
+                                - required: [output]
+                                - required: [result]
+                              additionalProperties: false
+                              properties:
+                                type:
+                                  type: string
+                                  enum: [text, thinking, reasoning, tool_use, tool-call, tool_call, tool_result, tool-output, tool_output]
+                                text:
+                                  type: string
+                                content: {}
+                                value: {}
+                                name:
+                                  type: string
+                                tool:
+                                  type: string
+                                function:
+                                  type: string
+                                function_name:
+                                  type: string
+                                id:
+                                  type: string
+                                call_id:
+                                  type: string
+                                tool_call_id:
+                                  type: string
+                                input: {}
+                                arguments: {}
+                                args: {}
+                                params: {}
+                                output: {}
+                                result: {}
+                                error: {}
+                      - type: object
+                  text:
+                    type: string
+                  message:
+                    type: string
+                  output: {}
+                  thinking:
+                    type: string
+                  reasoning:
+                    type: string
+                  thoughts:
+                    type: string
+                  tool_uses:
+                    type: array
+                    items:
+                      type: object
+                      required: [name]
+                      additionalProperties: false
+                      properties:
+                        name:
+                          type: string
+                        tool:
+                          type: string
+                        function:
+                          type: string
+                        function_name:
+                          type: string
+                        id:
+                          type: string
+                        call_id:
+                          type: string
+                        tool_call_id:
+                          type: string
+                        input: {}
+                        arguments: {}
+                        args: {}
+                        params: {}
+                        output: {}
+                        result: {}
+                        error: {}
+                  toolUses:
+                    type: array
+                  tools:
+                    type: array
+                  tool_results:
+                    type: array
+                    items:
+                      type: object
+                      required: [name]
+                      anyOf:
+                        - required: [output]
+                        - required: [result]
+                        - required: [content]
+                        - required: [error]
+                      additionalProperties: false
+                      properties:
+                        name:
+                          type: string
+                        tool:
+                          type: string
+                        function:
+                          type: string
+                        function_name:
+                          type: string
+                        id:
+                          type: string
+                        call_id:
+                          type: string
+                        tool_call_id:
+                          type: string
+                        output: {}
+                        result: {}
+                        content: {}
+                        error: {}
+                  toolResults:
+                    type: array
             turns:
               type: array
+              minItems: 1
               items:
                 type: object
+                required: [role]
+                anyOf:
+                  - required: [content]
+                  - required: [thinking]
+                  - required: [reasoning]
+                  - required: [tool_uses]
+                  - required: [tool_results]
+                additionalProperties: false
+                properties:
+                  role:
+                    type: string
+                    enum: [user, human, assistant, system, tool]
+                  content:
+                    anyOf:
+                      - type: string
+                      - type: array
+                      - type: object
+                  text:
+                    type: string
+                  message:
+                    type: string
+                  output: {}
+                  thinking:
+                    type: string
+                  reasoning:
+                    type: string
+                  thoughts:
+                    type: string
+                  tool_uses:
+                    type: array
+                    items:
+                      type: object
+                      required: [name]
+                      additionalProperties: true
+                      properties:
+                        name:
+                          type: string
+                  toolUses:
+                    type: array
+                  tools:
+                    type: array
+                  tool_results:
+                    type: array
+                    items:
+                      type: object
+                      required: [name]
+                      additionalProperties: true
+                      properties:
+                        name:
+                          type: string
+                  toolResults:
+                    type: array
             source:
               type: string
             date:

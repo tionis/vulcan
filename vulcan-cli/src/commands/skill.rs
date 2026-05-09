@@ -175,14 +175,6 @@ fn validate_visible_skills(cli: &Cli, paths: &VaultPaths) -> Result<SkillValidat
                     ));
                 }
             }
-            if let Err(error) =
-                validate_json_value_against_schema(&serde_json::json!({}), &command.input_schema)
-            {
-                errors.push(format!(
-                    "{}:{} input schema rejected an empty object: {error}",
-                    summary.name, command.id
-                ));
-            }
         }
     }
     Ok(SkillValidateReport {
