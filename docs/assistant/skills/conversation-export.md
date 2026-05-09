@@ -15,6 +15,37 @@ metadata:
         sandbox: fs
         packs: [custom]
         expose: true
+        cli:
+          aliases: [conversation-export]
+          args:
+            - flag: title
+              action: string
+              field: title
+              description: Conversation title.
+            - flag: transcript
+              action: string
+              field: transcript
+              description: Raw transcript text.
+            - flag: transcript-file
+              action: string_file
+              field: transcript
+              description: Read raw transcript text from a file or stdin.
+            - flag: messages-file
+              action: json_file
+              field: messages
+              description: Read structured message JSON from a file or stdin.
+            - flag: user
+              action: append_message
+              role: user
+              description: Append a user turn to messages.
+            - flag: assistant
+              action: append_message
+              role: assistant
+              description: Append an assistant turn to messages.
+            - flag: system
+              action: append_message
+              role: system
+              description: Append a system turn to messages.
         input_schema:
           type: object
           required: [title]

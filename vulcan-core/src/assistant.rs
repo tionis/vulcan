@@ -105,6 +105,40 @@ pub struct AssistantSkillCommandSummary {
     pub input_schema: JsonValue,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cli: Option<AssistantSkillCommandCli>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantSkillCommandCli {
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub args: Vec<AssistantSkillCommandCliArg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantSkillCommandCliArg {
+    pub flag: String,
+    pub action: AssistantSkillCommandCliArgAction,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AssistantSkillCommandCliArgAction {
+    String,
+    Json,
+    StringFile,
+    JsonFile,
+    AppendMessage,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -156,6 +190,8 @@ pub struct AssistantToolSummary {
     pub input_schema: JsonValue,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output_schema: Option<JsonValue>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cli: Option<AssistantSkillCommandCli>,
     pub path: String,
 }
 
@@ -573,9 +609,67 @@ fn normalize_skill_commands(
                 "output_schema",
             )?;
         }
+        if let Some(cli) = &summary.cli {
+            validate_skill_command_cli(&summary.id, cli)?;
+        }
         parsed.push(summary);
     }
     Ok(parsed)
+}
+
+fn validate_skill_command_cli(
+    command_id: &str,
+    cli: &AssistantSkillCommandCli,
+) -> Result<(), AssistantError> {
+    for alias in &cli.aliases {
+        if !is_valid_skill_command_cli_name(alias) {
+            return Err(AssistantError::parse(format!(
+                "invalid CLI alias `{alias}` for skill command `{command_id}`"
+            )));
+        }
+    }
+    for arg in &cli.args {
+        let flag = arg.flag.trim_start_matches('-');
+        if !is_valid_skill_command_cli_name(flag) {
+            return Err(AssistantError::parse(format!(
+                "invalid CLI flag `{}` for skill command `{command_id}`",
+                arg.flag
+            )));
+        }
+        match arg.action {
+            AssistantSkillCommandCliArgAction::AppendMessage => {
+                if matches!(arg.role.as_deref(), None | Some("")) {
+                    return Err(AssistantError::parse(format!(
+                        "CLI flag `{}` for skill command `{command_id}` must set `role`",
+                        arg.flag
+                    )));
+                }
+            }
+            AssistantSkillCommandCliArgAction::String
+            | AssistantSkillCommandCliArgAction::Json
+            | AssistantSkillCommandCliArgAction::StringFile
+            | AssistantSkillCommandCliArgAction::JsonFile => {
+                if matches!(arg.field.as_deref(), None | Some("")) {
+                    return Err(AssistantError::parse(format!(
+                        "CLI flag `{}` for skill command `{command_id}` must set `field`",
+                        arg.flag
+                    )));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_valid_skill_command_cli_name(value: &str) -> bool {
+    let value = value.trim_start_matches('-');
+    !value.is_empty()
+        && value
+            .chars()
+            .any(|character| character.is_ascii_alphabetic())
+        && value
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
 }
 
 fn default_object_schema() -> JsonValue {
@@ -678,6 +772,7 @@ fn parse_tool_file(
             destructive: frontmatter.destructive,
             input_schema,
             output_schema,
+            cli: None,
             path: relative,
         },
         body: body.trim().to_string(),
@@ -1223,6 +1318,15 @@ metadata:
         permission_profile: readonly
         packs: [notes-read]
         expose: true
+        cli:
+          aliases: [suggest-bridges]
+          args:
+            - flag: note
+              action: string
+              field: note
+            - flag: user
+              action: append_message
+              role: user
 ---
 Use this skill to curate links.
 ",
@@ -1243,6 +1347,13 @@ Use this skill to curate links.
             "scripts/suggest-bridges.js"
         );
         assert!(skill.summary.commands[0].expose);
+        let cli = skill.summary.commands[0]
+            .cli
+            .as_ref()
+            .expect("cli metadata should parse");
+        assert_eq!(cli.aliases, vec!["suggest-bridges".to_string()]);
+        assert_eq!(cli.args[0].flag, "note");
+        assert_eq!(cli.args[1].role.as_deref(), Some("user"));
     }
 
     #[test]

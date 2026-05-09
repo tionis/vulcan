@@ -54,6 +54,7 @@ pub use assistant::{
     load_assistant_skill, load_assistant_tool, load_assistant_tool_manifest,
     read_vault_agents_file, render_assistant_prompt, AssistantConfigSummary, AssistantError,
     AssistantPrompt, AssistantPromptArgument, AssistantPromptSummary, AssistantSkill,
+    AssistantSkillCommandCli, AssistantSkillCommandCliArg, AssistantSkillCommandCliArgAction,
     AssistantSkillCommandSummary, AssistantSkillSummary, AssistantTool, AssistantToolRuntime,
     AssistantToolSecretSpec, AssistantToolSummary, AssistantToolValidationOptions,
 };

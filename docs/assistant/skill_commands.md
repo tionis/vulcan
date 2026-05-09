@@ -164,6 +164,7 @@ Optional fields:
 - `read_only`: UX annotation only
 - `destructive`: UX annotation only
 - `expose`: controls whether the command is projected to CLI, MCP, and `describe`
+- `cli`: optional aliases and shell-friendly flag mappings for `vulcan tool run <alias>`
 
 Validation rules:
 
@@ -304,6 +305,14 @@ Projected commands may also appear under the generic tool surface:
 - `vulcan tool list`
 - `vulcan tool show <projected-name>`
 - `vulcan tool run <projected-name> --input-json <json>`
+- `vulcan tool run <cli-alias> --flag value`
+
+Custom CLI metadata is an adapter over the input schema. It must not bypass validation,
+permissions, trust, or the script entrypoint. Use it for ergonomic commands such as:
+
+```bash
+vulcan tool run conversation-export --title Chat --user Hello --assistant "Some message"
+```
 
 `tool show` and `skill commands` should make clear that the projected tool comes from a skill command.
 

@@ -102,6 +102,25 @@ mod tools {
         .map_err(CliError::operation)
     }
 
+    pub(crate) fn resolve_custom_tool_cli_name(
+        paths: &VaultPaths,
+        name: &str,
+        registry_options: &CustomToolRegistryOptions,
+    ) -> Result<String, CliError> {
+        vulcan_app::tools::resolve_custom_tool_cli_name(paths, name, registry_options)
+            .map_err(CliError::operation)
+    }
+
+    pub(crate) fn build_custom_tool_cli_input(
+        paths: &VaultPaths,
+        name: &str,
+        args: &[String],
+        registry_options: &CustomToolRegistryOptions,
+    ) -> Result<(String, Value), CliError> {
+        vulcan_app::tools::build_custom_tool_cli_input(paths, name, args, registry_options)
+            .map_err(CliError::operation)
+    }
+
     pub(crate) fn runtime_tool_registry(
         paths: &VaultPaths,
         active_permission_profile: Option<&str>,
@@ -2857,12 +2876,25 @@ fn handle_tool_command(
             name,
             input_json,
             input_file,
+            args,
         } => {
-            let input = read_tool_input(input_json.as_deref(), input_file.as_deref())?;
+            if (input_json.is_some() || input_file.is_some()) && !args.is_empty() {
+                return Err(CliError::operation(
+                    "tool run accepts either --input-json/--input-file or custom CLI arguments, not both",
+                ));
+            }
+            let (name, input) = if args.is_empty() {
+                (
+                    tools::resolve_custom_tool_cli_name(paths, name, &registry_options)?,
+                    read_tool_input(input_json.as_deref(), input_file.as_deref())?,
+                )
+            } else {
+                tools::build_custom_tool_cli_input(paths, name, args, &registry_options)?
+            };
             let report = tools::run_custom_tool(
                 paths,
                 cli.permissions.as_deref(),
-                name,
+                &name,
                 &input,
                 &registry_options,
                 &tools::CustomToolRunOptions::default(),
@@ -23675,6 +23707,7 @@ mod tests {
                     name: "skill_meeting_summarize".to_string(),
                     input_json: Some("{\"note\":\"Meetings/Weekly.md\"}".to_string()),
                     input_file: None,
+                    args: Vec::new(),
                 },
             }
         );
