@@ -868,6 +868,7 @@ fn skill_command_tool_summary(
         input_schema: command.input_schema.clone(),
         output_schema: command.output_schema.clone(),
         cli: command.cli.clone(),
+        examples: command.examples.clone(),
         path: skill.path.clone(),
     }
 }

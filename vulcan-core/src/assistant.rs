@@ -107,6 +107,22 @@ pub struct AssistantSkillCommandSummary {
     pub output_schema: Option<JsonValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cli: Option<AssistantSkillCommandCli>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<AssistantSkillCommandExample>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssistantSkillCommandExample {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cli_args: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_output: Option<JsonValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -202,6 +218,8 @@ pub struct AssistantToolSummary {
     pub output_schema: Option<JsonValue>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cli: Option<AssistantSkillCommandCli>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub examples: Vec<AssistantSkillCommandExample>,
     pub path: String,
 }
 
@@ -622,9 +640,36 @@ fn normalize_skill_commands(
         if let Some(cli) = &summary.cli {
             validate_skill_command_cli(&summary.id, cli)?;
         }
+        validate_skill_command_examples(&summary.id, &summary.examples)?;
         parsed.push(summary);
     }
     Ok(parsed)
+}
+
+fn validate_skill_command_examples(
+    command_id: &str,
+    examples: &[AssistantSkillCommandExample],
+) -> Result<(), AssistantError> {
+    for example in examples {
+        if example.name.trim().is_empty() {
+            return Err(AssistantError::parse(format!(
+                "skill command `{command_id}` has an example with an empty name"
+            )));
+        }
+        if example.input.is_some() && !example.cli_args.is_empty() {
+            return Err(AssistantError::parse(format!(
+                "skill command `{command_id}` example `{}` must set either `input` or `cli_args`, not both",
+                example.name
+            )));
+        }
+        if example.input.is_none() && example.cli_args.is_empty() {
+            return Err(AssistantError::parse(format!(
+                "skill command `{command_id}` example `{}` must set `input` or `cli_args`",
+                example.name
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_skill_command_cli(
@@ -821,6 +866,7 @@ fn parse_tool_file(
             input_schema,
             output_schema,
             cli: None,
+            examples: Vec::new(),
             path: relative,
         },
         body: body.trim().to_string(),
@@ -1375,6 +1421,9 @@ metadata:
             - flag: user
               action: append_message
               role: user
+        examples:
+          - name: smoke
+            cli_args: [--note, Home.md]
 ---
 Use this skill to curate links.
 ",
@@ -1402,6 +1451,11 @@ Use this skill to curate links.
         assert_eq!(cli.aliases, vec!["suggest-bridges".to_string()]);
         assert_eq!(cli.args[0].flag, "note");
         assert_eq!(cli.args[1].role.as_deref(), Some("user"));
+        assert_eq!(skill.summary.commands[0].examples[0].name, "smoke");
+        assert_eq!(
+            skill.summary.commands[0].examples[0].cli_args,
+            vec!["--note".to_string(), "Home.md".to_string()]
+        );
     }
 
     #[test]

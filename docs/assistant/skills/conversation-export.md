@@ -302,6 +302,21 @@ metadata:
                 type: string
             markdown:
               type: string
+        examples:
+          - name: dry-run-cli
+            description: Preview a short two-turn ChatGPT transcript without writing a note.
+            cli_args:
+              - --title
+              - Example Chat
+              - --source
+              - chatgpt
+              - --date
+              - "2026-05-09"
+              - --dry-run
+              - --user
+              - Hello
+              - --assistant
+              - Hi there.
 ---
 
 # Conversation Export

@@ -52,6 +52,11 @@ Custom CLI actions include typed scalar flags, repeatable array flags, file/stdi
 flags, `choice` flags, and `append_message`. Dotted `field` values create nested
 input objects before schema validation.
 
+Declare `examples` beside the command metadata to make the tool self-testing and
+documented. `vulcan tool test <tool-or-alias>` runs every example, and
+`--example <name>` selects one. Examples can provide raw `input` or shell-style
+`cli_args`; optional `expected_output` is compared exactly.
+
 JavaScript can call skill commands through either `tools.call("skill_daily_review_prepare_day", input)` or `skills.run("daily-review", "prepare-day", input)`.
 
 Nested calls preserve the current effective permission ceiling. A script cannot use `skills.run()` to escape its own sandbox or permission profile.

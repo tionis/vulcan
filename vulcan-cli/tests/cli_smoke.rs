@@ -10646,6 +10646,29 @@ fn bundled_conversation_export_skill_writes_callout_note() {
         .stdout(predicate::str::contains("--dry-run"))
         .stdout(predicate::str::contains("choices: chatgpt, codex"));
 
+    let tool_test_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "test",
+            "conversation-export",
+            "--example",
+            "dry-run-cli",
+        ])
+        .assert()
+        .success();
+    let tool_test_json = parse_stdout_json(&tool_test_assert);
+    assert_eq!(tool_test_json["passed"].as_bool(), Some(true));
+    assert_eq!(tool_test_json["checked"].as_u64(), Some(1));
+    assert_eq!(
+        tool_test_json["examples"][0]["input"]["dry_run"].as_bool(),
+        Some(true)
+    );
+
     Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
