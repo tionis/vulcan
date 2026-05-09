@@ -293,6 +293,8 @@ Behavior:
 - `vulcan skill exec <script> --arg key=value --arg-json flag=true`: run an executable skill command script directly.
 - `vulcan skill validate [<skill>]`: validate skill frontmatter, command metadata, schemas, scripts, and permission-profile references.
 - `vulcan skill init <name>`: scaffold a new skill directory with `SKILL.md` and optional starter command.
+- `vulcan tool init <alias>`: scaffold a skill-backed custom tool with schemas, CLI metadata, a Vulcan shebang script, and a smoke example.
+- `vulcan tool lint [<alias>]`: check exposed custom tools for schemas, CLI coverage, examples, shebangs, executable bits, and packaging issues.
 
 Behavior:
 
@@ -305,6 +307,7 @@ Behavior:
 - Trusted skill commands may be projected into `vulcan describe --format mcp|openai-tools|json-schema` and into the live MCP server as first-class tools.
 - Exposed tools may declare custom CLI aliases so `vulcan tool run <alias> --flag value` builds the same validated input JSON as MCP.
 - `vulcan tool help <alias>` prints the shell-friendly usage generated from that metadata.
+- `vulcan tool lint --strict` treats authoring warnings as failures.
 - `vulcan tool test <alias>` runs examples declared in command metadata and compares `expected_output` when present.
 - `vulcan skill validate` warns about exposed commands that are missing examples, output schemas, or CLI aliases.
 - Mutating commands should support dry-run/proposal output so Vulcan can preview diffs, require approval, and write audit records.
@@ -319,8 +322,10 @@ vulcan skill commands daily-review
 vulcan skill run daily-review prepare-day --input-json '{"date":"2026-05-05","dryRun":true}'
 vulcan skill run daily-review prepare-day --arg date=2026-05-05 --arg-json dryRun=true
 jq '.messages' chat.json | vulcan skill run conversation-export export --arg title=Chat --arg-json-file messages=-
+vulcan tool init meeting-summary --description "Summarize meeting notes"
 vulcan tool run conversation-export --title Chat --user Hello --assistant "Some message"
 vulcan tool help conversation-export
+vulcan tool lint conversation-export --strict
 vulcan tool test conversation-export --example dry-run-cli
 ```
 

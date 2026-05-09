@@ -24,11 +24,11 @@ and may include `scripts/`, `references/`, `assets/`, and `schemas/`.
 
 1. Capture the intended workflow before writing files.
 2. Decide whether the skill is only guidance or also needs callable commands.
-3. Scaffold with `vulcan skill init <name>` when starting fresh.
+3. Scaffold with `vulcan skill init <name>` for a guidance-first skill, or `vulcan tool init <alias>` for a callable custom tool.
 4. Add or edit `SKILL.md` frontmatter and instructions.
 5. Put deterministic executable behavior in skill command scripts.
 6. Validate with `vulcan skill validate`.
-7. If commands are exposed, verify them with `vulcan tool list`, `vulcan tool show`, and `vulcan tool run`.
+7. If commands are exposed, verify them with `vulcan tool list`, `vulcan tool show`, `vulcan tool lint`, `vulcan tool test`, and `vulcan tool run`.
 
 ## Frontmatter
 
@@ -150,6 +150,7 @@ schemas, permissions, or cross-harness execution matter.
 - `vulcan tool run <tool-name> --input-json '<json>'` returns the expected JSON.
 - `vulcan tool run <alias> --flag value` returns the same shape when CLI metadata is declared.
 - `vulcan tool help <alias>` shows a readable shell invocation.
+- `vulcan tool lint <alias> --strict` passes without warnings or errors.
 - `vulcan tool test <alias>` runs declared examples successfully.
 - `vulcan complete custom-tool <prefix>`, `vulcan complete custom-tool-flag:<alias> --<prefix>`, and `vulcan complete custom-tool-value:<alias>:<flag> <prefix>` list the expected shell completion candidates.
 - Any write, network, or host execution behavior is covered by sandbox and permission-profile choices.
