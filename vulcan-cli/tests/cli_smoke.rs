@@ -10253,6 +10253,63 @@ fn skill_init_and_run_execute_agent_skill_command() {
         serde_json::json!({ "label": "demo", "value": 10 })
     );
 
+    let messages_path = vault_root.join("messages.json");
+    fs::write(
+        &messages_path,
+        r#"[{"role":"user","content":"hello"},{"role":"assistant","tool_uses":[{"name":"note_get","input":{"path":"Home.md"}}]}]"#,
+    )
+    .expect("messages fixture should write");
+    let file_arg_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "skill",
+            "run",
+            "math",
+            "echo",
+            "--arg",
+            "title=Chat",
+            "--arg-json-file",
+            &format!("messages={}", messages_path.display()),
+        ])
+        .assert()
+        .success();
+    let file_arg_json = parse_stdout_json(&file_arg_assert);
+    assert_eq!(file_arg_json["result"]["input"]["title"], "Chat");
+    assert_eq!(
+        file_arg_json["result"]["input"]["messages"][1]["tool_uses"][0]["input"]["path"],
+        "Home.md"
+    );
+
+    let stdin_arg_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "skill",
+            "run",
+            "math",
+            "echo",
+            "--arg",
+            "title=Pipe",
+            "--arg-json-file",
+            "messages=-",
+        ])
+        .write_stdin(r#"[{"role":"user","content":"from stdin"}]"#)
+        .assert()
+        .success();
+    let stdin_arg_json = parse_stdout_json(&stdin_arg_assert);
+    assert_eq!(stdin_arg_json["result"]["input"]["title"], "Pipe");
+    assert_eq!(
+        stdin_arg_json["result"]["input"]["messages"][0]["content"],
+        "from stdin"
+    );
+
     let describe_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([

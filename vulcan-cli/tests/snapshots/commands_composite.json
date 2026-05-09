@@ -6166,7 +6166,7 @@
       },
       {
         "about": "List and read bundled or vault-defined assistant skills",
-        "after_help": "Subcommands:\n  list       enumerate visible bundled and vault-defined skills\n  get        read one skill's metadata plus Markdown body\n  show       read one skill's metadata plus SKILL.md body (alias for get)\n  commands   list Vulcan-declared commands exported by one skill\n  run        run a skill command with validated JSON input\n  exec       run a skill command script by path; this is the script shebang target\n  validate   validate skills, command metadata, schemas, scripts, and permission profile references\n  init       scaffold a new skill directory with optional starter command\n\nNotes:\n  Skill visibility follows the active permission profile's read filter.\n  External runtimes should call `skill list` up front and `skill get <name>` on demand.\n  Skill names are normalized from folder names, but `skill get` also accepts the relative path.\n  Skill command execution requires a trusted vault: `vulcan trust add`.\n  Generated skill command scripts use `#!/usr/bin/env -S vulcan skill exec`, so\n  `./scripts/name.js --help` shows the executable command contract.\n  `skill run` and `skill exec` accept `--arg key=value` for string fields and\n  `--arg-json key=json` for typed fields; these merge into the input object.\n\nExamples:\n  vulcan skill list\n  vulcan --output json skill list\n  vulcan skill get note-operations\n  vulcan skill get weekly-review\n  vulcan skill show daily-review\n  vulcan skill commands daily-review\n  vulcan skill run daily-review prepare-day --input-json '{\"date\":\"2026-05-05\",\"dryRun\":true}'\n  vulcan skill run daily-review prepare-day --arg date=2026-05-05 --arg-json dryRun=true\n  .agents/skills/daily-review/scripts/prepare-day.js --input-json '{\"date\":\"2026-05-05\"}'\n  .agents/skills/daily-review/scripts/prepare-day.js --arg date=2026-05-05 --arg-json dryRun=true\n  vulcan skill validate\n  vulcan skill init my-skill --starter-command hello",
+        "after_help": "Subcommands:\n  list       enumerate visible bundled and vault-defined skills\n  get        read one skill's metadata plus Markdown body\n  show       read one skill's metadata plus SKILL.md body (alias for get)\n  commands   list Vulcan-declared commands exported by one skill\n  run        run a skill command with validated JSON input\n  exec       run a skill command script by path; this is the script shebang target\n  validate   validate skills, command metadata, schemas, scripts, and permission profile references\n  init       scaffold a new skill directory with optional starter command\n\nNotes:\n  Skill visibility follows the active permission profile's read filter.\n  External runtimes should call `skill list` up front and `skill get <name>` on demand.\n  Skill names are normalized from folder names, but `skill get` also accepts the relative path.\n  Skill command execution requires a trusted vault: `vulcan trust add`.\n  Generated skill command scripts use `#!/usr/bin/env -S vulcan skill exec`, so\n  `./scripts/name.js --help` shows the executable command contract.\n  `skill run` and `skill exec` accept `--arg key=value` for string fields and\n  `--arg-json key=json` for typed fields; use `--arg-file key=path` or\n  `--arg-json-file key=path` for larger fields. Use `-` as the path to read\n  that field from stdin. These flags merge into the input object.\n\nExamples:\n  vulcan skill list\n  vulcan --output json skill list\n  vulcan skill get note-operations\n  vulcan skill get weekly-review\n  vulcan skill show daily-review\n  vulcan skill commands daily-review\n  vulcan skill run daily-review prepare-day --input-json '{\"date\":\"2026-05-05\",\"dryRun\":true}'\n  vulcan skill run daily-review prepare-day --arg date=2026-05-05 --arg-json dryRun=true\n  jq '.messages' chat.json | vulcan skill run conversation-export export --arg title=Chat --arg-json-file messages=-\n  .agents/skills/daily-review/scripts/prepare-day.js --input-json '{\"date\":\"2026-05-05\"}'\n  .agents/skills/daily-review/scripts/prepare-day.js --arg date=2026-05-05 --arg-json dryRun=true\n  vulcan skill validate\n  vulcan skill init my-skill --starter-command hello",
         "name": "skill",
         "options": [],
         "subcommands": [
@@ -6305,6 +6305,28 @@
                 "value_names": [
                   "KEY=JSON"
                 ]
+              },
+              {
+                "help": "Read a string field for the input object from a file, or '-' for stdin",
+                "id": "input_file_args",
+                "long": "arg-file",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "KEY=PATH"
+                ]
+              },
+              {
+                "help": "Read a JSON-valued field for the input object from a file, or '-' for stdin",
+                "id": "input_json_file_args",
+                "long": "arg-json-file",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "KEY=PATH"
+                ]
               }
             ],
             "subcommands": []
@@ -6366,6 +6388,28 @@
                 "short": null,
                 "value_names": [
                   "KEY=JSON"
+                ]
+              },
+              {
+                "help": "Read a string field for the input object from a file, or '-' for stdin",
+                "id": "input_file_args",
+                "long": "arg-file",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "KEY=PATH"
+                ]
+              },
+              {
+                "help": "Read a JSON-valued field for the input object from a file, or '-' for stdin",
+                "id": "input_json_file_args",
+                "long": "arg-json-file",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "KEY=PATH"
                 ]
               }
             ],

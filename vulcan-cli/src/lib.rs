@@ -21538,6 +21538,8 @@ mod tests {
                     input_file: None,
                     input_args: Vec::new(),
                     input_json_args: Vec::new(),
+                    input_file_args: Vec::new(),
+                    input_json_file_args: Vec::new(),
                 },
             }
         );
@@ -21559,6 +21561,8 @@ mod tests {
                     input_file: None,
                     input_args: Vec::new(),
                     input_json_args: Vec::new(),
+                    input_file_args: Vec::new(),
+                    input_json_file_args: Vec::new(),
                 },
             }
         );
