@@ -271,6 +271,7 @@ Preserved default skill ideas:
 - `note-operations`
 - `vault-query`
 - `js-api-guide`
+- `skill-creator`
 - `graph-exploration`
 - `daily-notes`
 - `properties-and-tags`
