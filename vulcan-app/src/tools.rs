@@ -18,6 +18,8 @@ use vulcan_core::{
     DataviewJsToolRegistry, JsRuntimeSandbox, VaultPaths,
 };
 
+const CUSTOM_TOOL_SCRIPT_SHEBANG: &str = "#!/usr/bin/env -S vulcan run --script\n";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CustomToolRegistryOptions {
     pub reserved_names: Vec<String>,
@@ -877,8 +879,7 @@ pub fn init_custom_tool(
     if !options.dry_run {
         fs::create_dir_all(&tool_root).map_err(AppError::operation)?;
         fs::write(&manifest_path, manifest_contents).map_err(AppError::operation)?;
-        fs::write(&entrypoint_path, ensure_trailing_newline(&source))
-            .map_err(AppError::operation)?;
+        write_executable_script(&entrypoint_path, &ensure_trailing_newline(&source))?;
         load_assistant_tool_manifest(paths, &manifest_relative_to_tools, &validation_options)
             .map_err(AppError::operation)?;
     }
@@ -1516,8 +1517,9 @@ fn scaffold_tool_template(
             "## When to use\n\nDescribe when `{tool_name}` should run and what contract it provides.\n\n## Input\n\nKeep this section aligned with `input_schema`.\n\n## Secrets\n\nDeclare secret bindings in frontmatter `secrets:` and access them at runtime with `ctx.secrets.get()` or `ctx.secrets.require()`.\n\n## Output\n\nReturn JSON directly or return `{{ result, text }}` when you want both machine-readable output and a short human fallback."
         ),
     };
-    let source = "function main(input, ctx) {\n  return {\n    result: {\n      ok: true,\n      tool: ctx.tool.name,\n      received: input,\n    },\n    text: `ran ${ctx.tool.name}`,\n  };\n}\n"
-        .to_string();
+    let source = format!(
+        "{CUSTOM_TOOL_SCRIPT_SHEBANG}function main(input, ctx) {{\n  return {{\n    result: {{\n      ok: true,\n      tool: ctx.tool.name,\n      received: input,\n    }},\n    text: `ran ${{ctx.tool.name}}`,\n  }};\n}}\n"
+    );
     (frontmatter, body, source)
 }
 
@@ -1644,6 +1646,26 @@ fn ensure_trailing_newline(value: &str) -> String {
     } else {
         format!("{value}\n")
     }
+}
+
+fn write_executable_script(path: &Path, contents: &str) -> Result<(), AppError> {
+    fs::write(path, contents).map_err(AppError::operation)?;
+    set_executable_permissions(path)
+}
+
+#[cfg(unix)]
+fn set_executable_permissions(path: &Path) -> Result<(), AppError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::metadata(path).map_err(AppError::operation)?;
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(permissions.mode() | 0o111);
+    fs::set_permissions(path, permissions).map_err(AppError::operation)
+}
+
+#[cfg(not(unix))]
+fn set_executable_permissions(_path: &Path) -> Result<(), AppError> {
+    Ok(())
 }
 
 #[cfg(test)]
@@ -2251,13 +2273,22 @@ input_schema:
             .expect("manifest should exist");
         assert!(manifest.contains("name: meeting_summary"));
         assert!(manifest.contains("description: Summarize one meeting note."));
-        let source = fs::read_to_string(
-            paths
-                .vault_root()
-                .join(report.entrypoint_path.as_deref().expect("entrypoint path")),
-        )
-        .expect("entrypoint should exist");
+        let entrypoint_path = paths
+            .vault_root()
+            .join(report.entrypoint_path.as_deref().expect("entrypoint path"));
+        let source = fs::read_to_string(&entrypoint_path).expect("entrypoint should exist");
+        assert!(source.starts_with(CUSTOM_TOOL_SCRIPT_SHEBANG));
         assert!(source.contains("function main(input, ctx)"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+
+            let mode = fs::metadata(&entrypoint_path)
+                .expect("entrypoint metadata should load")
+                .permissions()
+                .mode();
+            assert_ne!(mode & 0o111, 0);
+        }
     }
 
     #[test]
