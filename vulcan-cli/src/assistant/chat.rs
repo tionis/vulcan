@@ -1,23 +1,33 @@
 use crate::assistant::engine;
 use crate::assistant::renderer::{AssistantRenderReport, AssistantRenderer, RenderOptions};
 use crate::assistant::{export_session_after_run, AssistantHostContext, AssistantHostOptions};
-use crate::cli::Cli;
 use crate::{CliError, OutputFormat};
-use clap::CommandFactory;
-use rustyline::completion::{Completer, Pair};
-use rustyline::error::ReadlineError;
-use rustyline::highlight::Highlighter;
-use rustyline::hint::Hinter;
-use rustyline::history::DefaultHistory;
-use rustyline::validate::Validator;
-use rustyline::{Context, Editor, Helper};
 use serde_json::{Map, Value};
+#[cfg(test)]
 use std::borrow::Cow;
-use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
-use std::path::Path;
 use vulcan_core::VaultPaths;
 
+#[cfg(test)]
+use crate::cli::Cli;
+#[cfg(test)]
+use clap::CommandFactory;
+#[cfg(test)]
+use rustyline::completion::{Completer, Pair};
+#[cfg(test)]
+use rustyline::highlight::Highlighter;
+#[cfg(test)]
+use rustyline::hint::Hinter;
+#[cfg(test)]
+use rustyline::validate::Validator;
+#[cfg(test)]
+use rustyline::{Context, Helper};
+#[cfg(test)]
+use std::fs;
+#[cfg(test)]
+use std::path::Path;
+
+#[cfg(test)]
 const CHAT_SLASH_COMMANDS: &[&str] = &[
     "/compact",
     "/exit",
@@ -44,6 +54,12 @@ pub(crate) fn run_chat(
     show_thinking: bool,
     output: OutputFormat,
 ) -> Result<(), CliError> {
+    if io::stdin().is_terminal() {
+        engine::run_pi_interactive(host, paths.vault_root(), initial_prompt)?;
+        export_session_after_run(paths, host)?;
+        return Ok(());
+    }
+
     let mut process = engine::spawn_pi_rpc(host, paths.vault_root())?;
     process.ensure_running()?;
 
@@ -56,50 +72,17 @@ pub(crate) fn run_chat(
         )?;
     }
 
-    if !io::stdin().is_terminal() {
-        let mut input = String::new();
-        io::stdin()
-            .read_to_string(&mut input)
-            .map_err(CliError::operation)?;
-        for line in input.lines().map(str::trim).filter(|line| !line.is_empty()) {
-            if line.starts_with('/') {
-                if handle_slash_command(&mut process.client, line, output)?.should_quit {
-                    break;
-                }
-            } else {
-                send_and_render(&mut process.client, line, show_thinking, output)?;
+    let mut input = String::new();
+    io::stdin()
+        .read_to_string(&mut input)
+        .map_err(CliError::operation)?;
+    for line in input.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if line.starts_with('/') {
+            if handle_slash_command(&mut process.client, line, output)?.should_quit {
+                break;
             }
-        }
-        process.shutdown()?;
-        export_session_after_run(paths, host)?;
-        return Ok(());
-    }
-
-    let mut editor =
-        Editor::<AssistantChatHelper, DefaultHistory>::new().map_err(CliError::operation)?;
-    editor.set_helper(Some(AssistantChatHelper::new(paths.vault_root())));
-    loop {
-        match editor.readline("vulcan> ") {
-            Ok(line) => {
-                let line = line.trim();
-                if line.is_empty() {
-                    continue;
-                }
-                let _ = editor.add_history_entry(line);
-                if line.starts_with('/') {
-                    if handle_slash_command(&mut process.client, line, output)?.should_quit {
-                        break;
-                    }
-                    continue;
-                }
-                send_and_render(&mut process.client, line, show_thinking, output)?;
-            }
-            Err(ReadlineError::Interrupted) => {
-                let _ = process.client.abort();
-                println!("aborted");
-            }
-            Err(ReadlineError::Eof) => break,
-            Err(error) => return Err(CliError::operation(error)),
+        } else {
+            send_and_render(&mut process.client, line, show_thinking, output)?;
         }
     }
     process.shutdown()?;
@@ -258,6 +241,7 @@ fn ensure_success(response: &crate::assistant::rpc::RpcResponse) -> Result<(), C
     }
 }
 
+#[cfg(test)]
 #[derive(Clone)]
 struct AssistantChatHelper {
     slash_commands: Vec<String>,
@@ -265,6 +249,7 @@ struct AssistantChatHelper {
     vault_paths: Vec<String>,
 }
 
+#[cfg(test)]
 impl AssistantChatHelper {
     fn new(vault_root: &Path) -> Self {
         Self {
@@ -315,20 +300,25 @@ impl AssistantChatHelper {
     }
 }
 
+#[cfg(test)]
 impl Helper for AssistantChatHelper {}
 
+#[cfg(test)]
 impl Hinter for AssistantChatHelper {
     type Hint = String;
 }
 
+#[cfg(test)]
 impl Highlighter for AssistantChatHelper {
     fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
         Cow::Borrowed(hint)
     }
 }
 
+#[cfg(test)]
 impl Validator for AssistantChatHelper {}
 
+#[cfg(test)]
 impl Completer for AssistantChatHelper {
     type Candidate = Pair;
 
@@ -342,6 +332,7 @@ impl Completer for AssistantChatHelper {
     }
 }
 
+#[cfg(test)]
 fn at_path_completion(prefix: &str) -> Option<(usize, &str)> {
     let at = prefix.rfind('@')?;
     let needle = &prefix[at + 1..];
@@ -351,6 +342,7 @@ fn at_path_completion(prefix: &str) -> Option<(usize, &str)> {
     Some((at + 1, needle))
 }
 
+#[cfg(test)]
 fn completion_pairs<'a>(values: impl Iterator<Item = &'a String>) -> Vec<Pair> {
     values
         .take(50)
@@ -361,6 +353,7 @@ fn completion_pairs<'a>(values: impl Iterator<Item = &'a String>) -> Vec<Pair> {
         .collect()
 }
 
+#[cfg(test)]
 fn collect_vulcan_command_paths() -> Vec<String> {
     fn visit(command: &clap::Command, prefix: &mut Vec<String>, output: &mut Vec<String>) {
         for subcommand in command
@@ -382,6 +375,7 @@ fn collect_vulcan_command_paths() -> Vec<String> {
     output
 }
 
+#[cfg(test)]
 fn collect_chat_vault_paths(vault_root: &Path) -> Vec<String> {
     fn visit(root: &Path, dir: &Path, output: &mut Vec<String>) {
         let Ok(entries) = fs::read_dir(dir) else {

@@ -2,8 +2,9 @@
 
 `vulcan assistant` is an optional managed-engine host mode. Vulcan owns vault
 context, permission-profile selection, MCP tool exposure, and process lifecycle.
-The managed engine is a JSONL RPC subprocess that owns model inference and its
-own session format.
+The managed engine owns model inference and its own session format. Interactive
+chat runs the engine's native terminal UI; one-shot and piped runs use the
+engine's JSONL RPC path.
 
 This design keeps the same boundary that proved important for the MCP server:
 tool exposure and policy are Vulcan responsibilities. The engine should not
@@ -12,7 +13,7 @@ truth for vault state.
 
 ## Prerequisites
 
-The initial runtime is `pi` in RPC mode:
+The initial runtime is `pi`:
 
 ```sh
 vulcan assistant --doctor
@@ -99,6 +100,11 @@ Start an interactive chat:
 vulcan assistant --chat
 ```
 
+When stdin is a terminal, `--chat` starts pi's native interactive UI with
+Vulcan's context, extension, session directory, model, and permission profile
+already injected. Use pi's normal keys and commands for model selection,
+settings, context display, completion, and session controls.
+
 Resume the newest persisted session:
 
 ```sh
@@ -112,11 +118,8 @@ vulcan assistant --chat --resume-session session-id
 vulcan assistant --resume-session AI/Sessions/session.jsonl "Continue the summary"
 ```
 
-Chat slash commands include `/model`, `/models`, `/thinking`, `/compact`,
-`/new`, `/stats`, `/state`, `/steer <text>`, `/follow-up <text>`,
-`/set-model <provider> <model>`, `/vulcan <command>`, `/help`, and `/quit`.
-Interactive chat has tab completion for slash commands, Vulcan command names
-after `/vulcan `, and vault paths after `@`.
+When stdin is piped, `--chat` keeps the small line-oriented RPC driver for
+scripted smoke tests and simple batch prompts.
 
 ## Native Chat Transport Contract
 
@@ -185,15 +188,14 @@ Vulcan supports two assistant integration models:
 
 - External runtime contract: the runtime hosts the conversation and shells out
   to `vulcan --output json` for tools. See `vulcan help assistant-integration`.
-- Embedded host mode: `vulcan assistant` starts a managed RPC engine and sends
-  it vault context plus filtered tools.
+- Embedded host mode: `vulcan assistant` starts a managed engine and injects
+  vault context plus filtered tools.
 
 Both models share `AGENTS.md`, skills, permission profiles, MCP-style tool
 packs, and the rule that durable artifacts are normal vault notes.
 
 ## Current Limits
 
-The embedded host uses a synchronous JSONL RPC client in the CLI process. Rich
-extension UI prompts, a session picker for choosing anything other than the
-newest session, native chat adapters, and always-on real-pi CI smoke tests
-remain deferred until the daemon/WebUI shape needs them.
+One-shot and piped assistant runs use a synchronous JSONL RPC client in the CLI
+process. Native chat adapters and always-on real-pi CI smoke tests remain
+deferred until the daemon/WebUI shape needs them.

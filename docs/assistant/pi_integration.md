@@ -12,8 +12,9 @@ Vulcan now has two supported integration shapes:
   shells out to Vulcan commands in JSON mode. This is the Phase 9.12 contract
   described below.
 - **Model B: embedded managed-engine host.** `vulcan assistant` hosts the CLI
-  UX and starts a managed JSONL RPC engine such as `pi --mode rpc`. Vulcan
-  sends vault context, filtered tools, and the active permission profile to the
+  entrypoint and starts a managed engine such as `pi`. TTY chat uses pi's
+  native terminal UI; one-shot and piped runs use `pi --mode rpc`. Vulcan sends
+  vault context, filtered tools, and the active permission profile to the
   engine. See [`../guide/assistant.md`](../guide/assistant.md).
 
 The MCP server work reinforced the key boundary for both models: Vulcan owns
@@ -196,7 +197,7 @@ Recommended profiles:
 
 Default assumption: session history lives in the external runtime or managed
 engine, not in ordinary vault notes. In Model B, `vulcan assistant --chat`
-delegates session persistence to pi's session files under the configured
+delegates chat UX and session persistence to pi under the configured
 `assistant.sessions_dir`.
 
 That means Vulcan still does not need:
