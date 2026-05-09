@@ -3319,6 +3319,8 @@ Power users want shortcuts like `vulcan t` → `vulcan tasks list` or `vulcan q`
 
 #### 9.19.9 Command clarity and discoverability
 
+**Status:** Complete. Remaining `[-]` entries in this section are intentional product decisions: keep `automation run` and `batch` separate, keep their `--all` semantics distinct but documented, and use Phase 9.20 `site build` as the canonical HTML publication path instead of adding a second renderer under `export html`.
+
 **`vulcan automation run` / `vulcan batch` / `vulcan saved` — report system is opaque**
 
 The relationship between saved reports, automation run, batch, and the `saved` command is unclear to users. It's not obvious what a "report" even is, how to create one, or when to use which command. The `--all` flag semantics differ between commands.
@@ -3632,7 +3634,7 @@ The current Linux x86\_64 release binary is about 31.3MB unstripped and 26.0MB s
 
 **Design principle:** MCP is not just "the CLI schema over JSON-RPC". In the subprocess/CLI case the host can preload `AGENTS.md`, prompt files, and skill summaries. Generic MCP clients usually cannot. Vulcan therefore needs its own protocol-native discovery and progressive-disclosure surface.
 
-**Status:** Implemented in `vulcan-cli/src/mcp.rs` with a native `2025-06-18` MCP server over stdio and Streamable HTTP, curated headless tool packs, structured tool results, vault-native prompts/resources/completions, change notifications, and shared registry/export plumbing via `describe --format mcp`. Remaining work in this sub-phase is limited to cancellation/timeout handling and later daemon-side transport reuse.
+**Status:** Complete for Phase 9. Implemented in `vulcan-cli/src/mcp.rs` with a native `2025-06-18` MCP server over stdio and Streamable HTTP, curated headless tool packs, structured tool results, request timeout handling, vault-native prompts/resources/completions, change notifications, first-class task tools, and shared registry/export plumbing via `describe --format mcp`. Remaining `[-]` entries are intentional follow-ons: preserve the contract when Phase 10 daemon routing arrives, and defer MCP Apps until there is a concrete host/UI flow to target.
 
 **Protocol baseline**
 
@@ -4148,6 +4150,8 @@ Search and shell controls should live in the persistent navigation surface, not 
 
 #### 9.20.10.4 Right rail modules and toggleability
 
+**Status:** Complete. The built-in shell now has named right-rail modules, per-profile module settings, per-note `hide_modules` frontmatter controls, persisted collapse state, TOC auto-hide/sticky behavior, and shared graph/backlink/search assets.
+
 The right rail should be a module host, not one hardcoded sidebar.
 
 - [x] Turn TOC, local graph, backlinks, outgoing links, and similar surfaces into named right-rail modules with stable identifiers
@@ -4168,6 +4172,8 @@ The current site profile booleans are not expressive enough for the intended she
 - [x] Add config parsing/default tests and update the default config template/help text to document the new site-shell surface clearly
 
 #### 9.20.10.6 Default theme v2 and visual language
+
+**Status:** Complete. The no-Node built-in shell now uses the v2 left/right rail layout, palette and reader controls, responsive drawers, and richer home/folder/tag/listing pages, with the reference theme updated for the same shell contract.
 
 This is the visible payoff. The built-in theme should stop looking like a generic generated site.
 
