@@ -2,7 +2,6 @@ use crate::assistant::rpc::ManagedRpcClient;
 use crate::assistant::AssistantHostOptions;
 use crate::CliError;
 use serde::Serialize;
-use serde_json::Map;
 use std::env;
 use std::ffi::OsString;
 use std::io::BufReader;
@@ -33,8 +32,8 @@ impl ManagedEngineProcess {
     }
 
     pub(crate) fn shutdown(mut self) -> Result<(), CliError> {
-        let _ = self.client.command("abort", Map::default());
-        drop(self.client);
+        let (reader, writer) = self.client.into_parts();
+        drop(writer);
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
             if self
@@ -47,6 +46,7 @@ impl ManagedEngineProcess {
             }
             std::thread::sleep(Duration::from_millis(25));
         }
+        drop(reader);
         self.child.kill().map_err(CliError::operation)?;
         let _ = self.child.wait();
         Ok(())
@@ -166,6 +166,10 @@ pub(crate) fn build_pi_launch(options: &AssistantHostOptions, vault_root: &Path)
         args.push(OsString::from("--thinking"));
         args.push(OsString::from(thinking));
     }
+    if let Some(context_prompt) = options.context_prompt_path.as_ref() {
+        args.push(OsString::from("--append-system-prompt"));
+        args.push(context_prompt.as_os_str().to_os_string());
+    }
     if let Some(extension) = options.extension_entrypoint.as_ref() {
         args.push(OsString::from("-e"));
         args.push(extension.as_os_str().to_os_string());
@@ -245,6 +249,7 @@ mod tests {
             sessions_dir: Some(PathBuf::from("AI/Sessions")),
             no_tools: false,
             extension_entrypoint: None,
+            context_prompt_path: None,
             extension_env: Vec::new(),
             resume_session: None,
             session_export: "manual".to_string(),
@@ -290,6 +295,7 @@ mod tests {
     fn pi_launch_includes_extension_and_session_resume() {
         let mut options = options();
         options.extension_entrypoint = Some(PathBuf::from("/vault/.vulcan/assistant/index.ts"));
+        options.context_prompt_path = Some(PathBuf::from("/vault/.vulcan/assistant/context.md"));
         options.resume_session = Some(PathBuf::from("/vault/AI/Sessions/last.jsonl"));
         options.extension_env = vec![("VULCAN_VAULT_ROOT".to_string(), "/vault".to_string())];
         let launch = build_pi_launch(&options, Path::new("/vault"));
@@ -302,6 +308,12 @@ mod tests {
         assert!(args
             .windows(2)
             .any(|pair| pair == ["-e", "/vault/.vulcan/assistant/index.ts"]));
+        assert!(args.windows(2).any(|pair| {
+            pair == [
+                "--append-system-prompt",
+                "/vault/.vulcan/assistant/context.md",
+            ]
+        }));
         assert!(args
             .windows(2)
             .any(|pair| pair == ["--session", "/vault/AI/Sessions/last.jsonl"]));
