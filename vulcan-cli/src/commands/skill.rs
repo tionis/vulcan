@@ -107,8 +107,15 @@ pub(crate) fn handle_skill_command(
             command,
             input_json,
             input_file,
+            input_args,
+            input_json_args,
         } => {
-            let input = read_skill_input(input_json.as_deref(), input_file.as_deref())?;
+            let input = read_skill_input(
+                input_json.as_deref(),
+                input_file.as_deref(),
+                input_args,
+                input_json_args,
+            )?;
             let report = run_skill_command(cli, paths, skill, command, input)?;
             print_skill_run_report(cli.output, &report)
         }
@@ -116,8 +123,15 @@ pub(crate) fn handle_skill_command(
             script,
             input_json,
             input_file,
+            input_args,
+            input_json_args,
         } => {
-            let input = read_skill_input_or_stdin(input_json.as_deref(), input_file.as_deref())?;
+            let input = read_skill_input_or_stdin(
+                input_json.as_deref(),
+                input_file.as_deref(),
+                input_args,
+                input_json_args,
+            )?;
             let report = run_skill_command_script(cli, paths, script, input)?;
             print_skill_run_report(cli.output, &report)
         }
@@ -367,8 +381,10 @@ main(__vulcanSkillInput, __vulcanSkillContext);\n"
 fn read_skill_input(
     input_json: Option<&str>,
     input_file: Option<&Path>,
+    input_args: &[String],
+    input_json_args: &[String],
 ) -> Result<Value, CliError> {
-    match (input_json, input_file) {
+    let input = match (input_json, input_file) {
         (None, None) => Ok(serde_json::json!({})),
         (Some(input_json), None) => serde_json::from_str(input_json).map_err(CliError::operation),
         (None, Some(input_file)) => {
@@ -378,25 +394,77 @@ fn read_skill_input(
         (Some(_), Some(_)) => Err(CliError::operation(
             "skill input accepts either --input-json or --input-file, not both",
         )),
-    }
+    }?;
+    merge_skill_input_args(input, input_args, input_json_args)
 }
 
 fn read_skill_input_or_stdin(
     input_json: Option<&str>,
     input_file: Option<&Path>,
+    input_args: &[String],
+    input_json_args: &[String],
 ) -> Result<Value, CliError> {
     if input_json.is_some() || input_file.is_some() || io::stdin().is_terminal() {
-        return read_skill_input(input_json, input_file);
+        return read_skill_input(input_json, input_file, input_args, input_json_args);
     }
     let mut source = String::new();
     io::stdin()
         .read_to_string(&mut source)
         .map_err(CliError::operation)?;
-    if source.trim().is_empty() {
+    let input = if source.trim().is_empty() {
         Ok(serde_json::json!({}))
     } else {
         serde_json::from_str(&source).map_err(CliError::operation)
+    }?;
+    merge_skill_input_args(input, input_args, input_json_args)
+}
+
+fn merge_skill_input_args(
+    input: Value,
+    input_args: &[String],
+    input_json_args: &[String],
+) -> Result<Value, CliError> {
+    if input_args.is_empty() && input_json_args.is_empty() {
+        return Ok(input);
     }
+    let mut object = input
+        .as_object()
+        .cloned()
+        .ok_or_else(|| CliError::operation("skill --arg and --arg-json require an object input"))?;
+    for arg in input_args {
+        let (key, value) = parse_skill_input_assignment(arg, "--arg")?;
+        object.insert(key.to_string(), Value::String(value.to_string()));
+    }
+    for arg in input_json_args {
+        let (key, value) = parse_skill_input_assignment(arg, "--arg-json")?;
+        let value = serde_json::from_str(value).map_err(|error| {
+            CliError::operation(format!("invalid JSON for --arg-json `{key}`: {error}"))
+        })?;
+        object.insert(key.to_string(), value);
+    }
+    Ok(Value::Object(object))
+}
+
+fn parse_skill_input_assignment<'a>(
+    value: &'a str,
+    flag_name: &str,
+) -> Result<(&'a str, &'a str), CliError> {
+    let Some((key, value)) = value.split_once('=') else {
+        return Err(CliError::operation(format!(
+            "{flag_name} expects KEY=VALUE"
+        )));
+    };
+    if key.is_empty()
+        || key.chars().any(char::is_control)
+        || key.contains('.')
+        || key.contains('/')
+        || key.contains('\\')
+    {
+        return Err(CliError::operation(format!(
+            "{flag_name} key must be a non-empty top-level JSON field name"
+        )));
+    }
+    Ok((key, value))
 }
 
 fn init_skill(

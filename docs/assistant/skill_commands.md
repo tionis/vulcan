@@ -231,9 +231,15 @@ The script should support:
 
 ```bash
 scripts/prepare-day.js --help
-scripts/prepare-day.js --json '{"date":"2026-05-05","dryRun":true}'
+scripts/prepare-day.js --arg date=2026-05-05 --arg-json dryRun=true
 vulcan skill run daily-review prepare-day --input-json '{"date":"2026-05-05"}'
+vulcan skill run daily-review prepare-day --arg date=2026-05-05 --arg-json dryRun=true
 ```
+
+`--arg key=value` adds a string input field. `--arg-json key=json` adds a typed
+JSON input field. Both forms build the same input object used by MCP and other
+structured callers, so scripts should keep one schema-driven implementation
+rather than adding separate CLI-only parsing.
 
 Scripts should be non-interactive, provide concise `--help`, use structured output, send diagnostics to stderr, support dry-run for mutating operations, and produce predictable output sizes.
 
@@ -282,7 +288,9 @@ Add or keep a stable skill command group:
 - `vulcan skill show <skill>`
 - `vulcan skill commands <skill>`
 - `vulcan skill run <skill> <command> --input-json <json>`
+- `vulcan skill run <skill> <command> --arg key=value --arg-json flag=true`
 - `vulcan skill exec <script> --input-json <json>`
+- `vulcan skill exec <script> --arg key=value --arg-json flag=true`
 - `vulcan skill validate`
 - `vulcan skill init <name>`
 

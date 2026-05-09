@@ -21536,6 +21536,8 @@ mod tests {
                     command: "prepare-day".to_string(),
                     input_json: Some("{\"date\":\"2026-05-08\"}".to_string()),
                     input_file: None,
+                    input_args: Vec::new(),
+                    input_json_args: Vec::new(),
                 },
             }
         );
@@ -21555,6 +21557,8 @@ mod tests {
                     script: PathBuf::from(".agents/skills/daily-review/scripts/prepare-day.js"),
                     input_json: Some("{\"date\":\"2026-05-08\"}".to_string()),
                     input_file: None,
+                    input_args: Vec::new(),
+                    input_json_args: Vec::new(),
                 },
             }
         );
