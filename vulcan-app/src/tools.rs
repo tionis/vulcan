@@ -409,6 +409,48 @@ pub fn collect_custom_tool_cli_flag_candidates(
     Ok(candidates)
 }
 
+pub fn collect_custom_tool_cli_choice_candidates(
+    paths: &VaultPaths,
+    name: &str,
+    flag: &str,
+    registry_options: &CustomToolRegistryOptions,
+) -> Result<Vec<String>, AppError> {
+    let (_resolved_name, _skill, command) =
+        resolve_skill_command_tool_identifier(paths, name, registry_options)?;
+    let Some(cli) = command.cli else {
+        return Ok(Vec::new());
+    };
+    let normalized_flag = flag.trim_start_matches('-');
+    let Some(arg) = cli
+        .args
+        .into_iter()
+        .find(|arg| arg.flag.trim_start_matches('-') == normalized_flag)
+    else {
+        return Ok(Vec::new());
+    };
+    Ok(arg.choices)
+}
+
+pub fn custom_tool_cli_flag_completion_context(
+    paths: &VaultPaths,
+    name: &str,
+    flag: &str,
+    registry_options: &CustomToolRegistryOptions,
+) -> Result<Option<String>, AppError> {
+    let (_resolved_name, _skill, command) =
+        resolve_skill_command_tool_identifier(paths, name, registry_options)?;
+    let Some(cli) = command.cli else {
+        return Ok(None);
+    };
+    let normalized_flag = flag.trim_start_matches('-');
+    Ok(cli
+        .args
+        .into_iter()
+        .find(|arg| arg.flag.trim_start_matches('-') == normalized_flag)
+        .and_then(|arg| arg.completion))
+}
+
+#[allow(clippy::too_many_lines)]
 pub fn build_custom_tool_cli_input(
     paths: &VaultPaths,
     name: &str,
@@ -443,16 +485,17 @@ pub fn build_custom_tool_cli_input(
                 ))
             })?;
         position += 1;
-        let value = args.get(position).ok_or_else(|| {
-            AppError::operation(format!("custom CLI flag `--{flag}` requires a value"))
-        })?;
-        position += 1;
 
         match spec.action {
+            AssistantSkillCommandCliArgAction::Boolean => {
+                insert_cli_field_value(&mut input, spec.field.as_deref(), Value::Bool(true))?;
+            }
             AssistantSkillCommandCliArgAction::String => {
-                insert_cli_field(&mut input, spec.field.as_deref(), value.clone())?;
+                let value = take_cli_flag_value(args, &mut position, flag)?;
+                insert_cli_field(&mut input, spec.field.as_deref(), value.to_string())?;
             }
             AssistantSkillCommandCliArgAction::Json => {
+                let value = take_cli_flag_value(args, &mut position, flag)?;
                 let value = serde_json::from_str(value).map_err(|error| {
                     AppError::operation(format!(
                         "invalid JSON for custom CLI flag `--{flag}`: {error}"
@@ -461,10 +504,12 @@ pub fn build_custom_tool_cli_input(
                 insert_cli_field_value(&mut input, spec.field.as_deref(), value)?;
             }
             AssistantSkillCommandCliArgAction::StringFile => {
+                let value = take_cli_flag_value(args, &mut position, flag)?;
                 let value = read_cli_field_source(value)?;
                 insert_cli_field(&mut input, spec.field.as_deref(), value)?;
             }
             AssistantSkillCommandCliArgAction::JsonFile => {
+                let value = take_cli_flag_value(args, &mut position, flag)?;
                 let source = read_cli_field_source(value)?;
                 let value = serde_json::from_str(&source).map_err(|error| {
                     AppError::operation(format!(
@@ -473,7 +518,53 @@ pub fn build_custom_tool_cli_input(
                 })?;
                 insert_cli_field_value(&mut input, spec.field.as_deref(), value)?;
             }
+            AssistantSkillCommandCliArgAction::Integer => {
+                let raw = take_cli_flag_value(args, &mut position, flag)?;
+                let value = raw.parse::<i64>().map_err(|error| {
+                    AppError::operation(format!(
+                        "invalid integer for custom CLI flag `--{flag}`: {error}"
+                    ))
+                })?;
+                insert_cli_field_value(&mut input, spec.field.as_deref(), json!(value))?;
+            }
+            AssistantSkillCommandCliArgAction::Number => {
+                let raw = take_cli_flag_value(args, &mut position, flag)?;
+                let value = raw.parse::<f64>().map_err(|error| {
+                    AppError::operation(format!(
+                        "invalid number for custom CLI flag `--{flag}`: {error}"
+                    ))
+                })?;
+                insert_cli_field_value(&mut input, spec.field.as_deref(), json!(value))?;
+            }
+            AssistantSkillCommandCliArgAction::StringArray => {
+                let value = take_cli_flag_value(args, &mut position, flag)?;
+                append_cli_field_array_value(
+                    &mut input,
+                    spec.field.as_deref(),
+                    Value::String(value.to_string()),
+                )?;
+            }
+            AssistantSkillCommandCliArgAction::JsonArray => {
+                let raw = take_cli_flag_value(args, &mut position, flag)?;
+                let value = serde_json::from_str(raw).map_err(|error| {
+                    AppError::operation(format!(
+                        "invalid JSON for custom CLI flag `--{flag}`: {error}"
+                    ))
+                })?;
+                append_cli_field_array_value(&mut input, spec.field.as_deref(), value)?;
+            }
+            AssistantSkillCommandCliArgAction::Choice => {
+                let value = take_cli_flag_value(args, &mut position, flag)?;
+                if !spec.choices.iter().any(|choice| choice == value) {
+                    return Err(AppError::operation(format!(
+                        "invalid choice `{value}` for custom CLI flag `--{flag}`; expected one of: {}",
+                        spec.choices.join(", ")
+                    )));
+                }
+                insert_cli_field(&mut input, spec.field.as_deref(), value.to_string())?;
+            }
             AssistantSkillCommandCliArgAction::AppendMessage => {
+                let value = take_cli_flag_value(args, &mut position, flag)?;
                 messages.push(json!({
                     "role": spec.role.as_deref().unwrap_or("user"),
                     "content": value,
@@ -485,6 +576,18 @@ pub fn build_custom_tool_cli_input(
         input.insert("messages".to_string(), Value::Array(messages));
     }
     Ok((resolved_name, Value::Object(input)))
+}
+
+fn take_cli_flag_value<'a>(
+    args: &'a [String],
+    position: &mut usize,
+    flag: &str,
+) -> Result<&'a str, AppError> {
+    let value = args.get(*position).ok_or_else(|| {
+        AppError::operation(format!("custom CLI flag `--{flag}` requires a value"))
+    })?;
+    *position += 1;
+    Ok(value)
 }
 
 fn insert_cli_field(
@@ -501,8 +604,67 @@ fn insert_cli_field_value(
     value: Value,
 ) -> Result<(), AppError> {
     let field = field.ok_or_else(|| AppError::operation("custom CLI argument is missing field"))?;
-    input.insert(field.to_string(), value);
-    Ok(())
+    insert_cli_field_path(input, field, value, false)
+}
+
+fn append_cli_field_array_value(
+    input: &mut serde_json::Map<String, Value>,
+    field: Option<&str>,
+    value: Value,
+) -> Result<(), AppError> {
+    let field = field.ok_or_else(|| AppError::operation("custom CLI argument is missing field"))?;
+    insert_cli_field_path(input, field, value, true)
+}
+
+fn insert_cli_field_path(
+    input: &mut serde_json::Map<String, Value>,
+    field: &str,
+    value: Value,
+    append: bool,
+) -> Result<(), AppError> {
+    let parts = field.split('.').collect::<Vec<_>>();
+    if parts.is_empty() || parts.iter().any(|part| part.is_empty()) {
+        return Err(AppError::operation(format!(
+            "custom CLI argument has invalid field path `{field}`"
+        )));
+    }
+    insert_cli_field_parts(input, &parts, value, append)
+}
+
+fn insert_cli_field_parts(
+    input: &mut serde_json::Map<String, Value>,
+    parts: &[&str],
+    value: Value,
+    append: bool,
+) -> Result<(), AppError> {
+    if parts.len() == 1 {
+        if append {
+            let entry = input
+                .entry(parts[0].to_string())
+                .or_insert_with(|| Value::Array(Vec::new()));
+            let Some(array) = entry.as_array_mut() else {
+                return Err(AppError::operation(format!(
+                    "custom CLI field `{}` is already set to a non-array value",
+                    parts[0]
+                )));
+            };
+            array.push(value);
+        } else {
+            input.insert(parts[0].to_string(), value);
+        }
+        return Ok(());
+    }
+
+    let entry = input
+        .entry(parts[0].to_string())
+        .or_insert_with(|| Value::Object(serde_json::Map::new()));
+    let Some(object) = entry.as_object_mut() else {
+        return Err(AppError::operation(format!(
+            "custom CLI field `{}` is already set to a non-object value",
+            parts[0]
+        )));
+    };
+    insert_cli_field_parts(object, &parts[1..], value, append)
 }
 
 fn read_cli_field_source(path: &str) -> Result<String, AppError> {
@@ -1956,6 +2118,7 @@ input_schema:
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn custom_tool_cli_completion_candidates_include_aliases_and_flags() {
         let (_dir, paths) = test_paths();
         write_skill(
@@ -1977,6 +2140,22 @@ metadata:
             - flag: title
               action: string
               field: title
+            - flag: dry-run
+              action: boolean
+              field: options.dry_run
+            - flag: limit
+              action: integer
+              field: options.limit
+            - flag: score
+              action: number
+              field: options.score
+            - flag: source
+              action: choice
+              field: source
+              choices: [chatgpt, codex]
+            - flag: tag
+              action: string_array
+              field: tags
             - flag: user
               action: append_message
               role: user
@@ -2004,7 +2183,68 @@ metadata:
                 &CustomToolRegistryOptions::default(),
             )
             .expect("flag candidates"),
-            vec!["--title".to_string(), "--user".to_string()]
+            vec![
+                "--title".to_string(),
+                "--dry-run".to_string(),
+                "--limit".to_string(),
+                "--score".to_string(),
+                "--source".to_string(),
+                "--tag".to_string(),
+                "--user".to_string()
+            ]
+        );
+
+        let (_resolved, input) = build_custom_tool_cli_input(
+            &paths,
+            "conversation-export",
+            &[
+                "--title".to_string(),
+                "Chat".to_string(),
+                "--dry-run".to_string(),
+                "--limit".to_string(),
+                "3".to_string(),
+                "--score".to_string(),
+                "1.5".to_string(),
+                "--source".to_string(),
+                "codex".to_string(),
+                "--tag".to_string(),
+                "alpha".to_string(),
+                "--tag".to_string(),
+                "beta".to_string(),
+            ],
+            &CustomToolRegistryOptions::default(),
+        )
+        .expect("cli input should build");
+        assert_eq!(
+            input,
+            json!({
+                "title": "Chat",
+                "options": {
+                    "dry_run": true,
+                    "limit": 3,
+                    "score": 1.5
+                },
+                "source": "codex",
+                "tags": ["alpha", "beta"]
+            })
+        );
+        let error = build_custom_tool_cli_input(
+            &paths,
+            "conversation-export",
+            &[
+                "--title".to_string(),
+                "Chat".to_string(),
+                "--source".to_string(),
+                "gemini".to_string(),
+            ],
+            &CustomToolRegistryOptions::default(),
+        )
+        .expect_err("invalid choice should fail");
+        assert!(
+            error
+                .to_string()
+                .contains("invalid choice `gemini` for custom CLI flag `--source`"),
+            "{error}"
         );
     }
 

@@ -11163,7 +11163,7 @@
       },
       {
         "about": "List and run exposed skill command tools",
-        "after_help": "Subcommands:\n  list       inspect exposed skill command tools\n  show       read one exposed skill command tool definition\n  run        validate JSON input and invoke one exposed skill command tool\n\nNotes:\n  Tools are the callable registry view over Agent Skills-compatible commands declared\n  in `SKILL.md` under `metadata.vulcan.commands` with `expose: true`.\n  Author tools with `vulcan skill init --starter-command` or by editing skill command\n  metadata directly.\n  Tool execution requires a trusted vault: `vulcan trust add`.\n  `tool run` defaults to `{}` input when no `--input-json` or `--input-file` is provided.\n  Tools may declare custom CLI aliases and flags in `metadata.vulcan.commands[].cli`.\n  Custom flags are only an input adapter; the final JSON still uses the tool schema.\n\nExamples:\n  vulcan tool list\n  vulcan tool show skill_conversation_export_export\n  vulcan tool run skill_conversation_export_export --input-json '{\"title\":\"Chat\",\"transcript\":\"User: hi\"}'\n  vulcan tool run conversation-export --title Chat --user Hello --assistant 'Some message'\n\nSee also:\n  `vulcan skill` — author, validate, and execute skill commands",
+        "after_help": "Subcommands:\n  list       inspect exposed skill command tools\n  show       read one exposed skill command tool definition\n  help       show shell-friendly usage for one exposed skill command tool\n  run        validate JSON input and invoke one exposed skill command tool\n\nNotes:\n  Tools are the callable registry view over Agent Skills-compatible commands declared\n  in `SKILL.md` under `metadata.vulcan.commands` with `expose: true`.\n  Author tools with `vulcan skill init --starter-command` or by editing skill command\n  metadata directly.\n  Tool execution requires a trusted vault: `vulcan trust add`.\n  `tool run` defaults to `{}` input when no `--input-json` or `--input-file` is provided.\n  Tools may declare custom CLI aliases and flags in `metadata.vulcan.commands[].cli`.\n  Custom flags are only an input adapter; the final JSON still uses the tool schema.\n  CLI metadata supports typed flags, repeated array flags, nested fields, and value completions.\n\nExamples:\n  vulcan tool list\n  vulcan tool show skill_conversation_export_export\n  vulcan tool help conversation-export\n  vulcan tool run skill_conversation_export_export --input-json '{\"title\":\"Chat\",\"transcript\":\"User: hi\"}'\n  vulcan tool run conversation-export --title Chat --user Hello --assistant 'Some message'\n\nSee also:\n  `vulcan skill` — author, validate, and execute skill commands",
         "name": "tool",
         "options": [],
         "subcommands": [
@@ -11179,6 +11179,24 @@
             "options": [
               {
                 "help": "Tool name, typically skill_<skill>_<command>",
+                "id": "name",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "NAME"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Show shell usage for one exposed skill command tool",
+            "name": "help",
+            "options": [
+              {
+                "help": "Tool name or CLI alias",
                 "id": "name",
                 "long": null,
                 "possible_values": [],

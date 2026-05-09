@@ -177,6 +177,10 @@ Validation rules:
 - Unknown Vulcan command metadata keys should be rejected or diagnosed so discovery stays deterministic.
 - CLI aliases and flags declared under `cli` are discoverable through `vulcan complete custom-tool`
   and `vulcan complete custom-tool-flag:<tool-or-alias>`.
+- CLI value completions are discoverable through `vulcan complete custom-tool-value:<tool-or-alias>:<flag>`.
+- CLI flag actions support `string`, `json`, `string_file`, `json_file`, `boolean`,
+  `integer`, `number`, repeatable `string_array`/`json_array`, `choice`, and
+  `append_message`. Dotted fields such as `options.limit` create nested input objects.
 - `sandbox = none` is not valid for projected skill commands.
 - `permission_profile` can narrow authority but cannot widen the caller's authority.
 

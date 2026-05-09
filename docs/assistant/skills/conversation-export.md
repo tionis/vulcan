@@ -22,6 +22,25 @@ metadata:
               action: string
               field: title
               description: Conversation title.
+            - flag: source
+              action: choice
+              field: source
+              choices: [chatgpt, codex, claude, gemini, pi, other]
+              description: Conversation source label.
+            - flag: date
+              action: string
+              field: date
+              completion: daily-date
+              description: Conversation date.
+            - flag: target-folder
+              action: string
+              field: target_folder
+              completion: vault-path
+              description: Vault folder for exported conversation notes.
+            - flag: dry-run
+              action: boolean
+              field: dry_run
+              description: Preview normalized Markdown without writing a note.
             - flag: transcript
               action: string
               field: transcript

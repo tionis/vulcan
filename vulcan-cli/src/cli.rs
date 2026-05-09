@@ -106,6 +106,7 @@ const TOOL_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   list       inspect exposed skill command tools
   show       read one exposed skill command tool definition
+  help       show shell-friendly usage for one exposed skill command tool
   run        validate JSON input and invoke one exposed skill command tool
 
 Notes:
@@ -117,10 +118,12 @@ Notes:
   `tool run` defaults to `{}` input when no `--input-json` or `--input-file` is provided.
   Tools may declare custom CLI aliases and flags in `metadata.vulcan.commands[].cli`.
   Custom flags are only an input adapter; the final JSON still uses the tool schema.
+  CLI metadata supports typed flags, repeated array flags, nested fields, and value completions.
 
 Examples:
   vulcan tool list
   vulcan tool show skill_conversation_export_export
+  vulcan tool help conversation-export
   vulcan tool run skill_conversation_export_export --input-json '{\"title\":\"Chat\",\"transcript\":\"User: hi\"}'
   vulcan tool run conversation-export --title Chat --user Hello --assistant 'Some message'
 
@@ -2813,6 +2816,11 @@ pub enum ToolCommand {
         #[arg(help = "Tool name, typically skill_<skill>_<command>")]
         name: String,
     },
+    #[command(about = "Show shell usage for one exposed skill command tool")]
+    Help {
+        #[arg(help = "Tool name or CLI alias")]
+        name: String,
+    },
     #[command(about = "Run one exposed skill command tool with validated JSON input")]
     Run {
         #[arg(help = "Tool name to execute")]
@@ -5355,7 +5363,7 @@ Examples:
     },
     /// Return dynamic completion candidates for a given context (newline-separated).
     ///
-    /// Contexts: note, kanban-board, bases-view, daily-date, script, task-view, vault-path, custom-tool, custom-tool-flag:<tool>
+    /// Contexts: note, kanban-board, bases-view, daily-date, script, task-view, vault-path, custom-tool, custom-tool-flag:<tool>, custom-tool-value:<tool>:<flag>
     #[command(hide = true)]
     Complete {
         #[arg(help = "Completion context")]

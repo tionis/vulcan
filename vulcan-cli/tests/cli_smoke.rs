@@ -10501,6 +10501,9 @@ fn bundled_conversation_export_skill_writes_callout_note() {
             "conversation-export",
             "--title",
             "Facade Chat",
+            "--source",
+            "codex",
+            "--dry-run",
             "--user",
             "Hello",
             "--assistant",
@@ -10514,6 +10517,8 @@ fn bundled_conversation_export_skill_writes_callout_note() {
         Some("skill_conversation_export_export")
     );
     assert_eq!(facade_json["input"]["title"].as_str(), Some("Facade Chat"));
+    assert_eq!(facade_json["input"]["source"].as_str(), Some("codex"));
+    assert_eq!(facade_json["input"]["dry_run"].as_bool(), Some(true));
     assert_eq!(
         facade_json["input"]["messages"],
         serde_json::json!([
@@ -10607,6 +10612,39 @@ fn bundled_conversation_export_skill_writes_callout_note() {
         String::from_utf8_lossy(&tool_flag_complete.get_output().stdout).trim(),
         "--assistant"
     );
+
+    let tool_value_complete = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "complete",
+            "custom-tool-value:conversation-export:source",
+            "co",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        String::from_utf8_lossy(&tool_value_complete.get_output().stdout).trim(),
+        "codex"
+    );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "tool",
+            "help",
+            "conversation-export",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "vulcan tool run conversation-export",
+        ))
+        .stdout(predicate::str::contains("--dry-run"))
+        .stdout(predicate::str::contains("choices: chatgpt, codex"));
 
     Command::cargo_bin("vulcan")
         .expect("binary should build")
