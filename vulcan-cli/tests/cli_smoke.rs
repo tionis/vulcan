@@ -10408,6 +10408,24 @@ fn bundled_conversation_export_skill_writes_callout_note() {
     assert!(structured_markdown.contains("> > [!tool]- Tool result: search (call_1)"));
     assert!(structured_markdown.contains("\"Project Alpha.md\""));
 
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "skill",
+            "run",
+            "conversation-export",
+            "export",
+            "--input-json",
+            r#"{"title":"Invalid Structured Chat","messages":[{"role":"assistant","tool_uses":[{"input":{"query":"missing tool name"}}]}]}"#,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "skill command input validation failed",
+        ));
+
     let validate_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
