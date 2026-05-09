@@ -32,6 +32,16 @@ Projected skill commands may also appear as normal tools in `vulcan describe --f
 
 Projected tool names are normalized as `skill_<skill_name>_<command_id>`, for example `skill_daily_review_prepare_day`.
 
+Skill commands may declare `metadata.vulcan.commands[].cli` aliases and flags for a
+more natural shell interface:
+
+```bash
+vulcan tool run conversation-export --title Chat --user Hello --assistant "Some message"
+```
+
+These custom flags only build the same JSON input object used by MCP and `tools.call()`;
+the normal schema validation and permission checks still run.
+
 JavaScript can call skill commands through either `tools.call("skill_daily_review_prepare_day", input)` or `skills.run("daily-review", "prepare-day", input)`.
 
 Nested calls preserve the current effective permission ceiling. A script cannot use `skills.run()` to escape its own sandbox or permission profile.

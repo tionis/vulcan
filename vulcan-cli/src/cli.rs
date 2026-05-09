@@ -115,11 +115,14 @@ Notes:
   metadata directly.
   Tool execution requires a trusted vault: `vulcan trust add`.
   `tool run` defaults to `{}` input when no `--input-json` or `--input-file` is provided.
+  Tools may declare custom CLI aliases and flags in `metadata.vulcan.commands[].cli`.
+  Custom flags are only an input adapter; the final JSON still uses the tool schema.
 
 Examples:
   vulcan tool list
   vulcan tool show skill_conversation_export_export
   vulcan tool run skill_conversation_export_export --input-json '{\"title\":\"Chat\",\"transcript\":\"User: hi\"}'
+  vulcan tool run conversation-export --title Chat --user Hello --assistant 'Some message'
 
 See also:
   `vulcan skill` — author, validate, and execute skill commands";
@@ -2814,6 +2817,13 @@ pub enum ToolCommand {
         input_json: Option<String>,
         #[arg(long = "input-file", conflicts_with = "input_json")]
         input_file: Option<PathBuf>,
+        #[arg(
+            value_name = "ARGS",
+            trailing_var_arg = true,
+            allow_hyphen_values = true,
+            help = "Custom CLI arguments declared by the tool"
+        )]
+        args: Vec<String>,
     },
 }
 

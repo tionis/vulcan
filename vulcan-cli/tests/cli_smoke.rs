@@ -10489,6 +10489,93 @@ fn bundled_conversation_export_skill_writes_callout_note() {
     assert!(structured_markdown.contains("> > [!tool]- Tool result: search (call_1)"));
     assert!(structured_markdown.contains("\"Project Alpha.md\""));
 
+    let facade_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "run",
+            "conversation-export",
+            "--title",
+            "Facade Chat",
+            "--user",
+            "Hello",
+            "--assistant",
+            "Some message",
+        ])
+        .assert()
+        .success();
+    let facade_json = parse_stdout_json(&facade_assert);
+    assert_eq!(
+        facade_json["name"].as_str(),
+        Some("skill_conversation_export_export")
+    );
+    assert_eq!(facade_json["input"]["title"].as_str(), Some("Facade Chat"));
+    assert_eq!(
+        facade_json["input"]["messages"],
+        serde_json::json!([
+            { "role": "user", "content": "Hello" },
+            { "role": "assistant", "content": "Some message" }
+        ])
+    );
+    assert_eq!(facade_json["result"]["message_count"].as_u64(), Some(2));
+
+    let transcript_stdin_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "run",
+            "conversation-export",
+            "--title",
+            "Stdin Transcript",
+            "--transcript-file",
+            "-",
+        ])
+        .write_stdin("User: stdin hello\nAssistant: stdin reply")
+        .assert()
+        .success();
+    let transcript_stdin_json = parse_stdout_json(&transcript_stdin_assert);
+    assert_eq!(
+        transcript_stdin_json["input"]["transcript"].as_str(),
+        Some("User: stdin hello\nAssistant: stdin reply")
+    );
+
+    let messages_path = vault_root.join("turns.json");
+    fs::write(
+        &messages_path,
+        r#"[{"role":"user","content":"from file"},{"role":"assistant","content":"file reply"}]"#,
+    )
+    .expect("messages file should write");
+    let messages_file_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "run",
+            "conversation-export",
+            "--title",
+            "Messages File Chat",
+            "--messages-file",
+            messages_path.to_str().expect("utf-8"),
+        ])
+        .assert()
+        .success();
+    let messages_file_json = parse_stdout_json(&messages_file_assert);
+    assert_eq!(
+        messages_file_json["input"]["messages"][1]["content"].as_str(),
+        Some("file reply")
+    );
+
     Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
@@ -10505,6 +10592,75 @@ fn bundled_conversation_export_skill_writes_callout_note() {
         .failure()
         .stderr(predicate::str::contains(
             "skill command input validation failed",
+        ));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "tool",
+            "run",
+            "conversation-export",
+            "--title",
+            "Invalid Facade",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "skill command tool `skill_conversation_export_export` input validation failed",
+        ));
+
+    let duplicate_skill = vault_root.join(".agents/skills/duplicate-export");
+    fs::create_dir_all(duplicate_skill.join("scripts")).expect("duplicate skill dir");
+    fs::write(
+        duplicate_skill.join("SKILL.md"),
+        r"---
+name: duplicate-export
+description: Duplicate export alias.
+license: UNLICENSED
+compatibility: [vulcan]
+allowed-tools: []
+metadata:
+  vulcan:
+    commands:
+      - id: export
+        script: scripts/export.js
+        expose: true
+        cli:
+          aliases: [conversation-export]
+          args:
+            - flag: title
+              action: string
+              field: title
+        input_schema:
+          type: object
+---
+# Duplicate Export
+",
+    )
+    .expect("duplicate skill should write");
+    fs::write(
+        duplicate_skill.join("scripts/export.js"),
+        "function main(input) { return input; }\n",
+    )
+    .expect("duplicate script should write");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "tool",
+            "run",
+            "conversation-export",
+            "--title",
+            "Ambiguous",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "custom tool alias `conversation-export` is ambiguous",
         ));
 
     let validate_assert = Command::cargo_bin("vulcan")

@@ -303,6 +303,7 @@ Behavior:
 - Field arguments merge into the same input object as `--input-json`, `--input-file`, or stdin, then schema validation runs.
 - Command output is validated when an output schema is declared.
 - Trusted skill commands may be projected into `vulcan describe --format mcp|openai-tools|json-schema` and into the live MCP server as first-class tools.
+- Exposed tools may declare custom CLI aliases so `vulcan tool run <alias> --flag value` builds the same validated input JSON as MCP.
 - Mutating commands should support dry-run/proposal output so Vulcan can preview diffs, require approval, and write audit records.
 - Skill-command permissions are the intersection of the active caller profile, the command's declared permission profile, its sandbox, and normal Vulcan path/network/execute checks.
 
@@ -315,6 +316,7 @@ vulcan skill commands daily-review
 vulcan skill run daily-review prepare-day --input-json '{"date":"2026-05-05","dryRun":true}'
 vulcan skill run daily-review prepare-day --arg date=2026-05-05 --arg-json dryRun=true
 jq '.messages' chat.json | vulcan skill run conversation-export export --arg title=Chat --arg-json-file messages=-
+vulcan tool run conversation-export --title Chat --user Hello --assistant "Some message"
 ```
 
 ### Plugin commands

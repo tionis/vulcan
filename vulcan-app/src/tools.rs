@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use serde_yaml::Value as YamlValue;
 use std::fs;
+use std::io::Read;
 use std::path::Component;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -12,10 +13,10 @@ use vulcan_core::{
     list_assistant_skills, list_assistant_tool_manifest_paths, list_assistant_tools,
     load_assistant_skill, load_assistant_tool, load_assistant_tool_manifest, load_vault_config,
     resolve_permission_profile, validate_json_value_against_schema, AssistantSkill,
-    AssistantSkillCommandSummary, AssistantSkillSummary, AssistantTool, AssistantToolRuntime,
-    AssistantToolSecretSpec, AssistantToolSummary, AssistantToolValidationOptions,
-    DataviewJsEvalOptions, DataviewJsToolDefinition, DataviewJsToolDescriptor,
-    DataviewJsToolRegistry, JsRuntimeSandbox, VaultPaths,
+    AssistantSkillCommandCliArgAction, AssistantSkillCommandSummary, AssistantSkillSummary,
+    AssistantTool, AssistantToolRuntime, AssistantToolSecretSpec, AssistantToolSummary,
+    AssistantToolValidationOptions, DataviewJsEvalOptions, DataviewJsToolDefinition,
+    DataviewJsToolDescriptor, DataviewJsToolRegistry, JsRuntimeSandbox, VaultPaths,
 };
 
 const CUSTOM_TOOL_SCRIPT_SHEBANG: &str = "#!/usr/bin/env -S vulcan run --script\n";
@@ -351,6 +352,123 @@ pub fn require_trusted_tool_execution(
     )))
 }
 
+pub fn resolve_custom_tool_cli_name(
+    paths: &VaultPaths,
+    name: &str,
+    registry_options: &CustomToolRegistryOptions,
+) -> Result<String, AppError> {
+    resolve_skill_command_tool_identifier(paths, name, registry_options)
+        .map(|(resolved_name, _, _)| resolved_name)
+}
+
+pub fn build_custom_tool_cli_input(
+    paths: &VaultPaths,
+    name: &str,
+    args: &[String],
+    registry_options: &CustomToolRegistryOptions,
+) -> Result<(String, Value), AppError> {
+    let (resolved_name, _skill, command) =
+        resolve_skill_command_tool_identifier(paths, name, registry_options)?;
+    let cli = command.cli.as_ref().ok_or_else(|| {
+        AppError::operation(format!(
+            "tool `{name}` does not declare custom CLI arguments; use --input-json or --input-file"
+        ))
+    })?;
+    let mut input = serde_json::Map::new();
+    let mut messages = Vec::new();
+    let mut position = 0;
+    while position < args.len() {
+        let token = &args[position];
+        if !token.starts_with("--") || token == "--" {
+            return Err(AppError::operation(format!(
+                "unexpected custom tool argument `{token}`; expected a declared --flag"
+            )));
+        }
+        let flag = token.trim_start_matches('-');
+        let spec = cli
+            .args
+            .iter()
+            .find(|arg| arg.flag.trim_start_matches('-') == flag)
+            .ok_or_else(|| {
+                AppError::operation(format!(
+                    "unknown custom CLI flag `--{flag}` for tool `{name}`"
+                ))
+            })?;
+        position += 1;
+        let value = args.get(position).ok_or_else(|| {
+            AppError::operation(format!("custom CLI flag `--{flag}` requires a value"))
+        })?;
+        position += 1;
+
+        match spec.action {
+            AssistantSkillCommandCliArgAction::String => {
+                insert_cli_field(&mut input, spec.field.as_deref(), value.clone())?;
+            }
+            AssistantSkillCommandCliArgAction::Json => {
+                let value = serde_json::from_str(value).map_err(|error| {
+                    AppError::operation(format!(
+                        "invalid JSON for custom CLI flag `--{flag}`: {error}"
+                    ))
+                })?;
+                insert_cli_field_value(&mut input, spec.field.as_deref(), value)?;
+            }
+            AssistantSkillCommandCliArgAction::StringFile => {
+                let value = read_cli_field_source(value)?;
+                insert_cli_field(&mut input, spec.field.as_deref(), value)?;
+            }
+            AssistantSkillCommandCliArgAction::JsonFile => {
+                let source = read_cli_field_source(value)?;
+                let value = serde_json::from_str(&source).map_err(|error| {
+                    AppError::operation(format!(
+                        "invalid JSON for custom CLI flag `--{flag}` from `{value}`: {error}"
+                    ))
+                })?;
+                insert_cli_field_value(&mut input, spec.field.as_deref(), value)?;
+            }
+            AssistantSkillCommandCliArgAction::AppendMessage => {
+                messages.push(json!({
+                    "role": spec.role.as_deref().unwrap_or("user"),
+                    "content": value,
+                }));
+            }
+        }
+    }
+    if !messages.is_empty() {
+        input.insert("messages".to_string(), Value::Array(messages));
+    }
+    Ok((resolved_name, Value::Object(input)))
+}
+
+fn insert_cli_field(
+    input: &mut serde_json::Map<String, Value>,
+    field: Option<&str>,
+    value: String,
+) -> Result<(), AppError> {
+    insert_cli_field_value(input, field, Value::String(value))
+}
+
+fn insert_cli_field_value(
+    input: &mut serde_json::Map<String, Value>,
+    field: Option<&str>,
+    value: Value,
+) -> Result<(), AppError> {
+    let field = field.ok_or_else(|| AppError::operation("custom CLI argument is missing field"))?;
+    input.insert(field.to_string(), value);
+    Ok(())
+}
+
+fn read_cli_field_source(path: &str) -> Result<String, AppError> {
+    if path == "-" {
+        let mut source = String::new();
+        let mut stdin = std::io::stdin();
+        stdin
+            .read_to_string(&mut source)
+            .map_err(AppError::operation)?;
+        return Ok(source);
+    }
+    fs::read_to_string(path).map_err(AppError::operation)
+}
+
 pub fn run_custom_tool(
     paths: &VaultPaths,
     active_permission_profile: Option<&str>,
@@ -498,26 +616,12 @@ fn skill_command_tool(
     name: &str,
     options: &CustomToolRegistryOptions,
 ) -> Result<AssistantTool, AppError> {
-    for skill in list_assistant_skills(paths).map_err(AppError::operation)? {
-        for command in skill.commands.iter().filter(|command| command.expose) {
-            if skill_command_tool_name(&skill.name, &command.id) == name {
-                if !command_matches_allowed_packs(&command.packs, options) {
-                    return Err(AppError::operation(format!(
-                        "skill command tool `{name}` is not in an allowed tool pack"
-                    )));
-                }
-                let loaded =
-                    load_assistant_skill(paths, &skill.name).map_err(AppError::operation)?;
-                return Ok(AssistantTool {
-                    summary: skill_command_tool_summary(paths, &loaded.summary, command),
-                    body: loaded.body,
-                });
-            }
-        }
-    }
-    Err(AppError::operation(format!(
-        "unknown skill command tool `{name}`"
-    )))
+    let (_resolved_name, skill, command) =
+        resolve_skill_command_tool_identifier(paths, name, options)?;
+    Ok(AssistantTool {
+        summary: skill_command_tool_summary(paths, &skill.summary, &command),
+        body: skill.body,
+    })
 }
 
 fn skill_command_tool_summary(
@@ -553,6 +657,7 @@ fn skill_command_tool_summary(
         destructive: false,
         input_schema: command.input_schema.clone(),
         output_schema: command.output_schema.clone(),
+        cli: command.cli.clone(),
         path: skill.path.clone(),
     }
 }
@@ -634,9 +739,20 @@ fn resolve_skill_command_tool(
     name: &str,
     options: &CustomToolRegistryOptions,
 ) -> Result<(AssistantSkill, AssistantSkillCommandSummary), AppError> {
+    resolve_skill_command_tool_identifier(paths, name, options)
+        .map(|(_resolved_name, skill, command)| (skill, command))
+}
+
+fn resolve_skill_command_tool_identifier(
+    paths: &VaultPaths,
+    name: &str,
+    options: &CustomToolRegistryOptions,
+) -> Result<(String, AssistantSkill, AssistantSkillCommandSummary), AppError> {
+    let mut alias_matches = Vec::new();
     for summary in list_assistant_skills(paths).map_err(AppError::operation)? {
         for command in summary.commands.iter().filter(|command| command.expose) {
-            if skill_command_tool_name(&summary.name, &command.id) == name {
+            let tool_name = skill_command_tool_name(&summary.name, &command.id);
+            if tool_name == name {
                 if !command_matches_allowed_packs(&command.packs, options) {
                     return Err(AppError::operation(format!(
                         "skill command tool `{name}` is not in an allowed tool pack"
@@ -644,9 +760,32 @@ fn resolve_skill_command_tool(
                 }
                 let skill =
                     load_assistant_skill(paths, &summary.name).map_err(AppError::operation)?;
-                return Ok((skill, command.clone()));
+                return Ok((tool_name, skill, command.clone()));
+            }
+            if command
+                .cli
+                .as_ref()
+                .is_some_and(|cli| cli.aliases.iter().any(|alias| alias == name))
+                && command_matches_allowed_packs(&command.packs, options)
+            {
+                alias_matches.push((tool_name, summary.name.clone(), command.clone()));
             }
         }
+    }
+    if alias_matches.len() == 1 {
+        let (tool_name, skill_name, command) = alias_matches.remove(0);
+        let skill = load_assistant_skill(paths, &skill_name).map_err(AppError::operation)?;
+        return Ok((tool_name, skill, command));
+    }
+    if alias_matches.len() > 1 {
+        let names = alias_matches
+            .into_iter()
+            .map(|(tool_name, _, _)| tool_name)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(AppError::operation(format!(
+            "custom tool alias `{name}` is ambiguous: {names}"
+        )));
     }
     Err(AppError::operation(format!("unknown custom tool `{name}`")))
 }
