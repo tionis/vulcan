@@ -436,6 +436,7 @@ pub fn build_periodic_list_report(
         .map_err(AppError::operation)
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn collect_complete_candidates(
     paths: &VaultPaths,
     context: &str,
@@ -515,6 +516,31 @@ pub fn collect_complete_candidates(
                     &tools::CustomToolRegistryOptions::default(),
                 )?
             }
+        }
+        context if context.starts_with("custom-tool-value:") => {
+            let Some((name, flag)) = context
+                .trim_start_matches("custom-tool-value:")
+                .rsplit_once(':')
+            else {
+                return Ok(Vec::new());
+            };
+            let mut candidates = tools::collect_custom_tool_cli_choice_candidates(
+                paths,
+                name,
+                flag,
+                &tools::CustomToolRegistryOptions::default(),
+            )?;
+            if candidates.is_empty() {
+                if let Some(completion) = tools::custom_tool_cli_flag_completion_context(
+                    paths,
+                    name,
+                    flag,
+                    &tools::CustomToolRegistryOptions::default(),
+                )? {
+                    candidates = collect_complete_candidates(paths, &completion)?;
+                }
+            }
+            candidates
         }
         _ => Vec::new(),
     };

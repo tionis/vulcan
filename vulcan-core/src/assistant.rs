@@ -127,6 +127,10 @@ pub struct AssistantSkillCommandCliArg {
     pub field: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub choices: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
 }
@@ -138,6 +142,12 @@ pub enum AssistantSkillCommandCliArgAction {
     Json,
     StringFile,
     JsonFile,
+    Boolean,
+    Integer,
+    Number,
+    StringArray,
+    JsonArray,
+    Choice,
     AppendMessage,
 }
 
@@ -648,13 +658,37 @@ fn validate_skill_command_cli(
             AssistantSkillCommandCliArgAction::String
             | AssistantSkillCommandCliArgAction::Json
             | AssistantSkillCommandCliArgAction::StringFile
-            | AssistantSkillCommandCliArgAction::JsonFile => {
-                if matches!(arg.field.as_deref(), None | Some("")) {
+            | AssistantSkillCommandCliArgAction::JsonFile
+            | AssistantSkillCommandCliArgAction::Boolean
+            | AssistantSkillCommandCliArgAction::Integer
+            | AssistantSkillCommandCliArgAction::Number
+            | AssistantSkillCommandCliArgAction::StringArray
+            | AssistantSkillCommandCliArgAction::JsonArray
+            | AssistantSkillCommandCliArgAction::Choice => {
+                if !arg
+                    .field
+                    .as_deref()
+                    .is_some_and(is_valid_skill_command_cli_field_path)
+                {
                     return Err(AssistantError::parse(format!(
-                        "CLI flag `{}` for skill command `{command_id}` must set `field`",
+                        "CLI flag `{}` for skill command `{command_id}` must set a valid `field`",
                         arg.flag
                     )));
                 }
+                if arg.action == AssistantSkillCommandCliArgAction::Choice && arg.choices.is_empty()
+                {
+                    return Err(AssistantError::parse(format!(
+                        "CLI flag `{}` for skill command `{command_id}` must set non-empty `choices`",
+                        arg.flag
+                    )));
+                }
+            }
+        }
+        if let Some(completion) = &arg.completion {
+            if !is_valid_skill_command_cli_completion(completion) {
+                return Err(AssistantError::parse(format!(
+                    "invalid CLI completion `{completion}` for skill command `{command_id}`"
+                )));
             }
         }
     }
@@ -670,6 +704,20 @@ fn is_valid_skill_command_cli_name(value: &str) -> bool {
         && value
             .chars()
             .all(|character| character.is_ascii_alphanumeric() || matches!(character, '-' | '_'))
+}
+
+fn is_valid_skill_command_cli_field_path(value: &str) -> bool {
+    !value.is_empty()
+        && value.split('.').all(|part| {
+            !part.is_empty()
+                && part.chars().all(|character| {
+                    character.is_ascii_alphanumeric() || matches!(character, '-' | '_')
+                })
+        })
+}
+
+fn is_valid_skill_command_cli_completion(value: &str) -> bool {
+    is_valid_skill_command_cli_name(value)
 }
 
 fn default_object_schema() -> JsonValue {

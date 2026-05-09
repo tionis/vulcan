@@ -2872,6 +2872,15 @@ fn handle_tool_command(
             )?;
             print_tool_show_report(cli.output, &report)
         }
+        ToolCommand::Help { name } => {
+            let report = tools::show_custom_tool(
+                paths,
+                cli.permissions.as_deref(),
+                name,
+                &registry_options,
+            )?;
+            print_tool_help_report(cli.output, &report)
+        }
         ToolCommand::Run {
             name,
             input_json,
@@ -3400,6 +3409,28 @@ fn print_tool_show_report(
             if !report.tool.summary.packs.is_empty() {
                 println!("packs: {}", report.tool.summary.packs.join(", "));
             }
+            if let Some(cli) = &report.tool.summary.cli {
+                if !cli.aliases.is_empty() {
+                    println!("aliases: {}", cli.aliases.join(", "));
+                }
+                if !cli.args.is_empty() {
+                    println!("cli flags:");
+                    for arg in &cli.args {
+                        let flag = format!("--{}", arg.flag.trim_start_matches('-'));
+                        let value_hint = tool_cli_arg_value_hint(arg);
+                        let usage = if value_hint.is_empty() {
+                            flag
+                        } else {
+                            format!("{flag} <{value_hint}>")
+                        };
+                        if let Some(description) = &arg.description {
+                            println!("  {usage} - {description}");
+                        } else {
+                            println!("  {usage}");
+                        }
+                    }
+                }
+            }
             if !report.tool.summary.secrets.is_empty() {
                 println!(
                     "secrets: {}",
@@ -3418,6 +3449,104 @@ fn print_tool_show_report(
             }
             Ok(())
         }
+    }
+}
+
+fn print_tool_help_report(
+    output: OutputFormat,
+    report: &tools::CustomToolShowReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            let name = report
+                .tool
+                .summary
+                .cli
+                .as_ref()
+                .and_then(|cli| cli.aliases.first())
+                .unwrap_or(&report.tool.summary.name);
+            println!("{}", report.tool.summary.description);
+            println!();
+            println!("Usage:");
+            if let Some(cli) = &report.tool.summary.cli {
+                if cli.args.is_empty() {
+                    println!("  vulcan tool run {name}");
+                } else {
+                    let flags = cli
+                        .args
+                        .iter()
+                        .map(|arg| {
+                            let flag = format!("--{}", arg.flag.trim_start_matches('-'));
+                            let value_hint = tool_cli_arg_value_hint(arg);
+                            if value_hint.is_empty() {
+                                flag
+                            } else {
+                                format!("{flag} <{value_hint}>")
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" ");
+                    println!("  vulcan tool run {name} {flags}");
+                }
+                if !cli.aliases.is_empty() {
+                    println!();
+                    println!("Aliases: {}", cli.aliases.join(", "));
+                }
+                if !cli.args.is_empty() {
+                    println!();
+                    println!("Flags:");
+                    for arg in &cli.args {
+                        let flag = format!("--{}", arg.flag.trim_start_matches('-'));
+                        let value_hint = tool_cli_arg_value_hint(arg);
+                        let usage = if value_hint.is_empty() {
+                            flag
+                        } else {
+                            format!("{flag} <{value_hint}>")
+                        };
+                        let mut details = Vec::new();
+                        if !arg.choices.is_empty() {
+                            details.push(format!("choices: {}", arg.choices.join(", ")));
+                        }
+                        if let Some(completion) = &arg.completion {
+                            details.push(format!("completion: {completion}"));
+                        }
+                        let suffix = if details.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" ({})", details.join("; "))
+                        };
+                        if let Some(description) = &arg.description {
+                            println!("  {usage} - {description}{suffix}");
+                        } else {
+                            println!("  {usage}{suffix}");
+                        }
+                    }
+                }
+            } else {
+                println!(
+                    "  vulcan tool run {} --input-json '<json>'",
+                    report.tool.summary.name
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+fn tool_cli_arg_value_hint(arg: &vulcan_core::AssistantSkillCommandCliArg) -> &'static str {
+    match arg.action {
+        vulcan_core::AssistantSkillCommandCliArgAction::Boolean => "",
+        vulcan_core::AssistantSkillCommandCliArgAction::Integer => "integer",
+        vulcan_core::AssistantSkillCommandCliArgAction::Number => "number",
+        vulcan_core::AssistantSkillCommandCliArgAction::Json
+        | vulcan_core::AssistantSkillCommandCliArgAction::JsonArray => "json",
+        vulcan_core::AssistantSkillCommandCliArgAction::StringFile
+        | vulcan_core::AssistantSkillCommandCliArgAction::JsonFile => "path|-",
+        vulcan_core::AssistantSkillCommandCliArgAction::Choice => "choice",
+        vulcan_core::AssistantSkillCommandCliArgAction::String
+        | vulcan_core::AssistantSkillCommandCliArgAction::StringArray
+        | vulcan_core::AssistantSkillCommandCliArgAction::AppendMessage => "text",
     }
 }
 
@@ -19406,6 +19535,23 @@ function __fish_vulcan_dynamic_complete_custom_tool_flag
     $cmd $args complete custom-tool-flag:$tool "$prefix" 2>/dev/null
 end
 
+function __fish_vulcan_dynamic_complete_custom_tool_value
+    set -l tool (__fish_vulcan_tool_run_name)
+    if test -z "$tool"
+        return
+    end
+    set -l words (commandline -opc)
+    set -l previous $words[-1]
+    if not string match -q -- '--*' "$previous"
+        return
+    end
+    set -l flag (string replace -r '^--' '' -- "$previous")
+    set -l args (__fish_vulcan_completion_prefix_args)
+    set -l prefix (commandline -ct)
+    set -l cmd "__VULCAN_CMD__"
+    $cmd $args complete custom-tool-value:$tool:$flag "$prefix" 2>/dev/null
+end
+
 function __fish_vulcan_complete_vault_path_arg
     set -l args (__fish_vulcan_completion_prefix_args)
     set -l prefix (commandline -ct)
@@ -19438,6 +19584,7 @@ complete -c vulcan -n "__fish_vulcan_using_subcommand run" -f -a "(__fish_vulcan
 # Skill-backed custom tools and declared CLI flags for vulcan tool run
 complete -c vulcan -n "__fish_vulcan_using_subcommand tool; and __fish_seen_subcommand_from run" -f -a "(__fish_vulcan_dynamic_complete_custom_tool)" -d "Tool"
 complete -c vulcan -n "__fish_vulcan_using_subcommand tool; and __fish_seen_subcommand_from run" -f -a "(__fish_vulcan_dynamic_complete_custom_tool_flag)" -d "Tool flag"
+complete -c vulcan -n "__fish_vulcan_using_subcommand tool; and __fish_seen_subcommand_from run" -f -a "(__fish_vulcan_dynamic_complete_custom_tool_value)" -d "Tool value"
 
 # Vault-relative path arguments
 complete -c vulcan -n "__fish_vulcan_using_subcommand note; and __fish_seen_subcommand_from create" -f -a "(__fish_vulcan_complete_vault_path_arg)" -d "Path"
@@ -19582,6 +19729,12 @@ __vulcan_dynamic_dispatch() {
             while IFS= read -r candidate; do
                 __vulcan_append_completion_candidate "$candidate"
             done < <(__vulcan_dynamic_candidates "custom-tool-flag:$tool" "${COMP_WORDS[COMP_CWORD]}")
+        elif [[ -n "$tool" && "${COMP_WORDS[COMP_CWORD - 1]}" == --* ]]; then
+            COMPREPLY=()
+            local flag="${COMP_WORDS[COMP_CWORD - 1]#--}"
+            while IFS= read -r candidate; do
+                __vulcan_append_completion_candidate "$candidate"
+            done < <(__vulcan_dynamic_candidates "custom-tool-value:$tool:$flag" "${COMP_WORDS[COMP_CWORD]}")
         fi
     fi
 }
@@ -19755,6 +19908,20 @@ _vulcan_complete_custom_tool_flag() {
     _describe 'tool flag' flags
 }
 
+_vulcan_complete_custom_tool_value() {
+    local cmd="__VULCAN_CMD__"
+    local -a args values
+    local tool="$(_vulcan_tool_run_name)"
+    [[ -z "$tool" ]] && return
+    local previous="${words[CURRENT - 1]}"
+    [[ "$previous" != --* ]] && return
+    local flag="${previous#--}"
+    _vulcan_completion_prefix_args
+    args=("${reply[@]}")
+    values=(${(f)"$("$cmd" "${args[@]}" complete custom-tool-value:$tool:$flag "${words[CURRENT]}" 2>/dev/null)"})
+    _describe 'tool value' values
+}
+
 _vulcan_is_tool_run_context() {
     local i
     for (( i = 1; i < CURRENT; i++ )); do
@@ -19785,6 +19952,9 @@ if functions -c _vulcan _vulcan_static 2>/dev/null; then
                 _vulcan_custom_tool_candidates custom-tool "${words[CURRENT]}"
             elif [[ -n "$tool" && "${words[CURRENT]}" == --* ]]; then
                 _vulcan_custom_tool_candidates "custom-tool-flag:$tool" "${words[CURRENT]}"
+            elif [[ -n "$tool" && "${words[CURRENT - 1]}" == --* ]]; then
+                local flag="${words[CURRENT - 1]#--}"
+                _vulcan_custom_tool_candidates "custom-tool-value:$tool:$flag" "${words[CURRENT]}"
             fi
         fi
     }
@@ -23889,6 +24059,8 @@ mod tests {
         let list = Cli::try_parse_from(["vulcan", "tool", "list"]).expect("tool list should parse");
         let show = Cli::try_parse_from(["vulcan", "tool", "show", "skill_meeting_summarize"])
             .expect("tool show should parse");
+        let help = Cli::try_parse_from(["vulcan", "tool", "help", "meeting-summary"])
+            .expect("tool help should parse");
         let run = Cli::try_parse_from([
             "vulcan",
             "tool",
@@ -23910,6 +24082,14 @@ mod tests {
             Command::Tool {
                 command: ToolCommand::Show {
                     name: "skill_meeting_summarize".to_string(),
+                },
+            }
+        );
+        assert_eq!(
+            help.command,
+            Command::Tool {
+                command: ToolCommand::Help {
+                    name: "meeting-summary".to_string(),
                 },
             }
         );
@@ -24180,6 +24360,9 @@ while [ "$#" -gt 0 ]; do
             custom-tool-flag:conversation-export)
                 printf -- '--assistant\n'
                 ;;
+            custom-tool-value:conversation-export:source)
+                printf 'codex\n'
+                ;;
         esac
         exit 0
     fi
@@ -24203,6 +24386,13 @@ __vulcan_dynamic_dispatch vulcan --ass conversation-export
 for reply in "${{COMPREPLY[@]}}"; do
     printf 'FLAG:%s\n' "$reply"
 done
+COMP_WORDS=(vulcan --vault /tmp/vault tool run conversation-export --source co)
+COMP_CWORD=7
+COMPREPLY=()
+__vulcan_dynamic_dispatch vulcan co --source
+for reply in "${{COMPREPLY[@]}}"; do
+    printf 'VALUE:%s\n' "$reply"
+done
 "#
         );
 
@@ -24222,6 +24412,7 @@ done
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(stdout.contains("NAME:conversation-export"));
         assert!(stdout.contains("FLAG:--assistant"));
+        assert!(stdout.contains("VALUE:codex"));
     }
 
     #[test]
@@ -24268,6 +24459,10 @@ done
             fish.contains("$cmd $args complete custom-tool-flag:$tool \"$prefix\""),
             "fish custom tool flag completion should include the selected tool"
         );
+        assert!(
+            fish.contains("$cmd $args complete custom-tool-value:$tool:$flag \"$prefix\""),
+            "fish custom tool value completion should include the selected tool and flag"
+        );
 
         let bash = generate_bash_dynamic_completions();
         assert!(
@@ -24310,6 +24505,10 @@ done
             bash.contains("__vulcan_dynamic_candidates \"custom-tool-flag:$tool\""),
             "bash custom tool flag completion should include the selected tool"
         );
+        assert!(
+            bash.contains("__vulcan_dynamic_candidates \"custom-tool-value:$tool:$flag\""),
+            "bash custom tool value completion should include the selected tool and flag"
+        );
 
         let zsh = generate_zsh_dynamic_completions();
         assert!(
@@ -24335,6 +24534,10 @@ done
         assert!(
             zsh.contains("complete custom-tool-flag:$tool \"${words[CURRENT]}\""),
             "zsh custom tool flag completion should include the selected tool"
+        );
+        assert!(
+            zsh.contains("custom-tool-value:$tool:$flag"),
+            "zsh custom tool value completion should include the selected tool and flag"
         );
         assert!(
             zsh.contains("functions -c _vulcan _vulcan_static"),

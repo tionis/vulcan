@@ -45,7 +45,12 @@ the normal schema validation and permission checks still run.
 Bash, Fish, and Zsh completions use the same `cli` metadata. `vulcan complete
 custom-tool <prefix>` lists projected tool names and aliases, while `vulcan
 complete custom-tool-flag:<tool-or-alias> --<prefix>` lists declared custom
-flags for one tool.
+flags for one tool. `vulcan complete custom-tool-value:<tool-or-alias>:<flag>
+<prefix>` lists declared choices or delegates to the flag's `completion` context.
+
+Custom CLI actions include typed scalar flags, repeatable array flags, file/stdin
+flags, `choice` flags, and `append_message`. Dotted `field` values create nested
+input objects before schema validation.
 
 JavaScript can call skill commands through either `tools.call("skill_daily_review_prepare_day", input)` or `skills.run("daily-review", "prepare-day", input)`.
 
