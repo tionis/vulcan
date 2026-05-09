@@ -267,8 +267,29 @@ fn run_skill_command_script(
     input: Value,
 ) -> Result<SkillRunReport, CliError> {
     let script_path = normalize_script_path(script)?;
-    let (skill, command) = resolve_skill_command_for_script(cli, paths, &script_path)?;
-    run_skill_command(cli, paths, &skill.summary.name, &command.id, input)
+    match resolve_skill_command_for_script(cli, paths, &script_path) {
+        Ok((skill, command)) => {
+            run_skill_command(cli, paths, &skill.summary.name, &command.id, input)
+        }
+        Err(error) => {
+            let Some(inferred_paths) = infer_skill_script_vault(paths, &script_path) else {
+                return Err(error);
+            };
+            if inferred_paths.vault_root() == paths.vault_root() {
+                return Err(error);
+            }
+            let (skill, command) =
+                resolve_skill_command_for_script(cli, &inferred_paths, &script_path)
+                    .map_err(|_| error)?;
+            run_skill_command(
+                cli,
+                &inferred_paths,
+                &skill.summary.name,
+                &command.id,
+                input,
+            )
+        }
+    }
 }
 
 fn normalize_script_path(script: &Path) -> Result<PathBuf, CliError> {
@@ -306,6 +327,22 @@ fn resolve_skill_command_for_script(
         "script `{}` is not declared by a visible skill command in this vault",
         script_path.display()
     )))
+}
+
+fn infer_skill_script_vault(current_paths: &VaultPaths, script_path: &Path) -> Option<VaultPaths> {
+    for candidate_root in script_path.ancestors().skip(1) {
+        let candidate_paths = VaultPaths::new(candidate_root);
+        let config = load_vault_config(&candidate_paths).config;
+        let skills_root = candidate_root.join(config.assistant.skills_folder);
+        if script_path.starts_with(&skills_root) {
+            return Some(candidate_paths);
+        }
+    }
+    if script_path.starts_with(current_paths.vault_root()) {
+        Some(current_paths.clone())
+    } else {
+        None
+    }
 }
 
 fn build_skill_invocation_source(
