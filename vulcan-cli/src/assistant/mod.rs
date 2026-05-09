@@ -15,6 +15,7 @@ use vulcan_core::{
 };
 
 pub(crate) mod chat;
+pub(crate) mod chat_transport;
 pub(crate) mod engine;
 pub(crate) mod extension;
 pub(crate) mod renderer;

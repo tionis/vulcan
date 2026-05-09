@@ -3699,7 +3699,7 @@ The current Linux x86\_64 release binary is about 31.3MB unstripped and 26.0MB s
 
 **Explicit deferrals**
 
-- [-] Defer MCP `tasks` until Vulcan has a concrete long-running/session model that benefits from them
+- [x] Expose MCP `tasks` through the curated tasks tool pack now that daily-driver MCP workflows need first-class task semantics
 - [-] Defer MCP Apps integration until there is a concrete host/UI flow to target; do not add app-specific surface area speculatively
 
 **Testing**
@@ -4204,7 +4204,7 @@ Do the structural pieces before visual polish:
 
 **Goal:** Embed a managed agent engine inside Vulcan so that `vulcan assistant` provides a fully integrated coding and vault-management assistant without the user needing to install, configure, or manage a separate runtime. The current sketch uses `pi` RPC (JSON-RPC over stdin/stdout) as one candidate engine. Vulcan owns the process lifecycle, UI, and tool surface; the managed engine owns model inference, session management, context compaction, and tool orchestration.
 
-**Status:** Complete for the optional CLI-hosted managed-engine pilot. Shipped: assistant config, `vulcan assistant` CLI, pi process lifecycle management, synchronous JSONL RPC client, typed pi event parsing, context payload injection, bundled pi extension materialization, permission-profile propagation, one-shot prompts, non-interactive prompt stdin, interactive chat, resume/continue via newest session, explicit resume target selection, session listing with header metadata, manual/on-exit Markdown session exports, doctor/context inspection, renderer hardening, mock-engine integration tests, and user docs. Deferred items are explicitly scoped to richer terminal UI, extension UI prompts, real-pi CI smoke tests, daemon-managed async transport, and native chat adapters.
+**Status:** Complete for the optional CLI-hosted managed-engine pilot. Shipped: assistant config, `vulcan assistant` CLI, pi process lifecycle management, synchronous JSONL RPC client, typed pi event parsing, context payload injection, bundled pi extension materialization, permission-profile propagation, one-shot prompts, non-interactive prompt stdin, interactive chat, chat tab completion, resume/continue via newest session, explicit resume target selection, session listing with header metadata, manual/on-exit Markdown session exports, doctor/context inspection, renderer hardening, mock-engine integration tests, platform-neutral chat transport contract types, and user docs. Deferred items are explicitly scoped to richer terminal UI, extension UI prompts, real-pi CI smoke tests, daemon-managed async transport, and native chat adapters.
 
 **Completion scope:** The checked `[x]` items define the completed 9.21 CLI-hosted pilot. `[-]` items in this phase are non-blocking follow-ons that were deliberately cut from the pilot because they depend on stable pi CI, daemon process supervision, richer terminal UI, or native chat transport decisions. They should not be read as unfinished requirements for the 9.21 milestone.
 
@@ -4460,7 +4460,7 @@ Wire the assistant into Vulcan's CLI command structure.
 - [x] Initial `vulcan assistant --list-sessions`:
   - Enumerate session files in `.vulcan/assistant/sessions/`
   - Show session ID, title, message count, last active timestamp
-- [-] Tab completion in chat mode:
+- [x] Tab completion in chat mode:
   - Complete `vulcan` commands after `/vulcan ` prefix
   - Complete file paths after `@` prefix
   - Complete slash commands (`/model`, `/thinking`, `/compact`, etc.)
@@ -4596,53 +4596,53 @@ The RPC client (9.21.2) is the key investment. When the daemon exists:
 
 Do not make Telegram the architecture. If native chat is revived, start by defining the reusable assistant/chat boundary that all platforms plug into.
 
-- [-] New module `vulcan-cli/src/assistant/chat_transport.rs` (or similar) for the platform-neutral runtime contract
-- [-] Define canonical external user principal strings for bindings and audit logs:
+- [x] New module `vulcan-cli/src/assistant/chat_transport.rs` (or similar) for the platform-neutral runtime contract
+- [x] Define canonical external user principal strings for bindings and audit logs:
   - `telegram:123456`
   - `matrix:@alice:example.com`
   - `discord:123456789012345678`
-- [-] Define canonical external chat-space IDs for sessions and policy lookup:
+- [x] Define canonical external chat-space IDs for sessions and policy lookup:
   - `telegram:-1001234567890` for a Telegram group/chat
   - `matrix:!roomid:example.com` for a Matrix room
   - `discord:guild/123/channel/456`
   - `discord:guild/123/channel/456/thread/789`
-- [-] Separate user principals from chat spaces in the data model; do not overload one string type for both
-- [-] Model hierarchical spaces with `parent_space_id` so guild → channel → thread or workspace → room inheritance works naturally
-- [-] Define typed transport-layer Rust structs:
+- [x] Separate user principals from chat spaces in the data model; do not overload one string type for both
+- [x] Model hierarchical spaces with `parent_space_id` so guild → channel → thread or workspace → room inheritance works naturally
+- [x] Define typed transport-layer Rust structs:
   - `ExternalUserPrincipal`
   - `ChatSpace`
   - `IdentityBinding`
   - `ChatEvent`
   - `ChatAction`
   - `AdapterCapabilities`
-- [-] Core inbound events must include at least:
+- [x] Core inbound events must include at least:
   - message
   - reaction added / removed
   - reply-to / message reference
   - message edited / deleted
   - attachment received
   - interaction event (buttons/selects or equivalent)
-- [-] Core outbound actions must include at least:
+- [x] Core outbound actions must include at least:
   - send message
   - edit message
   - reply
   - add/remove reaction
   - acknowledge interaction
   - render buttons when supported
-- [-] Capability negotiation: adapters advertise whether they support reactions, message edits, replies, buttons, attachments, threads, or ephemeral messages; the assistant core degrades gracefully when a feature is absent
-- [-] Identity binding layer maps an external user principal to:
+- [x] Capability negotiation: adapters advertise whether they support reactions, message edits, replies, buttons, attachments, threads, or ephemeral messages; the assistant core degrades gracefully when a feature is absent
+- [x] Identity binding layer maps an external user principal to:
   - a stable assistant-side `vault_identity`
   - an optional Phase 17 auth principal such as `user:alice`
   - an optional canonical note path such as `People/Alice.md`
-- [-] Session and memory routing should key off the internal `vault_identity` and internal space ID once a binding exists, so one human can share memory across Telegram and Matrix after verification
-- [-] Unbound users fall back to platform-scoped memory/session routing until linked
-- [-] Permission resolution should use the restrictive intersection of:
+- [x] Session and memory routing should key off the internal `vault_identity` and internal space ID once a binding exists, so one human can share memory across Telegram and Matrix after verification
+- [x] Unbound users fall back to platform-scoped memory/session routing until linked
+- [x] Permission resolution should use the restrictive intersection of:
   - platform default
   - space hierarchy policy
   - external-user override
   - bound identity / Phase 17 principal policy
-- [-] Keep non-rebuildable platform runtime state out of the vault and out of `.vulcan/cache.db`; define a daemon-managed state directory for adapter-specific databases, sync tokens, media caches, and crypto material
-- [-] Add assistant chat config sketch to `.vulcan/config.toml` docs:
+- [x] Keep non-rebuildable platform runtime state out of the vault and out of `.vulcan/cache.db`; define a daemon-managed state directory for adapter-specific databases, sync tokens, media caches, and crypto material
+- [x] Add assistant chat config sketch to `.vulcan/config.toml` docs:
   ```toml
   [assistant.chat]
   default_profile = "readonly"

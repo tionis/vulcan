@@ -1,12 +1,40 @@
 use crate::assistant::engine;
 use crate::assistant::renderer::{AssistantRenderReport, AssistantRenderer, RenderOptions};
 use crate::assistant::{export_session_after_run, AssistantHostContext, AssistantHostOptions};
+use crate::cli::Cli;
 use crate::{CliError, OutputFormat};
+use clap::CommandFactory;
+use rustyline::completion::{Completer, Pair};
 use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
+use rustyline::highlight::Highlighter;
+use rustyline::hint::Hinter;
+use rustyline::history::DefaultHistory;
+use rustyline::validate::Validator;
+use rustyline::{Context, Editor, Helper};
 use serde_json::{Map, Value};
+use std::borrow::Cow;
+use std::fs;
 use std::io::{self, IsTerminal, Read, Write};
+use std::path::Path;
 use vulcan_core::VaultPaths;
+
+const CHAT_SLASH_COMMANDS: &[&str] = &[
+    "/compact",
+    "/exit",
+    "/follow-up",
+    "/followup",
+    "/help",
+    "/model",
+    "/models",
+    "/new",
+    "/quit",
+    "/set-model",
+    "/state",
+    "/stats",
+    "/steer",
+    "/thinking",
+    "/vulcan",
+];
 
 pub(crate) fn run_chat(
     paths: &VaultPaths,
@@ -48,7 +76,9 @@ pub(crate) fn run_chat(
         return Ok(());
     }
 
-    let mut editor = DefaultEditor::new().map_err(CliError::operation)?;
+    let mut editor =
+        Editor::<AssistantChatHelper, DefaultHistory>::new().map_err(CliError::operation)?;
+    editor.set_helper(Some(AssistantChatHelper::new(paths.vault_root())));
     loop {
         match editor.readline("vulcan> ") {
             Ok(line) => {
@@ -210,7 +240,7 @@ fn handle_slash_command<R: std::io::BufRead, W: std::io::Write>(
 
 fn print_chat_help() {
     println!(
-        "Commands: /model /models /thinking /compact /new /stats /state /steer <text> /follow-up <text> /set-model <provider> <model> /quit"
+        "Commands: /model /models /thinking /compact /new /stats /state /steer <text> /follow-up <text> /set-model <provider> <model> /vulcan <command> /quit"
     );
 }
 
@@ -242,10 +272,171 @@ fn ensure_success(response: &crate::assistant::rpc::RpcResponse) -> Result<(), C
     }
 }
 
+#[derive(Clone)]
+struct AssistantChatHelper {
+    slash_commands: Vec<String>,
+    vulcan_commands: Vec<String>,
+    vault_paths: Vec<String>,
+}
+
+impl AssistantChatHelper {
+    fn new(vault_root: &Path) -> Self {
+        Self {
+            slash_commands: CHAT_SLASH_COMMANDS
+                .iter()
+                .map(|command| (*command).to_string())
+                .collect(),
+            vulcan_commands: collect_vulcan_command_paths(),
+            vault_paths: collect_chat_vault_paths(vault_root),
+        }
+    }
+
+    fn complete_line(&self, line: &str, pos: usize) -> (usize, Vec<Pair>) {
+        let prefix = &line[..pos.min(line.len())];
+        if let Some((start, needle)) = at_path_completion(prefix) {
+            return (
+                start,
+                completion_pairs(
+                    self.vault_paths
+                        .iter()
+                        .filter(|path| path.starts_with(needle)),
+                ),
+            );
+        }
+        if let Some(needle) = prefix.strip_prefix("/vulcan ") {
+            let needle = needle.trim_start();
+            let start = pos.saturating_sub(needle.len());
+            return (
+                start,
+                completion_pairs(
+                    self.vulcan_commands
+                        .iter()
+                        .filter(|command| command.starts_with(needle)),
+                ),
+            );
+        }
+        if prefix.starts_with('/') && !prefix.contains(char::is_whitespace) {
+            return (
+                0,
+                completion_pairs(
+                    self.slash_commands
+                        .iter()
+                        .filter(|command| command.starts_with(prefix)),
+                ),
+            );
+        }
+        (pos, Vec::new())
+    }
+}
+
+impl Helper for AssistantChatHelper {}
+
+impl Hinter for AssistantChatHelper {
+    type Hint = String;
+}
+
+impl Highlighter for AssistantChatHelper {
+    fn highlight_hint<'h>(&self, hint: &'h str) -> Cow<'h, str> {
+        Cow::Borrowed(hint)
+    }
+}
+
+impl Validator for AssistantChatHelper {}
+
+impl Completer for AssistantChatHelper {
+    type Candidate = Pair;
+
+    fn complete(
+        &self,
+        line: &str,
+        pos: usize,
+        _context: &Context<'_>,
+    ) -> rustyline::Result<(usize, Vec<Pair>)> {
+        Ok(self.complete_line(line, pos))
+    }
+}
+
+fn at_path_completion(prefix: &str) -> Option<(usize, &str)> {
+    let at = prefix.rfind('@')?;
+    let needle = &prefix[at + 1..];
+    if needle.contains(char::is_whitespace) {
+        return None;
+    }
+    Some((at + 1, needle))
+}
+
+fn completion_pairs<'a>(values: impl Iterator<Item = &'a String>) -> Vec<Pair> {
+    values
+        .take(50)
+        .map(|value| Pair {
+            display: value.clone(),
+            replacement: value.clone(),
+        })
+        .collect()
+}
+
+fn collect_vulcan_command_paths() -> Vec<String> {
+    fn visit(command: &clap::Command, prefix: &mut Vec<String>, output: &mut Vec<String>) {
+        for subcommand in command
+            .get_subcommands()
+            .filter(|subcommand| !subcommand.is_hide_set())
+        {
+            prefix.push(subcommand.get_name().to_string());
+            output.push(prefix.join(" "));
+            visit(subcommand, prefix, output);
+            prefix.pop();
+        }
+    }
+
+    let root = Cli::command().bin_name("vulcan");
+    let mut output = Vec::new();
+    visit(&root, &mut Vec::new(), &mut output);
+    output.sort();
+    output.dedup();
+    output
+}
+
+fn collect_chat_vault_paths(vault_root: &Path) -> Vec<String> {
+    fn visit(root: &Path, dir: &Path, output: &mut Vec<String>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        let mut entries = entries.filter_map(Result::ok).collect::<Vec<_>>();
+        entries.sort_by_key(std::fs::DirEntry::path);
+        for entry in entries {
+            let path = entry.path();
+            let Ok(relative) = path.strip_prefix(root) else {
+                continue;
+            };
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            if relative.starts_with(".git/")
+                || relative == ".git"
+                || relative.starts_with(".vulcan/")
+                || relative == ".vulcan"
+            {
+                continue;
+            }
+            if path.is_dir() {
+                output.push(format!("{relative}/"));
+                visit(root, &path, output);
+            } else if path.extension().is_some_and(|extension| {
+                extension.eq_ignore_ascii_case("md") || extension.eq_ignore_ascii_case("canvas")
+            }) {
+                output.push(relative);
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    visit(vault_root, vault_root, &mut output);
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::{BufReader, Cursor};
+    use tempfile::TempDir;
 
     #[test]
     fn slash_help_and_quit_are_local() {
@@ -263,5 +454,31 @@ mod tests {
                 .expect("quit should work")
                 .should_quit
         );
+    }
+
+    #[test]
+    fn chat_completion_suggests_slash_vulcan_and_vault_paths() {
+        let temp = TempDir::new().expect("temp dir should exist");
+        fs::create_dir_all(temp.path().join("Projects")).expect("folder should write");
+        fs::create_dir_all(temp.path().join(".vulcan")).expect("internal folder should write");
+        fs::write(temp.path().join("Projects/Alpha.md"), "# Alpha").expect("note should write");
+        fs::write(temp.path().join(".vulcan/internal.md"), "# Hidden")
+            .expect("hidden should write");
+        let helper = AssistantChatHelper::new(temp.path());
+
+        let (_, slash) = helper.complete_line("/th", 3);
+        assert!(slash.iter().any(|pair| pair.replacement == "/thinking"));
+
+        let (_, commands) = helper.complete_line("/vulcan note g", 14);
+        assert!(commands.iter().any(|pair| pair.replacement == "note get"));
+
+        let (start, paths) = helper.complete_line("read @Projects/A", 16);
+        assert_eq!(start, "read @".len());
+        assert!(paths
+            .iter()
+            .any(|pair| pair.replacement == "Projects/Alpha.md"));
+        assert!(!paths
+            .iter()
+            .any(|pair| pair.replacement.contains(".vulcan")));
     }
 }
