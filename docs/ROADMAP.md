@@ -1723,11 +1723,11 @@ Preserved native-runtime steering lives in `docs/assistant/native_runtime_deferr
 
 #### 9.12.6 Prompts and skills remain vault-native
 
-Prompts and skills stay as Markdown files in the vault. External runtimes consume them as reference material; MCP should expose the same prompt files through protocol-native prompt discovery, and any later integrated `vulcan assistant` should reuse the same loader rather than inventing a second prompt store.
+Prompts and skills stay as Markdown files in the vault. External runtimes consume them as reference material, and MCP exposes the same prompt files through protocol-native prompt discovery.
 
 - [x] Configurable prompts folder: `assistant.prompts_folder` in `.vulcan/config.toml` (default: `AI/Prompts/`)
 - [x] Configurable skills folder: `assistant.skills_folder` in `.vulcan/config.toml` (default: `.agents/skills/`)
-- [x] Shared prompt loader/discovery API in Vulcan: enumerate prompt files from `assistant.prompts_folder`, parse metadata, and load/render prompt bodies for reuse by external-runtime helpers, MCP `prompts/*`, and later 9.21 integrated-assistant flows
+- [x] Shared prompt loader/discovery API in Vulcan: enumerate prompt files from `assistant.prompts_folder`, parse metadata, and load/render prompt bodies for reuse by external-runtime helpers and MCP `prompts/*`
 - [x] `vulcan init --agent-files` / `vulcan agent install` should be able to scaffold example prompt files into the configured prompts folder without making them special runtime-only assets
 - [x] Prompt file format — Markdown with YAML frontmatter:
   ```yaml
@@ -1812,7 +1812,7 @@ Detailed native assistant and chat-runtime ideas from the previous roadmap are p
 
 - [-] Do not implement `vulcan assistant serve` or in-process chat adapters in the current Phase 9 plan
 - [-] Revisit only after Phase 9.19.13 (permissions) and Phase 10 (daemon) are mature enough to support a safe long-lived service model
-- [-] If revived, treat that work as the separate embedded-host track captured in Phase 9.21 rather than expanding Phase 9.12 itself
+- [-] If revived, define a new post-MCP/daemon roadmap item rather than expanding Phase 9.12 itself
 - [-] If revived later, keep the same rule: memory and durable artifacts live in the vault, and all mutations still go through the normal Vulcan command surface
 
 #### 9.12.9 Agent asset import
@@ -2860,7 +2860,7 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
 9.17.6 (batch commands)  ← 9.17.1      │── Wave 3
 9.17.7 (init integration)← 9.17.6      │── Wave 3+
                                         │
---- AI path (CLI first, then external runtime, then optional embedded host pilot) ---
+--- AI path (CLI first, then external runtimes and MCP) ---
 9.18.2 (note CRUD)       ← 7, 2        │── Wave 5 (CLI for LLMs)
 9.18.3 (query enhance)   ← 7.12        │── Wave 5
 9.18.6 (web tools)       ← standalone  │── Wave 5
@@ -2870,7 +2870,7 @@ The Phase 9 sub-phases have both sequential dependencies and parallelization opp
                                         │
 9.12.1-6 (pi integration) ← 9.18.2,6,7,8│── Wave 6 (after CLI tools)
                                         │
-9.21 (embedded assistant host mode)← 9.12,9.19.13 │── complete CLI-hosted pilot; daemon/chat follow-ons deferred
+9.21 (embedded assistant host mode)← 9.12,9.19.13 │── retired after pilot; MCP/external runtime path kept
                                         │
 9.18.4 (refactor group)  ← 7           │── Wave 6+ (with 9.18.1)
 9.18.5 (JS runtime/REPL) ← 9.8.8       │── Wave 6+ (after DataviewJS)
@@ -2913,7 +2913,7 @@ The key sequencing principle for AI-related work: **CLI tool surface first** (us
 5. **Wave 5 — CLI for LLMs (parallel):** **9.18.2 (note CRUD)**, **9.18.3 (query enhancements)**, **9.18.6 (web tools)**, **9.18.7 (help/describe polish)**, **9.18.8 (git ops)**, 9.15 (TaskNotes). This wave makes the CLI usable as a tool surface by any LLM harness (Claude Code, Codex, Gemini CLI, `pi`, etc.) without a Vulcan-native runtime. Deliverables include: note CRUD commands, `describe --format` for tool schema export, `help --output json` for structured command docs, default skills (bundled), vault AGENTS.md template, and consistent JSON error output. Can proceed in parallel with Wave 4.
 6. **Wave 6 — External agent integration (sequential):** **9.12.1–9.12.6 as one coherent deliverable.** `pi` package/extension contract → tool boundary and trust model → AGENTS/skills-driven prompting → session/persistence boundary → rollout guidance and revisit criteria. Depends on Wave 5 for the tool surface.
 7. **Wave 6+ (sequential after prerequisites):** **9.18.5 (JS runtime/REPL)** ← requires 9.8.8; **9.18.9 (task mutations)** ← requires 9.10; **9.18.4 (refactor group)** ← with 9.18.1.
-8. **Wave 7 — Optional embedded host mode:** **9.21** has shipped as the CLI-hosted managed-engine pilot. Remaining deferred work is limited to richer terminal UI, real-pi CI, daemon-managed async transport, and native chat adapters.
+8. **Wave 7 — Embedded host evaluation:** **9.21** shipped as a CLI-hosted managed-engine pilot and was then retired. Use MCP, `describe`, agent skills, and external runtimes instead.
 9. **Wave 8:** 9.13 (QuickAdd) — capture format compatibility and settings import. Benefits from 9.7 (template variables) and 9.16 (periodic notes) being in place. QuickAdd importer (9.13.2) uses `PluginImporter`.
 10. **Wave 9+:** 9.19.15 → 9.23 → 9.24 for the protocol-native programmable tool surface. Build the MCP-native registry first, then pack negotiation, then vault-defined custom tools on top of that shared registry.
 11. **Wave 9+ — Link graph intelligence (after Wave 9+ MCP foundation):** **9.25 → 9.26 → 9.27** sequenced because each builds on the output of the prior phase. Community detection (9.25) on the existing link graph enables cross-community scoring in link suggestions (9.26), which in turn feeds INFERRED edges into the confidence-tagged graph (9.27). 9.25 and 9.26 are additive (new features); 9.27 is a structural schema change that wires through all existing graph surfaces.
@@ -3669,7 +3669,7 @@ The current Linux x86\_64 release binary is about 31.3MB unstripped and 26.0MB s
 - [x] Implement a shared prompt loader over `assistant.prompts_folder` from `.vulcan/config.toml`
 - [x] Expose prompt files from that configured vault folder through MCP `prompts/list` + `prompts/get`
 - [x] Support a Markdown + frontmatter prompt format that can declare prompt `name`, `description`, `arguments`, `version`, and tags without introducing a second prompt store
-- [x] Reuse the same prompt loader for subprocess-runtime helpers and later 9.21 integrated-assistant flows
+- [x] Reuse the same prompt loader for subprocess-runtime helpers and MCP prompt exposure
 - [x] Allow `vulcan init --agent-files` / `vulcan agent install` to scaffold example prompt files into the configured prompts folder
 - [x] Emit `notifications/prompts/list_changed` when the available vault prompt set changes
 
@@ -4210,18 +4210,17 @@ Do the structural pieces before visual polish:
 
 ---
 
-## Phase 9.21: Optional embedded assistant host mode via managed-engine RPC
+## Phase 9.21: Retired embedded assistant host mode via managed-engine RPC
 
-**Goal:** Embed a managed agent engine inside Vulcan so that `vulcan assistant` provides a fully integrated coding and vault-management assistant without the user needing to install, configure, or manage a separate runtime. The current sketch uses `pi` RPC (JSON-RPC over stdin/stdout) as one candidate engine. Vulcan owns the process lifecycle, UI, and tool surface; the managed engine owns model inference, session management, context compaction, and tool orchestration.
+**Goal:** Retire the optional embedded assistant host and keep Vulcan focused on the stable MCP/CLI/tool boundary. Native assistant runtimes should connect through MCP or shell out to Vulcan's JSON commands; Vulcan should not host `pi` directly in Phase 9.
 
-**Status:** Complete for the optional CLI-hosted managed-engine pilot. Shipped: assistant config, `vulcan assistant` CLI, pi process lifecycle management, synchronous JSONL RPC client, typed pi event parsing, context payload injection, bundled pi extension materialization, permission-profile propagation, one-shot prompts, non-interactive prompt stdin, interactive chat, chat tab completion, resume/continue via newest session, explicit resume target selection, session listing with header metadata, manual/on-exit Markdown session exports, doctor/context inspection, renderer hardening, mock-engine integration tests, platform-neutral chat transport contract types, and user docs. Deferred items are explicitly scoped to richer terminal UI, extension UI prompts, real-pi CI smoke tests, daemon-managed async transport, and native chat adapters.
+**Status:** Retired and removed. The CLI-hosted managed-engine pilot was implemented, tested against a mock engine, and then removed after real-world evaluation showed that it produced a worse experience than using the native assistant runtime directly or using Vulcan's MCP server. The `vulcan assistant` command, pi RPC modules, bundled pi extension, assistant session export app code, and embedded-host config fields were deleted. The remaining supported surfaces are MCP, `vulcan describe`, `vulcan agent install`, `vulcan skill ...`, and external runtimes invoking Vulcan commands under permission profiles.
 
-**Completion scope:** The checked `[x]` items define the completed 9.21 CLI-hosted pilot. `[-]` items in this phase are non-blocking follow-ons that were deliberately cut from the pilot because they depend on stable pi CI, daemon process supervision, richer terminal UI, or native chat transport decisions. They should not be read as unfinished requirements for the 9.21 milestone.
+**Replacement path:** Conversation archiving moved into the bundled `conversation-export` skill command. This intentionally demonstrates the default skill/custom-command flow and keeps transcript import/export as ordinary vault note creation rather than a hard-coded assistant subsystem.
 
-**Why this phase exists separately:** Phase 9.12 defines the contract for external agent runtimes shelling out to Vulcan. Phase 9.21 flips the host/runtime relationship: Vulcan embeds a managed agent engine. The phases intentionally share the same prompts, skills, permission profiles, and mutation rules, but they are different deliverables:
+**Why the design changed:** Phase 9.12 and the MCP work proved the important boundary is tool ownership, permission filtering, and vault mutation semantics. Embedding a specific assistant engine inside Vulcan duplicated UI/session concerns, depended on unstable external runtime flags, and did not provide enough value over MCP plus external runtimes. Vulcan should remain the vault/tool authority; assistant clients should own chat UX and model orchestration.
 
-- **9.12:** bring-your-own runtime (Codex, Claude Code, Gemini CLI, `pi`, etc.); Vulcan is the tool provider
-- **9.21:** built-in `vulcan assistant`; Vulcan is the host process and a managed agent engine is embedded behind it, with `pi` as one candidate engine
+**Historical note:** The detailed checklist below records the retired pilot for archaeology only. It is not an open work queue, and deferred items in this retired phase are no longer Phase 9 requirements. Future native-chat or runtime-host work should start from MCP, Phase 10 daemon primitives, and explicit new roadmap items rather than reviving the removed `vulcan assistant` code.
 
 **Design principle — Vulcancentrism:** Vulcan is the host process. Pi is a managed subprocess. The user never interacts with pi directly; all interaction goes through the `vulcan assistant` command surface. Based on the MCP server experience, Vulcan must own context assembly, tool discovery, permission-profile filtering, and vault mutation semantics. Pi's built-in tools are not the trusted enforcement boundary; vault mutations should be routed through Vulcan commands, not pi's raw file-edit tools, so the same safety checks, dry-run, and auto-commit guarantees apply.
 
@@ -4266,7 +4265,7 @@ Spawn and manage the pi process lifecycle. This is the foundation that everythin
 - [x] Add `[assistant]` section to `DEFAULT_CONFIG_TEMPLATE` (commented out, with defaults shown)
 - [x] Add `--assistant-pi-binary`, provider/model/thinking overrides, and `--assistant-permissions` CLI overrides
 - [x] Integration test: spawn a mock pi-compatible RPC process, verify command/response round-trip, then shut down cleanly
-- [-] Real-pi CI smoke test: deferred until CI has a stable pi install and credentials story
+- [x] Removed with retired embedded host: Real-pi CI smoke test: deferred until CI has a stable pi install and credentials story
 
 ### 9.21.2 Pi RPC client
 
@@ -4314,9 +4313,8 @@ A typed Rust client for pi's JSON-RPC protocol. This module knows the protocol; 
   - `PiAssistantEvent` enum for streaming delta types: `TextDelta`, `ThinkingDelta`, `ToolCallStart`, `ToolCallDelta`, `ToolCallEnd`, `Done`, `Error`
   - All structs derive `Serialize`, `Deserialize` for parsing from pi's JSON output
   - Unit tests for parsing representative JSON lines from pi's RPC protocol against the typed structs
-
-- [-] Dependency: add `tokio` with `process` and `sync` features to `vulcan-cli/Cargo.toml`; not needed for the shipped synchronous CLI host, and deferred to daemon-managed async transport
-- [-] Add `tokio-util` with `codec` feature for the JSONL codec if beneficial; the shipped client uses a manual LF-only line reader
+- [x] Removed with retired embedded host: Dependency: add `tokio` with `process` and `sync` features to `vulcan-cli/Cargo.toml`; not needed for the shipped synchronous CLI host, and deferred to daemon-managed async transport
+- [x] Removed with retired embedded host: Add `tokio-util` with `codec` feature for the JSONL codec if beneficial; the shipped client uses a manual LF-only line reader
 
 ### 9.21.3 Vulcan tools as a pi extension
 
@@ -4347,7 +4345,7 @@ Register Vulcan's tool surface as pi custom tools so the LLM can call them natur
   - Injects a compact tool summary and active permission profile description
 - [x] Unit tests: verify the bundled extension materializes and carries the expected permission-profile enforcement strings
 - [x] Integration test: launch a mock pi-compatible RPC engine with the extension path and verify one-shot/chat round-trips
-- [-] Real pi extension load test: deferred until real-pi CI smoke tests are available
+- [x] Removed with retired embedded host: Real pi extension load test: deferred until real-pi CI smoke tests are available
 
 ### 9.21.4 Assistant context injection
 
@@ -4387,7 +4385,7 @@ Render pi's streaming events into Vulcan's terminal output, both for one-shot pr
   - Show tool results as truncated output with `[...N lines]` for long results
   - Print session stats on completion: token usage, cost, turn count
   - Respect `--output json` for machine-readable results (emit structured JSON instead of formatted text)
-- [-] Rich `InteractiveRenderer` implementation — deferred; chat currently uses the same streaming print renderer:
+- [x] Removed with retired embedded host: Rich `InteractiveRenderer` implementation — deferred; chat currently uses the same streaming print renderer:
   - Use `crossterm` for styled output (colored tool names, bold headings, dimmed thinking)
   - Show a live tool execution indicator with spinner (reuse existing TUI patterns from `browse_tui.rs`)
   - Render assistant text as it streams (no buffering)
@@ -4419,7 +4417,7 @@ A REPL-style interactive assistant session, driven by `readline` for input and `
     - `/stats`: send `get_session_stats` command to pi, display usage
     - `/help`: display available slash commands
     - `/quit` or Ctrl+D: send `abort` if streaming, then shut down pi and exit
-  - [-] Handle extension UI requests from pi:
+- [x] Removed with retired embedded host: Handle extension UI requests from pi:
     - `confirm`: render the confirmation prompt in the terminal, read y/n, send response back to pi
     - `select`: render numbered options, read selection, send response back to pi
     - `input`: render the prompt, read input via rustyline, send response back to pi
@@ -4455,7 +4453,7 @@ Wire the assistant into Vulcan's CLI command structure.
   - `--thinking <level>` — thinking level override
   - `--show-thinking` — render thinking blocks in one-shot output
   - `--assistant-permissions <profile>` — permission profile (`readonly`, `edit`, `refactor`; default from config); the global `--permissions` flag remains available before the subcommand
-  - [-] `--no-commit` — not added because assistant writes go through normal Vulcan commands and existing command-level commit controls
+- [x] Removed with retired embedded host: `--no-commit` — not added because assistant writes go through normal Vulcan commands and existing command-level commit controls
   - `--output json` — machine-readable output for one-shot results
   - `--no-tools` — start pi with `--no-tools` and only Vulcan tools from the extension
 - [x] Chat mode flags:
@@ -4497,7 +4495,7 @@ Enforce Vulcan's permission model in the pi subprocess so that vault mutations a
   permissions = "edit"  # default profile for assistant sessions
   ```
 - [x] `--assistant-permissions` CLI override on `vulcan assistant` commands
-- [-] High-impact dry-run-by-default prompts are deferred until extension UI confirmation is implemented; Vulcan command permission checks remain the enforcement boundary
+- [x] Removed with retired embedded host: High-impact dry-run-by-default prompts are deferred until extension UI confirmation is implemented; Vulcan command permission checks remain the enforcement boundary
 - [x] `vulcan assistant --assistant-permissions readonly` is the recommended mode for exploration and search-heavy workflows
 - [x] Document the permission profile mapping from Vulcan profiles to pi tool constraints
 - [x] Integration test: extension unit coverage verifies readonly built-in blocking and nested Vulcan invocations pass the active permission profile
@@ -4529,7 +4527,7 @@ Comprehensive testing for the embedded assistant integration.
   - [x] Context builder: verify AGENTS.md injection, skill enumeration, tool summary generation
   - [x] Renderer: verify formatted output for streaming events, tool calls, thinking blocks
   - [x] Permission enforcement: verify tool_call blocking inputs are bundled and permission profile is propagated
-- [-] **Integration tests (require pi installed in CI):**
+- [x] Removed with retired embedded host: **Integration tests (require pi installed in CI):**
   - Spawn pi in RPC mode, send `get_state`, verify response structure
   - One-shot prompt: `vulcan assistant "list files in the current directory"` — verify non-empty text output
   - Chat round-trip: send a prompt, receive streaming text, send a follow-up, receive response
@@ -4538,16 +4536,16 @@ Comprehensive testing for the embedded assistant integration.
   - Permission profiles: verify `readonly` blocks note mutations, `edit` allows them
   - [x] Session persistence with mock engine: start a session, exit, resume a selected session, and verify the resolved session is passed back to the engine
   - Crash recovery: kill pi mid-stream, verify Vulcan detects the crash and reports a useful error
-- [-] **Smoke tests (CI-marked optional if pi is not installed):**
+- [x] Removed with retired embedded host: **Smoke tests (CI-marked optional if pi is not installed):**
   - Daily-driver workflows: read note, patch note, search vault, run refactors
   - Model switching: `/model` in chat mode
   - Compaction: long session that triggers auto-compaction
 - [x] **Error scenario tests:**
   - Pi binary not found
-  - [-] Pi binary too old strict failure; doctor reports version, but minimum version is deferred until pi publishes stable compatibility metadata
-  - [-] No API key configured; provider-specific auth remains owned by pi
+- [x] Removed with retired embedded host: Pi binary too old strict failure; doctor reports version, but minimum version is deferred until pi publishes stable compatibility metadata
+- [x] Removed with retired embedded host: No API key configured; provider-specific auth remains owned by pi
   - Pi crashes mid-stream
-  - [-] Pi takes too long (timeout); deferred to daemon-managed process supervision
+- [x] Removed with retired embedded host: Pi takes too long (timeout); deferred to daemon-managed process supervision
   - [x] Extension fails to load
   - [x] Misconfigured settings
 - [x] Document how to run the assistant test suite locally and in CI, including which tests require pi to be installed
@@ -4685,34 +4683,34 @@ Do not make Telegram the architecture. If native chat is revived, start by defin
 
 Implement Telegram on top of the cross-platform contract from 9.21.12 rather than letting Telegram-specific concerns leak into the assistant core.
 
-- [-] New module `vulcan-cli/src/assistant/platforms/telegram.rs` (using `teloxide` or similar crate)
-- [-] Add `vulcan assistant --telegram` command only after the transport contract exists
-- [-] Map Telegram users to `telegram:<user_id>` and spaces to `telegram:<chat_id>`
-- [-] Support DM, group, and supergroup conversations through the shared `ChatSpace` model
-- [-] Translate Telegram replies, reactions, attachments, and inline keyboard button callbacks into the shared event/action contract
-- [-] Route sessions by internal chat-space ID rather than raw Telegram `chat_id` paths
-- [-] Batch streaming message edits to respect Telegram API rate limits without making the assistant renderer Telegram-aware
-- [-] Enforce security at the Rust boundary by resolving the effective profile from the transport contract, then spawning pi with the corresponding `--permissions` profile
+- [x] Removed with retired embedded host: New module `vulcan-cli/src/assistant/platforms/telegram.rs` (using `teloxide` or similar crate)
+- [x] Removed with retired embedded host: Add `vulcan assistant --telegram` command only after the transport contract exists
+- [x] Removed with retired embedded host: Map Telegram users to `telegram:<user_id>` and spaces to `telegram:<chat_id>`
+- [x] Removed with retired embedded host: Support DM, group, and supergroup conversations through the shared `ChatSpace` model
+- [x] Removed with retired embedded host: Translate Telegram replies, reactions, attachments, and inline keyboard button callbacks into the shared event/action contract
+- [x] Removed with retired embedded host: Route sessions by internal chat-space ID rather than raw Telegram `chat_id` paths
+- [x] Removed with retired embedded host: Batch streaming message edits to respect Telegram API rate limits without making the assistant renderer Telegram-aware
+- [x] Removed with retired embedded host: Enforce security at the Rust boundary by resolving the effective profile from the transport contract, then spawning pi with the corresponding `--permissions` profile
 
 ### 9.21.14 Matrix adapter research and viability gate (Deferred follow-on: native chat)
 
 Matrix is explicitly more complex than Telegram because it brings sync loops, room state, media handling, and E2EE key management. Treat it as a separate design gate, not as "Telegram but different IDs."
 
-- [-] Produce a research note covering Matrix SDK options, sync architecture, E2EE key storage, verification UX, and room/thread/reaction support
-- [-] Evaluate `matrix-sdk` (or equivalent) for a daemon-managed long-lived adapter
-- [-] Define daemon-managed runtime state requirements for:
+- [x] Removed with retired embedded host: Produce a research note covering Matrix SDK options, sync architecture, E2EE key storage, and verification UX
+- [x] Removed with retired embedded host: Evaluate `matrix-sdk` (or equivalent) for a daemon-managed long-lived adapter
+- [x] Removed with retired embedded host: Define daemon-managed runtime state requirements for:
   - sync tokens
   - room state caches
   - Olm/Megolm key stores
   - device verification state
   - media cache / upload staging
-- [-] Map Matrix users to `matrix:@user:server` and rooms to `matrix:!roomid:server`
-- [-] Verify how replies, reactions, edits, attachments, and richer interactions map into the 9.21.12 transport contract
-- [-] Decide whether Matrix lands as:
+- [x] Removed with retired embedded host: Map Matrix users to `matrix:@user:server` and rooms to `matrix:!roomid:server`
+- [x] Removed with retired embedded host: Verify how replies, reactions, edits, attachments, and richer interactions map into the 9.21.12 transport contract
+- [x] Removed with retired embedded host: Decide whether Matrix lands as:
   - a native daemon-managed adapter
   - a separate sidecar process speaking the same transport contract
   - or a deferred platform if the operational burden is too high for the native runtime
-- [-] Exit criterion: do not start a production Matrix implementation until the runtime-state boundary and verification story are both explicit
+- [x] Removed with retired embedded host: Exit criterion for production Matrix implementation
 
 ## Phase 9.22: Crate boundary cleanup and reusable workflow extraction
 
@@ -4722,7 +4720,7 @@ Matrix is explicitly more complex than Telegram because it brings sync loops, ro
 
 **Scope rule:** This phase is primarily a code migration and boundary cleanup. It should not intentionally change user-visible behavior unless a separate roadmap item explicitly calls for it.
 
-**Builds on:** Phase 9.18 command reorganization and the current command surfaces. Recommended before substantial additional work in Phase 9.20, Phase 9.21, and Phase 10 so those surfaces can consume shared libraries instead of depending on `vulcan-cli` internals.
+**Builds on:** Phase 9.18 command reorganization and the current command surfaces. Recommended before substantial additional work in Phase 9.20 and Phase 10 so those surfaces can consume shared libraries instead of depending on `vulcan-cli` internals.
 
 ### 9.22.1 Responsibility contract and migration inventory
 
@@ -5187,7 +5185,7 @@ trait SyncBackend: Send + Sync {
 
 ### 15.2 Telegram bot integration
 
-**Note:** Phase 9.12 no longer assumes a built-in conversational Telegram assistant. Phase 15.2 covers a daemon-hosted webhook/integration variant for simpler notification and command use cases; the richer embedded assistant/chat track is the optional follow-on in Phase 9.21's cross-platform chat transport work (9.21.12+) if external runtimes prove insufficient.
+**Note:** Phase 9.12 no longer assumes a built-in conversational Telegram assistant. Phase 15.2 covers a daemon-hosted webhook/integration variant for simpler notification and command use cases; richer chat transport work should be planned as a new daemon-era item if external runtimes prove insufficient.
 
 - [ ] Per-vault Telegram bot configuration (daemon mode):
   ```toml
@@ -5784,7 +5782,7 @@ Phase 9.8 (Dataview) builds on Phase 4 (properties and Bases expression language
 Phase 9.9 (Templater) builds on Phase 9.7 (enhanced templates) and Phase 9.8.8 (DataviewJS sandbox for JS execution commands). Native tp.date/tp.file/tp.frontmatter modules need no JS; tp.web, user scripts, and execution commands reuse the DataviewJS sandbox.
 Phase 9.10 (Tasks plugin) builds on Phase 9.8.2 (task extraction) and provides the parsing and query layer for inline checkbox tasks: Tasks DSL parser, recurring task expansion (RRULE), dependency graph, and custom status types. This shared infrastructure is reused by 9.15 (TaskNotes). The CLI surface is unified under `vulcan tasks` (defined in 9.15.9).
 Phase 9.11 (Kanban) builds on Phase 9.8.2 (list item extraction) and Phase 7.1 (metadata refactors). TUI/WebUI rendering depends on Phase 9.2 (browse TUI) and Phase 13 (WebUI) respectively.
-Phase 9.12 (external agent integration) builds on Phase 5 (vectors) and Phase 7.12 (query model). Independent of 9.9–9.11. The tool interface is aligned with 9.18 command reorganization — tools map 1:1 to CLI commands, and external runtimes consume them through `describe`/`help` plus vault `AGENTS.md` and skills. Session history and compaction stay in the external runtime by default. The optional embedded-host follow-on is tracked separately in Phase 9.21; 9.12.8 is the deferral gate, not a second implementation plan.
+Phase 9.12 (external agent integration) builds on Phase 5 (vectors) and Phase 7.12 (query model). Independent of 9.9–9.11. The tool interface is aligned with 9.18 command reorganization — tools map 1:1 to CLI commands, and external runtimes consume them through `describe`/`help` plus vault `AGENTS.md` and skills. Session history and compaction stay in the external runtime by default. The optional embedded-host follow-on was evaluated and retired in Phase 9.21; 9.12.8 is the deferral gate, not a second implementation plan.
 Phase 9.18 (CLI redesign) has varying sub-phase dependencies: 9.18.1 (reorg) and 9.18.2 (note CRUD) can start after Phase 7; 9.18.3 (query enhancements) after 7.12; 9.18.5 (JS runtime) after 9.8.8; 9.18.6 (web tools) is standalone; 9.18.7 (docs) is standalone; 9.18.8 (git) after 9.3; 9.18.9 (task mutations) after 9.10 and 9.15. The command tree reorganization (9.18.1) should land last — build new commands first, then rename in one pass.
 Phase 9.13 (QuickAdd) provides Obsidian-compatible capture format syntax and settings import. Macro/scripting functionality is handled by the JS runtime (9.18.5) and existing CLI commands rather than a separate automation DSL.
 Phase 9.15 (TaskNotes) is Vulcan's primary task management model. Builds on Phase 4 (properties/Bases, including 4.5.1 custom source types) and Phase 9.8 (Dataview metadata). Reuses shared task infrastructure from 9.10 (recurring tasks, dependencies, custom statuses). The unified `vulcan tasks` CLI (9.15.9) covers both TaskNotes file-based tasks and inline checkbox tasks. Calendar sync (9.15.10), HTTP API (9.15.12), and calendar Bases views are deferred to post-Phase 9. Time tracking (9.15.6) ships core+CLI only; GUI deferred to post-WebUI. Reminders (9.15.7) ship core evaluation only; delivery channels deferred to chat/daemon phases.

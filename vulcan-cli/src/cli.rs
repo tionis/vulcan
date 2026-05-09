@@ -24,7 +24,7 @@ Command groups (run `vulcan help` for the full grouped reference):
   Index:       index, vectors, cache, repair
   Interactive: browse, edit, open
   Scripting:   run, web, render, plugin, tool, skill
-  AI/MCP:      assistant, mcp
+  AI/MCP:      mcp
   Git:         git, changes
   Automation:  saved, automation, export, checkpoint
   Setup:       init, agent, config, trust
@@ -1222,34 +1222,6 @@ Notes:
 Examples:
   vulcan status
   vulcan status --output json";
-
-const ASSISTANT_COMMAND_AFTER_HELP: &str = "\
-Modes:
-  --doctor         Check managed-engine availability and launch configuration
-  --print-context  Print the vault context that would be sent to the engine
-  --list-sessions  List local assistant session files
-  --export-session SESSION
-                   Export a session transcript to Markdown
-  --chat           Start the managed engine's native interactive chat UI
-  PROMPT           Run one prompt through the managed RPC engine
-
-Notes:
-  `assistant` is an optional embedded host mode. Vulcan owns vault context, MCP tool exposure,
-  and permission-profile selection. TTY chat delegates to pi's native terminal UI;
-  one-shot and piped runs use the managed engine RPC path.
-  The initial runtime is `pi` with the vault as the subprocess working directory.
-  Defaults live under `[assistant]` in `.vulcan/config.toml`.
-  Use `--assistant-permissions <profile>` to bind the assistant to a permission profile.
-  Use `--tool-pack` to expose the same curated tool packs as MCP.
-
-Examples:
-  vulcan assistant --doctor
-  vulcan assistant --print-context --tool-pack notes-read,search,status
-  vulcan assistant --list-sessions
-  vulcan assistant --export-session latest
-  vulcan assistant --chat --continue
-  vulcan assistant --chat --resume-session session-id
-  vulcan assistant \"Summarize today's routine\"";
 
 const MCP_COMMAND_AFTER_HELP: &str = "\
 Protocols:
@@ -3296,24 +3268,6 @@ pub enum McpToolPackArg {
     Index,
 }
 
-impl McpToolPackArg {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::NotesRead => "notes-read",
-            Self::Search => "search",
-            Self::Status => "status",
-            Self::Custom => "custom",
-            Self::Daily => "daily",
-            Self::Tasks => "tasks",
-            Self::NotesWrite => "notes-write",
-            Self::NotesManage => "notes-manage",
-            Self::Web => "web",
-            Self::Config => "config",
-            Self::Index => "index",
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
 pub enum McpToolPackModeArg {
     #[default]
@@ -4802,81 +4756,6 @@ pub enum Command {
     Skill {
         #[command(subcommand)]
         command: SkillCommand,
-    },
-    #[command(
-        about = "Run an optional embedded assistant engine against this vault",
-        after_help = ASSISTANT_COMMAND_AFTER_HELP
-    )]
-    Assistant {
-        #[arg(help = "Prompt text; if omitted and stdin is piped, stdin is used")]
-        prompt: Vec<String>,
-        #[arg(
-            long,
-            help = "Check the configured managed engine without starting a session"
-        )]
-        doctor: bool,
-        #[arg(
-            long,
-            help = "Print the context payload that would be sent to the engine"
-        )]
-        print_context: bool,
-        #[arg(
-            long,
-            help = "List assistant session files from the configured sessions directory"
-        )]
-        list_sessions: bool,
-        #[arg(long, help = "Start a REPL-style assistant chat session")]
-        chat: bool,
-        #[arg(long, help = "Resume the most recent assistant session")]
-        resume: bool,
-        #[arg(
-            long,
-            value_name = "SESSION",
-            help = "Resume a specific assistant session by path, file name, stem, or session id"
-        )]
-        resume_session: Option<String>,
-        #[arg(
-            long = "continue",
-            help = "Continue the most recent assistant session without prompting"
-        )]
-        continue_session: bool,
-        #[arg(
-            long,
-            value_name = "SESSION",
-            help = "Export a session by path, file name, stem, session id, or 'latest'"
-        )]
-        export_session: Option<String>,
-        #[arg(long, help = "Override [assistant].provider for this run")]
-        provider: Option<String>,
-        #[arg(long, help = "Override [assistant].model for this run")]
-        model: Option<String>,
-        #[arg(long, help = "Override [assistant].thinking_level for this run")]
-        thinking: Option<String>,
-        #[arg(long, help = "Show thinking deltas emitted by the engine")]
-        show_thinking: bool,
-        #[arg(long, help = "Override [assistant].pi_binary for this run")]
-        assistant_pi_binary: Option<String>,
-        #[arg(
-            long = "assistant-permissions",
-            help = "Permission profile used to filter assistant tool access"
-        )]
-        assistant_permissions: Option<String>,
-        #[arg(long, help = "Do not persist assistant session state")]
-        ephemeral: bool,
-        #[arg(
-            long,
-            help = "Do not inject Vulcan tools into the managed engine context"
-        )]
-        no_tools: bool,
-        #[arg(
-            long,
-            value_enum,
-            value_delimiter = ',',
-            default_value = "notes-read,search,status"
-        )]
-        tool_pack: Vec<McpToolPackArg>,
-        #[arg(long, value_enum, default_value_t = McpToolPackModeArg::Static)]
-        tool_pack_mode: McpToolPackModeArg,
     },
     #[command(
         about = "Open, inspect, and append to daily notes",

@@ -7,7 +7,7 @@ Core workflows:
 - `vulcan note get|create|append|patch` for precise note edits.
 - `vulcan export ...` for publication output; `markdown`, `json`, `epub`, and `zip` can apply publication transforms without modifying source notes.
 - `vulcan doctor` to surface unresolved links and parser diagnostics.
-- `vulcan assistant --doctor`, `vulcan assistant "..."`, and `vulcan assistant --chat` for the optional embedded assistant host; see `docs/guide/assistant.md`.
+- `vulcan mcp ...`, `vulcan agent print-config`, and `vulcan skill ...` for external assistant runtimes and workflow skills.
 
 Automation conventions:
 
@@ -16,4 +16,4 @@ Automation conventions:
 - Note names may be ambiguous; pass a full relative path when precision matters.
 - When you need repeatable public exports, prefer `export profile create` for the profile-wide settings and `export profile rule ...` for the ordered transform rules stored in `.vulcan/config.toml`.
 
-See also: `help examples`, `help filters`, `help query-dsl`, `help assistant`, `vulcan export --help`.
+See also: `help examples`, `help filters`, `help query-dsl`, `help assistant-integration`, `vulcan export --help`.
