@@ -1230,13 +1230,14 @@ Modes:
   --list-sessions  List local assistant session files
   --export-session SESSION
                    Export a session transcript to Markdown
-  --chat           Start a REPL-style chat session
+  --chat           Start the managed engine's native interactive chat UI
   PROMPT           Run one prompt through the managed RPC engine
 
 Notes:
   `assistant` is an optional embedded host mode. Vulcan owns vault context, MCP tool exposure,
-  and permission-profile selection; the engine is a JSONL RPC subprocess.
-  The initial runtime is `pi` via `pi --mode rpc --cwd <vault>`.
+  and permission-profile selection. TTY chat delegates to pi's native terminal UI;
+  one-shot and piped runs use the managed engine RPC path.
+  The initial runtime is `pi` with the vault as the subprocess working directory.
   Defaults live under `[assistant]` in `.vulcan/config.toml`.
   Use `--assistant-permissions <profile>` to bind the assistant to a permission profile.
   Use `--tool-pack` to expose the same curated tool packs as MCP.

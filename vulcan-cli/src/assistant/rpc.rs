@@ -159,10 +159,14 @@ impl<R: BufRead, W: Write> ManagedRpcClient<R, W> {
     }
 
     pub(crate) fn prompt(&mut self, message: &str) -> Result<RpcCommandResult, CliError> {
-        self.command(
+        let mut result = self.command(
             "prompt",
             map_with("message", Value::String(message.to_string())),
-        )
+        )?;
+        if result.response.success && !result.events.iter().any(is_agent_end) {
+            result.events.extend(self.read_until_agent_end()?);
+        }
+        Ok(result)
     }
 
     pub(crate) fn steer(&mut self, message: &str) -> Result<RpcCommandResult, CliError> {
@@ -177,10 +181,6 @@ impl<R: BufRead, W: Write> ManagedRpcClient<R, W> {
             "follow_up",
             map_with("message", Value::String(message.to_string())),
         )
-    }
-
-    pub(crate) fn abort(&mut self) -> Result<RpcCommandResult, CliError> {
-        self.command("abort", Map::new())
     }
 
     pub(crate) fn get_state(&mut self) -> Result<PiSessionState, CliError> {
@@ -286,6 +286,31 @@ impl<R: BufRead, W: Write> ManagedRpcClient<R, W> {
             }
         }
     }
+
+    fn read_until_agent_end(&mut self) -> Result<Vec<AssistantEvent>, CliError> {
+        let mut events = Vec::new();
+        loop {
+            let Some(message) = read_message(&mut self.reader)? else {
+                return Err(CliError::operation(
+                    "managed assistant engine exited before prompt completed",
+                ));
+            };
+            match message {
+                RpcMessage::Event(event) => {
+                    let done = is_agent_end(&event);
+                    events.push(event);
+                    if done {
+                        return Ok(events);
+                    }
+                }
+                RpcMessage::Response(_) | RpcMessage::Unknown(_) => {}
+            }
+        }
+    }
+}
+
+fn is_agent_end(event: &AssistantEvent) -> bool {
+    matches!(event, AssistantEvent::AgentEnd { .. })
 }
 
 fn map_with(key: &str, value: Value) -> Map<String, Value> {
@@ -418,6 +443,41 @@ mod tests {
                 "message": "hello"
             })
         );
+    }
+
+    #[test]
+    fn client_can_collect_prompt_events_after_immediate_response() {
+        let input = br#"{"type":"response","id":"01KTEST","command":"prompt","success":true,"data":{"ok":true}}
+{"type":"message_update","assistant_event":{"type":"text_delta","text":"hello"}}
+{"type":"agent_end","messages":[]}
+"#;
+        let reader = BufReader::new(Cursor::new(input));
+        let writer = Vec::new();
+        let mut client = ManagedRpcClient::new(reader, writer);
+        let command = RpcCommand {
+            id: "01KTEST".to_string(),
+            command: "prompt".to_string(),
+            data: Map::new(),
+        };
+
+        client.send(&command).expect("command should send");
+        let result = client
+            .read_until_response("01KTEST")
+            .expect("response should be read");
+        let mut events = result.events;
+        events.extend(
+            client
+                .read_until_agent_end()
+                .expect("prompt events should complete"),
+        );
+
+        assert_eq!(
+            events.first(),
+            Some(&AssistantEvent::TextDelta {
+                text: "hello".to_string()
+            })
+        );
+        assert!(events.iter().any(is_agent_end));
     }
 
     #[test]

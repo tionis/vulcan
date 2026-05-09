@@ -72,6 +72,12 @@ pub(crate) struct EngineLaunch {
     pub(crate) env: Vec<(String, String)>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PiLaunchMode {
+    Interactive,
+    Rpc,
+}
+
 pub(crate) fn doctor(options: &AssistantHostOptions, vault_root: &Path) -> EngineDoctorReport {
     if options.runtime != "pi" {
         return EngineDoctorReport {
@@ -126,7 +132,7 @@ pub(crate) fn spawn_pi_rpc(
     options: &AssistantHostOptions,
     vault_root: &Path,
 ) -> Result<ManagedEngineProcess, CliError> {
-    let launch = build_pi_launch(options, vault_root);
+    let launch = build_pi_launch_for_mode(options, vault_root, PiLaunchMode::Rpc, &[]);
     let mut child = Command::new(&launch.program)
         .args(&launch.args)
         .current_dir(&launch.cwd)
@@ -150,10 +156,52 @@ pub(crate) fn spawn_pi_rpc(
     })
 }
 
+pub(crate) fn run_pi_interactive(
+    options: &AssistantHostOptions,
+    vault_root: &Path,
+    initial_messages: &[String],
+) -> Result<(), CliError> {
+    let launch = build_pi_launch_for_mode(
+        options,
+        vault_root,
+        PiLaunchMode::Interactive,
+        initial_messages,
+    );
+    let status = Command::new(&launch.program)
+        .args(&launch.args)
+        .current_dir(&launch.cwd)
+        .envs(launch.env.iter().map(|(key, value)| (key, value)))
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .status()
+        .map_err(CliError::operation)?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(CliError::operation(format!(
+            "managed assistant engine exited with {status}"
+        )))
+    }
+}
+
 pub(crate) fn build_pi_launch(options: &AssistantHostOptions, vault_root: &Path) -> EngineLaunch {
+    build_pi_launch_for_mode(options, vault_root, PiLaunchMode::Rpc, &[])
+}
+
+pub(crate) fn build_pi_launch_for_mode(
+    options: &AssistantHostOptions,
+    vault_root: &Path,
+    mode: PiLaunchMode,
+    initial_messages: &[String],
+) -> EngineLaunch {
     let program =
         resolve_binary(&options.pi_binary).unwrap_or_else(|| PathBuf::from(&options.pi_binary));
-    let mut args = vec![OsString::from("--mode"), OsString::from("rpc")];
+    let mut args = Vec::new();
+    if mode == PiLaunchMode::Rpc {
+        args.push(OsString::from("--mode"));
+        args.push(OsString::from("rpc"));
+    }
     if let Some(provider) = options.provider.as_ref() {
         args.push(OsString::from("--provider"));
         args.push(OsString::from(provider));
@@ -184,6 +232,7 @@ pub(crate) fn build_pi_launch(options: &AssistantHostOptions, vault_root: &Path)
     } else {
         args.push(OsString::from("--no-session"));
     }
+    args.extend(initial_messages.iter().map(OsString::from));
     EngineLaunch {
         program,
         cwd: vault_root.to_path_buf(),
@@ -321,6 +370,36 @@ mod tests {
             launch.env,
             vec![("VULCAN_VAULT_ROOT".to_string(), "/vault".to_string())]
         );
+    }
+
+    #[test]
+    fn interactive_pi_launch_uses_native_ui_without_rpc_mode() {
+        let mut options = options();
+        options.extension_entrypoint = Some(PathBuf::from("/vault/.vulcan/assistant/index.ts"));
+        options.context_prompt_path = Some(PathBuf::from("/vault/.vulcan/assistant/context.md"));
+        let launch = build_pi_launch_for_mode(
+            &options,
+            Path::new("/vault"),
+            PiLaunchMode::Interactive,
+            &["hello".to_string()],
+        );
+        let args = launch
+            .args
+            .iter()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert!(!args.windows(2).any(|pair| pair == ["--mode", "rpc"]));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == ["-e", "/vault/.vulcan/assistant/index.ts"]));
+        assert!(args.windows(2).any(|pair| {
+            pair == [
+                "--append-system-prompt",
+                "/vault/.vulcan/assistant/context.md",
+            ]
+        }));
+        assert_eq!(args.last().map(String::as_str), Some("hello"));
     }
 
     #[test]
