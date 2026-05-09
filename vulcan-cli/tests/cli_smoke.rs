@@ -9865,6 +9865,12 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(vault_root
         .join(".agents/skills/js-api-guide/SKILL.md")
         .exists());
+    assert!(vault_root
+        .join(".agents/skills/mcp-setup/SKILL.md")
+        .exists());
+    assert!(vault_root
+        .join(".agents/skills/diagnostics-and-repair/SKILL.md")
+        .exists());
     assert!(vault_root.join("AI/Prompts/summarize-note.md").exists());
     assert!(vault_root.join("AI/Prompts/daily-review.md").exists());
     assert!(fs::read_to_string(vault_root.join("AGENTS.md"))
@@ -9876,6 +9882,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         && items
             .iter()
             .any(|item| item["path"] == ".agents/skills/js-api-guide/SKILL.md")
+        && items
+            .iter()
+            .any(|item| item["path"] == ".agents/skills/mcp-setup/SKILL.md")
         && items
             .iter()
             .any(|item| item["path"] == "AI/Prompts/summarize-note.md")));
@@ -9960,6 +9969,24 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(list_json["skills"]
         .as_array()
         .is_some_and(|skills| skills.iter().any(|skill| skill["name"] == "skill-creator")));
+    for expected in [
+        "configuration-and-permissions",
+        "mcp-setup",
+        "index-maintenance",
+        "dataview-and-bases",
+        "templates-and-capture",
+        "publishing-and-export",
+        "plugin-authoring",
+        "diagnostics-and-repair",
+        "conversation-export",
+    ] {
+        assert!(
+            list_json["skills"]
+                .as_array()
+                .is_some_and(|skills| skills.iter().any(|skill| skill["name"] == expected)),
+            "missing bundled skill {expected}"
+        );
+    }
 
     let get_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -9999,6 +10026,25 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(get_creator_json["body"].as_str().is_some_and(|body| {
         body.contains("#!/usr/bin/env -S vulcan skill exec")
             && body.contains("metadata.vulcan.commands")
+    }));
+
+    let get_mcp_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "skill",
+            "get",
+            "mcp-setup",
+        ])
+        .assert()
+        .success();
+    let get_mcp_json = parse_stdout_json(&get_mcp_assert);
+    assert_eq!(get_mcp_json["name"].as_str(), Some("mcp-setup"));
+    assert!(get_mcp_json["body"].as_str().is_some_and(|body| {
+        body.contains("OAuth/IndieAuth") && body.contains("ChatGPT remote connector")
     }));
 }
 
