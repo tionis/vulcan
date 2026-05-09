@@ -6166,7 +6166,7 @@
       },
       {
         "about": "List and read bundled or vault-defined assistant skills",
-        "after_help": "Subcommands:\n  list       enumerate visible bundled and vault-defined skills\n  get        read one skill's metadata plus Markdown body\n  show       read one skill's metadata plus SKILL.md body (alias for get)\n  commands   list Vulcan-declared commands exported by one skill\n  run        run a skill command with validated JSON input\n  validate   validate skills, command metadata, schemas, scripts, and permission profile references\n  init       scaffold a new skill directory with optional starter command\n\nNotes:\n  Skill visibility follows the active permission profile's read filter.\n  External runtimes should call `skill list` up front and `skill get <name>` on demand.\n  Skill names are normalized from folder names, but `skill get` also accepts the relative path.\n  Skill command execution requires a trusted vault: `vulcan trust add`.\n\nExamples:\n  vulcan skill list\n  vulcan --output json skill list\n  vulcan skill get note-operations\n  vulcan skill get weekly-review\n  vulcan skill show daily-review\n  vulcan skill commands daily-review\n  vulcan skill run daily-review prepare-day --input-json '{\"date\":\"2026-05-05\",\"dryRun\":true}'\n  vulcan skill validate\n  vulcan skill init my-skill --starter-command hello",
+        "after_help": "Subcommands:\n  list       enumerate visible bundled and vault-defined skills\n  get        read one skill's metadata plus Markdown body\n  show       read one skill's metadata plus SKILL.md body (alias for get)\n  commands   list Vulcan-declared commands exported by one skill\n  run        run a skill command with validated JSON input\n  exec       run a skill command script by path; this is the script shebang target\n  validate   validate skills, command metadata, schemas, scripts, and permission profile references\n  init       scaffold a new skill directory with optional starter command\n\nNotes:\n  Skill visibility follows the active permission profile's read filter.\n  External runtimes should call `skill list` up front and `skill get <name>` on demand.\n  Skill names are normalized from folder names, but `skill get` also accepts the relative path.\n  Skill command execution requires a trusted vault: `vulcan trust add`.\n  Generated skill command scripts use `#!/usr/bin/env -S vulcan skill exec`, so\n  `./scripts/name.js --help` shows the executable command contract.\n\nExamples:\n  vulcan skill list\n  vulcan --output json skill list\n  vulcan skill get note-operations\n  vulcan skill get weekly-review\n  vulcan skill show daily-review\n  vulcan skill commands daily-review\n  vulcan skill run daily-review prepare-day --input-json '{\"date\":\"2026-05-05\",\"dryRun\":true}'\n  .agents/skills/daily-review/scripts/prepare-day.js --input-json '{\"date\":\"2026-05-05\"}'\n  vulcan skill validate\n  vulcan skill init my-skill --starter-command hello",
         "name": "skill",
         "options": [],
         "subcommands": [
@@ -6260,6 +6260,46 @@
                 "short": null,
                 "value_names": [
                   "COMMAND"
+                ]
+              },
+              {
+                "help": "JSON input object",
+                "id": "input_json",
+                "long": "input-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "INPUT_JSON"
+                ]
+              },
+              {
+                "help": "Read JSON input from a file",
+                "id": "input_file",
+                "long": "input-file",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Run a skill command script by path",
+            "name": "exec",
+            "options": [
+              {
+                "help": "Path to a script declared by a nearby SKILL.md",
+                "id": "script",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "SCRIPT"
                 ]
               },
               {
@@ -11034,23 +11074,23 @@
         ]
       },
       {
-        "about": "List, validate, scaffold, and run vault-native custom tools",
-        "after_help": "Subcommands:\n  list       inspect discovered custom tools\n  show       read one tool manifest plus its Markdown docs\n  run        validate JSON input and invoke one tool\n  validate   check one tool or the whole tools folder\n  init       scaffold `.agents/tools/<name>/TOOL.md` plus `main.js`\n  set        update common manifest fields without hand-editing YAML\n\nNotes:\n  New reusable callable automation should be packaged as Agent Skills-compatible\n  skill commands under `.agents/skills/<skill-name>/` with command metadata declared\n  in `SKILL.md` under `metadata.vulcan.commands`.\n  Tool execution requires a trusted vault: `vulcan trust add`.\n  `tool run` defaults to `{}` input when no `--input-json` or `--input-file` is provided.\n  `tool set --secret name=ENV` replaces the full secret list for the tool.\n  `tool set --pack <name>` replaces the full pack list for the tool.\n\nExamples:\n  vulcan tool list\n  vulcan tool show summarize_meeting\n  vulcan tool run summarize_meeting --input-json '{\"note\":\"Meetings/Weekly.md\"}'\n  vulcan tool init summarize_meeting --description \"Summarize one meeting note\"\n  vulcan tool set summarize_meeting --sandbox fs --read-only --timeout-ms 5000\n  vulcan tool validate\n\nSee also:\n  `vulcan skill` — Agent Skills-compatible skill commands (preferred for new automation)",
+        "about": "List and run exposed skill command tools",
+        "after_help": "Subcommands:\n  list       inspect exposed skill command tools\n  show       read one exposed skill command tool definition\n  run        validate JSON input and invoke one exposed skill command tool\n\nNotes:\n  Tools are the callable registry view over Agent Skills-compatible commands declared\n  in `SKILL.md` under `metadata.vulcan.commands` with `expose: true`.\n  Author tools with `vulcan skill init --starter-command` or by editing skill command\n  metadata directly.\n  Tool execution requires a trusted vault: `vulcan trust add`.\n  `tool run` defaults to `{}` input when no `--input-json` or `--input-file` is provided.\n\nExamples:\n  vulcan tool list\n  vulcan tool show skill_conversation_export_export\n  vulcan tool run skill_conversation_export_export --input-json '{\"title\":\"Chat\",\"transcript\":\"User: hi\"}'\n\nSee also:\n  `vulcan skill` — author, validate, and execute skill commands",
         "name": "tool",
         "options": [],
         "subcommands": [
           {
-            "about": "List discovered custom tools",
+            "about": "List exposed skill command tools",
             "name": "list",
             "options": [],
             "subcommands": []
           },
           {
-            "about": "Show one tool manifest plus its Markdown documentation",
+            "about": "Show one exposed skill command tool",
             "name": "show",
             "options": [
               {
-                "help": "Tool name, directory name, or manifest path",
+                "help": "Tool name, typically skill_<skill>_<command>",
                 "id": "name",
                 "long": null,
                 "possible_values": [],
@@ -11064,7 +11104,7 @@
             "subcommands": []
           },
           {
-            "about": "Run one custom tool with validated JSON input",
+            "about": "Run one exposed skill command tool with validated JSON input",
             "name": "run",
             "options": [
               {
@@ -11098,445 +11138,6 @@
                 "short": null,
                 "value_names": [
                   "INPUT_FILE"
-                ]
-              }
-            ],
-            "subcommands": []
-          },
-          {
-            "about": "Validate one tool or every tool manifest",
-            "name": "validate",
-            "options": [
-              {
-                "help": "Optional tool name, directory name, or manifest path",
-                "id": "name",
-                "long": null,
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "NAME"
-                ]
-              }
-            ],
-            "subcommands": []
-          },
-          {
-            "about": "Scaffold a new custom tool",
-            "name": "init",
-            "options": [
-              {
-                "help": "Tool name and default directory name",
-                "id": "name",
-                "long": null,
-                "possible_values": [],
-                "required": true,
-                "short": null,
-                "value_names": [
-                  "NAME"
-                ]
-              },
-              {
-                "help": "Optional human-readable title",
-                "id": "title",
-                "long": "title",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "TITLE"
-                ]
-              },
-              {
-                "help": "One-line tool description",
-                "id": "description",
-                "long": "description",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "DESCRIPTION"
-                ]
-              },
-              {
-                "help": null,
-                "id": "sandbox",
-                "long": "sandbox",
-                "possible_values": [
-                  "strict",
-                  "fs",
-                  "net"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "SANDBOX"
-                ]
-              },
-              {
-                "help": null,
-                "id": "permission_profile",
-                "long": "permission-profile",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "PERMISSION_PROFILE"
-                ]
-              },
-              {
-                "help": null,
-                "id": "timeout_ms",
-                "long": "timeout-ms",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "TIMEOUT_MS"
-                ]
-              },
-              {
-                "help": null,
-                "id": "example",
-                "long": "example",
-                "possible_values": [
-                  "minimal"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "EXAMPLE"
-                ]
-              },
-              {
-                "help": "Replace an existing scaffold if the tool already exists",
-                "id": "overwrite",
-                "long": "overwrite",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "OVERWRITE"
-                ]
-              },
-              {
-                "help": "Preview the scaffold without writing files",
-                "id": "dry_run",
-                "long": "dry-run",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "DRY_RUN"
-                ]
-              },
-              {
-                "help": "Suppress auto-commit for this invocation",
-                "id": "no_commit",
-                "long": "no-commit",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "NO_COMMIT"
-                ]
-              }
-            ],
-            "subcommands": []
-          },
-          {
-            "about": "Update common custom-tool manifest fields",
-            "name": "set",
-            "options": [
-              {
-                "help": "Tool name, directory name, or manifest path",
-                "id": "name",
-                "long": null,
-                "possible_values": [],
-                "required": true,
-                "short": null,
-                "value_names": [
-                  "NAME"
-                ]
-              },
-              {
-                "help": "Replace the title field",
-                "id": "title",
-                "long": "title",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "TITLE"
-                ]
-              },
-              {
-                "help": "Remove the title field",
-                "id": "clear_title",
-                "long": "clear-title",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "CLEAR_TITLE"
-                ]
-              },
-              {
-                "help": "Replace the description field",
-                "id": "description",
-                "long": "description",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "DESCRIPTION"
-                ]
-              },
-              {
-                "help": null,
-                "id": "sandbox",
-                "long": "sandbox",
-                "possible_values": [
-                  "strict",
-                  "fs",
-                  "net"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "SANDBOX"
-                ]
-              },
-              {
-                "help": null,
-                "id": "permission_profile",
-                "long": "permission-profile",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "PERMISSION_PROFILE"
-                ]
-              },
-              {
-                "help": null,
-                "id": "clear_permission_profile",
-                "long": "clear-permission-profile",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "CLEAR_PERMISSION_PROFILE"
-                ]
-              },
-              {
-                "help": null,
-                "id": "timeout_ms",
-                "long": "timeout-ms",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "TIMEOUT_MS"
-                ]
-              },
-              {
-                "help": null,
-                "id": "clear_timeout",
-                "long": "clear-timeout",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "CLEAR_TIMEOUT"
-                ]
-              },
-              {
-                "help": "Replace the pack list; repeatable",
-                "id": "pack",
-                "long": "pack",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "PACK"
-                ]
-              },
-              {
-                "help": null,
-                "id": "clear_packs",
-                "long": "clear-packs",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "CLEAR_PACKS"
-                ]
-              },
-              {
-                "help": "Replace the secret list with name=ENV bindings; repeatable",
-                "id": "secret",
-                "long": "secret",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "SECRET"
-                ]
-              },
-              {
-                "help": null,
-                "id": "clear_secrets",
-                "long": "clear-secrets",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "CLEAR_SECRETS"
-                ]
-              },
-              {
-                "help": null,
-                "id": "read_only",
-                "long": "read-only",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "READ_ONLY"
-                ]
-              },
-              {
-                "help": null,
-                "id": "writable",
-                "long": "writable",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "WRITABLE"
-                ]
-              },
-              {
-                "help": null,
-                "id": "destructive",
-                "long": "destructive",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "DESTRUCTIVE"
-                ]
-              },
-              {
-                "help": null,
-                "id": "non_destructive",
-                "long": "non-destructive",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "NON_DESTRUCTIVE"
-                ]
-              },
-              {
-                "help": null,
-                "id": "input_schema_file",
-                "long": "input-schema-file",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "INPUT_SCHEMA_FILE"
-                ]
-              },
-              {
-                "help": null,
-                "id": "output_schema_file",
-                "long": "output-schema-file",
-                "possible_values": [],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "OUTPUT_SCHEMA_FILE"
-                ]
-              },
-              {
-                "help": null,
-                "id": "clear_output_schema",
-                "long": "clear-output-schema",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "CLEAR_OUTPUT_SCHEMA"
-                ]
-              },
-              {
-                "help": "Preview manifest changes without writing files",
-                "id": "dry_run",
-                "long": "dry-run",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "DRY_RUN"
-                ]
-              },
-              {
-                "help": "Suppress auto-commit for this invocation",
-                "id": "no_commit",
-                "long": "no-commit",
-                "possible_values": [
-                  "true",
-                  "false"
-                ],
-                "required": false,
-                "short": null,
-                "value_names": [
-                  "NO_COMMIT"
                 ]
               }
             ],

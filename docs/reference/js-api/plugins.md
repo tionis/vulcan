@@ -20,23 +20,23 @@ Default file resolution:
 
 ## When a plugin is the right tool
 
-Plugins are not the same thing as skills or custom tools.
+Plugins are not the same thing as skills or exposed skill command tools.
 
 - A **plugin** reacts to a Vulcan lifecycle event such as note write, pre-commit, scan completion,
   or refactor.
-- A **custom tool** is a directly callable request/response function that a human, LLM, CLI command,
-  MCP client, or JS script invokes by name.
-- A **skill** is Markdown guidance that teaches a workflow; it is not an event hook and not a typed
-  callable function.
+- A **skill command tool** is a directly callable request/response function declared in `SKILL.md`
+  that a human, LLM, CLI command, MCP client, or JS script invokes by name.
+- A **skill** is Markdown guidance that teaches a workflow and can optionally declare commands; it is
+  not an event hook.
 
-Use a plugin when the behavior should happen because an event occurred. Use a custom tool when the
-behavior should happen because someone explicitly asked for it. Use a skill when the asset is
-guidance rather than code.
+Use a plugin when the behavior should happen because an event occurred. Use a skill command tool
+when the behavior should happen because someone explicitly asked for it. Use skill Markdown when the
+asset is guidance rather than code.
 
 Examples:
 
 - "Reject writes that do not end in a newline" is a plugin.
-- "Summarize a meeting note into structured JSON" is a custom tool.
+- "Summarize a meeting note into structured JSON" is a skill command tool.
 - "Teach the agent how to do a daily review" is a skill.
 
 See also: [automation-surfaces.md](../../guide/automation-surfaces.md)

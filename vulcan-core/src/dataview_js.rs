@@ -2355,7 +2355,7 @@ function help(obj) {
       "Vulcan JS Runtime — available globals:",
       "  vault    — note reading, writing, search, graph, daily notes",
       "  dv       — Dataview-compatible query API (dv.pages, dv.table, etc.)",
-      "  tools    — registry-backed custom tools (tools.list, tools.get, tools.call)",
+      "  tools    — registry-backed skill command tools (tools.list, tools.get, tools.call)",
       "  host     — permission-gated host process execution (host.exec, host.shell)",
       "  web      — external web search and fetch (requires --sandbox net)",
       "  console  — console.log() for output",
@@ -2636,7 +2636,7 @@ __vulcanRegisterHelp(
   tools.list,
   `tools.list(): Array<CustomTool>
 
-List visible vault-native custom tools with metadata such as description, sandbox, packs, and
+List visible exposed skill command tools with metadata such as description, sandbox, packs, and
 callability.
 
 Example:
@@ -2648,7 +2648,7 @@ __vulcanRegisterHelp(
   tools.get,
   `tools.get(name: string): CustomTool
 
-Read one custom tool definition, including static metadata and the Markdown documentation body.
+Read one exposed skill command tool definition, including static metadata and the Markdown documentation body.
 
 Parameters:
   name - Tool name, directory name, or manifest path.
@@ -2662,7 +2662,7 @@ __vulcanRegisterHelp(
   tools.call,
   `tools.call(name: string, input?: object, opts?: object): unknown
 
-Invoke one custom tool with validated JSON input.
+Invoke one exposed skill command tool with validated JSON input.
 
 Parameters:
   name  - Tool name to execute.
@@ -2729,11 +2729,11 @@ Use dv.pages('#tag') or dv.pages('"Folder"') to filter.`
 
 __vulcanRegisterHelp(
   tools,
-  `tools — Vault-native custom tool registry
+  `tools — Exposed skill command tool registry
 
-  tools.list()             — list visible custom tools
-  tools.get(name)          — read one tool manifest plus documentation body
-  tools.call(name, input?) — invoke one custom tool with validated JSON input
+  tools.list()             — list visible skill command tools
+  tools.get(name)          — read one tool definition plus documentation body
+  tools.call(name, input?) — invoke one skill command tool with validated JSON input
 
 Use help(tools.call) for execution details and nested-call limits.`
 );
@@ -3736,7 +3736,7 @@ globalThis.Function = undefined;
                     let Some(registry) = tools_get_registry.as_ref() else {
                         return Err(Exception::throw_message(
                             &ctx,
-                            "custom tool registry is not available in this runtime",
+                            "tool registry is not available in this runtime",
                         ));
                     };
                     to_json_string(
@@ -3758,7 +3758,7 @@ globalThis.Function = undefined;
                         let Some(registry) = tools_call_registry.as_ref() else {
                             return Err(Exception::throw_message(
                                 &ctx,
-                                "custom tool registry is not available in this runtime",
+                                "tool registry is not available in this runtime",
                             ));
                         };
                         let input = parse_json_string::<Value>(&ctx, &input_json)?;

@@ -59,10 +59,8 @@ mod tools {
     use serde_json::Value;
     use std::sync::Arc;
     pub(crate) use vulcan_app::tools::{
-        build_custom_tool_js_registry, validate_custom_tools, CustomToolDescriptor,
-        CustomToolInitExample, CustomToolInitOptions, CustomToolRegistryOptions,
-        CustomToolRunOptions, CustomToolRunReport, CustomToolSetOptions, CustomToolShowReport,
-        CustomToolValidationReport, CustomToolWriteReport,
+        build_custom_tool_js_registry, CustomToolDescriptor, CustomToolRegistryOptions,
+        CustomToolRunOptions, CustomToolRunReport, CustomToolShowReport,
     };
     use vulcan_core::{DataviewJsToolRegistry, JsRuntimeSandbox, VaultPaths};
 
@@ -115,26 +113,6 @@ mod tools {
             surface,
             &crate::custom_tool_registry_options(),
         )
-    }
-
-    pub(crate) fn init_custom_tool(
-        paths: &VaultPaths,
-        name: &str,
-        registry_options: &CustomToolRegistryOptions,
-        options: &CustomToolInitOptions,
-    ) -> Result<CustomToolWriteReport, CliError> {
-        vulcan_app::tools::init_custom_tool(paths, name, registry_options, options)
-            .map_err(CliError::operation)
-    }
-
-    pub(crate) fn set_custom_tool(
-        paths: &VaultPaths,
-        identifier: &str,
-        registry_options: &CustomToolRegistryOptions,
-        options: &CustomToolSetOptions,
-    ) -> Result<CustomToolWriteReport, CliError> {
-        vulcan_app::tools::set_custom_tool(paths, identifier, registry_options, options)
-            .map_err(CliError::operation)
     }
 
     pub(crate) fn require_trusted_tool_execution(
@@ -389,8 +367,8 @@ pub use cli::{
     SearchBackendArg, SearchMode, SearchSortArg, SiteCommand, SkillCommand, SuggestCommand,
     SuggestLinkStatusArg, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
     TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
-    TemplateRenderArgs, TemplateSubcommand, ToolCommand, ToolInitExampleArg, ToolSandboxArg,
-    TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    TemplateRenderArgs, TemplateSubcommand, ToolCommand, TrustCommand, VectorQueueCommand,
+    VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -521,44 +499,43 @@ use vulcan_core::expression::functions::{
 };
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{
-    add_kanban_card, all_importers, annotate_import_conflicts, archive_kanban_card,
-    assistant_tools_root, bulk_replace, cache_vacuum, create_checkpoint,
-    default_assistant_tool_reserved_names, delete_saved_report, doctor_fix, doctor_vault,
-    evaluate_base_file, evaluate_dataview_js_with_options, evaluate_dql_with_filter,
-    expected_periodic_note_path, export_daily_events_to_ics, export_static_search_index, git_blame,
-    git_diff, git_log, git_recent_log, git_status, initialize_vault, inspect_cache, link_mentions,
-    list_checkpoints, list_daily_note_events, list_saved_reports, load_events_for_periodic_note,
-    load_kanban_board, load_saved_report, load_vault_config, merge_tags, move_kanban_card,
-    move_note, period_range_for_date, plan_base_note_create, query_backlinks, query_change_report,
-    query_links, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
-    rename_heading, rename_property, render_note_fragment_html, render_note_html,
-    render_vault_html, repair_fts, resolve_note_reference, resolve_periodic_note,
-    resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
-    step_period_start, verify_cache, watch_vault, AssistantToolSecretSpec, AutoScanMode,
-    BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport, BasesViewEditReport,
-    BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport,
-    CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord,
-    ClusterReport, ConfigImportReport, CoreImporter, DataviewImporter, DataviewJsEvalOptions,
-    DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue,
-    DoctorReport, DqlQueryResult, DuplicateSuggestionsReport, GitBlameLine, GitCommitReport,
-    GitLogEntry, GraphAnalyticsReport, GraphCommunitiesReport, GraphComponentsReport,
-    GraphConfidenceBreakdown, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate,
-    GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport, HtmlRenderOptions,
-    ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport, KanbanArchiveReport,
-    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
-    LinkSuggestion, LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport,
-    MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport,
-    OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter,
-    PermissionFilter, PermissionGuard, PluginEvent, PluginImporter, ProfilePermissionGuard,
-    QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit,
-    RelatedNotesReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport,
-    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchBackendKind,
-    SearchHit, SearchQuery, SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter,
-    TasksImporter, TasksQueryResult, TemplaterImporter, VaultPaths, VectorDuplicatePair,
-    VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress, VectorIndexReport,
-    VectorNeighborHit, VectorNeighborsReport, VectorQueueReport, VectorRepairReport, WatchOptions,
-    WatchReport,
+    add_kanban_card, all_importers, annotate_import_conflicts, archive_kanban_card, bulk_replace,
+    cache_vacuum, create_checkpoint, default_assistant_tool_reserved_names, delete_saved_report,
+    doctor_fix, doctor_vault, evaluate_base_file, evaluate_dataview_js_with_options,
+    evaluate_dql_with_filter, expected_periodic_note_path, export_daily_events_to_ics,
+    export_static_search_index, git_blame, git_diff, git_log, git_recent_log, git_status,
+    initialize_vault, inspect_cache, link_mentions, list_checkpoints, list_daily_note_events,
+    list_saved_reports, load_events_for_periodic_note, load_kanban_board, load_saved_report,
+    load_vault_config, merge_tags, move_kanban_card, move_note, period_range_for_date,
+    plan_base_note_create, query_backlinks, query_change_report, query_links, query_notes,
+    rebuild_vault_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
+    render_note_fragment_html, render_note_html, render_vault_html, repair_fts,
+    resolve_note_reference, resolve_periodic_note, resolve_permission_profile, save_saved_report,
+    scan_vault_with_progress, search_vault, step_period_start, verify_cache, watch_vault,
+    AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport,
+    BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery,
+    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
+    CheckpointRecord, ClusterReport, ConfigImportReport, CoreImporter, DataviewImporter,
+    DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue,
+    DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
+    GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphCommunitiesReport,
+    GraphComponentsReport, GraphConfidenceBreakdown, GraphDeadEndsReport, GraphHubsReport,
+    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
+    HtmlRenderOptions, ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport,
+    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport,
+    KanbanTaskStatus, LinkSuggestion, LinkSuggestionsReport, MentionSuggestion,
+    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
+    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig,
+    PeriodicNotesImporter, PermissionFilter, PermissionGuard, PluginEvent, PluginImporter,
+    ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport, RefactorChange,
+    RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport,
+    ResolvedPermissionProfile, SavedExport, SavedExportFormat, SavedReportDefinition,
+    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
+    ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport, SearchSort,
+    StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult, TemplaterImporter,
+    VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
+    VectorIndexReport, VectorNeighborHit, VectorNeighborsReport, VectorQueueReport,
+    VectorRepairReport, WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -807,7 +784,6 @@ metadata:
       - id: summarize
         script: scripts/summarize.js
         sandbox: fs
-        permission_profile: readonly
         packs: [custom]
         expose: true
         input_schema:
@@ -835,7 +811,7 @@ Use this skill command as a minimal Agent Skills-compatible executable example.
     BundledTextFile {
         kind: "skill",
         relative_path: "summarize-note/scripts/summarize.js",
-        contents: "#!/usr/bin/env -S vulcan run --script\nfunction main(input) {\n  return {\n    note: input.note,\n    summary: `TODO: summarize ${input.note}`,\n  };\n}\n",
+        contents: "#!/usr/bin/env -S vulcan skill exec\nfunction main(input) {\n  return {\n    note: input.note,\n    summary: `TODO: summarize ${input.note}`,\n  };\n}\n",
         target: BundledFileTarget::SkillsFolder,
     },
 ];
@@ -2839,118 +2815,6 @@ fn handle_tool_command(
             )?;
             print_tool_run_report(cli.output, &report)
         }
-        ToolCommand::Validate { name } => {
-            let report = tools::validate_custom_tools(paths, name.as_deref(), &registry_options)?;
-            print_tool_validation_report(cli.output, &report)
-        }
-        ToolCommand::Init {
-            name,
-            title,
-            description,
-            sandbox,
-            permission_profile,
-            timeout_ms,
-            example,
-            overwrite,
-            dry_run,
-            no_commit,
-        } => {
-            selected_permission_guard(cli, paths)?
-                .check_write_path(&assistant_tools_folder_display_path(paths))
-                .map_err(CliError::operation)?;
-            let report = tools::init_custom_tool(
-                paths,
-                name,
-                &registry_options,
-                &tools::CustomToolInitOptions {
-                    title: title.clone(),
-                    description: description.clone(),
-                    sandbox: tool_sandbox(*sandbox),
-                    permission_profile: permission_profile.clone(),
-                    timeout_ms: *timeout_ms,
-                    example: tool_init_example(*example),
-                    overwrite: *overwrite,
-                    dry_run: *dry_run,
-                },
-            )?;
-            maybe_commit_tool_write(paths, &report, *dry_run, *no_commit, "tool-init", cli.quiet)?;
-            print_tool_write_report(cli.output, "scaffold", &report)
-        }
-        ToolCommand::Set {
-            name,
-            title,
-            clear_title,
-            description,
-            sandbox,
-            permission_profile,
-            clear_permission_profile,
-            timeout_ms,
-            clear_timeout,
-            pack,
-            clear_packs,
-            secret,
-            clear_secrets,
-            read_only,
-            writable,
-            destructive,
-            non_destructive,
-            input_schema_file,
-            output_schema_file,
-            clear_output_schema,
-            dry_run,
-            no_commit,
-        } => {
-            selected_permission_guard(cli, paths)?
-                .check_write_path(&assistant_tools_folder_display_path(paths))
-                .map_err(CliError::operation)?;
-            let report = tools::set_custom_tool(
-                paths,
-                name,
-                &registry_options,
-                &tools::CustomToolSetOptions {
-                    title: title.clone(),
-                    clear_title: *clear_title,
-                    description: description.clone(),
-                    sandbox: sandbox.map(tool_sandbox),
-                    permission_profile: permission_profile.clone(),
-                    clear_permission_profile: *clear_permission_profile,
-                    timeout_ms: *timeout_ms,
-                    clear_timeout_ms: *clear_timeout,
-                    packs: (!pack.is_empty()).then(|| pack.clone()),
-                    clear_packs: *clear_packs,
-                    secrets: (!secret.is_empty())
-                        .then(|| parse_tool_secret_bindings(secret))
-                        .transpose()?,
-                    clear_secrets: *clear_secrets,
-                    read_only: if *read_only {
-                        Some(true)
-                    } else if *writable {
-                        Some(false)
-                    } else {
-                        None
-                    },
-                    destructive: if *destructive {
-                        Some(true)
-                    } else if *non_destructive {
-                        Some(false)
-                    } else {
-                        None
-                    },
-                    input_schema: input_schema_file
-                        .as_deref()
-                        .map(read_json_value_file)
-                        .transpose()?,
-                    output_schema: output_schema_file
-                        .as_deref()
-                        .map(read_json_value_file)
-                        .transpose()?,
-                    clear_output_schema: *clear_output_schema,
-                    dry_run: *dry_run,
-                },
-            )?;
-            maybe_commit_tool_write(paths, &report, *dry_run, *no_commit, "tool-set", cli.quiet)?;
-            print_tool_write_report(cli.output, "update", &report)
-        }
     }
 }
 
@@ -3365,84 +3229,6 @@ fn print_plugin_config_write_report(
     }
 }
 
-fn maybe_commit_tool_write(
-    paths: &VaultPaths,
-    report: &tools::CustomToolWriteReport,
-    dry_run: bool,
-    no_commit: bool,
-    action: &str,
-    quiet: bool,
-) -> Result<(), CliError> {
-    if dry_run || !report.updated {
-        return Ok(());
-    }
-    let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, quiet);
-    auto_commit
-        .commit(paths, action, &tool_changed_files(report), None, quiet)
-        .map(|_| ())
-        .map_err(CliError::operation)
-}
-
-fn tool_changed_files(report: &tools::CustomToolWriteReport) -> Vec<String> {
-    let mut changed = vec![report.manifest_path.clone()];
-    if let Some(entrypoint_path) = &report.entrypoint_path {
-        changed.push(entrypoint_path.clone());
-    }
-    changed.sort();
-    changed.dedup();
-    changed
-}
-
-fn assistant_tools_folder_display_path(paths: &VaultPaths) -> String {
-    assistant_tools_root(paths)
-        .strip_prefix(paths.vault_root())
-        .map_or_else(
-            |_| assistant_tools_root(paths).display().to_string(),
-            path_to_forward_slash_string,
-        )
-}
-
-fn tool_sandbox(sandbox: ToolSandboxArg) -> JsRuntimeSandbox {
-    match sandbox {
-        ToolSandboxArg::Strict => JsRuntimeSandbox::Strict,
-        ToolSandboxArg::Fs => JsRuntimeSandbox::Fs,
-        ToolSandboxArg::Net => JsRuntimeSandbox::Net,
-    }
-}
-
-fn tool_init_example(example: ToolInitExampleArg) -> tools::CustomToolInitExample {
-    match example {
-        ToolInitExampleArg::Minimal => tools::CustomToolInitExample::Minimal,
-    }
-}
-
-fn parse_tool_secret_bindings(values: &[String]) -> Result<Vec<AssistantToolSecretSpec>, CliError> {
-    values
-        .iter()
-        .map(|value| parse_tool_secret_binding(value))
-        .collect()
-}
-
-fn parse_tool_secret_binding(value: &str) -> Result<AssistantToolSecretSpec, CliError> {
-    let (name, env) = value.split_once('=').ok_or_else(|| {
-        CliError::operation(format!(
-            "invalid secret binding `{value}`; expected name=ENV"
-        ))
-    })?;
-    if name.trim().is_empty() || env.trim().is_empty() {
-        return Err(CliError::operation(format!(
-            "invalid secret binding `{value}`; expected non-empty name=ENV"
-        )));
-    }
-    Ok(AssistantToolSecretSpec {
-        name: name.trim().to_string(),
-        env: env.trim().to_string(),
-        required: true,
-        description: None,
-    })
-}
-
 fn read_tool_input(input_json: Option<&str>, input_file: Option<&Path>) -> Result<Value, CliError> {
     match (input_json, input_file) {
         (None, None) => Ok(json!({})),
@@ -3457,17 +3243,12 @@ fn read_tool_input(input_json: Option<&str>, input_file: Option<&Path>) -> Resul
     }
 }
 
-fn read_json_value_file(path: &Path) -> Result<Value, CliError> {
-    let source = fs::read_to_string(path).map_err(CliError::operation)?;
-    serde_json::from_str(&source).map_err(CliError::operation)
-}
-
 fn print_tool_list_report(output: OutputFormat, report: &ToolListReport) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => print_json(report),
         OutputFormat::Human | OutputFormat::Markdown => {
             if report.tools.is_empty() {
-                println!("No custom tools.");
+                println!("No exposed skill command tools.");
                 return Ok(());
             }
             for tool in &report.tools {
@@ -3564,7 +3345,7 @@ fn print_tool_run_report(
             if let Some(text) = &report.text {
                 println!("{text}");
             } else {
-                println!("Ran custom tool {}", report.name);
+                println!("Ran tool {}", report.name);
             }
             println!(
                 "{}",
@@ -3573,83 +3354,6 @@ fn print_tool_run_report(
             Ok(())
         }
     }
-}
-
-fn print_tool_validation_report(
-    output: OutputFormat,
-    report: &tools::CustomToolValidationReport,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Json => print_json(report),
-        OutputFormat::Human | OutputFormat::Markdown => {
-            if report.valid {
-                println!("Validated {} custom tool(s); all valid.", report.checked);
-            } else {
-                println!("Validated {} custom tool(s); issues found.", report.checked);
-            }
-            for tool in &report.tools {
-                println!(
-                    "- {} [{}] {}",
-                    tool.name.as_deref().unwrap_or(&tool.identifier),
-                    if tool.valid { "valid" } else { "invalid" },
-                    tool.manifest_path
-                );
-                for error in &tool.errors {
-                    println!("  {error}");
-                }
-            }
-            if let Some(registry_error) = &report.registry_error {
-                println!("Registry: {registry_error}");
-            }
-            Ok(())
-        }
-    }
-}
-
-fn print_tool_write_report(
-    output: OutputFormat,
-    verb: &str,
-    report: &tools::CustomToolWriteReport,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Json => print_json(report),
-        OutputFormat::Human | OutputFormat::Markdown => {
-            if report.dry_run {
-                if report.updated {
-                    println!("Would {verb} custom tool {}", report.name);
-                } else {
-                    println!("No changes for custom tool {}", report.name);
-                }
-            } else if report.updated {
-                println!(
-                    "{} custom tool {}",
-                    capitalize_ascii_first(verb),
-                    report.name
-                );
-            } else {
-                println!("No changes for custom tool {}", report.name);
-            }
-            println!("  manifest: {}", report.manifest_path);
-            if let Some(entrypoint_path) = &report.entrypoint_path {
-                println!("  entrypoint: {entrypoint_path}");
-            }
-            if !report.operations.is_empty() {
-                println!("  {}", report.operations.join(", "));
-            }
-            Ok(())
-        }
-    }
-}
-
-fn capitalize_ascii_first(value: &str) -> String {
-    let mut chars = value.chars();
-    let Some(first) = chars.next() else {
-        return String::new();
-    };
-    let mut out = String::new();
-    out.push(first.to_ascii_uppercase());
-    out.extend(chars);
-    out
 }
 
 fn run_dataview_eval_command(
@@ -12918,10 +12622,6 @@ fn relativize_config_import_path(paths: &VaultPaths, path: &Path) -> PathBuf {
     PathBuf::from(relative_or_original.to_string_lossy().replace('\\', "/"))
 }
 
-fn path_to_forward_slash_string(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
 fn render_config_import_value(value: &Value) -> Result<String, CliError> {
     match value {
         Value::Null => Ok("<unset>".to_string()),
@@ -16930,7 +16630,7 @@ fn help_overview() -> HelpTopicReport {
                 ),
                 (
                     "tool",
-                    "List, validate, scaffold, and run vault-native custom tools",
+                    "List and run exposed skill command tools",
                 ),
                 (
                     "skill",
@@ -17167,7 +16867,7 @@ fn builtin_help_topics() -> Vec<HelpTopicReport> {
         static_help_topic(
             "js.tools",
             HelpTopicKind::Concept,
-            "Registry-backed custom tool discovery, invocation, and runtime context.",
+            "Registry-backed skill command tool discovery, invocation, and runtime context.",
             include_str!("../../docs/reference/js-api/tools.md"),
             &["tool", "js.host", "automation-surfaces"],
         ),
@@ -17188,7 +16888,7 @@ fn builtin_help_topics() -> Vec<HelpTopicReport> {
         static_help_topic(
             "automation-surfaces",
             HelpTopicKind::Concept,
-            "How skills, custom tools, plugins, and `vulcan run` differ.",
+            "How skills, skill command tools, plugins, and `vulcan run` differ.",
             include_str!("../../docs/guide/automation-surfaces.md"),
             &["tool", "plugin", "scripting"],
         ),
@@ -21785,6 +21485,25 @@ mod tests {
                 },
             }
         );
+        let exec = Cli::try_parse_from([
+            "vulcan",
+            "skill",
+            "exec",
+            ".agents/skills/daily-review/scripts/prepare-day.js",
+            "--input-json",
+            "{\"date\":\"2026-05-08\"}",
+        ])
+        .expect("skill exec should parse");
+        assert_eq!(
+            exec.command,
+            Command::Skill {
+                command: SkillCommand::Exec {
+                    script: PathBuf::from(".agents/skills/daily-review/scripts/prepare-day.js"),
+                    input_json: Some("{\"date\":\"2026-05-08\"}".to_string()),
+                    input_file: None,
+                },
+            }
+        );
         assert_eq!(
             init.command,
             Command::Skill {
@@ -23860,44 +23579,30 @@ mod tests {
 
     #[test]
     fn parses_tool_commands() {
-        let init = Cli::try_parse_from([
-            "vulcan",
-            "tool",
-            "init",
-            "summarize_meeting",
-            "--description",
-            "Summarize one meeting note",
-            "--sandbox",
-            "fs",
-            "--timeout-ms",
-            "5000",
-            "--overwrite",
-        ])
-        .expect("tool init should parse");
+        let list = Cli::try_parse_from(["vulcan", "tool", "list"]).expect("tool list should parse");
+        let show = Cli::try_parse_from(["vulcan", "tool", "show", "skill_meeting_summarize"])
+            .expect("tool show should parse");
         let run = Cli::try_parse_from([
             "vulcan",
             "tool",
             "run",
-            "summarize_meeting",
+            "skill_meeting_summarize",
             "--input-json",
             "{\"note\":\"Meetings/Weekly.md\"}",
         ])
         .expect("tool run should parse");
 
         assert_eq!(
-            init.command,
+            list.command,
             Command::Tool {
-                command: ToolCommand::Init {
-                    name: "summarize_meeting".to_string(),
-                    title: None,
-                    description: Some("Summarize one meeting note".to_string()),
-                    sandbox: ToolSandboxArg::Fs,
-                    permission_profile: None,
-                    timeout_ms: Some(5000),
-                    example: ToolInitExampleArg::Minimal,
-                    overwrite: true,
-                    dry_run: false,
-                    no_commit: false,
+                command: ToolCommand::List,
+            }
+        );
+        assert_eq!(
+            show.command,
+            Command::Tool {
+                command: ToolCommand::Show {
+                    name: "skill_meeting_summarize".to_string(),
                 },
             }
         );
@@ -23905,7 +23610,7 @@ mod tests {
             run.command,
             Command::Tool {
                 command: ToolCommand::Run {
-                    name: "summarize_meeting".to_string(),
+                    name: "skill_meeting_summarize".to_string(),
                     input_json: Some("{\"note\":\"Meetings/Weekly.md\"}".to_string()),
                     input_file: None,
                 },

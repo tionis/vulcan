@@ -3,6 +3,7 @@ use crate::{selected_permission_guard, Cli, CliError, OutputFormat, SkillCommand
 use serde::Serialize;
 use serde_json::Value;
 use std::fs;
+use std::io::{self, IsTerminal, Read};
 use std::path::{Path, PathBuf};
 use vulcan_core::{
     evaluate_dataview_js_with_options, list_assistant_skills, load_assistant_skill,
@@ -11,7 +12,7 @@ use vulcan_core::{
     JsRuntimeSandbox, PermissionGuard, VaultPaths,
 };
 
-const SKILL_COMMAND_SCRIPT_SHEBANG: &str = "#!/usr/bin/env -S vulcan run --script\n";
+const SKILL_COMMAND_SCRIPT_SHEBANG: &str = "#!/usr/bin/env -S vulcan skill exec\n";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct SkillListReport {
@@ -109,6 +110,15 @@ pub(crate) fn handle_skill_command(
         } => {
             let input = read_skill_input(input_json.as_deref(), input_file.as_deref())?;
             let report = run_skill_command(cli, paths, skill, command, input)?;
+            print_skill_run_report(cli.output, &report)
+        }
+        SkillCommand::Exec {
+            script,
+            input_json,
+            input_file,
+        } => {
+            let input = read_skill_input_or_stdin(input_json.as_deref(), input_file.as_deref())?;
+            let report = run_skill_command_script(cli, paths, script, input)?;
             print_skill_run_report(cli.output, &report)
         }
         SkillCommand::Init {
@@ -250,6 +260,54 @@ fn run_skill_command(
     })
 }
 
+fn run_skill_command_script(
+    cli: &Cli,
+    paths: &VaultPaths,
+    script: &Path,
+    input: Value,
+) -> Result<SkillRunReport, CliError> {
+    let script_path = normalize_script_path(script)?;
+    let (skill, command) = resolve_skill_command_for_script(cli, paths, &script_path)?;
+    run_skill_command(cli, paths, &skill.summary.name, &command.id, input)
+}
+
+fn normalize_script_path(script: &Path) -> Result<PathBuf, CliError> {
+    let expanded = expand_home_path(script).unwrap_or_else(|| script.to_path_buf());
+    let absolute = if expanded.is_absolute() {
+        expanded
+    } else {
+        std::env::current_dir()
+            .map_err(CliError::operation)?
+            .join(expanded)
+    };
+    absolute
+        .canonicalize()
+        .map_err(|error| CliError::operation(format!("script not found: {error}")))
+}
+
+fn resolve_skill_command_for_script(
+    cli: &Cli,
+    paths: &VaultPaths,
+    script_path: &Path,
+) -> Result<(AssistantSkill, AssistantSkillCommandSummary), CliError> {
+    for summary in visible_skills(cli, paths)? {
+        let skill = visible_skill(cli, paths, &summary.name)?;
+        for command in skill.summary.commands.clone() {
+            let candidate = skill_script_path(paths, &skill.summary, &command)?;
+            let Ok(candidate) = candidate.canonicalize() else {
+                continue;
+            };
+            if candidate == script_path {
+                return Ok((skill, command));
+            }
+        }
+    }
+    Err(CliError::operation(format!(
+        "script `{}` is not declared by a visible skill command in this vault",
+        script_path.display()
+    )))
+}
+
 fn build_skill_invocation_source(
     skill: &AssistantSkill,
     command: &AssistantSkillCommandSummary,
@@ -291,6 +349,24 @@ fn read_skill_input(
         (Some(_), Some(_)) => Err(CliError::operation(
             "skill input accepts either --input-json or --input-file, not both",
         )),
+    }
+}
+
+fn read_skill_input_or_stdin(
+    input_json: Option<&str>,
+    input_file: Option<&Path>,
+) -> Result<Value, CliError> {
+    if input_json.is_some() || input_file.is_some() || io::stdin().is_terminal() {
+        return read_skill_input(input_json, input_file);
+    }
+    let mut source = String::new();
+    io::stdin()
+        .read_to_string(&mut source)
+        .map_err(CliError::operation)?;
+    if source.trim().is_empty() {
+        Ok(serde_json::json!({}))
+    } else {
+        serde_json::from_str(&source).map_err(CliError::operation)
     }
 }
 
@@ -406,6 +482,16 @@ fn normalize_skill_name(value: &str) -> Result<String, CliError> {
         return Err(CliError::operation(format!("invalid skill name `{value}`")));
     }
     Ok(normalized)
+}
+
+fn expand_home_path(path: &Path) -> Option<PathBuf> {
+    let path_str = path.to_str()?;
+    if path_str == "~" {
+        return std::env::var_os("HOME").map(PathBuf::from);
+    }
+    path_str
+        .strip_prefix("~/")
+        .and_then(|rest| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(rest)))
 }
 
 fn skill_script_path(

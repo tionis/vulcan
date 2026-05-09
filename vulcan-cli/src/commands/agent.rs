@@ -9,7 +9,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use vulcan_core::{
-    assistant_config_summary, assistant_prompts_root, assistant_skills_root, assistant_tools_root,
+    assistant_config_summary, assistant_prompts_root, assistant_skills_root,
     list_assistant_prompts, list_assistant_skills, read_vault_agents_file, PermissionGuard,
     VaultPaths,
 };
@@ -28,7 +28,6 @@ struct AgentPrintConfigFiles {
     visible_prompt_count: usize,
     skills_path: String,
     visible_skill_count: usize,
-    tools_path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -188,7 +187,6 @@ fn build_agent_print_config_report(
             visible_prompt_count: prompt_count,
             skills_path: path_to_forward_slashes(&assistant_skills_root(paths)),
             visible_skill_count: skill_count,
-            tools_path: path_to_forward_slashes(&assistant_tools_root(paths)),
         },
         commands,
         snippets,
@@ -233,7 +231,6 @@ fn print_agent_print_config_report(
                 "- Skills: {} ({} visible)",
                 report.files.skills_path, report.files.visible_skill_count
             );
-            println!("- Tools: {}", report.files.tools_path);
             println!();
             println!("Core commands:");
             println!("- describe: {}", report.commands.describe_openai_tools);

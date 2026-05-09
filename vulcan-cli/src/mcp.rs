@@ -35,16 +35,16 @@ use vulcan_core::properties::load_note_index;
 use vulcan_core::LocalOAuthUserConfig;
 use vulcan_core::{
     accept_link_suggestion, assistant_config_summary, assistant_prompts_root,
-    assistant_skills_root, assistant_tools_root, evaluate_dql_with_filter,
-    execute_query_report_with_filter, list_assistant_prompts, list_assistant_skills,
-    load_assistant_prompt, load_assistant_skill, load_vault_config,
-    query_graph_communities_with_filter, query_notes_with_filter, read_vault_agents_file,
-    reject_link_suggestion, render_assistant_prompt, resolve_permission_profile,
-    scan_vault_with_progress, search_vault_with_filter, suggest_links, watch_vault,
-    ConfigPermissionMode, LinkSuggestionStatus, LocalOAuthIssuer, LocalOAuthIssuerConfig,
-    NoteQuery, OAuthResourceServer, OAuthResourceServerConfig, PermissionGuard, PermissionMode,
-    PermissionProfile, PluginEvent, ProfilePermissionGuard, QueryAst, QueryReport, ScanMode,
-    ScanSummary, SearchQuery, SearchSort, VaultPaths, WatchOptions,
+    assistant_skills_root, evaluate_dql_with_filter, execute_query_report_with_filter,
+    list_assistant_prompts, list_assistant_skills, load_assistant_prompt, load_assistant_skill,
+    load_vault_config, query_graph_communities_with_filter, query_notes_with_filter,
+    read_vault_agents_file, reject_link_suggestion, render_assistant_prompt,
+    resolve_permission_profile, scan_vault_with_progress, search_vault_with_filter, suggest_links,
+    watch_vault, ConfigPermissionMode, LinkSuggestionStatus, LocalOAuthIssuer,
+    LocalOAuthIssuerConfig, NoteQuery, OAuthResourceServer, OAuthResourceServerConfig,
+    PermissionGuard, PermissionMode, PermissionProfile, PluginEvent, ProfilePermissionGuard,
+    QueryAst, QueryReport, ScanMode, ScanSummary, SearchQuery, SearchSort, VaultPaths,
+    WatchOptions,
 };
 use vulcan_core::{discover_indieauth_endpoints, exchange_indieauth_code, pkce_s256_challenge};
 
@@ -147,7 +147,7 @@ impl McpToolPack {
             Self::NotesRead => "Read note content and outlines for scoped follow-up work.",
             Self::Search => "Search the vault with structured hits and snippets.",
             Self::Status => "Inspect vault status, cache metadata, and git summary.",
-            Self::Custom => "Expose callable vault-native custom tools.",
+            Self::Custom => "Expose callable vault-defined skill command tools.",
             Self::Daily => {
                 "Read daily notes and daily-note ranges with structured periodic metadata."
             }
@@ -2346,7 +2346,7 @@ impl McpServerCore {
                     "uri": "vulcan://assistant/tools/index",
                     "name": "Assistant Tool Index",
                     "title": "Vault Custom Tool Index",
-                    "description": "Visible callable custom tools loaded from the configured assistant tools folder.",
+                    "description": "Visible callable skill command tools projected into the shared tool registry.",
                     "mimeType": "application/json",
                 }));
             }
@@ -2407,7 +2407,7 @@ impl McpServerCore {
                     "uriTemplate": "vulcan://assistant/tools/{name}",
                     "name": "Assistant Tools",
                     "title": "Assistant Tool Resource",
-                    "description": "Read one visible callable custom tool as structured JSON.",
+                    "description": "Read one visible callable skill command tool as structured JSON.",
                     "mimeType": "application/json",
                 }));
             }
@@ -5696,7 +5696,7 @@ fn tool_fingerprint(
                     .into_iter()
                     .map(|tool| format!("custom:{}", tool.summary.name)),
             );
-            parts.push(path_tree_fingerprint(&assistant_tools_root(paths)));
+            parts.push(path_tree_fingerprint(&assistant_skills_root(paths)));
         }
     }
     parts.join("\n")
@@ -5710,7 +5710,6 @@ fn resource_files_fingerprint(paths: &VaultPaths) -> String {
     let mut parts = vec![
         path_tree_fingerprint(&assistant_prompts_root(paths)),
         path_tree_fingerprint(&assistant_skills_root(paths)),
-        path_tree_fingerprint(&assistant_tools_root(paths)),
         path_tree_fingerprint(&paths.vault_root().join("AGENTS.md")),
         path_tree_fingerprint(paths.config_file()),
         path_tree_fingerprint(&paths.vulcan_dir().join("config.local.toml")),

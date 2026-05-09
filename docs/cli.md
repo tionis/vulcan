@@ -266,7 +266,8 @@ Behavior:
 
 - `vulcan run <script.js>`: execute a JavaScript file through the Vulcan runtime, stripping a leading shebang line when present.
 - `vulcan run <script-name>`: resolve `.vulcan/scripts/<name>` or `.vulcan/scripts/<name>.js`.
-- `vulcan run --script <file>`: shebang-friendly entrypoint for `#!/usr/bin/env -S vulcan run --script`.
+- `vulcan run --script <file>`: shebang-friendly entrypoint for ad hoc scripts.
+- `vulcan skill exec <script>`: shebang-friendly entrypoint used by generated skill command scripts.
 - `vulcan run`: open the interactive JS REPL with persistent context.
 
 Behavior:
@@ -1044,7 +1045,8 @@ vulcan mcp --transport http                  # expose the curated MCP tool surfa
 
 ```
 vulcan run <script.js|script-name>       # current script execution surface
-vulcan run --script <file>               # current shebang entry point
+vulcan run --script <file>               # ad hoc script shebang entry point
+vulcan skill exec <script>               # skill command script shebang entry point
 vulcan run --sandbox fs runtime.js       # enable vault writes
 vulcan run --sandbox net fetch.js        # enable web helpers
 vulcan run                               # interactive REPL
