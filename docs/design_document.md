@@ -1091,6 +1091,7 @@ Skills serve double duty: they teach external runtimes how to use Vulcan effecti
 - **note-operations** — reading, creating, editing notes; `note outline`, semantic `note get` selectors, frontmatter conventions, `note patch` safety
 - **vault-query** — query DSL, filter expressions, property operators, `search` vs `query` guidance
 - **js-api-guide** — vault JS API patterns, `vault.note()`, semantic note outlining/partial reads, `vault.query()`, collection chains, `vault.transaction()`
+- **skill-creator** — skill authoring and review, projected skill command metadata, direct script shebangs, schemas, sandboxing, permissions, and validation
 - **graph-exploration** — links, backlinks, graph paths, hubs, dead ends, when to use graph vs search
 - **daily-notes** — periodic note workflow, appending entries, reviewing date ranges, event syntax
 - **properties-and-tags** — metadata management, property types, tag conventions, querying by metadata

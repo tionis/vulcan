@@ -689,6 +689,12 @@ const BUNDLED_SKILL_FILES: &[BundledTextFile] = &[
     },
     BundledTextFile {
         kind: "skill",
+        relative_path: "skill-creator/SKILL.md",
+        contents: include_str!("../../docs/assistant/skills/skill-creator.md"),
+        target: BundledFileTarget::SkillsFolder,
+    },
+    BundledTextFile {
+        kind: "skill",
         relative_path: "graph-exploration/SKILL.md",
         contents: include_str!("../../docs/assistant/skills/graph-exploration.md"),
         target: BundledFileTarget::SkillsFolder,

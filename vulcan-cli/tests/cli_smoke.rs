@@ -9957,6 +9957,9 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(list_json["skills"].as_array().is_some_and(|skills| skills
         .iter()
         .any(|skill| skill["name"] == "note-operations")));
+    assert!(list_json["skills"]
+        .as_array()
+        .is_some_and(|skills| skills.iter().any(|skill| skill["name"] == "skill-creator")));
 
     let get_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -9977,6 +9980,26 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(get_json["body"]
         .as_str()
         .is_some_and(|body| body.contains("note outline")));
+
+    let get_creator_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "skill",
+            "get",
+            "skill-creator",
+        ])
+        .assert()
+        .success();
+    let get_creator_json = parse_stdout_json(&get_creator_assert);
+    assert_eq!(get_creator_json["name"].as_str(), Some("skill-creator"));
+    assert!(get_creator_json["body"].as_str().is_some_and(|body| {
+        body.contains("#!/usr/bin/env -S vulcan skill exec")
+            && body.contains("metadata.vulcan.commands")
+    }));
 }
 
 #[test]
