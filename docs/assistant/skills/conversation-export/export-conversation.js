@@ -5,14 +5,14 @@ function main(input) {
   if (!title) {
     throw new Error("title is required");
   }
-  if (!transcript.trim()) {
-    throw new Error("transcript is required");
+  if (!hasConversationInput(input, transcript)) {
+    throw new Error("transcript, messages, or turns is required");
   }
 
   const source = text(input.source).trim() || "manual";
   const day = normalizeDate(input.date) || new Date().toISOString().slice(0, 10);
   const folder = normalizeFolder(input.target_folder) || "AI/Conversations";
-  const messages = parseMessages(transcript);
+  const messages = parseConversationInput(input, transcript);
   const markdown = renderConversation(title, messages);
   const path = `${folder}/${day}-${slugify(title)}.md`;
   const roles = Array.from(new Set(messages.map((message) => message.role)));
@@ -50,6 +50,10 @@ function text(value) {
   return value == null ? "" : String(value);
 }
 
+function hasConversationInput(input, transcript) {
+  return transcript.trim() || Array.isArray(input.messages) || Array.isArray(input.turns);
+}
+
 function normalizeDate(value) {
   const raw = text(value).trim();
   if (!raw) {
@@ -84,6 +88,17 @@ function slugify(value) {
   return slug || "conversation";
 }
 
+function parseConversationInput(input, transcript) {
+  const structured = messagesFromJsonValue(input.turns || input.messages || []);
+  if (structured.length > 0) {
+    return structured;
+  }
+  if (transcript.trim()) {
+    return parseMessages(transcript);
+  }
+  return [];
+}
+
 function parseMessages(transcript) {
   const jsonMessages = parseJsonMessages(transcript);
   if (jsonMessages.length > 0) {
@@ -93,7 +108,7 @@ function parseMessages(transcript) {
   if (blocks.length > 0) {
     return blocks;
   }
-  return [{ role: "user", content: transcript.trim() }];
+  return [{ role: "user", parts: [{ type: "text", content: transcript.trim() }] }];
 }
 
 function parseJsonMessages(transcript) {
@@ -131,15 +146,109 @@ function messagesFromJsonValue(value) {
   if (!value || typeof value !== "object") {
     return [];
   }
+  if (Array.isArray(value.turns)) {
+    return messagesFromJsonValue(value.turns);
+  }
   if (Array.isArray(value.messages)) {
     return messagesFromJsonValue(value.messages);
   }
   const role = normalizeRole(value.role || value.author || value.type);
-  const content = value.content || value.text || value.message || value.output;
-  if (!content) {
+  const parts = normalizeParts(value);
+  if (parts.length === 0) {
     return [];
   }
-  return [{ role, content: normalizeContent(content) }];
+  return [{ role, parts }];
+}
+
+function normalizeParts(value) {
+  const parts = [];
+  appendContentParts(parts, value.content || value.text || value.message || value.output);
+  appendThinkingPart(parts, value.thinking || value.reasoning || value.thoughts);
+  appendToolUseParts(parts, value.tool_uses || value.toolUses || value.tools);
+  appendToolResultParts(parts, value.tool_results || value.toolResults);
+  return parts;
+}
+
+function appendContentParts(parts, content) {
+  if (content == null) {
+    return;
+  }
+  if (Array.isArray(content)) {
+    for (const item of content) {
+      if (item && typeof item === "object") {
+        appendTypedPart(parts, item);
+      } else {
+        appendTextPart(parts, "text", item);
+      }
+    }
+    return;
+  }
+  appendTextPart(parts, "text", content);
+}
+
+function appendTypedPart(parts, item) {
+  const type = text(item.type).toLowerCase();
+  if (["thinking", "reasoning"].includes(type)) {
+    appendTextPart(parts, "thinking", item.text || item.content || item.thinking);
+    return;
+  }
+  if (["tool_use", "tool-call", "tool_call"].includes(type)) {
+    appendToolUseParts(parts, [item]);
+    return;
+  }
+  if (["tool_result", "tool-output", "tool_output"].includes(type)) {
+    appendToolResultParts(parts, [item]);
+    return;
+  }
+  appendTextPart(parts, "text", item.text || item.content || item.value || item);
+}
+
+function appendThinkingPart(parts, thinking) {
+  appendTextPart(parts, "thinking", thinking);
+}
+
+function appendToolUseParts(parts, toolUses) {
+  if (!Array.isArray(toolUses)) {
+    return;
+  }
+  for (const toolUse of toolUses) {
+    if (!toolUse || typeof toolUse !== "object") {
+      continue;
+    }
+    parts.push({
+      type: "tool_use",
+      id: text(toolUse.id || toolUse.call_id || toolUse.tool_call_id).trim(),
+      name: text(toolUse.name || toolUse.tool || toolUse.function || toolUse.function_name).trim() || "tool",
+      input: toolUse.input ?? toolUse.arguments ?? toolUse.args ?? toolUse.params,
+      output: toolUse.output ?? toolUse.result,
+      error: toolUse.error,
+    });
+  }
+}
+
+function appendToolResultParts(parts, toolResults) {
+  if (!Array.isArray(toolResults)) {
+    return;
+  }
+  for (const toolResult of toolResults) {
+    if (!toolResult || typeof toolResult !== "object") {
+      continue;
+    }
+    parts.push({
+      type: "tool_result",
+      id: text(toolResult.id || toolResult.call_id || toolResult.tool_call_id).trim(),
+      name: text(toolResult.name || toolResult.tool || toolResult.function || toolResult.function_name).trim() || "tool",
+      output: toolResult.output ?? toolResult.result ?? toolResult.content,
+      error: toolResult.error,
+    });
+  }
+}
+
+function appendTextPart(parts, type, value) {
+  const content = normalizeContent(value);
+  if (content) {
+    parts.push({ type, content });
+  }
 }
 
 function parseRoleBlocks(transcript) {
@@ -150,7 +259,7 @@ function parseRoleBlocks(transcript) {
     const match = line.match(/^\s*(user|human|assistant|system|tool)\s*:\s*(.*)$/i);
     if (match) {
       if (current && current.content.trim()) {
-        messages.push({ role: current.role, content: current.content.trim() });
+        messages.push({ role: current.role, parts: [{ type: "text", content: current.content.trim() }] });
       }
       current = {
         role: normalizeRole(match[1]),
@@ -164,7 +273,7 @@ function parseRoleBlocks(transcript) {
   }
 
   if (current && current.content.trim()) {
-    messages.push({ role: current.role, content: current.content.trim() });
+    messages.push({ role: current.role, parts: [{ type: "text", content: current.content.trim() }] });
   }
   return messages;
 }
@@ -194,12 +303,60 @@ function renderConversation(title, messages) {
   const blocks = [`# ${title}`];
   for (const message of messages) {
     const lines = [`> [!${message.role}]+ ${labelForRole(message.role)}`];
-    for (const line of message.content.split(/\r?\n/)) {
-      lines.push(line ? `> ${line}` : ">");
-    }
+    appendMessageParts(lines, message.parts || [{ type: "text", content: message.content || "" }]);
     blocks.push(lines.join("\n"));
   }
   return `${blocks.join("\n\n")}\n`;
+}
+
+function appendMessageParts(lines, parts) {
+  for (const part of parts) {
+    if (part.type === "thinking") {
+      appendNestedTextCallout(lines, "thinking", "Thinking", part.content);
+    } else if (part.type === "tool_use") {
+      appendToolCallout(lines, "Tool use", part);
+    } else if (part.type === "tool_result") {
+      appendToolCallout(lines, "Tool result", part);
+    } else {
+      appendQuotedLines(lines, part.content);
+    }
+  }
+}
+
+function appendQuotedLines(lines, content) {
+  for (const line of text(content).split(/\r?\n/)) {
+    lines.push(line ? `> ${line}` : ">");
+  }
+}
+
+function appendNestedTextCallout(lines, kind, label, content) {
+  lines.push(`> > [!${kind}]- ${label}`);
+  for (const line of text(content).split(/\r?\n/)) {
+    lines.push(line ? `> > ${line}` : "> >");
+  }
+}
+
+function appendToolCallout(lines, label, part) {
+  const suffix = part.id ? ` (${part.id})` : "";
+  lines.push(`> > [!tool]- ${label}: ${part.name}${suffix}`);
+  if (part.input !== undefined) {
+    appendNestedJsonBlock(lines, "input", part.input);
+  }
+  if (part.output !== undefined) {
+    appendNestedJsonBlock(lines, "output", part.output);
+  }
+  if (part.error !== undefined) {
+    appendNestedJsonBlock(lines, "error", part.error);
+  }
+}
+
+function appendNestedJsonBlock(lines, label, value) {
+  lines.push(`> > ${label}:`);
+  lines.push("> > ```json");
+  for (const line of JSON.stringify(value, null, 2).split(/\r?\n/)) {
+    lines.push(`> > ${line}`);
+  }
+  lines.push("> > ```");
 }
 
 function labelForRole(role) {
