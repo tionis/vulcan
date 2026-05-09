@@ -19362,6 +19362,50 @@ function __fish_vulcan_dynamic_complete_task_view
     $cmd $args complete task-view "$prefix" 2>/dev/null
 end
 
+function __fish_vulcan_dynamic_complete_custom_tool
+    set -l args (__fish_vulcan_completion_prefix_args)
+    set -l prefix (commandline -ct)
+    set -l cmd "__VULCAN_CMD__"
+    $cmd $args complete custom-tool "$prefix" 2>/dev/null
+end
+
+function __fish_vulcan_tool_run_name
+    set -l words (commandline -opc)
+    set -l i 1
+    while test $i -le (count $words)
+        if test "$words[$i]" = "tool"
+            set -l next (math $i + 1)
+            if test $next -le (count $words); and test "$words[$next]" = "run"
+                set -l j (math $i + 2)
+                while test $j -le (count $words)
+                    set -l word $words[$j]
+                    switch $word
+                        case '--input-json' '--input-file'
+                            set j (math $j + 2)
+                        case '--*'
+                            set j (math $j + 1)
+                        case '*'
+                            printf '%s\n' "$word"
+                            return
+                    end
+                end
+            end
+        end
+        set i (math $i + 1)
+    end
+end
+
+function __fish_vulcan_dynamic_complete_custom_tool_flag
+    set -l tool (__fish_vulcan_tool_run_name)
+    if test -z "$tool"
+        return
+    end
+    set -l args (__fish_vulcan_completion_prefix_args)
+    set -l prefix (commandline -ct)
+    set -l cmd "__VULCAN_CMD__"
+    $cmd $args complete custom-tool-flag:$tool "$prefix" 2>/dev/null
+end
+
 function __fish_vulcan_complete_vault_path_arg
     set -l args (__fish_vulcan_completion_prefix_args)
     set -l prefix (commandline -ct)
@@ -19391,6 +19435,10 @@ complete -c vulcan -n "__fish_vulcan_using_subcommand daily; and __fish_seen_sub
 # Script names for vulcan run
 complete -c vulcan -n "__fish_vulcan_using_subcommand run" -f -a "(__fish_vulcan_dynamic_complete_script)" -d "Script"
 
+# Skill-backed custom tools and declared CLI flags for vulcan tool run
+complete -c vulcan -n "__fish_vulcan_using_subcommand tool; and __fish_seen_subcommand_from run" -f -a "(__fish_vulcan_dynamic_complete_custom_tool)" -d "Tool"
+complete -c vulcan -n "__fish_vulcan_using_subcommand tool; and __fish_seen_subcommand_from run" -f -a "(__fish_vulcan_dynamic_complete_custom_tool_flag)" -d "Tool flag"
+
 # Vault-relative path arguments
 complete -c vulcan -n "__fish_vulcan_using_subcommand note; and __fish_seen_subcommand_from create" -f -a "(__fish_vulcan_complete_vault_path_arg)" -d "Path"
 complete -c vulcan -n "__fish_vulcan_using_subcommand edit; and __fish_vulcan_seen_flag --new" -f -a "(__fish_vulcan_complete_vault_path_arg)" -d "Path"
@@ -19406,6 +19454,7 @@ complete -c vulcan -n "__fish_vulcan_using_subcommand tasks; and __fish_seen_sub
     .replace("__VULCAN_CMD__", &command)
 }
 
+#[allow(clippy::too_many_lines)]
 fn generate_bash_dynamic_completions() -> String {
     let command = completion_command_path_literal();
     r#"
@@ -19460,6 +19509,89 @@ __vulcan_dynamic_complete() {
     return 0
 }
 
+__vulcan_dynamic_candidates() {
+    local context="$1"
+    local prefix="$2"
+    local cmd="__VULCAN_CMD__"
+    local arg candidate
+    local -a args=()
+    while IFS= read -r arg; do
+        args+=("$arg")
+    done < <(__vulcan_completion_prefix_args)
+    while IFS= read -r candidate; do
+        printf '%s\n' "$candidate"
+    done < <("$cmd" "${args[@]}" complete "$context" "$prefix" 2>/dev/null)
+}
+
+__vulcan_tool_run_name() {
+    local i j word
+    for (( i = 1; i < COMP_CWORD; i++ )); do
+        if [[ "${COMP_WORDS[i]}" == "tool" && "${COMP_WORDS[i + 1]}" == "run" ]]; then
+            j=$((i + 2))
+            while (( j < COMP_CWORD )); do
+                word="${COMP_WORDS[j]}"
+                case "$word" in
+                    --input-json|--input-file)
+                        ((j += 2))
+                        ;;
+                    --*)
+                        ((j += 1))
+                        ;;
+                    *)
+                        printf '%s\n' "$word"
+                        return 0
+                        ;;
+                esac
+            done
+        fi
+    done
+}
+
+__vulcan_is_tool_run_context() {
+    local i
+    for (( i = 1; i < COMP_CWORD; i++ )); do
+        if [[ "${COMP_WORDS[i]}" == "tool" && "${COMP_WORDS[i + 1]}" == "run" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+__vulcan_append_completion_candidate() {
+    local candidate existing
+    candidate="$1"
+    for existing in "${COMPREPLY[@]}"; do
+        if [[ "$existing" == "$candidate" ]]; then
+            return
+        fi
+    done
+    COMPREPLY+=("$candidate")
+}
+
+__vulcan_dynamic_dispatch() {
+    _vulcan "$@"
+    if __vulcan_is_tool_run_context; then
+        local tool candidate
+        tool="$(__vulcan_tool_run_name)"
+        if [[ -z "$tool" && "${cur:-${COMP_WORDS[COMP_CWORD]}}" != -* ]]; then
+            COMPREPLY=()
+            while IFS= read -r candidate; do
+                __vulcan_append_completion_candidate "$candidate"
+            done < <(__vulcan_dynamic_candidates custom-tool "${COMP_WORDS[COMP_CWORD]}")
+        elif [[ -n "$tool" && "${cur:-${COMP_WORDS[COMP_CWORD]}}" == --* ]]; then
+            while IFS= read -r candidate; do
+                __vulcan_append_completion_candidate "$candidate"
+            done < <(__vulcan_dynamic_candidates "custom-tool-flag:$tool" "${COMP_WORDS[COMP_CWORD]}")
+        fi
+    fi
+}
+
+if [[ "${BASH_VERSINFO[0]}" -eq 4 && "${BASH_VERSINFO[1]}" -ge 4 || "${BASH_VERSINFO[0]}" -gt 4 ]]; then
+    complete -F __vulcan_dynamic_dispatch -o nosort -o bashdefault -o default vulcan
+else
+    complete -F __vulcan_dynamic_dispatch -o bashdefault -o default vulcan
+fi
+
 # Override completion for specific subcommand contexts
 _vulcan_complete_note_arg() {
     if [[ "${COMP_WORDS[1]}" == "note" || "${COMP_WORDS[1]}" == "links" || "${COMP_WORDS[1]}" == "backlinks" ]]; then
@@ -19484,6 +19616,7 @@ _vulcan_complete_bases_arg() {
     .replace("__VULCAN_CMD__", &command)
 }
 
+#[allow(clippy::too_many_lines)]
 fn generate_zsh_dynamic_completions() -> String {
     let command = completion_command_path_literal();
     r#"
@@ -19577,6 +19710,86 @@ _vulcan_complete_task_view() {
     views=(${(f)"$("$cmd" "${args[@]}" complete task-view "${words[CURRENT]}" 2>/dev/null)"})
     _describe 'view' views
 }
+
+_vulcan_complete_custom_tool() {
+    local cmd="__VULCAN_CMD__"
+    local -a args tools
+    _vulcan_completion_prefix_args
+    args=("${reply[@]}")
+    tools=(${(f)"$("$cmd" "${args[@]}" complete custom-tool "${words[CURRENT]}" 2>/dev/null)"})
+    _describe 'tool' tools
+}
+
+_vulcan_tool_run_name() {
+    local i j word
+    for (( i = 1; i < CURRENT; i++ )); do
+        if [[ "${words[i]}" == "tool" && "${words[i + 1]}" == "run" ]]; then
+            j=$((i + 2))
+            while (( j < CURRENT )); do
+                word="${words[j]}"
+                case "$word" in
+                    --input-json|--input-file)
+                        (( j += 2 ))
+                        ;;
+                    --*)
+                        (( j += 1 ))
+                        ;;
+                    *)
+                        print -r -- "$word"
+                        return
+                        ;;
+                esac
+            done
+        fi
+    done
+}
+
+_vulcan_complete_custom_tool_flag() {
+    local cmd="__VULCAN_CMD__"
+    local -a args flags
+    local tool="$(_vulcan_tool_run_name)"
+    [[ -z "$tool" ]] && return
+    _vulcan_completion_prefix_args
+    args=("${reply[@]}")
+    flags=(${(f)"$("$cmd" "${args[@]}" complete custom-tool-flag:$tool "${words[CURRENT]}" 2>/dev/null)"})
+    _describe 'tool flag' flags
+}
+
+_vulcan_is_tool_run_context() {
+    local i
+    for (( i = 1; i < CURRENT; i++ )); do
+        if [[ "${words[i]}" == "tool" && "${words[i + 1]}" == "run" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+_vulcan_custom_tool_candidates() {
+    local context="$1"
+    local prefix="$2"
+    local cmd="__VULCAN_CMD__"
+    local -a args candidates
+    _vulcan_completion_prefix_args
+    args=("${reply[@]}")
+    candidates=(${(f)"$("$cmd" "${args[@]}" complete "$context" "$prefix" 2>/dev/null)"})
+    (( ${#candidates} )) && compadd -a candidates
+}
+
+if functions -c _vulcan _vulcan_static 2>/dev/null; then
+    _vulcan() {
+        _vulcan_static "$@"
+        if _vulcan_is_tool_run_context; then
+            local tool="$(_vulcan_tool_run_name)"
+            if [[ -z "$tool" && "${words[CURRENT]}" != -* ]]; then
+                _vulcan_custom_tool_candidates custom-tool "${words[CURRENT]}"
+            elif [[ -n "$tool" && "${words[CURRENT]}" == --* ]]; then
+                _vulcan_custom_tool_candidates "custom-tool-flag:$tool" "${words[CURRENT]}"
+            fi
+        fi
+    }
+    compdef _vulcan vulcan
+fi
 "#
     .trim()
     .to_string()
@@ -23939,6 +24152,80 @@ done < "$record_path"
     }
 
     #[test]
+    fn bash_dynamic_completions_complete_custom_tool_names_and_flags() {
+        #[cfg(windows)]
+        let Some(bash_path) = completion_test_bash_path() else {
+            return;
+        };
+        #[cfg(not(windows))]
+        let bash_path = completion_test_bash_path();
+        let dynamic = generate_bash_dynamic_completions().replace(
+            &format!("local cmd=\"{}\"", completion_command_path_literal()),
+            "local cmd=\"$tmpdir/vulcan\"",
+        );
+        let script = format!(
+            r#"
+set -uo pipefail
+tmpdir="$(mktemp -d)"
+cat > "$tmpdir/vulcan" <<'EOF'
+#!/bin/sh
+set -eu
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "complete" ]; then
+        context="$2"
+        case "$context" in
+            custom-tool)
+                printf 'conversation-export\n'
+                ;;
+            custom-tool-flag:conversation-export)
+                printf -- '--assistant\n'
+                ;;
+        esac
+        exit 0
+    fi
+    shift
+done
+EOF
+chmod +x "$tmpdir/vulcan"
+_vulcan() {{ COMPREPLY=(); }}
+{dynamic}
+COMP_WORDS=(vulcan --vault /tmp/vault tool run con)
+COMP_CWORD=5
+COMPREPLY=()
+__vulcan_dynamic_dispatch vulcan con run
+for reply in "${{COMPREPLY[@]}}"; do
+    printf 'NAME:%s\n' "$reply"
+done
+COMP_WORDS=(vulcan --vault /tmp/vault tool run conversation-export --ass)
+COMP_CWORD=6
+COMPREPLY=()
+__vulcan_dynamic_dispatch vulcan --ass conversation-export
+for reply in "${{COMPREPLY[@]}}"; do
+    printf 'FLAG:%s\n' "$reply"
+done
+"#
+        );
+
+        let output = ProcessCommand::new(&bash_path)
+            .arg("-lc")
+            .arg(script)
+            .output()
+            .expect("bash should run generated completion helper");
+        assert!(
+            output.status.success(),
+            "bash helper should succeed (shell: {:?}, status: {:?})\nstdout:\n{}\nstderr:\n{}",
+            bash_path,
+            output.status.code(),
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("NAME:conversation-export"));
+        assert!(stdout.contains("FLAG:--assistant"));
+    }
+
+    #[test]
+    #[allow(clippy::too_many_lines)]
     fn dynamic_completion_scripts_replay_leading_global_args() {
         let fish = generate_fish_dynamic_completions();
         assert!(
@@ -23973,6 +24260,14 @@ done < "$record_path"
             fish.contains("(__fish_vulcan_complete_vault_path_arg)"),
             "fish path completions should use the dedicated vault-path helper"
         );
+        assert!(
+            fish.contains("$cmd $args complete custom-tool \"$prefix\""),
+            "fish custom tool completion should replay into vulcan complete"
+        );
+        assert!(
+            fish.contains("$cmd $args complete custom-tool-flag:$tool \"$prefix\""),
+            "fish custom tool flag completion should include the selected tool"
+        );
 
         let bash = generate_bash_dynamic_completions();
         assert!(
@@ -24003,6 +24298,18 @@ done < "$record_path"
             bash.contains("--vault=*"),
             "bash completions should preserve inline --vault assignments"
         );
+        assert!(
+            bash.contains("complete -F __vulcan_dynamic_dispatch"),
+            "bash completions should install a wrapper for dynamic tool run completions"
+        );
+        assert!(
+            bash.contains("__vulcan_dynamic_candidates custom-tool"),
+            "bash custom tool completion should call vulcan complete"
+        );
+        assert!(
+            bash.contains("__vulcan_dynamic_candidates \"custom-tool-flag:$tool\""),
+            "bash custom tool flag completion should include the selected tool"
+        );
 
         let zsh = generate_zsh_dynamic_completions();
         assert!(
@@ -24020,6 +24327,18 @@ done < "$record_path"
         assert!(
             zsh.contains("--vault=*"),
             "zsh completions should preserve inline --vault assignments"
+        );
+        assert!(
+            zsh.contains("complete custom-tool \"${words[CURRENT]}\""),
+            "zsh custom tool completion should call vulcan complete"
+        );
+        assert!(
+            zsh.contains("complete custom-tool-flag:$tool \"${words[CURRENT]}\""),
+            "zsh custom tool flag completion should include the selected tool"
+        );
+        assert!(
+            zsh.contains("functions -c _vulcan _vulcan_static"),
+            "zsh completions should wrap the generated completer for dynamic tool run completions"
         );
     }
 

@@ -1,6 +1,6 @@
 use crate::scan::refresh_cache_incrementally;
 use crate::tools::{build_custom_tool_js_registry, CustomToolRegistryOptions};
-use crate::AppError;
+use crate::{tools, AppError};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
 use std::process::Command as ProcessCommand;
@@ -499,6 +499,22 @@ pub fn collect_complete_candidates(
             let mut base_files = collect_complete_candidates(paths, "bases-view")?;
             out.append(&mut base_files);
             dedupe_strings_preserve_order(out)
+        }
+        "custom-tool" => tools::collect_custom_tool_cli_name_candidates(
+            paths,
+            &tools::CustomToolRegistryOptions::default(),
+        )?,
+        context if context.starts_with("custom-tool-flag:") => {
+            let name = context.trim_start_matches("custom-tool-flag:");
+            if name.is_empty() {
+                Vec::new()
+            } else {
+                tools::collect_custom_tool_cli_flag_candidates(
+                    paths,
+                    name,
+                    &tools::CustomToolRegistryOptions::default(),
+                )?
+            }
         }
         _ => Vec::new(),
     };

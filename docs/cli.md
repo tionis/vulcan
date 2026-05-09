@@ -1027,6 +1027,12 @@ Supported shells:
 - `powershell`
 - `zsh`
 
+Bash, Fish, and Zsh completions include vault-aware dynamic candidates for notes,
+task views, scripts, and skill-backed custom tools. When a skill command declares
+`metadata.vulcan.commands[].cli`, `vulcan tool run <TAB>` completes its projected
+tool name and aliases, and `vulcan tool run <alias> --<TAB>` completes the
+declared custom flags.
+
 ## Later roadmap items
 
 ### Phase A: CLI for LLMs (Roadmap Wave 5)

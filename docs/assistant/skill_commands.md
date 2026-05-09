@@ -165,6 +165,7 @@ Optional fields:
 - `destructive`: UX annotation only
 - `expose`: controls whether the command is projected to CLI, MCP, and `describe`
 - `cli`: optional aliases and shell-friendly flag mappings for `vulcan tool run <alias>`
+  and Bash/Fish/Zsh dynamic shell completions
 
 Validation rules:
 
@@ -174,6 +175,8 @@ Validation rules:
 - Command names must not collide with built-in tool names or reserved meta-tools.
 - Discovery never executes command code.
 - Unknown Vulcan command metadata keys should be rejected or diagnosed so discovery stays deterministic.
+- CLI aliases and flags declared under `cli` are discoverable through `vulcan complete custom-tool`
+  and `vulcan complete custom-tool-flag:<tool-or-alias>`.
 - `sandbox = none` is not valid for projected skill commands.
 - `permission_profile` can narrow authority but cannot widen the caller's authority.
 
