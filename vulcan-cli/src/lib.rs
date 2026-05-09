@@ -677,7 +677,7 @@ struct BundledTextFile {
     target: BundledFileTarget,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum BundledFileTarget {
     VaultRoot,
     SkillsFolder,
@@ -835,7 +835,7 @@ Use this skill command as a minimal Agent Skills-compatible executable example.
     BundledTextFile {
         kind: "skill",
         relative_path: "summarize-note/scripts/summarize.js",
-        contents: "function main(input) {\n  return {\n    note: input.note,\n    summary: `TODO: summarize ${input.note}`,\n  };\n}\n",
+        contents: "#!/usr/bin/env -S vulcan run --script\nfunction main(input) {\n  return {\n    note: input.note,\n    summary: `TODO: summarize ${input.note}`,\n  };\n}\n",
         target: BundledFileTarget::SkillsFolder,
     },
 ];
@@ -11250,11 +11250,21 @@ fn write_bundled_text_file(
 ) -> Result<SupportFileReport, CliError> {
     let destination = bundled_text_file_destination(paths, file);
     let status = write_bundled_text_contents(&destination, file.contents, overwrite)?;
+    if bundled_text_file_should_be_executable(file) && destination.exists() {
+        set_executable_permissions(&destination)?;
+    }
     Ok(SupportFileReport {
         path: bundled_text_file_display_path(paths, file),
         kind: file.kind.to_string(),
         status,
     })
+}
+
+fn bundled_text_file_should_be_executable(file: &BundledTextFile) -> bool {
+    file.target == BundledFileTarget::SkillsFolder
+        && Path::new(file.relative_path)
+            .extension()
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("js"))
 }
 
 fn bundled_text_file_destination(paths: &VaultPaths, file: &BundledTextFile) -> PathBuf {
@@ -11317,6 +11327,21 @@ fn write_bundled_text_contents(
     } else {
         SupportFileStatus::Created
     })
+}
+
+#[cfg(unix)]
+fn set_executable_permissions(path: &Path) -> Result<(), CliError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::metadata(path).map_err(CliError::operation)?;
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(permissions.mode() | 0o111);
+    fs::set_permissions(path, permissions).map_err(CliError::operation)
+}
+
+#[cfg(not(unix))]
+fn set_executable_permissions(_path: &Path) -> Result<(), CliError> {
+    Ok(())
 }
 
 fn print_note_get_report(

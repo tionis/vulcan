@@ -37,6 +37,20 @@ fn commit_all(vault_root: &Path, message: &str) {
     run_git_ok(vault_root, &["commit", "-m", message]);
 }
 
+#[cfg(unix)]
+fn assert_executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = fs::metadata(path)
+        .expect("script metadata should load")
+        .permissions()
+        .mode();
+    assert_ne!(mode & 0o111, 0, "{} should be executable", path.display());
+}
+
+#[cfg(not(unix))]
+fn assert_executable(_path: &Path) {}
+
 fn cargo_vulcan_fixed_now() -> Command {
     let mut command = Command::cargo_bin("vulcan").expect("binary should build");
     command.env("VULCAN_FIXED_NOW", FIXED_NOW);
@@ -9917,9 +9931,11 @@ fn init_agent_files_optionally_scaffolds_example_tool() {
     assert!(fs::read_to_string(&manifest_path)
         .expect("example tool manifest should be readable")
         .contains("metadata:\n  vulcan:\n    commands:"));
-    assert!(fs::read_to_string(&entrypoint_path)
-        .expect("example tool entrypoint should be readable")
-        .contains("function main"));
+    let entrypoint =
+        fs::read_to_string(&entrypoint_path).expect("example tool entrypoint should be readable");
+    assert!(entrypoint.starts_with("#!/usr/bin/env -S vulcan run --script\n"));
+    assert!(entrypoint.contains("function main"));
+    assert_executable(&entrypoint_path);
     assert!(json["support_files"].as_array().is_some_and(|items| items
         .iter()
         .any(|item| item["path"] == ".agents/skills/summarize-note/SKILL.md")
@@ -10095,6 +10111,10 @@ fn skill_init_and_run_execute_agent_skill_command() {
         init_json["script_path"].as_str(),
         Some(".agents/skills/math/scripts/echo.js")
     );
+    let script_path = vault_root.join(".agents/skills/math/scripts/echo.js");
+    let script = fs::read_to_string(&script_path).expect("starter command script should exist");
+    assert!(script.starts_with("#!/usr/bin/env -S vulcan run --script\n"));
+    assert_executable(&script_path);
 
     Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -10207,6 +10227,11 @@ fn bundled_conversation_export_skill_writes_callout_note() {
         ])
         .assert()
         .success();
+    let script_path =
+        vault_root.join(".agents/skills/conversation-export/scripts/export-conversation.js");
+    let script = fs::read_to_string(&script_path).expect("bundled script should be readable");
+    assert!(script.starts_with("#!/usr/bin/env -S vulcan run --script\n"));
+    assert_executable(&script_path);
     Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
