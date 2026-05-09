@@ -23,10 +23,12 @@ Command groups (run `vulcan help` for the full grouped reference):
   Analysis:    graph, suggest, doctor
   Index:       index, vectors, cache, repair
   Interactive: browse, edit, open
-  Scripting:   run, web, render, tool, skill
+  Scripting:   run, web, render, plugin, tool, skill
+  AI/MCP:      assistant, mcp
   Git:         git, changes
   Automation:  saved, automation, export, checkpoint
-  Setup:       init, agent, config, trust, plugin
+  Setup:       init, agent, config, trust
+  Reference:   help, describe, completions, status
 
 Reference:
   vulcan help <command>              Integrated help for any command

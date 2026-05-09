@@ -16888,6 +16888,7 @@ fn help_overview() -> HelpTopicReport {
         (
             "Periodic Notes",
             &[
+                ("today", "Open today's daily note"),
                 (
                     "daily",
                     "Open today's daily note; append text, list notes, or export as ICS",
@@ -16972,6 +16973,19 @@ fn help_overview() -> HelpTopicReport {
             ],
         ),
         (
+            "Assistant & Protocols",
+            &[
+                (
+                    "assistant",
+                    "Run an optional embedded managed-engine assistant against this vault",
+                ),
+                (
+                    "mcp",
+                    "Start a protocol-native MCP server over stdio or Streamable HTTP",
+                ),
+            ],
+        ),
+        (
             "Automation & Export",
             &[
                 (
@@ -17011,10 +17025,16 @@ fn help_overview() -> HelpTopicReport {
         (
             "Help & Info",
             &[
+                ("status", "Show vault, cache, git, and config overview"),
                 (
                     "help",
                     "Browse integrated docs (this page); `help <topic>` for details",
                 ),
+                (
+                    "describe",
+                    "Export machine-readable CLI, OpenAI tools, or MCP schemas",
+                ),
+                ("completions", "Generate shell completion scripts"),
                 ("version", "Print the Vulcan version"),
             ],
         ),
@@ -24374,6 +24394,26 @@ done < "$record_path"
             .commands
             .iter()
             .all(|command| command.name != "monthly"));
+    }
+
+    #[test]
+    fn help_overview_lists_current_top_level_surfaces() {
+        let report = help_overview();
+
+        for expected in [
+            "`assistant`",
+            "`mcp`",
+            "`describe`",
+            "`completions`",
+            "`status`",
+            "`plugin`",
+            "`today`",
+        ] {
+            assert!(
+                report.body.contains(expected),
+                "help overview should mention {expected}"
+            );
+        }
     }
 
     #[test]
