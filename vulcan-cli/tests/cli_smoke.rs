@@ -10382,6 +10382,32 @@ fn bundled_conversation_export_skill_writes_callout_note() {
     assert!(direct_stdout.contains("conversation-export:export"));
     assert!(direct_stdout.contains("AI/Conversations/2026-05-09-dry-run-chat.md"));
 
+    let structured_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "skill",
+            "run",
+            "conversation-export",
+            "export",
+            "--input-json",
+            r#"{"title":"Structured Chat","source":"codex","date":"2026-05-09","dry_run":true,"messages":[{"role":"user","content":"Find the note."},{"role":"assistant","content":[{"type":"thinking","text":"Need to search first."},{"type":"text","text":"I will search the vault."},{"type":"tool_use","name":"search","id":"call_1","input":{"query":"Project Alpha"}}]},{"role":"tool","tool_results":[{"name":"search","id":"call_1","output":{"hits":["Project Alpha.md"]}}]}]}"#,
+        ])
+        .assert()
+        .success();
+    let structured_json = parse_stdout_json(&structured_assert);
+    let structured_markdown = structured_json["result"]["markdown"]
+        .as_str()
+        .expect("dry-run markdown should be returned");
+    assert_eq!(structured_json["result"]["message_count"].as_u64(), Some(3));
+    assert!(structured_markdown.contains("> > [!thinking]- Thinking"));
+    assert!(structured_markdown.contains("> > [!tool]- Tool use: search (call_1)"));
+    assert!(structured_markdown.contains("> > [!tool]- Tool result: search (call_1)"));
+    assert!(structured_markdown.contains("\"Project Alpha.md\""));
+
     let validate_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([

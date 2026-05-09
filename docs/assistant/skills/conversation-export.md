@@ -22,6 +22,14 @@ metadata:
               type: string
             transcript:
               type: string
+            messages:
+              type: array
+              items:
+                type: object
+            turns:
+              type: array
+              items:
+                type: object
             source:
               type: string
             date:
@@ -54,6 +62,6 @@ metadata:
 
 Use this skill when a user wants to save a chat transcript into the vault as an Obsidian-readable Markdown note.
 
-The `export` command accepts pasted plain text, JSON arrays, or JSONL-style message logs. It writes a note under `AI/Conversations/` by default using `[!user]`, `[!assistant]`, `[!system]`, and `[!tool]` callouts with frontmatter describing the source and message count.
+The `export` command accepts pasted plain text, JSON arrays, JSONL-style message logs, or structured `messages`/`turns` arrays. Structured turns may include `role`, `content`, `thinking`/`reasoning`, `tool_uses`, `tool_results`, or typed `content` parts such as `text`, `thinking`, `tool_use`, and `tool_result`. It writes a note under `AI/Conversations/` by default using `[!user]`, `[!assistant]`, `[!system]`, `[!tool]`, and nested `[!thinking]` callouts with frontmatter describing the source and message count.
 
 Prefer this skill over a bespoke note edit when the task is primarily conversation archival. Use `dry_run: true` when the user wants to preview the normalized Markdown before writing it.
