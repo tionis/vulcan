@@ -2721,6 +2721,36 @@ struct ToolTestReport {
     examples: Vec<ToolTestExampleReport>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ToolInitReport {
+    name: String,
+    skill: String,
+    command: String,
+    dry_run: bool,
+    skill_root: String,
+    manifest_path: String,
+    script_path: String,
+    operations: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ToolLintReport {
+    valid: bool,
+    checked: usize,
+    warnings: Vec<String>,
+    errors: Vec<String>,
+    tools: Vec<ToolLintToolReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ToolLintToolReport {
+    name: String,
+    path: String,
+    entrypoint_path: String,
+    warnings: Vec<String>,
+    errors: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct ToolTestExampleReport {
     name: String,
@@ -2901,6 +2931,35 @@ fn handle_tool_command(
                 &registry_options,
             )?;
             print_tool_help_report(cli.output, &report)
+        }
+        ToolCommand::Init {
+            name,
+            description,
+            command,
+            dry_run,
+            overwrite,
+        } => {
+            let report = init_skill_backed_tool(
+                paths,
+                name,
+                description.as_deref(),
+                command,
+                *dry_run,
+                *overwrite,
+                &registry_options,
+            )?;
+            print_tool_init_report(cli.output, &report)
+        }
+        ToolCommand::Lint { name, strict } => {
+            let report =
+                lint_custom_tools(cli, paths, name.as_deref(), *strict, &registry_options)?;
+            let valid = report.valid;
+            print_tool_lint_report(cli.output, &report)?;
+            if valid {
+                Ok(())
+            } else {
+                Err(CliError::operation("custom tool lint failed"))
+            }
         }
         ToolCommand::Test { name, example } => {
             let report =
@@ -3370,6 +3429,182 @@ fn read_tool_input(input_json: Option<&str>, input_file: Option<&Path>) -> Resul
     }
 }
 
+fn init_skill_backed_tool(
+    paths: &VaultPaths,
+    name: &str,
+    description: Option<&str>,
+    command: &str,
+    dry_run: bool,
+    overwrite: bool,
+    registry_options: &tools::CustomToolRegistryOptions,
+) -> Result<ToolInitReport, CliError> {
+    let tool_alias = normalize_skill_backed_tool_name(name)?;
+    if registry_options
+        .reserved_names
+        .iter()
+        .any(|reserved| reserved == &tool_alias)
+    {
+        return Err(CliError::operation(format!(
+            "`{tool_alias}` is reserved by the built-in CLI surface"
+        )));
+    }
+    if tools::resolve_custom_tool_cli_name(paths, &tool_alias, registry_options).is_ok()
+        && !overwrite
+    {
+        return Err(CliError::operation(format!(
+            "tool `{tool_alias}` already exists; rerun with --overwrite to replace the scaffold"
+        )));
+    }
+
+    let command = normalize_skill_backed_tool_name(command)?;
+    let config = load_vault_config(paths).config;
+    let skill_root = paths
+        .vault_root()
+        .join(config.assistant.skills_folder)
+        .join(&tool_alias);
+    let manifest_path = skill_root.join("SKILL.md");
+    let script_path = skill_root.join("scripts").join(format!("{command}.js"));
+    if !overwrite && (manifest_path.exists() || script_path.exists()) {
+        return Err(CliError::operation(format!(
+            "tool `{tool_alias}` already exists; rerun with --overwrite to replace the scaffold"
+        )));
+    }
+
+    let description = description.unwrap_or("TODO: describe this tool.");
+    let manifest = render_skill_backed_tool_manifest(&tool_alias, &command, description)?;
+    let script = render_skill_backed_tool_script();
+    if !dry_run {
+        fs::create_dir_all(skill_root.join("scripts")).map_err(CliError::operation)?;
+        fs::write(&manifest_path, manifest).map_err(CliError::operation)?;
+        write_executable_vulcan_tool_script(&script_path, &script)?;
+        tools::show_custom_tool(paths, None, &tool_alias, registry_options)?;
+    }
+
+    Ok(ToolInitReport {
+        name: tool_alias.clone(),
+        skill: tool_alias,
+        command,
+        dry_run,
+        skill_root: relative_path_from_vault(paths, &skill_root)?,
+        manifest_path: relative_path_from_vault(paths, &manifest_path)?,
+        script_path: relative_path_from_vault(paths, &script_path)?,
+        operations: vec!["create skill-backed custom tool scaffold".to_string()],
+    })
+}
+
+fn lint_custom_tools(
+    cli: &Cli,
+    paths: &VaultPaths,
+    name: Option<&str>,
+    strict: bool,
+    registry_options: &tools::CustomToolRegistryOptions,
+) -> Result<ToolLintReport, CliError> {
+    let tools = if let Some(name) = name {
+        vec![
+            tools::show_custom_tool(paths, cli.permissions.as_deref(), name, registry_options)?
+                .tool
+                .summary,
+        ]
+    } else {
+        tools::list_custom_tools(paths, cli.permissions.as_deref(), registry_options)?
+            .into_iter()
+            .map(|descriptor| descriptor.summary)
+            .collect()
+    };
+
+    let mut reports = Vec::new();
+    for tool in tools {
+        let mut warnings = Vec::new();
+        let mut errors = Vec::new();
+        if tool.output_schema.is_none() {
+            warnings.push("missing output_schema".to_string());
+        }
+        match &tool.cli {
+            Some(cli) => {
+                if cli.aliases.is_empty() {
+                    warnings.push("missing CLI alias".to_string());
+                }
+                let required_fields = json_schema_required_fields(&tool.input_schema);
+                let covered_fields = cli
+                    .args
+                    .iter()
+                    .map(|arg| arg.field.as_deref().unwrap_or(&arg.flag))
+                    .map(top_level_field_name)
+                    .collect::<BTreeSet<_>>();
+                for field in required_fields {
+                    if !covered_fields.contains(&field) {
+                        warnings.push(format!("required input field `{field}` has no CLI flag"));
+                    }
+                }
+            }
+            None => warnings.push("missing CLI metadata".to_string()),
+        }
+        if tool.examples.is_empty() {
+            warnings.push("missing runnable examples".to_string());
+        }
+        if matches!(tool.sandbox, JsRuntimeSandbox::Net) {
+            warnings.push(
+                "net sandbox should be reserved for tools that need network access".to_string(),
+            );
+        }
+        if matches!(tool.sandbox, JsRuntimeSandbox::None) {
+            errors.push("sandbox none is not allowed for exposed skill command tools".to_string());
+        }
+        if Path::new(&tool.entrypoint).is_absolute()
+            || Path::new(&tool.entrypoint_path).is_absolute()
+        {
+            errors.push("entrypoint paths must be relative".to_string());
+        }
+
+        let entrypoint_path = paths.vault_root().join(&tool.entrypoint_path);
+        match fs::read_to_string(&entrypoint_path) {
+            Ok(source) => {
+                if !source.starts_with("#!") {
+                    errors.push("entrypoint script is missing a shebang".to_string());
+                } else if !source.lines().next().unwrap_or_default().contains("vulcan") {
+                    errors.push("entrypoint shebang does not invoke vulcan".to_string());
+                }
+            }
+            Err(error) => errors.push(format!("entrypoint script is not readable: {error}")),
+        }
+        if !script_is_executable(&entrypoint_path) {
+            errors.push("entrypoint script is not executable".to_string());
+        }
+
+        reports.push(ToolLintToolReport {
+            name: tool.name,
+            path: tool.path,
+            entrypoint_path: tool.entrypoint_path,
+            warnings,
+            errors,
+        });
+    }
+
+    let warnings = reports
+        .iter()
+        .flat_map(|tool| {
+            tool.warnings
+                .iter()
+                .map(|warning| format!("{}: {warning}", tool.name))
+        })
+        .collect::<Vec<_>>();
+    let errors = reports
+        .iter()
+        .flat_map(|tool| {
+            tool.errors
+                .iter()
+                .map(|error| format!("{}: {error}", tool.name))
+        })
+        .collect::<Vec<_>>();
+    Ok(ToolLintReport {
+        valid: errors.is_empty() && (!strict || warnings.is_empty()),
+        checked: reports.len(),
+        warnings,
+        errors,
+        tools: reports,
+    })
+}
+
 fn run_tool_examples(
     cli: &Cli,
     paths: &VaultPaths,
@@ -3455,6 +3690,145 @@ fn run_tool_examples(
     })
 }
 
+fn render_skill_backed_tool_manifest(
+    tool_alias: &str,
+    command: &str,
+    description: &str,
+) -> Result<String, CliError> {
+    let quoted_name = serde_json::to_string(tool_alias).map_err(CliError::operation)?;
+    let quoted_description = serde_json::to_string(description).map_err(CliError::operation)?;
+    let quoted_alias = serde_json::to_string(tool_alias).map_err(CliError::operation)?;
+    Ok(format!(
+        r"---
+name: {quoted_name}
+description: {quoted_description}
+license: UNLICENSED
+compatibility:
+  - vulcan
+allowed-tools: []
+metadata:
+  vulcan:
+    commands:
+      - id: {command}
+        script: scripts/{command}.js
+        sandbox: strict
+        packs: [custom]
+        expose: true
+        input_schema:
+          type: object
+          properties:
+            message:
+              type: string
+              description: Input text for the tool.
+          required: [message]
+        output_schema:
+          type: object
+          properties:
+            message:
+              type: string
+            length:
+              type: integer
+          required: [message, length]
+        cli:
+          aliases: [{quoted_alias}]
+          args:
+            - flag: message
+              field: message
+              action: string
+              description: Input text for the tool.
+        examples:
+          - name: smoke
+            cli_args: [--message, hello]
+            expected_output:
+              message: hello
+              length: 5
+---
+
+# {tool_alias}
+
+{description}
+"
+    ))
+}
+
+fn render_skill_backed_tool_script() -> String {
+    "#!/usr/bin/env -S vulcan skill exec\nfunction main(input) {\n  const message = String(input.message ?? \"\");\n  return { message, length: message.length };\n}\n".to_string()
+}
+
+fn normalize_skill_backed_tool_name(value: &str) -> Result<String, CliError> {
+    let normalized = value.trim().replace('_', "-");
+    if normalized.is_empty()
+        || !normalized
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-')
+    {
+        return Err(CliError::operation(format!(
+            "invalid custom tool name `{value}`"
+        )));
+    }
+    Ok(normalized)
+}
+
+fn relative_path_from_vault(paths: &VaultPaths, path: &Path) -> Result<String, CliError> {
+    path.strip_prefix(paths.vault_root())
+        .map(|path| path.to_string_lossy().replace('\\', "/"))
+        .map_err(CliError::operation)
+}
+
+fn write_executable_vulcan_tool_script(path: &Path, contents: &str) -> Result<(), CliError> {
+    fs::write(path, contents).map_err(CliError::operation)?;
+    set_vulcan_tool_script_executable(path)
+}
+
+#[cfg(unix)]
+fn set_vulcan_tool_script_executable(path: &Path) -> Result<(), CliError> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = fs::metadata(path).map_err(CliError::operation)?;
+    let mut permissions = metadata.permissions();
+    permissions.set_mode(permissions.mode() | 0o111);
+    fs::set_permissions(path, permissions).map_err(CliError::operation)
+}
+
+#[cfg(not(unix))]
+fn set_vulcan_tool_script_executable(_path: &Path) -> Result<(), CliError> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn script_is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::metadata(path)
+        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn script_is_executable(path: &Path) -> bool {
+    path.exists()
+}
+
+fn json_schema_required_fields(schema: &Value) -> BTreeSet<String> {
+    schema
+        .get("required")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn top_level_field_name(value: &str) -> String {
+    value
+        .split('.')
+        .next()
+        .unwrap_or(value)
+        .trim_start_matches('-')
+        .to_string()
+}
+
 fn print_tool_list_report(output: OutputFormat, report: &ToolListReport) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => print_json(report),
@@ -3482,6 +3856,44 @@ fn print_tool_list_report(output: OutputFormat, report: &ToolListReport) -> Resu
                     tool.summary.path
                 );
                 println!("  {}", tool.summary.description);
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_tool_init_report(output: OutputFormat, report: &ToolInitReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            let mode = if report.dry_run {
+                "Would create"
+            } else {
+                "Created"
+            };
+            println!("{mode} custom tool {}", report.name);
+            println!("Skill: {}", report.skill_root);
+            println!("Manifest: {}", report.manifest_path);
+            println!("Script: {}", report.script_path);
+            Ok(())
+        }
+    }
+}
+
+fn print_tool_lint_report(output: OutputFormat, report: &ToolLintReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!(
+                "Custom tool lint: {} ({} checked)",
+                if report.valid { "passed" } else { "failed" },
+                report.checked
+            );
+            for warning in &report.warnings {
+                println!("warning: {warning}");
+            }
+            for error in &report.errors {
+                println!("error: {error}");
             }
             Ok(())
         }
@@ -24283,6 +24695,46 @@ mod tests {
                     input_json: Some("{\"note\":\"Meetings/Weekly.md\"}".to_string()),
                     input_file: None,
                     args: Vec::new(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tool_authoring_commands() {
+        let init = Cli::try_parse_from([
+            "vulcan",
+            "tool",
+            "init",
+            "meeting-summary",
+            "--description",
+            "Summarize meetings",
+            "--command",
+            "summarize",
+            "--dry-run",
+        ])
+        .expect("tool init should parse");
+        let lint = Cli::try_parse_from(["vulcan", "tool", "lint", "meeting-summary", "--strict"])
+            .expect("tool lint should parse");
+
+        assert_eq!(
+            init.command,
+            Command::Tool {
+                command: ToolCommand::Init {
+                    name: "meeting-summary".to_string(),
+                    description: Some("Summarize meetings".to_string()),
+                    command: "summarize".to_string(),
+                    dry_run: true,
+                    overwrite: false,
+                },
+            }
+        );
+        assert_eq!(
+            lint.command,
+            Command::Tool {
+                command: ToolCommand::Lint {
+                    name: Some("meeting-summary".to_string()),
+                    strict: true,
                 },
             }
         );

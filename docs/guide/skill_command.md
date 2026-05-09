@@ -36,6 +36,7 @@ Skill commands may declare `metadata.vulcan.commands[].cli` aliases and flags fo
 more natural shell interface:
 
 ```bash
+vulcan tool init conversation-export --description "Export chat transcripts"
 vulcan tool run conversation-export --title Chat --user Hello --assistant "Some message"
 ```
 
@@ -56,6 +57,11 @@ Declare `examples` beside the command metadata to make the tool self-testing and
 documented. `vulcan tool test <tool-or-alias>` runs every example, and
 `--example <name>` selects one. Examples can provide raw `input` or shell-style
 `cli_args`; optional `expected_output` is compared exactly.
+
+Use `vulcan tool lint [<tool-or-alias>] --strict` before exposing a custom tool to
+external harnesses. It checks for schemas, CLI aliases, examples, required-field
+coverage, relative entrypoints, Vulcan shebangs, executable scripts, and risky
+sandbox choices.
 
 JavaScript can call skill commands through either `tools.call("skill_daily_review_prepare_day", input)` or `skills.run("daily-review", "prepare-day", input)`.
 

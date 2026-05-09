@@ -10364,6 +10364,120 @@ fn skill_init_and_run_execute_agent_skill_command() {
 }
 
 #[test]
+fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "init",
+            "--no-import",
+        ])
+        .assert()
+        .success();
+
+    let init_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "init",
+            "echo-tool",
+            "--description",
+            "Echo a message.",
+        ])
+        .assert()
+        .success();
+    let init_json = parse_stdout_json(&init_assert);
+    assert_eq!(init_json["name"].as_str(), Some("echo-tool"));
+    assert_eq!(
+        init_json["manifest_path"].as_str(),
+        Some(".agents/skills/echo-tool/SKILL.md")
+    );
+    assert_eq!(
+        init_json["script_path"].as_str(),
+        Some(".agents/skills/echo-tool/scripts/run.js")
+    );
+
+    let script_path = vault_root.join(".agents/skills/echo-tool/scripts/run.js");
+    let script = fs::read_to_string(&script_path).expect("tool script should exist");
+    assert!(script.starts_with("#!/usr/bin/env -S vulcan skill exec\n"));
+    assert_executable(&script_path);
+
+    let lint_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "lint",
+            "echo-tool",
+            "--strict",
+        ])
+        .assert()
+        .success();
+    let lint_json = parse_stdout_json(&lint_assert);
+    assert_eq!(lint_json["valid"].as_bool(), Some(true));
+    assert_eq!(lint_json["checked"].as_u64(), Some(1));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "trust",
+            "add",
+        ])
+        .assert()
+        .success();
+
+    let test_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "test",
+            "echo-tool",
+        ])
+        .assert()
+        .success();
+    let test_json = parse_stdout_json(&test_assert);
+    assert_eq!(test_json["passed"].as_bool(), Some(true));
+    assert_eq!(test_json["examples"][0]["output"]["message"], "hello");
+
+    let run_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "run",
+            "echo-tool",
+            "--message",
+            "custom",
+        ])
+        .assert()
+        .success();
+    let run_json = parse_stdout_json(&run_assert);
+    assert_eq!(run_json["result"]["message"], "custom");
+    assert_eq!(run_json["result"]["length"].as_u64(), Some(6));
+}
+
+#[test]
 fn bundled_conversation_export_skill_writes_callout_note() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

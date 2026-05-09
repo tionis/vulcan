@@ -315,6 +315,9 @@ Projected commands may also appear under the generic tool surface:
 
 - `vulcan tool list`
 - `vulcan tool show <projected-name>`
+- `vulcan tool init <alias>`
+- `vulcan tool lint [<alias>]`
+- `vulcan tool test <alias>`
 - `vulcan tool run <projected-name> --input-json <json>`
 - `vulcan tool run <cli-alias> --flag value`
 
@@ -324,6 +327,10 @@ permissions, trust, or the script entrypoint. Use it for ergonomic commands such
 ```bash
 vulcan tool run conversation-export --title Chat --user Hello --assistant "Some message"
 ```
+
+`tool init` creates the same skill-backed command format as `skill init`; it is only the
+tool-oriented authoring shortcut. `tool lint` is stricter than `skill validate` and checks
+authoring quality plus packaging details such as Vulcan shebangs and executable scripts.
 
 `tool show` and `skill commands` should make clear that the projected tool comes from a skill command.
 

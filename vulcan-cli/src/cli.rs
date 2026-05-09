@@ -107,6 +107,8 @@ Subcommands:
   list       inspect exposed skill command tools
   show       read one exposed skill command tool definition
   help       show shell-friendly usage for one exposed skill command tool
+  init       scaffold a new skill-backed custom tool
+  lint       check exposed custom tools for authoring and packaging issues
   test       run declared examples for one exposed skill command tool
   run        validate JSON input and invoke one exposed skill command tool
 
@@ -125,6 +127,8 @@ Examples:
   vulcan tool list
   vulcan tool show skill_conversation_export_export
   vulcan tool help conversation-export
+  vulcan tool init meeting-summary --description 'Summarize a meeting transcript'
+  vulcan tool lint conversation-export
   vulcan tool test conversation-export --example dry-run-cli
   vulcan tool run skill_conversation_export_export --input-json '{\"title\":\"Chat\",\"transcript\":\"User: hi\"}'
   vulcan tool run conversation-export --title Chat --user Hello --assistant 'Some message'
@@ -2822,6 +2826,30 @@ pub enum ToolCommand {
     Help {
         #[arg(help = "Tool name or CLI alias")]
         name: String,
+    },
+    #[command(about = "Scaffold a new skill-backed custom tool")]
+    Init {
+        #[arg(help = "Tool CLI alias and skill name to create")]
+        name: String,
+        #[arg(long, help = "Human-readable tool description")]
+        description: Option<String>,
+        #[arg(
+            long = "command",
+            default_value = "run",
+            help = "Skill command id to generate"
+        )]
+        command: String,
+        #[arg(long, help = "Preview the scaffold without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Replace an existing scaffold")]
+        overwrite: bool,
+    },
+    #[command(about = "Check exposed custom tools for authoring and packaging issues")]
+    Lint {
+        #[arg(help = "Optional tool name or CLI alias")]
+        name: Option<String>,
+        #[arg(long, help = "Treat warnings as failures")]
+        strict: bool,
     },
     #[command(about = "Run declared examples for one exposed skill command tool")]
     Test {

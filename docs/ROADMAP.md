@@ -5900,7 +5900,7 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 
 - [x] Introduce an internal tool registry abstraction that can hold both built-in tools and projected skill command definitions without duplicating schema/export logic
 - [x] Add `vulcan tool list`, `vulcan tool show <name>`, and `vulcan tool run <name> --input-json ...`
-- [x] Keep authoring under `vulcan skill init`, `vulcan skill validate`, and direct `SKILL.md` edits; `vulcan tool` is only the callable registry view (`list`, `show`, `run`)
+- [x] Keep skills as the single authoring model while allowing `vulcan tool init` and `vulcan tool lint` as tool-oriented shortcuts over skill command metadata
 - [x] Ensure `tool show` exposes parsed metadata plus the Markdown body so humans and agents can read usage notes without opening files manually
 - [x] Make `vulcan describe --format openai-tools|mcp|json-schema` include visible skill command tools from the shared registry
 - [x] Keep CLI JSON output stable and machine-readable; no ad hoc stdout parsing from the JS script body
@@ -5936,6 +5936,7 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 - [x] Add in-repo docs that compare scripts, skills, tools, and plugins with concrete examples instead of only field-by-field schema reference
 - [x] Update bundled/default skill guidance so reusable executable behavior is declared as exposed skill commands when cross-surface discoverability matters
 - [x] Extend `vulcan init --agent-files` / `vulcan agent install` to optionally write an example exposed skill command template
+- [x] Add `vulcan tool init`, `vulcan tool lint`, runnable examples, and `vulcan tool test` so authors can scaffold and verify custom tools without learning every `SKILL.md` field first
 - [x] Add help topics and authoring docs that explain manifest fields, permission ceilings, return envelopes, and host execution risks
 
 ### 9.24.8 Testing and rollout
