@@ -100,7 +100,7 @@ Rules for scripts:
 - Export or define `main(input, ctx)`.
 - Return a JSON-serializable value.
 - Use `#!/usr/bin/env -S vulcan skill exec` for skill command scripts.
-- Design input schemas so the command is usable both as a structured tool and from the shell. Direct scripts and `vulcan skill run` accept `--arg key=value` for string fields and `--arg-json key=json` for typed values.
+- Design input schemas so the command is usable both as a structured tool and from the shell. Direct scripts and `vulcan skill run` accept `--arg key=value` for string fields, `--arg-json key=json` for typed values, and `--arg-file key=path` or `--arg-json-file key=path` for larger fields. Use `-` as the path to read one field from stdin.
 - Prefer Vulcan JS APIs such as `vault.*`, `tools.*`, `skills.*`, `web.*`, and `host.*` over raw filesystem or shell work.
 - Set the narrowest useful `sandbox`: `strict`, `fs`, or `net`. Do not use `none` for exposed skill commands.
 - Add `permission_profile` when the command should run under a narrower authority ceiling.
@@ -121,7 +121,7 @@ schemas, permissions, or cross-harness execution matter.
 
 - `vulcan skill validate` succeeds.
 - `vulcan skill commands <skill>` shows expected command metadata.
-- Direct script execution works: `.agents/skills/<skill>/scripts/<command>.js --arg name=value` or `--input-json '{}'`.
+- Direct script execution works: `.agents/skills/<skill>/scripts/<command>.js --arg name=value`, `--arg-json-file messages=-`, or `--input-json '{}'`.
 - `vulcan tool list` shows exposed commands after the vault is trusted.
 - `vulcan tool run <tool-name> --input-json '<json>'` returns the expected JSON.
 - Any write, network, or host execution behavior is covered by sandbox and permission-profile choices.

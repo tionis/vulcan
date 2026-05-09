@@ -18,11 +18,14 @@ vulcan skill show daily-review
 vulcan skill commands daily-review
 vulcan skill run daily-review prepare-day --input-json '{"date":"2026-05-05"}'
 vulcan skill run daily-review prepare-day --arg date=2026-05-05 --arg-json dryRun=true
+jq '.messages' chat.json | vulcan skill run conversation-export export --arg title=Chat --arg-json-file messages=-
 ```
 
 `--arg key=value` adds a string field to the input object. `--arg-json key=json`
-adds a typed JSON value. Both flags merge into any object supplied by
-`--input-json`, `--input-file`, or stdin, then the final object is validated
+adds a typed JSON value. `--arg-file key=path` adds a string field from a file,
+and `--arg-json-file key=path` adds a typed JSON field from a file. Use `-` as
+the path to read one field from stdin. These flags merge into any object supplied
+by `--input-json`, `--input-file`, or stdin, then the final object is validated
 against the skill command input schema.
 
 Projected skill commands may also appear as normal tools in `vulcan describe --format mcp` and in the MCP server.

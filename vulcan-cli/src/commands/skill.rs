@@ -109,12 +109,16 @@ pub(crate) fn handle_skill_command(
             input_file,
             input_args,
             input_json_args,
+            input_file_args,
+            input_json_file_args,
         } => {
             let input = read_skill_input(
                 input_json.as_deref(),
                 input_file.as_deref(),
                 input_args,
                 input_json_args,
+                input_file_args,
+                input_json_file_args,
             )?;
             let report = run_skill_command(cli, paths, skill, command, input)?;
             print_skill_run_report(cli.output, &report)
@@ -125,12 +129,16 @@ pub(crate) fn handle_skill_command(
             input_file,
             input_args,
             input_json_args,
+            input_file_args,
+            input_json_file_args,
         } => {
             let input = read_skill_input_or_stdin(
                 input_json.as_deref(),
                 input_file.as_deref(),
                 input_args,
                 input_json_args,
+                input_file_args,
+                input_json_file_args,
             )?;
             let report = run_skill_command_script(cli, paths, script, input)?;
             print_skill_run_report(cli.output, &report)
@@ -383,7 +391,10 @@ fn read_skill_input(
     input_file: Option<&Path>,
     input_args: &[String],
     input_json_args: &[String],
+    input_file_args: &[String],
+    input_json_file_args: &[String],
 ) -> Result<Value, CliError> {
+    validate_single_stdin_field_arg(input_file_args, input_json_file_args)?;
     let input = match (input_json, input_file) {
         (None, None) => Ok(serde_json::json!({})),
         (Some(input_json), None) => serde_json::from_str(input_json).map_err(CliError::operation),
@@ -395,7 +406,13 @@ fn read_skill_input(
             "skill input accepts either --input-json or --input-file, not both",
         )),
     }?;
-    merge_skill_input_args(input, input_args, input_json_args)
+    merge_skill_input_args(
+        input,
+        input_args,
+        input_json_args,
+        input_file_args,
+        input_json_file_args,
+    )
 }
 
 fn read_skill_input_or_stdin(
@@ -403,9 +420,30 @@ fn read_skill_input_or_stdin(
     input_file: Option<&Path>,
     input_args: &[String],
     input_json_args: &[String],
+    input_file_args: &[String],
+    input_json_file_args: &[String],
 ) -> Result<Value, CliError> {
+    validate_single_stdin_field_arg(input_file_args, input_json_file_args)?;
+    let field_args_read_stdin =
+        skill_input_field_args_read_stdin(input_file_args, input_json_file_args)?;
     if input_json.is_some() || input_file.is_some() || io::stdin().is_terminal() {
-        return read_skill_input(input_json, input_file, input_args, input_json_args);
+        return read_skill_input(
+            input_json,
+            input_file,
+            input_args,
+            input_json_args,
+            input_file_args,
+            input_json_file_args,
+        );
+    }
+    if field_args_read_stdin {
+        return merge_skill_input_args(
+            serde_json::json!({}),
+            input_args,
+            input_json_args,
+            input_file_args,
+            input_json_file_args,
+        );
     }
     let mut source = String::new();
     io::stdin()
@@ -416,21 +454,32 @@ fn read_skill_input_or_stdin(
     } else {
         serde_json::from_str(&source).map_err(CliError::operation)
     }?;
-    merge_skill_input_args(input, input_args, input_json_args)
+    merge_skill_input_args(
+        input,
+        input_args,
+        input_json_args,
+        input_file_args,
+        input_json_file_args,
+    )
 }
 
 fn merge_skill_input_args(
     input: Value,
     input_args: &[String],
     input_json_args: &[String],
+    input_file_args: &[String],
+    input_json_file_args: &[String],
 ) -> Result<Value, CliError> {
-    if input_args.is_empty() && input_json_args.is_empty() {
+    if input_args.is_empty()
+        && input_json_args.is_empty()
+        && input_file_args.is_empty()
+        && input_json_file_args.is_empty()
+    {
         return Ok(input);
     }
-    let mut object = input
-        .as_object()
-        .cloned()
-        .ok_or_else(|| CliError::operation("skill --arg and --arg-json require an object input"))?;
+    let mut object = input.as_object().cloned().ok_or_else(|| {
+        CliError::operation("skill input field arguments require an object input")
+    })?;
     for arg in input_args {
         let (key, value) = parse_skill_input_assignment(arg, "--arg")?;
         object.insert(key.to_string(), Value::String(value.to_string()));
@@ -442,7 +491,78 @@ fn merge_skill_input_args(
         })?;
         object.insert(key.to_string(), value);
     }
+    for arg in input_file_args {
+        let (key, path) = parse_skill_input_assignment(arg, "--arg-file")?;
+        let value = read_skill_input_field_source(path, "--arg-file", key)?;
+        object.insert(key.to_string(), Value::String(value));
+    }
+    for arg in input_json_file_args {
+        let (key, path) = parse_skill_input_assignment(arg, "--arg-json-file")?;
+        let source = read_skill_input_field_source(path, "--arg-json-file", key)?;
+        let value = serde_json::from_str(&source).map_err(|error| {
+            CliError::operation(format!(
+                "invalid JSON for --arg-json-file `{key}` from `{path}`: {error}"
+            ))
+        })?;
+        object.insert(key.to_string(), value);
+    }
     Ok(Value::Object(object))
+}
+
+fn validate_single_stdin_field_arg(
+    input_file_args: &[String],
+    input_json_file_args: &[String],
+) -> Result<(), CliError> {
+    let stdin_count = input_file_args
+        .iter()
+        .chain(input_json_file_args.iter())
+        .filter_map(|arg| parse_skill_input_assignment(arg, "skill input field argument").ok())
+        .filter(|(_, path)| *path == "-")
+        .count();
+    if stdin_count > 1 {
+        return Err(CliError::operation(
+            "only one skill input field can read from stdin",
+        ));
+    }
+    Ok(())
+}
+
+fn skill_input_field_args_read_stdin(
+    input_file_args: &[String],
+    input_json_file_args: &[String],
+) -> Result<bool, CliError> {
+    for arg in input_file_args {
+        let (_, path) = parse_skill_input_assignment(arg, "--arg-file")?;
+        if path == "-" {
+            return Ok(true);
+        }
+    }
+    for arg in input_json_file_args {
+        let (_, path) = parse_skill_input_assignment(arg, "--arg-json-file")?;
+        if path == "-" {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn read_skill_input_field_source(
+    path: &str,
+    flag_name: &str,
+    key: &str,
+) -> Result<String, CliError> {
+    let mut source = String::new();
+    if path == "-" {
+        io::stdin()
+            .read_to_string(&mut source)
+            .map_err(CliError::operation)?;
+        return Ok(source);
+    }
+    fs::read_to_string(path).map_err(|error| {
+        CliError::operation(format!(
+            "failed to read {flag_name} `{key}` from `{path}`: {error}"
+        ))
+    })
 }
 
 fn parse_skill_input_assignment<'a>(

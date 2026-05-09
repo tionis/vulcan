@@ -83,7 +83,9 @@ Notes:
   Generated skill command scripts use `#!/usr/bin/env -S vulcan skill exec`, so
   `./scripts/name.js --help` shows the executable command contract.
   `skill run` and `skill exec` accept `--arg key=value` for string fields and
-  `--arg-json key=json` for typed fields; these merge into the input object.
+  `--arg-json key=json` for typed fields; use `--arg-file key=path` or
+  `--arg-json-file key=path` for larger fields. Use `-` as the path to read
+  that field from stdin. These flags merge into the input object.
 
 Examples:
   vulcan skill list
@@ -94,6 +96,7 @@ Examples:
   vulcan skill commands daily-review
   vulcan skill run daily-review prepare-day --input-json '{\"date\":\"2026-05-05\",\"dryRun\":true}'
   vulcan skill run daily-review prepare-day --arg date=2026-05-05 --arg-json dryRun=true
+  jq '.messages' chat.json | vulcan skill run conversation-export export --arg title=Chat --arg-json-file messages=-
   .agents/skills/daily-review/scripts/prepare-day.js --input-json '{\"date\":\"2026-05-05\"}'
   .agents/skills/daily-review/scripts/prepare-day.js --arg date=2026-05-05 --arg-json dryRun=true
   vulcan skill validate
@@ -2955,6 +2958,18 @@ pub enum SkillCommand {
             help = "Add a JSON-valued field to the input object"
         )]
         input_json_args: Vec<String>,
+        #[arg(
+            long = "arg-file",
+            value_name = "KEY=PATH",
+            help = "Read a string field for the input object from a file, or '-' for stdin"
+        )]
+        input_file_args: Vec<String>,
+        #[arg(
+            long = "arg-json-file",
+            value_name = "KEY=PATH",
+            help = "Read a JSON-valued field for the input object from a file, or '-' for stdin"
+        )]
+        input_json_file_args: Vec<String>,
     },
     #[command(
         about = "Run a skill command script by path",
@@ -2979,6 +2994,18 @@ pub enum SkillCommand {
             help = "Add a JSON-valued field to the input object"
         )]
         input_json_args: Vec<String>,
+        #[arg(
+            long = "arg-file",
+            value_name = "KEY=PATH",
+            help = "Read a string field for the input object from a file, or '-' for stdin"
+        )]
+        input_file_args: Vec<String>,
+        #[arg(
+            long = "arg-json-file",
+            value_name = "KEY=PATH",
+            help = "Read a JSON-valued field for the input object from a file, or '-' for stdin"
+        )]
+        input_json_file_args: Vec<String>,
     },
     #[command(about = "Scaffold a new Agent Skills-compatible skill")]
     Init {

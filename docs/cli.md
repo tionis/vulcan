@@ -289,6 +289,7 @@ Behavior:
 - `vulcan skill commands <skill>`: list Vulcan-declared commands exported by one skill.
 - `vulcan skill run <skill> <command> --input-json <json>`: run one skill command with validated JSON input.
 - `vulcan skill run <skill> <command> --arg key=value --arg-json flag=true`: build an input object from shell-friendly arguments.
+- `vulcan skill run <skill> <command> --arg-file transcript=chat.md --arg-json-file messages=turns.json`: read larger input fields from files, or use `-` to read one field from stdin.
 - `vulcan skill exec <script> --arg key=value --arg-json flag=true`: run an executable skill command script directly.
 - `vulcan skill validate [<skill>]`: validate skill frontmatter, command metadata, schemas, scripts, and permission-profile references.
 - `vulcan skill init <name>`: scaffold a new skill directory with `SKILL.md` and optional starter command.
@@ -299,7 +300,7 @@ Behavior:
 - Vulcan-specific command metadata lives under `metadata.vulcan.commands` in `SKILL.md`.
 - Commands usually point at scripts under the skill's `scripts/` directory.
 - Command input is validated with JSON Schema before execution.
-- `--arg` and `--arg-json` merge into the same input object as `--input-json`, `--input-file`, or stdin, then schema validation runs.
+- Field arguments merge into the same input object as `--input-json`, `--input-file`, or stdin, then schema validation runs.
 - Command output is validated when an output schema is declared.
 - Trusted skill commands may be projected into `vulcan describe --format mcp|openai-tools|json-schema` and into the live MCP server as first-class tools.
 - Mutating commands should support dry-run/proposal output so Vulcan can preview diffs, require approval, and write audit records.
@@ -313,6 +314,7 @@ vulcan skill get daily-review
 vulcan skill commands daily-review
 vulcan skill run daily-review prepare-day --input-json '{"date":"2026-05-05","dryRun":true}'
 vulcan skill run daily-review prepare-day --arg date=2026-05-05 --arg-json dryRun=true
+jq '.messages' chat.json | vulcan skill run conversation-export export --arg title=Chat --arg-json-file messages=-
 ```
 
 ### Plugin commands
