@@ -714,7 +714,7 @@ Notes:
 
 Output:
   json-schema    runtime CLI schema with commands, options, defaults, and after-help text
-  openai-tools   OpenAI function-calling tool definitions
+  openai-tools   Curated OpenAI function-calling tool definitions
   mcp            Curated MCP protocol-native tool definitions
 
 Examples:

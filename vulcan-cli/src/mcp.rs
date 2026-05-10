@@ -1262,21 +1262,12 @@ pub(crate) fn build_mcp_tool_definitions(
     tool_pack_args: &[McpToolPackArg],
     tool_pack_mode_arg: McpToolPackModeArg,
 ) -> Result<McpToolsReport, CliError> {
-    let selection =
-        resolve_permission_profile(paths, requested_profile).map_err(permission_error_to_cli)?;
     let tool_pack_mode = McpToolPackMode::from(tool_pack_mode_arg);
     let selected_tool_packs = resolve_selected_tool_packs(tool_pack_args, tool_pack_mode);
-    let mut tools = visible_tool_catalog(&selected_tool_packs, &selection.profile)
+    let tools = build_mcp_tool_registry_entries(paths, requested_profile, &selected_tool_packs)?
         .into_iter()
-        .map(mcp_tool_registry_entry)
         .map(|tool| tool.to_mcp_definition())
         .collect::<Vec<_>>();
-    tools.extend(
-        visible_custom_tools(paths, requested_profile, &selected_tool_packs)?
-            .iter()
-            .map(custom_tool_registry_entry)
-            .map(|tool| tool.to_mcp_definition()),
-    );
 
     Ok(McpToolsReport {
         protocol_version: MCP_PROTOCOL_VERSION.to_string(),
@@ -1284,6 +1275,22 @@ pub(crate) fn build_mcp_tool_definitions(
         selected_tool_packs: pack_name_list(&selected_tool_packs),
         tools,
     })
+}
+
+pub(crate) fn build_openai_tool_registry_entries(
+    paths: &VaultPaths,
+    requested_profile: Option<&str>,
+    tool_pack_args: &[McpToolPackArg],
+    tool_pack_mode_arg: McpToolPackModeArg,
+) -> Result<Vec<ToolRegistryEntry>, CliError> {
+    let tool_pack_mode = McpToolPackMode::from(tool_pack_mode_arg);
+    let selected_tool_packs =
+        if tool_pack_args.is_empty() || is_default_tool_pack_args(tool_pack_args) {
+            default_openai_tool_packs()
+        } else {
+            resolve_selected_tool_packs(tool_pack_args, tool_pack_mode)
+        };
+    build_mcp_tool_registry_entries(paths, requested_profile, &selected_tool_packs)
 }
 
 pub(crate) fn run_mcp(
@@ -5149,6 +5156,23 @@ fn resolve_selected_tool_packs(
     selected
 }
 
+fn is_default_tool_pack_args(tool_pack_args: &[McpToolPackArg]) -> bool {
+    tool_pack_args
+        == [
+            McpToolPackArg::NotesRead,
+            McpToolPackArg::Search,
+            McpToolPackArg::Status,
+        ]
+}
+
+fn default_openai_tool_packs() -> BTreeSet<McpToolPack> {
+    ALL_MCP_TOOL_PACKS
+        .iter()
+        .copied()
+        .filter(|pack| !matches!(pack, McpToolPack::ToolPacks))
+        .collect()
+}
+
 fn pack_name_list(selected_tool_packs: &BTreeSet<McpToolPack>) -> Vec<String> {
     ALL_MCP_TOOL_PACKS
         .iter()
@@ -5201,6 +5225,25 @@ fn visible_tool_catalog(
         .collect()
 }
 
+fn build_mcp_tool_registry_entries(
+    paths: &VaultPaths,
+    requested_profile: Option<&str>,
+    selected_tool_packs: &BTreeSet<McpToolPack>,
+) -> Result<Vec<ToolRegistryEntry>, CliError> {
+    let selection =
+        resolve_permission_profile(paths, requested_profile).map_err(permission_error_to_cli)?;
+    let mut tools = visible_tool_catalog(selected_tool_packs, &selection.profile)
+        .into_iter()
+        .map(mcp_tool_registry_entry)
+        .collect::<Vec<_>>();
+    tools.extend(
+        visible_custom_tools(paths, requested_profile, selected_tool_packs)?
+            .iter()
+            .map(custom_tool_registry_entry),
+    );
+    Ok(tools)
+}
+
 fn visible_custom_tools(
     paths: &VaultPaths,
     active_permission_profile: Option<&str>,
@@ -5227,6 +5270,9 @@ fn custom_tool_matches_selected_packs(
     packs: &[String],
     selected_pack_names: &BTreeSet<String>,
 ) -> bool {
+    if packs.is_empty() {
+        return selected_pack_names.contains("custom");
+    }
     packs.iter().any(|pack| selected_pack_names.contains(pack))
 }
 
