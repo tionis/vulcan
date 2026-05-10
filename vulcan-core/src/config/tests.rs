@@ -1052,10 +1052,6 @@ fn builtin_defaults_include_assistant_paths() {
         defaults.assistant.skills_folder,
         PathBuf::from(".agents/skills")
     );
-    assert_eq!(
-        defaults.assistant.tools_folder,
-        PathBuf::from(".agents/tools")
-    );
 }
 
 #[test]
@@ -1068,7 +1064,6 @@ fn vulcan_config_can_override_assistant_settings() {
         r#"[assistant]
 prompts_folder = "Shared/Prompts"
 skills_folder = "Shared/Skills"
-tools_folder = "Shared/Tools"
 "#,
     )
     .expect("config should be written");
@@ -1082,10 +1077,6 @@ tools_folder = "Shared/Tools"
     assert_eq!(
         loaded.config.assistant.skills_folder,
         PathBuf::from("Shared/Skills")
-    );
-    assert_eq!(
-        loaded.config.assistant.tools_folder,
-        PathBuf::from("Shared/Tools")
     );
 }
 
@@ -3053,7 +3044,6 @@ fn default_config_template_documents_assistant_folders() {
     assert!(template.contains("[assistant]"));
     assert!(template.contains("prompts_folder = \"AI/Prompts\""));
     assert!(template.contains("skills_folder = \".agents/skills\""));
-    assert!(!template.contains("tools_folder = \".agents/tools\""));
     assert!(!template.contains("pi_binary = \"pi\""));
     assert!(!template.contains("session_export = \"on_exit\""));
 }

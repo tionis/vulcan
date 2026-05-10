@@ -839,9 +839,6 @@ pub fn config_descriptor_catalog() -> Vec<ConfigDescriptor> {
     }
 
     for (key, value) in &default_values {
-        if key == "assistant.tools_folder" {
-            continue;
-        }
         descriptors.entry(key.clone()).or_insert_with(|| {
             build_descriptor(
                 key,
@@ -2515,9 +2512,6 @@ read = { allow = ["folder:Projects/**"] }
             .collect::<BTreeSet<_>>();
 
         for key in default_config_value_map().keys() {
-            if key == "assistant.tools_folder" {
-                continue;
-            }
             assert!(
                 catalog_keys.contains(key),
                 "descriptor catalog should include default config key `{key}`"
