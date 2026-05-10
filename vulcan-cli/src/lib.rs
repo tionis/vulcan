@@ -504,60 +504,50 @@ use vulcan_app::templates::{
     list_templates_in_directory, prepare_template_insertion, render_template_variable,
     resolve_template_file, TemplateCandidate,
 };
-use vulcan_app::web::{
-    apply_web_fetch_report, execute_web_search, prepare_web_search,
-    WebFetchMode as AppWebFetchMode, WebFetchReport as AppWebFetchReport,
-    WebFetchRequest as AppWebFetchRequest, WebSearchReport as AppWebSearchReport,
-    WebSearchRequest as AppWebSearchRequest,
-};
 #[cfg(test)]
 use vulcan_core::config::TemplatesConfig;
 use vulcan_core::config::{
     ContentTransformRuleConfig, ExportEpubTocStyleConfig, ExportGraphFormatConfig,
     ExportProfileConfig, ExportProfileFormat, QuickAddImporter, TasksDefaultSource,
 };
-use vulcan_core::expression::functions::{
-    date_components, parse_date_like_string, parse_duration_string,
-};
+use vulcan_core::expression::functions::{date_components, parse_date_like_string};
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{
     add_kanban_card, all_importers, annotate_import_conflicts, archive_kanban_card, bulk_replace,
     cache_vacuum, create_checkpoint, default_assistant_tool_reserved_names, delete_saved_report,
-    doctor_fix, doctor_vault, evaluate_base_file, evaluate_dataview_js_with_options,
-    evaluate_dql_with_filter, expected_periodic_note_path, export_daily_events_to_ics,
-    export_static_search_index, git_blame, git_diff, git_log, git_recent_log, git_status,
-    initialize_vault, inspect_cache, link_mentions, list_checkpoints, list_daily_note_events,
-    list_saved_reports, load_events_for_periodic_note, load_kanban_board, load_saved_report,
-    load_vault_config, merge_tags, move_kanban_card, move_note, period_range_for_date,
-    plan_base_note_create, query_backlinks, query_change_report, query_links, query_notes,
-    rebuild_vault_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
-    render_note_fragment_html, render_note_html, render_vault_html, repair_fts,
-    resolve_note_reference, resolve_periodic_note, resolve_permission_profile, save_saved_report,
-    scan_vault_with_progress, search_vault, step_period_start, verify_cache, watch_vault,
-    AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport,
-    BasesViewEditReport, BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery,
-    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, ClusterReport, ConfigImportReport, CoreImporter, DataviewImporter,
-    DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue,
+    doctor_fix, doctor_vault, evaluate_base_file, evaluate_dql_with_filter,
+    expected_periodic_note_path, export_daily_events_to_ics, export_static_search_index, git_blame,
+    git_diff, git_log, git_recent_log, git_status, initialize_vault, inspect_cache, link_mentions,
+    list_checkpoints, list_daily_note_events, list_saved_reports, load_events_for_periodic_note,
+    load_kanban_board, load_saved_report, load_vault_config, merge_tags, move_kanban_card,
+    move_note, period_range_for_date, plan_base_note_create, query_backlinks, query_change_report,
+    query_links, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
+    rename_heading, rename_property, render_note_fragment_html, render_note_html,
+    render_vault_html, repair_fts, resolve_note_reference, resolve_periodic_note,
+    resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
+    step_period_start, verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport,
+    BasesCreateContext, BasesEvalReport, BasesViewEditReport, BulkMutationReport, CacheDatabase,
+    CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport, ChangeAnchor,
+    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterReport, ConfigImportReport,
+    CoreImporter, DataviewImporter, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue,
     DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
     GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphCommunitiesReport,
     GraphComponentsReport, GraphConfidenceBreakdown, GraphDeadEndsReport, GraphHubsReport,
     GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
-    HtmlRenderOptions, ImportTarget, InitSummary, JsRuntimeSandbox, KanbanAddReport,
-    KanbanArchiveReport, KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport,
-    KanbanTaskStatus, LinkSuggestion, LinkSuggestionsReport, MentionSuggestion,
-    MentionSuggestionsReport, MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery,
-    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig,
-    PeriodicNotesImporter, PermissionFilter, PermissionGuard, PluginEvent, PluginImporter,
-    ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport, RefactorChange,
-    RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery, RepairFtsReport,
-    ResolvedPermissionProfile, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchBackendKind, SearchHit, SearchQuery, SearchReport, SearchSort,
-    StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult, TemplaterImporter,
-    VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
-    VectorIndexReport, VectorNeighborHit, VectorNeighborsReport, VectorQueueReport,
-    VectorRepairReport, WatchOptions, WatchReport,
+    HtmlRenderOptions, ImportTarget, InitSummary, KanbanAddReport, KanbanArchiveReport,
+    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
+    LinkSuggestion, LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport,
+    MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport,
+    OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter,
+    PermissionFilter, PermissionGuard, PluginEvent, PluginImporter, ProfilePermissionGuard,
+    QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit,
+    RelatedNotesReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport,
+    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult,
+    TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase,
+    VectorIndexProgress, VectorIndexReport, VectorNeighborHit, VectorNeighborsReport,
+    VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -1417,8 +1407,6 @@ struct GitBlameReport {
     lines: Vec<GitBlameLine>,
 }
 
-type WebSearchReport = AppWebSearchReport;
-type WebFetchReport = AppWebFetchReport;
 type DataviewInlineReport = AppDataviewInlineReport;
 type DataviewEvalReport = AppDataviewEvalReport;
 type DataviewBlockResult = AppDataviewBlockResult;
@@ -2395,74 +2383,6 @@ fn run_git_blame_command(paths: &VaultPaths, path: &str) -> Result<GitBlameRepor
     })
 }
 
-fn search_backend_kind_from_arg(arg: SearchBackendArg) -> SearchBackendKind {
-    match arg {
-        SearchBackendArg::Disabled => SearchBackendKind::Disabled,
-        SearchBackendArg::Auto => SearchBackendKind::Auto,
-        SearchBackendArg::Duckduckgo => SearchBackendKind::Duckduckgo,
-        SearchBackendArg::Kagi => SearchBackendKind::Kagi,
-        SearchBackendArg::Exa => SearchBackendKind::Exa,
-        SearchBackendArg::Tavily => SearchBackendKind::Tavily,
-        SearchBackendArg::Brave => SearchBackendKind::Brave,
-        SearchBackendArg::Ollama => SearchBackendKind::Ollama,
-    }
-}
-
-fn app_web_fetch_mode(mode: WebFetchMode) -> AppWebFetchMode {
-    match mode {
-        WebFetchMode::Markdown => AppWebFetchMode::Markdown,
-        WebFetchMode::Html => AppWebFetchMode::Html,
-        WebFetchMode::Raw => AppWebFetchMode::Raw,
-    }
-}
-
-fn run_web_search_command(
-    paths: &VaultPaths,
-    query: &str,
-    backend_override: Option<SearchBackendArg>,
-    limit: usize,
-    permissions: Option<&ProfilePermissionGuard>,
-) -> Result<WebSearchReport, CliError> {
-    let prepared = prepare_web_search(
-        paths,
-        &AppWebSearchRequest {
-            query: query.to_string(),
-            backend: backend_override.map(search_backend_kind_from_arg),
-            limit,
-        },
-    )
-    .map_err(CliError::operation)?;
-    if let Some(permissions) = permissions {
-        permissions
-            .check_network(&prepared.base_url)
-            .map_err(CliError::operation)?;
-    }
-    execute_web_search(&prepared).map_err(CliError::operation)
-}
-
-fn run_web_fetch_command(
-    paths: &VaultPaths,
-    url: &str,
-    mode: WebFetchMode,
-    save: Option<&PathBuf>,
-    permissions: Option<&ProfilePermissionGuard>,
-) -> Result<WebFetchReport, CliError> {
-    if let Some(permissions) = permissions {
-        permissions
-            .check_network(url)
-            .map_err(CliError::operation)?;
-    }
-    apply_web_fetch_report(
-        paths,
-        &AppWebFetchRequest {
-            url: url.to_string(),
-            mode: app_web_fetch_mode(mode),
-            save: save.cloned(),
-        },
-    )
-    .map_err(CliError::operation)
-}
-
 fn run_dataview_inline_command(
     paths: &VaultPaths,
     file: &str,
@@ -2487,202 +2407,6 @@ fn run_dataview_query_js_command(
 ) -> Result<DataviewJsResult, CliError> {
     app_build_dataview_query_js_report(paths, js, file, permission_profile)
         .map_err(CliError::operation)
-}
-
-fn strip_shebang_line(source: &str) -> &str {
-    if let Some(stripped) = source.strip_prefix("#!") {
-        stripped
-            .split_once('\n')
-            .map_or("", |(_, remainder)| remainder)
-    } else {
-        source
-    }
-}
-
-fn resolve_named_run_script_path(paths: &VaultPaths, script: &str) -> Option<PathBuf> {
-    let scripts_root = resolve_run_scripts_root(paths);
-    [PathBuf::from(script), PathBuf::from(format!("{script}.js"))]
-        .into_iter()
-        .map(|candidate| scripts_root.join(candidate))
-        .find(|candidate| candidate.is_file())
-}
-
-fn resolve_run_scripts_root(paths: &VaultPaths) -> PathBuf {
-    let configured = load_vault_config(paths).config.js_runtime.scripts_folder;
-    if configured.is_absolute() {
-        configured
-    } else {
-        paths.vault_root().join(configured)
-    }
-}
-
-fn load_run_script_source(
-    paths: &VaultPaths,
-    script: Option<&str>,
-    script_mode: bool,
-) -> Result<String, CliError> {
-    if let Some(script) = script {
-        let direct = PathBuf::from(script);
-        let path = if script_mode || direct.is_file() {
-            direct
-        } else if let Some(named) = resolve_named_run_script_path(paths, script) {
-            named
-        } else {
-            return Err(CliError::operation(format!(
-                "script not found: {script}; expected a file path or .vulcan/scripts entry"
-            )));
-        };
-        return fs::read_to_string(path).map_err(CliError::operation);
-    }
-
-    if io::stdin().is_terminal() {
-        return Err(CliError::operation(
-            "`vulcan run` requires a script path, stdin, or an interactive terminal session",
-        ));
-    }
-
-    let mut buffer = String::new();
-    io::stdin()
-        .read_to_string(&mut buffer)
-        .map_err(CliError::operation)?;
-    Ok(buffer)
-}
-
-fn parse_run_timeout(timeout: Option<&str>) -> Result<Option<Duration>, CliError> {
-    let Some(timeout) = timeout else {
-        return Ok(None);
-    };
-
-    let millis = parse_duration_string(timeout).ok_or_else(|| {
-        CliError::operation(format!(
-            "invalid timeout duration `{timeout}`; expected values like 500ms, 30s, or 2m"
-        ))
-    })?;
-    if millis <= 0 {
-        return Err(CliError::operation("run timeout must be greater than 0ms"));
-    }
-    let millis = u64::try_from(millis)
-        .map_err(|_| CliError::operation("run timeout must be greater than 0ms"))?;
-    Ok(Some(Duration::from_millis(millis)))
-}
-
-fn parse_run_sandbox(sandbox: Option<&str>) -> Result<Option<JsRuntimeSandbox>, CliError> {
-    match sandbox {
-        None => Ok(None),
-        Some("strict") => Ok(Some(JsRuntimeSandbox::Strict)),
-        Some("fs") => Ok(Some(JsRuntimeSandbox::Fs)),
-        Some("net") => Ok(Some(JsRuntimeSandbox::Net)),
-        Some("none") => Ok(Some(JsRuntimeSandbox::None)),
-        Some(other) => Err(CliError::operation(format!(
-            "invalid sandbox level `{other}`; expected strict, fs, net, or none"
-        ))),
-    }
-}
-
-fn run_js_command(
-    paths: &VaultPaths,
-    script: Option<&str>,
-    script_mode: bool,
-    timeout: Option<Duration>,
-    sandbox: Option<JsRuntimeSandbox>,
-    permission_profile: Option<&str>,
-) -> Result<DataviewJsResult, CliError> {
-    let source = load_run_script_source(paths, script, script_mode)?;
-    let tool_registry = tools::runtime_tool_registry(paths, permission_profile, "run");
-    evaluate_dataview_js_with_options(
-        paths,
-        strip_shebang_line(&source),
-        None,
-        DataviewJsEvalOptions {
-            timeout,
-            sandbox,
-            permission_profile: permission_profile.map(ToOwned::to_owned),
-            tool_registry: Some(tool_registry),
-            ..DataviewJsEvalOptions::default()
-        },
-    )
-    .map_err(CliError::operation)
-}
-
-fn run_js_eval(
-    paths: &VaultPaths,
-    code: &str,
-    timeout: Option<Duration>,
-    sandbox: Option<JsRuntimeSandbox>,
-    permission_profile: Option<&str>,
-) -> Result<DataviewJsResult, CliError> {
-    let tool_registry = tools::runtime_tool_registry(paths, permission_profile, "run");
-    evaluate_dataview_js_with_options(
-        paths,
-        code,
-        None,
-        DataviewJsEvalOptions {
-            timeout,
-            sandbox,
-            permission_profile: permission_profile.map(ToOwned::to_owned),
-            tool_registry: Some(tool_registry),
-            ..DataviewJsEvalOptions::default()
-        },
-    )
-    .map_err(CliError::operation)
-}
-
-fn handle_trust_command(
-    cli: &Cli,
-    paths: &VaultPaths,
-    command: Option<&TrustCommand>,
-) -> Result<(), CliError> {
-    match command.unwrap_or(&TrustCommand::Add) {
-        TrustCommand::Add => {
-            let added = trust::add_trust(paths.vault_root())?;
-            if cli.output == OutputFormat::Json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "trusted": true,
-                        "vault": paths.vault_root().display().to_string(),
-                        "newly_added": added,
-                    })
-                );
-            } else if added {
-                println!("Vault marked as trusted: {}", paths.vault_root().display());
-            } else {
-                println!("Vault is already trusted: {}", paths.vault_root().display());
-            }
-        }
-        TrustCommand::Revoke => {
-            let removed = trust::revoke_trust(paths.vault_root())?;
-            if cli.output == OutputFormat::Json {
-                println!(
-                    "{}",
-                    serde_json::json!({
-                        "trusted": false,
-                        "vault": paths.vault_root().display().to_string(),
-                        "was_trusted": removed,
-                    })
-                );
-            } else if removed {
-                println!("Trust removed from vault: {}", paths.vault_root().display());
-            } else {
-                println!("Vault was not trusted: {}", paths.vault_root().display());
-            }
-        }
-        TrustCommand::List => {
-            let vaults = trust::list_trusted()?;
-            if cli.output == OutputFormat::Json {
-                let paths_json: Vec<_> = vaults.iter().map(|p| p.display().to_string()).collect();
-                println!("{}", serde_json::json!({ "trusted_vaults": paths_json }));
-            } else if vaults.is_empty() {
-                println!("No trusted vaults.");
-            } else {
-                println!("Trusted vaults:");
-                for vault in &vaults {
-                    println!("  {}", vault.display());
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 fn run_dataview_eval_command(
@@ -6630,8 +6354,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref oauth_indieauth_me,
             ref oauth_local_user,
         } => {
-            let request_timeout = parse_run_timeout(Some(request_timeout.as_str()))?
-                .unwrap_or(mcp::DEFAULT_MCP_REQUEST_TIMEOUT);
+            let request_timeout =
+                commands::runtime::parse_run_timeout(Some(request_timeout.as_str()))?
+                    .unwrap_or(mcp::DEFAULT_MCP_REQUEST_TIMEOUT);
             mcp::run_mcp(
                 &paths,
                 cli.permissions.as_deref(),
@@ -6666,7 +6391,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 },
             )
         }
-        Command::Trust { ref command } => handle_trust_command(cli, &paths, command.as_ref()),
+        Command::Trust { ref command } => {
+            commands::runtime::handle_trust_command(cli, &paths, command.as_ref())
+        }
         Command::Bases { ref command } => commands::bases::handle_bases_command(
             cli,
             &paths,
@@ -8446,7 +8173,7 @@ fn run_render_command(
     })
 }
 
-fn print_markdown_output(
+pub(crate) fn print_markdown_output(
     output: OutputFormat,
     markdown: &str,
     stdout_is_tty: bool,
@@ -12652,70 +12379,6 @@ fn print_git_blame_report(output: OutputFormat, report: &GitBlameReport) -> Resu
                 );
             }
             Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_web_search_report(output: OutputFormat, report: &WebSearchReport) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            if report.results.is_empty() {
-                println!("No web results.");
-                return Ok(());
-            }
-            for result in &report.results {
-                println!("- {} [{}]", result.title, result.url);
-                if !result.snippet.is_empty() {
-                    println!("  {}", result.snippet);
-                }
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_web_fetch_report(
-    output: OutputFormat,
-    report: &WebFetchReport,
-    stdout_is_tty: bool,
-    use_color: bool,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human => {
-            if let Some(saved) = &report.saved {
-                println!(
-                    "Fetched {} [{} {}] -> {}",
-                    report.url, report.status, report.content_type, saved
-                );
-            } else if report.mode == "markdown" {
-                print_markdown_output(output, &report.content, stdout_is_tty, use_color)?;
-            } else {
-                print!("{}", report.content);
-                if !report.content.ends_with('\n') {
-                    println!();
-                }
-            }
-            Ok(())
-        }
-        OutputFormat::Markdown => {
-            if report.mode == "markdown" && report.saved.is_none() {
-                print_markdown_output(output, &report.content, stdout_is_tty, use_color)
-            } else {
-                if let Some(saved) = &report.saved {
-                    println!(
-                        "Fetched {} [{} {}] -> {}",
-                        report.url, report.status, report.content_type, saved
-                    );
-                } else {
-                    print!("{}", report.content);
-                    if !report.content.ends_with('\n') {
-                        println!();
-                    }
-                }
-                Ok(())
-            }
         }
         OutputFormat::Json => print_json(report),
     }
