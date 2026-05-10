@@ -190,6 +190,7 @@ Validation rules:
 - `vulcan tool lint --fix` may repair packaging issues such as missing Vulcan shebangs and executable bits, but it does not infer schemas or edit command behavior.
 - Mutation-capable tools should declare a boolean `dry_run`/`dryRun` input and include at least one dry-run example.
 - `vulcan tool test <alias> --profile <permission-profile>` verifies examples under a selected active permission ceiling.
+- `vulcan tool test --all` runs declared examples for every exposed command; add `--update-expected` to refresh file-backed `expected_output_file` snapshots after intentional output changes.
 - `vulcan tool compat <alias> --surface cli,mcp,openai-tools,js` reports surface-specific compatibility gaps.
 - JavaScript command scripts should prefer `tool.input(defaults)`, `tool.result()`, `vault.plan({ dry_run })`, `vulcan.permissions()`, and `tools.callChecked()` for cross-surface-safe behavior.
 - `sandbox = none` is not valid for projected skill commands.

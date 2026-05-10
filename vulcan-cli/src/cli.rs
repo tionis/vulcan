@@ -124,7 +124,8 @@ Notes:
   Custom flags are only an input adapter; the final JSON still uses the tool schema.
   CLI metadata supports typed flags, repeated array flags, nested fields, and value completions.
   `tool test` supports inline examples, fixture files relative to the skill directory,
-  JSON path diffs for expected-output mismatches, and `--profile` permission checks.
+  JSON path diffs for expected-output mismatches, `--all`, `--update-expected`,
+  and `--profile` permission checks.
   `tool lint --fix` only applies safe packaging repairs such as shebang normalization
   and executable-bit fixes; mutation-capable tools should expose dry-run examples.
 
@@ -135,6 +136,8 @@ Examples:
   vulcan tool init meeting-summary --description 'Summarize a meeting transcript'
   vulcan tool lint conversation-export
   vulcan tool test conversation-export --example dry-run-cli
+  vulcan tool test --all --profile daily-wiki-agent
+  vulcan tool test conversation-export --example transcript-fixture --update-expected
   vulcan tool compat conversation-export --surface cli,mcp
   vulcan tool run skill_conversation_export_export --input-json '{\"title\":\"Chat\",\"transcript\":\"User: hi\"}'
   vulcan tool run conversation-export --title Chat --user Hello --assistant 'Some message'
@@ -2864,10 +2867,25 @@ pub enum ToolCommand {
     },
     #[command(about = "Run declared examples for one exposed skill command tool")]
     Test {
-        #[arg(help = "Tool name or CLI alias")]
-        name: String,
-        #[arg(long = "example", help = "Run only the named example")]
+        #[arg(help = "Tool name or CLI alias", required_unless_present = "all")]
+        name: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "name",
+            help = "Run examples for every exposed tool"
+        )]
+        all: bool,
+        #[arg(
+            long = "example",
+            requires = "name",
+            help = "Run only the named example"
+        )]
         example: Option<String>,
+        #[arg(
+            long = "update-expected",
+            help = "Update file-backed expected outputs with the actual result"
+        )]
+        update_expected: bool,
         #[arg(long, help = "Run examples under a specific active permission profile")]
         profile: Option<String>,
     },

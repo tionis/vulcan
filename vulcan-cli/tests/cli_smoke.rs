@@ -10522,7 +10522,26 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
     let test_json = parse_stdout_json(&test_assert);
     assert_eq!(test_json["passed"].as_bool(), Some(true));
     assert_eq!(test_json["profile"].as_str(), Some("unrestricted"));
+    assert_eq!(test_json["updated"].as_u64(), Some(0));
     assert_eq!(test_json["examples"][0]["output"]["message"], "hello");
+
+    let test_all_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "test",
+            "--all",
+        ])
+        .assert()
+        .success();
+    let test_all_json = parse_stdout_json(&test_all_assert);
+    assert_eq!(test_all_json["passed"].as_bool(), Some(true));
+    assert_eq!(test_all_json["checked"].as_u64(), Some(1));
+    assert_eq!(test_all_json["tools"][0]["name"], "skill_echo_tool_run");
 
     let compat_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -10610,6 +10629,39 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
         file_example_json["examples"][0]["input"]["message"].as_str(),
         Some("fixture")
     );
+
+    fs::write(
+        vault_root.join(".agents/skills/echo-tool/examples/expected.json"),
+        r#"{"message":"fixture","length":999}"#,
+    )
+    .expect("expected fixture should be made stale");
+    let update_expected_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "test",
+            "echo-tool",
+            "--example",
+            "file-fixture",
+            "--update-expected",
+        ])
+        .assert()
+        .success();
+    let update_expected_json = parse_stdout_json(&update_expected_assert);
+    assert_eq!(update_expected_json["passed"].as_bool(), Some(true));
+    assert_eq!(update_expected_json["updated"].as_u64(), Some(1));
+    assert_eq!(
+        update_expected_json["examples"][0]["updated"].as_bool(),
+        Some(true)
+    );
+    let updated_expected =
+        fs::read_to_string(vault_root.join(".agents/skills/echo-tool/examples/expected.json"))
+            .expect("updated expected fixture should read");
+    assert!(updated_expected.contains("\"length\": 7"));
 
     let mismatch_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")

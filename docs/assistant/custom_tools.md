@@ -13,7 +13,9 @@ only applies safe packaging repairs such as shebang normalization and executable
 bits; mutation-capable tools should expose a boolean dry-run input and at least
 one dry-run example. Examples may use inline `input`, `cli_args`, or fixture
 files with `input_file` and `expected_output_file`; expected-output mismatches
-report JSON path diffs.
+report JSON path diffs. Use `vulcan tool test --all` to run every exposed
+tool's examples in a vault, and use `--update-expected` to refresh
+`expected_output_file` snapshots from the current output.
 
 Use `vulcan tool test <alias> --profile <permission-profile>` to check the
 examples under the same permission profile exposed to an MCP or external agent

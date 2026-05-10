@@ -309,7 +309,7 @@ Behavior:
 - Exposed tools may declare custom CLI aliases so `vulcan tool run <alias> --flag value` builds the same validated input JSON as MCP.
 - `vulcan tool help <alias>` prints the shell-friendly usage generated from that metadata.
 - `vulcan tool lint --strict` treats authoring warnings as failures; `--fix` applies safe packaging repairs such as shebang normalization and executable-bit fixes.
-- `vulcan tool test <alias>` runs examples declared in command metadata, supports fixture files relative to the skill directory, reports JSON diffs when expected output does not match, and accepts `--profile <name>` to test under the same permission profile used by MCP or another agent surface.
+- `vulcan tool test <alias>` runs examples declared in command metadata, supports fixture files relative to the skill directory, reports JSON diffs when expected output does not match, accepts `--profile <name>` to test under the same permission profile used by MCP or another agent surface, supports `--all` for every exposed tool, and can refresh file-backed snapshots with `--update-expected`.
 - `vulcan tool compat <alias> --surface cli,mcp` checks surface-specific requirements such as CLI flag coverage, structured schemas, relative entrypoints, sandbox exposure, and callable status.
 - `vulcan skill validate` warns about exposed commands that are missing examples, output schemas, or CLI aliases.
 - Mutating commands should support dry-run/proposal output so Vulcan can preview diffs, require approval, and write audit records.
