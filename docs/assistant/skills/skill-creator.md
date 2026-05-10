@@ -159,7 +159,8 @@ schemas, permissions, or cross-harness execution matter.
 - `vulcan tool test <alias> --update-expected` refreshes file-backed `expected_output_file` snapshots after intentional output changes.
 - `vulcan tool test <alias> --profile <permission-profile>` passes for the profile that will expose the tool to MCP or another agent surface.
 - `vulcan tool compat <alias> --surface cli,mcp,openai-tools,js` reports no blocking compatibility errors for the intended surfaces.
-- `vulcan tool types <alias>` emits TypeScript declarations from the command schemas when external harnesses need typed calls.
+- `vulcan tool types <alias>|--all` emits TypeScript declarations from command schemas when external harnesses need typed calls.
+- `vulcan tool ci --profile <permission-profile>` passes before suggesting that users expose the command to MCP or external harnesses.
 - `vulcan complete custom-tool <prefix>`, `vulcan complete custom-tool-flag:<alias> --<prefix>`, and `vulcan complete custom-tool-value:<alias>:<flag> <prefix>` list the expected shell completion candidates.
 - Any write, network, or host execution behavior is covered by sandbox and permission-profile choices.
 

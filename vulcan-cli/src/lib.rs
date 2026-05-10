@@ -2789,6 +2789,22 @@ struct ToolTypesReport {
     source: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ToolTypesSuiteReport {
+    checked: usize,
+    tools: Vec<ToolTypesReport>,
+    source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ToolCiReport {
+    passed: bool,
+    profile: Option<String>,
+    lint: ToolLintReport,
+    tests: ToolTestSuiteReport,
+    compatibility: Vec<ToolCompatReport>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct ToolTestExampleReport {
     name: String,
@@ -3060,14 +3076,37 @@ fn handle_tool_command(
             )?;
             print_tool_compat_report(cli.output, &report)
         }
-        ToolCommand::Types { name } => {
-            let report = build_tool_types_report(
-                paths,
-                cli.permissions.as_deref(),
-                name,
-                &registry_options,
-            )?;
-            print_tool_types_report(cli.output, &report)
+        ToolCommand::Types { name, all } => {
+            if *all {
+                let report = build_all_tool_types_report(
+                    paths,
+                    cli.permissions.as_deref(),
+                    &registry_options,
+                )?;
+                print_tool_types_output(cli.output, &ToolTypesOutput::All(report))
+            } else {
+                let name = name.as_deref().ok_or_else(|| {
+                    CliError::operation("tool types requires a tool name unless --all is set")
+                })?;
+                let report = build_tool_types_report(
+                    paths,
+                    cli.permissions.as_deref(),
+                    name,
+                    &registry_options,
+                )?;
+                print_tool_types_output(cli.output, &ToolTypesOutput::One(report))
+            }
+        }
+        ToolCommand::Ci { profile, surface } => {
+            let report =
+                build_tool_ci_report(cli, paths, profile.as_deref(), surface, &registry_options)?;
+            let passed = report.passed;
+            print_tool_ci_report(cli.output, &report)?;
+            if passed {
+                Ok(())
+            } else {
+                Err(CliError::operation("custom tool CI checks failed"))
+            }
         }
         ToolCommand::Run {
             name,
@@ -4020,6 +4059,71 @@ fn build_tool_types_report(
     })
 }
 
+fn build_all_tool_types_report(
+    paths: &VaultPaths,
+    active_profile: Option<&str>,
+    registry_options: &tools::CustomToolRegistryOptions,
+) -> Result<ToolTypesSuiteReport, CliError> {
+    let reports = tools::list_custom_tools(paths, active_profile, registry_options)?
+        .iter()
+        .map(|tool| {
+            build_tool_types_report(paths, active_profile, &tool.summary.name, registry_options)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let source = reports
+        .iter()
+        .map(|report| report.source.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Ok(ToolTypesSuiteReport {
+        checked: reports.len(),
+        tools: reports,
+        source: format!("{source}\n"),
+    })
+}
+
+fn build_tool_ci_report(
+    cli: &Cli,
+    paths: &VaultPaths,
+    profile: Option<&str>,
+    requested_surfaces: &[String],
+    registry_options: &tools::CustomToolRegistryOptions,
+) -> Result<ToolCiReport, CliError> {
+    let active_profile = profile.or(cli.permissions.as_deref());
+    let lint = lint_custom_tools(cli, paths, None, true, false, registry_options)?;
+    let tests =
+        match run_all_tool_examples(cli, paths, None, active_profile, false, registry_options)? {
+            ToolTestOutput::All(report) => report,
+            ToolTestOutput::One(_) => {
+                return Err(CliError::operation(
+                    "internal error: tool CI expected an all-tools test report",
+                ))
+            }
+        };
+    let compatibility = tools::list_custom_tools(paths, active_profile, registry_options)?
+        .iter()
+        .map(|tool| {
+            build_tool_compat_report(
+                paths,
+                active_profile,
+                &tool.summary.name,
+                requested_surfaces,
+                registry_options,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let compat_passed = compatibility
+        .iter()
+        .all(|report| report.surfaces.iter().all(|surface| surface.compatible));
+    Ok(ToolCiReport {
+        passed: lint.valid && tests.passed && compat_passed,
+        profile: active_profile.map(ToOwned::to_owned),
+        lint,
+        tests,
+        compatibility,
+    })
+}
+
 fn run_tool_examples(
     cli: &Cli,
     paths: &VaultPaths,
@@ -4440,39 +4544,82 @@ fn ts_function_name(value: &str) -> String {
 }
 
 fn json_schema_to_typescript(schema: &Value, indent: usize) -> String {
+    if let Some(value) = schema.get("const") {
+        return json_value_to_typescript_literal(value);
+    }
     if let Some(values) = schema.get("enum").and_then(Value::as_array) {
         let variants = values
             .iter()
-            .map(|value| match value {
-                Value::String(value) => {
-                    serde_json::to_string(value).unwrap_or_else(|_| "\"<invalid>\"".to_string())
-                }
-                other => compact_json(other),
-            })
+            .map(json_value_to_typescript_literal)
             .collect::<Vec<_>>();
         return variants.join(" | ");
     }
-    match schema.get("type").and_then(Value::as_str) {
-        Some("string") => "string".to_string(),
-        Some("integer" | "number") => "number".to_string(),
-        Some("boolean") => "boolean".to_string(),
-        Some("null") => "null".to_string(),
-        Some("array") => {
-            let item_type = schema.get("items").map_or_else(
-                || "unknown".to_string(),
-                |items| json_schema_to_typescript(items, indent),
-            );
-            format!("{item_type}[]")
+    for union_key in ["anyOf", "oneOf"] {
+        if let Some(variants) = schema.get(union_key).and_then(Value::as_array) {
+            return variants
+                .iter()
+                .map(|variant| json_schema_to_typescript(variant, indent))
+                .collect::<Vec<_>>()
+                .join(" | ");
         }
-        Some("object") | None => json_object_schema_to_typescript(schema, indent),
+    }
+    match schema.get("type") {
+        Some(Value::String(kind)) => json_schema_kind_to_typescript(kind, schema, indent),
+        Some(Value::Array(kinds)) => kinds
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|kind| json_schema_kind_to_typescript(kind, schema, indent))
+            .collect::<Vec<_>>()
+            .join(" | "),
+        None => json_object_schema_to_typescript(schema, indent),
         Some(_) => "unknown".to_string(),
     }
 }
 
+fn json_schema_kind_to_typescript(kind: &str, schema: &Value, indent: usize) -> String {
+    match kind {
+        "string" => "string".to_string(),
+        "integer" | "number" => "number".to_string(),
+        "boolean" => "boolean".to_string(),
+        "null" => "null".to_string(),
+        "array" => {
+            let item_type = schema.get("items").map_or_else(
+                || "unknown".to_string(),
+                |items| json_schema_to_typescript(items, indent),
+            );
+            if item_type.contains(" | ") {
+                format!("({item_type})[]")
+            } else {
+                format!("{item_type}[]")
+            }
+        }
+        "object" => json_object_schema_to_typescript(schema, indent),
+        _ => "unknown".to_string(),
+    }
+}
+
 fn json_object_schema_to_typescript(schema: &Value, indent: usize) -> String {
-    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
-        return "Record<string, unknown>".to_string();
-    };
+    let properties = schema.get("properties").and_then(Value::as_object);
+    let additional_properties = schema.get("additionalProperties");
+    if properties.is_none() {
+        return additional_properties
+            .and_then(|schema| {
+                if schema == &Value::Bool(false) {
+                    Some("Record<string, never>".to_string())
+                } else if schema == &Value::Bool(true) {
+                    Some("Record<string, unknown>".to_string())
+                } else if schema.is_object() {
+                    Some(format!(
+                        "Record<string, {}>",
+                        json_schema_to_typescript(schema, indent)
+                    ))
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "Record<string, unknown>".to_string());
+    }
+    let properties = properties.expect("properties checked above");
     let required = schema
         .get("required")
         .and_then(Value::as_array)
@@ -4502,8 +4649,32 @@ fn json_object_schema_to_typescript(schema: &Value, indent: usize) -> String {
             json_schema_to_typescript(schema, indent + 2)
         ));
     }
+    if let Some(additional_schema) = additional_properties {
+        match additional_schema {
+            Value::Bool(true) => {
+                lines.push(format!("{child_pad}[key: string]: unknown;"));
+            }
+            Value::Object(_) => {
+                lines.push(format!(
+                    "{child_pad}[key: string]: {};",
+                    json_schema_to_typescript(additional_schema, indent + 2)
+                ));
+            }
+            _ => {}
+        }
+    }
     lines.push(format!("{pad}}}"));
     lines.join("\n")
+}
+
+fn json_value_to_typescript_literal(value: &Value) -> String {
+    match value {
+        Value::String(value) => {
+            serde_json::to_string(value).unwrap_or_else(|_| "\"<invalid>\"".to_string())
+        }
+        Value::Number(_) | Value::Bool(_) | Value::Null => compact_json(value),
+        Value::Array(_) | Value::Object(_) => "unknown".to_string(),
+    }
 }
 
 fn is_ts_identifier(value: &str) -> bool {
@@ -4949,11 +5120,100 @@ fn print_tool_compat_report(
     }
 }
 
-fn print_tool_types_report(output: OutputFormat, report: &ToolTypesReport) -> Result<(), CliError> {
+enum ToolTypesOutput {
+    One(ToolTypesReport),
+    All(ToolTypesSuiteReport),
+}
+
+fn print_tool_types_output(output: OutputFormat, report: &ToolTypesOutput) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => print_json(report),
         OutputFormat::Human | OutputFormat::Markdown => {
-            print!("{}", report.source);
+            match report {
+                ToolTypesOutput::One(report) => print!("{}", report.source),
+                ToolTypesOutput::All(report) => print!("{}", report.source),
+            }
+            Ok(())
+        }
+    }
+}
+
+impl Serialize for ToolTypesOutput {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self {
+            Self::One(report) => report.serialize(serializer),
+            Self::All(report) => report.serialize(serializer),
+        }
+    }
+}
+
+fn print_tool_ci_report(output: OutputFormat, report: &ToolCiReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!(
+                "Custom tool CI: {}",
+                if report.passed { "passed" } else { "failed" }
+            );
+            println!(
+                "lint: {} ({} checked, {} warnings, {} errors)",
+                if report.lint.valid {
+                    "passed"
+                } else {
+                    "failed"
+                },
+                report.lint.checked,
+                report.lint.warnings.len(),
+                report.lint.errors.len()
+            );
+            println!(
+                "examples: {} ({} checked across {} tools)",
+                if report.tests.passed {
+                    "passed"
+                } else {
+                    "failed"
+                },
+                report.tests.checked,
+                report.tests.tools.len()
+            );
+            let compatible_surfaces = report
+                .compatibility
+                .iter()
+                .flat_map(|tool| &tool.surfaces)
+                .filter(|surface| surface.compatible)
+                .count();
+            let total_surfaces: usize = report
+                .compatibility
+                .iter()
+                .map(|tool| tool.surfaces.len())
+                .sum();
+            println!("compatibility: {compatible_surfaces}/{total_surfaces} surfaces compatible");
+            for warning in &report.lint.warnings {
+                println!("warning: {warning}");
+            }
+            for error in &report.lint.errors {
+                println!("error: {error}");
+            }
+            for tool in &report.tests.tools {
+                for example in &tool.examples {
+                    if !example.passed {
+                        println!("error: {} example `{}` failed", tool.name, example.name);
+                    }
+                }
+            }
+            for tool in &report.compatibility {
+                for surface in &tool.surfaces {
+                    for warning in &surface.warnings {
+                        println!("warning: {} {}: {warning}", tool.name, surface.surface);
+                    }
+                    for error in &surface.errors {
+                        println!("error: {} {}: {error}", tool.name, surface.surface);
+                    }
+                }
+            }
             Ok(())
         }
     }
@@ -21288,7 +21548,8 @@ complete -c vulcan -n "__fish_vulcan_using_subcommand daily; and __fish_seen_sub
 # Script names for vulcan run
 complete -c vulcan -n "__fish_vulcan_using_subcommand run" -f -a "(__fish_vulcan_dynamic_complete_script)" -d "Script"
 
-# Skill-backed custom tools and declared CLI flags for vulcan tool run
+# Skill-backed custom tools and declared CLI flags
+complete -c vulcan -n "__fish_vulcan_using_subcommand tool; and __fish_seen_subcommand_from show help test compat types" -f -a "(__fish_vulcan_dynamic_complete_custom_tool)" -d "Tool"
 complete -c vulcan -n "__fish_vulcan_using_subcommand tool; and __fish_seen_subcommand_from run" -f -a "(__fish_vulcan_dynamic_complete_custom_tool)" -d "Tool"
 complete -c vulcan -n "__fish_vulcan_using_subcommand tool; and __fish_seen_subcommand_from run" -f -a "(__fish_vulcan_dynamic_complete_custom_tool_flag)" -d "Tool flag"
 complete -c vulcan -n "__fish_vulcan_using_subcommand tool; and __fish_seen_subcommand_from run" -f -a "(__fish_vulcan_dynamic_complete_custom_tool_value)" -d "Tool value"
@@ -21411,6 +21672,19 @@ __vulcan_is_tool_run_context() {
     return 1
 }
 
+__vulcan_is_tool_name_context() {
+    local i command
+    for (( i = 1; i < COMP_CWORD; i++ )); do
+        if [[ "${COMP_WORDS[i]}" == "tool" ]]; then
+            command="${COMP_WORDS[i + 1]}"
+            if [[ "$command" =~ ^(show|help|test|compat|types)$ ]]; then
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
 __vulcan_append_completion_candidate() {
     local candidate existing
     candidate="$1"
@@ -21443,6 +21717,12 @@ __vulcan_dynamic_dispatch() {
                 __vulcan_append_completion_candidate "$candidate"
             done < <(__vulcan_dynamic_candidates "custom-tool-value:$tool:$flag" "${COMP_WORDS[COMP_CWORD]}")
         fi
+    elif __vulcan_is_tool_name_context && [[ "${cur:-${COMP_WORDS[COMP_CWORD]}}" != -* ]]; then
+        COMPREPLY=()
+        local candidate
+        while IFS= read -r candidate; do
+            __vulcan_append_completion_candidate "$candidate"
+        done < <(__vulcan_dynamic_candidates custom-tool "${COMP_WORDS[COMP_CWORD]}")
     fi
 }
 
@@ -21639,6 +21919,19 @@ _vulcan_is_tool_run_context() {
     return 1
 }
 
+_vulcan_is_tool_name_context() {
+    local i command
+    for (( i = 1; i < CURRENT; i++ )); do
+        if [[ "${words[i]}" == "tool" ]]; then
+            command="${words[i + 1]}"
+            if [[ "$command" =~ ^(show|help|test|compat|types)$ ]]; then
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
 _vulcan_custom_tool_candidates() {
     local context="$1"
     local prefix="$2"
@@ -21663,6 +21956,8 @@ if functions -c _vulcan _vulcan_static 2>/dev/null; then
                 local flag="${words[CURRENT - 1]#--}"
                 _vulcan_custom_tool_candidates "custom-tool-value:$tool:$flag" "${words[CURRENT]}"
             fi
+        elif _vulcan_is_tool_name_context && [[ "${words[CURRENT]}" != -* ]]; then
+            _vulcan_custom_tool_candidates custom-tool "${words[CURRENT]}"
         fi
     }
     compdef _vulcan vulcan
@@ -25762,6 +26057,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn parses_tool_commands() {
         let list = Cli::try_parse_from(["vulcan", "tool", "list"]).expect("tool list should parse");
         let show = Cli::try_parse_from(["vulcan", "tool", "show", "skill_meeting_summarize"])
@@ -25791,6 +26087,16 @@ mod tests {
         .expect("tool compat should parse");
         let types = Cli::try_parse_from(["vulcan", "tool", "types", "meeting-summary"])
             .expect("tool types should parse");
+        let ci = Cli::try_parse_from([
+            "vulcan",
+            "tool",
+            "ci",
+            "--profile",
+            "daily-wiki-agent",
+            "--surface",
+            "cli,mcp",
+        ])
+        .expect("tool ci should parse");
         let run = Cli::try_parse_from([
             "vulcan",
             "tool",
@@ -25848,7 +26154,17 @@ mod tests {
             types.command,
             Command::Tool {
                 command: ToolCommand::Types {
-                    name: "meeting-summary".to_string(),
+                    name: Some("meeting-summary".to_string()),
+                    all: false,
+                },
+            }
+        );
+        assert_eq!(
+            ci.command,
+            Command::Tool {
+                command: ToolCommand::Ci {
+                    profile: Some("daily-wiki-agent".to_string()),
+                    surface: vec!["cli".to_string(), "mcp".to_string()],
                 },
             }
         );
@@ -25869,6 +26185,8 @@ mod tests {
     fn parses_tool_test_all_command() {
         let test_all = Cli::try_parse_from(["vulcan", "tool", "test", "--all"])
             .expect("tool test --all should parse");
+        let types_all = Cli::try_parse_from(["vulcan", "tool", "types", "--all"])
+            .expect("tool types --all should parse");
 
         assert_eq!(
             test_all.command,
@@ -25879,6 +26197,15 @@ mod tests {
                     example: None,
                     update_expected: false,
                     profile: None,
+                },
+            }
+        );
+        assert_eq!(
+            types_all.command,
+            Command::Tool {
+                command: ToolCommand::Types {
+                    name: None,
+                    all: true,
                 },
             }
         );
@@ -25933,6 +26260,37 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn json_schema_typescript_supports_common_schema_composition() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["mode", "payload"],
+            "properties": {
+                "mode": { "const": "append" },
+                "payload": {
+                    "anyOf": [
+                        { "type": "string" },
+                        { "type": "array", "items": { "type": ["string", "null"] } }
+                    ]
+                },
+                "labels": {
+                    "type": "object",
+                    "additionalProperties": { "type": "number" }
+                },
+                "status": { "enum": ["open", "done", null] }
+            },
+            "additionalProperties": false
+        });
+
+        let typescript = json_schema_to_typescript(&schema, 0);
+
+        assert!(typescript.contains("mode: \"append\";"));
+        assert!(typescript.contains("payload: string | (string | null)[];"));
+        assert!(typescript.contains("labels?: Record<string, number>;"));
+        assert!(typescript.contains("status?: \"open\" | \"done\" | null;"));
+        assert!(!typescript.contains("[key: string]"));
     }
 
     #[test]

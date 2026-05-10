@@ -11163,7 +11163,7 @@
       },
       {
         "about": "List and run exposed skill command tools",
-        "after_help": "Subcommands:\n  list       inspect exposed skill command tools\n  show       read one exposed skill command tool definition\n  help       show shell-friendly usage for one exposed skill command tool\n  init       scaffold a new skill-backed custom tool\n  lint       check exposed custom tools for authoring and packaging issues\n  test       run declared examples for one exposed skill command tool\n  compat     report custom tool compatibility across CLI, MCP, OpenAI, and JS surfaces\n  types      emit TypeScript declarations for one exposed skill command tool\n  run        validate JSON input and invoke one exposed skill command tool\n\nNotes:\n  Tools are the callable registry view over Agent Skills-compatible commands declared\n  in `SKILL.md` under `metadata.vulcan.commands` with `expose: true`.\n  Author tools with `vulcan skill init --starter-command` or by editing skill command\n  metadata directly.\n  Tool execution requires a trusted vault: `vulcan trust add`.\n  `tool run` defaults to `{}` input when no `--input-json` or `--input-file` is provided.\n  Tools may declare custom CLI aliases and flags in `metadata.vulcan.commands[].cli`.\n  Custom flags are only an input adapter; the final JSON still uses the tool schema.\n  CLI metadata supports typed flags, repeated array flags, nested fields, and value completions.\n  `tool test` supports inline examples, fixture files relative to the skill directory,\n  JSON path diffs for expected-output mismatches, `--all`, `--update-expected`,\n  and `--profile` permission checks.\n  `tool lint --fix` only applies safe packaging repairs such as shebang normalization\n  and executable-bit fixes; mutation-capable tools should expose dry-run examples.\n\nExamples:\n  vulcan tool list\n  vulcan tool show skill_conversation_export_export\n  vulcan tool help conversation-export\n  vulcan tool init meeting-summary --description 'Summarize a meeting transcript'\n  vulcan tool init append-log --template mutation\n  vulcan tool lint conversation-export\n  vulcan tool test conversation-export --example dry-run-cli\n  vulcan tool test --all --profile daily-wiki-agent\n  vulcan tool test conversation-export --example transcript-fixture --update-expected\n  vulcan tool compat conversation-export --surface cli,mcp\n  vulcan tool types conversation-export\n  vulcan tool run skill_conversation_export_export --input-json '{\"title\":\"Chat\",\"transcript\":\"User: hi\"}'\n  vulcan tool run conversation-export --title Chat --user Hello --assistant 'Some message'\n\nSee also:\n  `vulcan skill` — author, validate, and execute skill commands",
+        "after_help": "Subcommands:\n  list       inspect exposed skill command tools\n  show       read one exposed skill command tool definition\n  help       show shell-friendly usage for one exposed skill command tool\n  init       scaffold a new skill-backed custom tool\n  lint       check exposed custom tools for authoring and packaging issues\n  test       run declared examples for one exposed skill command tool\n  compat     report custom tool compatibility across CLI, MCP, OpenAI, and JS surfaces\n  types      emit TypeScript declarations for exposed skill command tools\n  ci         run lint, examples, and compatibility checks for custom tools\n  run        validate JSON input and invoke one exposed skill command tool\n\nNotes:\n  Tools are the callable registry view over Agent Skills-compatible commands declared\n  in `SKILL.md` under `metadata.vulcan.commands` with `expose: true`.\n  Author tools with `vulcan skill init --starter-command` or by editing skill command\n  metadata directly.\n  Tool execution requires a trusted vault: `vulcan trust add`.\n  `tool run` defaults to `{}` input when no `--input-json` or `--input-file` is provided.\n  Tools may declare custom CLI aliases and flags in `metadata.vulcan.commands[].cli`.\n  Custom flags are only an input adapter; the final JSON still uses the tool schema.\n  CLI metadata supports typed flags, repeated array flags, nested fields, and value completions.\n  `tool test` supports inline examples, fixture files relative to the skill directory,\n  JSON path diffs for expected-output mismatches, `--all`, `--update-expected`,\n  and `--profile` permission checks.\n  `tool lint --fix` only applies safe packaging repairs such as shebang normalization\n  and executable-bit fixes; mutation-capable tools should expose dry-run examples.\n\nExamples:\n  vulcan tool list\n  vulcan tool show skill_conversation_export_export\n  vulcan tool help conversation-export\n  vulcan tool init meeting-summary --description 'Summarize a meeting transcript'\n  vulcan tool init append-log --template mutation\n  vulcan tool lint conversation-export\n  vulcan tool test conversation-export --example dry-run-cli\n  vulcan tool test --all --profile daily-wiki-agent\n  vulcan tool test conversation-export --example transcript-fixture --update-expected\n  vulcan tool compat conversation-export --surface cli,mcp\n  vulcan tool types conversation-export\n  vulcan tool types --all\n  vulcan tool ci --profile daily-wiki-agent\n  vulcan tool run skill_conversation_export_export --input-json '{\"title\":\"Chat\",\"transcript\":\"User: hi\"}'\n  vulcan tool run conversation-export --title Chat --user Hello --assistant 'Some message'\n\nSee also:\n  `vulcan skill` — author, validate, and execute skill commands",
         "name": "tool",
         "options": [],
         "subcommands": [
@@ -11438,7 +11438,7 @@
             "subcommands": []
           },
           {
-            "about": "Emit TypeScript declarations for one exposed skill command tool",
+            "about": "Emit TypeScript declarations for exposed skill command tools",
             "name": "types",
             "options": [
               {
@@ -11446,10 +11446,53 @@
                 "id": "name",
                 "long": null,
                 "possible_values": [],
-                "required": true,
+                "required": false,
                 "short": null,
                 "value_names": [
                   "NAME"
+                ]
+              },
+              {
+                "help": "Emit declarations for every exposed tool",
+                "id": "all",
+                "long": "all",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ALL"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Run lint, examples, and compatibility checks for custom tools",
+            "name": "ci",
+            "options": [
+              {
+                "help": "Run examples under a specific active permission profile",
+                "id": "profile",
+                "long": "profile",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PROFILE"
+                ]
+              },
+              {
+                "help": "Compatibility surfaces to check: cli,mcp,openai-tools,js",
+                "id": "surface",
+                "long": "surface",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SURFACE"
                 ]
               }
             ],

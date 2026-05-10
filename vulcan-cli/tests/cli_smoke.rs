@@ -10614,6 +10614,52 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
                 )),
         );
 
+    let types_all_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "types",
+            "--all",
+        ])
+        .assert()
+        .success();
+    let types_all_json = parse_stdout_json(&types_all_assert);
+    assert_eq!(types_all_json["checked"].as_u64(), Some(2));
+    assert!(types_all_json["source"]
+        .as_str()
+        .expect("types source")
+        .contains("export type SkillAppendToolRunInput"));
+
+    let ci_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "ci",
+            "--profile",
+            "unrestricted",
+        ])
+        .assert()
+        .success();
+    let ci_json = parse_stdout_json(&ci_assert);
+    assert_eq!(ci_json["passed"].as_bool(), Some(true));
+    assert_eq!(ci_json["lint"]["checked"].as_u64(), Some(2));
+    assert_eq!(ci_json["tests"]["checked"].as_u64(), Some(2));
+    assert_eq!(
+        ci_json["compatibility"]
+            .as_array()
+            .expect("compatibility")
+            .len(),
+        2
+    );
+
     let run_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([

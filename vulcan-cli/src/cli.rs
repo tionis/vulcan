@@ -111,7 +111,8 @@ Subcommands:
   lint       check exposed custom tools for authoring and packaging issues
   test       run declared examples for one exposed skill command tool
   compat     report custom tool compatibility across CLI, MCP, OpenAI, and JS surfaces
-  types      emit TypeScript declarations for one exposed skill command tool
+  types      emit TypeScript declarations for exposed skill command tools
+  ci         run lint, examples, and compatibility checks for custom tools
   run        validate JSON input and invoke one exposed skill command tool
 
 Notes:
@@ -142,6 +143,8 @@ Examples:
   vulcan tool test conversation-export --example transcript-fixture --update-expected
   vulcan tool compat conversation-export --surface cli,mcp
   vulcan tool types conversation-export
+  vulcan tool types --all
+  vulcan tool ci --profile daily-wiki-agent
   vulcan tool run skill_conversation_export_export --input-json '{\"title\":\"Chat\",\"transcript\":\"User: hi\"}'
   vulcan tool run conversation-export --title Chat --user Hello --assistant 'Some message'
 
@@ -2910,10 +2913,27 @@ pub enum ToolCommand {
         )]
         surface: Vec<String>,
     },
-    #[command(about = "Emit TypeScript declarations for one exposed skill command tool")]
+    #[command(about = "Emit TypeScript declarations for exposed skill command tools")]
     Types {
-        #[arg(help = "Tool name or CLI alias")]
-        name: String,
+        #[arg(help = "Tool name or CLI alias", required_unless_present = "all")]
+        name: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "name",
+            help = "Emit declarations for every exposed tool"
+        )]
+        all: bool,
+    },
+    #[command(about = "Run lint, examples, and compatibility checks for custom tools")]
+    Ci {
+        #[arg(long, help = "Run examples under a specific active permission profile")]
+        profile: Option<String>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Compatibility surfaces to check: cli,mcp,openai-tools,js"
+        )]
+        surface: Vec<String>,
     },
     #[command(about = "Run one exposed skill command tool with validated JSON input")]
     Run {
