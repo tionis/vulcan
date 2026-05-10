@@ -3,6 +3,7 @@
 mod schemas;
 
 use crate::app_config;
+use crate::commands::runtime::{run_web_fetch_command, run_web_search_command};
 use crate::commit::AutoCommitPolicy;
 use crate::plugins;
 use crate::{
@@ -14,11 +15,10 @@ use crate::{
     run_note_info_command, run_note_outline_command, run_note_patch_command,
     run_note_set_with_content, run_status_command, run_tasks_complete_command,
     run_tasks_create_command, run_tasks_list_command, run_tasks_query_command,
-    run_tasks_reschedule_command, run_web_fetch_command, run_web_search_command, CliError,
-    McpToolAnnotations, McpToolPackArg, McpToolPackModeArg, McpToolsReport, McpTransportArg,
-    NoteAppendMode, NoteAppendOptions, NoteAppendPeriodicArg, NoteGetMode, NoteGetOptions,
-    NotePatchOptions, OutputFormat, SearchBackendArg, TasksCreateOptions, TasksListOptions,
-    TasksListSourceArg, ToolRegistryEntry, WebFetchMode,
+    run_tasks_reschedule_command, CliError, McpToolAnnotations, McpToolPackArg, McpToolPackModeArg,
+    McpToolsReport, McpTransportArg, NoteAppendMode, NoteAppendOptions, NoteAppendPeriodicArg,
+    NoteGetMode, NoteGetOptions, NotePatchOptions, OutputFormat, SearchBackendArg,
+    TasksCreateOptions, TasksListOptions, TasksListSourceArg, ToolRegistryEntry, WebFetchMode,
 };
 use schemas::{
     config_set_input_schema, config_set_output_schema, config_show_input_schema,
