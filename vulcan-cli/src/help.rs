@@ -1,4 +1,4 @@
-use crate::CliArgDescribe;
+use crate::commands::docs::CliArgDescribe;
 use serde::Serialize;
 use std::fmt::{Display, Formatter, Write as _};
 
