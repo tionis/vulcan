@@ -296,6 +296,7 @@ Behavior:
 - `vulcan tool init <alias> [--template minimal|reader|mutation|exporter|wrapper]`: scaffold a skill-backed custom tool with schemas, CLI metadata, a Vulcan shebang script, and a smoke example.
 - `vulcan tool lint [<alias>]`: check exposed custom tools for schemas, CLI coverage, examples, shebangs, executable bits, mutation dry-run conventions, and packaging issues.
 - `vulcan tool compat <alias>`: report whether a tool is cleanly usable from CLI, MCP, OpenAI-tool, and JS registry surfaces.
+- `vulcan tool types <alias>`: emit TypeScript declarations from the tool's input and output JSON schemas.
 
 Behavior:
 

@@ -10595,6 +10595,25 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
         .iter()
         .all(|surface| surface["compatible"].as_bool() == Some(true)));
 
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "tool",
+            "types",
+            "echo-tool",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("export type SkillEchoToolRunInput")
+                .and(predicate::str::contains("message: string"))
+                .and(predicate::str::contains(
+                    "export declare function skillEchoToolRun",
+                )),
+        );
+
     let run_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
