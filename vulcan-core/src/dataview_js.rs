@@ -367,7 +367,7 @@ mod runtime {
         timeout: Option<Duration>,
     }
 
-    const DATAVIEW_JS_PRELUDE: &str = r#"
+    const DATAVIEW_JS_PRELUDE: &str = r##"
 const __vulcanDeterministicStatic = Boolean(globalThis.__vulcan_deterministic_static);
 
 function __vulcanStaticTimeError(operation) {
@@ -2064,6 +2064,52 @@ class Note {
     );
   }
 
+  section(opts = {}) {
+    return this.read(opts);
+  }
+
+  block(id) {
+    return this.read({ block_ref: String(id) });
+  }
+
+  patch(find, replace, opts = {}) {
+    return vault.patch(this.file.path, find, replace, opts);
+  }
+
+  append(text, opts = {}) {
+    return vault.append(this.file.path, text, opts);
+  }
+
+  update(key, value) {
+    return vault.update(this.file.path, key, value);
+  }
+
+  unset(key) {
+    return vault.unset(this.file.path, key);
+  }
+
+  get properties() {
+    const note = this;
+    return {
+      get(key) {
+        return note.frontmatter?.[key] ?? note.__data?.[key] ?? null;
+      },
+      set(key, value) {
+        return vault.update(note.file.path, key, value);
+      },
+      unset(key) {
+        return vault.unset(note.file.path, key);
+      },
+      merge(values = {}) {
+        let updated = note;
+        for (const [key, value] of Object.entries(values ?? {})) {
+          updated = vault.update(note.file.path, key, value);
+        }
+        return updated;
+      },
+    };
+  }
+
   links() {
     return new DataArray(
       JSON.parse(__vulcan_note_links_json(this.file.path, "outgoing")).map(__vulcanHydrateRelationship)
@@ -2111,6 +2157,218 @@ function __vulcanMutation(kind, payload) {
   return JSON.parse(__vulcan_mutate_json(String(kind), JSON.stringify(__vulcanPlain(payload))));
 }
 
+function __vulcanGetPath(value) {
+  if (value instanceof Note) {
+    return value.file.path;
+  }
+  if (value && typeof value === "object" && value.file?.path) {
+    return value.file.path;
+  }
+  return String(value);
+}
+
+function __vulcanUnifiedDiff(before, after, path = "content") {
+  const beforeLines = String(before ?? "").split("\n");
+  const afterLines = String(after ?? "").split("\n");
+  if (beforeLines.length && beforeLines[beforeLines.length - 1] === "") beforeLines.pop();
+  if (afterLines.length && afterLines[afterLines.length - 1] === "") afterLines.pop();
+  const lines = [`--- ${path}`, `+++ ${path}`];
+  const max = Math.max(beforeLines.length, afterLines.length);
+  for (let index = 0; index < max; index += 1) {
+    const left = beforeLines[index];
+    const right = afterLines[index];
+    if (left === right) {
+      lines.push(` ${left ?? ""}`);
+    } else {
+      if (left !== undefined) lines.push(`-${left}`);
+      if (right !== undefined) lines.push(`+${right}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+class VaultMutationPlan {
+  constructor(opts = {}) {
+    this.dryRun = !!(opts?.dry_run ?? opts?.dryRun);
+    this.operations = [];
+  }
+
+  set(path, content, opts = {}) {
+    this.operations.push({ kind: "set", path: __vulcanGetPath(path), content, opts });
+    return this;
+  }
+
+  writeNote(path, content, opts = {}) {
+    return this.set(path, content, opts);
+  }
+
+  create(path, opts = {}) {
+    this.operations.push({ kind: "create", path: __vulcanGetPath(path), opts });
+    return this;
+  }
+
+  append(path, text, opts = {}) {
+    this.operations.push({ kind: "append", path: __vulcanGetPath(path), text, opts });
+    return this;
+  }
+
+  appendNote(path, text, opts = {}) {
+    return this.append(path, text, opts);
+  }
+
+  patch(path, find, replace, opts = {}) {
+    this.operations.push({ kind: "patch", path: __vulcanGetPath(path), find, replace, opts });
+    return this;
+  }
+
+  update(path, key, value) {
+    this.operations.push({ kind: "update", path: __vulcanGetPath(path), key, value });
+    return this;
+  }
+
+  unset(path, key) {
+    this.operations.push({ kind: "unset", path: __vulcanGetPath(path), key });
+    return this;
+  }
+
+  diff(path, before, after) {
+    this.operations.push({ kind: "diff", path: __vulcanGetPath(path), before, after });
+    return this;
+  }
+
+  preview() {
+    const changedPaths = [...new Set(this.operations.map((op) => op.path).filter(Boolean))];
+    return {
+      ok: true,
+      dry_run: true,
+      applied: false,
+      changed_paths: changedPaths,
+      operations: this.operations.map(__vulcanPlain),
+      diffs: this.operations
+        .filter((op) => op.kind === "diff")
+        .map((op) => ({ path: op.path, diff: __vulcanUnifiedDiff(op.before, op.after, op.path) })),
+    };
+  }
+
+  apply() {
+    if (this.dryRun) {
+      return this.preview();
+    }
+    const results = [];
+    vault.transaction(() => {
+      for (const op of this.operations) {
+        if (op.kind === "set") results.push(vault.set(op.path, op.content, op.opts));
+        if (op.kind === "create") results.push(vault.create(op.path, op.opts));
+        if (op.kind === "append") results.push(vault.append(op.path, op.text, op.opts));
+        if (op.kind === "patch") results.push(vault.patch(op.path, op.find, op.replace, op.opts));
+        if (op.kind === "update") results.push(vault.update(op.path, op.key, op.value));
+        if (op.kind === "unset") results.push(vault.unset(op.path, op.key));
+      }
+    });
+    const changedPaths = [...new Set(this.operations.map((op) => op.path).filter(Boolean))];
+    return {
+      ok: true,
+      dry_run: false,
+      applied: true,
+      changed_paths: changedPaths,
+      operations: this.operations.map(__vulcanPlain),
+      results,
+    };
+  }
+
+  result() {
+    return this.apply();
+  }
+}
+
+class VaultQueryBuilder {
+  constructor() {
+    this.source = "";
+    this.filters = [];
+    this.sorts = [];
+    this.limitValue = null;
+  }
+
+  from(source) {
+    this.source = String(source);
+    return this;
+  }
+
+  tag(tag) {
+    this.source = "#" + String(tag).replace(/^#/, "");
+    return this;
+  }
+
+  path(path) {
+    this.source = `"${String(path).replace(/"/g, '\\"')}"`;
+    return this;
+  }
+
+  where(field, op, value) {
+    const rendered = typeof value === "string" ? `"${value.replace(/"/g, '\\"')}"` : String(value);
+    this.filters.push(`${field} ${op} ${rendered}`);
+    return this;
+  }
+
+  sort(field, direction = "ASC") {
+    this.sorts.push(`${field} ${String(direction).toUpperCase()}`);
+    return this;
+  }
+
+  limit(value) {
+    this.limitValue = Number(value);
+    return this;
+  }
+
+  toString() {
+    const parts = ["TABLE file.link"];
+    if (this.source) parts.push("FROM", this.source);
+    for (const filter of this.filters) parts.push("WHERE", filter);
+    if (this.sorts.length) parts.push("SORT", this.sorts.join(", "));
+    if (this.limitValue != null) parts.push("LIMIT", String(this.limitValue));
+    return parts.join(" ");
+  }
+
+  run(opts = {}) {
+    return vault.query(this.toString(), opts);
+  }
+}
+
+class VaultSearchBuilder {
+  constructor() {
+    this.parts = [];
+    this.limitValue = null;
+  }
+
+  text(value) {
+    this.parts.push(String(value));
+    return this;
+  }
+
+  tag(value) {
+    this.parts.push(`tag:${String(value).replace(/^#/, "")}`);
+    return this;
+  }
+
+  path(value) {
+    this.parts.push(`path:${String(value)}`);
+    return this;
+  }
+
+  limit(value) {
+    this.limitValue = Number(value);
+    return this;
+  }
+
+  toString() {
+    return this.parts.join(" ").trim();
+  }
+
+  run(opts = {}) {
+    return vault.search(this.toString(), { ...opts, limit: opts?.limit ?? this.limitValue });
+  }
+}
+
 const vault = {
   note(path) {
     return __vulcanNote(JSON.parse(__vulcan_page_json(path)));
@@ -2119,10 +2377,28 @@ const vault = {
     return __vulcanNotes(JSON.parse(__vulcan_pages_json(source)));
   },
   query(dql, opts = {}) {
+    if (dql == null) {
+      return new VaultQueryBuilder();
+    }
     return dv.tryQuery(dql, opts?.file ?? null, opts);
   },
   search(query, opts = {}) {
+    if (query == null) {
+      return new VaultSearchBuilder();
+    }
     return JSON.parse(__vulcan_search_json(String(query), opts?.limit ?? null));
+  },
+  diffText(before, after, opts = {}) {
+    return __vulcanUnifiedDiff(before, after, opts?.path ?? "content");
+  },
+  mutation(opts = {}) {
+    return new VaultMutationPlan(opts);
+  },
+  plan(opts = {}) {
+    return new VaultMutationPlan(opts);
+  },
+  withLock(_paths, callback) {
+    return callback();
   },
   set(path, content, opts = {}) {
     return __vulcanNote(
@@ -2251,6 +2527,9 @@ const vault = {
     today() {
       return __vulcanNote(JSON.parse(__vulcan_vault_daily_json(__vulcan_today())));
     },
+    path(date = "today") {
+      return __vulcan_daily_path(String(date));
+    },
     get(date) {
       return __vulcanNote(JSON.parse(__vulcan_vault_daily_json(String(date))));
     },
@@ -2271,6 +2550,141 @@ const vault = {
     return new DataArray(
       JSON.parse(__vulcan_vault_events_json(options?.from ?? null, options?.to ?? null))
     );
+  },
+};
+
+function __vulcanPermissionCheck(action, path = null) {
+  return JSON.parse(__vulcan_permission_check_json(String(action), path == null ? null : String(path)));
+}
+
+const vulcan = {
+  permissions() {
+    const summary = JSON.parse(__vulcan_permissions_json());
+    summary.canRead = (path) => __vulcanPermissionCheck("read", path).allowed;
+    summary.canWrite = (path) => __vulcanPermissionCheck("write", path).allowed;
+    summary.canRefactor = (path) => __vulcanPermissionCheck("refactor", path).allowed;
+    summary.can = (capability, path = null) => __vulcanPermissionCheck(capability, path).allowed;
+    return summary;
+  },
+  date: {
+    today() {
+      return __vulcan_today();
+    },
+    parse(input) {
+      const millis = __vulcan_date_millis(String(input));
+      return millis == null ? null : new VulcanDateTime(new Date(millis));
+    },
+    format(input, format = "yyyy-MM-dd") {
+      const millis = input instanceof VulcanDateTime ? input.toMillis() : __vulcan_date_millis(String(input));
+      return millis == null ? null : __vulcan_format_date(millis, String(format));
+    },
+  },
+  tempDir() {
+    const files = new Map();
+    return {
+      writeJson(path, value) {
+        files.set(String(path), JSON.stringify(__vulcanPlain(value), null, 2));
+        return String(path);
+      },
+      writeText(path, value) {
+        files.set(String(path), String(value));
+        return String(path);
+      },
+      readText(path) {
+        return files.get(String(path)) ?? null;
+      },
+      readJson(path) {
+        const value = files.get(String(path));
+        return value == null ? null : JSON.parse(value);
+      },
+      list() {
+        return Array.from(files.keys());
+      },
+    };
+  },
+};
+
+class ToolResultBuilder {
+  constructor(ok = true) {
+    this.payload = { ok };
+  }
+
+  summary(text) {
+    this.payload.summary = String(text);
+    return this;
+  }
+
+  changedPath(path) {
+    if (!this.payload.changed_paths) this.payload.changed_paths = [];
+    this.payload.changed_paths.push(String(path));
+    return this;
+  }
+
+  diff(diff) {
+    if (!this.payload.diffs) this.payload.diffs = [];
+    this.payload.diffs.push(diff);
+    return this;
+  }
+
+  data(value) {
+    this.payload.data = value;
+    return this;
+  }
+
+  error(code, message, details = undefined) {
+    this.payload.ok = false;
+    this.payload.error = { code: String(code), message: String(message) };
+    if (details !== undefined) this.payload.error.details = details;
+    return this;
+  }
+
+  ok(value = undefined) {
+    if (value && typeof value === "object") {
+      Object.assign(this.payload, value);
+    }
+    return this.payload;
+  }
+}
+
+const tool = {
+  input(defaults = {}) {
+    return { ...defaults, ...(globalThis.input ?? {}) };
+  },
+  boolean(name, fallback = false) {
+    const value = (globalThis.input ?? {})[name];
+    return value == null ? !!fallback : !!value;
+  },
+  result() {
+    return new ToolResultBuilder(true);
+  },
+  ok(value = {}) {
+    return new ToolResultBuilder(true).ok(value);
+  },
+  error(code, message, details = undefined) {
+    return new ToolResultBuilder(false).error(code, message, details).ok();
+  },
+  progress(message, data = {}) {
+    __vulcan_emit(JSON.stringify({ kind: "paragraph", text: String(message) }));
+    return { kind: "progress", message: String(message), data };
+  },
+  notice(message, data = {}) {
+    __vulcan_emit(JSON.stringify({ kind: "paragraph", text: String(message) }));
+    return { kind: "notice", message: String(message), data };
+  },
+  config(defaults = {}) {
+    return { ...defaults };
+  },
+  audit(event = {}) {
+    return { kind: "audit", ...__vulcanPlain(event) };
+  },
+  output(value) {
+    return value;
+  },
+  confirm(request = {}) {
+    throw new Error("tool.confirm() requires an interactive approval-capable host");
+  },
+  idempotencyKey(value = globalThis.input ?? {}) {
+    return JSON.stringify(__vulcanPlain(value));
   },
 };
 
@@ -2309,6 +2723,25 @@ const tools = {
         JSON.stringify(opts ?? null)
       )
     );
+  },
+  callChecked(name, input = {}, opts = undefined) {
+    const result = tools.call(name, input, opts);
+    if (result && typeof result === "object") {
+      Object.defineProperty(result, "expect", {
+        enumerable: false,
+        value(path) {
+          const value = String(path)
+            .split(".")
+            .filter(Boolean)
+            .reduce((current, key) => current?.[key], result);
+          if (value === undefined || value === null) {
+            throw new Error(`tools.callChecked(${name}) missing expected path: ${path}`);
+          }
+          return value;
+        },
+      });
+    }
+    return result;
   },
 };
 
@@ -2354,8 +2787,10 @@ function help(obj) {
     return [
       "Vulcan JS Runtime — available globals:",
       "  vault    — note reading, writing, search, graph, daily notes",
+      "  vulcan   — permission, date, and scratch helpers",
       "  dv       — Dataview-compatible query API (dv.pages, dv.table, etc.)",
       "  tools    — registry-backed skill command tools (tools.list, tools.get, tools.call)",
+      "  tool     — custom-tool input, result, progress, and audit helpers",
       "  host     — permission-gated host process execution (host.exec, host.shell)",
       "  web      — external web search and fetch (requires --sandbox net)",
       "  console  — console.log() for output",
@@ -2363,7 +2798,7 @@ function help(obj) {
       "  _        — last successful result",
       "  _error   — last error message",
       "",
-      "Usage: help(vault), help(dv), help(vault.search), etc.",
+      "Usage: help(vault), help(vulcan.permissions), help(tool.result), etc.",
     ].join("\n");
   }
   if (typeof obj === "function" && !__vulcanJsHelp.has(obj)) {
@@ -2390,6 +2825,8 @@ Note properties:
   note.html          - rendered HTML using Vulcan's markdown pipeline
   note.outline()     - section and block outline with semantic ids and line spans
   note.read(opts)    - partial note read using heading/section/block/line/match selectors
+  note.section(opts) - alias for note.read(opts)
+  note.properties.*  - frontmatter get/set/unset/merge helpers
 
 See also: vault.notes(), vault.query()`
 );
@@ -2409,9 +2846,9 @@ See also: vault.note(), vault.query()`
 );
 __vulcanRegisterHelp(
   vault.query,
-  `vault.query(dql: string, opts?: { file?: string }): QueryResult
+  `vault.query(dql?: string, opts?: { file?: string }): QueryResult | QueryBuilder
 
-Run one DQL query against the indexed vault.
+Run one DQL query against the indexed vault, or call without arguments to build one.
 
 Parameters:
   dql  - Query DSL string.
@@ -2419,14 +2856,15 @@ Parameters:
 
 Example:
   vault.query('TABLE status FROM "Projects"')
+  vault.query().path("Projects").where("status", "=", "active").limit(5).run()
 
 See also: vault.notes(), vault.search()`
 );
 __vulcanRegisterHelp(
   vault.search,
-  `vault.search(query: string, opts?: { limit?: number }): SearchReport
+  `vault.search(query?: string, opts?: { limit?: number }): SearchReport | SearchBuilder
 
-Run indexed full-text search.
+Run indexed full-text search, or call without arguments to build one.
 
 Parameters:
   query - Search text or phrase.
@@ -2434,8 +2872,31 @@ Parameters:
 
 Example:
   vault.search("Alpha", { limit: 3 })
+  vault.search().text("Alpha").path("Projects").limit(3).run()
 
 See also: vault.notes(), vault.query()`
+);
+__vulcanRegisterHelp(
+  vault.plan,
+  `vault.plan(opts?: { dry_run?: boolean }): MutationPlan
+
+Build a reusable mutation plan for custom tools. Dry-run plans return changed_paths,
+operations, and explicit diffs without writing files.
+
+Example:
+  vault.plan({ dry_run: input.dry_run }).append("Daily.md", "- [ ] Review").result()
+
+See also: vault.mutation(), tool.result(), vulcan.permissions()`
+);
+__vulcanRegisterHelp(vault.mutation, __vulcanJsHelp.get(vault.plan));
+__vulcanRegisterHelp(
+  vault.diffText,
+  `vault.diffText(before: string, after: string, opts?: { path?: string }): string
+
+Return a small unified diff string suitable for dry-run output.
+
+Example:
+  vault.diffText(oldText, newText, { path: "Scratch.md" })`
 );
 __vulcanRegisterHelp(
   vault.graph.shortestPath,
@@ -2477,6 +2938,15 @@ Example:
   vault.daily.append("- [ ] Review plan", { heading: "Tasks", date: "2026-04-01" })
 
 See also: vault.append(), vault.daily.today()`
+);
+__vulcanRegisterHelp(
+  vault.daily.path,
+  `vault.daily.path(date?: string): string
+
+Resolve a daily note path using the vault's periodic-note configuration.
+
+Example:
+  vault.daily.path("2026-04-01")`
 );
 __vulcanRegisterHelp(
   vault.events,
@@ -2682,16 +3152,30 @@ Example:
 See also: tools.list(), tools.get()`
 );
 __vulcanRegisterHelp(
+  tools.callChecked,
+  `tools.callChecked(name: string, input?: object, opts?: object): object
+
+Call a registered tool and attach expect(path) for checked composition.
+
+Example:
+  const result = tools.callChecked("task-create", { text: "Call Alex" });
+  const id = result.expect("task.id");
+
+See also: tools.call(), skills.run()`
+);
+__vulcanRegisterHelp(
   vault,
   `vault — Vulcan vault API
 
 Available methods and namespaces:
   vault.note(path)       — resolve one note
   vault.notes(source?)   — query a note collection (DataArray)
-  vault.query(dql)       — run a DQL query string
-  vault.search(q, opts?) — full-text search
+  vault.query(dql)       — run a DQL query string, or build one with vault.query()
+  vault.search(q, opts?) — full-text search, or build one with vault.search()
   vault.graph.*          — link graph traversal (shortestPath, hubs, deadEnds, etc.)
   vault.daily.*          — periodic/daily note helpers (today, get, range, append)
+  vault.plan(opts)       — collect dry-run/apply mutation plans for custom tools
+  vault.diffText(a, b)   — produce a small unified diff
   vault.create(path, ...) — create a new note
   vault.set(path, ...)   — overwrite a note
   vault.append(path, ...) — append content to a note
@@ -2702,6 +3186,52 @@ Available methods and namespaces:
   vault.refactor.*        — rename and reorganize helpers
 
 Use help(vault.note), help(vault.search), etc. for details on each method.`
+);
+
+__vulcanRegisterHelp(
+  vulcan.permissions,
+  `vulcan.permissions(): PermissionSummary
+
+Return the active permission profile summary with canRead(path), canWrite(path),
+canRefactor(path), and can(capability, resource?) helpers.
+
+Example:
+  if (!vulcan.permissions().canWrite("Daily/")) return tool.error("permission_denied", "Cannot write daily notes");`
+);
+__vulcanRegisterHelp(
+  vulcan.date.today,
+  `vulcan.date.today(): string
+
+Return today's date string using Vulcan's runtime date policy.
+
+See also: vulcan.date.parse(), vault.daily.path()`
+);
+__vulcanRegisterHelp(
+  tool.result,
+  `tool.result(): ToolResultBuilder
+
+Build a standard custom-tool result with summary, changed_paths, diffs, data, or error fields.
+
+Example:
+  return tool.result().summary("Updated note").changedPath("Daily.md").data({ count: 1 }).ok();`
+);
+__vulcanRegisterHelp(
+  tool.input,
+  `tool.input(defaults?: object): object
+
+Return the validated custom-tool input merged over optional defaults.
+
+Example:
+  const input = tool.input({ dry_run: true });`
+);
+__vulcanRegisterHelp(
+  tool.progress,
+  `tool.progress(message: string, data?: object): object
+
+Emit a progress message for CLI/MCP-capable hosts and return a structured progress object.
+
+Example:
+  tool.progress("Scanning notes", { current: 10, total: 200 });`
 );
 
 __vulcanRegisterHelp(
@@ -2734,6 +3264,7 @@ __vulcanRegisterHelp(
   tools.list()             — list visible skill command tools
   tools.get(name)          — read one tool definition plus documentation body
   tools.call(name, input?) — invoke one skill command tool with validated JSON input
+  tools.callChecked(name, input?) — call a tool and assert expected result paths
 
 Use help(tools.call) for execution details and nested-call limits.`
 );
@@ -2906,7 +3437,7 @@ globalThis._error = undefined;
 globalThis.this = dv.current();
 globalThis.eval = undefined;
 globalThis.Function = undefined;
-"#;
+"##;
 
     pub fn evaluate_dataview_js(
         paths: &VaultPaths,
@@ -3287,6 +3818,32 @@ globalThis.Function = undefined;
             )
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
 
+        let daily_path_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_daily_path",
+                Func::from(move |ctx: Ctx<'_>, date: String| {
+                    let date = normalize_daily_event_date(
+                        Some(&date),
+                        daily_path_state.deterministic_static,
+                        "vault.daily.path()",
+                    )
+                    .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?;
+                    crate::expected_periodic_note_path(
+                        &daily_path_state.periodic_config,
+                        "daily",
+                        &date,
+                    )
+                    .ok_or_else(|| {
+                        Exception::throw_message(
+                            &ctx,
+                            &format!("failed to resolve daily note path for {date}"),
+                        )
+                    })
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
         let vault_daily_range_state = Arc::clone(&state);
         globals
             .set(
@@ -3628,6 +4185,29 @@ globalThis.Function = undefined;
                         &ctx,
                         apply_js_mutation(&mutation_state, &kind, payload)
                             .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))?,
+                    )
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let permissions_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_permissions_json",
+                Func::from(move |ctx: Ctx<'_>| {
+                    to_json_string(&ctx, js_permissions_summary(&permissions_state))
+                }),
+            )
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+
+        let permission_check_state = Arc::clone(&state);
+        globals
+            .set(
+                "__vulcan_permission_check_json",
+                Func::from(move |ctx: Ctx<'_>, action: String, path: Option<String>| {
+                    to_json_string(
+                        &ctx,
+                        js_permission_check(&permission_check_state, &action, path.as_deref()),
                     )
                 }),
             )
@@ -4365,6 +4945,53 @@ globalThis.Function = undefined;
         DataviewJsError::Message(format!(
             "DataviewJS static mode does not allow {capability} via {operation}"
         ))
+    }
+
+    fn js_permissions_summary(state: &JsEvalState) -> Value {
+        state.permissions.as_ref().map_or_else(
+            || {
+                serde_json::json!({
+                    "profile": null,
+                    "unrestricted": true,
+                    "grant": null,
+                })
+            },
+            |permissions| {
+                serde_json::json!({
+                    "profile": permissions.profile_name(),
+                    "unrestricted": false,
+                    "grant": permissions.grant(),
+                })
+            },
+        )
+    }
+
+    fn js_permission_check(state: &JsEvalState, action: &str, path: Option<&str>) -> Value {
+        let Some(permissions) = state.permissions.as_ref() else {
+            return serde_json::json!({ "allowed": true, "error": null });
+        };
+        let result = match action {
+            "read" => permissions.check_read_path(path.unwrap_or_default()),
+            "write" => permissions.check_write_path(path.unwrap_or_default()),
+            "refactor" => permissions.check_refactor_path(path.unwrap_or_default()),
+            "git" => permissions.check_git(),
+            "index" => permissions.check_index(),
+            "execute" => permissions.check_execute(),
+            "shell" => permissions.check_shell(),
+            "config_read" | "config-read" => permissions.check_config_read(),
+            "config_write" | "config-write" => permissions.check_config_write(),
+            "network" => permissions.check_network(path.unwrap_or_default()),
+            other => {
+                return serde_json::json!({
+                    "allowed": false,
+                    "error": format!("unknown permission capability `{other}`"),
+                });
+            }
+        };
+        match result {
+            Ok(()) => serde_json::json!({ "allowed": true, "error": null }),
+            Err(error) => serde_json::json!({ "allowed": false, "error": error.to_string() }),
+        }
     }
 
     fn static_mode_time_denied(operation: &str) -> DataviewJsError {
@@ -5895,7 +6522,7 @@ globalThis.Function = undefined;
             match &result.outputs[0] {
                 DataviewJsOutput::Paragraph { text } => {
                     assert!(text.contains(
-                        "vault.search(query: string, opts?: { limit?: number }): SearchReport"
+                        "vault.search(query?: string, opts?: { limit?: number }): SearchReport | SearchBuilder"
                     ));
                     assert!(text.contains("Parameters:"));
                     assert!(text.contains("Example:"));
@@ -5924,6 +6551,75 @@ globalThis.Function = undefined;
                 }
                 other => panic!("expected table output, got {other:?}"),
             }
+        }
+
+        #[test]
+        fn dataviewjs_exposes_custom_tool_authoring_helpers() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let result = evaluate_dataview_js_with_options(
+                &paths,
+                r##"
+                const note = vault.note("Projects/Alpha");
+                const section = note.section();
+                const query = vault.query().path("Projects").where("status", "=", "active").limit(2);
+                const search = vault.search().text("Alpha").path("Projects").limit(1);
+                const plan = vault.plan({ dry_run: true })
+                  .append("Projects/Alpha", "- [ ] Planned")
+                  .diff("Projects/Alpha", "old", "new")
+                  .result();
+                const permissions = vulcan.permissions();
+                const tmp = vulcan.tempDir();
+                tmp.writeJson("input.json", { ok: true });
+                ({
+                  section_has_content: String(section.content ?? "").includes("#project"),
+                  query_count: query.run().result_count,
+                  search_hits: search.run().hits.length,
+                  plan_dry_run: plan.dry_run,
+                  plan_paths: plan.changed_paths,
+                  diff_has_plus: vault.diffText("a", "b", { path: "X.md" }).includes("+b"),
+                  daily_path: vault.daily.path("2026-04-03"),
+                  can_write: permissions.canWrite("Projects/Alpha.md"),
+                  tmp_ok: tmp.readJson("input.json").ok,
+                  result_ok: tool.result().summary("done").changedPath("Projects/Alpha.md").ok().ok
+                })
+                "##,
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    timeout: None,
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                    permission_profile: None,
+                    deterministic_static: true,
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect("DataviewJS helper surface should evaluate");
+
+            let value = result.value.expect("helper result should be serializable");
+            assert_eq!(value["section_has_content"], Value::Bool(true));
+            assert!(value["query_count"]
+                .as_i64()
+                .is_some_and(|count| count >= 1));
+            assert_eq!(value["search_hits"], Value::from(1));
+            assert_eq!(value["plan_dry_run"], Value::Bool(true));
+            assert_eq!(
+                value["plan_paths"],
+                Value::Array(vec![Value::String("Projects/Alpha".to_string())])
+            );
+            assert_eq!(value["diff_has_plus"], Value::Bool(true));
+            assert_eq!(
+                value["daily_path"],
+                Value::String("Journal/Daily/2026-04-03.md".to_string())
+            );
+            assert_eq!(value["can_write"], Value::Bool(true));
+            assert_eq!(value["tmp_ok"], Value::Bool(true));
+            assert_eq!(value["result_ok"], Value::Bool(true));
         }
 
         #[test]
@@ -6249,6 +6945,11 @@ cpu_limit_ms = 25
                     vault.append("Scratch", "Follow-up", { heading: "## Log" });
                     vault.update("Scratch", "owner", "alice");
                     vault.unset("Scratch", "status");
+                    vault.note("Scratch").properties.set("phase", "active");
+                    vault.mutation()
+                      .appendNote("Scratch", "From plan")
+                      .update("Scratch", "planned", true)
+                      .result();
                     created.name
                     "###,
                 )
@@ -6258,9 +6959,12 @@ cpu_limit_ms = 25
             let scratch = fs::read_to_string(vault_root.join("Scratch.md"))
                 .expect("scratch note should exist");
             assert!(scratch.contains("owner: alice"));
+            assert!(scratch.contains("phase: active"));
+            assert!(scratch.contains("planned: true"));
             assert!(!scratch.contains("status: draft"));
             assert!(scratch.contains("## Log"));
             assert!(scratch.contains("Follow-up"));
+            assert!(scratch.contains("From plan"));
 
             let error = session
                 .evaluate(

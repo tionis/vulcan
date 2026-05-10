@@ -12,6 +12,8 @@ Available today:
 Current top-level namespaces:
 
 - `vault` for note lookup, queries, graph access, periodic note helpers, and vault mutations.
+- `vulcan` for permission introspection, vault-aware date helpers, and scratch data.
+- `tool` for custom-tool input, result, progress, confirmation, and audit helpers.
 - `web` for network-gated search and fetch helpers.
 - `tools` for registry-backed skill command tool discovery and invocation.
 - `skills` for Agent Skills-compatible command discovery and invocation.
@@ -22,6 +24,8 @@ Current write/network surface:
 
 - `vault.set()`, `vault.create()`, `vault.append()`, `vault.patch()`
 - `vault.update()`, `vault.unset()`, `vault.transaction()`, `vault.refactor.*`
+- `vault.plan()` / `vault.mutation()` for dry-run/apply mutation plans with changed paths and diffs
+- `vault.note(path).properties.*` for frontmatter get/set/unset/merge helpers
 - `web.search()` and `web.fetch()` when the sandbox is `net` or `none`
 
 See also: `help js.vault`, `help js.tools`, `help js.skills`, `help js.host`, `help js.vault.graph`, `help js.vault.note`.

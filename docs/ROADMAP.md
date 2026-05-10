@@ -5908,6 +5908,7 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 ### 9.24.4 Internal JS API integration
 
 - [x] Add a `tools` namespace to the JS runtime with `tools.list()`, `tools.get(name)`, and `tools.call(name, input, opts?)`
+- [x] Add custom-tool authoring helpers in the JS runtime: `tool.input/result/progress`, `tools.callChecked`, `vulcan.permissions`, query/search builders, note property helpers, daily path resolution, text diffs, and `vault.plan()` mutation plans
 - [x] Make the same registry available to skill command tools, general `vulcan run` scripts, and future assistant-internal JS helpers
 - [x] Add recursion/cycle protection and a clear maximum call depth for tool-to-tool composition
 - [x] Ensure nested calls preserve the effective permission ceiling rather than recomputing broader access
