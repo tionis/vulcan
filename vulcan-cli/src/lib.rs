@@ -25,6 +25,7 @@ mod terminal_markdown;
 pub(crate) use commands::edit::{
     print_diff_report, print_edit_report, run_diff_command, run_edit_command, EditReport,
 };
+pub(crate) use commands::inbox::{print_inbox_report, run_inbox_command};
 #[cfg(test)]
 pub(crate) use commands::template::TemplateSummary;
 pub(crate) use commands::template::{
@@ -477,13 +478,13 @@ use vulcan_app::site::{
 use vulcan_app::templates::{
     find_frontmatter_block, load_named_template, merge_template_frontmatter,
     parse_frontmatter_document, parse_template_var_bindings, render_loaded_template,
-    render_note_from_parts, template_variables_for_path, LoadedTemplateRenderRequest,
-    TemplateEngineKind, TemplateInsertMode, TemplateRunMode, TemplateTimestamp, TemplateVariables,
+    render_note_from_parts, LoadedTemplateRenderRequest, TemplateEngineKind, TemplateInsertMode,
+    TemplateRunMode, TemplateTimestamp, TemplateVariables,
 };
 #[cfg(test)]
 use vulcan_app::templates::{
     list_templates_in_directory, prepare_template_insertion, render_template_variable,
-    resolve_template_file, TemplateCandidate,
+    resolve_template_file, template_variables_for_path, TemplateCandidate,
 };
 #[cfg(test)]
 use vulcan_core::config::TemplatesConfig;
@@ -1364,12 +1365,6 @@ struct NoteEntryInsertion {
     change: RefactorChange,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct InboxReport {
-    path: String,
-    appended: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct BasesCreateReport {
     pub(crate) file: String,
@@ -1896,62 +1891,6 @@ fn move_changed_files(summary: &MoveSummary) -> Vec<String> {
         .collect()
 }
 
-fn run_inbox_command(
-    paths: &VaultPaths,
-    text: Option<&str>,
-    file: Option<&PathBuf>,
-    no_commit: bool,
-    quiet: bool,
-) -> Result<InboxReport, CliError> {
-    let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, quiet);
-    let inbox_config = vulcan_core::load_vault_config(paths).config.inbox;
-    let relative_path = normalize_relative_input_path(
-        &inbox_config.path,
-        RelativePathOptions {
-            expected_extension: Some("md"),
-            append_extension_if_missing: true,
-        },
-    )
-    .map_err(CliError::operation)?;
-
-    let raw_text = inbox_input_text(text, file)?;
-    let variables = template_variables_for_path(&relative_path, TemplateTimestamp::current());
-    let rendered_entry = render_inbox_entry(&inbox_config.format, &raw_text, &variables);
-    let entry = if inbox_config.timestamp {
-        format!("{} {}", variables.datetime, rendered_entry)
-    } else {
-        rendered_entry
-    };
-
-    let absolute_path = paths.vault_root().join(&relative_path);
-    if let Some(parent) = absolute_path.parent() {
-        fs::create_dir_all(parent).map_err(CliError::operation)?;
-    }
-    let existing = fs::read_to_string(&absolute_path).unwrap_or_default();
-    let updated = if let Some(heading) = inbox_config.heading.as_deref() {
-        append_under_heading(&existing, heading, &entry)
-    } else {
-        append_at_end(&existing, &entry)
-    };
-    fs::write(&absolute_path, updated).map_err(CliError::operation)?;
-    run_incremental_scan(paths, OutputFormat::Human, false, false)?;
-    auto_commit
-        .commit(
-            paths,
-            "inbox",
-            std::slice::from_ref(&relative_path),
-            None,
-            false,
-        )
-        .map_err(CliError::operation)?;
-
-    Ok(InboxReport {
-        path: relative_path,
-        appended: true,
-    })
-}
-
 pub(crate) fn create_note_from_bases_view(
     paths: &VaultPaths,
     file: &str,
@@ -2077,7 +2016,10 @@ fn build_bases_create_frontmatter(
     json_properties_to_frontmatter(properties).map_err(CliError::operation)
 }
 
-fn inbox_input_text(text: Option<&str>, file: Option<&PathBuf>) -> Result<String, CliError> {
+pub(crate) fn inbox_input_text(
+    text: Option<&str>,
+    file: Option<&PathBuf>,
+) -> Result<String, CliError> {
     if let Some(file) = file {
         return fs::read_to_string(file).map_err(CliError::operation);
     }
@@ -2097,7 +2039,11 @@ fn inbox_input_text(text: Option<&str>, file: Option<&PathBuf>) -> Result<String
     }
 }
 
-fn render_inbox_entry(format: &str, text: &str, variables: &TemplateVariables) -> String {
+pub(crate) fn render_inbox_entry(
+    format: &str,
+    text: &str,
+    variables: &TemplateVariables,
+) -> String {
     format
         .replace("{text}", text.trim_end())
         .replace("{date}", &variables.date)
@@ -2139,11 +2085,11 @@ fn render_template_contents(
     rendered
 }
 
-fn append_at_end(contents: &str, entry: &str) -> String {
+pub(crate) fn append_at_end(contents: &str, entry: &str) -> String {
     append_entry_at_end(contents, entry).updated
 }
 
-fn append_under_heading(contents: &str, heading: &str, entry: &str) -> String {
+pub(crate) fn append_under_heading(contents: &str, heading: &str, entry: &str) -> String {
     append_entry_under_heading(contents, heading, entry).updated
 }
 
@@ -10097,16 +10043,6 @@ fn render_dql_diagnostics_markdown(diagnostics: &[vulcan_core::DqlDiagnostic]) -
         )
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn print_inbox_report(output: OutputFormat, report: &InboxReport) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            println!("Appended to {}", report.path);
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
 }
 
 fn print_open_report(output: OutputFormat, report: &OpenReport) -> Result<(), CliError> {
