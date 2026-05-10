@@ -421,16 +421,11 @@ use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
 use vulcan_app::browse::{
-    build_dataview_eval_report as app_build_dataview_eval_report,
-    build_dataview_inline_report as app_build_dataview_inline_report,
-    build_dataview_query_js_report as app_build_dataview_query_js_report,
-    build_dataview_query_report as app_build_dataview_query_report,
     build_periodic_list_report as app_build_periodic_list_report,
     build_vault_status_report as app_build_vault_status_report,
     collect_complete_candidates as app_collect_complete_candidates,
     DataviewBlockResult as AppDataviewBlockResult, DataviewEvalReport as AppDataviewEvalReport,
-    DataviewInlineReport as AppDataviewInlineReport, PeriodicListItem as AppPeriodicListItem,
-    VaultStatusReport as AppVaultStatusReport,
+    PeriodicListItem as AppPeriodicListItem, VaultStatusReport as AppVaultStatusReport,
 };
 use vulcan_app::export::{
     apply_export_profile_create, apply_export_profile_delete, apply_export_profile_rule_add,
@@ -1386,7 +1381,6 @@ struct DiffReport {
     diff: Option<String>,
 }
 
-type DataviewInlineReport = AppDataviewInlineReport;
 type DataviewEvalReport = AppDataviewEvalReport;
 type DataviewBlockResult = AppDataviewBlockResult;
 type PeriodicListItem = AppPeriodicListItem;
@@ -2274,43 +2268,6 @@ fn diff_report_from_change_anchor(
         changed_kinds,
         diff: None,
     })
-}
-
-fn run_dataview_inline_command(
-    paths: &VaultPaths,
-    file: &str,
-    permissions: Option<&ProfilePermissionGuard>,
-) -> Result<DataviewInlineReport, CliError> {
-    app_build_dataview_inline_report(paths, file, permissions).map_err(CliError::operation)
-}
-
-fn run_dataview_query_command(
-    paths: &VaultPaths,
-    dql: &str,
-    filter: Option<&PermissionFilter>,
-) -> Result<DqlQueryResult, CliError> {
-    app_build_dataview_query_report(paths, dql, None, filter).map_err(CliError::operation)
-}
-
-fn run_dataview_query_js_command(
-    paths: &VaultPaths,
-    js: &str,
-    file: Option<&str>,
-    permission_profile: Option<&str>,
-) -> Result<DataviewJsResult, CliError> {
-    app_build_dataview_query_js_report(paths, js, file, permission_profile)
-        .map_err(CliError::operation)
-}
-
-fn run_dataview_eval_command(
-    paths: &VaultPaths,
-    file: &str,
-    block: Option<usize>,
-    permission_profile: Option<&str>,
-    permissions: Option<&ProfilePermissionGuard>,
-) -> Result<DataviewEvalReport, CliError> {
-    app_build_dataview_eval_report(paths, file, block, permission_profile, permissions)
-        .map_err(CliError::operation)
 }
 
 fn run_tasks_query_command(paths: &VaultPaths, source: &str) -> Result<TasksQueryResult, CliError> {
@@ -12038,52 +11995,6 @@ fn print_diff_report(output: OutputFormat, report: &DiffReport) -> Result<(), Cl
     }
 }
 
-fn print_dataview_inline_report(
-    output: OutputFormat,
-    report: &DataviewInlineReport,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            if report.results.is_empty() {
-                println!("No inline expressions in {}", report.file);
-                return Ok(());
-            }
-            println!("Dataview inline expressions for {}", report.file);
-            for result in &report.results {
-                if let Some(error) = &result.error {
-                    println!("- {} => error: {}", result.expression, error);
-                } else {
-                    println!(
-                        "- {} => {}",
-                        result.expression,
-                        render_dataview_inline_value(&result.value)
-                    );
-                }
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_dataview_eval_report(
-    output: OutputFormat,
-    report: &DataviewEvalReport,
-    show_result_count: bool,
-    stdout_is_tty: bool,
-    use_color: bool,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => print_markdown_output(
-            output,
-            &render_dataview_eval_markdown(report, show_result_count),
-            stdout_is_tty,
-            use_color,
-        ),
-        OutputFormat::Json => print_json(report),
-    }
-}
-
 fn print_dataview_js_result(
     output: OutputFormat,
     result: &DataviewJsResult,
@@ -12813,7 +12724,10 @@ fn render_dataview_block_markdown(result: &DataviewBlockResult, show_result_coun
     }
 }
 
-fn render_dataview_eval_markdown(report: &DataviewEvalReport, show_result_count: bool) -> String {
+pub(crate) fn render_dataview_eval_markdown(
+    report: &DataviewEvalReport,
+    show_result_count: bool,
+) -> String {
     if report.blocks.is_empty() {
         return format!("No Dataview blocks in {}", report.file);
     }
@@ -14149,7 +14063,12 @@ fn render_epub_dataview_block_markdown(
             Err(error) => render_epub_message_html("Dataview error:", &error.to_string()),
         }
     } else if language == "dataviewjs" {
-        match run_dataview_query_js_command(paths, source, Some(note_path), None) {
+        match commands::dataview::run_dataview_query_js_command(
+            paths,
+            source,
+            Some(note_path),
+            None,
+        ) {
             Ok(result) => render_dataview_js_markdown(&result, false),
             Err(error) => render_epub_message_html("DataviewJS error:", &error.to_string()),
         }
