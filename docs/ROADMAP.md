@@ -5936,7 +5936,7 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 - [x] Add in-repo docs that compare scripts, skills, tools, and plugins with concrete examples instead of only field-by-field schema reference
 - [x] Update bundled/default skill guidance so reusable executable behavior is declared as exposed skill commands when cross-surface discoverability matters
 - [x] Extend `vulcan init --agent-files` / `vulcan agent install` to optionally write an example exposed skill command template
-- [x] Add `vulcan tool init`, `vulcan tool lint`, runnable examples, fixture-file examples, JSON mismatch diffs, and `vulcan tool test` so authors can scaffold and verify custom tools without learning every `SKILL.md` field first
+- [x] Add `vulcan tool init`, `vulcan tool lint`, `tool lint --fix`, mutation dry-run linting, runnable examples, fixture-file examples, JSON mismatch diffs, and `vulcan tool test` so authors can scaffold and verify custom tools without learning every `SKILL.md` field first
 - [x] Add help topics and authoring docs that explain manifest fields, permission ceilings, return envelopes, and host execution risks
 
 ### 9.24.8 Testing and rollout

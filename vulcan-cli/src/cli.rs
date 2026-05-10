@@ -124,6 +124,8 @@ Notes:
   CLI metadata supports typed flags, repeated array flags, nested fields, and value completions.
   `tool test` supports inline examples, fixture files relative to the skill directory,
   and JSON path diffs for expected-output mismatches.
+  `tool lint --fix` only applies safe packaging repairs such as shebang normalization
+  and executable-bit fixes; mutation-capable tools should expose dry-run examples.
 
 Examples:
   vulcan tool list
@@ -2852,6 +2854,11 @@ pub enum ToolCommand {
         name: Option<String>,
         #[arg(long, help = "Treat warnings as failures")]
         strict: bool,
+        #[arg(
+            long,
+            help = "Apply safe packaging fixes such as shebang and executable-bit repairs"
+        )]
+        fix: bool,
     },
     #[command(about = "Run declared examples for one exposed skill command tool")]
     Test {

@@ -62,8 +62,9 @@ reported with JSON path diffs.
 
 Use `vulcan tool lint [<tool-or-alias>] --strict` before exposing a custom tool to
 external harnesses. It checks for schemas, CLI aliases, examples, required-field
-coverage, relative entrypoints, Vulcan shebangs, executable scripts, and risky
-sandbox choices.
+coverage, relative entrypoints, Vulcan shebangs, executable scripts, mutation
+dry-run conventions, and risky sandbox choices. Add `--fix` for safe packaging
+repairs such as shebang normalization and executable-bit fixes.
 
 JavaScript can call skill commands through either `tools.call("skill_daily_review_prepare_day", input)` or `skills.run("daily-review", "prepare-day", input)`.
 
