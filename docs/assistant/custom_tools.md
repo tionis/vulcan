@@ -22,7 +22,9 @@ tool's examples in a vault, and use `--update-expected` to refresh
 Use `vulcan tool test <alias> --profile <permission-profile>` to check the
 examples under the same permission profile exposed to an MCP or external agent
 caller. Use `vulcan tool compat <alias> --surface cli,mcp,openai-tools,js` to
-check surface-specific schema, CLI, sandbox, and callability requirements.
+check surface-specific schema, CLI, sandbox, and callability requirements. Use
+`vulcan tool types <alias>` to generate TypeScript declarations from the input
+and output schemas when writing larger scripts or external harnesses.
 
 Inside JavaScript tool scripts, prefer `tool.input(defaults)` for normalized
 input, `vault.plan({ dry_run })` for reviewable mutation plans, `tool.result()`

@@ -192,6 +192,7 @@ Validation rules:
 - `vulcan tool test <alias> --profile <permission-profile>` verifies examples under a selected active permission ceiling.
 - `vulcan tool test --all` runs declared examples for every exposed command; add `--update-expected` to refresh file-backed `expected_output_file` snapshots after intentional output changes.
 - `vulcan tool compat <alias> --surface cli,mcp,openai-tools,js` reports surface-specific compatibility gaps.
+- `vulcan tool types <alias>` emits TypeScript declarations from the declared input and output schemas.
 - JavaScript command scripts should prefer `tool.input(defaults)`, `tool.result()`, `vault.plan({ dry_run })`, `vulcan.permissions()`, and `tools.callChecked()` for cross-surface-safe behavior.
 - `sandbox = none` is not valid for projected skill commands.
 - `permission_profile` can narrow authority but cannot widen the caller's authority.

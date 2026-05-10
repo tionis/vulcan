@@ -2781,6 +2781,14 @@ struct ToolCompatSurfaceReport {
     errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ToolTypesReport {
+    name: String,
+    input_type: String,
+    output_type: String,
+    source: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct ToolTestExampleReport {
     name: String,
@@ -3051,6 +3059,15 @@ fn handle_tool_command(
                 &registry_options,
             )?;
             print_tool_compat_report(cli.output, &report)
+        }
+        ToolCommand::Types { name } => {
+            let report = build_tool_types_report(
+                paths,
+                cli.permissions.as_deref(),
+                name,
+                &registry_options,
+            )?;
+            print_tool_types_report(cli.output, &report)
         }
         ToolCommand::Run {
             name,
@@ -3975,6 +3992,34 @@ fn collect_js_compat(
     }
 }
 
+fn build_tool_types_report(
+    paths: &VaultPaths,
+    active_profile: Option<&str>,
+    name: &str,
+    registry_options: &tools::CustomToolRegistryOptions,
+) -> Result<ToolTypesReport, CliError> {
+    let show = tools::show_custom_tool(paths, active_profile, name, registry_options)?;
+    let base_name = ts_type_name(&show.tool.summary.name);
+    let input_type = format!("{base_name}Input");
+    let output_type = format!("{base_name}Output");
+    let output_ts = show.tool.summary.output_schema.as_ref().map_or_else(
+        || "unknown".to_string(),
+        |schema| json_schema_to_typescript(schema, 0),
+    );
+    let source = format!(
+        "export type {input_type} = {};\n\nexport type {output_type} = {};\n\nexport declare function {function_name}(input: {input_type}): {output_type};\n",
+        json_schema_to_typescript(&show.tool.summary.input_schema, 0),
+        output_ts,
+        function_name = ts_function_name(&show.tool.summary.name),
+    );
+    Ok(ToolTypesReport {
+        name: show.tool.summary.name,
+        input_type,
+        output_type,
+        source,
+    })
+}
+
 fn run_tool_examples(
     cli: &Cli,
     paths: &VaultPaths,
@@ -4355,6 +4400,121 @@ fn json_value_diff(path: &str, expected: &Value, actual: &Value) -> Vec<String> 
 
 fn compact_json(value: &Value) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| "<unprintable>".to_string())
+}
+
+fn ts_type_name(value: &str) -> String {
+    let mut result = String::new();
+    for part in value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty())
+    {
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            result.push(first.to_ascii_uppercase());
+            result.extend(chars.map(|character| character.to_ascii_lowercase()));
+        }
+    }
+    if result.is_empty() {
+        "Tool".to_string()
+    } else {
+        result
+    }
+}
+
+fn ts_function_name(value: &str) -> String {
+    let mut parts = value
+        .split(|character: char| !character.is_ascii_alphanumeric())
+        .filter(|part| !part.is_empty());
+    let Some(first) = parts.next() else {
+        return "callTool".to_string();
+    };
+    let mut result = first.to_ascii_lowercase();
+    for part in parts {
+        let mut chars = part.chars();
+        if let Some(first) = chars.next() {
+            result.push(first.to_ascii_uppercase());
+            result.extend(chars.map(|character| character.to_ascii_lowercase()));
+        }
+    }
+    result
+}
+
+fn json_schema_to_typescript(schema: &Value, indent: usize) -> String {
+    if let Some(values) = schema.get("enum").and_then(Value::as_array) {
+        let variants = values
+            .iter()
+            .map(|value| match value {
+                Value::String(value) => {
+                    serde_json::to_string(value).unwrap_or_else(|_| "\"<invalid>\"".to_string())
+                }
+                other => compact_json(other),
+            })
+            .collect::<Vec<_>>();
+        return variants.join(" | ");
+    }
+    match schema.get("type").and_then(Value::as_str) {
+        Some("string") => "string".to_string(),
+        Some("integer" | "number") => "number".to_string(),
+        Some("boolean") => "boolean".to_string(),
+        Some("null") => "null".to_string(),
+        Some("array") => {
+            let item_type = schema.get("items").map_or_else(
+                || "unknown".to_string(),
+                |items| json_schema_to_typescript(items, indent),
+            );
+            format!("{item_type}[]")
+        }
+        Some("object") | None => json_object_schema_to_typescript(schema, indent),
+        Some(_) => "unknown".to_string(),
+    }
+}
+
+fn json_object_schema_to_typescript(schema: &Value, indent: usize) -> String {
+    let Some(properties) = schema.get("properties").and_then(Value::as_object) else {
+        return "Record<string, unknown>".to_string();
+    };
+    let required = schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|values| {
+            values
+                .iter()
+                .filter_map(Value::as_str)
+                .collect::<BTreeSet<_>>()
+        })
+        .unwrap_or_default();
+    let pad = " ".repeat(indent);
+    let child_pad = " ".repeat(indent + 2);
+    let mut lines = vec!["{".to_string()];
+    for (name, schema) in properties {
+        let optional = if required.contains(name.as_str()) {
+            ""
+        } else {
+            "?"
+        };
+        let property = if is_ts_identifier(name) {
+            name.clone()
+        } else {
+            serde_json::to_string(name).unwrap_or_else(|_| "\"<invalid>\"".to_string())
+        };
+        lines.push(format!(
+            "{child_pad}{property}{optional}: {};",
+            json_schema_to_typescript(schema, indent + 2)
+        ));
+    }
+    lines.push(format!("{pad}}}"));
+    lines.join("\n")
+}
+
+fn is_ts_identifier(value: &str) -> bool {
+    let mut chars = value.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_' || first == '$')
+        && chars.all(|character| {
+            character.is_ascii_alphanumeric() || character == '_' || character == '$'
+        })
 }
 
 fn render_skill_backed_tool_manifest(
@@ -4784,6 +4944,16 @@ fn print_tool_compat_report(
                     println!("  error: {error}");
                 }
             }
+            Ok(())
+        }
+    }
+}
+
+fn print_tool_types_report(output: OutputFormat, report: &ToolTypesReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            print!("{}", report.source);
             Ok(())
         }
     }
@@ -25619,6 +25789,8 @@ mod tests {
             "cli,mcp",
         ])
         .expect("tool compat should parse");
+        let types = Cli::try_parse_from(["vulcan", "tool", "types", "meeting-summary"])
+            .expect("tool types should parse");
         let run = Cli::try_parse_from([
             "vulcan",
             "tool",
@@ -25669,6 +25841,14 @@ mod tests {
                 command: ToolCommand::Compat {
                     name: "meeting-summary".to_string(),
                     surface: vec!["cli".to_string(), "mcp".to_string()],
+                },
+            }
+        );
+        assert_eq!(
+            types.command,
+            Command::Tool {
+                command: ToolCommand::Types {
+                    name: "meeting-summary".to_string(),
                 },
             }
         );

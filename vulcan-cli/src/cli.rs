@@ -111,6 +111,7 @@ Subcommands:
   lint       check exposed custom tools for authoring and packaging issues
   test       run declared examples for one exposed skill command tool
   compat     report custom tool compatibility across CLI, MCP, OpenAI, and JS surfaces
+  types      emit TypeScript declarations for one exposed skill command tool
   run        validate JSON input and invoke one exposed skill command tool
 
 Notes:
@@ -140,6 +141,7 @@ Examples:
   vulcan tool test --all --profile daily-wiki-agent
   vulcan tool test conversation-export --example transcript-fixture --update-expected
   vulcan tool compat conversation-export --surface cli,mcp
+  vulcan tool types conversation-export
   vulcan tool run skill_conversation_export_export --input-json '{\"title\":\"Chat\",\"transcript\":\"User: hi\"}'
   vulcan tool run conversation-export --title Chat --user Hello --assistant 'Some message'
 
@@ -2907,6 +2909,11 @@ pub enum ToolCommand {
             help = "Surfaces to check: cli,mcp,openai-tools,js"
         )]
         surface: Vec<String>,
+    },
+    #[command(about = "Emit TypeScript declarations for one exposed skill command tool")]
+    Types {
+        #[arg(help = "Tool name or CLI alias")]
+        name: String,
     },
     #[command(about = "Run one exposed skill command tool with validated JSON input")]
     Run {
