@@ -154,6 +154,8 @@ schemas, permissions, or cross-harness execution matter.
 - `vulcan tool lint <alias> --strict` passes without warnings or errors.
 - `vulcan tool lint <alias> --fix` only makes safe packaging repairs, such as fixing the Vulcan shebang or executable bit.
 - `vulcan tool test <alias>` runs declared examples successfully.
+- `vulcan tool test --all` runs declared examples for every exposed tool in the vault.
+- `vulcan tool test <alias> --update-expected` refreshes file-backed `expected_output_file` snapshots after intentional output changes.
 - `vulcan tool test <alias> --profile <permission-profile>` passes for the profile that will expose the tool to MCP or another agent surface.
 - `vulcan tool compat <alias> --surface cli,mcp,openai-tools,js` reports no blocking compatibility errors for the intended surfaces.
 - `vulcan complete custom-tool <prefix>`, `vulcan complete custom-tool-flag:<alias> --<prefix>`, and `vulcan complete custom-tool-value:<alias>:<flag> <prefix>` list the expected shell completion candidates.

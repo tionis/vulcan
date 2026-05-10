@@ -2719,8 +2719,19 @@ struct ToolTestReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     profile: Option<String>,
     checked: usize,
+    updated: usize,
     passed: bool,
     examples: Vec<ToolTestExampleReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+struct ToolTestSuiteReport {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile: Option<String>,
+    checked: usize,
+    updated: usize,
+    passed: bool,
+    tools: Vec<ToolTestReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2774,6 +2785,7 @@ struct ToolTestExampleReport {
     name: String,
     input: Value,
     passed: bool,
+    updated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     output: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -2989,19 +3001,36 @@ fn handle_tool_command(
         }
         ToolCommand::Test {
             name,
+            all,
             example,
+            update_expected,
             profile,
         } => {
-            let report = run_tool_examples(
-                cli,
-                paths,
-                name,
-                example.as_deref(),
-                profile.as_deref(),
-                &registry_options,
-            )?;
-            let passed = report.passed;
-            print_tool_test_report(cli.output, &report)?;
+            let report = if *all {
+                run_all_tool_examples(
+                    cli,
+                    paths,
+                    example.as_deref(),
+                    profile.as_deref(),
+                    *update_expected,
+                    &registry_options,
+                )?
+            } else {
+                let name = name.as_deref().ok_or_else(|| {
+                    CliError::operation("tool test requires a tool name unless --all is set")
+                })?;
+                ToolTestOutput::One(run_tool_examples(
+                    cli,
+                    paths,
+                    name,
+                    example.as_deref(),
+                    profile.as_deref(),
+                    *update_expected,
+                    &registry_options,
+                )?)
+            };
+            let passed = report.passed();
+            print_tool_test_output(cli.output, &report)?;
             if passed {
                 Ok(())
             } else {
@@ -3940,6 +3969,7 @@ fn run_tool_examples(
     name: &str,
     example_filter: Option<&str>,
     profile: Option<&str>,
+    update_expected: bool,
     registry_options: &tools::CustomToolRegistryOptions,
 ) -> Result<ToolTestReport, CliError> {
     let active_profile = profile.or(cli.permissions.as_deref());
@@ -3953,13 +3983,16 @@ fn run_tool_examples(
         .filter(|example| example_filter.is_none_or(|filter| example.name == filter))
         .map(|example| {
             run_tool_example(
-                paths,
-                name,
-                &show.tool.summary.name,
+                &ToolExampleRunContext {
+                    paths,
+                    requested_name: name,
+                    resolved_name: &show.tool.summary.name,
+                    example_base_dir: &example_base_dir,
+                    active_profile,
+                    update_expected,
+                    registry_options,
+                },
                 example,
-                &example_base_dir,
-                active_profile,
-                registry_options,
             )
         })
         .collect::<Vec<_>>();
@@ -3975,26 +4008,85 @@ fn run_tool_examples(
         name: show.tool.summary.name,
         profile: active_profile.map(ToOwned::to_owned),
         checked: examples.len(),
+        updated: examples.iter().filter(|example| example.updated).count(),
         passed: examples.iter().all(|example| example.passed),
         examples,
     })
 }
 
-fn run_tool_example(
+enum ToolTestOutput {
+    One(ToolTestReport),
+    All(ToolTestSuiteReport),
+}
+
+impl ToolTestOutput {
+    fn passed(&self) -> bool {
+        match self {
+            Self::One(report) => report.passed,
+            Self::All(report) => report.passed,
+        }
+    }
+}
+
+fn run_all_tool_examples(
+    cli: &Cli,
     paths: &VaultPaths,
-    requested_name: &str,
-    resolved_name: &str,
-    example: &vulcan_core::AssistantSkillCommandExample,
-    example_base_dir: &Path,
-    active_profile: Option<&str>,
+    example_filter: Option<&str>,
+    profile: Option<&str>,
+    update_expected: bool,
     registry_options: &tools::CustomToolRegistryOptions,
+) -> Result<ToolTestOutput, CliError> {
+    let active_profile = profile.or(cli.permissions.as_deref());
+    let tools = tools::list_custom_tools(paths, active_profile, registry_options)?;
+    let reports = tools
+        .iter()
+        .filter(|tool| !tool.summary.examples.is_empty())
+        .map(|tool| {
+            run_tool_examples(
+                cli,
+                paths,
+                &tool.summary.name,
+                example_filter,
+                profile,
+                update_expected,
+                registry_options,
+            )
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if reports.is_empty() {
+        return Err(CliError::operation(
+            "no exposed tools declare runnable examples",
+        ));
+    }
+    Ok(ToolTestOutput::All(ToolTestSuiteReport {
+        profile: active_profile.map(ToOwned::to_owned),
+        checked: reports.iter().map(|report| report.checked).sum(),
+        updated: reports.iter().map(|report| report.updated).sum(),
+        passed: reports.iter().all(|report| report.passed),
+        tools: reports,
+    }))
+}
+
+struct ToolExampleRunContext<'a> {
+    paths: &'a VaultPaths,
+    requested_name: &'a str,
+    resolved_name: &'a str,
+    example_base_dir: &'a Path,
+    active_profile: Option<&'a str>,
+    update_expected: bool,
+    registry_options: &'a tools::CustomToolRegistryOptions,
+}
+
+fn run_tool_example(
+    context: &ToolExampleRunContext<'_>,
+    example: &vulcan_core::AssistantSkillCommandExample,
 ) -> ToolTestExampleReport {
     let input = match tool_example_input(
-        paths,
-        requested_name,
+        context.paths,
+        context.requested_name,
         example,
-        example_base_dir,
-        registry_options,
+        context.example_base_dir,
+        context.registry_options,
     ) {
         Ok(input) => input,
         Err(error) => {
@@ -4002,6 +4094,7 @@ fn run_tool_example(
                 name: example.name.clone(),
                 input: json!({}),
                 passed: false,
+                updated: false,
                 output: None,
                 expected_output: None,
                 diff: None,
@@ -4009,13 +4102,14 @@ fn run_tool_example(
             }
         }
     };
-    let expected_output = match tool_example_expected_output(example, example_base_dir) {
+    let expected_output = match tool_example_expected_output(example, context.example_base_dir) {
         Ok(expected_output) => expected_output,
         Err(error) => {
             return ToolTestExampleReport {
                 name: example.name.clone(),
                 input,
                 passed: false,
+                updated: false,
                 output: None,
                 expected_output: None,
                 diff: None,
@@ -4024,11 +4118,11 @@ fn run_tool_example(
         }
     };
     match tools::run_custom_tool(
-        paths,
-        active_profile,
-        resolved_name,
+        context.paths,
+        context.active_profile,
+        context.resolved_name,
         &input,
-        registry_options,
+        context.registry_options,
         &tools::CustomToolRunOptions {
             surface: "cli.tool.test".to_string(),
         },
@@ -4038,20 +4132,41 @@ fn run_tool_example(
                 let diff = json_value_diff("$", expected, &report.result);
                 (!diff.is_empty()).then_some(diff)
             });
+            let update_result = if context.update_expected {
+                Some(tool_example_update_expected_output(
+                    example,
+                    context.example_base_dir,
+                    &report.result,
+                ))
+            } else {
+                None
+            };
+            let updated = update_result
+                .as_ref()
+                .is_some_and(std::result::Result::is_ok);
+            let update_error = if context.update_expected && !updated {
+                update_result
+                    .and_then(std::result::Result::err)
+                    .map(|error| error.to_string())
+            } else {
+                None
+            };
             ToolTestExampleReport {
                 name: example.name.clone(),
                 input,
-                passed: diff.is_none(),
+                passed: updated || diff.is_none(),
+                updated,
                 output: Some(report.result),
                 expected_output,
-                diff,
-                error: None,
+                diff: (!updated).then_some(diff).flatten(),
+                error: update_error,
             }
         }
         Err(error) => ToolTestExampleReport {
             name: example.name.clone(),
             input,
             passed: false,
+            updated: false,
             output: None,
             expected_output,
             diff: None,
@@ -4093,6 +4208,25 @@ fn tool_example_expected_output(
     } else {
         Ok(None)
     }
+}
+
+fn tool_example_update_expected_output(
+    example: &vulcan_core::AssistantSkillCommandExample,
+    example_base_dir: &Path,
+    output: &Value,
+) -> Result<(), CliError> {
+    let Some(expected_output_file) = &example.expected_output_file else {
+        return Err(CliError::operation(format!(
+            "example `{}` cannot be updated because it does not use expected_output_file",
+            example.name
+        )));
+    };
+    let relative_path = safe_relative_example_path(expected_output_file)?;
+    let path = example_base_dir.join(relative_path);
+    let formatted = serde_json::to_string_pretty(output).map_err(CliError::operation)?;
+    fs::write(&path, format!("{formatted}\n")).map_err(|error| {
+        CliError::operation(format!("failed to write {}: {error}", path.display()))
+    })
 }
 
 fn tool_example_base_dir(
@@ -4643,34 +4777,83 @@ fn print_tool_help_report(
     }
 }
 
+fn print_tool_test_output(output: OutputFormat, report: &ToolTestOutput) -> Result<(), CliError> {
+    match report {
+        ToolTestOutput::One(report) => print_tool_test_report(output, report),
+        ToolTestOutput::All(report) => print_tool_test_suite_report(output, report),
+    }
+}
+
+fn print_tool_test_suite_report(
+    output: OutputFormat,
+    report: &ToolTestSuiteReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!(
+                "Tool examples: {} ({} checked across {} tools, {} updated)",
+                if report.passed { "passed" } else { "failed" },
+                report.checked,
+                report.tools.len(),
+                report.updated
+            );
+            if let Some(profile) = &report.profile {
+                println!("profile: {profile}");
+            }
+            for tool in &report.tools {
+                println!(
+                    "- {}: {} ({} checked, {} updated)",
+                    tool.name,
+                    if tool.passed { "passed" } else { "failed" },
+                    tool.checked,
+                    tool.updated
+                );
+                for example in &tool.examples {
+                    print_tool_test_example_report(example);
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 fn print_tool_test_report(output: OutputFormat, report: &ToolTestReport) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => print_json(report),
         OutputFormat::Human | OutputFormat::Markdown => {
             println!(
-                "Tool examples: {} ({} checked)",
+                "Tool examples: {} ({} checked, {} updated)",
                 if report.passed { "passed" } else { "failed" },
-                report.checked
+                report.checked,
+                report.updated
             );
             if let Some(profile) = &report.profile {
                 println!("profile: {profile}");
             }
             for example in &report.examples {
-                println!(
-                    "- {}: {}",
-                    example.name,
-                    if example.passed { "passed" } else { "failed" }
-                );
-                if let Some(error) = &example.error {
-                    println!("  error: {error}");
-                }
-                if let Some(diff) = &example.diff {
-                    for line in diff {
-                        println!("  diff: {line}");
-                    }
-                }
+                print_tool_test_example_report(example);
             }
             Ok(())
+        }
+    }
+}
+
+fn print_tool_test_example_report(example: &ToolTestExampleReport) {
+    let status = if example.updated {
+        "updated"
+    } else if example.passed {
+        "passed"
+    } else {
+        "failed"
+    };
+    println!("- {}: {status}", example.name);
+    if let Some(error) = &example.error {
+        println!("  error: {error}");
+    }
+    if let Some(diff) = &example.diff {
+        for line in diff {
+            println!("  diff: {line}");
         }
     }
 }
@@ -25224,6 +25407,7 @@ mod tests {
             "meeting-summary",
             "--example",
             "smoke",
+            "--update-expected",
             "--profile",
             "daily-wiki-agent",
         ])
@@ -25273,8 +25457,10 @@ mod tests {
             test.command,
             Command::Tool {
                 command: ToolCommand::Test {
-                    name: "meeting-summary".to_string(),
+                    name: Some("meeting-summary".to_string()),
+                    all: false,
                     example: Some("smoke".to_string()),
+                    update_expected: true,
                     profile: Some("daily-wiki-agent".to_string()),
                 },
             }
@@ -25296,6 +25482,25 @@ mod tests {
                     input_json: Some("{\"note\":\"Meetings/Weekly.md\"}".to_string()),
                     input_file: None,
                     args: Vec::new(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn parses_tool_test_all_command() {
+        let test_all = Cli::try_parse_from(["vulcan", "tool", "test", "--all"])
+            .expect("tool test --all should parse");
+
+        assert_eq!(
+            test_all.command,
+            Command::Tool {
+                command: ToolCommand::Test {
+                    name: None,
+                    all: true,
+                    example: None,
+                    update_expected: false,
+                    profile: None,
                 },
             }
         );
