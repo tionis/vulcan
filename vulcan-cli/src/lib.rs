@@ -18172,6 +18172,21 @@ fn builtin_help_topics() -> Vec<HelpTopicReport> {
             &["skill command", "commands", "scripts", "scripts/", "mcp", "tool", "tools", "schema", "json schema", "permissions", "sandbox", "skill run"],
         ),
         static_help_topic(
+            "custom-tools",
+            HelpTopicKind::Guide,
+            "Author, inspect, lint, test, and expose skill-backed custom tools.",
+            include_str!("../../docs/assistant/custom_tools.md"),
+            &[
+                "tool",
+                "tool init",
+                "tool lint",
+                "tool test",
+                "tool compat",
+                "tool run",
+                "skill commands",
+            ],
+        ),
+        static_help_topic(
             "static-sites",
             HelpTopicKind::Guide,
             "Profile-driven static publishing, diagnostics, and local preview workflow.",
