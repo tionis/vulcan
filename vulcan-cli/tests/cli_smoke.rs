@@ -16960,9 +16960,9 @@ fn run_json_output_executes_script_files_and_named_scripts() {
     let help_text = json["outputs"][0]["text"]
         .as_str()
         .expect("help text should be rendered");
-    assert!(
-        help_text.contains("vault.search(query: string, opts?: { limit?: number }): SearchReport")
-    );
+    assert!(help_text.contains(
+        "vault.search(query?: string, opts?: { limit?: number }): SearchReport | SearchBuilder"
+    ));
     assert!(help_text.contains("Parameters:"));
     assert!(help_text.contains("Example:"));
     assert!(help_text.contains("See also: vault.notes(), vault.query()"));

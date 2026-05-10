@@ -277,7 +277,7 @@ Behavior:
 - `--timeout <duration>` overrides the JS execution limit for one script run or REPL session.
 - `--sandbox strict|fs|net|none` selects the runtime capability tier for one script run or REPL session.
 - The REPL supports multiline input, tab completion, history in `.vulcan/repl_history`, pretty-printed objects, and preserved JS variables between prompts.
-- The runtime exposes `vault.note()`, `vault.notes()`, `vault.query()`, `vault.search()`, `vault.graph.*`, `vault.daily.*`, `vault.events()`, `vault.set/create/append/patch/update/unset`, `vault.transaction()`, `vault.refactor.*`, `web.search()`, `web.fetch()`, and `help(obj)`.
+- The runtime exposes `vault.note()`, `vault.notes()`, `vault.query()`, `vault.search()`, query/search builders, `vault.graph.*`, `vault.daily.*`, `vault.events()`, `vault.set/create/append/patch/update/unset`, `vault.transaction()`, `vault.plan()`, `vault.refactor.*`, `vulcan.permissions()`, `tool.result()`, `tools.callChecked()`, `web.search()`, `web.fetch()`, and `help(obj)`.
 - `vault.note(path).outline()` returns the same semantic section/block outline as `vulcan note outline`, and `vault.note(path).read(opts)` reuses the same section/heading/block/line/match selectors as `vulcan note get`.
 - Use `vulcan run` for exploratory scripts. Promote reusable scripts into Agent Skills-compatible skill commands when they need discovery, schemas, permissions, MCP exposure, or cross-harness packaging.
 

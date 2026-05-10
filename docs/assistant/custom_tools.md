@@ -20,4 +20,9 @@ examples under the same permission profile exposed to an MCP or external agent
 caller. Use `vulcan tool compat <alias> --surface cli,mcp,openai-tools,js` to
 check surface-specific schema, CLI, sandbox, and callability requirements.
 
+Inside JavaScript tool scripts, prefer `tool.input(defaults)` for normalized
+input, `vault.plan({ dry_run })` for reviewable mutation plans, `tool.result()`
+for structured output, `vulcan.permissions()` for adaptive permission checks, and
+`tools.callChecked()` when composing other tools.
+
 See [skill_commands.md](skill_commands.md).

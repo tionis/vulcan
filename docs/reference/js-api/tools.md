@@ -12,6 +12,11 @@ Available entrypoints:
 - `tools.get(name)` — read one tool definition and documentation
 - `tools.call(name, input, opts?)` — invoke one tool with validated input and return the structured
   result
+- `tools.callChecked(name, input, opts?)` — invoke one tool and attach `expect(path)` for checked
+  composition
+- `tool.input(defaults?)` — read the validated current custom-tool input merged over defaults
+- `tool.result()` / `tool.ok()` / `tool.error()` — build a standard structured tool result
+- `tool.progress()` / `tool.notice()` / `tool.audit()` — emit or return agent-friendly runtime events
 
 Current runtime surfaces:
 
@@ -32,6 +37,7 @@ Runtime behavior:
 - `tools.list()` returns visible exposed skill-command tools plus `callable`
 - `tools.get(name)` returns static metadata and the Markdown body from the declaring `SKILL.md`
 - `tools.call(name, input, opts?)` returns the callee's JSON result
+- `tools.callChecked(name, input, opts?)` returns the callee result with non-enumerable `expect(path)`
 - recursive tool-call loops are rejected
 - nested calls are capped at depth 8
 
@@ -44,6 +50,21 @@ Skill-command runtime context:
 Return contract:
 
 - return any JSON-serializable value for a plain structured result
+- prefer `tool.result().summary(...).changedPath(...).data(...).ok()` for write-capable tools
+- return `tool.error(code, message, details?)` for structured failures
+
+Example:
+
+```js
+function main(input) {
+  const normalized = tool.input({ dry_run: true });
+  const created = tools.callChecked("task-create", { text: input.text, dry_run: normalized.dry_run });
+  return tool.result()
+    .summary("Created task")
+    .data({ task_id: created.expect("task.id") })
+    .ok();
+}
+```
 
 See also:
 

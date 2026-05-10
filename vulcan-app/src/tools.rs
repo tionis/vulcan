@@ -1441,6 +1441,8 @@ fn build_tool_invocation_source(
         "const __vulcanToolInput = {input};\n\
 const __vulcanToolContext = {context};\n\
 const __vulcanToolSecrets = {secrets};\n\
+globalThis.input = __vulcanToolInput;\n\
+globalThis.ctx = __vulcanToolContext;\n\
 __vulcanToolContext.secrets = {{\n\
   list() {{ return Object.keys(__vulcanToolSecrets); }},\n\
   get(name) {{\n\
@@ -2893,7 +2895,7 @@ input_schema:
 
 Outer tool documentation.
 ",
-            "function main(input) {\n  const listed = tools.list();\n  const described = tools.get('inner_tool');\n  const called = tools.call('inner_tool', { note: input.note });\n  return {\n    listed: listed.map((tool) => tool.name),\n    callable: listed.every((tool) => tool.callable === true),\n    body_has_doc: described.body.includes('Inner tool documentation.'),\n    echoed: called.echoed,\n  };\n}\n",
+            "function main(input) {\n  const normalized = tool.input({ fallback: true });\n  const listed = tools.list();\n  const described = tools.get('inner_tool');\n  const called = tools.callChecked('inner_tool', { note: input.note });\n  return tool.result().summary('nested call complete').data({\n    listed: listed.map((tool) => tool.name),\n    callable: listed.every((tool) => tool.callable === true),\n    body_has_doc: described.body.includes('Inner tool documentation.'),\n    echoed: called.expect('echoed'),\n    fallback: normalized.fallback,\n  }).ok();\n}\n",
         );
 
         let report = run_custom_tool(
@@ -2908,10 +2910,16 @@ Outer tool documentation.
         )
         .expect("nested tool calls should succeed");
 
-        assert_eq!(report.result["listed"], json!(["inner_tool", "outer_tool"]));
-        assert_eq!(report.result["callable"], json!(true));
-        assert_eq!(report.result["body_has_doc"], json!(true));
-        assert_eq!(report.result["echoed"], json!("ALPHA"));
+        assert_eq!(report.result["ok"], json!(true));
+        assert_eq!(report.result["summary"], json!("nested call complete"));
+        assert_eq!(
+            report.result["data"]["listed"],
+            json!(["inner_tool", "outer_tool"])
+        );
+        assert_eq!(report.result["data"]["callable"], json!(true));
+        assert_eq!(report.result["data"]["body_has_doc"], json!(true));
+        assert_eq!(report.result["data"]["echoed"], json!("ALPHA"));
+        assert_eq!(report.result["data"]["fallback"], json!(true));
 
         trust::revoke_trust(paths.vault_root()).expect("trust should be removed");
         match previous_xdg {
