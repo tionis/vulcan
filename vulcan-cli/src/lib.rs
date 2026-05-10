@@ -26606,6 +26606,49 @@ done
             .all(|command| command.name != "monthly"));
     }
 
+    fn collect_option_help_gaps(
+        command_path: &mut Vec<String>,
+        command: &CliCommandDescribe,
+        gaps: &mut Vec<String>,
+    ) {
+        command_path.push(command.name.clone());
+        for option in &command.options {
+            if option_help_is_blank(option) {
+                gaps.push(format!("{} --{}", command_path.join(" "), option.id));
+            }
+        }
+        for subcommand in &command.subcommands {
+            collect_option_help_gaps(command_path, subcommand, gaps);
+        }
+        command_path.pop();
+    }
+
+    fn option_help_is_blank(option: &CliArgDescribe) -> bool {
+        match option.help.as_deref() {
+            Some(help) => help.trim().is_empty(),
+            None => true,
+        }
+    }
+
+    #[test]
+    fn describe_report_options_have_help_text() {
+        let report = describe_cli();
+        let mut gaps = Vec::new();
+        for option in &report.global_options {
+            if option_help_is_blank(option) {
+                gaps.push(format!("global --{}", option.id));
+            }
+        }
+        for command in &report.commands {
+            collect_option_help_gaps(&mut Vec::new(), command, &mut gaps);
+        }
+
+        assert!(
+            gaps.is_empty(),
+            "every described CLI option should include help text; missing: {gaps:?}"
+        );
+    }
+
     #[test]
     fn help_overview_lists_current_top_level_surfaces() {
         let report = help_overview();
