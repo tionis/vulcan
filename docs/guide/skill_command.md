@@ -58,13 +58,18 @@ documented. `vulcan tool test <tool-or-alias>` runs every example, and
 `--example <name>` selects one. Examples can provide raw `input`, `input_file`
 relative to the skill directory, or shell-style `cli_args`; optional
 `expected_output` or `expected_output_file` is compared exactly. Mismatches are
-reported with JSON path diffs.
+reported with JSON path diffs. Add `--profile <permission-profile>` to verify
+the tool under the same permission ceiling an MCP or external agent caller will use.
 
 Use `vulcan tool lint [<tool-or-alias>] --strict` before exposing a custom tool to
 external harnesses. It checks for schemas, CLI aliases, examples, required-field
 coverage, relative entrypoints, Vulcan shebangs, executable scripts, mutation
 dry-run conventions, and risky sandbox choices. Add `--fix` for safe packaging
 repairs such as shebang normalization and executable-bit fixes.
+
+Use `vulcan tool compat <tool-or-alias> --surface cli,mcp,openai-tools,js` before
+sharing a tool across harnesses. It reports surface-specific schema, CLI, sandbox,
+and callability issues that may not show up when only running a local example.
 
 JavaScript can call skill commands through either `tools.call("skill_daily_review_prepare_day", input)` or `skills.run("daily-review", "prepare-day", input)`.
 

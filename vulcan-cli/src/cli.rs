@@ -110,6 +110,7 @@ Subcommands:
   init       scaffold a new skill-backed custom tool
   lint       check exposed custom tools for authoring and packaging issues
   test       run declared examples for one exposed skill command tool
+  compat     report custom tool compatibility across CLI, MCP, OpenAI, and JS surfaces
   run        validate JSON input and invoke one exposed skill command tool
 
 Notes:
@@ -123,7 +124,7 @@ Notes:
   Custom flags are only an input adapter; the final JSON still uses the tool schema.
   CLI metadata supports typed flags, repeated array flags, nested fields, and value completions.
   `tool test` supports inline examples, fixture files relative to the skill directory,
-  and JSON path diffs for expected-output mismatches.
+  JSON path diffs for expected-output mismatches, and `--profile` permission checks.
   `tool lint --fix` only applies safe packaging repairs such as shebang normalization
   and executable-bit fixes; mutation-capable tools should expose dry-run examples.
 
@@ -134,6 +135,7 @@ Examples:
   vulcan tool init meeting-summary --description 'Summarize a meeting transcript'
   vulcan tool lint conversation-export
   vulcan tool test conversation-export --example dry-run-cli
+  vulcan tool compat conversation-export --surface cli,mcp
   vulcan tool run skill_conversation_export_export --input-json '{\"title\":\"Chat\",\"transcript\":\"User: hi\"}'
   vulcan tool run conversation-export --title Chat --user Hello --assistant 'Some message'
 
@@ -2866,6 +2868,19 @@ pub enum ToolCommand {
         name: String,
         #[arg(long = "example", help = "Run only the named example")]
         example: Option<String>,
+        #[arg(long, help = "Run examples under a specific active permission profile")]
+        profile: Option<String>,
+    },
+    #[command(about = "Report custom tool compatibility across execution surfaces")]
+    Compat {
+        #[arg(help = "Tool name or CLI alias")]
+        name: String,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Surfaces to check: cli,mcp,openai-tools,js"
+        )]
+        surface: Vec<String>,
     },
     #[command(about = "Run one exposed skill command tool with validated JSON input")]
     Run {

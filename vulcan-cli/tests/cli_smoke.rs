@@ -10502,12 +10502,38 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
             "tool",
             "test",
             "echo-tool",
+            "--profile",
+            "unrestricted",
         ])
         .assert()
         .success();
     let test_json = parse_stdout_json(&test_assert);
     assert_eq!(test_json["passed"].as_bool(), Some(true));
+    assert_eq!(test_json["profile"].as_str(), Some("unrestricted"));
     assert_eq!(test_json["examples"][0]["output"]["message"], "hello");
+
+    let compat_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "compat",
+            "echo-tool",
+            "--surface",
+            "cli,mcp,openai-tools,js",
+        ])
+        .assert()
+        .success();
+    let compat_json = parse_stdout_json(&compat_assert);
+    assert_eq!(compat_json["name"].as_str(), Some("skill_echo_tool_run"));
+    assert!(compat_json["surfaces"]
+        .as_array()
+        .expect("surfaces")
+        .iter()
+        .all(|surface| surface["compatible"].as_bool() == Some(true)));
 
     let run_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")

@@ -15,4 +15,9 @@ one dry-run example. Examples may use inline `input`, `cli_args`, or fixture
 files with `input_file` and `expected_output_file`; expected-output mismatches
 report JSON path diffs.
 
+Use `vulcan tool test <alias> --profile <permission-profile>` to check the
+examples under the same permission profile exposed to an MCP or external agent
+caller. Use `vulcan tool compat <alias> --surface cli,mcp,openai-tools,js` to
+check surface-specific schema, CLI, sandbox, and callability requirements.
+
 See [skill_commands.md](skill_commands.md).
