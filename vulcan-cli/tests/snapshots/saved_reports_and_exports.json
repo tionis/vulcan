@@ -1,30 +1,41 @@
 {
-  "bases_export": "document_path,group_value\nBacklog.md,backlog\n",
-  "batch": {
-    "failed": 0,
-    "items": [
-      {
-        "error": null,
-        "export_format": "csv",
-        "export_path": "<vault>/exports/release.csv",
-        "kind": "bases",
-        "name": "release-table",
-        "ok": true,
-        "row_count": 1
-      },
-      {
-        "error": null,
-        "export_format": "jsonl",
-        "export_path": "<vault>/exports/search.jsonl",
-        "kind": "search",
-        "name": "weekly-search",
-        "ok": true,
-        "row_count": 1
-      }
+  "automation": {
+    "actions": [
+      "saved_reports_all"
     ],
-    "succeeded": 2,
-    "total": 2
+    "cache_verify": null,
+    "doctor_fix": null,
+    "doctor_issues": null,
+    "issues_detected": false,
+    "repair_fts": null,
+    "reports": {
+      "failed": 0,
+      "items": [
+        {
+          "error": null,
+          "export_format": "csv",
+          "export_path": "<vault>/exports/release.csv",
+          "kind": "bases",
+          "name": "release-table",
+          "ok": true,
+          "row_count": 1
+        },
+        {
+          "error": null,
+          "export_format": "jsonl",
+          "export_path": "<vault>/exports/search.jsonl",
+          "kind": "search",
+          "name": "weekly-search",
+          "ok": true,
+          "row_count": 1
+        }
+      ],
+      "succeeded": 2,
+      "total": 2
+    },
+    "scan": null
   },
+  "bases_export": "document_path,group_value\nBacklog.md,backlog\n",
   "saved_list": [
     {
       "description": null,

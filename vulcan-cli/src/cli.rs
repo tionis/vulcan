@@ -880,29 +880,6 @@ Examples:
   vulcan saved run weekly --export jsonl --export-path exports/weekly.jsonl
   vulcan automation run weekly --scan --doctor";
 
-const BATCH_COMMAND_AFTER_HELP: &str = "\
-Notes:
-  `batch` is a hidden legacy alias for `automation run`.
-  It runs saved reports sequentially without enabling scan, doctor, or repair flags by default.
-  Use `--all` to mirror `automation run --all`.
-
-Report system overview:
-  saved reports live as TOML files in .vulcan/reports (created by `vulcan saved create <type>`).
-  `vulcan batch` is kept only for backwards compatibility.
-  `vulcan automation run` is the preferred entrypoint and adds `--scan`, `--doctor`, and `--fail-on-issues` for CI.
-  `vulcan saved run <name>` runs a single report with full export options.
-
-Examples:
-  vulcan batch weekly-review
-  vulcan batch weekly-review monthly-summary
-  vulcan batch --all
-  vulcan --output json batch weekly-review
-
-See also:
-  `vulcan saved` — create, list, and manage report definitions
-  `vulcan automation run` — scan + reports + health checks in one step
-  `vulcan help reports` — conceptual overview of the report system";
-
 const AUTOMATION_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   list        list saved reports that automation can run
@@ -945,8 +922,7 @@ Examples:
 const PERIODIC_COMMAND_AFTER_HELP: &str = "\
 Behavior:
   `periodic <type> [date]` opens or creates the configured periodic note for that date.
-  `periodic weekly [date]` and `periodic monthly [date]` are the preferred open forms.
-  Top-level `weekly` and `monthly` remain as hidden compatibility aliases.
+  `periodic weekly [date]` and `periodic monthly [date]` open weekly and monthly notes.
 
 Subcommands:
   list        list indexed periodic notes
@@ -1199,31 +1175,6 @@ Examples:
   vulcan changes --checkpoint weekly
   vulcan --output json changes
   vulcan --output json changes --checkpoint pre-refactor";
-
-const CLUSTER_COMMAND_AFTER_HELP: &str = "\
-Notes:
-  `cluster` groups indexed vector chunks by semantic similarity using k-means.
-  The vault must have a configured embedding provider and an up-to-date vector index.
-  `--dry-run` reports cluster assignments without writing them to the cache.
-  Cluster labels are heuristic topic summaries derived from the most common terms.
-
-Examples:
-  vulcan cluster
-  vulcan cluster --clusters 12
-  vulcan cluster --dry-run
-  vulcan --output json cluster";
-
-const RELATED_COMMAND_AFTER_HELP: &str = "\
-Notes:
-  `related` uses the vector index to find the most semantically similar notes.
-  The vault must have a configured embedding provider and an up-to-date vector index.
-  In an interactive terminal, omit the note argument to pick interactively.
-  `vectors related` is the subcommand form; `related` is a top-level shorthand.
-
-Examples:
-  vulcan related Projects/Alpha
-  vulcan related
-  vulcan --output json related Projects/Alpha --limit 10";
 
 const TRUST_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
@@ -2167,100 +2118,6 @@ pub enum SavedCommand {
     Delete {
         #[arg(help = "Saved report name")]
         name: String,
-    },
-    #[command(
-        about = "Persist a saved search definition in .vulcan/reports",
-        after_help = SEARCH_COMMAND_AFTER_HELP,
-        hide = true
-    )]
-    Search {
-        #[arg(help = "Saved report name")]
-        name: String,
-        #[arg(
-            help = "Full-text query string; supports phrases, `or`, `-term`, and inline tag:/path:/has: filters"
-        )]
-        query: String,
-        #[arg(
-            long = "where",
-            help = "Typed property filter such as `status = done`; repeatable and combined with AND"
-        )]
-        filters: Vec<String>,
-        #[arg(
-            long,
-            value_enum,
-            default_value_t = SearchMode::Keyword,
-            help = "Search strategy to store"
-        )]
-        mode: SearchMode,
-        #[arg(long, help = "Restrict matches to notes carrying the given tag")]
-        tag: Option<String>,
-        #[arg(
-            long = "path-prefix",
-            help = "Restrict matches to paths under this prefix"
-        )]
-        path_prefix: Option<String>,
-        #[arg(long = "has-property", help = "Require a property key to be present")]
-        has_property: Option<String>,
-        #[arg(long, value_enum, help = "Override result ordering")]
-        sort: Option<SearchSortArg>,
-        #[arg(long, help = "Require case-sensitive matching for unscoped terms")]
-        match_case: bool,
-        #[arg(
-            long = "context-size",
-            default_value_t = 18,
-            help = "Approximate snippet context size for each search hit"
-        )]
-        context_size: usize,
-        #[arg(long, help = "Persist the query string as raw FTS5 syntax")]
-        raw_query: bool,
-        #[arg(
-            long,
-            help = "Enable typo-tolerant fallback when the saved search runs"
-        )]
-        fuzzy: bool,
-        #[arg(long, help = "Optional saved report description")]
-        description: Option<String>,
-        #[command(flatten)]
-        export: ExportArgs,
-    },
-    #[command(
-        about = "Persist a saved property query definition in .vulcan/reports",
-        after_help = NOTES_COMMAND_AFTER_HELP,
-        hide = true
-    )]
-    Notes {
-        #[arg(help = "Saved report name")]
-        name: String,
-        #[arg(
-            long = "where",
-            help = "Filter expression such as `status = done`; repeatable and combined with AND"
-        )]
-        filters: Vec<String>,
-        #[arg(
-            long,
-            help = "Property key or file field (`file.path`, `file.name`, `file.ext`, `file.mtime`) to sort by"
-        )]
-        sort: Option<String>,
-        #[arg(long, help = "Sort descending instead of ascending")]
-        desc: bool,
-        #[arg(long, help = "Optional saved report description")]
-        description: Option<String>,
-        #[command(flatten)]
-        export: ExportArgs,
-    },
-    #[command(
-        about = "Persist a saved Bases evaluation definition in .vulcan/reports",
-        hide = true
-    )]
-    Bases {
-        #[arg(help = "Saved report name")]
-        name: String,
-        #[arg(help = "Vault-relative path to the .base file to evaluate")]
-        file: String,
-        #[arg(long, help = "Optional saved report description")]
-        description: Option<String>,
-        #[command(flatten)]
-        export: ExportArgs,
     },
     #[command(about = "Run one saved query or report definition")]
     Run {
@@ -4962,24 +4819,6 @@ pub enum Command {
     )]
     Render(RenderArgs),
     #[command(
-        about = "Open or create the weekly note for a date",
-        after_help = PERIODIC_COMMAND_AFTER_HELP,
-        hide = true
-    )]
-    Weekly {
-        #[command(flatten)]
-        args: PeriodicOpenArgs,
-    },
-    #[command(
-        about = "Open or create the monthly note for a date",
-        after_help = PERIODIC_COMMAND_AFTER_HELP,
-        hide = true
-    )]
-    Monthly {
-        #[command(flatten)]
-        args: PeriodicOpenArgs,
-    },
-    #[command(
         about = "Open, list, and inspect periodic notes",
         after_help = PERIODIC_COMMAND_AFTER_HELP
     )]
@@ -5052,49 +4891,12 @@ pub enum Command {
         no_commit: bool,
     },
     #[command(
-        about = "Run multiple saved reports for automation and scheduled jobs",
-        after_help = BATCH_COMMAND_AFTER_HELP,
-        hide = true
-    )]
-    Batch {
-        #[arg(help = "Saved report names to run")]
-        names: Vec<String>,
-        #[arg(long, help = "Run every saved report definition in .vulcan/reports")]
-        all: bool,
-    },
-    #[command(
         about = "Run checks, repairs, and saved reports for CI and scripts",
         after_help = AUTOMATION_COMMAND_AFTER_HELP
     )]
     Automation {
         #[command(subcommand)]
         command: AutomationCommand,
-    },
-    #[command(
-        about = "Cluster indexed vectors into topical groups",
-        after_help = CLUSTER_COMMAND_AFTER_HELP,
-        hide = true
-    )]
-    Cluster {
-        #[arg(long, default_value_t = 8, help = "Requested cluster count")]
-        clusters: usize,
-        #[arg(long, help = "Report cluster assignments without persisting them")]
-        dry_run: bool,
-        #[command(flatten)]
-        export: ExportArgs,
-    },
-    #[command(
-        about = "Recommend semantically related notes for one note",
-        after_help = RELATED_COMMAND_AFTER_HELP,
-        hide = true
-    )]
-    Related {
-        #[arg(
-            help = "Note path, filename, or alias to use as the seed note; omit in a TTY session to pick interactively"
-        )]
-        note: Option<String>,
-        #[command(flatten)]
-        export: ExportArgs,
     },
     #[command(
         about = "Open a persistent note browser TUI",

@@ -2396,7 +2396,7 @@ Restructure all existing commands into logical groups. The public command surfac
 | `config` | Plugin settings import | (existing) |
 | `cache` | Cache maintenance | (existing) |
 
-**Top-level commands (not grouped):** `doctor` (vault-wide), `diff` (vault-wide), `inbox`, `ls`, `describe`, `completions`, `checkpoint`, `changes`, `batch`, `automation`, `export`, `browse`
+**Top-level commands (not grouped):** `doctor` (vault-wide), `diff` (vault-wide), `inbox`, `ls`, `describe`, `completions`, `checkpoint`, `changes`, `automation`, `export`, `browse`
 
 - [x] **Split `vulcan-cli/src/lib.rs` into per-group modules.** The current `lib.rs` is ~10,400 lines containing the dispatch match, ~95 `print_*`/`render_*` functions, and command-specific logic in a single file. As part of this reorganization, split into:
   - `commands/note.rs`, `commands/graph.rs`, `commands/tasks.rs`, `commands/refactor.rs`, etc. — each module owns its dispatch arm and print functions
@@ -3226,11 +3226,11 @@ Full MCP follow-on work is tracked in **9.19.15 MCP protocol-native rework** bel
 
 The current CLI has 37 top-level commands. This is too many for discoverability. Target: ~25 top-level commands by nesting or merging.
 
-- [x] **Nest `cluster` and `related` under `vectors`** — they already exist as `vectors cluster` aliases. Remove the top-level entries or mark `hide = true`.
-- [x] **Nest `weekly` and `monthly` under `periodic`** — `periodic weekly`, `periodic monthly`. Keep hidden top-level aliases for backwards compatibility but remove from help listing.
-- [x] **Merge `batch` into `automation`** — `automation run --batch` or `automation run --all` replaces the standalone `batch` command. Add a hidden `batch` alias.
+- [x] **Nest `cluster` and `related` under `vectors`** — use `vectors cluster` and `vectors related`; the old top-level entries were removed.
+- [x] **Nest `weekly` and `monthly` under `periodic`** — use `periodic weekly` and `periodic monthly`; the old top-level entries were removed.
+- [x] **Merge `batch` into `automation`** — use `automation run`; the old top-level `batch` entry was removed.
 - [x] **Hide top-level `diff`** — `note diff` already exists for single-note diffs. If the top-level `diff` does something different (vault-wide), clarify; if identical, remove.
-- [x] **Absorb `notes` into `query`** — `notes --where` is a subset of `query`. Make `vulcan notes` a hidden alias for `query --format table`. Remove `notes` from the main help listing.
+- [x] **Absorb `notes` into `query`** — `notes --where` is a subset of `query`. Use `vulcan query`; `vulcan notes` is not a command.
 
 **Group reassignment**
 
@@ -3334,19 +3334,18 @@ Power users want shortcuts like `vulcan t` → `vulcan tasks list` or `vulcan q`
 
 #### 9.19.9 Command clarity and discoverability
 
-**Status:** Complete. Remaining `[-]` entries in this section are intentional product decisions: keep `automation run` and `batch` separate, keep their `--all` semantics distinct but documented, and use Phase 9.20 `site build` as the canonical HTML publication path instead of adding a second renderer under `export html`.
+**Status:** Complete. Remaining `[-]` entries in this section are intentional product decisions: use `automation run` as the single batch-report entrypoint and use Phase 9.20 `site build` as the canonical HTML publication path instead of adding a second renderer under `export html`.
 
-**`vulcan automation run` / `vulcan batch` / `vulcan saved` — report system is opaque**
+**`vulcan automation run` / `vulcan saved` — report system is opaque**
 
-The relationship between saved reports, automation run, batch, and the `saved` command is unclear to users. It's not obvious what a "report" even is, how to create one, or when to use which command. The `--all` flag semantics differ between commands.
+The relationship between saved reports, automation run, and the `saved` command is unclear to users. It's not obvious what a "report" even is, how to create one, or when to use which command.
 
-- [x] Write a clear conceptual overview for `vulcan help reports` explaining: what a saved report is (a persisted query/check in `.vulcan/reports/`), how to create one, the report file format, and how they relate to automation/batch/saved
+- [x] Write a clear conceptual overview for `vulcan help reports` explaining: what a saved report is (a persisted query/check in `.vulcan/reports/`), how to create one, the report file format, and how they relate to automation and `saved`
 - [x] Clarify the command roles and either merge or clearly differentiate:
   - `vulcan saved` — CRUD for saved reports (list, show, create, delete)
-  - `vulcan automation run` — execute reports with scan, exit codes for CI
-  - `vulcan batch` — run multiple reports sequentially
-- [-] If the distinction between `automation run` and `batch` doesn't justify two commands, merge them — kept separate; roles are distinct (scan+doctor vs plain batch)
-- [-] Make `--all` behavior consistent across commands — `batch --all` and `automation run --all-reports` differ intentionally; documented in help
+  - `vulcan automation run` — execute reports with optional scan/doctor/repair checks and CI exit codes
+- [x] If the distinction between `automation run` and `batch` doesn't justify two commands, merge them — `batch` was removed; `automation run` is the single entrypoint
+- [x] Make `--all` behavior consistent across commands — `automation run --all-reports` is the only batch-report all switch
 - [x] Add usage examples showing the full workflow: create a report → run it → use in CI
 
 **`vulcan changes` purpose**
@@ -3392,7 +3391,7 @@ The command may not correctly toggle between TaskNotes-only and all-tasks (inclu
 `vulcan notes` (property query) and `vulcan note` (single-note CRUD) differ by one character. Users will constantly type the wrong one.
 
 - [x] At minimum, add a clear error message when `vulcan notes get` or `vulcan note --where` is attempted: suggest the correct command
-- [x] Long-term: absorb `notes` into `query` (see 9.19.7) to eliminate the confusion entirely; `vulcan notes` now rewrites to `vulcan query --format table` and is no longer a first-class command
+- [x] Long-term: absorb `notes` into `query` (see 9.19.7) to eliminate the confusion entirely; `vulcan notes` was removed and `vulcan query` is the supported command
 
 **`vulcan note outline` on large docs**
 

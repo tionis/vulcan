@@ -245,7 +245,7 @@ Behavior:
 - `daily list` uses the configured weekly start when `--week` is selected and includes parsed schedule events from the `events` cache table.
 - `daily export-ics` uses the same cached events and emits a one-way RFC 5545 calendar export.
 - Periodic note creation uses the configured periodic template name when it resolves successfully; otherwise Vulcan creates a blank note and reports the template warning.
-- Hidden compatibility aliases `weekly` and `monthly` still work for existing scripts, but the preferred public forms are `periodic weekly` and `periodic monthly`.
+- Use `periodic weekly` and `periodic monthly` directly; Vulcan does not ship compatibility aliases for the old top-level forms.
 - These commands participate in auto-commit when they mutate note files and vault git auto-commit is enabled.
 
 ### Git commands
@@ -400,10 +400,6 @@ Important behavior:
 - `vulcan vectors duplicates [--threshold <F32>]`: highly similar chunk pairs.
 - `vulcan vectors models`: list stored embedding models.
 - `vulcan vectors drop-model <cache-key>`: drop one model and its vectors.
-
-Compatibility note:
-
-- Hidden top-level compatibility aliases `cluster` and `related` still exist, but the preferred public forms are `vectors cluster` and `vectors related`.
 
 ## Query and filter syntax
 
@@ -908,7 +904,7 @@ Automation notes:
 - `markdown`, `json`, `epub`, and `zip` support publication transforms that rewrite exported notes without mutating source files.
 - `saved create search` uses the same syntax as `search`.
 - `saved create notes` uses the same `--where` and `--sort` shortcut shape as `query`.
-- Hidden compatibility aliases such as `batch` and the legacy `saved search|notes|bases` forms still work, but the preferred public forms are `automation ...` and `saved create ...`.
+- Use the public grouped forms directly: `automation run ...` for batch execution and `saved create ...` for persisted report definitions.
 
 ### Publication transforms
 

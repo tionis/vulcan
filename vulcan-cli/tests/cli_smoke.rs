@@ -1600,7 +1600,7 @@ fn query_fields_aligned_table_output_in_tty_mode() {
             vault_root_str,
             "--fields",
             "file_name,document_path",
-            "notes",
+            "query",
             "--where",
             "status = active",
         ])
@@ -9313,7 +9313,7 @@ fn notes_json_output_includes_evaluated_inline_expressions() {
             "json",
             "--fields",
             "document_path,inline_expressions",
-            "notes",
+            "query",
             "--where",
             "status = draft",
         ])
@@ -9364,20 +9364,13 @@ fn query_help_documents_filter_shortcuts() {
 }
 
 #[test]
-fn legacy_notes_help_routes_to_query_help() {
+fn removed_notes_help_does_not_route_to_query_help() {
     Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args(["notes", "--help"])
         .assert()
-        .success()
-        .stdout(
-            predicate::str::contains(
-                "Run a Vulcan query, Dataview DQL query, or --where shortcut query",
-            )
-            .and(predicate::str::contains(
-                "vulcan query --where 'status = done'",
-            )),
-        );
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand 'notes'"));
 }
 
 #[test]
@@ -12200,7 +12193,14 @@ fn note_commands_without_arguments_fail_cleanly_in_non_interactive_mode() {
 
     let related_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
-        .args(["--vault", &vault_root_str, "--output", "json", "related"])
+        .args([
+            "--vault",
+            &vault_root_str,
+            "--output",
+            "json",
+            "vectors",
+            "related",
+        ])
         .assert()
         .failure();
     let related_json = parse_stdout_json(&related_assert);
@@ -12939,7 +12939,7 @@ fn notes_json_output_filters_and_sorts_property_queries() {
             "json",
             "--fields",
             "document_path,properties",
-            "notes",
+            "query",
             "--where",
             "estimate > 2",
             "--sort",
@@ -12980,7 +12980,7 @@ fn notes_json_output_supports_inline_field_and_file_namespace_filters() {
             "json",
             "--fields",
             "document_path",
-            "notes",
+            "query",
             "--where",
             "due < date(today)",
         ])
@@ -13001,7 +13001,7 @@ fn notes_json_output_supports_inline_field_and_file_namespace_filters() {
             "json",
             "--fields",
             "document_path",
-            "notes",
+            "query",
             "--where",
             "file.size > 10000",
         ])
@@ -13236,7 +13236,7 @@ fn search_notes_and_bases_support_file_exports() {
             vault_root
                 .to_str()
                 .expect("vault path should be valid utf-8"),
-            "notes",
+            "query",
             "--where",
             "reviewed = true",
             "--export",
@@ -13395,6 +13395,7 @@ fn graph_links_changes_and_cluster_support_file_exports() {
                 .expect("vault path should be valid utf-8"),
             "--output",
             "json",
+            "vectors",
             "cluster",
             "--clusters",
             "2",
@@ -15706,6 +15707,7 @@ fn saved_reports_can_be_listed_run_and_batched() {
             "--limit",
             "1",
             "saved",
+            "create",
             "search",
             "weekly-search",
             "release",
@@ -15728,6 +15730,7 @@ fn saved_reports_can_be_listed_run_and_batched() {
             "--fields",
             "document_path,group_value",
             "saved",
+            "create",
             "bases",
             "release-table",
             "release.base",
@@ -15813,8 +15816,9 @@ fn saved_reports_can_be_listed_run_and_batched() {
                     .expect("vault path should be valid utf-8"),
                 "--output",
                 "json",
-                "batch",
-                "--all",
+                "automation",
+                "run",
+                "--all-reports",
             ])
             .assert()
             .success();
@@ -15824,8 +15828,8 @@ fn saved_reports_can_be_listed_run_and_batched() {
         replace_string_recursively(&mut json, "\\", "/");
         json
     };
-    assert_eq!(batch_json["succeeded"], 2);
-    assert_eq!(batch_json["failed"], 0);
+    assert_eq!(batch_json["reports"]["succeeded"], 2);
+    assert_eq!(batch_json["reports"]["failed"], 0);
     assert!(vault_root.join("exports/search.jsonl").exists());
     assert!(vault_root.join("exports/release.csv").exists());
 }
@@ -15901,6 +15905,7 @@ fn automation_run_executes_saved_reports_and_health_checks() {
             "--limit",
             "1",
             "saved",
+            "create",
             "search",
             "weekly-search",
             "dashboard",
@@ -16229,6 +16234,7 @@ fn vectors_duplicates_and_cluster_json_output_work() {
             "json",
             "--fields",
             "cluster_id,cluster_label,keywords,chunk_count,document_count",
+            "vectors",
             "cluster",
             "--clusters",
             "2",
@@ -16334,6 +16340,7 @@ fn vectors_repair_queue_and_related_json_output_work() {
             "json",
             "--fields",
             "document_path,similarity,matched_chunks",
+            "vectors",
             "related",
             "Home",
         ])
@@ -17759,7 +17766,7 @@ fn notes_command_fields_support_property_keys_and_file_aliases() {
             "json",
             "--fields",
             "file.path,status",
-            "notes",
+            "query",
             "--sort",
             "file.path",
         ])
@@ -17816,7 +17823,7 @@ fn query_command_results_match_notes_command() {
             "json",
             "--fields",
             "document_path",
-            "notes",
+            "query",
             "--where",
             "status = backlog",
         ])
@@ -18417,7 +18424,7 @@ fn edit_new_creates_note_and_updates_cache() {
             "json",
             "--fields",
             "document_path",
-            "notes",
+            "query",
         ])
         .assert()
         .success();
@@ -19293,7 +19300,7 @@ fn build_command_snapshot() -> Value {
                 "json",
                 "--fields",
                 "document_path,properties",
-                "notes",
+                "query",
                 "--where",
                 "estimate > 2",
                 "--sort",
@@ -19530,6 +19537,7 @@ fn build_command_snapshot() -> Value {
                 "json",
                 "--fields",
                 "cluster_id,cluster_label,keywords,chunk_count,document_count",
+                "vectors",
                 "cluster",
                 "--clusters",
                 "2",
@@ -19585,6 +19593,7 @@ fn build_saved_report_snapshot() -> Value {
             "--limit",
             "1",
             "saved",
+            "create",
             "search",
             "weekly-search",
             "release",
@@ -19605,6 +19614,7 @@ fn build_saved_report_snapshot() -> Value {
             "--fields",
             "document_path,group_value",
             "saved",
+            "create",
             "bases",
             "release-table",
             "release.base",
@@ -19671,8 +19681,9 @@ fn build_saved_report_snapshot() -> Value {
                 &vault_root_str,
                 "--output",
                 "json",
-                "batch",
-                "--all",
+                "automation",
+                "run",
+                "--all-reports",
             ])
             .assert()
             .success();
@@ -19693,7 +19704,7 @@ fn build_saved_report_snapshot() -> Value {
         "saved_list": list_json,
         "saved_show": show_json,
         "saved_run": run_json,
-        "batch": batch_json,
+        "automation": batch_json,
         "search_export": search_export,
         "bases_export": bases_export,
     })
