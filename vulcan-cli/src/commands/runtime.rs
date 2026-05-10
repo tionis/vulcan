@@ -3,6 +3,7 @@ use crate::{
     js_repl, selected_permission_guard, tools, trust, Cli, CliError, GitCommand, OutputFormat,
     PermissionGuard, SearchBackendArg, TrustCommand, WebCommand, WebFetchMode,
 };
+use serde::Serialize;
 use std::fs;
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
@@ -13,10 +14,30 @@ use vulcan_app::web::{
     WebSearchRequest,
 };
 use vulcan_core::{
-    evaluate_dataview_js_with_options, git_commit, load_vault_config, DataviewJsEvalOptions,
-    DataviewJsResult, JsRuntimeSandbox, PluginEvent, ProfilePermissionGuard, SearchBackendKind,
-    VaultPaths,
+    evaluate_dataview_js_with_options, git_blame, git_commit, git_diff, git_recent_log, git_status,
+    load_vault_config, DataviewJsEvalOptions, DataviewJsResult, GitBlameLine, GitCommitReport,
+    GitLogEntry, GitStatusReport, JsRuntimeSandbox, PluginEvent, ProfilePermissionGuard,
+    SearchBackendKind, VaultPaths,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct GitLogReport {
+    limit: usize,
+    entries: Vec<GitLogEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct GitDiffReport {
+    path: Option<String>,
+    changed_paths: Vec<String>,
+    diff: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct GitBlameReport {
+    path: String,
+    lines: Vec<GitBlameLine>,
+}
 
 pub(crate) fn handle_trust_command(
     cli: &Cli,
@@ -86,22 +107,22 @@ pub(crate) fn handle_git_command(
         .map_err(CliError::operation)?;
     match command {
         GitCommand::Status => {
-            let mut report = crate::git_status(paths.vault_root()).map_err(CliError::operation)?;
-            report.staged = crate::filter_vault_git_paths(report.staged);
-            report.unstaged = crate::filter_vault_git_paths(report.unstaged);
-            report.untracked = crate::filter_vault_git_paths(report.untracked);
+            let mut report = git_status(paths.vault_root()).map_err(CliError::operation)?;
+            report.staged = filter_vault_git_paths(report.staged);
+            report.unstaged = filter_vault_git_paths(report.unstaged);
+            report.untracked = filter_vault_git_paths(report.untracked);
             report.clean = report.staged.is_empty()
                 && report.unstaged.is_empty()
                 && report.untracked.is_empty();
-            crate::print_git_status_report(cli.output, &report)
+            print_git_status_report(cli.output, &report)
         }
         GitCommand::Log { limit } => {
-            let report = crate::run_git_log_command(paths, *limit)?;
-            crate::print_git_log_report(cli.output, &report)
+            let report = run_git_log_command(paths, *limit)?;
+            print_git_log_report(cli.output, &report)
         }
         GitCommand::Diff { path } => {
-            let report = crate::run_git_diff_group_command(paths, path.as_deref())?;
-            crate::print_git_diff_group_report(cli.output, &report)
+            let report = run_git_diff_group_command(paths, path.as_deref())?;
+            print_git_diff_group_report(cli.output, &report)
         }
         GitCommand::Commit { message } => {
             crate::plugins::dispatch_plugin_event(
@@ -131,13 +152,70 @@ pub(crate) fn handle_git_command(
                     cli.quiet,
                 );
             }
-            crate::print_git_commit_report(cli.output, &report)
+            print_git_commit_report(cli.output, &report)
         }
         GitCommand::Blame { path } => {
-            let report = crate::run_git_blame_command(paths, path)?;
-            crate::print_git_blame_report(cli.output, &report)
+            let report = run_git_blame_command(paths, path)?;
+            print_git_blame_report(cli.output, &report)
         }
     }
+}
+
+fn normalize_git_scope_path(path: &str) -> String {
+    path.replace('\\', "/").trim_start_matches("./").to_string()
+}
+
+fn filter_vault_git_paths(paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter(|path| path != ".vulcan" && !path.starts_with(".vulcan/"))
+        .collect()
+}
+
+fn run_git_log_command(paths: &VaultPaths, limit: usize) -> Result<GitLogReport, CliError> {
+    let entries = git_recent_log(paths.vault_root(), limit).map_err(CliError::operation)?;
+    Ok(GitLogReport { limit, entries })
+}
+
+fn run_git_diff_group_command(
+    paths: &VaultPaths,
+    path: Option<&str>,
+) -> Result<GitDiffReport, CliError> {
+    let normalized_path = path.map(normalize_git_scope_path);
+    let changed_paths = if let Some(path) = normalized_path.as_deref() {
+        let changed = filter_vault_git_paths(
+            git_status(paths.vault_root())
+                .map_err(CliError::operation)?
+                .changed_paths(),
+        );
+        changed
+            .into_iter()
+            .filter(|candidate| candidate == path)
+            .collect()
+    } else {
+        filter_vault_git_paths(
+            git_status(paths.vault_root())
+                .map_err(CliError::operation)?
+                .changed_paths(),
+        )
+    };
+    let diff =
+        git_diff(paths.vault_root(), normalized_path.as_deref()).map_err(CliError::operation)?;
+
+    Ok(GitDiffReport {
+        path: normalized_path,
+        changed_paths,
+        diff,
+    })
+}
+
+fn run_git_blame_command(paths: &VaultPaths, path: &str) -> Result<GitBlameReport, CliError> {
+    let normalized = normalize_git_scope_path(path);
+    let lines = git_blame(paths.vault_root(), &normalized).map_err(CliError::operation)?;
+    Ok(GitBlameReport {
+        path: normalized,
+        lines,
+    })
 }
 
 pub(crate) struct RunArgs<'a> {
@@ -500,6 +578,121 @@ fn print_web_fetch_report(
                 }
                 Ok(())
             }
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_git_status_report(output: OutputFormat, report: &GitStatusReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human | OutputFormat::Markdown => {
+            if report.clean {
+                println!("Working tree clean.");
+                return Ok(());
+            }
+            if !report.staged.is_empty() {
+                println!("Staged:");
+                for path in &report.staged {
+                    println!("- {path}");
+                }
+            }
+            if !report.unstaged.is_empty() {
+                println!("Unstaged:");
+                for path in &report.unstaged {
+                    println!("- {path}");
+                }
+            }
+            if !report.untracked.is_empty() {
+                println!("Untracked:");
+                for path in &report.untracked {
+                    println!("- {path}");
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_git_log_report(output: OutputFormat, report: &GitLogReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human | OutputFormat::Markdown => {
+            if report.entries.is_empty() {
+                println!("No commits.");
+                return Ok(());
+            }
+            for entry in &report.entries {
+                println!(
+                    "- {} {} ({}, {})",
+                    entry.commit.chars().take(8).collect::<String>(),
+                    entry.summary,
+                    entry.author_name,
+                    entry.committed_at
+                );
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_git_diff_group_report(
+    output: OutputFormat,
+    report: &GitDiffReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human | OutputFormat::Markdown => {
+            if report.diff.trim().is_empty() {
+                if let Some(path) = &report.path {
+                    println!("No changes in {path}.");
+                } else {
+                    println!("Working tree clean.");
+                }
+            } else {
+                print!("{}", report.diff);
+                if !report.diff.ends_with('\n') {
+                    println!();
+                }
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_git_commit_report(output: OutputFormat, report: &GitCommitReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human | OutputFormat::Markdown => {
+            if report.committed {
+                let sha = report.sha.as_deref().unwrap_or_default();
+                println!(
+                    "Committed {} file(s) as {}: {}",
+                    report.files.len(),
+                    sha.chars().take(8).collect::<String>(),
+                    report.message
+                );
+            } else {
+                println!("{}", report.message);
+            }
+            Ok(())
+        }
+        OutputFormat::Json => print_json(report),
+    }
+}
+
+fn print_git_blame_report(output: OutputFormat, report: &GitBlameReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Human | OutputFormat::Markdown => {
+            for line in &report.lines {
+                println!(
+                    "{:>4} {} {:<16} | {}",
+                    line.line_number,
+                    line.commit.chars().take(8).collect::<String>(),
+                    line.author_name,
+                    line.line
+                );
+            }
+            Ok(())
         }
         OutputFormat::Json => print_json(report),
     }

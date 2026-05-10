@@ -516,11 +516,11 @@ use vulcan_core::{
     add_kanban_card, all_importers, annotate_import_conflicts, archive_kanban_card, bulk_replace,
     cache_vacuum, create_checkpoint, default_assistant_tool_reserved_names, delete_saved_report,
     doctor_fix, doctor_vault, evaluate_base_file, evaluate_dql_with_filter,
-    expected_periodic_note_path, export_daily_events_to_ics, export_static_search_index, git_blame,
-    git_diff, git_log, git_recent_log, git_status, initialize_vault, inspect_cache, link_mentions,
-    list_checkpoints, list_daily_note_events, list_saved_reports, load_events_for_periodic_note,
-    load_kanban_board, load_saved_report, load_vault_config, merge_tags, move_kanban_card,
-    move_note, period_range_for_date, plan_base_note_create, query_backlinks, query_change_report,
+    expected_periodic_note_path, export_daily_events_to_ics, export_static_search_index, git_log,
+    git_status, initialize_vault, inspect_cache, link_mentions, list_checkpoints,
+    list_daily_note_events, list_saved_reports, load_events_for_periodic_note, load_kanban_board,
+    load_saved_report, load_vault_config, merge_tags, move_kanban_card, move_note,
+    period_range_for_date, plan_base_note_create, query_backlinks, query_change_report,
     query_links, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
     rename_heading, rename_property, render_note_fragment_html, render_note_html,
     render_vault_html, repair_fts, resolve_note_reference, resolve_periodic_note,
@@ -531,23 +531,23 @@ use vulcan_core::{
     ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, ClusterReport, ConfigImportReport,
     CoreImporter, DataviewImporter, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue,
     DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
-    GitBlameLine, GitCommitReport, GitLogEntry, GraphAnalyticsReport, GraphCommunitiesReport,
-    GraphComponentsReport, GraphConfidenceBreakdown, GraphDeadEndsReport, GraphHubsReport,
-    GraphMocCandidate, GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport,
-    HtmlRenderOptions, ImportTarget, InitSummary, KanbanAddReport, KanbanArchiveReport,
-    KanbanBoardRecord, KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus,
-    LinkSuggestion, LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport,
-    MergeCandidate, MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport,
-    OutgoingLinkRecord, OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter,
-    PermissionFilter, PermissionGuard, PluginEvent, PluginImporter, ProfilePermissionGuard,
-    QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RelatedNoteHit,
-    RelatedNotesReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport,
-    SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
-    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, SearchSort, StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult,
-    TemplaterImporter, VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase,
-    VectorIndexProgress, VectorIndexReport, VectorNeighborHit, VectorNeighborsReport,
-    VectorQueueReport, VectorRepairReport, WatchOptions, WatchReport,
+    GitLogEntry, GraphAnalyticsReport, GraphCommunitiesReport, GraphComponentsReport,
+    GraphConfidenceBreakdown, GraphDeadEndsReport, GraphHubsReport, GraphMocCandidate,
+    GraphMocReport, GraphPathReport, GraphQueryError, GraphTrendsReport, HtmlRenderOptions,
+    ImportTarget, InitSummary, KanbanAddReport, KanbanArchiveReport, KanbanBoardRecord,
+    KanbanBoardSummary, KanbanImporter, KanbanMoveReport, KanbanTaskStatus, LinkSuggestion,
+    LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
+    MoveSummary, NamedCount, NoteMatchKind, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, PeriodicConfig, PeriodicNotesImporter, PermissionFilter, PermissionGuard,
+    PluginEvent, PluginImporter, ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport,
+    RefactorChange, RefactorReport, RelatedNoteHit, RelatedNotesReport, RepairFtsQuery,
+    RepairFtsReport, ResolvedPermissionProfile, SavedExport, SavedExportFormat,
+    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
+    ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort,
+    StoredModelInfo, TaskNotesImporter, TasksImporter, TasksQueryResult, TemplaterImporter,
+    VaultPaths, VectorDuplicatePair, VectorDuplicatesReport, VectorIndexPhase, VectorIndexProgress,
+    VectorIndexReport, VectorNeighborHit, VectorNeighborsReport, VectorQueueReport,
+    VectorRepairReport, WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -1386,25 +1386,6 @@ struct DiffReport {
     changed: bool,
     changed_kinds: Vec<String>,
     diff: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct GitLogReport {
-    limit: usize,
-    entries: Vec<GitLogEntry>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct GitDiffReport {
-    path: Option<String>,
-    changed_paths: Vec<String>,
-    diff: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct GitBlameReport {
-    path: String,
-    lines: Vec<GitBlameLine>,
 }
 
 type DataviewInlineReport = AppDataviewInlineReport;
@@ -2323,63 +2304,6 @@ fn diff_report_from_change_anchor(
         status,
         changed_kinds,
         diff: None,
-    })
-}
-
-fn normalize_git_scope_path(path: &str) -> String {
-    path.replace('\\', "/").trim_start_matches("./").to_string()
-}
-
-fn filter_vault_git_paths(paths: Vec<String>) -> Vec<String> {
-    paths
-        .into_iter()
-        .filter(|path| path != ".vulcan" && !path.starts_with(".vulcan/"))
-        .collect()
-}
-
-fn run_git_log_command(paths: &VaultPaths, limit: usize) -> Result<GitLogReport, CliError> {
-    let entries = git_recent_log(paths.vault_root(), limit).map_err(CliError::operation)?;
-    Ok(GitLogReport { limit, entries })
-}
-
-fn run_git_diff_group_command(
-    paths: &VaultPaths,
-    path: Option<&str>,
-) -> Result<GitDiffReport, CliError> {
-    let normalized_path = path.map(normalize_git_scope_path);
-    let changed_paths = if let Some(path) = normalized_path.as_deref() {
-        let changed = filter_vault_git_paths(
-            git_status(paths.vault_root())
-                .map_err(CliError::operation)?
-                .changed_paths(),
-        );
-        changed
-            .into_iter()
-            .filter(|candidate| candidate == path)
-            .collect()
-    } else {
-        filter_vault_git_paths(
-            git_status(paths.vault_root())
-                .map_err(CliError::operation)?
-                .changed_paths(),
-        )
-    };
-    let diff =
-        git_diff(paths.vault_root(), normalized_path.as_deref()).map_err(CliError::operation)?;
-
-    Ok(GitDiffReport {
-        path: normalized_path,
-        changed_paths,
-        diff,
-    })
-}
-
-fn run_git_blame_command(paths: &VaultPaths, path: &str) -> Result<GitBlameReport, CliError> {
-    let normalized = normalize_git_scope_path(path);
-    let lines = git_blame(paths.vault_root(), &normalized).map_err(CliError::operation)?;
-    Ok(GitBlameReport {
-        path: normalized,
-        lines,
     })
 }
 
@@ -12259,124 +12183,6 @@ fn print_diff_report(output: OutputFormat, report: &DiffReport) -> Result<(), Cl
                 );
             } else {
                 println!("No changes in {} since {}.", report.path, report.anchor);
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_git_status_report(
-    output: OutputFormat,
-    report: &vulcan_core::GitStatusReport,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            if report.clean {
-                println!("Working tree clean.");
-                return Ok(());
-            }
-            if !report.staged.is_empty() {
-                println!("Staged:");
-                for path in &report.staged {
-                    println!("- {path}");
-                }
-            }
-            if !report.unstaged.is_empty() {
-                println!("Unstaged:");
-                for path in &report.unstaged {
-                    println!("- {path}");
-                }
-            }
-            if !report.untracked.is_empty() {
-                println!("Untracked:");
-                for path in &report.untracked {
-                    println!("- {path}");
-                }
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_git_log_report(output: OutputFormat, report: &GitLogReport) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            if report.entries.is_empty() {
-                println!("No commits.");
-                return Ok(());
-            }
-            for entry in &report.entries {
-                println!(
-                    "- {} {} ({}, {})",
-                    entry.commit.chars().take(8).collect::<String>(),
-                    entry.summary,
-                    entry.author_name,
-                    entry.committed_at
-                );
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_git_diff_group_report(
-    output: OutputFormat,
-    report: &GitDiffReport,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            if report.diff.trim().is_empty() {
-                if let Some(path) = &report.path {
-                    println!("No changes in {path}.");
-                } else {
-                    println!("Working tree clean.");
-                }
-            } else {
-                print!("{}", report.diff);
-                if !report.diff.ends_with('\n') {
-                    println!();
-                }
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_git_commit_report(output: OutputFormat, report: &GitCommitReport) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            if report.committed {
-                let sha = report.sha.as_deref().unwrap_or_default();
-                println!(
-                    "Committed {} file(s) as {}: {}",
-                    report.files.len(),
-                    sha.chars().take(8).collect::<String>(),
-                    report.message
-                );
-            } else {
-                println!("{}", report.message);
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_git_blame_report(output: OutputFormat, report: &GitBlameReport) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            for line in &report.lines {
-                println!(
-                    "{:>4} {} {:<16} | {}",
-                    line.line_number,
-                    line.commit.chars().take(8).collect::<String>(),
-                    line.author_name,
-                    line.line
-                );
             }
             Ok(())
         }
