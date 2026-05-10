@@ -2716,6 +2716,8 @@ struct ToolListReport {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct ToolTestReport {
     name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    profile: Option<String>,
     checked: usize,
     passed: bool,
     examples: Vec<ToolTestExampleReport>,
@@ -2751,6 +2753,20 @@ struct ToolLintToolReport {
     warnings: Vec<String>,
     errors: Vec<String>,
     fixes: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ToolCompatReport {
+    name: String,
+    surfaces: Vec<ToolCompatSurfaceReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct ToolCompatSurfaceReport {
+    surface: String,
+    compatible: bool,
+    warnings: Vec<String>,
+    errors: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2971,9 +2987,19 @@ fn handle_tool_command(
                 Err(CliError::operation("custom tool lint failed"))
             }
         }
-        ToolCommand::Test { name, example } => {
-            let report =
-                run_tool_examples(cli, paths, name, example.as_deref(), &registry_options)?;
+        ToolCommand::Test {
+            name,
+            example,
+            profile,
+        } => {
+            let report = run_tool_examples(
+                cli,
+                paths,
+                name,
+                example.as_deref(),
+                profile.as_deref(),
+                &registry_options,
+            )?;
             let passed = report.passed;
             print_tool_test_report(cli.output, &report)?;
             if passed {
@@ -2981,6 +3007,16 @@ fn handle_tool_command(
             } else {
                 Err(CliError::operation("one or more tool examples failed"))
             }
+        }
+        ToolCommand::Compat { name, surface } => {
+            let report = build_tool_compat_report(
+                paths,
+                cli.permissions.as_deref(),
+                name,
+                surface,
+                &registry_options,
+            )?;
+            print_tool_compat_report(cli.output, &report)
         }
         ToolCommand::Run {
             name,
@@ -3766,14 +3802,148 @@ fn example_json_has_dry_run(input: Option<&Value>) -> bool {
     })
 }
 
+fn build_tool_compat_report(
+    paths: &VaultPaths,
+    active_permission_profile: Option<&str>,
+    name: &str,
+    requested_surfaces: &[String],
+    registry_options: &tools::CustomToolRegistryOptions,
+) -> Result<ToolCompatReport, CliError> {
+    let show = tools::show_custom_tool(paths, active_permission_profile, name, registry_options)?;
+    let surfaces = if requested_surfaces.is_empty() {
+        vec![
+            "cli".to_string(),
+            "mcp".to_string(),
+            "openai-tools".to_string(),
+            "js".to_string(),
+        ]
+    } else {
+        requested_surfaces.to_vec()
+    };
+    let surfaces = surfaces
+        .iter()
+        .map(|surface| tool_compat_surface_report(&show.tool.summary, show.callable, surface))
+        .collect();
+    Ok(ToolCompatReport {
+        name: show.tool.summary.name,
+        surfaces,
+    })
+}
+
+fn tool_compat_surface_report(
+    tool: &vulcan_core::AssistantToolSummary,
+    callable: bool,
+    surface: &str,
+) -> ToolCompatSurfaceReport {
+    let normalized = surface.trim().to_ascii_lowercase();
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+    if !callable {
+        errors.push("tool is not callable in the current vault/profile".to_string());
+    }
+    match normalized.as_str() {
+        "cli" => collect_cli_compat(tool, &mut warnings, &mut errors),
+        "mcp" => collect_mcp_compat(tool, &mut warnings, &mut errors),
+        "openai-tools" | "openai" => collect_openai_tool_compat(tool, &mut warnings, &mut errors),
+        "js" | "javascript" => collect_js_compat(tool, &mut warnings, &mut errors),
+        other => errors.push(format!("unknown compatibility surface `{other}`")),
+    }
+    ToolCompatSurfaceReport {
+        surface: normalized,
+        compatible: errors.is_empty(),
+        warnings,
+        errors,
+    }
+}
+
+fn collect_cli_compat(
+    tool: &vulcan_core::AssistantToolSummary,
+    warnings: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    let Some(cli) = &tool.cli else {
+        errors.push("missing CLI metadata".to_string());
+        return;
+    };
+    if cli.aliases.is_empty() {
+        warnings
+            .push("no CLI alias is declared; callers must use the canonical tool name".to_string());
+    }
+    let covered_fields = cli
+        .args
+        .iter()
+        .map(|arg| arg.field.as_deref().unwrap_or(&arg.flag))
+        .map(top_level_field_name)
+        .collect::<BTreeSet<_>>();
+    for field in json_schema_required_fields(&tool.input_schema) {
+        if !covered_fields.contains(&field) {
+            errors.push(format!("required input field `{field}` has no CLI flag"));
+        }
+    }
+}
+
+fn collect_mcp_compat(
+    tool: &vulcan_core::AssistantToolSummary,
+    warnings: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    if !tool.input_schema.is_object() {
+        errors.push("input schema must be a JSON object schema".to_string());
+    }
+    if tool.output_schema.is_none() {
+        warnings.push("missing output_schema limits structured-result usefulness".to_string());
+    }
+    if matches!(tool.sandbox, JsRuntimeSandbox::None) {
+        errors.push("sandbox none is not exposed as a managed MCP tool".to_string());
+    }
+    if Path::new(&tool.entrypoint).is_absolute() || Path::new(&tool.entrypoint_path).is_absolute() {
+        errors.push("entrypoint paths must be relative".to_string());
+    }
+}
+
+fn collect_openai_tool_compat(
+    tool: &vulcan_core::AssistantToolSummary,
+    warnings: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    collect_mcp_compat(tool, warnings, errors);
+    if tool.name.len() > 64 {
+        warnings.push(
+            "tool name is longer than 64 characters and may be awkward for some clients"
+                .to_string(),
+        );
+    }
+    if tool.description.trim().is_empty() {
+        errors.push("description is required for agent tool selection".to_string());
+    }
+}
+
+fn collect_js_compat(
+    tool: &vulcan_core::AssistantToolSummary,
+    warnings: &mut Vec<String>,
+    errors: &mut Vec<String>,
+) {
+    if matches!(tool.sandbox, JsRuntimeSandbox::None) {
+        errors.push("sandbox none is not callable from the managed JS tool registry".to_string());
+    }
+    if tool.secrets.is_empty() && matches!(tool.sandbox, JsRuntimeSandbox::Net) {
+        warnings.push(
+            "net sandbox tool declares no secrets; verify it does not need API credentials"
+                .to_string(),
+        );
+    }
+}
+
 fn run_tool_examples(
     cli: &Cli,
     paths: &VaultPaths,
     name: &str,
     example_filter: Option<&str>,
+    profile: Option<&str>,
     registry_options: &tools::CustomToolRegistryOptions,
 ) -> Result<ToolTestReport, CliError> {
-    let show = tools::show_custom_tool(paths, cli.permissions.as_deref(), name, registry_options)?;
+    let active_profile = profile.or(cli.permissions.as_deref());
+    let show = tools::show_custom_tool(paths, active_profile, name, registry_options)?;
     let example_base_dir = tool_example_base_dir(paths, &show.tool.summary)?;
     let examples = show
         .tool
@@ -3783,12 +3953,12 @@ fn run_tool_examples(
         .filter(|example| example_filter.is_none_or(|filter| example.name == filter))
         .map(|example| {
             run_tool_example(
-                cli,
                 paths,
                 name,
                 &show.tool.summary.name,
                 example,
                 &example_base_dir,
+                active_profile,
                 registry_options,
             )
         })
@@ -3803,6 +3973,7 @@ fn run_tool_examples(
     }
     Ok(ToolTestReport {
         name: show.tool.summary.name,
+        profile: active_profile.map(ToOwned::to_owned),
         checked: examples.len(),
         passed: examples.iter().all(|example| example.passed),
         examples,
@@ -3810,12 +3981,12 @@ fn run_tool_examples(
 }
 
 fn run_tool_example(
-    cli: &Cli,
     paths: &VaultPaths,
     requested_name: &str,
     resolved_name: &str,
     example: &vulcan_core::AssistantSkillCommandExample,
     example_base_dir: &Path,
+    active_profile: Option<&str>,
     registry_options: &tools::CustomToolRegistryOptions,
 ) -> ToolTestExampleReport {
     let input = match tool_example_input(
@@ -3854,7 +4025,7 @@ fn run_tool_example(
     };
     match tools::run_custom_tool(
         paths,
-        cli.permissions.as_deref(),
+        active_profile,
         resolved_name,
         &input,
         registry_options,
@@ -4256,6 +4427,36 @@ fn print_tool_lint_report(output: OutputFormat, report: &ToolLintReport) -> Resu
     }
 }
 
+fn print_tool_compat_report(
+    output: OutputFormat,
+    report: &ToolCompatReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!("Custom tool compatibility: {}", report.name);
+            for surface in &report.surfaces {
+                println!(
+                    "{}: {}",
+                    surface.surface,
+                    if surface.compatible {
+                        "compatible"
+                    } else {
+                        "not compatible"
+                    }
+                );
+                for warning in &surface.warnings {
+                    println!("  warning: {warning}");
+                }
+                for error in &surface.errors {
+                    println!("  error: {error}");
+                }
+            }
+            Ok(())
+        }
+    }
+}
+
 fn print_tool_show_report(
     output: OutputFormat,
     report: &tools::CustomToolShowReport,
@@ -4451,6 +4652,9 @@ fn print_tool_test_report(output: OutputFormat, report: &ToolTestReport) -> Resu
                 if report.passed { "passed" } else { "failed" },
                 report.checked
             );
+            if let Some(profile) = &report.profile {
+                println!("profile: {profile}");
+            }
             for example in &report.examples {
                 println!(
                     "- {}: {}",
@@ -25005,8 +25209,19 @@ mod tests {
             "meeting-summary",
             "--example",
             "smoke",
+            "--profile",
+            "daily-wiki-agent",
         ])
         .expect("tool test should parse");
+        let compat = Cli::try_parse_from([
+            "vulcan",
+            "tool",
+            "compat",
+            "meeting-summary",
+            "--surface",
+            "cli,mcp",
+        ])
+        .expect("tool compat should parse");
         let run = Cli::try_parse_from([
             "vulcan",
             "tool",
@@ -25045,6 +25260,16 @@ mod tests {
                 command: ToolCommand::Test {
                     name: "meeting-summary".to_string(),
                     example: Some("smoke".to_string()),
+                    profile: Some("daily-wiki-agent".to_string()),
+                },
+            }
+        );
+        assert_eq!(
+            compat.command,
+            Command::Tool {
+                command: ToolCommand::Compat {
+                    name: "meeting-summary".to_string(),
+                    surface: vec!["cli".to_string(), "mcp".to_string()],
                 },
             }
         );

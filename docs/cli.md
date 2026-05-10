@@ -295,6 +295,7 @@ Behavior:
 - `vulcan skill init <name>`: scaffold a new skill directory with `SKILL.md` and optional starter command.
 - `vulcan tool init <alias>`: scaffold a skill-backed custom tool with schemas, CLI metadata, a Vulcan shebang script, and a smoke example.
 - `vulcan tool lint [<alias>]`: check exposed custom tools for schemas, CLI coverage, examples, shebangs, executable bits, mutation dry-run conventions, and packaging issues.
+- `vulcan tool compat <alias>`: report whether a tool is cleanly usable from CLI, MCP, OpenAI-tool, and JS registry surfaces.
 
 Behavior:
 
@@ -308,7 +309,8 @@ Behavior:
 - Exposed tools may declare custom CLI aliases so `vulcan tool run <alias> --flag value` builds the same validated input JSON as MCP.
 - `vulcan tool help <alias>` prints the shell-friendly usage generated from that metadata.
 - `vulcan tool lint --strict` treats authoring warnings as failures; `--fix` applies safe packaging repairs such as shebang normalization and executable-bit fixes.
-- `vulcan tool test <alias>` runs examples declared in command metadata, supports fixture files relative to the skill directory, and reports JSON diffs when expected output does not match.
+- `vulcan tool test <alias>` runs examples declared in command metadata, supports fixture files relative to the skill directory, reports JSON diffs when expected output does not match, and accepts `--profile <name>` to test under the same permission profile used by MCP or another agent surface.
+- `vulcan tool compat <alias> --surface cli,mcp` checks surface-specific requirements such as CLI flag coverage, structured schemas, relative entrypoints, sandbox exposure, and callable status.
 - `vulcan skill validate` warns about exposed commands that are missing examples, output schemas, or CLI aliases.
 - Mutating commands should support dry-run/proposal output so Vulcan can preview diffs, require approval, and write audit records.
 - Skill-command permissions are the intersection of the active caller profile, the command's declared permission profile, its sandbox, and normal Vulcan path/network/execute checks.
@@ -326,7 +328,8 @@ vulcan tool init meeting-summary --description "Summarize meeting notes"
 vulcan tool run conversation-export --title Chat --user Hello --assistant "Some message"
 vulcan tool help conversation-export
 vulcan tool lint conversation-export --strict
-vulcan tool test conversation-export --example dry-run-cli
+vulcan tool test conversation-export --profile daily-wiki-agent --example dry-run-cli
+vulcan tool compat conversation-export --surface cli,mcp,openai-tools,js
 ```
 
 ### Plugin commands
