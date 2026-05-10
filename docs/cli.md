@@ -293,7 +293,7 @@ Behavior:
 - `vulcan skill exec <script> --arg key=value --arg-json flag=true`: run an executable skill command script directly.
 - `vulcan skill validate [<skill>]`: validate skill frontmatter, command metadata, schemas, scripts, and permission-profile references.
 - `vulcan skill init <name>`: scaffold a new skill directory with `SKILL.md` and optional starter command.
-- `vulcan tool init <alias>`: scaffold a skill-backed custom tool with schemas, CLI metadata, a Vulcan shebang script, and a smoke example.
+- `vulcan tool init <alias> [--template minimal|reader|mutation|exporter|wrapper]`: scaffold a skill-backed custom tool with schemas, CLI metadata, a Vulcan shebang script, and a smoke example.
 - `vulcan tool lint [<alias>]`: check exposed custom tools for schemas, CLI coverage, examples, shebangs, executable bits, mutation dry-run conventions, and packaging issues.
 - `vulcan tool compat <alias>`: report whether a tool is cleanly usable from CLI, MCP, OpenAI-tool, and JS registry surfaces.
 

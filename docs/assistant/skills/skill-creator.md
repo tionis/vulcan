@@ -123,6 +123,7 @@ Rules for scripts:
 
 - Export or define `main(input, ctx)`.
 - Return a JSON-serializable value.
+- Use `vulcan tool init <alias> --template minimal|reader|mutation|exporter|wrapper` when scaffolding a callable command.
 - Use `#!/usr/bin/env -S vulcan skill exec` for skill command scripts.
 - Design input schemas so the command is usable both as a structured tool and from the shell. Direct scripts and `vulcan skill run` accept `--arg key=value` for string fields, `--arg-json key=json` for typed values, and `--arg-file key=path` or `--arg-json-file key=path` for larger fields. Use `-` as the path to read one field from stdin.
 - For polished shell UX, declare `metadata.vulcan.commands[].cli` and test `vulcan tool run <alias> --flag value`. Installed Bash, Fish, and Zsh completions use this metadata for `vulcan tool run <TAB>`, custom `--flag` suggestions, and declared value completions.

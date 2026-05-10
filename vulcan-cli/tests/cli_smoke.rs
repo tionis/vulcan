@@ -10409,6 +10409,7 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
         .success();
     let init_json = parse_stdout_json(&init_assert);
     assert_eq!(init_json["name"].as_str(), Some("echo-tool"));
+    assert_eq!(init_json["template"].as_str(), Some("minimal"));
     assert_eq!(
         init_json["manifest_path"].as_str(),
         Some(".agents/skills/echo-tool/SKILL.md")
@@ -10422,6 +10423,30 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
     let script = fs::read_to_string(&script_path).expect("tool script should exist");
     assert!(script.starts_with("#!/usr/bin/env -S vulcan skill exec\n"));
     assert_executable(&script_path);
+
+    let mutation_init_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "init",
+            "append-tool",
+            "--template",
+            "mutation",
+        ])
+        .assert()
+        .success();
+    let mutation_init_json = parse_stdout_json(&mutation_init_assert);
+    assert_eq!(mutation_init_json["template"].as_str(), Some("mutation"));
+    let mutation_manifest =
+        fs::read_to_string(vault_root.join(".agents/skills/append-tool/SKILL.md"))
+            .expect("mutation manifest should read");
+    assert!(mutation_manifest.contains("dry_run"));
+    assert!(mutation_manifest.contains("name: dry-run"));
+    assert!(mutation_manifest.contains("action: boolean"));
 
     let lint_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -10540,8 +10565,12 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
         .success();
     let test_all_json = parse_stdout_json(&test_all_assert);
     assert_eq!(test_all_json["passed"].as_bool(), Some(true));
-    assert_eq!(test_all_json["checked"].as_u64(), Some(1));
-    assert_eq!(test_all_json["tools"][0]["name"], "skill_echo_tool_run");
+    assert_eq!(test_all_json["checked"].as_u64(), Some(2));
+    assert!(test_all_json["tools"]
+        .as_array()
+        .expect("tool reports")
+        .iter()
+        .any(|tool| tool["name"] == "skill_echo_tool_run"));
 
     let compat_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")

@@ -134,6 +134,7 @@ Examples:
   vulcan tool show skill_conversation_export_export
   vulcan tool help conversation-export
   vulcan tool init meeting-summary --description 'Summarize a meeting transcript'
+  vulcan tool init append-log --template mutation
   vulcan tool lint conversation-export
   vulcan tool test conversation-export --example dry-run-cli
   vulcan tool test --all --profile daily-wiki-agent
@@ -2848,6 +2849,13 @@ pub enum ToolCommand {
             help = "Skill command id to generate"
         )]
         command: String,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ToolInitTemplateArg::Minimal,
+            help = "Starter template to scaffold"
+        )]
+        template: ToolInitTemplateArg,
         #[arg(long, help = "Preview the scaffold without writing files")]
         dry_run: bool,
         #[arg(long, help = "Replace an existing scaffold")]
@@ -2916,6 +2924,15 @@ pub enum ToolCommand {
         )]
         args: Vec<String>,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ToolInitTemplateArg {
+    Minimal,
+    Reader,
+    Mutation,
+    Exporter,
+    Wrapper,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

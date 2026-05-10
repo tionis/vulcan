@@ -7,8 +7,10 @@ Define tools as commands under `.agents/skills/<skill-name>/SKILL.md` in
 `metadata.vulcan.commands` with `expose: true`. `vulcan tool list/show/run`,
 MCP, `describe`, and JS `tools.call()` all use that same exposed command registry.
 
-Use `vulcan tool init <alias>` for the starter scaffold, `vulcan tool lint` for
-authoring checks, and `vulcan tool test` for declared examples. `tool lint --fix`
+Use `vulcan tool init <alias>` for the starter scaffold. Add `--template
+reader`, `mutation`, `exporter`, or `wrapper` when a more specific starting
+point is useful. Use `vulcan tool lint` for authoring checks, and `vulcan tool
+test` for declared examples. `tool lint --fix`
 only applies safe packaging repairs such as shebang normalization and executable
 bits; mutation-capable tools should expose a boolean dry-run input and at least
 one dry-run example. Examples may use inline `input`, `cli_args`, or fixture
