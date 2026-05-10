@@ -10475,6 +10475,76 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
     let run_json = parse_stdout_json(&run_assert);
     assert_eq!(run_json["result"]["message"], "custom");
     assert_eq!(run_json["result"]["length"].as_u64(), Some(6));
+
+    fs::create_dir_all(vault_root.join(".agents/skills/echo-tool/examples"))
+        .expect("examples dir should be created");
+    fs::write(
+        vault_root.join(".agents/skills/echo-tool/examples/input.json"),
+        r#"{"message":"fixture"}"#,
+    )
+    .expect("input fixture should write");
+    fs::write(
+        vault_root.join(".agents/skills/echo-tool/examples/expected.json"),
+        r#"{"message":"fixture","length":7}"#,
+    )
+    .expect("expected fixture should write");
+    let manifest_path = vault_root.join(".agents/skills/echo-tool/SKILL.md");
+    let manifest = fs::read_to_string(&manifest_path).expect("manifest should read");
+    fs::write(
+        &manifest_path,
+        manifest.replace(
+            "          - name: smoke\n            cli_args: [--message, hello]\n            expected_output:\n              message: hello\n              length: 5\n",
+            "          - name: smoke\n            cli_args: [--message, hello]\n            expected_output:\n              message: hello\n              length: 5\n          - name: file-fixture\n            input_file: examples/input.json\n            expected_output_file: examples/expected.json\n          - name: mismatch\n            cli_args: [--message, hi]\n            expected_output:\n              message: hi\n              length: 999\n",
+        ),
+    )
+    .expect("manifest should update");
+
+    let file_example_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "test",
+            "echo-tool",
+            "--example",
+            "file-fixture",
+        ])
+        .assert()
+        .success();
+    let file_example_json = parse_stdout_json(&file_example_assert);
+    assert_eq!(file_example_json["passed"].as_bool(), Some(true));
+    assert_eq!(
+        file_example_json["examples"][0]["input"]["message"].as_str(),
+        Some("fixture")
+    );
+
+    let mismatch_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "test",
+            "echo-tool",
+            "--example",
+            "mismatch",
+        ])
+        .assert()
+        .failure();
+    let mismatch_json = parse_stdout_json_lines(&mismatch_assert)
+        .into_iter()
+        .next()
+        .expect("tool test should print a JSON report before failing");
+    assert_eq!(mismatch_json["passed"].as_bool(), Some(false));
+    assert_eq!(
+        mismatch_json["examples"][0]["diff"][0].as_str(),
+        Some("$.length: expected 999, got 2")
+    );
 }
 
 #[test]

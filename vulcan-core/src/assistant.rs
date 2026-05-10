@@ -119,10 +119,14 @@ pub struct AssistantSkillCommandExample {
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_file: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cli_args: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_output: Option<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_output_file: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -656,15 +660,44 @@ fn validate_skill_command_examples(
                 "skill command `{command_id}` has an example with an empty name"
             )));
         }
-        if example.input.is_some() && !example.cli_args.is_empty() {
+        let input_sources = usize::from(example.input.is_some())
+            + usize::from(example.input_file.is_some())
+            + usize::from(!example.cli_args.is_empty());
+        if input_sources > 1 {
             return Err(AssistantError::parse(format!(
-                "skill command `{command_id}` example `{}` must set either `input` or `cli_args`, not both",
+                "skill command `{command_id}` example `{}` must set only one of `input`, `input_file`, or `cli_args`",
                 example.name
             )));
         }
-        if example.input.is_none() && example.cli_args.is_empty() {
+        if input_sources == 0 {
             return Err(AssistantError::parse(format!(
-                "skill command `{command_id}` example `{}` must set `input` or `cli_args`",
+                "skill command `{command_id}` example `{}` must set `input`, `input_file`, or `cli_args`",
+                example.name
+            )));
+        }
+        if example
+            .input_file
+            .as_ref()
+            .is_some_and(|path| path.trim().is_empty())
+        {
+            return Err(AssistantError::parse(format!(
+                "skill command `{command_id}` example `{}` has an empty input_file",
+                example.name
+            )));
+        }
+        if example.expected_output.is_some() && example.expected_output_file.is_some() {
+            return Err(AssistantError::parse(format!(
+                "skill command `{command_id}` example `{}` must set either `expected_output` or `expected_output_file`, not both",
+                example.name
+            )));
+        }
+        if example
+            .expected_output_file
+            .as_ref()
+            .is_some_and(|path| path.trim().is_empty())
+        {
+            return Err(AssistantError::parse(format!(
+                "skill command `{command_id}` example `{}` has an empty expected_output_file",
                 example.name
             )));
         }

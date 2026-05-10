@@ -2761,6 +2761,8 @@ struct ToolTestExampleReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     expected_output: Option<Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    diff: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
 }
 
@@ -3613,6 +3615,7 @@ fn run_tool_examples(
     registry_options: &tools::CustomToolRegistryOptions,
 ) -> Result<ToolTestReport, CliError> {
     let show = tools::show_custom_tool(paths, cli.permissions.as_deref(), name, registry_options)?;
+    let example_base_dir = tool_example_base_dir(paths, &show.tool.summary)?;
     let examples = show
         .tool
         .summary
@@ -3620,58 +3623,15 @@ fn run_tool_examples(
         .iter()
         .filter(|example| example_filter.is_none_or(|filter| example.name == filter))
         .map(|example| {
-            let input = if let Some(input) = &example.input {
-                Ok(input.clone())
-            } else {
-                tools::build_custom_tool_cli_input(paths, name, &example.cli_args, registry_options)
-                    .map(|(_, input)| input)
-            };
-            let input = match input {
-                Ok(input) => input,
-                Err(error) => {
-                    return ToolTestExampleReport {
-                        name: example.name.clone(),
-                        input: json!({}),
-                        passed: false,
-                        output: None,
-                        expected_output: example.expected_output.clone(),
-                        error: Some(error.to_string()),
-                    }
-                }
-            };
-            match tools::run_custom_tool(
+            run_tool_example(
+                cli,
                 paths,
-                cli.permissions.as_deref(),
+                name,
                 &show.tool.summary.name,
-                &input,
+                example,
+                &example_base_dir,
                 registry_options,
-                &tools::CustomToolRunOptions {
-                    surface: "cli.tool.test".to_string(),
-                },
-            ) {
-                Ok(report) => {
-                    let expected_output = example.expected_output.clone();
-                    let passed = expected_output
-                        .as_ref()
-                        .is_none_or(|expected| expected == &report.result);
-                    ToolTestExampleReport {
-                        name: example.name.clone(),
-                        input,
-                        passed,
-                        output: Some(report.result),
-                        expected_output,
-                        error: None,
-                    }
-                }
-                Err(error) => ToolTestExampleReport {
-                    name: example.name.clone(),
-                    input,
-                    passed: false,
-                    output: None,
-                    expected_output: example.expected_output.clone(),
-                    error: Some(error.to_string()),
-                },
-            }
+            )
         })
         .collect::<Vec<_>>();
     if examples.is_empty() {
@@ -3688,6 +3648,237 @@ fn run_tool_examples(
         passed: examples.iter().all(|example| example.passed),
         examples,
     })
+}
+
+fn run_tool_example(
+    cli: &Cli,
+    paths: &VaultPaths,
+    requested_name: &str,
+    resolved_name: &str,
+    example: &vulcan_core::AssistantSkillCommandExample,
+    example_base_dir: &Path,
+    registry_options: &tools::CustomToolRegistryOptions,
+) -> ToolTestExampleReport {
+    let input = match tool_example_input(
+        paths,
+        requested_name,
+        example,
+        example_base_dir,
+        registry_options,
+    ) {
+        Ok(input) => input,
+        Err(error) => {
+            return ToolTestExampleReport {
+                name: example.name.clone(),
+                input: json!({}),
+                passed: false,
+                output: None,
+                expected_output: None,
+                diff: None,
+                error: Some(error.to_string()),
+            }
+        }
+    };
+    let expected_output = match tool_example_expected_output(example, example_base_dir) {
+        Ok(expected_output) => expected_output,
+        Err(error) => {
+            return ToolTestExampleReport {
+                name: example.name.clone(),
+                input,
+                passed: false,
+                output: None,
+                expected_output: None,
+                diff: None,
+                error: Some(error.to_string()),
+            }
+        }
+    };
+    match tools::run_custom_tool(
+        paths,
+        cli.permissions.as_deref(),
+        resolved_name,
+        &input,
+        registry_options,
+        &tools::CustomToolRunOptions {
+            surface: "cli.tool.test".to_string(),
+        },
+    ) {
+        Ok(report) => {
+            let diff = expected_output.as_ref().and_then(|expected| {
+                let diff = json_value_diff("$", expected, &report.result);
+                (!diff.is_empty()).then_some(diff)
+            });
+            ToolTestExampleReport {
+                name: example.name.clone(),
+                input,
+                passed: diff.is_none(),
+                output: Some(report.result),
+                expected_output,
+                diff,
+                error: None,
+            }
+        }
+        Err(error) => ToolTestExampleReport {
+            name: example.name.clone(),
+            input,
+            passed: false,
+            output: None,
+            expected_output,
+            diff: None,
+            error: Some(error.to_string()),
+        },
+    }
+}
+
+fn tool_example_input(
+    paths: &VaultPaths,
+    requested_name: &str,
+    example: &vulcan_core::AssistantSkillCommandExample,
+    example_base_dir: &Path,
+    registry_options: &tools::CustomToolRegistryOptions,
+) -> Result<Value, CliError> {
+    if let Some(input) = &example.input {
+        Ok(input.clone())
+    } else if let Some(input_file) = &example.input_file {
+        read_skill_example_json_file(example_base_dir, input_file)
+    } else {
+        tools::build_custom_tool_cli_input(
+            paths,
+            requested_name,
+            &example.cli_args,
+            registry_options,
+        )
+        .map(|(_, input)| input)
+    }
+}
+
+fn tool_example_expected_output(
+    example: &vulcan_core::AssistantSkillCommandExample,
+    example_base_dir: &Path,
+) -> Result<Option<Value>, CliError> {
+    if let Some(expected_output) = &example.expected_output {
+        Ok(Some(expected_output.clone()))
+    } else if let Some(expected_output_file) = &example.expected_output_file {
+        read_skill_example_json_file(example_base_dir, expected_output_file).map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+fn tool_example_base_dir(
+    paths: &VaultPaths,
+    tool: &vulcan_core::AssistantToolSummary,
+) -> Result<PathBuf, CliError> {
+    let manifest_path = paths.vault_root().join(&tool.path);
+    if manifest_path.exists() {
+        return manifest_path
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| CliError::operation("tool manifest has no parent directory"));
+    }
+    let config = load_vault_config(paths).config;
+    let manifest_path = paths
+        .vault_root()
+        .join(config.assistant.skills_folder)
+        .join(&tool.path);
+    manifest_path
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| CliError::operation("tool manifest has no parent directory"))
+}
+
+fn read_skill_example_json_file(base_dir: &Path, relative_path: &str) -> Result<Value, CliError> {
+    let relative_path = safe_relative_example_path(relative_path)?;
+    let path = base_dir.join(relative_path);
+    let source = fs::read_to_string(&path).map_err(|error| {
+        CliError::operation(format!("failed to read {}: {error}", path.display()))
+    })?;
+    serde_json::from_str(&source).map_err(|error| {
+        CliError::operation(format!(
+            "failed to parse {} as JSON: {error}",
+            path.display()
+        ))
+    })
+}
+
+fn safe_relative_example_path(value: &str) -> Result<PathBuf, CliError> {
+    let path = Path::new(value);
+    if path.is_absolute() {
+        return Err(CliError::operation(format!(
+            "example file path `{value}` must be relative"
+        )));
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
+    {
+        return Err(CliError::operation(format!(
+            "example file path `{value}` must stay inside the skill directory"
+        )));
+    }
+    Ok(path.to_path_buf())
+}
+
+fn json_value_diff(path: &str, expected: &Value, actual: &Value) -> Vec<String> {
+    match (expected, actual) {
+        (Value::Object(expected), Value::Object(actual)) => {
+            let keys = expected
+                .keys()
+                .chain(actual.keys())
+                .collect::<BTreeSet<_>>();
+            keys.into_iter()
+                .flat_map(|key| {
+                    let child_path = format!("{path}.{key}");
+                    match (expected.get(key), actual.get(key)) {
+                        (Some(expected), Some(actual)) => {
+                            json_value_diff(&child_path, expected, actual)
+                        }
+                        (Some(expected), None) => vec![format!(
+                            "{child_path}: missing actual value, expected {}",
+                            compact_json(expected)
+                        )],
+                        (None, Some(actual)) => vec![format!(
+                            "{child_path}: unexpected actual value {}",
+                            compact_json(actual)
+                        )],
+                        (None, None) => Vec::new(),
+                    }
+                })
+                .collect()
+        }
+        (Value::Array(expected), Value::Array(actual)) => {
+            let max_len = expected.len().max(actual.len());
+            (0..max_len)
+                .flat_map(|index| {
+                    let child_path = format!("{path}[{index}]");
+                    match (expected.get(index), actual.get(index)) {
+                        (Some(expected), Some(actual)) => {
+                            json_value_diff(&child_path, expected, actual)
+                        }
+                        (Some(expected), None) => vec![format!(
+                            "{child_path}: missing actual value, expected {}",
+                            compact_json(expected)
+                        )],
+                        (None, Some(actual)) => vec![format!(
+                            "{child_path}: unexpected actual value {}",
+                            compact_json(actual)
+                        )],
+                        (None, None) => Vec::new(),
+                    }
+                })
+                .collect()
+        }
+        _ if expected == actual => Vec::new(),
+        _ => vec![format!(
+            "{path}: expected {}, got {}",
+            compact_json(expected),
+            compact_json(actual)
+        )],
+    }
+}
+
+fn compact_json(value: &Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "<unprintable>".to_string())
 }
 
 fn render_skill_backed_tool_manifest(
@@ -4103,6 +4294,11 @@ fn print_tool_test_report(output: OutputFormat, report: &ToolTestReport) -> Resu
                 );
                 if let Some(error) = &example.error {
                     println!("  error: {error}");
+                }
+                if let Some(diff) = &example.diff {
+                    for line in diff {
+                        println!("  diff: {line}");
+                    }
                 }
             }
             Ok(())

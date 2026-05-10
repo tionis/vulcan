@@ -55,8 +55,10 @@ input objects before schema validation.
 
 Declare `examples` beside the command metadata to make the tool self-testing and
 documented. `vulcan tool test <tool-or-alias>` runs every example, and
-`--example <name>` selects one. Examples can provide raw `input` or shell-style
-`cli_args`; optional `expected_output` is compared exactly.
+`--example <name>` selects one. Examples can provide raw `input`, `input_file`
+relative to the skill directory, or shell-style `cli_args`; optional
+`expected_output` or `expected_output_file` is compared exactly. Mismatches are
+reported with JSON path diffs.
 
 Use `vulcan tool lint [<tool-or-alias>] --strict` before exposing a custom tool to
 external harnesses. It checks for schemas, CLI aliases, examples, required-field

@@ -99,8 +99,9 @@ Use `choices` for choice flags and `completion` for dynamic value completion con
 such as `note`, `vault-path`, `daily-date`, or `task-view`.
 
 Add `examples` for smoke tests and help text. Each example must provide either
-`input` or `cli_args`; `expected_output` is optional and, when present, is compared
-exactly by `vulcan tool test`.
+`input`, `input_file`, or `cli_args`; `expected_output` or `expected_output_file`
+is optional and, when present, is compared exactly by `vulcan tool test`. Use
+fixture files under the skill directory for large inputs such as transcripts.
 
 ## Script Rules
 

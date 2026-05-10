@@ -167,7 +167,8 @@ Optional fields:
 - `cli`: optional aliases and shell-friendly flag mappings for `vulcan tool run <alias>`
   and Bash/Fish/Zsh dynamic shell completions
 - `examples`: optional runnable smoke examples for `vulcan tool test`; each example
-  uses either `input` or `cli_args`, with optional exact `expected_output`
+  uses one of `input`, `input_file`, or `cli_args`, with optional exact
+  `expected_output` or `expected_output_file`
 
 Validation rules:
 
@@ -185,6 +186,7 @@ Validation rules:
   `append_message`. Dotted fields such as `options.limit` create nested input objects.
 - Exposed commands should declare `output_schema`, a CLI alias, and examples; `vulcan skill validate`
   reports warnings when these maintainability fields are missing.
+- Example fixture paths are resolved relative to the skill directory and must stay inside it.
 - `sandbox = none` is not valid for projected skill commands.
 - `permission_profile` can narrow authority but cannot widen the caller's authority.
 
