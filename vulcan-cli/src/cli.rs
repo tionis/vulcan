@@ -122,6 +122,8 @@ Notes:
   Tools may declare custom CLI aliases and flags in `metadata.vulcan.commands[].cli`.
   Custom flags are only an input adapter; the final JSON still uses the tool schema.
   CLI metadata supports typed flags, repeated array flags, nested fields, and value completions.
+  `tool test` supports inline examples, fixture files relative to the skill directory,
+  and JSON path diffs for expected-output mismatches.
 
 Examples:
   vulcan tool list
