@@ -352,7 +352,7 @@ Behavior:
 - `vulcan web search <query> [--backend <name>] [--limit <n>]`: query the configured web search backend and return title/url/snippet results.
 - `vulcan web fetch <url> [--mode markdown|html|raw] [--save <path>]`: fetch one URL and render or save the response body.
 - `vulcan help [<topic>] [--search <keyword>]`: browse integrated command and concept docs, with `--output json` for structured help consumers.
-- Built-in help topics include `getting-started`, `examples`, `filters`, `query-dsl`, `scripting`, `sandbox`, `js`, `js.vault`, `js.vault.graph`, and `js.vault.note`.
+- Built-in help topics include `getting-started`, `examples`, `filters`, `query-dsl`, `custom-tools`, `scripting`, `sandbox`, `js`, `js.vault`, `js.vault.graph`, and `js.vault.note`.
 - `vulcan describe [--format json-schema|openai-tools|mcp]`: export the CLI surface for humans or tool integrations.
 
 Behavior:

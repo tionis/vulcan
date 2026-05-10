@@ -896,6 +896,18 @@ fn help_topics_cover_custom_tools_host_execution_and_surface_comparison() {
                 .and(predicate::str::contains("Use a skill command"))
                 .and(predicate::str::contains("Use a plugin")),
         );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["help", "custom-tools"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Skill Command Tools")
+                .and(predicate::str::contains("vulcan tool init"))
+                .and(predicate::str::contains("vulcan tool test"))
+                .and(predicate::str::contains("tools.callChecked()")),
+        );
 }
 
 #[test]
