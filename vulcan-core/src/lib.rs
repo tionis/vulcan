@@ -48,16 +48,14 @@ pub mod web;
 pub mod write_lock;
 
 pub use assistant::{
-    assistant_config_summary, assistant_prompts_root, assistant_skills_root, assistant_tools_root,
+    assistant_config_summary, assistant_prompts_root, assistant_skills_root,
     default_assistant_tool_reserved_names, list_assistant_prompts, list_assistant_skills,
-    list_assistant_tool_manifest_paths, list_assistant_tools, load_assistant_prompt,
-    load_assistant_skill, load_assistant_tool, load_assistant_tool_manifest,
-    read_vault_agents_file, render_assistant_prompt, AssistantConfigSummary, AssistantError,
-    AssistantPrompt, AssistantPromptArgument, AssistantPromptSummary, AssistantSkill,
-    AssistantSkillCommandCli, AssistantSkillCommandCliArg, AssistantSkillCommandCliArgAction,
-    AssistantSkillCommandExample, AssistantSkillCommandSummary, AssistantSkillSummary,
-    AssistantTool, AssistantToolRuntime, AssistantToolSecretSpec, AssistantToolSummary,
-    AssistantToolValidationOptions,
+    load_assistant_prompt, load_assistant_skill, read_vault_agents_file, render_assistant_prompt,
+    AssistantConfigSummary, AssistantError, AssistantPrompt, AssistantPromptArgument,
+    AssistantPromptSummary, AssistantSkill, AssistantSkillCommandCli, AssistantSkillCommandCliArg,
+    AssistantSkillCommandCliArgAction, AssistantSkillCommandExample, AssistantSkillCommandSummary,
+    AssistantSkillSummary, AssistantTool, AssistantToolRuntime, AssistantToolSecretSpec,
+    AssistantToolSummary,
 };
 pub use bases::{
     bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, evaluate_base_file,

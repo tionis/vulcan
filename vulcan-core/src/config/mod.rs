@@ -491,8 +491,6 @@ pub struct AssistantConfig {
     pub prompts_folder: PathBuf,
     #[serde(default = "default_assistant_skills_folder")]
     pub skills_folder: PathBuf,
-    #[serde(default = "default_assistant_tools_folder")]
-    pub tools_folder: PathBuf,
 }
 
 impl Default for AssistantConfig {
@@ -500,7 +498,6 @@ impl Default for AssistantConfig {
         Self {
             prompts_folder: default_assistant_prompts_folder(),
             skills_folder: default_assistant_skills_folder(),
-            tools_folder: default_assistant_tools_folder(),
         }
     }
 }
@@ -511,10 +508,6 @@ fn default_assistant_prompts_folder() -> PathBuf {
 
 fn default_assistant_skills_folder() -> PathBuf {
     PathBuf::from(".agents/skills")
-}
-
-fn default_assistant_tools_folder() -> PathBuf {
-    PathBuf::from(".agents/tools")
 }
 
 /// Which HTTP-based search provider to use.
@@ -4272,10 +4265,6 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         if let Some(skills_folder) = assistant.skills_folder {
             config.assistant.skills_folder =
                 normalize_template_pathbuf(&skills_folder).unwrap_or_default();
-        }
-        if let Some(tools_folder) = assistant.tools_folder {
-            config.assistant.tools_folder =
-                normalize_template_pathbuf(&tools_folder).unwrap_or_default();
         }
     }
 

@@ -176,7 +176,6 @@ pub(super) struct PartialQuickAddAiConfig {
 pub(super) struct PartialAssistantConfig {
     pub(super) prompts_folder: Option<PathBuf>,
     pub(super) skills_folder: Option<PathBuf>,
-    pub(super) tools_folder: Option<PathBuf>,
 }
 
 #[derive(Debug, Deserialize, Default)]
