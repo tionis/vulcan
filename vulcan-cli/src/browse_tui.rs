@@ -2776,8 +2776,10 @@ struct CalendarViewState {
 
 impl CalendarViewState {
     fn new(paths: &VaultPaths) -> Result<Self, String> {
-        let selected_date = parse_calendar_date(&super::current_utc_date_string())
-            .ok_or_else(|| "failed to resolve today's date for the calendar view".to_string())?;
+        let selected_date = parse_calendar_date(
+            &crate::commands::periodic::current_utc_date_string(),
+        )
+        .ok_or_else(|| "failed to resolve today's date for the calendar view".to_string())?;
         let config = load_periodic_config(paths);
         let start_of_week = calendar_start_of_week(&config);
         let mut state = Self {
