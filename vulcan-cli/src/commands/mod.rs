@@ -9,6 +9,7 @@ pub(crate) mod index;
 pub(crate) mod kanban;
 pub(crate) mod note;
 pub(crate) mod periodic;
+pub(crate) mod plugin;
 pub(crate) mod query;
 pub(crate) mod refactor;
 pub(crate) mod runtime;
