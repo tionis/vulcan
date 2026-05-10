@@ -1,5 +1,8 @@
 The JS runtime surface builds on the DataviewJS-compatible sandbox already embedded in Vulcan.
 
+Contract: `vulcan-js-api` version `1`. See `help js.contract` and
+`docs/reference/js-api/contract.json` for the versioned namespace inventory.
+
 Available today:
 
 - `vulcan run <file.js>` and `vulcan run <script-name>`
@@ -28,4 +31,4 @@ Current write/network surface:
 - `vault.note(path).properties.*` for frontmatter get/set/unset/merge helpers
 - `web.search()` and `web.fetch()` when the sandbox is `net` or `none`
 
-See also: `help js.vault`, `help js.tools`, `help js.skills`, `help js.host`, `help js.vault.graph`, `help js.vault.note`.
+See also: `help js.contract`, `help js.vault`, `help js.tools`, `help js.skills`, `help js.host`, `help js.vault.graph`, `help js.vault.note`.
