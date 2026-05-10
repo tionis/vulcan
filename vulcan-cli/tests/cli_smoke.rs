@@ -16961,7 +16961,7 @@ fn help_json_output_returns_structured_topic_docs() {
         .as_str()
         .expect("body should be present");
     assert!(overview_body.contains("## Notes"));
-    assert!(overview_body.contains("`vulcan describe` exports the same command surface"));
+    assert!(overview_body.contains("`vulcan describe` exports the full CLI schema"));
     assert!(!overview_body.contains("## Command Tree"));
 }
 
@@ -16978,7 +16978,7 @@ fn help_human_output_uses_grouped_overview_and_parent_subcommand_examples() {
                     "- `note get` — Open a note, resolve its path, or print frontmatter",
                 ))
                 .and(predicate::str::contains(
-                    "`vulcan describe` exports the same command surface",
+                    "`vulcan describe` exports the full CLI schema",
                 ))
                 .and(predicate::str::contains("Command Tree").not()),
         );
@@ -17474,6 +17474,13 @@ fn describe_openai_and_mcp_formats_export_tool_definitions() {
     assert!(openai_tools
         .iter()
         .any(|tool| tool["function"]["name"] == "note_get"));
+    assert!(
+        openai_tools.len() < 60,
+        "openai-tools should expose the curated agent registry, not every CLI leaf command"
+    );
+    assert!(!openai_tools
+        .iter()
+        .any(|tool| tool["function"]["name"] == "cache_scan"));
     assert!(openai_tools
         .iter()
         .any(|tool| tool["function"]["name"] == summarize_tool));

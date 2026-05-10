@@ -155,11 +155,7 @@ pub(crate) fn custom_tool_registry_options() -> tools::CustomToolRegistryOptions
     let mut reserved_names = default_assistant_tool_reserved_names()
         .into_iter()
         .collect::<BTreeSet<_>>();
-    reserved_names.extend(
-        collect_leaf_commands(&cli_command_tree())
-            .into_iter()
-            .map(|tool| tool.name),
-    );
+    reserved_names.extend(collect_cli_leaf_tool_names(&cli_command_tree()));
     tools::CustomToolRegistryOptions {
         reserved_names: reserved_names.into_iter().collect(),
         ..tools::CustomToolRegistryOptions::default()
@@ -11564,7 +11560,8 @@ fn print_describe_report(
             }
         }
         DescribeFormatArg::OpenaiTools => {
-            let tools = build_openai_tool_definitions(paths, requested_profile)?;
+            let tools =
+                build_openai_tool_definitions(paths, requested_profile, tool_pack, tool_pack_mode)?;
             match output {
                 OutputFormat::Human | OutputFormat::Markdown => {
                     println!(
@@ -18560,6 +18557,128 @@ fn cli_command_tree() -> clap::Command {
     Cli::command().bin_name("vulcan")
 }
 
+fn collect_cli_leaf_tool_names(command: &clap::Command) -> Vec<String> {
+    let mut names = Vec::new();
+    for subcommand in command
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
+    {
+        collect_cli_leaf_tool_names_inner(subcommand, Vec::new(), &mut names);
+    }
+    names
+}
+
+fn collect_cli_leaf_tool_names_inner(
+    command: &clap::Command,
+    mut prefix: Vec<String>,
+    names: &mut Vec<String>,
+) {
+    prefix.push(command.get_name().to_string());
+    let subcommands = command
+        .get_subcommands()
+        .filter(|subcommand| !subcommand.is_hide_set())
+        .collect::<Vec<_>>();
+    if subcommands.is_empty() {
+        names.push(tool_name_from_path(&prefix));
+        return;
+    }
+    for subcommand in subcommands {
+        collect_cli_leaf_tool_names_inner(subcommand, prefix.clone(), names);
+    }
+}
+
+fn tool_name_from_path(path: &[String]) -> String {
+    let path = path.iter().map(String::as_str).collect::<Vec<_>>();
+    tool_name_from_str_path(&path)
+}
+
+fn tool_name_from_str_path(path: &[&str]) -> String {
+    path.iter()
+        .map(|segment| segment.replace('-', "_"))
+        .collect::<Vec<_>>()
+        .join("_")
+}
+
+fn command_input_schema(command: &clap::Command) -> Value {
+    let mut properties = Map::new();
+    let mut required = Vec::new();
+    for argument in command
+        .get_arguments()
+        .filter(|argument| !argument.is_global_set())
+    {
+        properties.insert(
+            argument.get_id().to_string(),
+            argument_json_schema(argument),
+        );
+        if argument.is_required_set() {
+            required.push(Value::String(argument.get_id().to_string()));
+        }
+    }
+    let mut schema = Map::new();
+    schema.insert("type".to_string(), Value::String("object".to_string()));
+    schema.insert("properties".to_string(), Value::Object(properties));
+    schema.insert("additionalProperties".to_string(), Value::Bool(false));
+    if !required.is_empty() {
+        schema.insert("required".to_string(), Value::Array(required));
+    }
+    Value::Object(schema)
+}
+
+fn argument_json_schema(argument: &clap::Arg) -> Value {
+    let schema = match argument.get_action() {
+        clap::ArgAction::SetTrue | clap::ArgAction::SetFalse => serde_json::json!({
+            "type": "boolean",
+        }),
+        clap::ArgAction::Append => serde_json::json!({
+            "type": "array",
+            "items": scalar_argument_schema(argument),
+        }),
+        clap::ArgAction::Count => serde_json::json!({
+            "type": "integer",
+        }),
+        _ => scalar_argument_schema(argument),
+    };
+
+    let mut schema = schema;
+    if let Some(description) = argument.get_help().map(ToString::to_string) {
+        if let Some(object) = schema.as_object_mut() {
+            object.insert("description".to_string(), Value::String(description));
+        }
+    }
+    if let Some(default) = argument.get_default_values().first() {
+        if let Some(object) = schema.as_object_mut() {
+            object.insert(
+                "default".to_string(),
+                Value::String(default.to_string_lossy().to_string()),
+            );
+        }
+    }
+    schema
+}
+
+fn scalar_argument_schema(argument: &clap::Arg) -> Value {
+    let values = argument
+        .get_possible_values()
+        .into_iter()
+        .map(|value| Value::String(value.get_name().to_string()))
+        .collect::<Vec<_>>();
+    if values
+        == [
+            Value::String("true".to_string()),
+            Value::String("false".to_string()),
+        ]
+    {
+        serde_json::json!({ "type": "boolean" })
+    } else if values.is_empty() {
+        serde_json::json!({ "type": "string" })
+    } else {
+        serde_json::json!({
+            "type": "string",
+            "enum": values,
+        })
+    }
+}
+
 fn print_describe_human(report: &CliDescribeReport) {
     let command_count = count_described_commands(&report.commands);
     println!("Machine-readable Vulcan tool schema");
@@ -18576,8 +18695,8 @@ fn print_describe_human(report: &CliDescribeReport) {
     println!();
     println!("Use one of:");
     println!("- `vulcan --output json describe` for the recursive CLI schema");
-    println!("- `vulcan describe --format openai-tools` for OpenAI tool definitions");
-    println!("- `vulcan describe --format mcp` for MCP tool definitions");
+    println!("- `vulcan describe --format openai-tools` for curated OpenAI tool definitions");
+    println!("- `vulcan describe --format mcp` for curated MCP tool definitions");
 }
 
 fn count_described_commands(commands: &[CliCommandDescribe]) -> usize {
@@ -18884,8 +19003,8 @@ fn help_overview() -> HelpTopicReport {
     );
     body.push_str(&concept_names.join(", "));
     body.push_str(
-        "\n\nFor external runtimes and tool integrations, `vulcan describe` exports the same \
-command surface as machine-readable `json-schema`, `openai-tools`, or `mcp` definitions.\n\n---\n",
+        "\n\nFor external runtimes and tool integrations, `vulcan describe` exports the full \
+CLI schema as `json-schema` and the curated agent tool registry as `openai-tools` or `mcp` definitions.\n\n---\n",
     );
 
     for (group, commands) in groups {
@@ -19474,42 +19593,53 @@ fn find_command<'a>(command: &'a clap::Command, path: &[&str]) -> Option<&'a cla
 fn build_openai_tool_definitions(
     paths: &VaultPaths,
     requested_profile: Option<&str>,
+    tool_pack: &[McpToolPackArg],
+    tool_pack_mode: McpToolPackModeArg,
 ) -> Result<OpenAiToolsReport, CliError> {
-    let mut tools = cli_leaf_tool_registry_entries()
-        .into_iter()
-        .map(ToolRegistryEntry::into_openai_definition)
-        .collect::<Vec<_>>();
-    tools.extend(
-        tools::list_custom_tools(paths, requested_profile, &custom_tool_registry_options())?
-            .into_iter()
-            .filter(|tool| tool.callable)
-            .map(|tool| custom_tool_registry_entry(&tool).into_openai_definition()),
-    );
+    let tools = mcp::build_openai_tool_registry_entries(
+        paths,
+        requested_profile,
+        tool_pack,
+        tool_pack_mode,
+    )?
+    .into_iter()
+    .chain(openai_cli_helper_tool_entries())
+    .map(ToolRegistryEntry::into_openai_definition)
+    .collect::<Vec<_>>();
     Ok(OpenAiToolsReport { tools })
 }
 
-#[derive(Debug, Clone)]
-struct ToolCommandDescribe {
-    name: String,
-    description: String,
-    input_schema: Value,
-    examples: Vec<String>,
+const OPENAI_CLI_HELPER_COMMANDS: &[&[&str]] = &[
+    &["skill", "list"],
+    &["skill", "get"],
+    &["agent", "print-config"],
+];
+
+fn openai_cli_helper_tool_entries() -> Vec<ToolRegistryEntry> {
+    let command_tree = cli_command_tree();
+    OPENAI_CLI_HELPER_COMMANDS
+        .iter()
+        .filter_map(|path| command_to_openai_helper_entry(&command_tree, path))
+        .collect()
 }
 
-fn cli_leaf_tool_registry_entries() -> Vec<ToolRegistryEntry> {
-    collect_leaf_commands(&cli_command_tree())
-        .into_iter()
-        .map(|tool| ToolRegistryEntry {
-            title: tool.name.clone(),
-            name: tool.name,
-            description: tool.description,
-            input_schema: tool.input_schema,
-            output_schema: None,
-            annotations: McpToolAnnotations::default(),
-            tool_packs: Vec::new(),
-            examples: tool.examples,
-        })
-        .collect()
+fn command_to_openai_helper_entry(
+    command_tree: &clap::Command,
+    path: &[&str],
+) -> Option<ToolRegistryEntry> {
+    let command = find_command(command_tree, path)?;
+    Some(ToolRegistryEntry {
+        name: tool_name_from_str_path(path),
+        title: path.join(" "),
+        description: command
+            .get_about()
+            .map_or_else(|| path.join(" "), ToString::to_string),
+        input_schema: command_input_schema(command),
+        output_schema: None,
+        annotations: McpToolAnnotations::default(),
+        tool_packs: vec!["assistant".to_string()],
+        examples: extract_examples(command),
+    })
 }
 
 pub(crate) fn custom_tool_registry_entry(tool: &tools::CustomToolDescriptor) -> ToolRegistryEntry {
@@ -19531,130 +19661,6 @@ pub(crate) fn custom_tool_registry_entry(tool: &tools::CustomToolDescriptor) -> 
         },
         tool_packs: tool.summary.packs.clone(),
         examples: Vec::new(),
-    }
-}
-
-fn collect_leaf_commands(command: &clap::Command) -> Vec<ToolCommandDescribe> {
-    let mut tools = Vec::new();
-    for subcommand in command
-        .get_subcommands()
-        .filter(|subcommand| !subcommand.is_hide_set())
-    {
-        collect_leaf_commands_inner(subcommand, Vec::new(), &mut tools);
-    }
-    tools
-}
-
-fn collect_leaf_commands_inner(
-    command: &clap::Command,
-    mut prefix: Vec<String>,
-    tools: &mut Vec<ToolCommandDescribe>,
-) {
-    prefix.push(command.get_name().to_string());
-    let subcommands = command
-        .get_subcommands()
-        .filter(|subcommand| !subcommand.is_hide_set())
-        .collect::<Vec<_>>();
-    if subcommands.is_empty() {
-        tools.push(ToolCommandDescribe {
-            name: tool_name_from_path(&prefix),
-            description: command
-                .get_about()
-                .map_or_else(|| prefix.join(" "), ToString::to_string),
-            input_schema: command_input_schema(command),
-            examples: extract_examples(command),
-        });
-        return;
-    }
-    for subcommand in subcommands {
-        collect_leaf_commands_inner(subcommand, prefix.clone(), tools);
-    }
-}
-
-fn tool_name_from_path(path: &[String]) -> String {
-    path.iter()
-        .map(|segment| segment.replace('-', "_"))
-        .collect::<Vec<_>>()
-        .join("_")
-}
-
-fn command_input_schema(command: &clap::Command) -> Value {
-    let mut properties = Map::new();
-    let mut required = Vec::new();
-    for argument in command
-        .get_arguments()
-        .filter(|argument| !argument.is_global_set())
-    {
-        properties.insert(
-            argument.get_id().to_string(),
-            argument_json_schema(argument),
-        );
-        if argument.is_required_set() {
-            required.push(Value::String(argument.get_id().to_string()));
-        }
-    }
-    let mut schema = Map::new();
-    schema.insert("type".to_string(), Value::String("object".to_string()));
-    schema.insert("properties".to_string(), Value::Object(properties));
-    schema.insert("additionalProperties".to_string(), Value::Bool(false));
-    if !required.is_empty() {
-        schema.insert("required".to_string(), Value::Array(required));
-    }
-    Value::Object(schema)
-}
-
-fn argument_json_schema(argument: &clap::Arg) -> Value {
-    let schema = match argument.get_action() {
-        clap::ArgAction::SetTrue | clap::ArgAction::SetFalse => serde_json::json!({
-            "type": "boolean",
-        }),
-        clap::ArgAction::Append => serde_json::json!({
-            "type": "array",
-            "items": scalar_argument_schema(argument),
-        }),
-        clap::ArgAction::Count => serde_json::json!({
-            "type": "integer",
-        }),
-        _ => scalar_argument_schema(argument),
-    };
-
-    let mut schema = schema;
-    if let Some(description) = argument.get_help().map(ToString::to_string) {
-        if let Some(object) = schema.as_object_mut() {
-            object.insert("description".to_string(), Value::String(description));
-        }
-    }
-    if let Some(default) = argument.get_default_values().first() {
-        if let Some(object) = schema.as_object_mut() {
-            object.insert(
-                "default".to_string(),
-                Value::String(default.to_string_lossy().to_string()),
-            );
-        }
-    }
-    schema
-}
-
-fn scalar_argument_schema(argument: &clap::Arg) -> Value {
-    let values = argument
-        .get_possible_values()
-        .into_iter()
-        .map(|value| Value::String(value.get_name().to_string()))
-        .collect::<Vec<_>>();
-    if values
-        == [
-            Value::String("true".to_string()),
-            Value::String("false".to_string()),
-        ]
-    {
-        serde_json::json!({ "type": "boolean" })
-    } else if values.is_empty() {
-        serde_json::json!({ "type": "string" })
-    } else {
-        serde_json::json!({
-            "type": "string",
-            "enum": values,
-        })
     }
 }
 
