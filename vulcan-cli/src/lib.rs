@@ -174,6 +174,7 @@ mod tools {
     }
 }
 
+pub(crate) use commands::agent::{print_init_summary, run_init_command};
 pub(crate) use commands::bases::{bases_rows, print_bases_report, render_bases_markdown};
 pub(crate) fn custom_tool_registry_options() -> tools::CustomToolRegistryOptions {
     let mut reserved_names = default_assistant_tool_reserved_names()
@@ -410,10 +411,6 @@ pub use cli::{
     VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
-use crate::commands::config::{
-    discover_config_importers, normalize_config_import_report, normalize_import_discovery_item,
-    ConfigImportBatchReport, ConfigImportDiscoveryItem,
-};
 use crate::commit::AutoCommitPolicy;
 use crate::help::{
     builtin_help_topic, builtin_help_topics, help_overview, HelpSearchMatch, HelpSearchReport,
@@ -496,28 +493,27 @@ use vulcan_core::config::{
 use vulcan_core::expression::functions::date_components;
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{
-    all_importers, annotate_import_conflicts, bulk_replace, cache_vacuum, create_checkpoint,
-    default_assistant_tool_reserved_names, delete_saved_report, doctor_fix, doctor_vault,
-    evaluate_base_file, evaluate_dql_with_filter, export_static_search_index, initialize_vault,
-    inspect_cache, link_mentions, list_checkpoints, list_saved_reports, load_saved_report,
-    load_vault_config, merge_tags, move_note, plan_base_note_create, query_change_report,
-    query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref, rename_heading,
-    rename_property, render_note_html, render_vault_html, repair_fts, resolve_note_reference,
-    resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
-    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext,
-    BasesEvalReport, BulkMutationReport, CacheDatabase, CacheInspectReport, CacheVacuumQuery,
-    CacheVacuumReport, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport,
-    DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
-    GraphConfidenceBreakdown, HtmlRenderOptions, ImportTarget, InitSummary, LinkSuggestion,
-    LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport, MergeCandidate,
-    MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport,
-    PermissionFilter, PermissionGuard, PluginEvent, ProfilePermissionGuard, QueryReport,
-    RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RepairFtsQuery, RepairFtsReport,
-    ResolvedPermissionProfile, SavedExport, SavedExportFormat, SavedReportDefinition,
-    SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode, ScanPhase, ScanProgress,
-    ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort, VaultPaths, WatchOptions,
-    WatchReport,
+    bulk_replace, cache_vacuum, create_checkpoint, default_assistant_tool_reserved_names,
+    delete_saved_report, doctor_fix, doctor_vault, evaluate_base_file, evaluate_dql_with_filter,
+    export_static_search_index, inspect_cache, link_mentions, list_checkpoints, list_saved_reports,
+    load_saved_report, load_vault_config, merge_tags, move_note, plan_base_note_create,
+    query_change_report, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
+    rename_heading, rename_property, render_note_html, render_vault_html, repair_fts,
+    resolve_note_reference, resolve_permission_profile, save_saved_report,
+    scan_vault_with_progress, search_vault, verify_cache, watch_vault, AutoScanMode,
+    BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport, BulkMutationReport,
+    CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport,
+    ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, DataviewJsOutput,
+    DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
+    DqlQueryResult, DuplicateSuggestionsReport, GraphConfidenceBreakdown, HtmlRenderOptions,
+    LinkSuggestion, LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport,
+    MergeCandidate, MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
+    OutgoingLinksReport, PermissionFilter, PermissionGuard, PluginEvent, ProfilePermissionGuard,
+    QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RepairFtsQuery,
+    RepairFtsReport, ResolvedPermissionProfile, SavedExport, SavedExportFormat,
+    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
+    ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort,
+    VaultPaths, WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -628,237 +624,6 @@ pub(crate) fn selected_read_permission_filter(
 }
 
 const SCAN_PROGRESS_STEP: usize = 250;
-
-struct BundledTextFile {
-    kind: &'static str,
-    relative_path: &'static str,
-    contents: &'static str,
-    target: BundledFileTarget,
-}
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum BundledFileTarget {
-    VaultRoot,
-    SkillsFolder,
-    PromptsFolder,
-}
-
-const BUNDLED_AGENT_TEMPLATE: BundledTextFile = BundledTextFile {
-    kind: "agents_template",
-    relative_path: "AGENTS.md",
-    contents: include_str!("../../docs/assistant/AGENTS.template.md"),
-    target: BundledFileTarget::VaultRoot,
-};
-
-const BUNDLED_SKILL_FILES: &[BundledTextFile] = &[
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "note-operations/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/note-operations.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "vault-query/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/vault-query.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "js-api-guide/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/js-api-guide.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "skill-creator/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/skill-creator.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "graph-exploration/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/graph-exploration.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "link-curation/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/link-curation.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "daily-notes/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/daily-notes.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "properties-and-tags/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/properties-and-tags.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "refactoring/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/refactoring.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "web-research/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/web-research.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "git-workflow/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/git-workflow.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "task-management/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/task-management.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "configuration-and-permissions/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/configuration-and-permissions.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "mcp-setup/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/mcp-setup.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "index-maintenance/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/index-maintenance.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "dataview-and-bases/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/dataview-and-bases.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "templates-and-capture/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/templates-and-capture.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "publishing-and-export/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/publishing-and-export.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "plugin-authoring/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/plugin-authoring.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "diagnostics-and-repair/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/diagnostics-and-repair.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "conversation-export/SKILL.md",
-        contents: include_str!("../../docs/assistant/skills/conversation-export.md"),
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "conversation-export/scripts/export-conversation.js",
-        contents: include_str!(
-            "../../docs/assistant/skills/conversation-export/export-conversation.js"
-        ),
-        target: BundledFileTarget::SkillsFolder,
-    },
-];
-
-const BUNDLED_PROMPT_FILES: &[BundledTextFile] = &[
-    BundledTextFile {
-        kind: "prompt",
-        relative_path: "summarize-note.md",
-        contents: include_str!("../../docs/assistant/prompts/summarize-note.md"),
-        target: BundledFileTarget::PromptsFolder,
-    },
-    BundledTextFile {
-        kind: "prompt",
-        relative_path: "daily-review.md",
-        contents: include_str!("../../docs/assistant/prompts/daily-review.md"),
-        target: BundledFileTarget::PromptsFolder,
-    },
-];
-
-const BUNDLED_TOOL_FILES: &[BundledTextFile] = &[
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "summarize-note/SKILL.md",
-        contents: r"---
-name: summarize-note
-description: Summarize one vault note.
-license: UNLICENSED
-compatibility:
-  - vulcan
-allowed-tools:
-  - note_get
-metadata:
-  vulcan:
-    commands:
-      - id: summarize
-        script: scripts/summarize.js
-        sandbox: fs
-        packs: [custom]
-        expose: true
-        input_schema:
-          type: object
-          required: [note]
-          properties:
-            note:
-              type: string
-        output_schema:
-          type: object
-          required: [note, summary]
-          properties:
-            note:
-              type: string
-            summary:
-              type: string
----
-
-# Summarize Note
-
-Use this skill command as a minimal Agent Skills-compatible executable example.
-",
-        target: BundledFileTarget::SkillsFolder,
-    },
-    BundledTextFile {
-        kind: "skill",
-        relative_path: "summarize-note/scripts/summarize.js",
-        contents: "#!/usr/bin/env -S vulcan skill exec\nfunction main(input) {\n  return {\n    note: input.note,\n    summary: `TODO: summarize ${input.note}`,\n  };\n}\n",
-        target: BundledFileTarget::SkillsFolder,
-    },
-];
-
-pub(crate) fn bundled_support_relative_paths(paths: &VaultPaths) -> Vec<String> {
-    std::iter::once(&BUNDLED_AGENT_TEMPLATE)
-        .chain(BUNDLED_SKILL_FILES.iter())
-        .chain(BUNDLED_PROMPT_FILES.iter())
-        .map(|file| bundled_text_file_display_path(paths, file))
-        .collect()
-}
 
 #[derive(Clone, Copy)]
 enum RefreshTarget {
@@ -1214,48 +979,6 @@ struct OpenReport {
     uri: String,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-enum SupportFileStatus {
-    Created,
-    Updated,
-    Kept,
-}
-
-impl SupportFileStatus {
-    fn label(self) -> &'static str {
-        match self {
-            Self::Created => "created",
-            Self::Updated => "updated",
-            Self::Kept => "kept",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct SupportFileReport {
-    path: String,
-    kind: String,
-    status: SupportFileStatus,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize)]
-struct InitReport {
-    #[serde(flatten)]
-    summary: InitSummary,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    importable_sources: Vec<ConfigImportDiscoveryItem>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    support_files: Vec<SupportFileReport>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    imported: Option<ConfigImportBatchReport>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct AgentInstallReport {
-    support_files: Vec<SupportFileReport>,
-}
-
 #[allow(clippy::large_enum_variant)]
 enum SavedExecution {
     Search(SearchReport),
@@ -1419,6 +1142,10 @@ fn path_to_string(path: &Path) -> Result<String, CliError> {
     path.to_str()
         .map(ToString::to_string)
         .ok_or_else(|| CliError::operation("export paths must be valid UTF-8"))
+}
+
+fn slash_display_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn run_incremental_scan(
@@ -5698,289 +5425,6 @@ fn print_backlinks_report(
             print_json_lines(rows, list_controls.fields.as_deref())
         }
     }
-}
-
-fn run_init_command(paths: &VaultPaths, args: &InitArgs) -> Result<InitReport, CliError> {
-    let summary = initialize_vault(paths).map_err(CliError::operation)?;
-    let support_files = if args.agent_files {
-        write_bundled_support_files(paths, false, args.example_tool)?
-    } else {
-        Vec::new()
-    };
-    let importable_sources = if args.no_import {
-        Vec::new()
-    } else {
-        discover_config_importers(paths)
-            .into_iter()
-            .filter_map(|(_, discovery)| discovery.detected.then_some(discovery))
-            .collect()
-    };
-    let imported = if args.import {
-        let target = ImportTarget::Shared;
-        let mut reports = Vec::new();
-        for importer in all_importers()
-            .into_iter()
-            .filter(|importer| importer.detect(paths))
-        {
-            reports.push(
-                importer
-                    .import(paths, target)
-                    .map_err(CliError::operation)?,
-            );
-        }
-        annotate_import_conflicts(&mut reports);
-        Some(ConfigImportBatchReport {
-            dry_run: false,
-            target,
-            detected_count: reports.len(),
-            imported_count: reports.len(),
-            updated_count: reports.iter().filter(|report| report.updated).count(),
-            reports,
-        })
-    } else {
-        None
-    };
-    Ok(InitReport {
-        summary,
-        importable_sources,
-        support_files,
-        imported,
-    })
-}
-
-pub(crate) fn run_agent_install_command(
-    paths: &VaultPaths,
-    args: &AgentInstallArgs,
-) -> Result<AgentInstallReport, CliError> {
-    Ok(AgentInstallReport {
-        support_files: write_bundled_support_files(paths, args.overwrite, args.example_tool)?,
-    })
-}
-
-fn print_init_summary(
-    output: OutputFormat,
-    paths: &VaultPaths,
-    report: &InitReport,
-) -> Result<(), CliError> {
-    let normalized_importable = report
-        .importable_sources
-        .iter()
-        .map(|item| normalize_import_discovery_item(paths, item))
-        .collect::<Vec<_>>();
-    let normalized_imported = report
-        .imported
-        .as_ref()
-        .map(|batch| ConfigImportBatchReport {
-            dry_run: batch.dry_run,
-            target: batch.target,
-            detected_count: batch.detected_count,
-            imported_count: batch.imported_count,
-            updated_count: batch.updated_count,
-            reports: batch
-                .reports
-                .iter()
-                .map(|item| normalize_config_import_report(paths, item))
-                .collect(),
-        });
-    let normalized = InitReport {
-        summary: report.summary.clone(),
-        importable_sources: normalized_importable,
-        support_files: report.support_files.clone(),
-        imported: normalized_imported,
-    };
-
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            println!(
-                "Initialized {} (config {}, cache {})",
-                normalized.summary.vault_root.display(),
-                if normalized.summary.created_config {
-                    "created"
-                } else {
-                    "existing"
-                },
-                if normalized.summary.created_cache {
-                    "created"
-                } else {
-                    "existing"
-                },
-            );
-            if let Some(imported) = &normalized.imported {
-                println!(
-                    "Imported {} detected importer{} ({} updated).",
-                    imported.imported_count,
-                    if imported.imported_count == 1 {
-                        ""
-                    } else {
-                        "s"
-                    },
-                    imported.updated_count
-                );
-            } else if !normalized.importable_sources.is_empty() {
-                println!("Importable settings detected:");
-                for importer in &normalized.importable_sources {
-                    println!("- {} ({})", importer.plugin, importer.display_name);
-                }
-                println!("Run `vulcan config import --all` to import them.");
-            }
-            if !normalized.support_files.is_empty() {
-                println!("Bundled agent support files:");
-                print_support_file_reports(&normalized.support_files);
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(&normalized),
-    }
-}
-
-pub(crate) fn print_agent_install_summary(
-    output: OutputFormat,
-    paths: &VaultPaths,
-    report: &AgentInstallReport,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            println!(
-                "Installed bundled agent support files for {}",
-                paths.vault_root().display()
-            );
-            print_support_file_reports(&report.support_files);
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_support_file_reports(files: &[SupportFileReport]) {
-    for file in files {
-        println!("- {} [{}; {}]", file.path, file.kind, file.status.label());
-    }
-}
-
-fn write_bundled_support_files(
-    paths: &VaultPaths,
-    overwrite: bool,
-    include_example_tool: bool,
-) -> Result<Vec<SupportFileReport>, CliError> {
-    let mut reports = Vec::new();
-    reports.push(write_bundled_text_file(
-        paths,
-        &BUNDLED_AGENT_TEMPLATE,
-        overwrite,
-    )?);
-    for file in BUNDLED_SKILL_FILES {
-        reports.push(write_bundled_text_file(paths, file, overwrite)?);
-    }
-    for file in BUNDLED_PROMPT_FILES {
-        reports.push(write_bundled_text_file(paths, file, overwrite)?);
-    }
-    if include_example_tool {
-        for file in BUNDLED_TOOL_FILES {
-            reports.push(write_bundled_text_file(paths, file, overwrite)?);
-        }
-    }
-    Ok(reports)
-}
-
-fn write_bundled_text_file(
-    paths: &VaultPaths,
-    file: &BundledTextFile,
-    overwrite: bool,
-) -> Result<SupportFileReport, CliError> {
-    let destination = bundled_text_file_destination(paths, file);
-    let status = write_bundled_text_contents(&destination, file.contents, overwrite)?;
-    if bundled_text_file_should_be_executable(file) && destination.exists() {
-        set_executable_permissions(&destination)?;
-    }
-    Ok(SupportFileReport {
-        path: bundled_text_file_display_path(paths, file),
-        kind: file.kind.to_string(),
-        status,
-    })
-}
-
-fn bundled_text_file_should_be_executable(file: &BundledTextFile) -> bool {
-    file.target == BundledFileTarget::SkillsFolder
-        && Path::new(file.relative_path)
-            .extension()
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("js"))
-}
-
-fn bundled_text_file_destination(paths: &VaultPaths, file: &BundledTextFile) -> PathBuf {
-    let config = load_vault_config(paths).config.assistant;
-    match file.target {
-        BundledFileTarget::VaultRoot => paths.vault_root().join(file.relative_path),
-        BundledFileTarget::SkillsFolder => paths
-            .vault_root()
-            .join(config.skills_folder)
-            .join(file.relative_path),
-        BundledFileTarget::PromptsFolder => paths
-            .vault_root()
-            .join(config.prompts_folder)
-            .join(file.relative_path),
-    }
-}
-
-fn bundled_text_file_display_path(paths: &VaultPaths, file: &BundledTextFile) -> String {
-    let destination = bundled_text_file_destination(paths, file);
-    destination
-        .strip_prefix(paths.vault_root())
-        .unwrap_or(&destination)
-        .to_string_lossy()
-        .replace('\\', "/")
-}
-
-fn slash_display_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
-fn write_bundled_text_contents(
-    path: &Path,
-    contents: &str,
-    overwrite: bool,
-) -> Result<SupportFileStatus, CliError> {
-    let rendered = if contents.ends_with('\n') {
-        contents.as_bytes().to_vec()
-    } else {
-        format!("{contents}\n").into_bytes()
-    };
-    let existed_before = match fs::read(path) {
-        Ok(existing) => {
-            if existing == rendered {
-                return Ok(SupportFileStatus::Kept);
-            }
-            if !overwrite {
-                return Ok(SupportFileStatus::Kept);
-            }
-            true
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-        Err(error) => return Err(CliError::operation(error)),
-    };
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(CliError::operation)?;
-    }
-    fs::write(path, &rendered).map_err(CliError::operation)?;
-    Ok(if existed_before {
-        SupportFileStatus::Updated
-    } else {
-        SupportFileStatus::Created
-    })
-}
-
-#[cfg(unix)]
-fn set_executable_permissions(path: &Path) -> Result<(), CliError> {
-    use std::os::unix::fs::PermissionsExt;
-
-    let metadata = fs::metadata(path).map_err(CliError::operation)?;
-    let mut permissions = metadata.permissions();
-    permissions.set_mode(permissions.mode() | 0o111);
-    fs::set_permissions(path, permissions).map_err(CliError::operation)
-}
-
-#[cfg(not(unix))]
-fn set_executable_permissions(_path: &Path) -> Result<(), CliError> {
-    Ok(())
 }
 
 pub(crate) fn wrap_config_section_toml(section: &str, value: TomlValue) -> TomlValue {
