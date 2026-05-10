@@ -296,7 +296,8 @@ Behavior:
 - `vulcan tool init <alias> [--template minimal|reader|mutation|exporter|wrapper]`: scaffold a skill-backed custom tool with schemas, CLI metadata, a Vulcan shebang script, and a smoke example.
 - `vulcan tool lint [<alias>]`: check exposed custom tools for schemas, CLI coverage, examples, shebangs, executable bits, mutation dry-run conventions, and packaging issues.
 - `vulcan tool compat <alias>`: report whether a tool is cleanly usable from CLI, MCP, OpenAI-tool, and JS registry surfaces.
-- `vulcan tool types <alias>`: emit TypeScript declarations from the tool's input and output JSON schemas.
+- `vulcan tool types <alias>|--all`: emit TypeScript declarations from tool input and output JSON schemas.
+- `vulcan tool ci [--profile <name>]`: run strict lint, declared examples, and surface compatibility checks in one authoring pass.
 
 Behavior:
 
@@ -312,6 +313,8 @@ Behavior:
 - `vulcan tool lint --strict` treats authoring warnings as failures; `--fix` applies safe packaging repairs such as shebang normalization and executable-bit fixes.
 - `vulcan tool test <alias>` runs examples declared in command metadata, supports fixture files relative to the skill directory, reports JSON diffs when expected output does not match, accepts `--profile <name>` to test under the same permission profile used by MCP or another agent surface, supports `--all` for every exposed tool, and can refresh file-backed snapshots with `--update-expected`.
 - `vulcan tool compat <alias> --surface cli,mcp` checks surface-specific requirements such as CLI flag coverage, structured schemas, relative entrypoints, sandbox exposure, and callable status.
+- `vulcan tool types --all` emits one TypeScript declaration bundle for every visible custom tool.
+- `vulcan tool ci` is the shortest preflight for custom tools because it combines strict lint, all declared examples, and compatibility checks.
 - `vulcan skill validate` warns about exposed commands that are missing examples, output schemas, or CLI aliases.
 - Mutating commands should support dry-run/proposal output so Vulcan can preview diffs, require approval, and write audit records.
 - Skill-command permissions are the intersection of the active caller profile, the command's declared permission profile, its sandbox, and normal Vulcan path/network/execute checks.
@@ -331,6 +334,7 @@ vulcan tool help conversation-export
 vulcan tool lint conversation-export --strict
 vulcan tool test conversation-export --profile daily-wiki-agent --example dry-run-cli
 vulcan tool compat conversation-export --surface cli,mcp,openai-tools,js
+vulcan tool ci --profile daily-wiki-agent
 ```
 
 ### Plugin commands
