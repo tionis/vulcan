@@ -1,6 +1,7 @@
 pub(crate) mod agent;
 pub(crate) mod bases;
 pub(crate) mod browse;
+pub(crate) mod completions;
 pub(crate) mod config;
 pub(crate) mod dataview;
 pub(crate) mod docs;
