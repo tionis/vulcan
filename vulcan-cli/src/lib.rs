@@ -2045,7 +2045,6 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         Command::Backlinks { .. }
         | Command::Graph { .. }
         | Command::Open { .. }
-        | Command::Cluster { .. }
         | Command::Doctor { .. }
         | Command::Move { .. }
         | Command::RenameProperty { .. }
@@ -2068,7 +2067,6 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Diff { .. }
         | Command::LinkMentions { .. }
         | Command::Rewrite { .. }
-        | Command::Related { .. }
         | Command::Suggest { .. }
         | Command::Refactor { .. }
         | Command::Checkpoint { .. }
@@ -9079,32 +9077,6 @@ fn detect_command_confusion(args: &[OsString]) -> Option<String> {
     None
 }
 
-fn rewrite_legacy_notes_command(args: &[OsString]) -> Vec<OsString> {
-    let Some(command_index) = command_index_for_alias_expansion(args) else {
-        return args.to_vec();
-    };
-    let Some(command_name) = args.get(command_index).and_then(|value| value.to_str()) else {
-        return args.to_vec();
-    };
-    if command_name != "notes" {
-        return args.to_vec();
-    }
-    if args
-        .get(command_index + 1)
-        .and_then(|value| value.to_str())
-        .is_some_and(|next| NOTE_SUBCOMMAND_HINTS.contains(&next))
-    {
-        return args.to_vec();
-    }
-
-    let mut rewritten = args[..command_index].to_vec();
-    rewritten.push(OsString::from("query"));
-    rewritten.push(OsString::from("--format"));
-    rewritten.push(OsString::from("table"));
-    rewritten.extend_from_slice(&args[command_index + 1..]);
-    rewritten
-}
-
 fn command_index_for_alias_expansion(args: &[OsString]) -> Option<usize> {
     let mut index = 1;
     while index < args.len() {
@@ -9260,8 +9232,7 @@ where
     T: Into<OsString> + Clone,
 {
     let args = args.into_iter().map(Into::into).collect::<Vec<OsString>>();
-    let rewritten_args = rewrite_legacy_notes_command(&args);
-    let expanded_args = expand_cli_aliases(&rewritten_args);
+    let expanded_args = expand_cli_aliases(&args);
     let cli = match Cli::try_parse_from(&expanded_args) {
         Ok(cli) => cli,
         Err(error) => match error.kind() {
@@ -9532,33 +9503,6 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             stdout_is_tty,
             use_stdout_color,
             use_stderr_color,
-        ),
-        Command::Cluster {
-            clusters,
-            dry_run,
-            ref export,
-        } => commands::vectors::handle_cluster_command(
-            cli,
-            &paths,
-            clusters,
-            dry_run,
-            export,
-            &list_controls,
-            stdout_is_tty,
-            use_stdout_color,
-        ),
-        Command::Related {
-            ref note,
-            ref export,
-        } => commands::vectors::handle_related_command(
-            cli,
-            &paths,
-            note.as_deref(),
-            export,
-            interactive_note_selection,
-            &list_controls,
-            stdout_is_tty,
-            use_stdout_color,
         ),
         Command::Help {
             ref search,
@@ -10197,84 +10141,6 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     deleted: true,
                 };
                 print_saved_report_delete_report(cli.output, &report)
-            }
-            SavedCommand::Search {
-                name,
-                query,
-                filters,
-                mode,
-                tag,
-                path_prefix,
-                has_property,
-                sort,
-                match_case,
-                context_size,
-                raw_query,
-                fuzzy,
-                description,
-                export,
-            } => {
-                let definition = saved_report_definition_from_create(
-                    cli,
-                    &SavedCreateCommand::Search {
-                        name: name.clone(),
-                        query: query.clone(),
-                        filters: filters.clone(),
-                        mode: *mode,
-                        tag: tag.clone(),
-                        path_prefix: path_prefix.clone(),
-                        has_property: has_property.clone(),
-                        sort: *sort,
-                        match_case: *match_case,
-                        context_size: *context_size,
-                        raw_query: *raw_query,
-                        fuzzy: *fuzzy,
-                        description: description.clone(),
-                        export: export.clone(),
-                    },
-                )?;
-                save_saved_report(&paths, &definition).map_err(CliError::operation)?;
-                print_saved_report_definition(cli.output, &definition)
-            }
-            SavedCommand::Notes {
-                name,
-                filters,
-                sort,
-                desc,
-                description,
-                export,
-            } => {
-                let definition = saved_report_definition_from_create(
-                    cli,
-                    &SavedCreateCommand::Notes {
-                        name: name.clone(),
-                        filters: filters.clone(),
-                        sort: sort.clone(),
-                        desc: *desc,
-                        description: description.clone(),
-                        export: export.clone(),
-                    },
-                )?;
-                save_saved_report(&paths, &definition).map_err(CliError::operation)?;
-                print_saved_report_definition(cli.output, &definition)
-            }
-            SavedCommand::Bases {
-                name,
-                file,
-                description,
-                export,
-            } => {
-                let definition = saved_report_definition_from_create(
-                    cli,
-                    &SavedCreateCommand::Bases {
-                        name: name.clone(),
-                        file: file.clone(),
-                        description: description.clone(),
-                        export: export.clone(),
-                    },
-                )?;
-                save_saved_report(&paths, &definition).map_err(CliError::operation)?;
-                print_saved_report_definition(cli.output, &definition)
             }
             SavedCommand::Run { name, export } => {
                 let definition = load_saved_report(&paths, name).map_err(CliError::operation)?;
@@ -10967,15 +10833,6 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             stdout_is_tty,
             use_stdout_color,
         ),
-        Command::Weekly { ref args } => {
-            commands::periodic::handle_weekly_command(cli, &paths, args, interactive_note_selection)
-        }
-        Command::Monthly { ref args } => commands::periodic::handle_monthly_command(
-            cli,
-            &paths,
-            args,
-            interactive_note_selection,
-        ),
         Command::Periodic {
             ref command,
             ref period_type,
@@ -11210,21 +11067,6 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 );
             }
             print_refactor_report(cli.output, &report)
-        }
-        Command::Batch { ref names, all } => {
-            let report =
-                run_saved_reports_batch(&paths, cli.provider.as_ref(), &list_controls, names, all)?;
-            let has_failures = report.failed > 0;
-            print_batch_run_report(cli.output, &report)?;
-            if has_failures {
-                Err(CliError {
-                    exit_code: 1,
-                    code: "batch_failed",
-                    message: "one or more saved reports failed".to_string(),
-                })
-            } else {
-                Ok(())
-            }
         }
         Command::Automation { ref command } => match command {
             AutomationCommand::List => {
@@ -11798,44 +11640,6 @@ fn print_saved_report_delete_report(
             Ok(())
         }
         OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_batch_run_report(output: OutputFormat, report: &BatchRunReport) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            println!(
-                "Batch completed: {} succeeded, {} failed",
-                report.succeeded, report.failed
-            );
-            for item in &report.items {
-                if item.ok {
-                    let export = item
-                        .export_path
-                        .as_deref()
-                        .map(|path| format!(" -> {path}"))
-                        .unwrap_or_default();
-                    println!(
-                        "- {} [{}] {} rows{}",
-                        item.name,
-                        item.kind
-                            .map_or_else(|| "unknown".to_string(), |kind| format!("{kind:?}")),
-                        item.row_count.unwrap_or_default(),
-                        export
-                    );
-                } else if let Some(error) = item.error.as_deref() {
-                    println!(
-                        "- {} [{}] failed: {}",
-                        item.name,
-                        item.kind
-                            .map_or_else(|| "unknown".to_string(), |kind| format!("{kind:?}")),
-                        error
-                    );
-                }
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(&report),
     }
 }
 
@@ -18711,21 +18515,6 @@ fn resolve_help_topic(topic: &[String]) -> Result<HelpTopicReport, CliError> {
     if let Some(report) = builtin_help_topic(&key) {
         return Ok(report);
     }
-    if key.eq_ignore_ascii_case("notes") {
-        let root = cli_command_tree();
-        let Some(command) = find_command(&root, &["query"]) else {
-            return Err(CliError::operation("unknown help topic `query`"));
-        };
-        let mut report = help_topic_from_command(command, &["query".to_string()]);
-        report.name = "notes".to_string();
-        report.summary = "Legacy alias for `query`; kept for backwards compatibility.".to_string();
-        report.body = format!(
-            "`vulcan notes` is now a compatibility alias that rewrites to `vulcan query --format table`.\n\n{}",
-            report.body
-        );
-        return Ok(report);
-    }
-
     let root = cli_command_tree();
     let topic_refs = topic.iter().map(String::as_str).collect::<Vec<_>>();
     let Some(command) = find_command(&root, &topic_refs) else {
@@ -23316,37 +23105,16 @@ mod tests {
     }
 
     #[test]
-    fn parses_hidden_legacy_alias_commands() {
-        assert!(matches!(
-            Cli::try_parse_from(["vulcan", "weekly"])
-                .expect("weekly alias should parse")
-                .command,
-            Command::Weekly { .. }
-        ));
-        assert!(matches!(
-            Cli::try_parse_from(["vulcan", "monthly"])
-                .expect("monthly alias should parse")
-                .command,
-            Command::Monthly { .. }
-        ));
-        assert!(matches!(
-            Cli::try_parse_from(["vulcan", "cluster"])
-                .expect("cluster alias should parse")
-                .command,
-            Command::Cluster { .. }
-        ));
-        assert!(matches!(
-            Cli::try_parse_from(["vulcan", "related"])
-                .expect("related alias should parse")
-                .command,
-            Command::Related { .. }
-        ));
-        assert!(matches!(
-            Cli::try_parse_from(["vulcan", "batch"])
-                .expect("batch alias should parse")
-                .command,
-            Command::Batch { .. }
-        ));
+    fn removed_top_level_aliases_no_longer_parse() {
+        for command in ["weekly", "monthly", "batch", "cluster", "related", "notes"] {
+            assert!(
+                Cli::try_parse_from(["vulcan", command]).is_err(),
+                "{command} should not parse as a top-level compatibility alias"
+            );
+        }
+        assert!(Cli::try_parse_from(["vulcan", "saved", "search", "weekly", "dashboard"]).is_err());
+        assert!(Cli::try_parse_from(["vulcan", "saved", "notes", "active"]).is_err());
+        assert!(Cli::try_parse_from(["vulcan", "saved", "bases", "base", "Dash.base"]).is_err());
     }
 
     #[test]
@@ -25877,32 +25645,6 @@ mod tests {
                 exit_code: false,
                 export: ExportArgs::default(),
             }
-        );
-    }
-
-    #[test]
-    fn legacy_notes_command_rewrites_to_query_table() {
-        let rewritten = rewrite_legacy_notes_command(&[
-            OsString::from("vulcan"),
-            OsString::from("--output"),
-            OsString::from("json"),
-            OsString::from("notes"),
-            OsString::from("--where"),
-            OsString::from("status = done"),
-        ]);
-
-        assert_eq!(
-            rewritten,
-            vec![
-                OsString::from("vulcan"),
-                OsString::from("--output"),
-                OsString::from("json"),
-                OsString::from("query"),
-                OsString::from("--format"),
-                OsString::from("table"),
-                OsString::from("--where"),
-                OsString::from("status = done"),
-            ]
         );
     }
 

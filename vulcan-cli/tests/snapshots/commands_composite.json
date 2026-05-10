@@ -7324,7 +7324,7 @@
       },
       {
         "about": "Open, list, and inspect periodic notes",
-        "after_help": "Behavior:\n  `periodic <type> [date]` opens or creates the configured periodic note for that date.\n  `periodic weekly [date]` and `periodic monthly [date]` are the preferred open forms.\n  Top-level `weekly` and `monthly` remain as hidden compatibility aliases.\n\nSubcommands:\n  list        list indexed periodic notes\n  gaps        show missing periodic notes across a date range\n  weekly      open or create the weekly note for a date\n  monthly     open or create the monthly note for a date\n\nExamples:\n  vulcan periodic weekly\n  vulcan periodic monthly 2026-04-03 --no-edit\n  vulcan periodic yearly 2026-01-01\n  vulcan periodic list --type daily\n  vulcan periodic gaps --type daily --from 2026-04-01 --to 2026-04-07",
+        "after_help": "Behavior:\n  `periodic <type> [date]` opens or creates the configured periodic note for that date.\n  `periodic weekly [date]` and `periodic monthly [date]` open weekly and monthly notes.\n\nSubcommands:\n  list        list indexed periodic notes\n  gaps        show missing periodic notes across a date range\n  weekly      open or create the weekly note for a date\n  monthly     open or create the monthly note for a date\n\nExamples:\n  vulcan periodic weekly\n  vulcan periodic monthly 2026-04-03 --no-edit\n  vulcan periodic yearly 2026-01-01\n  vulcan periodic list --type daily\n  vulcan periodic gaps --type daily --from 2026-04-01 --to 2026-04-07",
         "name": "periodic",
         "options": [
           {
