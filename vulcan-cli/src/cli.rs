@@ -2408,7 +2408,12 @@ pub enum ConfigAliasCommand {
         name: String,
         #[arg(help = "Expansion inserted before clap parsing")]
         expansion: String,
-        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ConfigTargetArg::Shared,
+            help = "Config file to write: shared vault config or local override"
+        )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
         dry_run: bool,
@@ -2419,7 +2424,12 @@ pub enum ConfigAliasCommand {
     Delete {
         #[arg(help = "Alias name under [aliases]")]
         name: String,
-        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ConfigTargetArg::Shared,
+            help = "Config file to write: shared vault config or local override"
+        )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
         dry_run: bool,
@@ -2443,7 +2453,12 @@ pub enum ConfigPermissionsProfileCommand {
         name: String,
         #[arg(long, help = "Optional base profile to clone before writing overrides")]
         clone: Option<String>,
-        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ConfigTargetArg::Shared,
+            help = "Config file to write: shared vault config or local override"
+        )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
         dry_run: bool,
@@ -2458,7 +2473,12 @@ pub enum ConfigPermissionsProfileCommand {
         dimension: String,
         #[arg(help = "TOML literal or bare string value to write")]
         value: String,
-        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ConfigTargetArg::Shared,
+            help = "Config file to write: shared vault config or local override"
+        )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
         dry_run: bool,
@@ -2469,7 +2489,12 @@ pub enum ConfigPermissionsProfileCommand {
     Delete {
         #[arg(help = "Permission profile name")]
         name: String,
-        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ConfigTargetArg::Shared,
+            help = "Config file to write: shared vault config or local override"
+        )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
         dry_run: bool,
@@ -2515,7 +2540,12 @@ pub enum ConfigCommand {
         key: String,
         #[arg(help = "TOML literal or bare string value to write")]
         value: String,
-        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ConfigTargetArg::Shared,
+            help = "Config file to write: shared vault config or local override"
+        )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
         dry_run: bool,
@@ -2526,7 +2556,12 @@ pub enum ConfigCommand {
     Unset {
         #[arg(help = "Dot-notation config key such as `periodic.daily.template`")]
         key: String,
-        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ConfigTargetArg::Shared,
+            help = "Config file to write: shared vault config or local override"
+        )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
         dry_run: bool,
@@ -2555,7 +2590,12 @@ pub enum PluginCommand {
     Enable {
         #[arg(help = "Plugin name (defaults to .vulcan/plugins/<name>.js)")]
         name: String,
-        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ConfigTargetArg::Shared,
+            help = "Config file to write: shared vault config or local override"
+        )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
         dry_run: bool,
@@ -2566,7 +2606,12 @@ pub enum PluginCommand {
     Disable {
         #[arg(help = "Plugin name (defaults to .vulcan/plugins/<name>.js)")]
         name: String,
-        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ConfigTargetArg::Shared,
+            help = "Config file to write: shared vault config or local override"
+        )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
         dry_run: bool,
@@ -2585,23 +2630,49 @@ pub enum PluginCommand {
         enable: bool,
         #[arg(long, conflicts_with = "enable", help = "Mark the plugin disabled")]
         disable: bool,
-        #[arg(long = "add-event", value_enum)]
+        #[arg(
+            long = "add-event",
+            value_enum,
+            help = "Register a lifecycle event that should trigger this plugin"
+        )]
         add_events: Vec<PluginEventArg>,
-        #[arg(long = "remove-event", value_enum)]
+        #[arg(
+            long = "remove-event",
+            value_enum,
+            help = "Remove a lifecycle event registration from this plugin"
+        )]
         remove_events: Vec<PluginEventArg>,
-        #[arg(long, value_enum)]
+        #[arg(
+            long,
+            value_enum,
+            help = "Sandbox tier used when executing this plugin"
+        )]
         sandbox: Option<PluginSandboxArg>,
         #[arg(long, help = "Remove any stored sandbox override")]
         clear_sandbox: bool,
-        #[arg(long = "permission-profile")]
+        #[arg(
+            long = "permission-profile",
+            help = "Permission profile to apply when executing this plugin"
+        )]
         permission_profile: Option<String>,
-        #[arg(long = "clear-permission-profile")]
+        #[arg(
+            long = "clear-permission-profile",
+            help = "Remove any stored permission-profile override"
+        )]
         clear_permission_profile: bool,
-        #[arg(long)]
+        #[arg(long, help = "Human-readable plugin description")]
         description: Option<String>,
-        #[arg(long = "clear-description")]
+        #[arg(
+            long = "clear-description",
+            help = "Remove any stored plugin description"
+        )]
         clear_description: bool,
-        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ConfigTargetArg::Shared,
+            help = "Config file to write: shared vault config or local override"
+        )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
         dry_run: bool,
@@ -2612,7 +2683,12 @@ pub enum PluginCommand {
     Delete {
         #[arg(help = "Plugin name under [plugins.<name>]")]
         name: String,
-        #[arg(long, value_enum, default_value_t = ConfigTargetArg::Shared)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ConfigTargetArg::Shared,
+            help = "Config file to write: shared vault config or local override"
+        )]
         target: ConfigTargetArg,
         #[arg(long, help = "Preview the config change without writing files")]
         dry_run: bool,
@@ -2796,9 +2872,17 @@ pub enum ToolCommand {
     Run {
         #[arg(help = "Tool name to execute")]
         name: String,
-        #[arg(long = "input-json", conflicts_with = "input_file")]
+        #[arg(
+            long = "input-json",
+            conflicts_with = "input_file",
+            help = "JSON object to pass as the tool input"
+        )]
         input_json: Option<String>,
-        #[arg(long = "input-file", conflicts_with = "input_json")]
+        #[arg(
+            long = "input-file",
+            conflicts_with = "input_json",
+            help = "Read the tool input JSON object from this file, or '-' for stdin"
+        )]
         input_file: Option<PathBuf>,
         #[arg(
             value_name = "ARGS",
@@ -2879,7 +2963,12 @@ pub enum AgentRuntimeArg {
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct AgentPrintConfigArgs {
-    #[arg(long, value_enum, default_value_t = AgentRuntimeArg::Generic)]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = AgentRuntimeArg::Generic,
+        help = "Agent runtime to generate configuration guidance for"
+    )]
     pub runtime: AgentRuntimeArg,
 }
 
@@ -3168,7 +3257,12 @@ pub enum WebCommand {
     Fetch {
         #[arg(help = "URL to fetch")]
         url: String,
-        #[arg(long, value_enum, default_value_t = WebFetchMode::Markdown)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = WebFetchMode::Markdown,
+            help = "Output mode for fetched content"
+        )]
         mode: WebFetchMode,
         #[arg(long, help = "Write fetched output to this path")]
         save: Option<PathBuf>,
@@ -3186,7 +3280,12 @@ pub enum WebFetchMode {
 pub struct RenderArgs {
     #[arg(help = "Markdown file to render; omit to read from stdin")]
     pub file: Option<PathBuf>,
-    #[arg(long, value_enum, default_value_t = RenderMode::Terminal)]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = RenderMode::Terminal,
+        help = "Rendering target for the Markdown input"
+    )]
     pub mode: RenderMode,
 }
 
@@ -5202,7 +5301,12 @@ Examples:
             help = "Query language: auto-detect (default), vulcan, or dql (Dataview)"
         )]
         engine: QueryEngineArg,
-        #[arg(long, value_enum, default_value_t = QueryFormatArg::Table)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = QueryFormatArg::Table,
+            help = "Result output format"
+        )]
         format: QueryFormatArg,
         #[arg(long, help = "Restrict result paths with a glob such as Projects/**")]
         glob: Option<String>,
@@ -5237,7 +5341,12 @@ Examples:
         glob: Option<String>,
         #[arg(long, help = "Shorthand tag filter")]
         tag: Option<String>,
-        #[arg(long, value_enum, default_value_t = QueryFormatArg::Paths)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = QueryFormatArg::Paths,
+            help = "Result output format"
+        )]
         format: QueryFormatArg,
         #[command(flatten)]
         export: ExportArgs,
@@ -5266,16 +5375,27 @@ Examples:
         hide = true
     )]
     Describe {
-        #[arg(long, value_enum, default_value_t = DescribeFormatArg::JsonSchema)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = DescribeFormatArg::JsonSchema,
+            help = "Schema export format"
+        )]
         format: DescribeFormatArg,
         #[arg(
             long,
             value_enum,
             value_delimiter = ',',
-            default_value = "notes-read,search,status"
+            default_value = "notes-read,search,status",
+            help = "MCP tool packs to include when exporting MCP or OpenAI tool schemas"
         )]
         tool_pack: Vec<McpToolPackArg>,
-        #[arg(long, value_enum, default_value_t = McpToolPackModeArg::Static)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = McpToolPackModeArg::Static,
+            help = "Whether MCP tool-pack selection is fixed or user-selectable"
+        )]
         tool_pack_mode: McpToolPackModeArg,
     },
     #[command(
@@ -5334,12 +5454,23 @@ Examples:
             long,
             value_enum,
             value_delimiter = ',',
-            default_value = "notes-read,search,status"
+            default_value = "notes-read,search,status",
+            help = "MCP tool packs to expose"
         )]
         tool_pack: Vec<McpToolPackArg>,
-        #[arg(long, value_enum, default_value_t = McpToolPackModeArg::Static)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = McpToolPackModeArg::Static,
+            help = "Whether MCP tool-pack selection is fixed or user-selectable"
+        )]
         tool_pack_mode: McpToolPackModeArg,
-        #[arg(long, value_enum, default_value_t = McpTransportArg::Stdio)]
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = McpTransportArg::Stdio,
+            help = "MCP transport to serve: stdio for local clients or http for remote clients"
+        )]
         transport: McpTransportArg,
         #[arg(
             long,

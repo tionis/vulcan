@@ -5449,7 +5449,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Config file to write: shared vault config or local override",
                 "id": "target",
                 "long": "target",
                 "possible_values": [
@@ -5509,7 +5509,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Config file to write: shared vault config or local override",
                 "id": "target",
                 "long": "target",
                 "possible_values": [
@@ -5591,7 +5591,7 @@
                     ]
                   },
                   {
-                    "help": null,
+                    "help": "Config file to write: shared vault config or local override",
                     "id": "target",
                     "long": "target",
                     "possible_values": [
@@ -5651,7 +5651,7 @@
                     ]
                   },
                   {
-                    "help": null,
+                    "help": "Config file to write: shared vault config or local override",
                     "id": "target",
                     "long": "target",
                     "possible_values": [
@@ -5758,7 +5758,7 @@
                         ]
                       },
                       {
-                        "help": null,
+                        "help": "Config file to write: shared vault config or local override",
                         "id": "target",
                         "long": "target",
                         "possible_values": [
@@ -5840,7 +5840,7 @@
                         ]
                       },
                       {
-                        "help": null,
+                        "help": "Config file to write: shared vault config or local override",
                         "id": "target",
                         "long": "target",
                         "possible_values": [
@@ -5900,7 +5900,7 @@
                         ]
                       },
                       {
-                        "help": null,
+                        "help": "Config file to write: shared vault config or local override",
                         "id": "target",
                         "long": "target",
                         "possible_values": [
@@ -6080,7 +6080,7 @@
             "name": "print-config",
             "options": [
               {
-                "help": null,
+                "help": "Agent runtime to generate configuration guidance for",
                 "id": "runtime",
                 "long": "runtime",
                 "possible_values": [
@@ -7259,7 +7259,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Output mode for fetched content",
                 "id": "mode",
                 "long": "mode",
                 "possible_values": [
@@ -7306,7 +7306,7 @@
             ]
           },
           {
-            "help": null,
+            "help": "Rendering target for the Markdown input",
             "id": "mode",
             "long": "mode",
             "possible_values": [
@@ -9983,7 +9983,7 @@
             ]
           },
           {
-            "help": null,
+            "help": "Result output format",
             "id": "format",
             "long": "format",
             "possible_values": [
@@ -10106,7 +10106,7 @@
             ]
           },
           {
-            "help": null,
+            "help": "Result output format",
             "id": "format",
             "long": "format",
             "possible_values": [
@@ -10746,7 +10746,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Config file to write: shared vault config or local override",
                 "id": "target",
                 "long": "target",
                 "possible_values": [
@@ -10806,7 +10806,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Config file to write: shared vault config or local override",
                 "id": "target",
                 "long": "target",
                 "possible_values": [
@@ -10919,7 +10919,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Register a lifecycle event that should trigger this plugin",
                 "id": "add_events",
                 "long": "add-event",
                 "possible_values": [
@@ -10938,7 +10938,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Remove a lifecycle event registration from this plugin",
                 "id": "remove_events",
                 "long": "remove-event",
                 "possible_values": [
@@ -10957,7 +10957,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Sandbox tier used when executing this plugin",
                 "id": "sandbox",
                 "long": "sandbox",
                 "possible_values": [
@@ -10987,7 +10987,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Permission profile to apply when executing this plugin",
                 "id": "permission_profile",
                 "long": "permission-profile",
                 "possible_values": [],
@@ -10998,7 +10998,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Remove any stored permission-profile override",
                 "id": "clear_permission_profile",
                 "long": "clear-permission-profile",
                 "possible_values": [
@@ -11012,7 +11012,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Human-readable plugin description",
                 "id": "description",
                 "long": "description",
                 "possible_values": [],
@@ -11023,7 +11023,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Remove any stored plugin description",
                 "id": "clear_description",
                 "long": "clear-description",
                 "possible_values": [
@@ -11037,7 +11037,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Config file to write: shared vault config or local override",
                 "id": "target",
                 "long": "target",
                 "possible_values": [
@@ -11097,7 +11097,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Config file to write: shared vault config or local override",
                 "id": "target",
                 "long": "target",
                 "possible_values": [
@@ -11514,7 +11514,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "JSON object to pass as the tool input",
                 "id": "input_json",
                 "long": "input-json",
                 "possible_values": [],
@@ -11525,7 +11525,7 @@
                 ]
               },
               {
-                "help": null,
+                "help": "Read the tool input JSON object from this file, or '-' for stdin",
                 "id": "input_file",
                 "long": "input-file",
                 "possible_values": [],
@@ -11590,7 +11590,7 @@
         "name": "mcp",
         "options": [
           {
-            "help": null,
+            "help": "MCP tool packs to expose",
             "id": "tool_pack",
             "long": "tool-pack",
             "possible_values": [
@@ -11613,7 +11613,7 @@
             ]
           },
           {
-            "help": null,
+            "help": "Whether MCP tool-pack selection is fixed or user-selectable",
             "id": "tool_pack_mode",
             "long": "tool-pack-mode",
             "possible_values": [
@@ -11627,7 +11627,7 @@
             ]
           },
           {
-            "help": null,
+            "help": "MCP transport to serve: stdio for local clients or http for remote clients",
             "id": "transport",
             "long": "transport",
             "possible_values": [
