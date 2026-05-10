@@ -911,6 +911,31 @@ fn help_topics_cover_custom_tools_host_execution_and_surface_comparison() {
 }
 
 #[test]
+fn js_contract_help_and_json_are_versioned() {
+    let contract: serde_json::Value =
+        serde_json::from_str(include_str!("../../docs/reference/js-api/contract.json"))
+            .expect("JS API contract should be valid JSON");
+    assert_eq!(contract["contract"], "vulcan-js-api");
+    assert_eq!(contract["version"], 1);
+    assert!(contract["surfaces"]
+        .as_array()
+        .expect("surfaces should be an array")
+        .iter()
+        .any(|surface| surface["name"] == "tools"));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["help", "js.contract"])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Contract: `vulcan-js-api`")
+                .and(predicate::str::contains("Version: `1`"))
+                .and(predicate::str::contains("contract.json")),
+        );
+}
+
+#[test]
 fn plugin_list_and_enable_disable_round_trip() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

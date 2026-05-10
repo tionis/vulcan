@@ -18225,7 +18225,14 @@ fn builtin_help_topics() -> Vec<HelpTopicReport> {
             HelpTopicKind::Concept,
             "Overview of the JS runtime surface, including current and planned namespaces.",
             include_str!("../../docs/reference/js-api/index.md"),
-            &["js.vault", "js.vault.graph", "js.vault.note"],
+            &["js.contract", "js.vault", "js.vault.graph", "js.vault.note"],
+        ),
+        static_help_topic(
+            "js.contract",
+            HelpTopicKind::Concept,
+            "Versioned contract for Vulcan's JavaScript runtime namespaces.",
+            include_str!("../../docs/reference/js-api/contract.md"),
+            &["js", "js.vault", "js.tools", "js.skills", "js.host"],
         ),
         static_help_topic(
             "js.vault",

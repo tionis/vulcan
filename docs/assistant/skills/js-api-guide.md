@@ -17,12 +17,13 @@ Use this skill when the workflow genuinely needs scripting or multi-step logic r
 
 ## Recommended Flow
 
-- Read `help js`, `help js.vault`, and `help sandbox` before writing runtime code.
+- Read `help js`, `help js.contract`, `help js.vault`, and `help sandbox` before writing runtime code.
 - Start from `vulcan run --sandbox strict` for pure computation or read-only inspection.
 - Escalate to `--sandbox fs` for vault writes and `--sandbox net` for web helpers.
 - Use `vault.transaction()` when several note mutations must succeed or roll back together.
 - Use `vault.plan({ dry_run })` for custom tools that need reviewable changed paths, diffs, and dry-run/apply behavior.
 - Use `vulcan.permissions()` before optional writes, `tool.result()` for structured returns, and `tools.callChecked()` when composing other tools.
+- Check `docs/reference/js-api/contract.json` when a harness needs a stable namespace inventory instead of prose examples.
 
 ## Guardrails
 
