@@ -22,6 +22,9 @@ mod serve;
 mod site_server;
 mod terminal_markdown;
 
+pub(crate) use commands::edit::{
+    print_diff_report, print_edit_report, run_diff_command, run_edit_command, EditReport,
+};
 #[cfg(test)]
 pub(crate) use commands::template::TemplateSummary;
 pub(crate) use commands::template::{
@@ -402,7 +405,6 @@ use crate::commands::config::{
     ConfigImportBatchReport, ConfigImportDiscoveryItem,
 };
 use crate::commit::AutoCommitPolicy;
-use crate::editor::open_in_editor;
 use crate::help::{
     builtin_help_topic, builtin_help_topics, help_overview, HelpSearchMatch, HelpSearchReport,
     HelpTopicKind, HelpTopicReport,
@@ -494,7 +496,7 @@ use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{
     all_importers, annotate_import_conflicts, bulk_replace, cache_vacuum, create_checkpoint,
     default_assistant_tool_reserved_names, delete_saved_report, doctor_fix, doctor_vault,
-    evaluate_base_file, evaluate_dql_with_filter, export_static_search_index, git_log, git_status,
+    evaluate_base_file, evaluate_dql_with_filter, export_static_search_index, git_log,
     initialize_vault, inspect_cache, link_mentions, list_checkpoints, list_saved_reports,
     load_saved_report, load_vault_config, merge_tags, move_note, plan_base_note_create,
     query_backlinks, query_change_report, query_links, query_notes, rebuild_vault_with_progress,
@@ -1343,24 +1345,6 @@ struct AutomationRunReport {
     issues_detected: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct EditReport {
-    path: String,
-    created: bool,
-    rescanned: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct DiffReport {
-    path: String,
-    anchor: String,
-    source: String,
-    status: String,
-    changed: bool,
-    changed_kinds: Vec<String>,
-    diff: Option<String>,
-}
-
 type DataviewEvalReport = AppDataviewEvalReport;
 type DataviewBlockResult = AppDataviewBlockResult;
 type VaultStatusReport = AppVaultStatusReport;
@@ -1910,224 +1894,6 @@ fn move_changed_files(summary: &MoveSummary) -> Vec<String> {
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect()
-}
-
-fn resolve_edit_path(
-    paths: &VaultPaths,
-    cli: &Cli,
-    stdout_is_tty: bool,
-    use_stderr_color: bool,
-    note: Option<&str>,
-    new: bool,
-) -> Result<(String, bool), CliError> {
-    if new {
-        let note = note.ok_or_else(|| {
-            CliError::operation("`edit --new` requires a relative note path such as Notes/Idea.md")
-        })?;
-        let path = normalize_relative_input_path(
-            note,
-            RelativePathOptions {
-                expected_extension: Some("md"),
-                append_extension_if_missing: true,
-            },
-        )
-        .map_err(CliError::operation)?;
-        return Ok((path, true));
-    }
-
-    if !paths.cache_db().exists() {
-        run_incremental_scan(paths, cli.output, use_stderr_color, cli.quiet)?;
-    }
-
-    let interactive = interactive_note_selection_allowed(cli, stdout_is_tty);
-    let note = resolve_note_argument(paths, note, interactive, "note")?;
-    let resolved = resolve_note_reference(paths, &note).map_err(CliError::operation)?;
-    Ok((resolved.path, false))
-}
-
-fn run_edit_command(
-    paths: &VaultPaths,
-    cli: &Cli,
-    stdout_is_tty: bool,
-    use_stderr_color: bool,
-    note: Option<&str>,
-    new: bool,
-) -> Result<EditReport, CliError> {
-    let (relative_path, creating_new_note) =
-        resolve_edit_path(paths, cli, stdout_is_tty, use_stderr_color, note, new)?;
-    let absolute_path = paths.vault_root().join(&relative_path);
-    let mut created = false;
-    if creating_new_note {
-        if let Some(parent) = absolute_path.parent() {
-            fs::create_dir_all(parent).map_err(CliError::operation)?;
-        }
-        if !absolute_path.exists() {
-            fs::write(&absolute_path, "").map_err(CliError::operation)?;
-            created = true;
-        }
-    } else if !absolute_path.is_file() {
-        return Err(CliError::operation(format!(
-            "note does not exist on disk: {relative_path}"
-        )));
-    }
-
-    open_in_editor(&absolute_path).map_err(CliError::operation)?;
-    run_incremental_scan(paths, cli.output, use_stderr_color, cli.quiet)?;
-
-    Ok(EditReport {
-        path: relative_path,
-        created,
-        rescanned: true,
-    })
-}
-
-fn run_diff_command(
-    paths: &VaultPaths,
-    note: Option<&str>,
-    since: Option<&str>,
-    interactive_note_selection: bool,
-) -> Result<DiffReport, CliError> {
-    let note = resolve_note_argument(paths, note, interactive_note_selection, "note")?;
-    let resolved = resolve_note_reference(paths, &note).map_err(CliError::operation)?;
-
-    if let Some(checkpoint) = since {
-        return diff_report_from_change_anchor(
-            paths,
-            &resolved.path,
-            &ChangeAnchor::Checkpoint(checkpoint.to_string()),
-            format!("checkpoint:{checkpoint}"),
-        );
-    }
-
-    if vulcan_core::is_git_repo(paths.vault_root()) {
-        return diff_report_from_git(paths, &resolved.path);
-    }
-
-    diff_report_from_change_anchor(
-        paths,
-        &resolved.path,
-        &ChangeAnchor::LastScan,
-        "last_scan".to_string(),
-    )
-}
-
-fn diff_report_from_git(paths: &VaultPaths, path: &str) -> Result<DiffReport, CliError> {
-    let status = git_status(paths.vault_root()).map_err(CliError::operation)?;
-    let untracked = status.untracked.iter().any(|candidate| candidate == path);
-    let diff = render_git_diff(paths.vault_root(), path, untracked)?;
-    let changed = !diff.trim().is_empty();
-
-    Ok(DiffReport {
-        path: path.to_string(),
-        anchor: "HEAD".to_string(),
-        source: "git_head".to_string(),
-        status: if untracked {
-            "new".to_string()
-        } else if changed {
-            "changed".to_string()
-        } else {
-            "unchanged".to_string()
-        },
-        changed,
-        changed_kinds: if changed {
-            vec!["note".to_string()]
-        } else {
-            Vec::new()
-        },
-        diff: changed.then_some(diff),
-    })
-}
-
-fn diff_report_from_change_anchor(
-    paths: &VaultPaths,
-    path: &str,
-    anchor: &ChangeAnchor,
-    anchor_label: String,
-) -> Result<DiffReport, CliError> {
-    let report = query_change_report(paths, anchor).map_err(CliError::operation)?;
-    let mut changed_kinds = Vec::new();
-    let note_status = report
-        .notes
-        .iter()
-        .find(|item| item.path == path)
-        .map(|item| item.status);
-
-    if note_status.is_some() {
-        changed_kinds.push("note".to_string());
-    }
-    if report.links.iter().any(|item| item.path == path) {
-        changed_kinds.push("links".to_string());
-    }
-    if report.properties.iter().any(|item| item.path == path) {
-        changed_kinds.push("properties".to_string());
-    }
-    if report.embeddings.iter().any(|item| item.path == path) {
-        changed_kinds.push("embeddings".to_string());
-    }
-
-    let status = match note_status {
-        Some(ChangeKindStatus::Added) => "new",
-        Some(ChangeKindStatus::Deleted) => "deleted",
-        Some(ChangeKindStatus::Updated) => "changed",
-        None => {
-            if changed_kinds.is_empty() {
-                "unchanged"
-            } else {
-                "changed"
-            }
-        }
-    }
-    .to_string();
-
-    Ok(DiffReport {
-        path: path.to_string(),
-        anchor: anchor_label,
-        source: "cache".to_string(),
-        changed: status != "unchanged",
-        status,
-        changed_kinds,
-        diff: None,
-    })
-}
-
-type ChangeKindStatus = vulcan_core::ChangeStatus;
-
-fn render_git_diff(vault_root: &Path, path: &str, untracked: bool) -> Result<String, CliError> {
-    let output = if untracked {
-        let empty_path = std::env::temp_dir().join(format!(
-            "vulcan-empty-diff-{}-{}",
-            std::process::id(),
-            path.replace('/', "_")
-        ));
-        fs::write(&empty_path, "").map_err(CliError::operation)?;
-        let output = ProcessCommand::new("git")
-            .arg("-C")
-            .arg(vault_root)
-            .args(["diff", "--no-index", "--no-color"])
-            .arg(&empty_path)
-            .arg(vault_root.join(path))
-            .output()
-            .map_err(CliError::operation)?;
-        let _ = fs::remove_file(&empty_path);
-        output
-    } else {
-        ProcessCommand::new("git")
-            .arg("-C")
-            .arg(vault_root)
-            .args(["diff", "--no-color", "HEAD", "--", path])
-            .output()
-            .map_err(CliError::operation)?
-    };
-
-    if untracked {
-        if !matches!(output.status.code(), Some(0 | 1)) {
-            return Err(CliError::operation(String::from_utf8_lossy(&output.stderr)));
-        }
-    } else if !output.status.success() {
-        return Err(CliError::operation(String::from_utf8_lossy(&output.stderr)));
-    }
-
-    String::from_utf8(output.stdout).map_err(CliError::operation)
 }
 
 fn run_inbox_command(
@@ -9414,21 +9180,6 @@ fn print_scan_summary(output: OutputFormat, summary: &ScanSummary, use_color: bo
     }
 }
 
-fn print_edit_report(output: OutputFormat, report: &EditReport) {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            if report.created {
-                println!("Created and edited {}", report.path);
-            } else {
-                println!("Edited {}", report.path);
-            }
-        }
-        OutputFormat::Json => {
-            print_json(report).expect("edit report JSON serialization should succeed");
-        }
-    }
-}
-
 fn print_move_summary(output: OutputFormat, summary: &MoveSummary) -> Result<(), CliError> {
     match output {
         OutputFormat::Human | OutputFormat::Markdown => {
@@ -10066,35 +9817,6 @@ fn print_change_report(
             export_rows(visible, list_controls.fields.as_deref(), export)?;
             print_json_lines(visible.to_vec(), list_controls.fields.as_deref())
         }
-    }
-}
-
-fn print_diff_report(output: OutputFormat, report: &DiffReport) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            if let Some(diff) = report.diff.as_deref() {
-                if diff.trim().is_empty() {
-                    println!("No changes in {} since {}.", report.path, report.anchor);
-                } else {
-                    println!("Diff for {} against {}:", report.path, report.anchor);
-                    print!("{diff}");
-                    if !diff.ends_with('\n') {
-                        println!();
-                    }
-                }
-            } else if report.changed {
-                println!(
-                    "{} changed since {} ({})",
-                    report.path,
-                    report.anchor,
-                    report.changed_kinds.join(", ")
-                );
-            } else {
-                println!("No changes in {} since {}.", report.path, report.anchor);
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
     }
 }
 

@@ -4,6 +4,7 @@ pub(crate) mod browse;
 pub(crate) mod config;
 pub(crate) mod dataview;
 pub(crate) mod docs;
+pub(crate) mod edit;
 pub(crate) mod graph;
 pub(crate) mod index;
 pub(crate) mod kanban;
