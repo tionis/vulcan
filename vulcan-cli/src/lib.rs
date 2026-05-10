@@ -2737,6 +2737,7 @@ struct ToolInitReport {
 struct ToolLintReport {
     valid: bool,
     checked: usize,
+    fixed: usize,
     warnings: Vec<String>,
     errors: Vec<String>,
     tools: Vec<ToolLintToolReport>,
@@ -2749,6 +2750,7 @@ struct ToolLintToolReport {
     entrypoint_path: String,
     warnings: Vec<String>,
     errors: Vec<String>,
+    fixes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -2952,9 +2954,15 @@ fn handle_tool_command(
             )?;
             print_tool_init_report(cli.output, &report)
         }
-        ToolCommand::Lint { name, strict } => {
-            let report =
-                lint_custom_tools(cli, paths, name.as_deref(), *strict, &registry_options)?;
+        ToolCommand::Lint { name, strict, fix } => {
+            let report = lint_custom_tools(
+                cli,
+                paths,
+                name.as_deref(),
+                *strict,
+                *fix,
+                &registry_options,
+            )?;
             let valid = report.valid;
             print_tool_lint_report(cli.output, &report)?;
             if valid {
@@ -3499,6 +3507,7 @@ fn lint_custom_tools(
     paths: &VaultPaths,
     name: Option<&str>,
     strict: bool,
+    fix: bool,
     registry_options: &tools::CustomToolRegistryOptions,
 ) -> Result<ToolLintReport, CliError> {
     let tools = if let Some(name) = name {
@@ -3514,73 +3523,10 @@ fn lint_custom_tools(
             .collect()
     };
 
-    let mut reports = Vec::new();
-    for tool in tools {
-        let mut warnings = Vec::new();
-        let mut errors = Vec::new();
-        if tool.output_schema.is_none() {
-            warnings.push("missing output_schema".to_string());
-        }
-        match &tool.cli {
-            Some(cli) => {
-                if cli.aliases.is_empty() {
-                    warnings.push("missing CLI alias".to_string());
-                }
-                let required_fields = json_schema_required_fields(&tool.input_schema);
-                let covered_fields = cli
-                    .args
-                    .iter()
-                    .map(|arg| arg.field.as_deref().unwrap_or(&arg.flag))
-                    .map(top_level_field_name)
-                    .collect::<BTreeSet<_>>();
-                for field in required_fields {
-                    if !covered_fields.contains(&field) {
-                        warnings.push(format!("required input field `{field}` has no CLI flag"));
-                    }
-                }
-            }
-            None => warnings.push("missing CLI metadata".to_string()),
-        }
-        if tool.examples.is_empty() {
-            warnings.push("missing runnable examples".to_string());
-        }
-        if matches!(tool.sandbox, JsRuntimeSandbox::Net) {
-            warnings.push(
-                "net sandbox should be reserved for tools that need network access".to_string(),
-            );
-        }
-        if matches!(tool.sandbox, JsRuntimeSandbox::None) {
-            errors.push("sandbox none is not allowed for exposed skill command tools".to_string());
-        }
-        if Path::new(&tool.entrypoint).is_absolute()
-            || Path::new(&tool.entrypoint_path).is_absolute()
-        {
-            errors.push("entrypoint paths must be relative".to_string());
-        }
-
-        let entrypoint_path = paths.vault_root().join(&tool.entrypoint_path);
-        match fs::read_to_string(&entrypoint_path) {
-            Ok(source) => {
-                if !source.starts_with("#!") {
-                    errors.push("entrypoint script is missing a shebang".to_string());
-                } else if !source.lines().next().unwrap_or_default().contains("vulcan") {
-                    errors.push("entrypoint shebang does not invoke vulcan".to_string());
-                }
-            }
-            Err(error) => errors.push(format!("entrypoint script is not readable: {error}")),
-        }
-        if !script_is_executable(&entrypoint_path) {
-            errors.push("entrypoint script is not executable".to_string());
-        }
-
-        reports.push(ToolLintToolReport {
-            name: tool.name,
-            path: tool.path,
-            entrypoint_path: tool.entrypoint_path,
-            warnings,
-            errors,
-        });
-    }
+    let reports = tools
+        .into_iter()
+        .map(|tool| lint_one_custom_tool(paths, tool, fix))
+        .collect::<Result<Vec<_>, _>>()?;
 
     let warnings = reports
         .iter()
@@ -3601,9 +3547,222 @@ fn lint_custom_tools(
     Ok(ToolLintReport {
         valid: errors.is_empty() && (!strict || warnings.is_empty()),
         checked: reports.len(),
+        fixed: reports.iter().map(|tool| tool.fixes.len()).sum(),
         warnings,
         errors,
         tools: reports,
+    })
+}
+
+fn lint_one_custom_tool(
+    paths: &VaultPaths,
+    tool: vulcan_core::AssistantToolSummary,
+    fix: bool,
+) -> Result<ToolLintToolReport, CliError> {
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+    let mut fixes = Vec::new();
+    collect_tool_metadata_lint(paths, &tool, &mut warnings)?;
+    collect_tool_packaging_lint(paths, &tool, fix, &mut errors, &mut fixes)?;
+    Ok(ToolLintToolReport {
+        name: tool.name,
+        path: tool.path,
+        entrypoint_path: tool.entrypoint_path,
+        warnings,
+        errors,
+        fixes,
+    })
+}
+
+fn collect_tool_metadata_lint(
+    paths: &VaultPaths,
+    tool: &vulcan_core::AssistantToolSummary,
+    warnings: &mut Vec<String>,
+) -> Result<(), CliError> {
+    if tool.output_schema.is_none() {
+        warnings.push("missing output_schema".to_string());
+    }
+    match &tool.cli {
+        Some(cli) => {
+            if cli.aliases.is_empty() {
+                warnings.push("missing CLI alias".to_string());
+            }
+            let covered_fields = cli
+                .args
+                .iter()
+                .map(|arg| arg.field.as_deref().unwrap_or(&arg.flag))
+                .map(top_level_field_name)
+                .collect::<BTreeSet<_>>();
+            for field in json_schema_required_fields(&tool.input_schema) {
+                if !covered_fields.contains(&field) {
+                    warnings.push(format!("required input field `{field}` has no CLI flag"));
+                }
+            }
+        }
+        None => warnings.push("missing CLI metadata".to_string()),
+    }
+    if tool.examples.is_empty() {
+        warnings.push("missing runnable examples".to_string());
+    }
+    if tool_is_mutation_capable(paths, tool)? {
+        if !schema_has_dry_run_input(&tool.input_schema) {
+            warnings
+                .push("mutation-capable tool should expose a boolean dry_run input".to_string());
+        }
+        if !tool_has_dry_run_example(paths, tool)? {
+            warnings.push(
+                "mutation-capable tool should include at least one dry-run example".to_string(),
+            );
+        }
+    }
+    if matches!(tool.sandbox, JsRuntimeSandbox::Net) {
+        warnings
+            .push("net sandbox should be reserved for tools that need network access".to_string());
+    }
+    Ok(())
+}
+
+fn collect_tool_packaging_lint(
+    paths: &VaultPaths,
+    tool: &vulcan_core::AssistantToolSummary,
+    fix: bool,
+    errors: &mut Vec<String>,
+    fixes: &mut Vec<String>,
+) -> Result<(), CliError> {
+    if matches!(tool.sandbox, JsRuntimeSandbox::None) {
+        errors.push("sandbox none is not allowed for exposed skill command tools".to_string());
+    }
+    let entrypoint_is_absolute =
+        Path::new(&tool.entrypoint).is_absolute() || Path::new(&tool.entrypoint_path).is_absolute();
+    if entrypoint_is_absolute {
+        errors.push("entrypoint paths must be relative".to_string());
+    }
+    let entrypoint_path = paths.vault_root().join(&tool.entrypoint_path);
+    if fix && !entrypoint_is_absolute {
+        fixes.extend(apply_tool_lint_fixes(paths, tool, &entrypoint_path)?);
+    }
+    match fs::read_to_string(&entrypoint_path) {
+        Ok(source) => {
+            if !source.starts_with("#!") {
+                errors.push("entrypoint script is missing a shebang".to_string());
+            } else if !source.lines().next().unwrap_or_default().contains("vulcan") {
+                errors.push("entrypoint shebang does not invoke vulcan".to_string());
+            }
+        }
+        Err(error) => errors.push(format!("entrypoint script is not readable: {error}")),
+    }
+    if !script_is_executable(&entrypoint_path) {
+        errors.push("entrypoint script is not executable".to_string());
+    }
+    Ok(())
+}
+
+fn apply_tool_lint_fixes(
+    paths: &VaultPaths,
+    tool: &vulcan_core::AssistantToolSummary,
+    entrypoint_path: &Path,
+) -> Result<Vec<String>, CliError> {
+    let mut fixes = Vec::new();
+    if let Ok(source) = fs::read_to_string(entrypoint_path) {
+        let fixed_source = normalize_tool_script_shebang(&source);
+        if fixed_source != source {
+            fs::write(entrypoint_path, fixed_source).map_err(CliError::operation)?;
+            fixes.push("normalized Vulcan shebang".to_string());
+        }
+    }
+    if entrypoint_path.exists() && !script_is_executable(entrypoint_path) {
+        set_vulcan_tool_script_executable(entrypoint_path)?;
+        fixes.push("set executable bit".to_string());
+    }
+    if tool.examples.is_empty() {
+        let examples_dir = tool_example_base_dir(paths, tool)?.join("examples");
+        if !examples_dir.exists() {
+            fs::create_dir_all(&examples_dir).map_err(CliError::operation)?;
+            fixes.push("created examples directory".to_string());
+        }
+    }
+    Ok(fixes)
+}
+
+fn normalize_tool_script_shebang(source: &str) -> String {
+    const SHEBANG: &str = "#!/usr/bin/env -S vulcan skill exec";
+    if let Some(rest) = source.strip_prefix("#!") {
+        let body = rest.split_once('\n').map_or("", |(_, body)| body);
+        format!("{SHEBANG}\n{body}")
+    } else {
+        format!("{SHEBANG}\n{source}")
+    }
+}
+
+fn tool_is_mutation_capable(
+    paths: &VaultPaths,
+    tool: &vulcan_core::AssistantToolSummary,
+) -> Result<bool, CliError> {
+    if tool.destructive {
+        return Ok(true);
+    }
+    let Some(permission_profile) = tool.permission_profile.as_deref() else {
+        return Ok(false);
+    };
+    let resolved = resolve_permission_profile(paths, Some(permission_profile))
+        .map_err(permission_error_to_cli)?;
+    Ok(permission_profile_allows_writes(&resolved.profile))
+}
+
+fn permission_profile_allows_writes(profile: &vulcan_core::PermissionProfile) -> bool {
+    !matches!(
+        profile.write,
+        vulcan_core::PathPermissionConfig::Keyword(vulcan_core::PathPermissionKeyword::None)
+    ) || !matches!(
+        profile.refactor,
+        vulcan_core::PathPermissionConfig::Keyword(vulcan_core::PathPermissionKeyword::None)
+    ) || matches!(profile.git, vulcan_core::PermissionMode::Allow)
+        || matches!(profile.config, vulcan_core::ConfigPermissionMode::Write)
+}
+
+fn schema_has_dry_run_input(schema: &Value) -> bool {
+    schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .is_some_and(|properties| {
+            ["dry_run", "dryRun"].iter().any(|field| {
+                properties.get(*field).is_some_and(|property| {
+                    property
+                        .get("type")
+                        .and_then(Value::as_str)
+                        .is_none_or(|kind| kind == "boolean")
+                })
+            })
+        })
+}
+
+fn tool_has_dry_run_example(
+    paths: &VaultPaths,
+    tool: &vulcan_core::AssistantToolSummary,
+) -> Result<bool, CliError> {
+    let base_dir = tool_example_base_dir(paths, tool)?;
+    Ok(tool.examples.iter().any(|example| {
+        example_cli_args_include_dry_run(&example.cli_args)
+            || example_json_has_dry_run(example.input.as_ref())
+            || example
+                .input_file
+                .as_deref()
+                .and_then(|path| read_skill_example_json_file(&base_dir, path).ok())
+                .as_ref()
+                .is_some_and(|input| example_json_has_dry_run(Some(input)))
+    }))
+}
+
+fn example_cli_args_include_dry_run(args: &[String]) -> bool {
+    args.iter()
+        .any(|arg| matches!(arg.as_str(), "--dry-run" | "--dry_run" | "--dryRun"))
+}
+
+fn example_json_has_dry_run(input: Option<&Value>) -> bool {
+    input.is_some_and(|input| {
+        ["dry_run", "dryRun"]
+            .iter()
+            .any(|field| input.get(*field).and_then(Value::as_bool) == Some(true))
     })
 }
 
@@ -4076,10 +4235,16 @@ fn print_tool_lint_report(output: OutputFormat, report: &ToolLintReport) -> Resu
         OutputFormat::Json => print_json(report),
         OutputFormat::Human | OutputFormat::Markdown => {
             println!(
-                "Custom tool lint: {} ({} checked)",
+                "Custom tool lint: {} ({} checked, {} fixed)",
                 if report.valid { "passed" } else { "failed" },
-                report.checked
+                report.checked,
+                report.fixed
             );
+            for tool in &report.tools {
+                for fix in &tool.fixes {
+                    println!("fix: {}: {fix}", tool.name);
+                }
+            }
             for warning in &report.warnings {
                 println!("warning: {warning}");
             }
@@ -24910,8 +25075,15 @@ mod tests {
             "--dry-run",
         ])
         .expect("tool init should parse");
-        let lint = Cli::try_parse_from(["vulcan", "tool", "lint", "meeting-summary", "--strict"])
-            .expect("tool lint should parse");
+        let lint = Cli::try_parse_from([
+            "vulcan",
+            "tool",
+            "lint",
+            "meeting-summary",
+            "--strict",
+            "--fix",
+        ])
+        .expect("tool lint should parse");
 
         assert_eq!(
             init.command,
@@ -24931,6 +25103,7 @@ mod tests {
                 command: ToolCommand::Lint {
                     name: Some("meeting-summary".to_string()),
                     strict: true,
+                    fix: true,
                 },
             }
         );

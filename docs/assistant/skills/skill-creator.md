@@ -152,6 +152,7 @@ schemas, permissions, or cross-harness execution matter.
 - `vulcan tool run <alias> --flag value` returns the same shape when CLI metadata is declared.
 - `vulcan tool help <alias>` shows a readable shell invocation.
 - `vulcan tool lint <alias> --strict` passes without warnings or errors.
+- `vulcan tool lint <alias> --fix` only makes safe packaging repairs, such as fixing the Vulcan shebang or executable bit.
 - `vulcan tool test <alias>` runs declared examples successfully.
 - `vulcan complete custom-tool <prefix>`, `vulcan complete custom-tool-flag:<alias> --<prefix>`, and `vulcan complete custom-tool-value:<alias>:<flag> <prefix>` list the expected shell completion candidates.
 - Any write, network, or host execution behavior is covered by sandbox and permission-profile choices.

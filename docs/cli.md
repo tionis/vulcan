@@ -294,7 +294,7 @@ Behavior:
 - `vulcan skill validate [<skill>]`: validate skill frontmatter, command metadata, schemas, scripts, and permission-profile references.
 - `vulcan skill init <name>`: scaffold a new skill directory with `SKILL.md` and optional starter command.
 - `vulcan tool init <alias>`: scaffold a skill-backed custom tool with schemas, CLI metadata, a Vulcan shebang script, and a smoke example.
-- `vulcan tool lint [<alias>]`: check exposed custom tools for schemas, CLI coverage, examples, shebangs, executable bits, and packaging issues.
+- `vulcan tool lint [<alias>]`: check exposed custom tools for schemas, CLI coverage, examples, shebangs, executable bits, mutation dry-run conventions, and packaging issues.
 
 Behavior:
 
@@ -307,7 +307,7 @@ Behavior:
 - Trusted skill commands may be projected into `vulcan describe --format mcp|openai-tools|json-schema` and into the live MCP server as first-class tools.
 - Exposed tools may declare custom CLI aliases so `vulcan tool run <alias> --flag value` builds the same validated input JSON as MCP.
 - `vulcan tool help <alias>` prints the shell-friendly usage generated from that metadata.
-- `vulcan tool lint --strict` treats authoring warnings as failures.
+- `vulcan tool lint --strict` treats authoring warnings as failures; `--fix` applies safe packaging repairs such as shebang normalization and executable-bit fixes.
 - `vulcan tool test <alias>` runs examples declared in command metadata, supports fixture files relative to the skill directory, and reports JSON diffs when expected output does not match.
 - `vulcan skill validate` warns about exposed commands that are missing examples, output schemas, or CLI aliases.
 - Mutating commands should support dry-run/proposal output so Vulcan can preview diffs, require approval, and write audit records.

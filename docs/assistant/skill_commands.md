@@ -187,6 +187,8 @@ Validation rules:
 - Exposed commands should declare `output_schema`, a CLI alias, and examples; `vulcan skill validate`
   reports warnings when these maintainability fields are missing.
 - Example fixture paths are resolved relative to the skill directory and must stay inside it.
+- `vulcan tool lint --fix` may repair packaging issues such as missing Vulcan shebangs and executable bits, but it does not infer schemas or edit command behavior.
+- Mutation-capable tools should declare a boolean `dry_run`/`dryRun` input and include at least one dry-run example.
 - `sandbox = none` is not valid for projected skill commands.
 - `permission_profile` can narrow authority but cannot widen the caller's authority.
 

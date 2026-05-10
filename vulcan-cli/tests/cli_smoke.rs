@@ -10429,6 +10429,58 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
     assert_eq!(lint_json["valid"].as_bool(), Some(true));
     assert_eq!(lint_json["checked"].as_u64(), Some(1));
 
+    let script_without_shebang = script
+        .split_once('\n')
+        .map_or(script.as_str(), |(_, body)| body);
+    fs::write(&script_path, script_without_shebang).expect("script should be made non-packaged");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = fs::metadata(&script_path)
+            .expect("script metadata should load")
+            .permissions();
+        permissions.set_mode(0o644);
+        fs::set_permissions(&script_path, permissions).expect("script permissions should update");
+    }
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "tool",
+            "lint",
+            "echo-tool",
+            "--strict",
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains(
+            "entrypoint script is missing a shebang",
+        ));
+
+    let fix_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "lint",
+            "echo-tool",
+            "--strict",
+            "--fix",
+        ])
+        .assert()
+        .success();
+    let fix_json = parse_stdout_json(&fix_assert);
+    assert_eq!(fix_json["valid"].as_bool(), Some(true));
+    assert!(fix_json["fixed"].as_u64().unwrap_or_default() >= 1);
+    let fixed_script = fs::read_to_string(&script_path).expect("fixed script should read");
+    assert!(fixed_script.starts_with("#!/usr/bin/env -S vulcan skill exec\n"));
+    assert_executable(&script_path);
+
     Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
@@ -10545,6 +10597,42 @@ fn tool_init_lint_and_test_create_skill_backed_custom_tool() {
         mismatch_json["examples"][0]["diff"][0].as_str(),
         Some("$.length: expected 999, got 2")
     );
+
+    let manifest = fs::read_to_string(&manifest_path).expect("manifest should read");
+    fs::write(
+        &manifest_path,
+        manifest.replace(
+            "        sandbox: strict\n",
+            "        sandbox: strict\n        permission_profile: unrestricted\n",
+        ),
+    )
+    .expect("manifest should add mutating permission profile");
+    let mutation_lint_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "tool",
+            "lint",
+            "echo-tool",
+            "--strict",
+        ])
+        .assert()
+        .failure();
+    let mutation_lint_json = parse_stdout_json_lines(&mutation_lint_assert)
+        .into_iter()
+        .next()
+        .expect("lint should print a JSON report before failing");
+    assert_eq!(mutation_lint_json["valid"].as_bool(), Some(false));
+    assert!(mutation_lint_json["warnings"]
+        .as_array()
+        .expect("warnings")
+        .iter()
+        .any(|warning| warning
+            .as_str()
+            .is_some_and(|warning| warning.contains("dry_run input"))));
 }
 
 #[test]
