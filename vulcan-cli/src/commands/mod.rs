@@ -15,6 +15,7 @@ pub(crate) mod refactor;
 pub(crate) mod runtime;
 pub(crate) mod skill;
 pub(crate) mod tasks;
+pub(crate) mod template;
 pub(crate) mod tool;
 pub(crate) mod tool_init;
 pub(crate) mod vectors;

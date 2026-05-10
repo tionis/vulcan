@@ -22,6 +22,14 @@ mod serve;
 mod site_server;
 mod terminal_markdown;
 
+#[cfg(test)]
+pub(crate) use commands::template::TemplateSummary;
+pub(crate) use commands::template::{
+    print_template_create_report, print_template_insert_report, print_template_list_report,
+    print_template_preview_report, run_template_command, run_template_insert_command,
+    run_template_preview_command, run_template_show_command, TemplateCommandResult,
+};
+
 mod plugins {
     use crate::CliError;
     use serde_json::Value;
@@ -465,13 +473,10 @@ use vulcan_app::site::{
     SiteProfileListEntry,
 };
 use vulcan_app::templates::{
-    apply_template_create, apply_template_insert, build_template_list_report,
-    build_template_preview_report, build_template_show_report, find_frontmatter_block,
-    load_named_template, merge_template_frontmatter, parse_frontmatter_document,
-    parse_template_var_bindings, render_loaded_template, render_note_from_parts,
-    template_variables_for_path, LoadedTemplateRenderRequest, TemplateCreateRequest,
-    TemplateEngineKind, TemplateInsertMode, TemplateInsertRequest, TemplatePreviewRequest,
-    TemplateRunMode, TemplateTimestamp, TemplateVariables,
+    find_frontmatter_block, load_named_template, merge_template_frontmatter,
+    parse_frontmatter_document, parse_template_var_bindings, render_loaded_template,
+    render_note_from_parts, template_variables_for_path, LoadedTemplateRenderRequest,
+    TemplateEngineKind, TemplateInsertMode, TemplateRunMode, TemplateTimestamp, TemplateVariables,
 };
 #[cfg(test)]
 use vulcan_app::templates::{
@@ -1381,45 +1386,6 @@ struct InboxReport {
     appended: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct TemplateListReport {
-    templates: Vec<TemplateSummary>,
-    warnings: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct TemplateCreateReport {
-    template: String,
-    template_source: String,
-    path: String,
-    engine: String,
-    opened_editor: bool,
-    warnings: Vec<String>,
-    diagnostics: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct TemplateInsertReport {
-    template: String,
-    template_source: String,
-    note: String,
-    mode: String,
-    engine: String,
-    warnings: Vec<String>,
-    diagnostics: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct TemplatePreviewReport {
-    template: String,
-    template_source: String,
-    path: String,
-    engine: String,
-    content: String,
-    warnings: Vec<String>,
-    diagnostics: Vec<String>,
-}
-
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(crate) struct BasesCreateReport {
     pub(crate) file: String,
@@ -1431,13 +1397,6 @@ pub(crate) struct BasesCreateReport {
     pub(crate) template: Option<String>,
     pub(crate) properties: BTreeMap<String, Value>,
     pub(crate) filters: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct TemplateSummary {
-    name: String,
-    source: String,
-    path: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2227,153 +2186,6 @@ fn run_inbox_command(
     })
 }
 
-#[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-fn run_template_command(
-    paths: &VaultPaths,
-    name: Option<&str>,
-    list: bool,
-    output_path: Option<&str>,
-    engine: TemplateEngineArg,
-    vars: &[String],
-    no_commit: bool,
-    quiet: bool,
-    stdout_is_tty: bool,
-) -> Result<TemplateCommandResult, CliError> {
-    if list {
-        let report = build_template_list_report(paths)?;
-        return Ok(TemplateCommandResult::List(TemplateListReport {
-            templates: report
-                .templates
-                .into_iter()
-                .map(|template| TemplateSummary {
-                    name: template.name,
-                    source: template.source,
-                    path: template.path,
-                })
-                .collect(),
-            warnings: report.warnings,
-        }));
-    }
-
-    let template_name = name.ok_or_else(|| {
-        CliError::operation("`template` requires a template name unless --list is used")
-    })?;
-    let created = apply_template_create(
-        paths,
-        &TemplateCreateRequest {
-            template: template_name.to_string(),
-            output_path: output_path.map(ToOwned::to_owned),
-            engine: template_engine_kind(engine),
-            vars: parse_template_var_bindings(vars)?,
-        },
-    )?;
-
-    let mut opened_editor = false;
-    if stdout_is_tty && io::stdin().is_terminal() {
-        open_in_editor(&created.absolute_path).map_err(CliError::operation)?;
-        opened_editor = true;
-    }
-
-    run_incremental_scan(paths, OutputFormat::Human, false, false)?;
-    let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, quiet);
-    auto_commit
-        .commit(paths, "template", &created.changed_paths, None, quiet)
-        .map_err(CliError::operation)?;
-
-    Ok(TemplateCommandResult::Create(TemplateCreateReport {
-        template: created.template,
-        template_source: created.template_source,
-        path: created.path,
-        engine: created.engine,
-        opened_editor,
-        warnings: created.warnings,
-        diagnostics: created.diagnostics,
-    }))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn run_template_insert_command(
-    paths: &VaultPaths,
-    template_name: &str,
-    note: Option<&str>,
-    mode: TemplateInsertMode,
-    engine: TemplateEngineArg,
-    vars: &[String],
-    no_commit: bool,
-    quiet: bool,
-    interactive_note_selection: bool,
-) -> Result<TemplateInsertReport, CliError> {
-    let target_identifier = resolve_note_argument(
-        paths,
-        note,
-        interactive_note_selection,
-        "template insert target note",
-    )?;
-    let report = apply_template_insert(
-        paths,
-        &TemplateInsertRequest {
-            template: template_name.to_string(),
-            note: target_identifier,
-            mode,
-            engine: template_engine_kind(engine),
-            vars: parse_template_var_bindings(vars)?,
-        },
-    )?;
-
-    run_incremental_scan(paths, OutputFormat::Human, false, false)?;
-    let auto_commit = AutoCommitPolicy::for_mutation(paths, no_commit);
-    warn_auto_commit_if_needed(&auto_commit, quiet);
-    auto_commit
-        .commit(paths, "template insert", &report.changed_paths, None, quiet)
-        .map_err(CliError::operation)?;
-
-    Ok(TemplateInsertReport {
-        template: report.template,
-        template_source: report.template_source,
-        note: report.note,
-        mode: report.mode,
-        engine: report.engine,
-        warnings: report.warnings,
-        diagnostics: report.diagnostics,
-    })
-}
-
-fn run_template_preview_command(
-    paths: &VaultPaths,
-    template_name: &str,
-    output_path: Option<&str>,
-    engine: TemplateEngineArg,
-    vars: &[String],
-) -> Result<TemplatePreviewReport, CliError> {
-    let report = build_template_preview_report(
-        paths,
-        &TemplatePreviewRequest {
-            template: template_name.to_string(),
-            output_path: output_path.map(ToOwned::to_owned),
-            engine: template_engine_kind(engine),
-            vars: parse_template_var_bindings(vars)?,
-        },
-    )?;
-    Ok(TemplatePreviewReport {
-        template: report.template,
-        template_source: report.template_source,
-        path: report.path,
-        engine: report.engine,
-        content: report.content,
-        warnings: report.warnings,
-        diagnostics: report.diagnostics,
-    })
-}
-
-fn template_engine_kind(engine: TemplateEngineArg) -> TemplateEngineKind {
-    match engine {
-        TemplateEngineArg::Native => TemplateEngineKind::Native,
-        TemplateEngineArg::Templater => TemplateEngineKind::Templater,
-        TemplateEngineArg::Auto => TemplateEngineKind::Auto,
-    }
-}
-
 pub(crate) fn create_note_from_bases_view(
     paths: &VaultPaths,
     file: &str,
@@ -2497,13 +2309,6 @@ fn build_bases_create_frontmatter(
     properties: &BTreeMap<String, Value>,
 ) -> Result<Option<vulcan_app::templates::YamlMapping>, CliError> {
     json_properties_to_frontmatter(properties).map_err(CliError::operation)
-}
-
-enum TemplateCommandResult {
-    List(TemplateListReport),
-    Create(TemplateCreateReport),
-    Insert(TemplateInsertReport),
-    Preview(TemplatePreviewReport),
 }
 
 fn inbox_input_text(text: Option<&str>, file: Option<&PathBuf>) -> Result<String, CliError> {
@@ -10582,93 +10387,6 @@ fn print_inbox_report(output: OutputFormat, report: &InboxReport) -> Result<(), 
     }
 }
 
-fn print_template_list_report(
-    output: OutputFormat,
-    report: &TemplateListReport,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            if report.templates.is_empty() {
-                println!("No templates found.");
-            } else {
-                for template in &report.templates {
-                    println!("{} [{}: {}]", template.name, template.source, template.path);
-                }
-            }
-            for warning in &report.warnings {
-                eprintln!("Warning: {warning}");
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_template_create_report(
-    output: OutputFormat,
-    report: &TemplateCreateReport,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            println!(
-                "Created {} from {} ({}, {})",
-                report.path, report.template, report.template_source, report.engine
-            );
-            for warning in &report.warnings {
-                eprintln!("Warning: {warning}");
-            }
-            for diagnostic in &report.diagnostics {
-                eprintln!("Diagnostic: {diagnostic}");
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_template_insert_report(
-    output: OutputFormat,
-    report: &TemplateInsertReport,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            println!(
-                "Inserted {} into {} ({}, {}, {})",
-                report.template, report.note, report.mode, report.template_source, report.engine
-            );
-            for warning in &report.warnings {
-                eprintln!("Warning: {warning}");
-            }
-            for diagnostic in &report.diagnostics {
-                eprintln!("Diagnostic: {diagnostic}");
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_template_preview_report(
-    output: OutputFormat,
-    report: &TemplatePreviewReport,
-    stdout_is_tty: bool,
-    use_color: bool,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            print_markdown_output(output, &report.content, stdout_is_tty, use_color)?;
-            for warning in &report.warnings {
-                eprintln!("Warning: {warning}");
-            }
-            for diagnostic in &report.diagnostics {
-                eprintln!("Diagnostic: {diagnostic}");
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
 fn print_open_report(output: OutputFormat, report: &OpenReport) -> Result<(), CliError> {
     match output {
         OutputFormat::Human | OutputFormat::Markdown => {
@@ -13882,25 +13600,6 @@ fn print_graph_export_report(
 // ────────────────────────────────────────────────────────────────────────────
 // template show
 // ────────────────────────────────────────────────────────────────────────────
-
-fn run_template_show_command(
-    paths: &VaultPaths,
-    name: &str,
-    output: OutputFormat,
-) -> Result<(), CliError> {
-    let report = build_template_show_report(paths, name)?;
-    match output {
-        OutputFormat::Json => print_json(&report),
-        OutputFormat::Human | OutputFormat::Markdown => {
-            println!("Name:   {}", report.name);
-            println!("Source: {}", report.source);
-            println!("Path:   {}", report.path);
-            println!();
-            print!("{}", report.content);
-            Ok(())
-        }
-    }
-}
 
 fn run_complete_command(paths: &VaultPaths, context: &str, prefix: Option<&str>) {
     let candidates = collect_complete_candidates(paths, context, prefix);
