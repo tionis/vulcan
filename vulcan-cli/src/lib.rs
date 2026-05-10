@@ -3013,8 +3013,8 @@ fn handle_tool_command(
         }
         ToolCommand::Lint { name, strict, fix } => {
             let report = lint_custom_tools(
-                cli,
                 paths,
+                cli.permissions.as_deref(),
                 name.as_deref(),
                 *strict,
                 *fix,
@@ -3636,8 +3636,8 @@ struct ToolInitCliOptions<'a> {
 }
 
 fn lint_custom_tools(
-    cli: &Cli,
     paths: &VaultPaths,
+    active_permission_profile: Option<&str>,
     name: Option<&str>,
     strict: bool,
     fix: bool,
@@ -3645,12 +3645,12 @@ fn lint_custom_tools(
 ) -> Result<ToolLintReport, CliError> {
     let tools = if let Some(name) = name {
         vec![
-            tools::show_custom_tool(paths, cli.permissions.as_deref(), name, registry_options)?
+            tools::show_custom_tool(paths, active_permission_profile, name, registry_options)?
                 .tool
                 .summary,
         ]
     } else {
-        tools::list_custom_tools(paths, cli.permissions.as_deref(), registry_options)?
+        tools::list_custom_tools(paths, active_permission_profile, registry_options)?
             .into_iter()
             .map(|descriptor| descriptor.summary)
             .collect()
@@ -4090,7 +4090,7 @@ fn build_tool_ci_report(
     registry_options: &tools::CustomToolRegistryOptions,
 ) -> Result<ToolCiReport, CliError> {
     let active_profile = profile.or(cli.permissions.as_deref());
-    let lint = lint_custom_tools(cli, paths, None, true, false, registry_options)?;
+    let lint = lint_custom_tools(paths, active_profile, None, true, false, registry_options)?;
     let tests =
         match run_all_tool_examples(cli, paths, None, active_profile, false, registry_options)? {
             ToolTestOutput::All(report) => report,
