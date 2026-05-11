@@ -24,6 +24,13 @@ fn production_source(source: &str) -> &str {
         .expect("split should always yield a first segment")
 }
 
+fn is_test_module(path: &Path) -> bool {
+    path.file_name().and_then(|name| name.to_str()) == Some("tests.rs")
+        || path
+            .components()
+            .any(|component| component.as_os_str().to_str() == Some("tests"))
+}
+
 #[test]
 fn production_cli_code_avoids_direct_backend_dependencies() {
     let src_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -76,6 +83,10 @@ fn production_cli_code_avoids_direct_backend_dependencies() {
 
     let mut violations = Vec::new();
     visit_rs_files(&src_root, &mut |path| {
+        if is_test_module(path) {
+            return;
+        }
+
         let source = fs::read_to_string(path).expect("source file should read");
         let production = production_source(&source);
         for (pattern, reason) in banned_patterns {
