@@ -4939,7 +4939,7 @@ Pre-Phase-10 cleanup baseline recorded on 2026-05-11:
 - [x] Add feature-combination checks to CI/test docs, including `cargo check --workspace --no-default-features` and targeted checks for the new feature sets.
 - [x] Document which features are enabled by default and why, with explicit guidance for library consumers that want a minimal build.
 
-Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default-features` for minimal library consumers. The CLI still keeps `vectors`, `web`, and `oauth` enabled as dependency features in JS-disabled builds so the full command surface remains compilable; making individual CLI command groups disappear under feature flags is intentionally left as an optional binary-size optimization unless a concrete consumer needs it.
+Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default-features` for minimal library consumers. `vulcan-cli --no-default-features` also compiles without forcing app/core `vectors`, `web`, or `oauth` features; the command parser remains available, and disabled command groups return explicit feature-disabled diagnostics rather than silently doing partial work.
 
 ### 9.29.3 `vulcan-core` boundary and dependency cleanup
 
@@ -4948,7 +4948,7 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
   - vector-backed suggestion signals
   - vector cache inspection/repair helpers
   - `vulcan-embed` dependency
-- [ ] Ensure graph/search/link suggestion features degrade cleanly when vectors are disabled: non-vector signals should still work, and vector-specific commands should return clear "feature disabled" errors.
+- [x] Ensure graph/search/link suggestion features degrade cleanly when vectors are disabled: non-vector signals should still work, and vector-specific commands should return clear "feature disabled" errors.
 - [x] Move or gate `vulcan-core/src/web.rs` behind a `web` feature and ensure JS/runtime callers use the same gated service.
 - [x] Move or gate `vulcan-core/src/oauth.rs` behind an `oauth` feature, or relocate server-facing OAuth pieces into a reusable MCP/daemon-support module if that boundary is cleaner.
 - [ ] Audit `vulcan-core/src/dataview_js.rs` and `vulcan-app/src/templates.rs` for `#[cfg(feature = "js_runtime")]` completeness after new features are introduced.
@@ -5003,7 +5003,7 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
   - no vector/embedding dependency usage outside vector-gated modules
   - no JS runtime usage outside `js_runtime`-gated modules
   - no MCP transport code depending on CLI rendering or terminal state
-- [ ] Add a documented local verification matrix:
+- [~] Add a documented local verification matrix:
   - `cargo fmt --all`
   - `cargo clippy --workspace --all-targets -- -D warnings`
   - `cargo test --workspace`
@@ -5032,10 +5032,10 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 - [ ] `cargo fmt --all` passes.
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - [ ] `cargo test --workspace` passes.
-- [ ] `cargo check --workspace --no-default-features` passes.
-- [ ] New feature-combination checks from 9.29.2 pass and are documented.
-- [ ] A non-AI library consumer can depend on Vulcan without pulling embedding/vector provider dependencies.
-- [ ] A web-disabled build can still scan/query/render local Markdown and report clear errors for web-only commands.
+- [x] `cargo check --workspace --no-default-features` passes.
+- [~] New feature-combination checks from 9.29.2 pass and are documented.
+- [x] A non-AI library consumer can depend on Vulcan without pulling embedding/vector provider dependencies.
+- [~] A web-disabled build can still scan/query/render local Markdown and report clear errors for web-only commands.
 - [ ] A JS-disabled build can still scan/query/render and reports clear errors for JS-only Dataview/Templater/custom-tool behavior.
 - [ ] `vulcan-cli` remains usable and snapshot-covered; command help and JSON output do not regress.
 - [ ] MCP behavior remains protocol-compatible after splitting: stdio, Streamable HTTP, OAuth/IndieAuth, tool packs, resources, prompts, completions, and skill command tools all retain coverage.

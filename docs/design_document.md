@@ -135,7 +135,7 @@ Current Phase 9.29 feature matrix:
 | `web` | enabled | `vulcan-core::web`, normalized web search/fetch helpers, HTML main-content extraction, and app-layer web workflows. |
 | `oauth` | enabled | Embedded OAuth/IndieAuth issuer/resource-server helpers used by MCP HTTP auth and future server transports. |
 
-Library consumers that only need parser/index/query/render basics should depend on `vulcan-core` with `default-features = false`. That build excludes `vulcan-embed`, `sqlite-vec`, `reqwest`, `rs-trafilatura`, `jsonwebtoken`, `sha2`, and `base64` from `vulcan-core` unless another crate enables the corresponding feature. The CLI currently keeps `vectors`, `web`, and `oauth` enabled even in JS-disabled builds because those command groups are part of the default local binary surface; finer-grained CLI command gating is a later optional size optimization.
+Library consumers that only need parser/index/query/render basics should depend on `vulcan-core` with `default-features = false`. That build excludes `vulcan-embed`, `sqlite-vec`, `reqwest`, `rs-trafilatura`, `jsonwebtoken`, `sha2`, and `base64` from `vulcan-core` unless another crate enables the corresponding feature. The CLI default build enables `js_runtime`, `vectors`, `web`, and `oauth` for the full local command surface. `vulcan-cli --no-default-features` now preserves the command parser while compiling without those app/core backend features; feature-disabled command groups return explicit diagnostics such as "`web` feature enabled" or "`vectors` feature enabled" instead of silently degrading.
 
 Regression strategy for boundary cleanup:
 

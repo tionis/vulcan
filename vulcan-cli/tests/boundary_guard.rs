@@ -149,6 +149,28 @@ fn core_optional_backend_dependencies_stay_feature_gated() {
 }
 
 #[test]
+fn cli_dependencies_do_not_force_optional_backend_features() {
+    let cli_manifest = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml"))
+        .expect("cli manifest should read");
+
+    for dependency in ["vulcan-app", "vulcan-core"] {
+        let pattern = format!("{dependency} = {{");
+        let line = cli_manifest
+            .lines()
+            .find(|line| line.trim_start().starts_with(&pattern))
+            .unwrap_or_else(|| panic!("{dependency} dependency should be declared explicitly"));
+        assert!(
+            !line.contains("features = ["),
+            "{dependency} must not force optional backend features in no-default CLI builds: {line}"
+        );
+        assert!(
+            line.contains("default-features = false"),
+            "{dependency} must keep default features disabled at the dependency edge: {line}"
+        );
+    }
+}
+
+#[test]
 fn core_production_code_avoids_daemon_runtime_crates() {
     let core_src_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
