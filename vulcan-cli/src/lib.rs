@@ -41,11 +41,10 @@ pub(crate) use commands::edit::{
 };
 pub(crate) use commands::inbox::{print_inbox_report, run_inbox_command};
 pub(crate) use commands::note::{
-    normalize_note_path, path_buf_to_slash_string, resolve_existing_markdown_target,
-    resolve_existing_note_path, run_note_append_command, run_note_create_with_body,
-    run_note_delete_command, run_note_get_command, run_note_info_command, run_note_outline_command,
-    run_note_patch_command, run_note_set_with_content, NoteAppendOptions, NoteGetOptions,
-    NotePatchOptions,
+    normalize_note_path, resolve_existing_markdown_target, resolve_existing_note_path,
+    run_note_append_command, run_note_create_with_body, run_note_delete_command,
+    run_note_get_command, run_note_info_command, run_note_outline_command, run_note_patch_command,
+    run_note_set_with_content, NoteAppendOptions, NoteGetOptions, NotePatchOptions,
 };
 pub(crate) use commands::status::run_status_command;
 #[cfg(test)]
@@ -514,14 +513,13 @@ use vulcan_core::{
     export_static_search_index, link_mentions, list_checkpoints, list_saved_reports,
     load_saved_report, load_vault_config, merge_tags, move_note, plan_base_note_create,
     query_change_report, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
-    rename_heading, rename_property, render_note_html, render_vault_html, repair_fts,
-    resolve_note_reference, resolve_permission_profile, save_saved_report,
-    scan_vault_with_progress, search_vault, verify_cache, watch_vault, AutoScanMode,
-    BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport, BulkMutationReport,
-    CacheDatabase, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
-    CheckpointRecord, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport,
-    DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
-    GraphConfidenceBreakdown, HtmlRenderOptions, LinkSuggestion, LinkSuggestionsReport,
+    rename_heading, rename_property, repair_fts, resolve_note_reference,
+    resolve_permission_profile, save_saved_report, scan_vault_with_progress, search_vault,
+    verify_cache, watch_vault, AutoScanMode, BacklinkRecord, BacklinksReport, BasesCreateContext,
+    BasesEvalReport, BulkMutationReport, CacheDatabase, CacheVerifyReport, ChangeAnchor,
+    ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, DataviewJsOutput, DataviewJsResult,
+    DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport, DqlQueryResult,
+    DuplicateSuggestionsReport, GraphConfidenceBreakdown, LinkSuggestion, LinkSuggestionsReport,
     MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NoteQuery,
     NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PermissionFilter,
     PermissionGuard, PluginEvent, ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport,
@@ -958,14 +956,6 @@ struct AutomationRunReport {
 
 type DataviewEvalReport = AppDataviewEvalReport;
 type DataviewBlockResult = AppDataviewBlockResult;
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct RenderReport {
-    path: Option<String>,
-    source: String,
-    rendered: String,
-    mode: String,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NoteEntryInsertion {
@@ -2363,8 +2353,13 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         let stdout_is_tty = io::stdout().is_terminal();
         let use_stdout_color = resolve_use_color(cli.color, stdout_is_tty);
         let render_paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
-        let report = run_render_command(&render_paths, file.as_ref(), mode)?;
-        return print_render_report(cli.output, &report, stdout_is_tty, use_stdout_color);
+        let report = commands::render::run_render_command(&render_paths, file.as_ref(), mode)?;
+        return commands::render::print_render_report(
+            cli.output,
+            &report,
+            stdout_is_tty,
+            use_stdout_color,
+        );
     }
 
     let paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
@@ -4275,70 +4270,6 @@ fn print_search_report(
     }
 }
 
-fn run_render_command(
-    paths: &VaultPaths,
-    path: Option<&PathBuf>,
-    mode: RenderMode,
-) -> Result<RenderReport, CliError> {
-    let (path, source, source_path) = match path {
-        Some(path) if path.as_os_str() == "-" => {
-            let mut source = String::new();
-            io::stdin()
-                .read_to_string(&mut source)
-                .map_err(CliError::operation)?;
-            (None, source, None)
-        }
-        Some(path) => {
-            let contents = fs::read_to_string(path).map_err(CliError::operation)?;
-            let absolute = fs::canonicalize(path).map_err(CliError::operation)?;
-            let source_path = paths
-                .relative_to_vault(&absolute)
-                .map(|relative| path_buf_to_slash_string(&relative));
-            (Some(path.display().to_string()), contents, source_path)
-        }
-        None => {
-            if io::stdin().is_terminal() {
-                return Err(CliError::operation(
-                    "`vulcan render` requires a file path or piped stdin",
-                ));
-            }
-            let mut source = String::new();
-            io::stdin()
-                .read_to_string(&mut source)
-                .map_err(CliError::operation)?;
-            (None, source, None)
-        }
-    };
-
-    let rendered = match mode {
-        RenderMode::Terminal => terminal_markdown::render_terminal_markdown(&source, false),
-        RenderMode::Html => source_path.as_deref().map_or_else(
-            || {
-                render_vault_html(
-                    paths,
-                    &source,
-                    &HtmlRenderOptions {
-                        full_document: true,
-                        ..HtmlRenderOptions::default()
-                    },
-                )
-                .html
-            },
-            |relative_path| render_note_html(paths, relative_path, &source).html,
-        ),
-    };
-    Ok(RenderReport {
-        path,
-        source,
-        rendered,
-        mode: match mode {
-            RenderMode::Terminal => "terminal",
-            RenderMode::Html => "html",
-        }
-        .to_string(),
-    })
-}
-
 pub(crate) fn print_markdown_output(
     output: OutputFormat,
     markdown: &str,
@@ -4370,41 +4301,6 @@ pub(crate) fn print_markdown_output(
             }
             print!("{markdown}");
             if !markdown.ends_with('\n') {
-                println!();
-            }
-            Ok(())
-        }
-    }
-}
-
-fn print_render_report(
-    output: OutputFormat,
-    report: &RenderReport,
-    stdout_is_tty: bool,
-    use_color: bool,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Json => print_json(report),
-        OutputFormat::Human => {
-            let rendered = if report.mode == "terminal" && stdout_is_tty {
-                terminal_markdown::render_terminal_markdown(&report.source, use_color)
-            } else {
-                report.rendered.clone()
-            };
-            print!("{rendered}");
-            if !rendered.ends_with('\n') {
-                println!();
-            }
-            Ok(())
-        }
-        OutputFormat::Markdown => {
-            let rendered = if report.mode == "html" {
-                report.rendered.as_str()
-            } else {
-                report.source.as_str()
-            };
-            print!("{rendered}");
-            if !rendered.ends_with('\n') {
                 println!();
             }
             Ok(())
