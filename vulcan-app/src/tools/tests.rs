@@ -1,9 +1,11 @@
 use super::*;
+use crate::trust;
+use serde_json::{json, Value};
 use std::env;
 use std::fs;
 use tempfile::TempDir;
 use vulcan_core::paths::initialize_vulcan_dir;
-use vulcan_core::{scan_vault, ScanMode};
+use vulcan_core::{scan_vault, ScanMode, VaultPaths};
 
 fn test_paths() -> (TempDir, VaultPaths) {
     let dir = TempDir::new().expect("temp dir should be created");
