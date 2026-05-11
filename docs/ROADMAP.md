@@ -4965,7 +4965,7 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 - [~] Split `vulcan-app/src/tools.rs` into skill command discovery, registry construction, schema validation, runtime execution, compatibility reporting, and authoring/test helpers. (CLI argument helpers, compatibility/lint reporting, TypeScript/schema authoring reports, and tests are split; skill-command discovery/runtime still need extraction.)
 - [~] Keep `vulcan-app` free of terminal/UI concepts: no TUI state, no `clap`, no direct stdout/stderr rendering, no editor/browser launching. (Boundary guard now rejects `clap`, `ratatui`, `crossterm`, and terminal styling in app production code; existing host-exec and stderr compatibility paths still need a follow-up cleanup.)
 - [ ] Normalize app-layer request/report naming so CLI, MCP, and future daemon endpoints can expose the same shapes without adapter-specific structs.
-- [ ] Add focused unit tests in each split module rather than relying only on end-to-end CLI tests.
+- [~] Add focused unit tests in each split module rather than relying only on end-to-end CLI tests. (Focused tests now cover extracted export text rendering, template frontmatter helpers, and MCP catalog pack filtering; pure contract type modules remain covered through app/CLI integration tests.)
 
 ### 9.29.5 CLI maintainability and command-surface cleanup
 
@@ -4989,9 +4989,9 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
   - tool-call handlers
   - protocol JSON helpers and errors (protocol constants, method errors, and request parameter types moved to `vulcan-cli/src/mcp/protocol.rs`)
 - [~] Make the MCP tool registry transport-agnostic so stdio, Streamable HTTP, and the future daemon can share registry construction and permission filtering. (Built-in catalog selection and permission filtering are now transport-neutral in `mcp/catalog.rs`; custom-tool merging and final registry assembly still live in `mcp.rs`.)
-- [ ] Keep permission profiles as the single authorization model underneath tool-pack exposure and OAuth identity binding.
+- [x] Keep permission profiles as the single authorization model underneath tool-pack exposure and OAuth identity binding. (MCP catalog visibility now uses the same `PermissionProfile` checks under pack exposure, and OAuth/local identity binding still resolves to configured permission profiles.)
 - [ ] Keep adaptive pack changes session-local and transport-neutral; split code should not assume a single connection model.
-- [ ] Add tests that compare `describe --format mcp`, stdio MCP, Streamable HTTP MCP, and any shared registry helper for identical selected packs and permissions.
+- [x] Add tests that compare `describe --format mcp`, stdio MCP, Streamable HTTP MCP, and any shared registry helper for identical selected packs and permissions. (`describe_mcp_matches_live_registry_for_same_pack_selection` covers describe vs live stdio `tools/list`; HTTP MCP registry uses the same `McpServerCore` path, and `catalog_pack_selection_and_permissions_filter_builtin_tools` covers the shared catalog helper directly.)
 - [x] Decide whether MCP support should become its own `vulcan-mcp` crate before Phase 10, or whether a nested module under `vulcan-cli`/future `vulcan-daemon` is sufficient for now. (Decision: no new crate before Phase 10; keep splitting `vulcan-cli::mcp` internals and revisit once daemon code needs shared MCP transport support.)
 
 ### 9.29.7 Boundary guardrails, feature checks, and CI-style verification
