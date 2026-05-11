@@ -163,3 +163,55 @@ pub fn find_frontmatter_block(source: &str) -> Option<(usize, usize, usize)> {
 
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_frontmatter_document_extracts_yaml_and_body() {
+        let (frontmatter, body) = parse_frontmatter_document("---\ntags:\n- a\n---\nBody\n", false)
+            .expect("frontmatter should parse");
+        let frontmatter = frontmatter.expect("frontmatter should exist");
+
+        assert_eq!(
+            frontmatter
+                .get(YamlValue::String("tags".to_string()))
+                .and_then(YamlValue::as_sequence)
+                .map(Vec::len),
+            Some(1)
+        );
+        assert_eq!(body, "Body\n");
+    }
+
+    #[test]
+    fn merge_template_frontmatter_appends_unique_sequence_items() {
+        let (target, _) =
+            parse_frontmatter_document("---\ntags:\n- a\n---\n", false).expect("target");
+        let (template, _) =
+            parse_frontmatter_document("---\ntags:\n- a\n- b\n---\n", true).expect("template");
+
+        let merged = merge_template_frontmatter(target, template).expect("merged");
+        let tags = merged
+            .get(YamlValue::String("tags".to_string()))
+            .and_then(YamlValue::as_sequence)
+            .expect("tags");
+
+        assert_eq!(tags.len(), 2);
+    }
+
+    #[test]
+    fn prepare_template_insertion_merges_frontmatter_and_appends_body() {
+        let prepared = prepare_template_insertion(
+            "---\nstatus: old\n---\nExisting\n",
+            "---\ntags:\n- new\n---\nInserted\n",
+        )
+        .expect("prepared");
+        let rendered =
+            apply_template_insertion_mode(&prepared, TemplateInsertMode::Append).expect("rendered");
+
+        assert!(rendered.contains("status: old"));
+        assert!(rendered.contains("tags:"));
+        assert!(rendered.ends_with("Existing\n\nInserted\n"));
+    }
+}
