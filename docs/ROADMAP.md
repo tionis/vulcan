@@ -4951,7 +4951,7 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 - [x] Ensure graph/search/link suggestion features degrade cleanly when vectors are disabled: non-vector signals should still work, and vector-specific commands should return clear "feature disabled" errors.
 - [x] Move or gate `vulcan-core/src/web.rs` behind a `web` feature and ensure JS/runtime callers use the same gated service.
 - [x] Move or gate `vulcan-core/src/oauth.rs` behind an `oauth` feature, or relocate server-facing OAuth pieces into a reusable MCP/daemon-support module if that boundary is cleaner.
-- [ ] Audit `vulcan-core/src/dataview_js.rs` and `vulcan-app/src/templates.rs` for `#[cfg(feature = "js_runtime")]` completeness after new features are introduced.
+- [x] Audit `vulcan-core/src/dataview_js.rs` and `vulcan-app/src/templates.rs` for `#[cfg(feature = "js_runtime")]` completeness after new features are introduced.
 - [x] Keep `vulcan-core` synchronous after the cleanup; do not introduce `tokio`, `axum`, or async traits into core.
 - [x] Add guard tests that fail if `vulcan-core` starts depending on daemon/runtime-only crates.
 - [x] Add at least one integration test for a minimal non-AI build that can initialize, scan, query, and render basic Markdown without JS, web, OAuth, or vectors.
@@ -5009,7 +5009,7 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
   - `cargo test --workspace`
   - `cargo check --workspace --no-default-features`
   - `cargo test -p vulcan-core --no-default-features --test minimal_non_ai`
-  - targeted feature-combination checks introduced in 9.29.2
+  - targeted feature-combination checks introduced in 9.29.2 (`cargo check -p vulcan-{core,app,cli} --no-default-features --features oauth,vectors,web` verifies the JS-disabled full-backend combination)
 - [x] Add tests or scripts that make it easy to compare feature build sizes/dependency trees before and after cleanup (`scripts/compare_feature_matrix.sh` writes comparable `cargo tree` outputs and a summary under `target/feature-matrix/`).
 - [ ] Add snapshot or contract tests for public request/report structs that daemon endpoints are expected to reuse.
 - [ ] Keep fuzz targets building after module splits, especially parser, DQL, expression, config, tasks, and frontmatter.
@@ -5034,10 +5034,10 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 - [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - [ ] `cargo test --workspace` passes.
 - [x] `cargo check --workspace --no-default-features` passes.
-- [~] New feature-combination checks from 9.29.2 pass and are documented.
+- [x] New feature-combination checks from 9.29.2 pass and are documented.
 - [x] A non-AI library consumer can depend on Vulcan without pulling embedding/vector provider dependencies.
 - [x] A web-disabled build can still scan/query/render local Markdown and report clear errors for web-only commands.
-- [ ] A JS-disabled build can still scan/query/render and reports clear errors for JS-only Dataview/Templater/custom-tool behavior.
+- [x] A JS-disabled build can still scan/query/render and reports clear errors for JS-only Dataview/Templater/custom-tool behavior.
 - [ ] `vulcan-cli` remains usable and snapshot-covered; command help and JSON output do not regress.
 - [ ] MCP behavior remains protocol-compatible after splitting: stdio, Streamable HTTP, OAuth/IndieAuth, tool packs, resources, prompts, completions, and skill command tools all retain coverage.
 - [ ] Phase 10 can be implemented by depending on shared app/core/MCP-support modules rather than importing `vulcan-cli` internals.
