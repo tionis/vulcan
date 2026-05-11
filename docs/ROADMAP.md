@@ -4913,14 +4913,14 @@ Pre-Phase-10 cleanup baseline recorded on 2026-05-11:
 | `vulcan-core/src/vector.rs` | 3,047 lines | Feature-gate target | Gate behind `vectors`; non-vector suggestions still work | Vector tests plus disabled-feature checks |
 | `vulcan-core/src/oauth.rs` | 960 lines | Feature-gate or transport-support target | Gate behind `oauth` or move to reusable MCP/server support | OAuth unit tests plus disabled-feature checks |
 | `vulcan-core/src/web.rs` | 851 lines | Feature-gate target | Gate behind `web`; JS callers share gated service | Web tests plus disabled-feature checks |
-| `vulcan-app/src/site.rs` | 9,795 lines | Split internally | Route planning, rendering, manifest, theme/assets, diagnostics, build state | Site build/serve tests |
+| `vulcan-app/src/site.rs` | 5,516 lines plus `site/assets.rs` | Split internally | Route planning, rendering, manifest, diagnostics, build state | Site build/serve tests |
 | `vulcan-app/src/tasks.rs` | 7,410 lines | Split internally | Mutations, reports, views, time tracking, pomodoro, reminders | Task CLI snapshots plus app unit tests |
-| `vulcan-app/src/export.rs` | 5,069 lines | Split internally | Profiles, query prep, transforms, writers, packaging | Export format/profile tests |
+| `vulcan-app/src/export.rs` | 3,670 lines | Split internally | Profiles, query prep, transforms, EPUB/frontend-bundle packaging | Export format/profile tests |
 | `vulcan-app/src/templates.rs` | 5,049 lines | Split internally and JS-audit | Parsing, native renderer, Templater compatibility, JS execution, discovery, workflows | Template tests with and without JS |
-| `vulcan-app/src/tools.rs` | 2,763 lines | Split internally | Discovery, registry, schema validation, execution, authoring/test helpers | Skill command/tool CLI and MCP shape tests |
-| `vulcan-cli/src/lib.rs` | 13,279 lines | Split remaining command/render clusters | Keep run/dispatch/setup and explicit command delegation | CLI parse/snapshot tests |
+| `vulcan-app/src/tools.rs` | 28-line facade plus focused modules | Mostly complete split | Keep skill-command runtime, CLI args, lint/compat, TypeScript reports, and tests in focused modules | Skill command/tool CLI and MCP shape tests |
+| `vulcan-cli/src/lib.rs` | 7,941 lines | Split remaining command/render clusters | Keep run/dispatch/setup and explicit command delegation | CLI parse/snapshot tests |
 | `vulcan-cli/src/cli.rs` | 5,718 lines | Accept unless generated definitions become unreviewable | Keep canonical `clap` surface for now | Parse and help tests |
-| `vulcan-cli/src/mcp.rs` | 6,092 lines | Split internally; maybe future crate | Auth, HTTP, stdio, catalog, resources/prompts/completions, handlers, protocol helpers | `describe`/stdio/HTTP MCP registry equivalence tests |
+| `vulcan-cli/src/mcp.rs` | 4,787 lines | Split internally; maybe future crate | Auth, HTTP, stdio, resources/prompts/completions, handlers, protocol helpers | `describe`/stdio/HTTP MCP registry equivalence tests |
 
 ### 9.29.2 Feature matrix for core, AI, web, OAuth, and JS support
 
