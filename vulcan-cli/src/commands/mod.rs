@@ -21,4 +21,27 @@ pub(crate) mod tasks;
 pub(crate) mod template;
 pub(crate) mod tool;
 pub(crate) mod tool_init;
+#[cfg(feature = "vectors")]
 pub(crate) mod vectors;
+
+#[cfg(not(feature = "vectors"))]
+pub(crate) mod vectors {
+    use vulcan_core::VaultPaths;
+
+    use crate::{Cli, CliError, ListOutputControls, VectorsCommand};
+
+    pub(crate) fn handle_vectors_command(
+        _cli: &Cli,
+        _paths: &VaultPaths,
+        _command: &VectorsCommand,
+        _interactive_note_selection: bool,
+        _list_controls: &ListOutputControls,
+        _stdout_is_tty: bool,
+        _use_stdout_color: bool,
+        _use_stderr_color: bool,
+    ) -> Result<(), CliError> {
+        Err(CliError::operation(
+            "the `vectors` command requires a build with the `vectors` feature enabled",
+        ))
+    }
+}

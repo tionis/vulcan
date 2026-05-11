@@ -45,7 +45,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(feature = "oauth")]
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -53,6 +55,7 @@ use std::time::Duration;
 use ulid::Ulid;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
 use vulcan_core::properties::load_note_index;
+#[cfg(feature = "oauth")]
 use vulcan_core::LocalOAuthUserConfig;
 use vulcan_core::{
     accept_link_suggestion, assistant_config_summary, assistant_prompts_root,
@@ -61,13 +64,15 @@ use vulcan_core::{
     load_vault_config, query_graph_communities_with_filter, query_notes_with_filter,
     read_vault_agents_file, reject_link_suggestion, render_assistant_prompt,
     resolve_permission_profile, scan_vault_with_progress, search_vault_with_filter, suggest_links,
-    watch_vault, ConfigPermissionMode, LinkSuggestionStatus, LocalOAuthIssuer,
-    LocalOAuthIssuerConfig, NoteQuery, OAuthResourceServer, OAuthResourceServerConfig,
-    PermissionGuard, PermissionMode, PermissionProfile, PluginEvent, ProfilePermissionGuard,
-    QueryAst, QueryReport, ScanMode, ScanSummary, SearchQuery, SearchSort, VaultPaths,
-    WatchOptions,
+    watch_vault, ConfigPermissionMode, LinkSuggestionStatus, NoteQuery, PermissionGuard,
+    PermissionMode, PermissionProfile, PluginEvent, ProfilePermissionGuard, QueryAst, QueryReport,
+    ScanMode, ScanSummary, SearchQuery, SearchSort, VaultPaths, WatchOptions,
 };
-use vulcan_core::{discover_indieauth_endpoints, exchange_indieauth_code, pkce_s256_challenge};
+#[cfg(feature = "oauth")]
+use vulcan_core::{
+    discover_indieauth_endpoints, exchange_indieauth_code, pkce_s256_challenge, LocalOAuthIssuer,
+    LocalOAuthIssuerConfig, OAuthResourceServer, OAuthResourceServerConfig,
+};
 
 const MCP_PROTOCOL_VERSION: &str = "2025-06-18";
 const MCP_INLINE_TEXT_LIMIT: usize = 4_096;
@@ -83,6 +88,7 @@ pub(crate) struct McpHttpOptions {
     pub bind: String,
     pub endpoint: String,
     pub auth_token: Option<String>,
+    #[cfg_attr(not(feature = "oauth"), allow(dead_code))]
     pub public_url: Option<String>,
     pub oauth_issuer: Option<String>,
     pub oauth_audience: Vec<String>,
@@ -727,6 +733,7 @@ impl McpHttpSession {
 struct McpHttpRequest {
     method: String,
     path: String,
+    #[cfg_attr(not(feature = "oauth"), allow(dead_code))]
     query: String,
     headers: BTreeMap<String, String>,
     body: Vec<u8>,
@@ -740,12 +747,14 @@ struct McpHttpResponse {
     extra_headers: Vec<(String, String)>,
 }
 
+#[cfg(feature = "oauth")]
 #[derive(Debug, Clone)]
 enum McpOAuthMode {
     External(Arc<OAuthResourceServer>),
     Local(Arc<LocalOAuthIssuer>),
 }
 
+#[cfg(feature = "oauth")]
 #[derive(Debug, Clone)]
 struct LocalOAuthCode {
     client_id: String,
@@ -757,6 +766,7 @@ struct LocalOAuthCode {
     expires_at: std::time::Instant,
 }
 
+#[cfg(feature = "oauth")]
 #[derive(Debug, Clone, Deserialize, serde::Serialize)]
 struct LocalOAuthRegisteredClient {
     client_id: String,
@@ -767,6 +777,7 @@ struct LocalOAuthRegisteredClient {
     client_id_issued_at: u64,
 }
 
+#[cfg(feature = "oauth")]
 #[derive(Debug, Clone)]
 struct LocalOAuthPendingIndieAuth {
     client_id: String,
@@ -777,6 +788,7 @@ struct LocalOAuthPendingIndieAuth {
     expires_at: std::time::Instant,
 }
 
+#[cfg(feature = "oauth")]
 #[derive(Debug, Clone)]
 struct LocalOAuthIndieAuthConfig {
     authorization_endpoint: String,
@@ -801,15 +813,23 @@ struct McpHttpServerContext {
     tool_pack_mode_arg: McpToolPackModeArg,
     endpoint: String,
     auth_token: Option<String>,
+    #[cfg(feature = "oauth")]
     oauth: Option<McpOAuthMode>,
     bind_addr: SocketAddr,
     sessions: Arc<Mutex<BTreeMap<String, Arc<McpHttpSession>>>>,
+    #[cfg(feature = "oauth")]
     oauth_codes: Arc<Mutex<BTreeMap<String, LocalOAuthCode>>>,
+    #[cfg(feature = "oauth")]
     oauth_clients: Arc<Mutex<BTreeMap<String, LocalOAuthRegisteredClient>>>,
+    #[cfg(feature = "oauth")]
     oauth_pending_indieauth: Arc<Mutex<BTreeMap<String, LocalOAuthPendingIndieAuth>>>,
+    #[cfg(feature = "oauth")]
     oauth_dcr_enabled: bool,
+    #[cfg(feature = "oauth")]
     oauth_dcr_allowed_redirect_hosts: Vec<String>,
+    #[cfg(feature = "oauth")]
     oauth_indieauth: Option<LocalOAuthIndieAuthConfig>,
+    #[cfg(feature = "oauth")]
     oauth_clients_path: Option<std::path::PathBuf>,
     request_timeout: Duration,
 }
@@ -1383,11 +1403,15 @@ fn run_mcp_http_server(
     tool_pack_mode_arg: McpToolPackModeArg,
     options: &McpHttpOptions,
 ) -> Result<(), CliError> {
+    #[cfg(feature = "oauth")]
     let oauth = build_mcp_oauth_validator(paths, options)?;
-    let bind_addr = parse_mcp_http_bind_addr(
-        &options.bind,
-        options.auth_token.is_some() || oauth.is_some(),
-    )?;
+    #[cfg(not(feature = "oauth"))]
+    reject_mcp_oauth_options_when_disabled(options)?;
+    #[cfg(feature = "oauth")]
+    let auth_enabled = options.auth_token.is_some() || oauth.is_some();
+    #[cfg(not(feature = "oauth"))]
+    let auth_enabled = options.auth_token.is_some();
+    let bind_addr = parse_mcp_http_bind_addr(&options.bind, auth_enabled)?;
     let endpoint = normalize_mcp_http_endpoint(&options.endpoint);
     let listener = TcpListener::bind(bind_addr).map_err(CliError::operation)?;
     listener
@@ -1403,19 +1427,27 @@ fn run_mcp_http_server(
         tool_pack_mode_arg,
         endpoint,
         auth_token: options.auth_token.clone(),
+        #[cfg(feature = "oauth")]
         oauth,
         bind_addr: addr,
         sessions: Arc::new(Mutex::new(BTreeMap::new())),
+        #[cfg(feature = "oauth")]
         oauth_codes: Arc::new(Mutex::new(BTreeMap::new())),
+        #[cfg(feature = "oauth")]
         oauth_clients: Arc::new(Mutex::new(load_oauth_registered_clients(paths)?)),
+        #[cfg(feature = "oauth")]
         oauth_pending_indieauth: Arc::new(Mutex::new(BTreeMap::new())),
+        #[cfg(feature = "oauth")]
         oauth_dcr_enabled: options.oauth_dcr,
+        #[cfg(feature = "oauth")]
         oauth_dcr_allowed_redirect_hosts: if options.oauth_dcr_allowed_redirect_host.is_empty() {
             vec!["chatgpt.com".to_string()]
         } else {
             options.oauth_dcr_allowed_redirect_host.clone()
         },
+        #[cfg(feature = "oauth")]
         oauth_indieauth: build_indieauth_config(options)?,
+        #[cfg(feature = "oauth")]
         oauth_clients_path: Some(oauth_clients_path(paths)),
         request_timeout: options.request_timeout,
     };
@@ -1482,9 +1514,12 @@ fn handle_mcp_http_connection(
         }
     };
 
-    if let Some(response) = handle_mcp_oauth_metadata(context, &request) {
-        write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
-        return Ok(());
+    #[cfg(feature = "oauth")]
+    {
+        if let Some(response) = handle_mcp_oauth_metadata(context, &request) {
+            write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
+            return Ok(());
+        }
     }
 
     if request.path != context.endpoint {
@@ -1775,6 +1810,7 @@ fn validate_mcp_http_security(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
 ) -> Option<McpHttpResponse> {
+    #[cfg(feature = "oauth")]
     if let Some(oauth) = context.oauth.as_ref() {
         let Some(token) = bearer_token(&request.headers) else {
             return Some(oauth_error_response(
@@ -1814,6 +1850,7 @@ fn validate_mcp_http_security(
     None
 }
 
+#[cfg(feature = "oauth")]
 fn validate_oauth_bearer_token(
     oauth: &McpOAuthMode,
     token: &str,
@@ -1828,12 +1865,21 @@ fn request_bound_permission_profile(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
 ) -> Option<String> {
-    let McpOAuthMode::Local(local) = context.oauth.as_ref()? else {
+    #[cfg(not(feature = "oauth"))]
+    {
+        let _ = (context, request);
         return None;
-    };
-    let token = bearer_token(&request.headers)?;
-    let identity = local.validate_bearer_token(&token).ok()?;
-    identity.permission_profile
+    }
+
+    #[cfg(feature = "oauth")]
+    {
+        let McpOAuthMode::Local(local) = context.oauth.as_ref()? else {
+            return None;
+        };
+        let token = bearer_token(&request.headers)?;
+        let identity = local.validate_bearer_token(&token).ok()?;
+        identity.permission_profile
+    }
 }
 
 impl McpServerCore {
@@ -3938,6 +3984,7 @@ fn parse_mcp_http_bind_addr(bind: &str, allow_remote: bool) -> Result<SocketAddr
 }
 
 #[allow(clippy::too_many_lines)]
+#[cfg(feature = "oauth")]
 fn build_mcp_oauth_validator(
     paths: &VaultPaths,
     options: &McpHttpOptions,
@@ -4052,6 +4099,35 @@ fn build_mcp_oauth_validator(
     .map_err(CliError::operation)
 }
 
+#[cfg(not(feature = "oauth"))]
+fn reject_mcp_oauth_options_when_disabled(options: &McpHttpOptions) -> Result<(), CliError> {
+    let oauth_requested = options.oauth_issuer.is_some()
+        || !options.oauth_audience.is_empty()
+        || options.oauth_jwks_url.is_some()
+        || !options.oauth_allowed_sub.is_empty()
+        || !options.oauth_allowed_email.is_empty()
+        || options.oauth_local_client_id.is_some()
+        || options.oauth_local_client_secret.is_some()
+        || options.oauth_local_approval_token.is_some()
+        || options.oauth_local_subject.is_some()
+        || options.oauth_local_email.is_some()
+        || options.oauth_dcr
+        || !options.oauth_dcr_allowed_redirect_host.is_empty()
+        || options.oauth_indieauth_authorization_endpoint.is_some()
+        || options.oauth_indieauth_token_endpoint.is_some()
+        || options.oauth_indieauth_client_id.is_some()
+        || options.oauth_indieauth_redirect_uri.is_some()
+        || options.oauth_indieauth_me.is_some()
+        || !options.oauth_local_user.is_empty();
+    if oauth_requested {
+        return Err(CliError::operation(
+            "MCP OAuth requires a build with the `oauth` feature enabled",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "oauth")]
 fn handle_mcp_oauth_metadata(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
@@ -4091,6 +4167,7 @@ fn handle_mcp_oauth_metadata(
     None
 }
 
+#[cfg(feature = "oauth")]
 fn oauth_authorization_server_metadata(oauth: &McpOAuthMode) -> &Value {
     match oauth {
         McpOAuthMode::External(external) => external.authorization_server_metadata(),
@@ -4098,6 +4175,7 @@ fn oauth_authorization_server_metadata(oauth: &McpOAuthMode) -> &Value {
     }
 }
 
+#[cfg(feature = "oauth")]
 fn oauth_protected_resource_response(oauth: &McpOAuthMode) -> McpHttpResponse {
     let body = match oauth {
         McpOAuthMode::External(external) => serde_json::json!({
@@ -4119,6 +4197,7 @@ fn oauth_protected_resource_response(oauth: &McpOAuthMode) -> McpHttpResponse {
     }
 }
 
+#[cfg(feature = "oauth")]
 fn handle_local_oauth_authorize(
     context: &McpHttpServerContext,
     issuer: &LocalOAuthIssuer,
@@ -4199,6 +4278,7 @@ fn handle_local_oauth_authorize(
     }
 }
 
+#[cfg(feature = "oauth")]
 fn handle_local_oauth_register(
     context: &McpHttpServerContext,
     request: &McpHttpRequest,
@@ -4282,6 +4362,7 @@ fn handle_local_oauth_register(
     }
 }
 
+#[cfg(feature = "oauth")]
 fn handle_local_oauth_token(
     context: &McpHttpServerContext,
     issuer: &LocalOAuthIssuer,
@@ -4367,6 +4448,7 @@ fn handle_local_oauth_token(
     }
 }
 
+#[cfg(feature = "oauth")]
 fn handle_local_oauth_indieauth_callback(
     context: &McpHttpServerContext,
     issuer: &LocalOAuthIssuer,
@@ -4442,6 +4524,7 @@ fn handle_local_oauth_indieauth_callback(
     }
 }
 
+#[cfg(feature = "oauth")]
 fn local_oauth_redirect_to_indieauth(
     indieauth: &LocalOAuthIndieAuthConfig,
     state: &str,
@@ -4467,6 +4550,7 @@ fn local_oauth_redirect_to_indieauth(
     }
 }
 
+#[cfg(feature = "oauth")]
 fn local_oauth_approval_form(params: &BTreeMap<String, String>) -> McpHttpResponse {
     let mut action = "/oauth/authorize?".to_string();
     let mut first = true;
@@ -4499,6 +4583,7 @@ fn local_oauth_approval_form(params: &BTreeMap<String, String>) -> McpHttpRespon
     }
 }
 
+#[cfg(feature = "oauth")]
 fn local_oauth_client_redirect_allowed(
     context: &McpHttpServerContext,
     issuer: &LocalOAuthIssuer,
@@ -4516,6 +4601,7 @@ fn local_oauth_client_redirect_allowed(
         .is_some_and(|client| client.redirect_uris.iter().any(|uri| uri == redirect_uri))
 }
 
+#[cfg(feature = "oauth")]
 fn local_oauth_registered_client_valid(
     context: &McpHttpServerContext,
     client_id: &str,
@@ -4529,6 +4615,7 @@ fn local_oauth_registered_client_valid(
         .is_some_and(|client| client.client_secret == client_secret)
 }
 
+#[cfg(feature = "oauth")]
 fn local_oauth_redirect_host_allowed(context: &McpHttpServerContext, redirect_uri: &str) -> bool {
     let Some((scheme, rest)) = redirect_uri.split_once("://") else {
         return false;
@@ -4549,14 +4636,17 @@ fn local_oauth_redirect_host_allowed(context: &McpHttpServerContext, redirect_ur
         .any(|allowed| host == allowed || host.ends_with(&format!(".{allowed}")))
 }
 
+#[cfg(feature = "oauth")]
 fn oauth_clients_path(paths: &VaultPaths) -> std::path::PathBuf {
     paths.vulcan_dir().join("mcp-oauth-clients.json")
 }
 
+#[cfg(feature = "oauth")]
 fn oauth_issuer_secret_path(paths: &VaultPaths) -> PathBuf {
     paths.vulcan_dir().join("mcp-oauth-issuer-secret")
 }
 
+#[cfg(feature = "oauth")]
 fn generate_pkce_verifier() -> String {
     format!(
         "{}{}{}{}",
@@ -4567,6 +4657,7 @@ fn generate_pkce_verifier() -> String {
     )
 }
 
+#[cfg(feature = "oauth")]
 fn load_or_create_local_oauth_issuer_secret(paths: &VaultPaths) -> Result<String, CliError> {
     let path = oauth_issuer_secret_path(paths);
     if path.exists() {
@@ -4588,7 +4679,7 @@ fn load_or_create_local_oauth_issuer_secret(paths: &VaultPaths) -> Result<String
     Ok(secret)
 }
 
-#[cfg(unix)]
+#[cfg(all(unix, feature = "oauth"))]
 fn write_secret_file(path: &Path, secret: &str) -> Result<(), CliError> {
     use std::fs::OpenOptions;
     use std::os::unix::fs::OpenOptionsExt;
@@ -4604,11 +4695,12 @@ fn write_secret_file(path: &Path, secret: &str) -> Result<(), CliError> {
     file.write_all(b"\n").map_err(CliError::operation)
 }
 
-#[cfg(not(unix))]
+#[cfg(all(not(unix), feature = "oauth"))]
 fn write_secret_file(path: &Path, secret: &str) -> Result<(), CliError> {
     fs::write(path, format!("{secret}\n")).map_err(CliError::operation)
 }
 
+#[cfg(feature = "oauth")]
 fn load_oauth_registered_clients(
     paths: &VaultPaths,
 ) -> Result<BTreeMap<String, LocalOAuthRegisteredClient>, CliError> {
@@ -4625,6 +4717,7 @@ fn load_oauth_registered_clients(
         .collect())
 }
 
+#[cfg(feature = "oauth")]
 fn save_oauth_registered_clients(context: &McpHttpServerContext) -> Result<(), CliError> {
     let Some(path) = context.oauth_clients_path.as_ref() else {
         return Ok(());
@@ -4643,6 +4736,7 @@ fn save_oauth_registered_clients(context: &McpHttpServerContext) -> Result<(), C
     fs::write(path, serialized).map_err(CliError::operation)
 }
 
+#[cfg(feature = "oauth")]
 fn build_indieauth_config(
     options: &McpHttpOptions,
 ) -> Result<Option<LocalOAuthIndieAuthConfig>, CliError> {
@@ -4705,6 +4799,7 @@ fn build_indieauth_config(
     }))
 }
 
+#[cfg(feature = "oauth")]
 fn public_url_origin_for_cli(public_url: &str) -> Result<String, CliError> {
     let Some((scheme, rest)) = public_url.split_once("://") else {
         return Err(CliError::operation("--public-url must be absolute"));
@@ -4713,6 +4808,7 @@ fn public_url_origin_for_cli(public_url: &str) -> Result<String, CliError> {
     Ok(format!("{scheme}://{host}"))
 }
 
+#[cfg(feature = "oauth")]
 fn parse_local_oauth_users(users: &[String]) -> Result<Vec<LocalOAuthUserConfig>, CliError> {
     users
         .iter()
@@ -4735,12 +4831,14 @@ fn parse_local_oauth_users(users: &[String]) -> Result<Vec<LocalOAuthUserConfig>
         .collect()
 }
 
+#[cfg(feature = "oauth")]
 fn current_unix_timestamp() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
 }
 
+#[cfg(feature = "oauth")]
 fn oauth_client_credentials(
     request: &McpHttpRequest,
     params: &BTreeMap<String, String>,
@@ -4758,6 +4856,7 @@ fn oauth_client_credentials(
     Some((client_id, client_secret))
 }
 
+#[cfg(feature = "oauth")]
 fn decode_basic_credentials(value: &str) -> Option<(String, String)> {
     use base64::prelude::{Engine, BASE64_STANDARD};
 
@@ -4767,6 +4866,7 @@ fn decode_basic_credentials(value: &str) -> Option<(String, String)> {
     Some((client_id.to_string(), client_secret.to_string()))
 }
 
+#[cfg(feature = "oauth")]
 fn oauth_plain_response(status: u16, message: &str) -> McpHttpResponse {
     McpHttpResponse {
         status,
@@ -4776,6 +4876,7 @@ fn oauth_plain_response(status: u16, message: &str) -> McpHttpResponse {
     }
 }
 
+#[cfg(feature = "oauth")]
 fn oauth_json_error_response(
     status: u16,
     error: &str,
@@ -4793,11 +4894,13 @@ fn oauth_json_error_response(
     }
 }
 
+#[cfg(feature = "oauth")]
 fn is_protected_resource_metadata_path(path: &str, endpoint: &str) -> bool {
     path == "/.well-known/oauth-protected-resource"
         || path == format!("/.well-known/oauth-protected-resource{endpoint}")
 }
 
+#[cfg(feature = "oauth")]
 fn is_authorization_server_metadata_path(path: &str, endpoint: &str) -> bool {
     path == "/.well-known/oauth-authorization-server"
         || path == format!("/.well-known/oauth-authorization-server{endpoint}")
@@ -4805,6 +4908,7 @@ fn is_authorization_server_metadata_path(path: &str, endpoint: &str) -> bool {
         || path == format!("/.well-known/openid-configuration{endpoint}")
 }
 
+#[cfg(feature = "oauth")]
 fn oauth_error_response(
     oauth: &McpOAuthMode,
     message: impl Into<String>,
@@ -4824,6 +4928,7 @@ fn oauth_error_response(
     response
 }
 
+#[cfg(feature = "oauth")]
 fn oauth_protected_resource_metadata_url(oauth: &McpOAuthMode) -> &str {
     match oauth {
         McpOAuthMode::External(external) => external.protected_resource_metadata_url(),
@@ -4831,6 +4936,7 @@ fn oauth_protected_resource_metadata_url(oauth: &McpOAuthMode) -> &str {
     }
 }
 
+#[cfg(feature = "oauth")]
 fn escape_www_authenticate_value(value: &str) -> String {
     value.replace('\\', "\\\\").replace('"', "\\\"")
 }
@@ -5046,6 +5152,7 @@ fn find_bytes(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
+#[cfg(feature = "oauth")]
 fn parse_query_params(query: &str) -> BTreeMap<String, String> {
     query
         .split('&')
@@ -5057,10 +5164,12 @@ fn parse_query_params(query: &str) -> BTreeMap<String, String> {
         .collect()
 }
 
+#[cfg(feature = "oauth")]
 fn parse_form_params(body: &[u8]) -> BTreeMap<String, String> {
     std::str::from_utf8(body).map_or_else(|_| BTreeMap::new(), parse_query_params)
 }
 
+#[cfg(feature = "oauth")]
 fn percent_decode(value: &str) -> Option<String> {
     let mut output = Vec::with_capacity(value.len());
     let bytes = value.as_bytes();
@@ -5087,6 +5196,7 @@ fn percent_decode(value: &str) -> Option<String> {
     String::from_utf8(output).ok()
 }
 
+#[cfg(feature = "oauth")]
 fn percent_encode(value: &str) -> String {
     use std::fmt::Write as _;
 
@@ -5101,6 +5211,7 @@ fn percent_encode(value: &str) -> String {
     output
 }
 
+#[cfg(feature = "oauth")]
 const fn hex_value(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -5110,6 +5221,7 @@ const fn hex_value(byte: u8) -> Option<u8> {
     }
 }
 
+#[cfg(feature = "oauth")]
 fn html_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")

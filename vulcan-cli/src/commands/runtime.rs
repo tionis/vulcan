@@ -8,16 +8,19 @@ use std::fs;
 use std::io::{self, IsTerminal, Read};
 use std::path::PathBuf;
 use std::time::Duration;
+#[cfg(feature = "web")]
 use vulcan_app::web::{
     apply_web_fetch_report, execute_web_search, prepare_web_search,
     WebFetchMode as AppWebFetchMode, WebFetchReport, WebFetchRequest, WebSearchReport,
     WebSearchRequest,
 };
+#[cfg(feature = "web")]
+use vulcan_core::SearchBackendKind;
 use vulcan_core::{
     evaluate_dataview_js_with_options, git_blame, git_commit, git_diff, git_recent_log, git_status,
     load_vault_config, DataviewJsEvalOptions, DataviewJsResult, GitBlameLine, GitCommitReport,
     GitLogEntry, GitStatusReport, JsRuntimeSandbox, PluginEvent, ProfilePermissionGuard,
-    SearchBackendKind, VaultPaths,
+    VaultPaths,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -295,23 +298,35 @@ pub(crate) fn handle_web_command(
     stdout_is_tty: bool,
     use_stdout_color: bool,
 ) -> Result<(), CliError> {
-    let guard = selected_permission_guard(cli, paths)?;
-    match command {
-        WebCommand::Search {
-            query,
-            backend,
-            limit,
-        } => {
-            let report = run_web_search_command(paths, query, *backend, *limit, Some(&guard))?;
-            print_web_search_report(cli.output, &report)
-        }
-        WebCommand::Fetch { url, mode, save } => {
-            let report = run_web_fetch_command(paths, url, *mode, save.as_ref(), Some(&guard))?;
-            print_web_fetch_report(cli.output, &report, stdout_is_tty, use_stdout_color)
+    #[cfg(not(feature = "web"))]
+    {
+        let _ = (cli, paths, command, stdout_is_tty, use_stdout_color);
+        return Err(CliError::operation(
+            "the `web` command requires a build with the `web` feature enabled",
+        ));
+    }
+
+    #[cfg(feature = "web")]
+    {
+        let guard = selected_permission_guard(cli, paths)?;
+        match command {
+            WebCommand::Search {
+                query,
+                backend,
+                limit,
+            } => {
+                let report = run_web_search_command(paths, query, *backend, *limit, Some(&guard))?;
+                print_web_search_report(cli.output, &report)
+            }
+            WebCommand::Fetch { url, mode, save } => {
+                let report = run_web_fetch_command(paths, url, *mode, save.as_ref(), Some(&guard))?;
+                print_web_fetch_report(cli.output, &report, stdout_is_tty, use_stdout_color)
+            }
         }
     }
 }
 
+#[cfg(feature = "web")]
 fn search_backend_kind_from_arg(arg: SearchBackendArg) -> SearchBackendKind {
     match arg {
         SearchBackendArg::Disabled => SearchBackendKind::Disabled,
@@ -325,6 +340,7 @@ fn search_backend_kind_from_arg(arg: SearchBackendArg) -> SearchBackendKind {
     }
 }
 
+#[cfg(feature = "web")]
 fn app_web_fetch_mode(mode: WebFetchMode) -> AppWebFetchMode {
     match mode {
         WebFetchMode::Markdown => AppWebFetchMode::Markdown,
@@ -333,6 +349,7 @@ fn app_web_fetch_mode(mode: WebFetchMode) -> AppWebFetchMode {
     }
 }
 
+#[cfg(feature = "web")]
 pub(crate) fn run_web_search_command(
     paths: &VaultPaths,
     query: &str,
@@ -357,6 +374,20 @@ pub(crate) fn run_web_search_command(
     execute_web_search(&prepared).map_err(CliError::operation)
 }
 
+#[cfg(not(feature = "web"))]
+pub(crate) fn run_web_search_command(
+    _paths: &VaultPaths,
+    _query: &str,
+    _backend_override: Option<SearchBackendArg>,
+    _limit: usize,
+    _permissions: Option<&ProfilePermissionGuard>,
+) -> Result<serde_json::Value, CliError> {
+    Err(CliError::operation(
+        "web search requires a build with the `web` feature enabled",
+    ))
+}
+
+#[cfg(feature = "web")]
 pub(crate) fn run_web_fetch_command(
     paths: &VaultPaths,
     url: &str,
@@ -378,6 +409,19 @@ pub(crate) fn run_web_fetch_command(
         },
     )
     .map_err(CliError::operation)
+}
+
+#[cfg(not(feature = "web"))]
+pub(crate) fn run_web_fetch_command(
+    _paths: &VaultPaths,
+    _url: &str,
+    _mode: WebFetchMode,
+    _save: Option<&PathBuf>,
+    _permissions: Option<&ProfilePermissionGuard>,
+) -> Result<serde_json::Value, CliError> {
+    Err(CliError::operation(
+        "web fetch requires a build with the `web` feature enabled",
+    ))
 }
 
 fn strip_shebang_line(source: &str) -> &str {
@@ -519,6 +563,7 @@ fn run_js_eval(
     .map_err(CliError::operation)
 }
 
+#[cfg(feature = "web")]
 fn print_web_search_report(output: OutputFormat, report: &WebSearchReport) -> Result<(), CliError> {
     match output {
         OutputFormat::Human | OutputFormat::Markdown => {
@@ -538,6 +583,7 @@ fn print_web_search_report(output: OutputFormat, report: &WebSearchReport) -> Re
     }
 }
 
+#[cfg(feature = "web")]
 fn print_web_fetch_report(
     output: OutputFormat,
     report: &WebFetchReport,
