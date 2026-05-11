@@ -2354,14 +2354,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
 
-        let started = Instant::now();
         let pairs = collect_vector_duplicate_pairs(&rows, 0.99, 25, |_, _| {});
-        eprintln!(
-            "scanned {} synthetic vectors in {:?}, retained {} pairs",
-            rows.len(),
-            started.elapsed(),
-            pairs.len()
-        );
 
         assert!(!pairs.is_empty());
         assert!(pairs.len() <= 25);
@@ -2392,11 +2385,8 @@ mod tests {
         write_embedding_config(&vault_root, &server.base_url());
         let paths = VaultPaths::new(&vault_root);
 
-        let scan_started = Instant::now();
         scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
-        let scan_elapsed = scan_started.elapsed();
 
-        let index_started = Instant::now();
         index_vectors(
             &paths,
             &VectorIndexQuery {
@@ -2406,9 +2396,7 @@ mod tests {
             },
         )
         .expect("vector index should succeed");
-        let index_elapsed = index_started.elapsed();
 
-        let duplicate_started = Instant::now();
         let report = vector_duplicates(
             &paths,
             &VectorDuplicatesQuery {
@@ -2418,16 +2406,6 @@ mod tests {
             },
         )
         .expect("duplicates query should succeed");
-        let duplicate_elapsed = duplicate_started.elapsed();
-
-        eprintln!(
-            "bench vault: {} notes, scan {:?}, index {:?}, duplicates {:?}, retained {} pairs",
-            note_count,
-            scan_elapsed,
-            index_elapsed,
-            duplicate_elapsed,
-            report.pairs.len()
-        );
 
         assert!(!report.pairs.is_empty());
         assert!(report.pairs.len() <= 25);

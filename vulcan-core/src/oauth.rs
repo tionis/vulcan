@@ -412,8 +412,9 @@ pub struct IndieAuthEndpoints {
 }
 
 pub fn discover_indieauth_endpoints(me: &str) -> Result<IndieAuthEndpoints, OAuthError> {
+    let profile_url = parse_https_url(me, "IndieAuth profile URL")?;
     let response = reqwest::blocking::Client::new()
-        .get(me)
+        .get(profile_url)
         .header("Accept", "text/html, application/xhtml+xml, */*")
         .send()
         .map_err(|error| OAuthError::Network(format!("IndieAuth profile fetch failed: {error}")))?
@@ -459,10 +460,14 @@ pub fn discover_indieauth_endpoints(me: &str) -> Result<IndieAuthEndpoints, OAut
         })
         .and_then(|url| resolve_url(base_url, &url));
     match (authorization_endpoint, token_endpoint) {
-        (Some(authorization_endpoint), Some(token_endpoint)) => Ok(IndieAuthEndpoints {
-            authorization_endpoint,
-            token_endpoint,
-        }),
+        (Some(authorization_endpoint), Some(token_endpoint)) => {
+            ensure_https_url(&authorization_endpoint, "IndieAuth authorization endpoint")?;
+            ensure_https_url(&token_endpoint, "IndieAuth token endpoint")?;
+            Ok(IndieAuthEndpoints {
+                authorization_endpoint,
+                token_endpoint,
+            })
+        }
         _ => Err(OAuthError::Network(
             "IndieAuth discovery did not find authorization and token endpoints".to_string(),
         )),
@@ -476,6 +481,7 @@ pub fn exchange_indieauth_code(
     client_id: &str,
     code_verifier: &str,
 ) -> Result<String, OAuthError> {
+    let token_endpoint = parse_https_url(token_endpoint, "IndieAuth token endpoint")?;
     let response = reqwest::blocking::Client::new()
         .post(token_endpoint)
         .header("Accept", "application/json")
@@ -562,6 +568,7 @@ struct IndieAuthMetadata {
 }
 
 fn fetch_indieauth_metadata(metadata_url: &str) -> Result<IndieAuthEndpoints, OAuthError> {
+    let metadata_url = parse_https_url(metadata_url, "IndieAuth metadata endpoint")?;
     let metadata = reqwest::blocking::get(metadata_url)
         .map_err(|error| OAuthError::Network(format!("IndieAuth metadata fetch failed: {error}")))?
         .error_for_status()
@@ -570,10 +577,29 @@ fn fetch_indieauth_metadata(metadata_url: &str) -> Result<IndieAuthEndpoints, OA
         .map_err(|error| {
             OAuthError::Network(format!("invalid IndieAuth metadata JSON: {error}"))
         })?;
+    ensure_https_url(
+        &metadata.authorization_endpoint,
+        "IndieAuth authorization endpoint",
+    )?;
+    ensure_https_url(&metadata.token_endpoint, "IndieAuth token endpoint")?;
     Ok(IndieAuthEndpoints {
         authorization_endpoint: metadata.authorization_endpoint,
         token_endpoint: metadata.token_endpoint,
     })
+}
+
+fn parse_https_url(raw: &str, label: &str) -> Result<reqwest::Url, OAuthError> {
+    let url = reqwest::Url::parse(raw).map_err(|error| {
+        OAuthError::Network(format!("{label} must be an absolute URL: {error}"))
+    })?;
+    if url.scheme() != "https" {
+        return Err(OAuthError::Network(format!("{label} must use HTTPS")));
+    }
+    Ok(url)
+}
+
+fn ensure_https_url(raw: &str, label: &str) -> Result<(), OAuthError> {
+    parse_https_url(raw, label).map(|_| ())
 }
 
 fn discover_link_header_rel(
@@ -956,5 +982,24 @@ mod tests {
             resolve_url("https://eric.wendland.dev/profile", "/auth").as_deref(),
             Some("https://eric.wendland.dev/auth")
         );
+    }
+
+    #[test]
+    fn indieauth_network_urls_must_use_https() {
+        assert!(parse_https_url("https://example.test/profile", "profile").is_ok());
+        assert!(parse_https_url("http://example.test/profile", "profile")
+            .unwrap_err()
+            .to_string()
+            .contains("must use HTTPS"));
+        assert!(exchange_indieauth_code(
+            "http://example.test/token",
+            "code",
+            "https://wiki.example.test/oauth/callback",
+            "https://wiki.example.test",
+            "verifier",
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("must use HTTPS"));
     }
 }

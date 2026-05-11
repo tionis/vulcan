@@ -64,22 +64,20 @@ impl VectorIndexProgressReporter {
                     eprintln!(
                         "{} {}",
                         self.palette.dim("Endpoint:"),
-                        progress.endpoint_url
+                        redacted_endpoint_for_display(&progress.endpoint_url)
                     );
-                    let key_status = match (&progress.api_key_env, progress.api_key_set) {
-                        (Some(env_var), true) => format!("set (from ${env_var})"),
-                        (Some(env_var), false) => format!("NOT SET (expected ${env_var})"),
-                        (None, _) => "none configured".to_string(),
+                    let credential_status =
+                        match (progress.api_key_env.is_some(), progress.api_key_set) {
+                            (_, true) => "configured".to_string(),
+                            (true, false) => "missing".to_string(),
+                            (false, false) => "not configured".to_string(),
+                        };
+                    let credential_status = if progress.api_key_set {
+                        credential_status
+                    } else {
+                        self.palette.red(&credential_status).clone()
                     };
-                    eprintln!(
-                        "{} {}",
-                        self.palette.dim("API key: "),
-                        if progress.api_key_set {
-                            key_status
-                        } else {
-                            self.palette.red(&key_status).clone()
-                        }
-                    );
+                    eprintln!("{} {}", self.palette.dim("Credential: "), credential_status);
                 }
                 if progress.pending == 0 {
                     eprintln!(
@@ -174,6 +172,24 @@ impl VectorIndexProgressReporter {
             }
         }
     }
+}
+
+fn redacted_endpoint_for_display(endpoint_url: &str) -> String {
+    let without_fragment = endpoint_url
+        .split_once('#')
+        .map_or(endpoint_url, |(url, _)| url);
+    let without_query = without_fragment
+        .split_once('?')
+        .map_or(without_fragment, |(url, _)| url);
+    let Some((scheme, rest)) = without_query.split_once("://") else {
+        return "<invalid endpoint>".to_string();
+    };
+    let authority_end = rest.find('/').unwrap_or(rest.len());
+    let (authority, path) = rest.split_at(authority_end);
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
+    format!("{scheme}://{host}{path}")
 }
 
 fn dedup_failure_messages(failures: &[(String, String, String)]) -> Vec<(&str, usize)> {
@@ -1024,5 +1040,26 @@ pub(crate) fn handle_vectors_command(
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redacted_endpoint_for_display;
+
+    #[test]
+    fn redacted_endpoint_for_display_strips_credentials_query_and_fragment() {
+        assert_eq!(
+            redacted_endpoint_for_display("https://user:secret@example.test/v1?key=secret#frag"),
+            "https://example.test/v1"
+        );
+        assert_eq!(
+            redacted_endpoint_for_display("https://example.test/v1"),
+            "https://example.test/v1"
+        );
+        assert_eq!(
+            redacted_endpoint_for_display("not a url"),
+            "<invalid endpoint>"
+        );
     }
 }

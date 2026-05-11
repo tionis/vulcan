@@ -883,13 +883,54 @@ fn print_skill_run_report(output: OutputFormat, report: &SkillRunReport) -> Resu
         OutputFormat::Json => print_json(report),
         OutputFormat::Human | OutputFormat::Markdown => {
             println!("{}:{}", report.skill, report.command);
+            let result = redact_sensitive_json(&report.result);
             println!(
                 "{}",
-                serde_json::to_string_pretty(&report.result).map_err(CliError::operation)?
+                serde_json::to_string_pretty(&result).map_err(CliError::operation)?
             );
             Ok(())
         }
     }
+}
+
+fn redact_sensitive_json(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => Value::Object(
+            map.iter()
+                .map(|(key, value)| {
+                    let redacted = if is_sensitive_json_key(key) {
+                        Value::String("[redacted]".to_string())
+                    } else {
+                        redact_sensitive_json(value)
+                    };
+                    (key.clone(), redacted)
+                })
+                .collect(),
+        ),
+        Value::Array(values) => Value::Array(values.iter().map(redact_sensitive_json).collect()),
+        Value::String(text) if text.trim_start().starts_with("Bearer ") => {
+            Value::String("[redacted]".to_string())
+        }
+        _ => value.clone(),
+    }
+}
+
+fn is_sensitive_json_key(key: &str) -> bool {
+    let normalized = key
+        .chars()
+        .filter(char::is_ascii_alphanumeric)
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    [
+        "secret",
+        "token",
+        "password",
+        "apikey",
+        "authorization",
+        "credential",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
 }
 
 fn print_skill_init_report(output: OutputFormat, report: &SkillInitReport) -> Result<(), CliError> {
@@ -942,5 +983,42 @@ fn print_skill_report(output: OutputFormat, skill: &AssistantSkill) -> Result<()
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::redact_sensitive_json;
+
+    #[test]
+    fn redacts_sensitive_skill_output_fields_for_human_display() {
+        let value = serde_json::json!({
+            "access_token": "secret-token",
+            "nested": {
+                "apiKey": "secret-key",
+                "safe": "value",
+                "auth": "Bearer abc.def"
+            },
+            "items": [
+                { "password": "hunter2" },
+                "Bearer xyz"
+            ]
+        });
+
+        assert_eq!(
+            redact_sensitive_json(&value),
+            serde_json::json!({
+                "access_token": "[redacted]",
+                "nested": {
+                    "apiKey": "[redacted]",
+                    "safe": "value",
+                    "auth": "[redacted]"
+                },
+                "items": [
+                    { "password": "[redacted]" },
+                    "[redacted]"
+                ]
+            })
+        );
     }
 }
