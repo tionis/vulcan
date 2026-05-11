@@ -3,6 +3,50 @@
 //! `vulcan-core` owns parsing, indexing, cache abstractions, config models,
 //! query/evaluation logic, and reusable domain types that can be shared across
 //! CLI, daemon, assistant, and other entrypoints.
+//!
+//! Depend on this crate when you need parser/index/query/render functionality
+//! without CLI or app workflow adapters. It is intentionally synchronous so
+//! async callers can put it behind their own runtime boundary.
+//!
+//! Common entrypoints:
+//!
+//! - Parser/index/query only: use [`VaultPaths`], [`scan_vault`],
+//!   [`query_notes`], [`execute_query_report`], graph helpers, and note readers.
+//! - Local Markdown rendering: use [`render_markdown_html`] for standalone
+//!   Markdown or [`render_note_html`] when vault-relative links should resolve.
+//! - Plugin-compatible semantics: use the `bases`, `dql`, `tasks`,
+//!   `tasknotes`, `kanban`, `periodic`, and `properties` modules.
+//! - Feature-gated backends: enable `js_runtime`, `vectors`, `web`, or `oauth`
+//!   only when the embedding JavaScript runtime, vector search, web fetch/search,
+//!   or OAuth helpers are required. `default-features = false` gives a minimal
+//!   parser/index/query build without those backends.
+//!
+//! Minimal library consumer sketch:
+//!
+//! ```no_run
+//! use std::path::Path;
+//! use vulcan_core::{
+//!     paths::initialize_vulcan_dir, query_notes, render_markdown_html, scan_vault,
+//!     NoteQuery, ScanMode, VaultPaths,
+//! };
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! let paths = VaultPaths::new(Path::new("/path/to/vault"));
+//! initialize_vulcan_dir(&paths)?;
+//! scan_vault(&paths, ScanMode::Full)?;
+//! let notes = query_notes(
+//!     &paths,
+//!     &NoteQuery {
+//!         filters: vec!["file.tags has_tag #project".to_string()],
+//!         sort_by: None,
+//!         sort_descending: false,
+//!     },
+//! )?;
+//! let html = render_markdown_html("# Preview");
+//! # let _ = (notes, html);
+//! # Ok(())
+//! # }
+//! ```
 
 pub mod assistant;
 pub mod bases;
