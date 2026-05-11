@@ -4871,11 +4871,161 @@ The `tasknotesCalendar` and `tasknotesMiniCalendar` Bases view types require vis
 
 ---
 
+## Phase 9.29: Pre-daemon maintainability and feature-boundary cleanup
+
+**Goal:** Make Vulcan a maintainable reusable library stack and a maintainable CLI before adding Phase 10's async daemon. This is an intentionally comprehensive cleanup pass. It should reduce compile-time dependency coupling, make "with AI features" and "without AI features" builds explicit, split oversized reusable modules, keep CLI code thin and understandable, and make MCP/server logic reusable by the future daemon without importing `vulcan-cli` internals.
+
+**Why this phase exists:** Phases 9.22–9.28 moved a large amount of behavior into shared crates and made the CLI much thinner, but the current architecture still has several pre-daemon risks:
+
+- `vulcan-core` always pulls embedding/vector and HTTP/OAuth dependencies, even for consumers that only want parser/index/query functionality.
+- `vulcan-app` now contains large reusable modules (`site`, `tasks`, `export`, `templates`, `tools`) that need internal boundaries before they become daemon dependencies.
+- `vulcan-cli/src/lib.rs` still owns central dispatch plus several large rendering/orchestration clusters that should be split while behavior is stable.
+- `vulcan-cli/src/mcp.rs` mixes auth, transport/session handling, registry/catalog construction, and tool-call handlers; the daemon should reuse those concepts without depending on a monolithic CLI module.
+- Existing boundary guardrails mainly protect the CLI from raw SQL/network duplication, but do not yet enforce the broader library goals.
+
+**Scope rule:** This phase is primarily cleanup and boundary hardening. It should preserve user-visible behavior, CLI JSON contracts, MCP protocol behavior, and vault data formats unless a deliberate compatibility change is documented in the same commit. Large refactors should land in small, tested commits.
+
+**Builds on:** Phase 9.22 (shared `vulcan-app` extraction), Phase 9.23 (pack-aware MCP registry), Phase 9.24/9.28 (skill command tools), Phase 9.20 (static site builder), and the final Phase 9 CLI/MCP surfaces.
+
+**Blocks:** Phase 10 daemon implementation. Daemon work should not start until this phase's acceptance checklist passes.
+
+### 9.29.1 Baseline inventory and public boundary decision record
+
+- [ ] Record the current largest files/modules and their intended ownership in `docs/design_document.md` or a new architecture note:
+  - `vulcan-core`: parser, cache, config model, query/eval, graph/search/task semantics, optional vector/web/oauth/JS support behind features
+  - `vulcan-app`: reusable synchronous workflows and service contracts over `vulcan-core`
+  - `vulcan-cli`: `clap` parsing, terminal/TUI/editor/URI handling, output rendering, command dispatch, shell completions
+  - `vulcan-daemon`: async HTTP/WebSocket transport, background scheduling, multi-vault registry, daemon lifecycle
+- [ ] Classify each remaining large module by whether it is acceptable as-is, should be split internally, should move to a feature-gated submodule, or should move to a future crate.
+- [ ] Define the public library promise for non-CLI users: which APIs are stable enough to call from daemon, tests, scripts, and future integrations, and which modules remain internal.
+- [ ] Add a short "pre-Phase-10 cleanup status" table to this roadmap with current line counts, feature-gate status, and remaining open refactor targets.
+- [ ] Confirm that every cleanup item has a regression-test strategy before implementation starts.
+
+### 9.29.2 Feature matrix for core, AI, web, OAuth, and JS support
+
+- [ ] Replace the current single optional `js_runtime` split with an explicit feature matrix that supports at least:
+  - default full CLI build
+  - `--no-default-features` parser/index/query build
+  - non-AI library build without embeddings/vector providers or assistant execution dependencies
+  - JS-disabled build
+  - web-disabled build
+  - OAuth/MCP-auth-disabled build where relevant
+- [ ] Introduce feature flags for AI/vector functionality so `vulcan-core` does not always depend on `vulcan-embed`, `sqlite-vec`, or embedding providers when vector search is not requested.
+- [ ] Introduce feature flags for web fetch/search so `reqwest` and HTML extraction backends are not mandatory for core parser/index/query consumers.
+- [ ] Introduce feature flags or module boundaries for OAuth/IndieAuth/JWT support so non-server consumers do not pay for auth dependencies.
+- [ ] Keep skill/prompt metadata parsing available without requiring model inference or external AI providers; "assistant assets" should not imply "AI runtime."
+- [ ] Decide whether MCP stays in `vulcan-cli` for Phase 9.29 or gets a reusable transport-agnostic library module before Phase 10.
+- [ ] Add feature-combination checks to CI/test docs, including `cargo check --workspace --no-default-features` and targeted checks for the new feature sets.
+- [ ] Document which features are enabled by default and why, with explicit guidance for library consumers that want a minimal build.
+
+### 9.29.3 `vulcan-core` boundary and dependency cleanup
+
+- [ ] Move vector-only code behind a `vectors` or `embeddings` feature:
+  - `vulcan-core/src/vector.rs`
+  - vector-backed suggestion signals
+  - vector cache inspection/repair helpers
+  - `vulcan-embed` dependency
+- [ ] Ensure graph/search/link suggestion features degrade cleanly when vectors are disabled: non-vector signals should still work, and vector-specific commands should return clear "feature disabled" errors.
+- [ ] Move or gate `vulcan-core/src/web.rs` behind a `web` feature and ensure JS/runtime callers use the same gated service.
+- [ ] Move or gate `vulcan-core/src/oauth.rs` behind an `oauth` feature, or relocate server-facing OAuth pieces into a reusable MCP/daemon-support module if that boundary is cleaner.
+- [ ] Audit `vulcan-core/src/dataview_js.rs` and `vulcan-app/src/templates.rs` for `#[cfg(feature = "js_runtime")]` completeness after new features are introduced.
+- [ ] Keep `vulcan-core` synchronous after the cleanup; do not introduce `tokio`, `axum`, or async traits into core.
+- [ ] Add guard tests that fail if `vulcan-core` starts depending on daemon/runtime-only crates.
+- [ ] Add at least one integration test for a minimal non-AI build that can initialize, scan, query, and render basic Markdown without JS, web, OAuth, or vectors.
+
+### 9.29.4 `vulcan-app` module breakup and service contract cleanup
+
+- [ ] Split `vulcan-app/src/site.rs` into smaller modules such as request/types, route planning, rendering, manifest generation, incremental build state, theme/assets, diagnostics, and tests.
+- [ ] Split `vulcan-app/src/tasks.rs` into task mutation workflows, task query/report workflows, task view workflows, time tracking, pomodoro, reminders, and shared helpers.
+- [ ] Split `vulcan-app/src/export.rs` into profile management, query preparation, content transforms, format writers, packaging helpers, and frontend-bundle export support.
+- [ ] Split `vulcan-app/src/templates.rs` into parsing, native renderer, Templater compatibility, JS-backed execution, file discovery, and workflow services.
+- [ ] Split `vulcan-app/src/tools.rs` into skill command discovery, registry construction, schema validation, runtime execution, compatibility reporting, and authoring/test helpers.
+- [ ] Keep `vulcan-app` free of terminal/UI concepts: no TUI state, no `clap`, no direct stdout/stderr rendering, no editor/browser launching.
+- [ ] Normalize app-layer request/report naming so CLI, MCP, and future daemon endpoints can expose the same shapes without adapter-specific structs.
+- [ ] Add focused unit tests in each split module rather than relying only on end-to-end CLI tests.
+
+### 9.29.5 CLI maintainability and command-surface cleanup
+
+- [ ] Keep `vulcan-cli/src/cli.rs` as the canonical `clap` surface, but split it if generated command definitions become too hard to review; any split must preserve help output and parse tests.
+- [ ] Reduce `vulcan-cli/src/lib.rs` to top-level run/dispatch, global setup, shared CLI-only rendering helpers, and explicit command delegation.
+- [ ] Move remaining export/profile/static-site CLI handling out of `lib.rs` into command modules over `vulcan-app` services.
+- [ ] Move saved-report and automation CLI handling out of `lib.rs` into dedicated command modules.
+- [ ] Move status/cache/doctor/change rendering helpers into focused renderer modules if they remain large or are reused by multiple commands.
+- [ ] Keep TUI modules (`browse_tui`, `bases_tui`, `config_tui`) in `vulcan-cli`, but ensure their data loading and mutations call shared app/core services.
+- [ ] Expand the CLI boundary guard so production CLI code cannot introduce raw SQL, direct HTTP clients, runtime YAML parsing, or shared workflow duplication.
+- [ ] Keep CLI JSON output contracts stable and snapshot-covered throughout the cleanup.
+
+### 9.29.6 MCP module split and daemon-ready transport boundary
+
+- [ ] Split `vulcan-cli/src/mcp.rs` into focused modules:
+  - auth/OAuth/IndieAuth option resolution and token validation
+  - HTTP transport/session management
+  - stdio transport/session management
+  - tool catalog and pack filtering
+  - resource/prompt/completion catalog
+  - tool-call handlers
+  - protocol JSON helpers and errors
+- [ ] Make the MCP tool registry transport-agnostic so stdio, Streamable HTTP, and the future daemon can share registry construction and permission filtering.
+- [ ] Keep permission profiles as the single authorization model underneath tool-pack exposure and OAuth identity binding.
+- [ ] Keep adaptive pack changes session-local and transport-neutral; split code should not assume a single connection model.
+- [ ] Add tests that compare `describe --format mcp`, stdio MCP, Streamable HTTP MCP, and any shared registry helper for identical selected packs and permissions.
+- [ ] Decide whether MCP support should become its own `vulcan-mcp` crate before Phase 10, or whether a nested module under `vulcan-cli`/future `vulcan-daemon` is sufficient for now.
+
+### 9.29.7 Boundary guardrails, feature checks, and CI-style verification
+
+- [ ] Add or extend boundary tests that enforce:
+  - no raw SQL in production CLI code
+  - no direct HTTP clients in production CLI code
+  - no `tokio`/`axum` in `vulcan-core`
+  - no vector/embedding dependency usage outside vector-gated modules
+  - no JS runtime usage outside `js_runtime`-gated modules
+  - no MCP transport code depending on CLI rendering or terminal state
+- [ ] Add a documented local verification matrix:
+  - `cargo fmt --all`
+  - `cargo clippy --workspace --all-targets -- -D warnings`
+  - `cargo test --workspace`
+  - `cargo check --workspace --no-default-features`
+  - targeted feature-combination checks introduced in 9.29.2
+- [ ] Add tests or scripts that make it easy to compare feature build sizes/dependency trees before and after cleanup.
+- [ ] Add snapshot or contract tests for public request/report structs that daemon endpoints are expected to reuse.
+- [ ] Keep fuzz targets building after module splits, especially parser, DQL, expression, config, tasks, and frontmatter.
+
+### 9.29.8 Public API docs and developer ergonomics
+
+- [ ] Add crate-level docs that explain which crate to depend on for common use cases:
+  - parser/index/query only
+  - full local app workflows
+  - CLI embedding
+  - MCP/server integration
+  - static export/site generation
+  - custom tools and skills
+- [ ] Add examples or doctest-style snippets for minimal library consumers where practical.
+- [ ] Update `docs/design_document.md`, `docs/guide/scripting.md`, `docs/guide/chatgpt-mcp.md`, and relevant assistant skills if feature flags or MCP setup flags change.
+- [ ] Keep the integrated `vulcan help` surface aligned with any command-module moves or feature-gated commands.
+- [ ] Document the intended module structure for future contributors so Phase 10 code lands in daemon/app/core boundaries rather than recreating CLI coupling.
+
+### 9.29.9 Acceptance criteria
+
+- [ ] `cargo fmt --all` passes.
+- [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes.
+- [ ] `cargo test --workspace` passes.
+- [ ] `cargo check --workspace --no-default-features` passes.
+- [ ] New feature-combination checks from 9.29.2 pass and are documented.
+- [ ] A non-AI library consumer can depend on Vulcan without pulling embedding/vector provider dependencies.
+- [ ] A web-disabled build can still scan/query/render local Markdown and report clear errors for web-only commands.
+- [ ] A JS-disabled build can still scan/query/render and reports clear errors for JS-only Dataview/Templater/custom-tool behavior.
+- [ ] `vulcan-cli` remains usable and snapshot-covered; command help and JSON output do not regress.
+- [ ] MCP behavior remains protocol-compatible after splitting: stdio, Streamable HTTP, OAuth/IndieAuth, tool packs, resources, prompts, completions, and skill command tools all retain coverage.
+- [ ] Phase 10 can be implemented by depending on shared app/core/MCP-support modules rather than importing `vulcan-cli` internals.
+- [ ] The roadmap and design document reflect the final boundaries before Phase 10 starts.
+
+---
+
 ## Phase 10: Multi-Vault Daemon
 
 **Goal:** A long-running process that serves multiple vaults over a proper REST API. The CLI can connect to it instead of opening the cache directly, eliminating per-command startup cost and enabling multi-vault workflows.
 
-**Depends on:** Phase 7 complete. Phases 9.8–9.17 (Dataview, Templater, Tasks, Kanban, AI, QuickAdd, TaskNotes, Periodic Notes) are CLI-phase foundation work that should be complete or well-advanced before daemon work begins. **Phase 9.20 is intentionally scheduled before this phase in roadmap priority order to solidify shared rendering/export contracts, but Phase 10 does not technically require it.**
+**Depends on:** Phase 7 complete. Phases 9.8–9.17 (Dataview, Templater, Tasks, Kanban, AI, QuickAdd, TaskNotes, Periodic Notes) are CLI-phase foundation work that should be complete or well-advanced before daemon work begins. **Phase 9.20 is intentionally scheduled before this phase in roadmap priority order to solidify shared rendering/export contracts, but Phase 10 does not technically require it. Phase 9.29 is a hard pre-daemon cleanup gate: daemon implementation should not start until the library/CLI/MCP boundaries and feature matrix are ready.**
 **Design refs:** Existing `serve.rs` (single-vault HTTP server, hand-rolled), `watch.rs` (file watcher).
 
 Search API note: search request semantics are already defined earlier by the shared `SearchQuery` contract from Phase 9.6. Phase 10 daemon work reuses that surface; it does not introduce a second search-parameter design step.
@@ -5762,9 +5912,9 @@ Phase 1 (Core indexing)
                                Phase 7 (Post-v1 workflow features)
                                     ↓                    ↓                         ↓
                           Phase 8 (Performance)  Phase 9 (CLI refinements)  Phase 10 (Multi-vault daemon)
-                                                   ↓            ↘             ↓             ↓
-                                                  9.3      Phase 9.20         │      Phase 17 (User mgmt & ACL)
-                                                   │      (Static site builder)│             ↓
+                                                   ↓            ↘             ↑             ↓
+                                                  9.3      Phase 9.20 ─→ Phase 9.29   Phase 17 (User mgmt & ACL)
+                                                   │      (Static site) (cleanup gate)       ↓
                                                    └──────→ Phase 11 (Git versioning)   Phase 13 (WebUI browse)
                                                                   ↓                  ↖        ↓
                                                           Phase 12 (Sync)      (also from 9.20)
@@ -5779,8 +5929,9 @@ Phase 1 (Core indexing)
 ```
 
 Phase 8 (Performance) is independent and can proceed in parallel with Phases 9 and 10 after Phase 7.
-Phase 9.20 (Static site builder) is intentionally scheduled after Phase 9 and before Phase 10 in roadmap priority order, but Phase 10 remains technically independent if daemon work becomes urgent.
-Phases 9 and 10 can proceed in parallel after Phase 7; 9.20 is the recommended "do this first" bridge between them for rendering/publication work.
+Phase 9.20 (Static site builder) is intentionally scheduled after Phase 9 and before Phase 10 in roadmap priority order, but Phase 10 remains technically independent from static-site rendering if daemon work becomes urgent.
+Phase 9.29 (Pre-daemon maintainability and feature-boundary cleanup) is the hard cleanup gate before Phase 10. Phase 10 should not start until 9.29's feature matrix, crate boundaries, MCP split, and verification matrix are complete.
+Phases 9 and 10 can proceed in parallel after Phase 7 only for design exploration. Implementation work for the daemon should wait for 9.29; 9.20 remains the recommended rendering/publication bridge before WebUI/wiki work.
 Phase 11 requires 9.3 (git module) and 10 (daemon). Phase 12 requires 10 and 11.
 Phase 17 requires 10 (daemon). Sub-phases 17.1–17.3 (users, groups, ACLs, permission-filtered queries) must complete before Phase 13.
 Phase 13 requires 10, 9.20, and 17.1–17.3. Phase 14 requires 13 and 10's write endpoints. Phase 14 introduces Automerge as the document model.
@@ -5799,6 +5950,7 @@ Phase 9.15 (TaskNotes) is Vulcan's primary task management model. Builds on Phas
 Phase 9.16 (Periodic notes) builds on Phase 1 (document indexing) and Phase 9.7 (template variables). It provides shared infrastructure for `file.day` resolution (9.8.3), Kanban date linking (9.11), QuickAdd daily note capture (9.13), and TaskNotes pomodoro storage (9.15). Can start as early as Wave 2 but `file.day` can be stubbed pending its completion.
 Phase 9.17 (Unified settings import) infrastructure (9.17.1–9.17.3) depends only on 9.5 (config layering) and can start in Wave 2. Core importer (9.17.4) depends on 9.17.1. Dataview importer (9.17.5) depends on 9.17.1 and 9.8.9. Batch commands (9.17.6) depend on 9.17.1 and any two or more importers on the trait. Init integration (9.17.7) depends on 9.17.6. Individual plugin importers (9.9.4, 9.10.5, 9.11.4, 9.13.3, 9.15.11, 9.16.4) are refactored or implemented as `PluginImporter` (9.17.1) within their respective phases.
 Phase 9.20 (Static site builder) is the recommended bridge between CLI completion and daemon/WebUI work. It reuses the parser, graph, query, Dataview, Bases, and task foundations to produce a shared HTML renderer, route planner, and static search/graph/preview assets. Phase 10 does not technically depend on it, but Phase 13 and Phase 16 should.
+Phase 9.29 (Pre-daemon maintainability and feature-boundary cleanup) builds on the completed Phase 9 shared-service, MCP, skill-command, and static-site work. It is deliberately broad: feature-gate AI/web/OAuth/vector dependencies, split oversized reusable modules, slim remaining CLI dispatch/rendering clusters, split MCP transport/auth/catalog/handler concerns, and add guardrails so Phase 10 can depend on shared libraries instead of `vulcan-cli` internals.
 Phase 9.23 (adaptive MCP tool packs) builds on 9.19.15's protocol-native MCP surface and 9.19.13's permission layer. It keeps MCP tool exposure typed and permission-aware while replacing the fixed `core|extended|admin` ladder with composable packs and optional session-local tool refresh for clients that honor `notifications/tools/list_changed`.
 Phase 9.24 (vault-native skill command tools) builds on 9.18.5 (JS runtime), 9.19.12 (plugin/runtime execution substrate), 9.19.13 (permission layer), 9.19.15 (protocol-native MCP registry), and 9.23 (pack-aware MCP exposure). It introduces a shared programmable tool registry for vault-defined callable tools, with static skill-command metadata discovery and QuickJS as the initial runtime backend. Skills remain the package/guidance format; plugins remain event hooks; exposed skill commands are direct request/response callables available through CLI, `describe`, MCP, and the internal JS API.
 Phase 4.5.1 (Custom Bases source types) extends the Bases evaluator with pluggable data sources. The trait and `FileSource` extraction are part of Phase 4. The actual custom source registrations happen in Phase 9.15.8 (TaskNotes Bases views).
