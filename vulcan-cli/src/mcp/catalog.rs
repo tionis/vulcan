@@ -1,6 +1,8 @@
 use serde_json::Value;
+use std::collections::BTreeSet;
+use vulcan_core::{ConfigPermissionMode, PermissionMode, PermissionProfile};
 
-use crate::{McpToolAnnotations, McpToolPackModeArg};
+use crate::{McpToolAnnotations, McpToolPackArg, McpToolPackModeArg, ToolRegistryEntry};
 
 use super::schemas::{
     config_set_input_schema, config_set_output_schema, config_show_input_schema,
@@ -557,3 +559,179 @@ pub(super) const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         examples: &["tool_pack_set {\"packs\":[\"notes-read\",\"search\"]}"],
     },
 ];
+
+pub(super) const ALL_MCP_TOOL_PACKS: &[McpToolPack] = &[
+    McpToolPack::NotesRead,
+    McpToolPack::Search,
+    McpToolPack::Status,
+    McpToolPack::Custom,
+    McpToolPack::Daily,
+    McpToolPack::Tasks,
+    McpToolPack::NotesWrite,
+    McpToolPack::NotesManage,
+    McpToolPack::Web,
+    McpToolPack::Config,
+    McpToolPack::Index,
+    McpToolPack::ToolPacks,
+];
+
+pub(super) fn tool_by_name(name: &str) -> Option<&'static McpToolCatalogEntry> {
+    MCP_TOOL_CATALOG.iter().find(|tool| tool.name == name)
+}
+
+pub(super) fn expand_tool_pack_arg(value: McpToolPackArg) -> &'static [McpToolPack] {
+    match value {
+        McpToolPackArg::NotesRead => PACK_NOTES_READ,
+        McpToolPackArg::Search => PACK_SEARCH,
+        McpToolPackArg::Status => PACK_STATUS,
+        McpToolPackArg::Custom => PACK_CUSTOM,
+        McpToolPackArg::Daily => PACK_DAILY,
+        McpToolPackArg::Tasks => PACK_TASKS,
+        McpToolPackArg::NotesWrite => PACK_NOTES_WRITE,
+        McpToolPackArg::NotesManage => PACK_NOTES_MANAGE,
+        McpToolPackArg::Web => PACK_WEB,
+        McpToolPackArg::Config => PACK_CONFIG,
+        McpToolPackArg::Index => PACK_INDEX,
+    }
+}
+
+pub(super) fn resolve_selected_tool_packs(
+    tool_pack_args: &[McpToolPackArg],
+    tool_pack_mode: McpToolPackMode,
+) -> BTreeSet<McpToolPack> {
+    let mut selected = BTreeSet::new();
+    let default_selection = [
+        McpToolPackArg::NotesRead,
+        McpToolPackArg::Search,
+        McpToolPackArg::Status,
+    ];
+    let source = if tool_pack_args.is_empty() {
+        default_selection.as_slice()
+    } else {
+        tool_pack_args
+    };
+    for value in source {
+        selected.extend(expand_tool_pack_arg(*value).iter().copied());
+    }
+    if matches!(tool_pack_mode, McpToolPackMode::Adaptive) {
+        selected.insert(McpToolPack::ToolPacks);
+    }
+    selected
+}
+
+pub(super) fn is_default_tool_pack_args(tool_pack_args: &[McpToolPackArg]) -> bool {
+    tool_pack_args
+        == [
+            McpToolPackArg::NotesRead,
+            McpToolPackArg::Search,
+            McpToolPackArg::Status,
+        ]
+}
+
+pub(super) fn default_openai_tool_packs() -> BTreeSet<McpToolPack> {
+    ALL_MCP_TOOL_PACKS
+        .iter()
+        .copied()
+        .filter(|pack| !matches!(pack, McpToolPack::ToolPacks))
+        .collect()
+}
+
+pub(super) fn pack_name_list(selected_tool_packs: &BTreeSet<McpToolPack>) -> Vec<String> {
+    ALL_MCP_TOOL_PACKS
+        .iter()
+        .copied()
+        .filter(|pack| selected_tool_packs.contains(pack))
+        .map(|pack| pack.as_str().to_string())
+        .collect()
+}
+
+pub(super) fn parse_tool_pack_selector(value: &str) -> Option<McpToolPackArg> {
+    match value {
+        "notes-read" => Some(McpToolPackArg::NotesRead),
+        "search" => Some(McpToolPackArg::Search),
+        "status" => Some(McpToolPackArg::Status),
+        "custom" => Some(McpToolPackArg::Custom),
+        "daily" => Some(McpToolPackArg::Daily),
+        "tasks" => Some(McpToolPackArg::Tasks),
+        "notes-write" => Some(McpToolPackArg::NotesWrite),
+        "notes-manage" => Some(McpToolPackArg::NotesManage),
+        "web" => Some(McpToolPackArg::Web),
+        "config" => Some(McpToolPackArg::Config),
+        "index" => Some(McpToolPackArg::Index),
+        _ => None,
+    }
+}
+
+pub(super) fn visible_tool_catalog(
+    selected_tool_packs: &BTreeSet<McpToolPack>,
+    profile: &PermissionProfile,
+) -> Vec<&'static McpToolCatalogEntry> {
+    MCP_TOOL_CATALOG
+        .iter()
+        .filter(|tool| tool_visible(tool, profile, selected_tool_packs))
+        .collect()
+}
+
+pub(super) fn tool_visible(
+    tool: &McpToolCatalogEntry,
+    profile: &PermissionProfile,
+    selected_tool_packs: &BTreeSet<McpToolPack>,
+) -> bool {
+    if !tool
+        .packs
+        .iter()
+        .any(|pack| selected_tool_packs.contains(pack))
+    {
+        return false;
+    }
+    tool_allowed_by_profile(tool, profile)
+}
+
+pub(super) fn tool_allowed_by_profile(
+    tool: &McpToolCatalogEntry,
+    profile: &PermissionProfile,
+) -> bool {
+    match tool.visibility {
+        McpVisibilityRequirement::None => true,
+        McpVisibilityRequirement::Read => !profile.read.is_none(),
+        McpVisibilityRequirement::Write => !profile.write.is_none(),
+        McpVisibilityRequirement::Network => profile.network.is_allowed(),
+        McpVisibilityRequirement::Index => matches!(profile.index, PermissionMode::Allow),
+        McpVisibilityRequirement::ConfigRead => {
+            !matches!(profile.config, ConfigPermissionMode::None)
+        }
+        McpVisibilityRequirement::ConfigWrite => {
+            matches!(profile.config, ConfigPermissionMode::Write)
+        }
+    }
+}
+
+pub(super) fn tool_names_for_pack(pack: McpToolPack, profile: &PermissionProfile) -> Vec<String> {
+    MCP_TOOL_CATALOG
+        .iter()
+        .filter(|tool| tool.packs.contains(&pack))
+        .filter(|tool| tool_allowed_by_profile(tool, profile))
+        .map(|tool| tool.name.to_string())
+        .collect()
+}
+
+pub(super) fn mcp_tool_registry_entry(tool: &McpToolCatalogEntry) -> ToolRegistryEntry {
+    ToolRegistryEntry {
+        name: tool.name.to_string(),
+        title: tool.title.to_string(),
+        description: tool.description.to_string(),
+        input_schema: (tool.input_schema)(),
+        output_schema: tool.output_schema.map(|schema| schema()),
+        annotations: tool.annotations,
+        tool_packs: tool
+            .packs
+            .iter()
+            .map(|pack| pack.as_str().to_string())
+            .collect(),
+        examples: tool
+            .examples
+            .iter()
+            .map(|item| (*item).to_string())
+            .collect(),
+    }
+}
