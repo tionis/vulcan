@@ -19,6 +19,7 @@ pub mod tasks;
 pub mod templates;
 pub mod tools;
 pub mod trust;
+#[cfg(feature = "web")]
 pub mod web;
 
 pub use error::AppError;

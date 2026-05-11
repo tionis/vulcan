@@ -3,6 +3,7 @@ use crate::properties::{
     build_note_filter_clause_from_expressions, parse_note_filter_expression, FilterExpression,
     FilterField, FilterOperator, FilterValue, ParsedFilter,
 };
+#[cfg(feature = "vectors")]
 use crate::vector::query_hybrid_candidates;
 use crate::{
     load_vault_config, parse_document, CacheDatabase, CacheError, NoteLineSpan, PropertyError,
@@ -11,6 +12,7 @@ use crate::{
 use regex::Regex;
 use rusqlite::{params_from_iter, types::Value as SqlValue, Connection};
 use serde::{Deserialize, Serialize};
+#[cfg(feature = "vectors")]
 use std::cmp::Ordering;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::error::Error;
@@ -25,6 +27,7 @@ pub enum SearchError {
     Json(serde_json::Error),
     Property(PropertyError),
     Sqlite(rusqlite::Error),
+    #[cfg(feature = "vectors")]
     Vector(crate::VectorError),
 }
 
@@ -39,6 +42,7 @@ impl Display for SearchError {
             Self::Json(error) => write!(formatter, "{error}"),
             Self::Property(error) => write!(formatter, "{error}"),
             Self::Sqlite(error) => write!(formatter, "{error}"),
+            #[cfg(feature = "vectors")]
             Self::Vector(error) => write!(formatter, "{error}"),
         }
     }
@@ -51,6 +55,7 @@ impl Error for SearchError {
             Self::Json(error) => Some(error),
             Self::Property(error) => Some(error),
             Self::Sqlite(error) => Some(error),
+            #[cfg(feature = "vectors")]
             Self::Vector(error) => Some(error),
             Self::CacheMissing | Self::InvalidQuery(_) => None,
         }
@@ -81,6 +86,7 @@ impl From<rusqlite::Error> for SearchError {
     }
 }
 
+#[cfg(feature = "vectors")]
 impl From<crate::VectorError> for SearchError {
     fn from(error: crate::VectorError) -> Self {
         Self::Vector(error)
@@ -1244,6 +1250,7 @@ fn first_matching_task_line(
     })
 }
 
+#[cfg(feature = "vectors")]
 fn hybrid_search_hits(
     paths: &VaultPaths,
     connection: &Connection,
@@ -1332,6 +1339,18 @@ fn hybrid_search_hits(
     Ok(hits)
 }
 
+#[cfg(not(feature = "vectors"))]
+fn hybrid_search_hits(
+    _paths: &VaultPaths,
+    connection: &Connection,
+    query: &SearchQuery,
+    prepared: &PreparedSearchQuery,
+    filter: Option<&PermissionFilter>,
+) -> Result<Vec<SearchHit>, SearchError> {
+    keyword_search_hits(connection, query, prepared, query.limit, filter)
+}
+
+#[cfg(feature = "vectors")]
 fn reciprocal_rank(index: usize) -> f64 {
     1.0 / (60.0 + f64::from(u32::try_from(index).unwrap_or(u32::MAX)) + 1.0)
 }
@@ -1449,6 +1468,7 @@ fn keyword_order_clause(sort: SearchSort, use_fts: bool) -> &'static str {
     }
 }
 
+#[cfg(feature = "vectors")]
 fn sort_hits(
     connection: &Connection,
     hits: &mut [SearchHit],
@@ -1513,6 +1533,7 @@ fn sort_hits(
     }
 }
 
+#[cfg(feature = "vectors")]
 fn load_hit_file_mtimes(
     connection: &Connection,
     hits: &[SearchHit],
@@ -1538,6 +1559,7 @@ fn load_hit_file_mtimes(
         .map_err(SearchError::from)
 }
 
+#[cfg(feature = "vectors")]
 fn batch_filter_vector_hits(
     connection: &Connection,
     vector_hits: Vec<crate::vector::VectorNeighborHit>,
@@ -1661,6 +1683,7 @@ fn batch_filter_vector_hits(
     Ok(candidates)
 }
 
+#[cfg(feature = "vectors")]
 fn matching_note_paths(
     connection: &Connection,
     filters: &[FilterExpression],

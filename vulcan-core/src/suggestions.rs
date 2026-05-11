@@ -17,6 +17,7 @@ use std::fs;
 use std::ops::Range;
 use std::path::{Component, Path};
 use ulid::Ulid;
+#[cfg(feature = "vectors")]
 use vulcan_embed::{SqliteVecStore, VectorStore};
 
 #[derive(Debug)]
@@ -470,6 +471,7 @@ fn compute_and_persist_link_suggestions(
     Ok(())
 }
 
+#[cfg(feature = "vectors")]
 fn load_embedding_similarity_scores(connection: &Connection) -> HashMap<(String, String), f64> {
     let Ok(store) = SqliteVecStore::new(connection) else {
         return HashMap::new();
@@ -520,6 +522,12 @@ fn load_embedding_similarity_scores(connection: &Connection) -> HashMap<(String,
     scores
 }
 
+#[cfg(not(feature = "vectors"))]
+fn load_embedding_similarity_scores(_connection: &Connection) -> HashMap<(String, String), f64> {
+    HashMap::new()
+}
+
+#[cfg(feature = "vectors")]
 fn update_embedding_score(
     scores: &mut HashMap<(String, String), f64>,
     source_document: &str,
@@ -536,6 +544,7 @@ fn update_embedding_score(
         .or_insert(score);
 }
 
+#[cfg(feature = "vectors")]
 fn cosine_similarity(left: &[f32], right: &[f32]) -> f32 {
     if left.len() != right.len() || left.is_empty() {
         return 0.0;
@@ -1666,6 +1675,7 @@ mod tests {
     use std::path::Path;
     use std::time::Instant;
     use tempfile::TempDir;
+    #[cfg(feature = "vectors")]
     use vulcan_embed::{SqliteVecStore, StoredModel, StoredVector, VectorStore};
 
     #[test]
@@ -1866,6 +1876,7 @@ mod tests {
         }));
     }
 
+    #[cfg(feature = "vectors")]
     #[test]
     fn suggest_links_uses_stored_embedding_similarity() {
         let temp_dir = TempDir::new().expect("temp dir should be created");

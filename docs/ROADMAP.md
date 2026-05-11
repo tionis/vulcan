@@ -4924,34 +4924,36 @@ Pre-Phase-10 cleanup baseline recorded on 2026-05-11:
 
 ### 9.29.2 Feature matrix for core, AI, web, OAuth, and JS support
 
-- [ ] Replace the current single optional `js_runtime` split with an explicit feature matrix that supports at least:
+- [x] Replace the current single optional `js_runtime` split with an explicit feature matrix that supports at least:
   - default full CLI build
   - `--no-default-features` parser/index/query build
   - non-AI library build without embeddings/vector providers or assistant execution dependencies
   - JS-disabled build
   - web-disabled build
   - OAuth/MCP-auth-disabled build where relevant
-- [ ] Introduce feature flags for AI/vector functionality so `vulcan-core` does not always depend on `vulcan-embed`, `sqlite-vec`, or embedding providers when vector search is not requested.
-- [ ] Introduce feature flags for web fetch/search so `reqwest` and HTML extraction backends are not mandatory for core parser/index/query consumers.
-- [ ] Introduce feature flags or module boundaries for OAuth/IndieAuth/JWT support so non-server consumers do not pay for auth dependencies.
-- [ ] Keep skill/prompt metadata parsing available without requiring model inference or external AI providers; "assistant assets" should not imply "AI runtime."
+- [x] Introduce feature flags for AI/vector functionality so `vulcan-core` does not always depend on `vulcan-embed`, `sqlite-vec`, or embedding providers when vector search is not requested.
+- [x] Introduce feature flags for web fetch/search so `reqwest` and HTML extraction backends are not mandatory for core parser/index/query consumers.
+- [x] Introduce feature flags or module boundaries for OAuth/IndieAuth/JWT support so non-server consumers do not pay for auth dependencies.
+- [x] Keep skill/prompt metadata parsing available without requiring model inference or external AI providers; "assistant assets" should not imply "AI runtime."
 - [ ] Decide whether MCP stays in `vulcan-cli` for Phase 9.29 or gets a reusable transport-agnostic library module before Phase 10.
-- [ ] Add feature-combination checks to CI/test docs, including `cargo check --workspace --no-default-features` and targeted checks for the new feature sets.
-- [ ] Document which features are enabled by default and why, with explicit guidance for library consumers that want a minimal build.
+- [x] Add feature-combination checks to CI/test docs, including `cargo check --workspace --no-default-features` and targeted checks for the new feature sets.
+- [x] Document which features are enabled by default and why, with explicit guidance for library consumers that want a minimal build.
+
+Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default-features` for minimal library consumers. The CLI still keeps `vectors`, `web`, and `oauth` enabled as dependency features in JS-disabled builds so the full command surface remains compilable; making individual CLI command groups disappear under feature flags is intentionally left as an optional binary-size optimization unless a concrete consumer needs it.
 
 ### 9.29.3 `vulcan-core` boundary and dependency cleanup
 
-- [ ] Move vector-only code behind a `vectors` or `embeddings` feature:
+- [x] Move vector-only code behind a `vectors` or `embeddings` feature:
   - `vulcan-core/src/vector.rs`
   - vector-backed suggestion signals
   - vector cache inspection/repair helpers
   - `vulcan-embed` dependency
 - [ ] Ensure graph/search/link suggestion features degrade cleanly when vectors are disabled: non-vector signals should still work, and vector-specific commands should return clear "feature disabled" errors.
-- [ ] Move or gate `vulcan-core/src/web.rs` behind a `web` feature and ensure JS/runtime callers use the same gated service.
-- [ ] Move or gate `vulcan-core/src/oauth.rs` behind an `oauth` feature, or relocate server-facing OAuth pieces into a reusable MCP/daemon-support module if that boundary is cleaner.
+- [x] Move or gate `vulcan-core/src/web.rs` behind a `web` feature and ensure JS/runtime callers use the same gated service.
+- [x] Move or gate `vulcan-core/src/oauth.rs` behind an `oauth` feature, or relocate server-facing OAuth pieces into a reusable MCP/daemon-support module if that boundary is cleaner.
 - [ ] Audit `vulcan-core/src/dataview_js.rs` and `vulcan-app/src/templates.rs` for `#[cfg(feature = "js_runtime")]` completeness after new features are introduced.
-- [ ] Keep `vulcan-core` synchronous after the cleanup; do not introduce `tokio`, `axum`, or async traits into core.
-- [ ] Add guard tests that fail if `vulcan-core` starts depending on daemon/runtime-only crates.
+- [x] Keep `vulcan-core` synchronous after the cleanup; do not introduce `tokio`, `axum`, or async traits into core.
+- [x] Add guard tests that fail if `vulcan-core` starts depending on daemon/runtime-only crates.
 - [ ] Add at least one integration test for a minimal non-AI build that can initialize, scan, query, and render basic Markdown without JS, web, OAuth, or vectors.
 
 ### 9.29.4 `vulcan-app` module breakup and service contract cleanup

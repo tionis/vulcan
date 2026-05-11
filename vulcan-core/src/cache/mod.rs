@@ -12,6 +12,7 @@ use crate::paths::{ensure_vulcan_dir, VaultPaths};
 use crate::{EXTRACTION_VERSION, PARSER_VERSION};
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use std::time::Duration;
+#[cfg(feature = "vectors")]
 use vulcan_embed::register_sqlite_vec_extension;
 
 pub const BUSY_TIMEOUT_MS: u64 = 5_000;
@@ -27,6 +28,7 @@ pub struct CacheDatabase {
 impl CacheDatabase {
     pub fn open(paths: &VaultPaths) -> Result<Self, CacheError> {
         ensure_vulcan_dir(paths)?;
+        #[cfg(feature = "vectors")]
         register_sqlite_vec_extension();
 
         let mut connection = Connection::open(paths.cache_db())?;

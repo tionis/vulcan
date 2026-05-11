@@ -6,15 +6,18 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-default = ["js_runtime"]
+default = ["js_runtime", "oauth", "vectors", "web"]
 js_runtime = ["dep:rquickjs", "vulcan-core/js_runtime"]
+oauth = ["vulcan-core/oauth"]
+vectors = ["vulcan-core/vectors"]
+web = ["dep:reqwest", "vulcan-core/web"]
 
 [dependencies]
 blake3.workspace = true
 csv.workspace = true
 pulldown-cmark.workspace = true
 regex.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, optional = true }
 rusqlite.workspace = true
 serde_yaml.workspace = true
 serde.workspace = true

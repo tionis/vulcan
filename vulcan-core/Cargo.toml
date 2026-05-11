@@ -6,35 +6,38 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-default = ["js_runtime"]
+default = ["js_runtime", "oauth", "vectors", "web"]
 js_runtime = ["dep:rquickjs", "dep:rquickjs-serde"]
+oauth = ["dep:base64", "dep:jsonwebtoken", "dep:reqwest", "dep:sha2"]
+vectors = ["dep:vulcan-embed"]
+web = ["dep:reqwest", "dep:rs-trafilatura"]
 
 [dependencies]
 aho-corasick = "1"
 ammonia.workspace = true
-base64.workspace = true
+base64 = { workspace = true, optional = true }
 blake3.workspace = true
 csv.workspace = true
 fs2.workspace = true
 ignore.workspace = true
-jsonwebtoken.workspace = true
+jsonwebtoken = { workspace = true, optional = true }
 libc.workspace = true
 notify.workspace = true
 pulldown-cmark.workspace = true
 rayon.workspace = true
 regex.workspace = true
-reqwest.workspace = true
+reqwest = { workspace = true, optional = true }
 rquickjs = { workspace = true, optional = true }
 rquickjs-serde = { workspace = true, optional = true }
-rs-trafilatura.workspace = true
+rs-trafilatura = { workspace = true, optional = true }
 rusqlite.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true
-sha2.workspace = true
+sha2 = { workspace = true, optional = true }
 toml.workspace = true
 ulid.workspace = true
-vulcan-embed = { path = "../vulcan-embed" }
+vulcan-embed = { path = "../vulcan-embed", optional = true }
 
 [dev-dependencies]
 proptest.workspace = true

@@ -6,11 +6,12 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use vulcan_core::{
-    query_graph_analytics_with_filter, query_notes_with_filter, query_related_notes_with_filter,
-    resolve_permission_profile, search_vault_with_filter, NoteQuery, PermissionFilter,
-    PermissionGuard, ProfilePermissionGuard, RelatedNotesQuery, SearchQuery, SearchSort,
-    VaultPaths, WatchReport,
+    query_graph_analytics_with_filter, query_notes_with_filter, resolve_permission_profile,
+    search_vault_with_filter, NoteQuery, PermissionFilter, PermissionGuard, ProfilePermissionGuard,
+    SearchQuery, SearchSort, VaultPaths, WatchReport,
 };
+#[cfg(feature = "vectors")]
+use vulcan_core::{query_related_notes_with_filter, RelatedNotesQuery};
 
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ServeHealthState {
@@ -153,6 +154,7 @@ pub fn route_request(
             Ok(report) => ServeResponse::ok(json!({ "ok": true, "result": report })),
             Err(error) => ServeResponse::error(500, error.to_string()),
         },
+        #[cfg(feature = "vectors")]
         "/related" => {
             let Some(note) = first_param(&request.query, "note") else {
                 return ServeResponse::error(400, "missing required query parameter: note");
@@ -166,6 +168,10 @@ pub fn route_request(
                 Ok(report) => ServeResponse::ok(json!({ "ok": true, "result": report })),
                 Err(error) => ServeResponse::error(500, error.to_string()),
             }
+        }
+        #[cfg(not(feature = "vectors"))]
+        "/related" => {
+            ServeResponse::error(501, "related-note endpoint requires the `vectors` feature")
         }
         "/dataview/inline" => {
             let Some(file) = first_param(&request.query, "file") else {
