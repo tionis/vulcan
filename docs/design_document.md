@@ -112,6 +112,27 @@ Current migration inventory for the Phase 9.22 cleanup:
 
 Contributor rule: new reusable business logic must not land in `vulcan-cli` unless it is unambiguously CLI- or TUI-only. Treat the size and responsibility spread of `vulcan-cli/src/lib.rs` as a migration target, not the desired steady state.
 
+Phase 9.29 adds a pre-daemon boundary hardening pass. The daemon must be able to depend on shared crates and transport-neutral support modules without importing CLI internals. The cleanup target is:
+
+- `vulcan-core` remains synchronous and owns reusable vault semantics. Parser, cache, config, query/DQL/expression, graph/search/task semantics, permission models, HTML rendering primitives, and rebuildable maintenance operations stay here. Optional vector, web, OAuth, and JavaScript-backed functionality must be behind explicit features or isolated modules so parser/index/query consumers can build without those dependencies.
+- `vulcan-app` remains synchronous and owns reusable workflows. It may coordinate file mutation, scan refresh, plugin dispatch, exports, template execution, site generation, task workflows, note workflows, config mutation, custom skill command execution, and trust checks. It must not own terminal state, TUI state, `clap` definitions, editor/browser launching, or stdout/stderr rendering.
+- `vulcan-cli` owns the executable command surface: `clap` parsing, shell completions, terminal/TUI/editor integration, human and JSON rendering, top-level dispatch, and CLI-only helpers. It should delegate reusable work to `vulcan-app`/`vulcan-core`.
+- MCP support should be split into transport-neutral registry/catalog/handler pieces plus transport-specific stdio and Streamable HTTP adapters. Permission profiles remain the common authorization model for CLI, MCP, daemon, and assistant-facing entrypoints.
+- `vulcan-daemon` owns async runtime integration, HTTP/WebSocket routing, multi-vault registry state, background scheduling, and long-lived session state. Core remains synchronous; daemon code wraps blocking shared services at the async boundary.
+
+Public library promise before Phase 10:
+
+- Stable enough for reuse: serializable request/report structs in `vulcan-core` and `vulcan-app`, cache/query/search/graph/task/note/template/export/config services, permission-profile resolution, skill command registry metadata, and transport-neutral MCP catalog construction once split.
+- Internal unless promoted by documentation: individual SQL statements, cache migration internals, CLI renderers, TUI state machines, command parsing structs, and transport session bookkeeping.
+- Feature expectations: default builds include the full local CLI experience. Minimal library builds must support parser/index/query/render basics without AI/vector, web fetch/search, OAuth, or JS runtime dependencies. Feature-disabled commands and APIs must fail with explicit diagnostics rather than silent partial behavior.
+
+Regression strategy for boundary cleanup:
+
+- Preserve existing CLI JSON snapshots and MCP shape comparisons while moving code.
+- Add feature-combination checks for full, no-default-features, JS-disabled, web-disabled, OAuth-disabled, and vector-disabled builds.
+- Add boundary tests that prevent production CLI code from reintroducing raw SQL, direct HTTP clients, runtime YAML parsing, shared workflow duplication, daemon runtime crates in `vulcan-core`, or MCP transport coupling to CLI rendering.
+- Prefer small mechanical module splits with focused unit tests before semantic changes.
+
 ### Agent Skills and projected skill commands
 
 Vulcan's assistant-facing automation should use Agent Skills-compatible skill directories as the portable packaging layer.

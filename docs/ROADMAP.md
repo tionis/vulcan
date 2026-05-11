@@ -4891,15 +4891,36 @@ The `tasknotesCalendar` and `tasknotesMiniCalendar` Bases view types require vis
 
 ### 9.29.1 Baseline inventory and public boundary decision record
 
-- [ ] Record the current largest files/modules and their intended ownership in `docs/design_document.md` or a new architecture note:
+- [x] Record the current largest files/modules and their intended ownership in `docs/design_document.md` or a new architecture note:
   - `vulcan-core`: parser, cache, config model, query/eval, graph/search/task semantics, optional vector/web/oauth/JS support behind features
   - `vulcan-app`: reusable synchronous workflows and service contracts over `vulcan-core`
   - `vulcan-cli`: `clap` parsing, terminal/TUI/editor/URI handling, output rendering, command dispatch, shell completions
   - `vulcan-daemon`: async HTTP/WebSocket transport, background scheduling, multi-vault registry, daemon lifecycle
-- [ ] Classify each remaining large module by whether it is acceptable as-is, should be split internally, should move to a feature-gated submodule, or should move to a future crate.
-- [ ] Define the public library promise for non-CLI users: which APIs are stable enough to call from daemon, tests, scripts, and future integrations, and which modules remain internal.
-- [ ] Add a short "pre-Phase-10 cleanup status" table to this roadmap with current line counts, feature-gate status, and remaining open refactor targets.
-- [ ] Confirm that every cleanup item has a regression-test strategy before implementation starts.
+- [x] Classify each remaining large module by whether it is acceptable as-is, should be split internally, should move to a feature-gated submodule, or should move to a future crate.
+- [x] Define the public library promise for non-CLI users: which APIs are stable enough to call from daemon, tests, scripts, and future integrations, and which modules remain internal.
+- [x] Add a short "pre-Phase-10 cleanup status" table to this roadmap with current line counts, feature-gate status, and remaining open refactor targets.
+- [x] Confirm that every cleanup item has a regression-test strategy before implementation starts.
+
+Pre-Phase-10 cleanup baseline recorded on 2026-05-11:
+
+| Target | Current baseline | Classification | Cleanup target | Regression strategy |
+| --- | ---: | --- | --- | --- |
+| `vulcan-core/src/dataview_js.rs` | 7,780 lines | Acceptable large feature module, already JS-gated | Keep behind `js_runtime`; audit cfg coverage after feature matrix changes | JS-enabled and JS-disabled Dataview/Templater tests |
+| `vulcan-core/src/scan.rs` | 5,134 lines | Acceptable core hot path for now | Keep synchronous; avoid daemon/runtime dependencies | Reindex idempotency and fixture scan tests |
+| `vulcan-core/src/config/mod.rs` | 4,935 lines | Candidate for later internal split | Keep public config API stable; split only if feature work touches it | Config load/import/set tests |
+| `vulcan-core/src/search.rs` | 4,200 lines | Acceptable shared query surface for Phase 10 | Preserve `SearchQuery`; gate vector/web-only paths where needed | Search parser/execution tests and CLI snapshots |
+| `vulcan-core/src/properties.rs` | 3,700 lines | Acceptable shared Dataview/property core for now | No Phase 10 blocker unless feature gating exposes coupling | Property/query fixture tests |
+| `vulcan-core/src/vector.rs` | 3,047 lines | Feature-gate target | Gate behind `vectors`; non-vector suggestions still work | Vector tests plus disabled-feature checks |
+| `vulcan-core/src/oauth.rs` | 960 lines | Feature-gate or transport-support target | Gate behind `oauth` or move to reusable MCP/server support | OAuth unit tests plus disabled-feature checks |
+| `vulcan-core/src/web.rs` | 851 lines | Feature-gate target | Gate behind `web`; JS callers share gated service | Web tests plus disabled-feature checks |
+| `vulcan-app/src/site.rs` | 9,795 lines | Split internally | Route planning, rendering, manifest, theme/assets, diagnostics, build state | Site build/serve tests |
+| `vulcan-app/src/tasks.rs` | 7,410 lines | Split internally | Mutations, reports, views, time tracking, pomodoro, reminders | Task CLI snapshots plus app unit tests |
+| `vulcan-app/src/export.rs` | 5,069 lines | Split internally | Profiles, query prep, transforms, writers, packaging | Export format/profile tests |
+| `vulcan-app/src/templates.rs` | 5,049 lines | Split internally and JS-audit | Parsing, native renderer, Templater compatibility, JS execution, discovery, workflows | Template tests with and without JS |
+| `vulcan-app/src/tools.rs` | 2,763 lines | Split internally | Discovery, registry, schema validation, execution, authoring/test helpers | Skill command/tool CLI and MCP shape tests |
+| `vulcan-cli/src/lib.rs` | 13,279 lines | Split remaining command/render clusters | Keep run/dispatch/setup and explicit command delegation | CLI parse/snapshot tests |
+| `vulcan-cli/src/cli.rs` | 5,718 lines | Accept unless generated definitions become unreviewable | Keep canonical `clap` surface for now | Parse and help tests |
+| `vulcan-cli/src/mcp.rs` | 6,092 lines | Split internally; maybe future crate | Auth, HTTP, stdio, catalog, resources/prompts/completions, handlers, protocol helpers | `describe`/stdio/HTTP MCP registry equivalence tests |
 
 ### 9.29.2 Feature matrix for core, AI, web, OAuth, and JS support
 
