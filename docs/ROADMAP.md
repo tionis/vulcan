@@ -4935,7 +4935,7 @@ Pre-Phase-10 cleanup baseline recorded on 2026-05-11:
 - [x] Introduce feature flags for web fetch/search so `reqwest` and HTML extraction backends are not mandatory for core parser/index/query consumers.
 - [x] Introduce feature flags or module boundaries for OAuth/IndieAuth/JWT support so non-server consumers do not pay for auth dependencies.
 - [x] Keep skill/prompt metadata parsing available without requiring model inference or external AI providers; "assistant assets" should not imply "AI runtime."
-- [ ] Decide whether MCP stays in `vulcan-cli` for Phase 9.29 or gets a reusable transport-agnostic library module before Phase 10.
+- [x] Decide whether MCP stays in `vulcan-cli` for Phase 9.29 or gets a reusable transport-agnostic library module before Phase 10. (Decision: keep MCP in `vulcan-cli` for 9.29, split internals there, and defer a dedicated `vulcan-mcp` crate until Phase 10 proves the daemon reuse boundary.)
 - [x] Add feature-combination checks to CI/test docs, including `cargo check --workspace --no-default-features` and targeted checks for the new feature sets.
 - [x] Document which features are enabled by default and why, with explicit guidance for library consumers that want a minimal build.
 
@@ -4992,7 +4992,7 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 - [ ] Keep permission profiles as the single authorization model underneath tool-pack exposure and OAuth identity binding.
 - [ ] Keep adaptive pack changes session-local and transport-neutral; split code should not assume a single connection model.
 - [ ] Add tests that compare `describe --format mcp`, stdio MCP, Streamable HTTP MCP, and any shared registry helper for identical selected packs and permissions.
-- [ ] Decide whether MCP support should become its own `vulcan-mcp` crate before Phase 10, or whether a nested module under `vulcan-cli`/future `vulcan-daemon` is sufficient for now.
+- [x] Decide whether MCP support should become its own `vulcan-mcp` crate before Phase 10, or whether a nested module under `vulcan-cli`/future `vulcan-daemon` is sufficient for now. (Decision: no new crate before Phase 10; keep splitting `vulcan-cli::mcp` internals and revisit once daemon code needs shared MCP transport support.)
 
 ### 9.29.7 Boundary guardrails, feature checks, and CI-style verification
 
