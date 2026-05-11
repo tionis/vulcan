@@ -516,9 +516,7 @@ fn set_executable_permissions(_path: &Path) -> Result<(), AppError> {
 fn script_is_executable(path: &Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
 
-    fs::metadata(path)
-        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
-        .unwrap_or(false)
+    fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
 }
 
 #[cfg(not(unix))]

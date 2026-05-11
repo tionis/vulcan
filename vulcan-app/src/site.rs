@@ -2460,10 +2460,9 @@ fn build_navigation_tree(deploy_path: &str, notes: &[RenderedNote]) -> Vec<SiteN
                 }
             })
             .collect::<Vec<_>>();
-        nodes.sort_by(|left, right| left.title.to_lowercase().cmp(&right.title.to_lowercase()));
+        nodes.sort_by_key(|node| node.title.to_lowercase());
         let mut note_nodes = builder.notes;
-        note_nodes
-            .sort_by(|left, right| left.title.to_lowercase().cmp(&right.title.to_lowercase()));
+        note_nodes.sort_by_key(|node| node.title.to_lowercase());
         nodes.extend(note_nodes);
         nodes
     }
