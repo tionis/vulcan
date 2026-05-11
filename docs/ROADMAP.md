@@ -4970,7 +4970,7 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 ### 9.29.5 CLI maintainability and command-surface cleanup
 
 - [ ] Keep `vulcan-cli/src/cli.rs` as the canonical `clap` surface, but split it if generated command definitions become too hard to review; any split must preserve help output and parse tests.
-- [~] Reduce `vulcan-cli/src/lib.rs` to top-level run/dispatch, global setup, shared CLI-only rendering helpers, and explicit command delegation. (`open`, `status`, and `cache` dispatch/rendering moved to command modules; export/profile/saved/automation/render clusters remain.)
+- [~] Reduce `vulcan-cli/src/lib.rs` to top-level run/dispatch, global setup, shared CLI-only rendering helpers, and explicit command delegation. (`open`, `status`, `cache`, and `render` dispatch/rendering moved to command modules; export/profile/saved/automation clusters remain.)
 - [ ] Move remaining export/profile/static-site CLI handling out of `lib.rs` into command modules over `vulcan-app` services.
 - [ ] Move saved-report and automation CLI handling out of `lib.rs` into dedicated command modules.
 - [~] Move status/cache/doctor/change rendering helpers into focused renderer modules if they remain large or are reused by multiple commands. (`status` and `cache` moved to focused command modules; doctor/change rendering remains in `lib.rs`.)
