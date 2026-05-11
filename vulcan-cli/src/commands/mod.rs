@@ -18,6 +18,7 @@ pub(crate) mod query;
 pub(crate) mod refactor;
 pub(crate) mod runtime;
 pub(crate) mod skill;
+pub(crate) mod status;
 pub(crate) mod tasks;
 pub(crate) mod template;
 pub(crate) mod tool;
