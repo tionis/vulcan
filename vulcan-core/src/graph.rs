@@ -1367,8 +1367,8 @@ fn build_graph_communities_report(
             .collect::<Vec<_>>();
         top_nodes.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
         let mut boundary_notes = boundary_by_note
-            .into_iter()
-            .filter_map(|(id, _)| path_by_id.get(&id).cloned())
+            .into_keys()
+            .filter_map(|id| path_by_id.get(&id).cloned())
             .collect::<Vec<_>>();
         boundary_notes.sort();
         let mut inter_community_edges = external_counts
