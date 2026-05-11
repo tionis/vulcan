@@ -109,12 +109,7 @@ pub fn dispatch_plugin_event(
     }
 
     if !trust::is_trusted(paths.vault_root()) {
-        if !quiet {
-            eprintln!(
-                "warning: skipping plugin hooks for {} because the vault is not trusted",
-                event.handler_name()
-            );
-        }
+        let _ = quiet;
         return Ok(());
     }
 
@@ -131,14 +126,7 @@ pub fn dispatch_plugin_event(
             result?;
             continue;
         }
-        if let Err(error) = result {
-            eprintln!(
-                "warning: plugin `{}` failed during {}: {}",
-                descriptor.name,
-                event.handler_name(),
-                error
-            );
-        }
+        let _ = result;
     }
 
     Ok(())

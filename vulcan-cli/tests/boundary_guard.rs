@@ -181,6 +181,10 @@ fn app_production_code_avoids_cli_and_terminal_dependencies() {
         ("ratatui::", "TUI rendering belongs in vulcan-cli"),
         ("crossterm::", "terminal control belongs in vulcan-cli"),
         ("anstyle::", "terminal styling belongs in vulcan-cli"),
+        ("println!", "terminal output belongs in vulcan-cli"),
+        ("eprintln!", "terminal output belongs in vulcan-cli"),
+        ("print!", "terminal output belongs in vulcan-cli"),
+        ("eprint!", "terminal output belongs in vulcan-cli"),
     ];
 
     let mut violations = Vec::new();
