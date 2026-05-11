@@ -4960,7 +4960,7 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 
 - [ ] Split `vulcan-app/src/site.rs` into smaller modules such as request/types, route planning, rendering, manifest generation, incremental build state, theme/assets, diagnostics, and tests.
 - [ ] Split `vulcan-app/src/tasks.rs` into task mutation workflows, task query/report workflows, task view workflows, time tracking, pomodoro, reminders, and shared helpers.
-- [ ] Split `vulcan-app/src/export.rs` into profile management, query preparation, content transforms, format writers, packaging helpers, and frontend-bundle export support.
+- [~] Split `vulcan-app/src/export.rs` into profile management, query preparation, content transforms, format writers, packaging helpers, and frontend-bundle export support. (SQLite writer extracted to `vulcan-app/src/export/sqlite.rs`; remaining format/profile splits still open.)
 - [ ] Split `vulcan-app/src/templates.rs` into parsing, native renderer, Templater compatibility, JS-backed execution, file discovery, and workflow services.
 - [ ] Split `vulcan-app/src/tools.rs` into skill command discovery, registry construction, schema validation, runtime execution, compatibility reporting, and authoring/test helpers.
 - [ ] Keep `vulcan-app` free of terminal/UI concepts: no TUI state, no `clap`, no direct stdout/stderr rendering, no editor/browser launching.
