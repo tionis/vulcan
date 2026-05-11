@@ -47,6 +47,7 @@ pub(crate) use commands::note::{
     run_note_patch_command, run_note_set_with_content, NoteAppendOptions, NoteGetOptions,
     NotePatchOptions,
 };
+pub(crate) use commands::status::run_status_command;
 #[cfg(test)]
 pub(crate) use commands::template::TemplateSummary;
 pub(crate) use commands::template::{
@@ -461,9 +462,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
 use vulcan_app::browse::{
-    build_vault_status_report as app_build_vault_status_report,
     DataviewBlockResult as AppDataviewBlockResult, DataviewEvalReport as AppDataviewEvalReport,
-    VaultStatusReport as AppVaultStatusReport,
 };
 use vulcan_app::export::{
     apply_export_profile_create, apply_export_profile_delete, apply_export_profile_rule_add,
@@ -666,11 +665,11 @@ impl AnsiPalette {
         self.wrap("36", text)
     }
 
-    fn green(self, text: &str) -> String {
+    pub(crate) fn green(self, text: &str) -> String {
         self.wrap("32", text)
     }
 
-    fn yellow(self, text: &str) -> String {
+    pub(crate) fn yellow(self, text: &str) -> String {
         self.wrap("33", text)
     }
 
@@ -678,7 +677,7 @@ impl AnsiPalette {
         self.wrap("31", text)
     }
 
-    fn dim(self, text: &str) -> String {
+    pub(crate) fn dim(self, text: &str) -> String {
         self.wrap("2", text)
     }
 
@@ -960,7 +959,6 @@ struct AutomationRunReport {
 
 type DataviewEvalReport = AppDataviewEvalReport;
 type DataviewBlockResult = AppDataviewBlockResult;
-type VaultStatusReport = AppVaultStatusReport;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct RenderReport {
@@ -2509,8 +2507,8 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             commands::skill::handle_skill_command(cli, &paths, command)
         }
         Command::Status => {
-            let report = run_status_command(&paths)?;
-            print_status_report(cli.output, &report, use_stdout_color)
+            let report = commands::status::run_status_command(&paths)?;
+            commands::status::print_status_report(cli.output, &report, use_stdout_color)
         }
         Command::Mcp {
             ref tool_pack,
@@ -8124,61 +8122,6 @@ fn append_change_rows(rows: &mut Vec<Value>, anchor: &str, kind: ChangeKind, ite
             "path": item.path,
             "status": item.status,
         }));
-    }
-}
-
-// ────────────────────────────────────────────────────────────────────────────
-// vulcan status
-// ────────────────────────────────────────────────────────────────────────────
-
-fn run_status_command(paths: &VaultPaths) -> Result<VaultStatusReport, CliError> {
-    app_build_vault_status_report(paths).map_err(CliError::operation)
-}
-
-fn print_status_report(
-    output: OutputFormat,
-    report: &VaultStatusReport,
-    use_color: bool,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Json => print_json(report),
-        OutputFormat::Human | OutputFormat::Markdown => {
-            let palette = AnsiPalette::new(use_color);
-            println!("Vault:      {}", report.vault_root);
-            println!(
-                "Notes:      {}  attachments: {}",
-                report.note_count, report.attachment_count
-            );
-            println!("Cache:      {} bytes", report.cache_bytes);
-            if let Some(last_scan) = &report.last_scan {
-                println!("Last scan:  {last_scan}");
-            } else {
-                println!("Last scan:  {}", palette.dim("never"));
-            }
-            if let Some(confidence) = &report.graph_confidence {
-                println!(
-                    "Confidence: {} EXTRACTED, {} INFERRED, {} AMBIGUOUS",
-                    confidence.extracted, confidence.inferred, confidence.ambiguous
-                );
-            }
-            if let Some(branch) = &report.git_branch {
-                let dirty_flag = if report.git_dirty {
-                    format!(
-                        " {}",
-                        palette.yellow(&format!(
-                            "(dirty: {} staged, {} unstaged, {} untracked)",
-                            report.git_staged, report.git_unstaged, report.git_untracked
-                        ))
-                    )
-                } else {
-                    format!(" {}", palette.green("(clean)"))
-                };
-                println!("Git:        {branch}{dirty_flag}");
-            } else {
-                println!("Git:        {}", palette.dim("not a git repository"));
-            }
-            Ok(())
-        }
     }
 }
 

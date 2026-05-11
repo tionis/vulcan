@@ -1191,6 +1191,13 @@ fn parses_daily_export_ics_command() {
 }
 
 #[test]
+fn parses_status_command() {
+    let cli = Cli::try_parse_from(["vulcan", "status"]).expect("cli should parse");
+
+    assert_eq!(cli.command, Command::Status);
+}
+
+#[test]
 fn parses_git_status_command() {
     let cli = Cli::try_parse_from(["vulcan", "git", "status"]).expect("cli should parse");
 
