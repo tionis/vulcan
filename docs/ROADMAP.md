@@ -4996,7 +4996,7 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 
 ### 9.29.7 Boundary guardrails, feature checks, and CI-style verification
 
-- [ ] Add or extend boundary tests that enforce:
+- [~] Add or extend boundary tests that enforce:
   - no raw SQL in production CLI code
   - no direct HTTP clients in production CLI code
   - no `tokio`/`axum` in `vulcan-core`
