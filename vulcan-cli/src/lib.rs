@@ -509,27 +509,26 @@ use vulcan_core::config::{
 };
 use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{
-    bulk_replace, cache_vacuum, create_checkpoint, default_assistant_tool_reserved_names,
-    delete_saved_report, doctor_fix, doctor_vault, evaluate_base_file, evaluate_dql_with_filter,
-    export_static_search_index, inspect_cache, link_mentions, list_checkpoints, list_saved_reports,
+    bulk_replace, create_checkpoint, default_assistant_tool_reserved_names, delete_saved_report,
+    doctor_fix, doctor_vault, evaluate_base_file, evaluate_dql_with_filter,
+    export_static_search_index, link_mentions, list_checkpoints, list_saved_reports,
     load_saved_report, load_vault_config, merge_tags, move_note, plan_base_note_create,
     query_change_report, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
     rename_heading, rename_property, render_note_html, render_vault_html, repair_fts,
     resolve_note_reference, resolve_permission_profile, save_saved_report,
     scan_vault_with_progress, search_vault, verify_cache, watch_vault, AutoScanMode,
     BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport, BulkMutationReport,
-    CacheDatabase, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyReport,
-    ChangeAnchor, ChangeItem, ChangeKind, ChangeReport, CheckpointRecord, DataviewJsOutput,
-    DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport, DoctorLinkIssue, DoctorReport,
-    DqlQueryResult, DuplicateSuggestionsReport, GraphConfidenceBreakdown, HtmlRenderOptions,
-    LinkSuggestion, LinkSuggestionsReport, MentionSuggestion, MentionSuggestionsReport,
-    MergeCandidate, MoveSummary, NoteQuery, NoteRecord, NotesReport, OutgoingLinkRecord,
-    OutgoingLinksReport, PermissionFilter, PermissionGuard, PluginEvent, ProfilePermissionGuard,
-    QueryReport, RebuildQuery, RebuildReport, RefactorChange, RefactorReport, RepairFtsQuery,
-    RepairFtsReport, ResolvedPermissionProfile, SavedExport, SavedExportFormat,
-    SavedReportDefinition, SavedReportKind, SavedReportQuery, SavedReportSummary, ScanMode,
-    ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery, SearchReport, SearchSort,
-    VaultPaths, WatchOptions, WatchReport,
+    CacheDatabase, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
+    CheckpointRecord, DataviewJsOutput, DataviewJsResult, DoctorDiagnosticIssue, DoctorFixReport,
+    DoctorLinkIssue, DoctorReport, DqlQueryResult, DuplicateSuggestionsReport,
+    GraphConfidenceBreakdown, HtmlRenderOptions, LinkSuggestion, LinkSuggestionsReport,
+    MentionSuggestion, MentionSuggestionsReport, MergeCandidate, MoveSummary, NoteQuery,
+    NoteRecord, NotesReport, OutgoingLinkRecord, OutgoingLinksReport, PermissionFilter,
+    PermissionGuard, PluginEvent, ProfilePermissionGuard, QueryReport, RebuildQuery, RebuildReport,
+    RefactorChange, RefactorReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile,
+    SavedExport, SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
+    SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
+    SearchReport, SearchSort, VaultPaths, WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -2919,26 +2918,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             print_refactor_report(cli.output, &report)?;
             Ok(())
         }
-        Command::Cache { ref command } => match command {
-            CacheCommand::Inspect => {
-                let report = inspect_cache(&paths).map_err(CliError::operation)?;
-                print_cache_inspect_report(cli.output, &report)
-            }
-            CacheCommand::Verify { fail_on_errors } => {
-                let report = verify_cache(&paths).map_err(CliError::operation)?;
-                print_cache_verify_report(cli.output, &report)?;
-                if *fail_on_errors && !report.healthy {
-                    Err(CliError::issues("cache verification failed"))
-                } else {
-                    Ok(())
-                }
-            }
-            CacheCommand::Vacuum { dry_run } => {
-                let report = cache_vacuum(&paths, &CacheVacuumQuery { dry_run: *dry_run })
-                    .map_err(CliError::operation)?;
-                print_cache_vacuum_report(cli.output, &report)
-            }
-        },
+        Command::Cache { ref command } => {
+            commands::cache::handle_cache_command(&paths, cli.output, command)
+        }
         Command::Repair { ref command } => match command {
             RepairCommand::Fts { dry_run } => {
                 selected_permission_guard(cli, &paths)?
@@ -7398,72 +7380,6 @@ fn print_automation_run_report(
                 println!("Issues detected.");
             } else {
                 println!("No issues detected.");
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_cache_inspect_report(
-    output: OutputFormat,
-    report: &CacheInspectReport,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            println!("Cache: {}", report.cache_path);
-            println!("Bytes: {}", report.database_bytes);
-            println!("Documents: {}", report.documents);
-            println!("Notes: {}", report.notes);
-            println!("Attachments: {}", report.attachments);
-            println!("Bases: {}", report.bases);
-            println!("Links: {}", report.links);
-            println!("Chunks: {}", report.chunks);
-            println!("Diagnostics: {}", report.diagnostics);
-            println!("Search rows: {}", report.search_rows);
-            println!("Vector rows: {}", report.vector_rows);
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_cache_verify_report(
-    output: OutputFormat,
-    report: &CacheVerifyReport,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            println!("Cache healthy: {}", report.healthy);
-            for check in &report.checks {
-                println!(
-                    "- {} [{}] {}",
-                    check.name,
-                    if check.ok { "ok" } else { "fail" },
-                    check.detail
-                );
-            }
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
-}
-
-fn print_cache_vacuum_report(
-    output: OutputFormat,
-    report: &CacheVacuumReport,
-) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            if report.dry_run {
-                println!("Dry run: cache is {} bytes", report.before_bytes);
-            } else {
-                println!(
-                    "Vacuumed cache: {} -> {} bytes (reclaimed {})",
-                    report.before_bytes,
-                    report.after_bytes.unwrap_or(report.before_bytes),
-                    report.reclaimed_bytes.unwrap_or(0)
-                );
             }
             Ok(())
         }
