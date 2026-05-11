@@ -5002,7 +5002,7 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
   - no `tokio`/`axum` in `vulcan-core`
   - no vector/embedding dependency usage outside vector-gated modules
   - no JS runtime usage outside `js_runtime`-gated modules
-  - no MCP transport code depending on CLI rendering or terminal state
+  - no MCP transport code depending on CLI rendering or terminal state (guarded by `mcp_transport_code_avoids_terminal_rendering_dependencies`)
 - [~] Add a documented local verification matrix:
   - `cargo fmt --all`
   - `cargo clippy --workspace --all-targets -- -D warnings`

@@ -320,3 +320,104 @@ fn vector_dependency_usage_stays_in_vector_gated_modules() {
         violations.join("\n")
     );
 }
+
+#[test]
+fn mcp_transport_code_avoids_terminal_rendering_dependencies() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("cli crate should have workspace parent");
+    let mcp_roots = [
+        workspace_root.join("vulcan-cli/src/mcp.rs"),
+        workspace_root.join("vulcan-cli/src/mcp"),
+    ];
+    let banned_patterns = [
+        (
+            "crate::output",
+            "presentation formatting belongs outside MCP transport",
+        ),
+        (
+            "crate::terminal_markdown",
+            "terminal rendering belongs outside MCP transport",
+        ),
+        (
+            "crate::browse_tui",
+            "interactive TUI state belongs outside MCP transport",
+        ),
+        (
+            "crate::bases_tui",
+            "interactive TUI state belongs outside MCP transport",
+        ),
+        (
+            "crate::config_tui",
+            "interactive TUI state belongs outside MCP transport",
+        ),
+        (
+            "crate::editor",
+            "editor launching belongs outside MCP transport",
+        ),
+        (
+            "ratatui::",
+            "terminal UI dependencies belong outside MCP transport",
+        ),
+        (
+            "crossterm::",
+            "terminal UI dependencies belong outside MCP transport",
+        ),
+        (
+            "anstyle::",
+            "terminal styling belongs outside MCP transport",
+        ),
+    ];
+
+    let mut violations = Vec::new();
+    for root in mcp_roots {
+        if root.is_dir() {
+            visit_rs_files(&root, &mut |path| {
+                collect_mcp_terminal_dependency_violations(
+                    workspace_root,
+                    path,
+                    &banned_patterns,
+                    &mut violations,
+                );
+            });
+        } else {
+            collect_mcp_terminal_dependency_violations(
+                workspace_root,
+                &root,
+                &banned_patterns,
+                &mut violations,
+            );
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "MCP terminal/rendering boundary violations found:\n{}",
+        violations.join("\n")
+    );
+}
+
+fn collect_mcp_terminal_dependency_violations(
+    workspace_root: &Path,
+    path: &Path,
+    banned_patterns: &[(&str, &str)],
+    violations: &mut Vec<String>,
+) {
+    if is_test_module(path) {
+        return;
+    }
+    let source = fs::read_to_string(path).expect("source file should read");
+    let production = production_source(&source);
+    for (pattern, reason) in banned_patterns {
+        if production.contains(pattern) {
+            violations.push(format!(
+                "{} contains `{}` ({})",
+                path.strip_prefix(workspace_root)
+                    .expect("path should be inside workspace")
+                    .display(),
+                pattern,
+                reason
+            ));
+        }
+    }
+}
