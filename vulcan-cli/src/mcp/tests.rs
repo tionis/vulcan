@@ -1,5 +1,6 @@
 use super::*;
 use crate::McpToolPackModeArg;
+use vulcan_core::PermissionProfile;
 
 fn oauth_options() -> McpHttpOptions {
     McpHttpOptions {
@@ -206,6 +207,23 @@ fn mcp_tool_calls_return_structured_timeout_errors() {
         Some(true)
     );
     assert_eq!(messages[0]["result"]["isError"].as_bool(), Some(true));
+}
+
+#[test]
+fn catalog_pack_selection_and_permissions_filter_builtin_tools() {
+    let selected =
+        resolve_selected_tool_packs(&[McpToolPackArg::NotesRead], McpToolPackMode::Adaptive);
+    assert!(selected.contains(&McpToolPack::NotesRead));
+    assert!(selected.contains(&McpToolPack::ToolPacks));
+
+    let readonly = PermissionProfile::readonly();
+    let visible = visible_tool_catalog(&selected, &readonly)
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+    assert!(visible.contains(&"note_get"));
+    assert!(visible.contains(&"tool_pack_list"));
+    assert!(!visible.contains(&"note_set"));
 }
 
 #[test]
