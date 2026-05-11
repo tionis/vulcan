@@ -33,6 +33,25 @@ cargo test -p vulcan-cli serve::tests::serve_applies_permission_filters_and_deni
 cargo test -p vulcan-core vector_duplicates_benchmark_large_synthetic_scan -- --ignored --nocapture
 ```
 
+## Feature Boundary Matrix
+
+Run this matrix when changing feature flags, optional dependencies, MCP/server
+boundaries, or app/core crate ownership:
+
+```bash
+cargo check --workspace --no-default-features
+cargo test -p vulcan-core --no-default-features --test minimal_non_ai
+cargo check -p vulcan-core --no-default-features --features oauth,vectors,web
+cargo check -p vulcan-app --no-default-features --features oauth,vectors,web
+cargo check -p vulcan-cli --no-default-features --features oauth,vectors,web
+scripts/compare_feature_matrix.sh
+```
+
+The `oauth,vectors,web` checks intentionally omit `js_runtime`; they verify the
+full non-JS backend combination still compiles. `scripts/compare_feature_matrix.sh`
+writes comparable `cargo tree` outputs and a short optional-dependency summary
+under `target/feature-matrix/`.
+
 The rest of the hardening coverage already lives in the normal test suite:
 
 - uninitialized and partially initialized vault repair coverage
