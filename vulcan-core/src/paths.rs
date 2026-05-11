@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -7,6 +8,7 @@ pub const CONFIG_FILE_NAME: &str = "config.toml";
 pub const LOCAL_CONFIG_FILE_NAME: &str = "config.local.toml";
 pub const GITIGNORE_FILE_NAME: &str = ".gitignore";
 pub const REPORTS_DIR_NAME: &str = "reports";
+pub const TRUSTED_VAULTS_FILE_NAME: &str = "trusted_vaults.json";
 pub const DEFAULT_ATTACHMENT_FOLDER: &str = ".";
 const DEFAULT_VULCAN_GITIGNORE: &str =
     "*\n!.gitignore\n!config.toml\nconfig.local.toml\n!reports/\nreports/*\n!reports/*.toml\n";
@@ -129,6 +131,64 @@ impl VaultPaths {
     }
 }
 
+#[must_use]
+pub fn user_config_dir() -> Option<PathBuf> {
+    user_config_dir_from_env(|name| std::env::var_os(name))
+}
+
+#[must_use]
+pub fn vulcan_user_config_dir() -> Option<PathBuf> {
+    user_config_dir().map(|path| path.join("vulcan"))
+}
+
+#[must_use]
+pub fn trusted_vaults_file() -> Option<PathBuf> {
+    vulcan_user_config_dir().map(|path| path.join(TRUSTED_VAULTS_FILE_NAME))
+}
+
+fn user_config_dir_from_env(mut env: impl FnMut(&str) -> Option<OsString>) -> Option<PathBuf> {
+    if let Some(path) = env_path(&mut env, "XDG_CONFIG_HOME") {
+        return Some(path);
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(path) = env_path(&mut env, "APPDATA") {
+            return Some(path);
+        }
+        if let Some(path) = env_path(&mut env, "LOCALAPPDATA") {
+            return Some(path);
+        }
+    }
+
+    if let Some(home) = env_path(&mut env, "HOME") {
+        return Some(home.join(".config"));
+    }
+
+    #[cfg(windows)]
+    {
+        if let Some(home) = env_path(&mut env, "USERPROFILE") {
+            return Some(home.join(".config"));
+        }
+        let drive = non_empty_os(env("HOMEDRIVE"));
+        let path = non_empty_os(env("HOMEPATH"));
+        if let (Some(mut drive), Some(path)) = (drive, path) {
+            drive.push(path);
+            return Some(PathBuf::from(drive).join(".config"));
+        }
+    }
+
+    None
+}
+
+fn env_path(env: &mut impl FnMut(&str) -> Option<OsString>, name: &str) -> Option<PathBuf> {
+    non_empty_os(env(name)).map(PathBuf::from)
+}
+
+fn non_empty_os(value: Option<OsString>) -> Option<OsString> {
+    value.filter(|value| !value.is_empty())
+}
+
 pub fn initialize_vulcan_dir(paths: &VaultPaths) -> Result<(), std::io::Error> {
     fs::create_dir_all(paths.vulcan_dir())?;
     ensure_vulcan_dir(paths)
@@ -220,6 +280,7 @@ pub fn normalize_relative_input_path(
 mod tests {
     use super::*;
     use proptest::prelude::*;
+    use std::collections::BTreeMap;
     use tempfile::TempDir;
 
     fn path_segment_strategy() -> impl Strategy<Value = String> {
@@ -252,6 +313,47 @@ mod tests {
         assert_eq!(
             paths.gitignore_file(),
             PathBuf::from("/tmp/example-vault/.vulcan/.gitignore")
+        );
+    }
+
+    #[test]
+    fn user_config_dir_prefers_xdg_config_home() {
+        let mut env = BTreeMap::new();
+        env.insert("XDG_CONFIG_HOME", OsString::from("/tmp/xdg"));
+        env.insert("HOME", OsString::from("/tmp/home"));
+
+        let config_dir = user_config_dir_from_env(|name| env.get(name).cloned());
+
+        assert_eq!(config_dir, Some(PathBuf::from("/tmp/xdg")));
+    }
+
+    #[test]
+    fn trusted_vaults_file_uses_vulcan_user_config_dir() {
+        let file = trusted_vaults_file();
+        let file_name = file
+            .as_ref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str());
+
+        if let Some(name) = file_name {
+            assert_eq!(name, TRUSTED_VAULTS_FILE_NAME);
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn user_config_dir_uses_windows_appdata_without_home() {
+        let mut env = BTreeMap::new();
+        env.insert(
+            "APPDATA",
+            OsString::from(r"C:\Users\runner\AppData\Roaming"),
+        );
+
+        let config_dir = user_config_dir_from_env(|name| env.get(name).cloned());
+
+        assert_eq!(
+            config_dir,
+            Some(PathBuf::from(r"C:\Users\runner\AppData\Roaming"))
         );
     }
 

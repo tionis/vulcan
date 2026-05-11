@@ -1010,15 +1010,8 @@ fn interpret_policy_hook_result(
     }
 }
 
-fn trusted_vaults_file() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
-        .map(|path| path.join("vulcan").join("trusted_vaults.json"))
-}
-
 fn is_trusted_vault(vault_root: &Path) -> bool {
-    let Some(path) = trusted_vaults_file() else {
+    let Some(path) = crate::paths::trusted_vaults_file() else {
         return false;
     };
     let Ok(canonical_root) = vault_root.canonicalize() else {

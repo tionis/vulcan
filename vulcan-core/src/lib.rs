@@ -218,8 +218,9 @@ pub use parser::{
     RawLink, RawListItem, RawTag, RawTask, RawTaskField, RawTasksBlock,
 };
 pub use paths::{
-    ensure_vulcan_dir, initialize_vulcan_dir, VaultPaths, CACHE_DB_NAME, CONFIG_FILE_NAME,
-    DEFAULT_ATTACHMENT_FOLDER, LOCAL_CONFIG_FILE_NAME, REPORTS_DIR_NAME, VULCAN_DIR_NAME,
+    ensure_vulcan_dir, initialize_vulcan_dir, trusted_vaults_file, user_config_dir,
+    vulcan_user_config_dir, VaultPaths, CACHE_DB_NAME, CONFIG_FILE_NAME, DEFAULT_ATTACHMENT_FOLDER,
+    LOCAL_CONFIG_FILE_NAME, REPORTS_DIR_NAME, TRUSTED_VAULTS_FILE_NAME, VULCAN_DIR_NAME,
 };
 pub use periodic::{
     expected_periodic_note_path, export_daily_events_to_ics, list_daily_note_events,

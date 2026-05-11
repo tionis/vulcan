@@ -1,5 +1,5 @@
 //! Vault trust management — persists the set of trusted vault paths in
-//! `~/.config/vulcan/trusted_vaults.json`.
+//! the per-user Vulcan config directory.
 //!
 //! Only trusted vaults may run startup scripts (`.vulcan/scripts/startup.js`)
 //! and plugins. This prevents arbitrary code execution when opening an
@@ -14,12 +14,8 @@ use std::sync::{Mutex, OnceLock};
 
 /// The file where trusted vault paths are stored.
 fn trusted_vaults_file() -> Result<PathBuf, AppError> {
-    // Prefer $XDG_CONFIG_HOME, fall back to $HOME/.config (Linux/macOS convention).
-    let config_dir = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .ok_or_else(|| AppError::operation("could not determine user config directory"))?;
-    Ok(config_dir.join("vulcan").join("trusted_vaults.json"))
+    vulcan_core::trusted_vaults_file()
+        .ok_or_else(|| AppError::operation("could not determine user config directory"))
 }
 
 #[cfg(test)]

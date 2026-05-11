@@ -112,9 +112,14 @@ __vulcan_is_tool_name_context() {
 }
 
 __vulcan_append_completion_candidate() {
-    local candidate existing
+    local candidate existing index existing_count
     candidate="$1"
-    for existing in "${COMPREPLY[@]}"; do
+    if ! declare -p COMPREPLY >/dev/null 2>&1; then
+        COMPREPLY=()
+    fi
+    existing_count=${#COMPREPLY[@]}
+    for (( index = 0; index < existing_count; index++ )); do
+        existing="${COMPREPLY[index]}"
         if [[ "$existing" == "$candidate" ]]; then
             return
         fi
