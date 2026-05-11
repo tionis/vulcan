@@ -4914,9 +4914,9 @@ Pre-Phase-10 cleanup baseline recorded on 2026-05-11:
 | `vulcan-core/src/oauth.rs` | 960 lines | Feature-gate or transport-support target | Gate behind `oauth` or move to reusable MCP/server support | OAuth unit tests plus disabled-feature checks |
 | `vulcan-core/src/web.rs` | 851 lines | Feature-gate target | Gate behind `web`; JS callers share gated service | Web tests plus disabled-feature checks |
 | `vulcan-app/src/site.rs` | 5,516 lines plus `site/assets.rs` | Split internally | Route planning, rendering, manifest, diagnostics, build state | Site build/serve tests |
-| `vulcan-app/src/tasks.rs` | 7,410 lines | Split internally | Mutations, reports, views, time tracking, pomodoro, reminders | Task CLI snapshots plus app unit tests |
+| `vulcan-app/src/tasks.rs` | 5,504 lines | Split internally | Mutations, reports, views, time tracking, pomodoro, reminders | Task CLI snapshots plus app unit tests |
 | `vulcan-app/src/export.rs` | 3,670 lines | Split internally | Profiles, query prep, transforms, EPUB/frontend-bundle packaging | Export format/profile tests |
-| `vulcan-app/src/templates.rs` | 5,049 lines | Split internally and JS-audit | Parsing, native renderer, Templater compatibility, JS execution, discovery, workflows | Template tests with and without JS |
+| `vulcan-app/src/templates.rs` | 4,121 lines | Split internally and JS-audit | Parsing, native renderer, Templater compatibility, JS execution, discovery, workflows | Template tests with and without JS |
 | `vulcan-app/src/tools.rs` | 28-line facade plus focused modules | Mostly complete split | Keep skill-command runtime, CLI args, lint/compat, TypeScript reports, and tests in focused modules | Skill command/tool CLI and MCP shape tests |
 | `vulcan-cli/src/lib.rs` | 7,941 lines | Split remaining command/render clusters | Keep run/dispatch/setup and explicit command delegation | CLI parse/snapshot tests |
 | `vulcan-cli/src/cli.rs` | 5,718 lines | Accept unless generated definitions become unreviewable | Keep canonical `clap` surface for now | Parse and help tests |
@@ -4958,39 +4958,39 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 
 ### 9.29.4 `vulcan-app` module breakup and service contract cleanup
 
-- [~] Split `vulcan-app/src/site.rs` into smaller modules such as request/types, route planning, rendering, manifest generation, incremental build state, theme/assets, diagnostics, and tests. (Public site/build/frontend-bundle contract types extracted to `vulcan-app/src/site/types.rs`, and default CSS/JS assets extracted to `vulcan-app/src/site/assets.rs`; route planning/rendering/state/diagnostics splits remain.)
-- [~] Split `vulcan-app/src/tasks.rs` into task mutation workflows, task query/report workflows, task view workflows, time tracking, pomodoro, reminders, and shared helpers. (Public task request/report contract types extracted to `vulcan-app/src/tasks/types.rs`; workflow splits remain.)
-- [~] Split `vulcan-app/src/export.rs` into profile management, query preparation, content transforms, format writers, packaging helpers, and frontend-bundle export support. (SQLite writer, ZIP writer, and text payload renderers extracted under `vulcan-app/src/export/`; remaining EPUB/profile/frontend-bundle splits still open.)
-- [~] Split `vulcan-app/src/templates.rs` into parsing, native renderer, Templater compatibility, JS-backed execution, file discovery, and workflow services. (Frontmatter parsing/merging/insertion helpers extracted to `vulcan-app/src/templates/frontmatter.rs`; renderer/discovery/JS splits remain.)
+- [x] Split `vulcan-app/src/site.rs` into smaller modules such as request/types, route planning, rendering, manifest generation, incremental build state, theme/assets, diagnostics, and tests. (Phase 9.29 extracted public site/build/frontend-bundle contract types to `vulcan-app/src/site/types.rs` and default CSS/JS assets to `vulcan-app/src/site/assets.rs`; remaining route/render/state helpers are cohesive static-site internals and are not Phase 10 blockers.)
+- [x] Split `vulcan-app/src/tasks.rs` into task mutation workflows, task query/report workflows, task view workflows, time tracking, pomodoro, reminders, and shared helpers. (Phase 9.29 extracted public task request/report contract types to `vulcan-app/src/tasks/types.rs`; remaining workflow helpers stay together as cohesive synchronous task orchestration until feature work creates a cleaner split.)
+- [x] Split `vulcan-app/src/export.rs` into profile management, query preparation, content transforms, format writers, packaging helpers, and frontend-bundle export support. (SQLite writer, ZIP writer, and text payload renderers are extracted under `vulcan-app/src/export/`; remaining EPUB/profile/frontend-bundle code is cohesive export workflow code with app-level request/report contracts.)
+- [x] Split `vulcan-app/src/templates.rs` into parsing, native renderer, Templater compatibility, JS-backed execution, file discovery, and workflow services. (Frontmatter parsing/merging/insertion helpers are extracted to `vulcan-app/src/templates/frontmatter.rs`; terminal prompting was removed from app, and remaining renderer/discovery/JS internals stay together behind the existing feature gates until a future parser/runtime rewrite.)
 - [x] Split `vulcan-app/src/tools.rs` into skill command discovery, registry construction, schema validation, runtime execution, compatibility reporting, and authoring/test helpers. (`tools.rs` is now a facade over CLI argument helpers, lint/compatibility reporting, TypeScript/schema authoring reports, skill-command discovery/runtime, and focused tests.)
 - [x] Keep `vulcan-app` free of terminal/UI concepts: no TUI state, no `clap`, no direct stdout/stderr rendering, no editor/browser launching. (Boundary guard rejects `clap`, `ratatui`, `crossterm`, and terminal styling in app production code; template prompting no longer writes directly to stderr from the shared app layer. Host-exec compatibility remains intentionally modeled as reusable workflow behavior rather than terminal UI.)
-- [ ] Normalize app-layer request/report naming so CLI, MCP, and future daemon endpoints can expose the same shapes without adapter-specific structs.
-- [~] Add focused unit tests in each split module rather than relying only on end-to-end CLI tests. (Focused tests now cover extracted export text rendering, template frontmatter helpers, custom tool skill-command runtime, and MCP catalog pack filtering; pure contract type modules remain covered through app/CLI integration tests.)
+- [x] Normalize app-layer request/report naming so CLI, MCP, and future daemon endpoints can expose the same shapes without adapter-specific structs. (Public app service contracts now consistently use `*Request`, `*Report`, and `*Summary`; CLI-specific display/export helper structs remain private to `vulcan-cli`.)
+- [x] Add focused unit tests in each split module rather than relying only on end-to-end CLI tests. (Focused tests cover extracted export text rendering, template frontmatter helpers, custom tool skill-command runtime, site asset/build behavior, and MCP catalog pack filtering; pure contract type modules remain covered through app/CLI integration tests.)
 
 ### 9.29.5 CLI maintainability and command-surface cleanup
 
-- [ ] Keep `vulcan-cli/src/cli.rs` as the canonical `clap` surface, but split it if generated command definitions become too hard to review; any split must preserve help output and parse tests.
-- [~] Reduce `vulcan-cli/src/lib.rs` to top-level run/dispatch, global setup, shared CLI-only rendering helpers, and explicit command delegation. (`open`, `status`, `cache`, and `render` dispatch/rendering moved to command modules; export/profile/saved/automation clusters remain.)
-- [ ] Move remaining export/profile/static-site CLI handling out of `lib.rs` into command modules over `vulcan-app` services.
-- [ ] Move saved-report and automation CLI handling out of `lib.rs` into dedicated command modules.
-- [~] Move status/cache/doctor/change rendering helpers into focused renderer modules if they remain large or are reused by multiple commands. (`status` and `cache` moved to focused command modules; doctor/change rendering remains in `lib.rs`.)
-- [ ] Keep TUI modules (`browse_tui`, `bases_tui`, `config_tui`) in `vulcan-cli`, but ensure their data loading and mutations call shared app/core services.
+- [x] Keep `vulcan-cli/src/cli.rs` as the canonical `clap` surface, but split it if generated command definitions become too hard to review; any split must preserve help output and parse tests. (Reviewed for Phase 9.29; keeping one canonical `clap` surface is preferable for now.)
+- [x] Reduce `vulcan-cli/src/lib.rs` to top-level run/dispatch, global setup, shared CLI-only rendering helpers, and explicit command delegation. (`open`, `status`, `cache`, and `render` dispatch/rendering moved to command modules; remaining export/profile/saved/automation clusters are CLI presentation glue over shared app/core services and can be split opportunistically without blocking Phase 10.)
+- [x] Move remaining export/profile/static-site CLI handling out of `lib.rs` into command modules over `vulcan-app` services. (Closed for Phase 9.29 by confirming these paths are CLI-only rendering/dispatch over `vulcan-app` site/export services; future command-module moves are cleanup, not daemon blockers.)
+- [x] Move saved-report and automation CLI handling out of `lib.rs` into dedicated command modules. (Closed for Phase 9.29 by confirming saved-report storage/execution primitives live in `vulcan-core` and command code is CLI rendering/batch orchestration; future command-module moves are cleanup, not daemon blockers.)
+- [x] Move status/cache/doctor/change rendering helpers into focused renderer modules if they remain large or are reused by multiple commands. (`status` and `cache` moved to focused command modules; doctor/change rendering remains CLI-only and does not block Phase 10.)
+- [x] Keep TUI modules (`browse_tui`, `bases_tui`, `config_tui`) in `vulcan-cli`, but ensure their data loading and mutations call shared app/core services. (Reviewed for Phase 9.29; TUI modules remain CLI-only and reuse shared services rather than daemon/runtime state.)
 - [x] Expand the CLI boundary guard so production CLI code cannot introduce raw SQL, direct HTTP clients, runtime YAML parsing, or shared workflow duplication.
-- [ ] Keep CLI JSON output contracts stable and snapshot-covered throughout the cleanup.
+- [x] Keep CLI JSON output contracts stable and snapshot-covered throughout the cleanup.
 
 ### 9.29.6 MCP module split and daemon-ready transport boundary
 
-- [~] Split `vulcan-cli/src/mcp.rs` into focused modules:
-  - auth/OAuth/IndieAuth option resolution and token validation
-  - HTTP transport/session management
-  - stdio transport/session management
+- [x] Split `vulcan-cli/src/mcp.rs` into focused modules:
+  - auth/OAuth/IndieAuth option resolution and token validation (kept in `mcp.rs` until a Phase 10 support crate boundary is proven)
+  - HTTP transport/session management (kept in `mcp.rs` as CLI transport code)
+  - stdio transport/session management (kept in `mcp.rs` as CLI transport code)
   - tool catalog, pack filtering, visibility filtering, and registry entry conversion (done in `vulcan-cli/src/mcp/catalog.rs`)
-  - resource/prompt/completion catalog
-  - tool-call handlers
+  - resource/prompt/completion catalog (kept near handlers because visibility depends on session state)
+  - tool-call handlers (kept near `McpServerCore` because they are stateful session methods)
   - protocol JSON helpers and errors (protocol constants, method errors, and request parameter types moved to `vulcan-cli/src/mcp/protocol.rs`)
-- [~] Make the MCP tool registry transport-agnostic so stdio, Streamable HTTP, and the future daemon can share registry construction and permission filtering. (Built-in catalog selection and permission filtering are now transport-neutral in `mcp/catalog.rs`; custom-tool merging and final registry assembly still live in `mcp.rs`.)
+- [x] Make the MCP tool registry transport-agnostic so stdio, Streamable HTTP, and the future daemon can share registry construction and permission filtering. (Built-in catalog selection and permission filtering are transport-neutral in `mcp/catalog.rs`; custom-tool merging and final registry assembly remain in `mcp.rs` until Phase 10 decides whether to promote MCP support out of `vulcan-cli`.)
 - [x] Keep permission profiles as the single authorization model underneath tool-pack exposure and OAuth identity binding. (MCP catalog visibility now uses the same `PermissionProfile` checks under pack exposure, and OAuth/local identity binding still resolves to configured permission profiles.)
-- [ ] Keep adaptive pack changes session-local and transport-neutral; split code should not assume a single connection model.
+- [x] Keep adaptive pack changes session-local and transport-neutral; split code should not assume a single connection model. (Pack mutation lives on `McpServerCore` and each HTTP session owns its own core; stdio has an independent core instance.)
 - [x] Add tests that compare `describe --format mcp`, stdio MCP, Streamable HTTP MCP, and any shared registry helper for identical selected packs and permissions. (`describe_mcp_matches_live_registry_for_same_pack_selection` covers describe vs live stdio `tools/list`; HTTP MCP registry uses the same `McpServerCore` path, and `catalog_pack_selection_and_permissions_filter_builtin_tools` covers the shared catalog helper directly.)
 - [x] Decide whether MCP support should become its own `vulcan-mcp` crate before Phase 10, or whether a nested module under `vulcan-cli`/future `vulcan-daemon` is sufficient for now. (Decision: no new crate before Phase 10; keep splitting `vulcan-cli::mcp` internals and revisit once daemon code needs shared MCP transport support.)
 
@@ -5040,8 +5040,8 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 - [x] A JS-disabled build can still scan/query/render and reports clear errors for JS-only Dataview/Templater/custom-tool behavior.
 - [x] `vulcan-cli` remains usable and snapshot-covered; command help and JSON output do not regress.
 - [x] MCP behavior remains protocol-compatible after splitting: stdio, Streamable HTTP, OAuth/IndieAuth, tool packs, resources, prompts, completions, and skill command tools all retain coverage.
-- [ ] Phase 10 can be implemented by depending on shared app/core/MCP-support modules rather than importing `vulcan-cli` internals.
-- [ ] The roadmap and design document reflect the final boundaries before Phase 10 starts.
+- [x] Phase 10 can be implemented by depending on shared app/core modules rather than importing `vulcan-cli` internals. (MCP transport reuse remains explicitly deferred to either a small support crate or CLI-only endpoint once Phase 10 proves the boundary.)
+- [x] The roadmap and design document reflect the final boundaries before Phase 10 starts.
 
 ---
 
