@@ -4963,7 +4963,7 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 - [~] Split `vulcan-app/src/export.rs` into profile management, query preparation, content transforms, format writers, packaging helpers, and frontend-bundle export support. (SQLite writer extracted to `vulcan-app/src/export/sqlite.rs`; remaining format/profile splits still open.)
 - [ ] Split `vulcan-app/src/templates.rs` into parsing, native renderer, Templater compatibility, JS-backed execution, file discovery, and workflow services.
 - [ ] Split `vulcan-app/src/tools.rs` into skill command discovery, registry construction, schema validation, runtime execution, compatibility reporting, and authoring/test helpers.
-- [ ] Keep `vulcan-app` free of terminal/UI concepts: no TUI state, no `clap`, no direct stdout/stderr rendering, no editor/browser launching.
+- [~] Keep `vulcan-app` free of terminal/UI concepts: no TUI state, no `clap`, no direct stdout/stderr rendering, no editor/browser launching. (Boundary guard now rejects `clap`, `ratatui`, `crossterm`, and terminal styling in app production code; existing host-exec and stderr compatibility paths still need a follow-up cleanup.)
 - [ ] Normalize app-layer request/report naming so CLI, MCP, and future daemon endpoints can expose the same shapes without adapter-specific structs.
 - [ ] Add focused unit tests in each split module rather than relying only on end-to-end CLI tests.
 
@@ -4975,7 +4975,7 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 - [ ] Move saved-report and automation CLI handling out of `lib.rs` into dedicated command modules.
 - [ ] Move status/cache/doctor/change rendering helpers into focused renderer modules if they remain large or are reused by multiple commands.
 - [ ] Keep TUI modules (`browse_tui`, `bases_tui`, `config_tui`) in `vulcan-cli`, but ensure their data loading and mutations call shared app/core services.
-- [ ] Expand the CLI boundary guard so production CLI code cannot introduce raw SQL, direct HTTP clients, runtime YAML parsing, or shared workflow duplication.
+- [x] Expand the CLI boundary guard so production CLI code cannot introduce raw SQL, direct HTTP clients, runtime YAML parsing, or shared workflow duplication.
 - [ ] Keep CLI JSON output contracts stable and snapshot-covered throughout the cleanup.
 
 ### 9.29.6 MCP module split and daemon-ready transport boundary

@@ -171,6 +171,48 @@ fn cli_dependencies_do_not_force_optional_backend_features() {
 }
 
 #[test]
+fn app_production_code_avoids_cli_and_terminal_dependencies() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("cli crate should have workspace parent");
+    let app_src_root = workspace_root.join("vulcan-app/src");
+    let banned_patterns = [
+        ("clap::", "argument parsing belongs in vulcan-cli"),
+        ("ratatui::", "TUI rendering belongs in vulcan-cli"),
+        ("crossterm::", "terminal control belongs in vulcan-cli"),
+        ("anstyle::", "terminal styling belongs in vulcan-cli"),
+    ];
+
+    let mut violations = Vec::new();
+    visit_rs_files(&app_src_root, &mut |path| {
+        if is_test_module(path) {
+            return;
+        }
+
+        let source = fs::read_to_string(path).expect("source file should read");
+        let production = production_source(&source);
+        for (pattern, reason) in banned_patterns {
+            if production.contains(pattern) {
+                violations.push(format!(
+                    "{} contains `{}` ({})",
+                    path.strip_prefix(workspace_root)
+                        .expect("path should be inside workspace")
+                        .display(),
+                    pattern,
+                    reason
+                ));
+            }
+        }
+    });
+
+    assert!(
+        violations.is_empty(),
+        "app boundary violations found:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
 fn core_production_code_avoids_daemon_runtime_crates() {
     let core_src_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
