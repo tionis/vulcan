@@ -458,7 +458,6 @@ use std::fs;
 use std::io;
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
 use std::time::{Duration, Instant};
 use toml::Value as TomlValue;
 use vulcan_app::browse::{
@@ -989,12 +988,6 @@ pub(crate) struct BasesCreateReport {
     pub(crate) template: Option<String>,
     pub(crate) properties: BTreeMap<String, Value>,
     pub(crate) filters: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct OpenReport {
-    path: String,
-    uri: String,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -1682,97 +1675,6 @@ pub(crate) fn read_note_paths_from_stdin() -> Result<Vec<String>, CliError> {
         }
     }
     Ok(paths)
-}
-
-fn run_open_command(
-    paths: &VaultPaths,
-    note: Option<&str>,
-    interactive_note_selection: bool,
-) -> Result<OpenReport, CliError> {
-    let note = resolve_note_argument(paths, note, interactive_note_selection, "note")?;
-    let resolved = resolve_note_reference(paths, &note).map_err(CliError::operation)?;
-    let uri = build_obsidian_uri(paths, &resolved.path);
-    launch_uri(&uri)?;
-
-    Ok(OpenReport {
-        path: resolved.path,
-        uri,
-    })
-}
-
-fn build_obsidian_uri(paths: &VaultPaths, path: &str) -> String {
-    let vault_name = paths
-        .vault_root()
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("vault");
-    format!(
-        "obsidian://open?vault={}&file={}",
-        percent_encode(vault_name),
-        percent_encode(path)
-    )
-}
-
-fn percent_encode(value: &str) -> String {
-    value
-        .bytes()
-        .map(|byte| match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                char::from(byte).to_string()
-            }
-            _ => format!("%{byte:02X}"),
-        })
-        .collect()
-}
-
-fn launch_uri(uri: &str) -> Result<(), CliError> {
-    let mut command = ProcessCommand::new(open_uri_program());
-    for arg in open_uri_args(uri) {
-        command.arg(arg);
-    }
-    let status = command.status().map_err(CliError::operation)?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(CliError::operation(format!(
-            "launcher exited with status {status} for {uri}"
-        )))
-    }
-}
-
-#[cfg(target_os = "linux")]
-fn open_uri_program() -> &'static str {
-    "xdg-open"
-}
-
-#[cfg(target_os = "macos")]
-fn open_uri_program() -> &'static str {
-    "open"
-}
-
-#[cfg(target_os = "windows")]
-fn open_uri_program() -> &'static str {
-    "cmd"
-}
-
-#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn open_uri_program() -> &'static str {
-    "xdg-open"
-}
-
-#[cfg(target_os = "windows")]
-fn open_uri_args(uri: &str) -> Vec<String> {
-    vec![
-        "/C".to_string(),
-        "start".to_string(),
-        String::new(),
-        uri.to_string(),
-    ]
-}
-
-#[cfg(not(target_os = "windows"))]
-fn open_uri_args(uri: &str) -> Vec<String> {
-    vec![uri.to_string()]
 }
 
 fn saved_export_format(format: ExportFormat) -> SavedExportFormat {
@@ -2537,8 +2439,12 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             Ok(())
         }
         Command::Open { ref note } => {
-            let report = run_open_command(&paths, note.as_deref(), interactive_note_selection)?;
-            print_open_report(cli.output, &report)
+            let report = commands::open::run_open_command(
+                &paths,
+                note.as_deref(),
+                interactive_note_selection,
+            )?;
+            commands::open::print_open_report(cli.output, &report)
         }
         Command::Browse { no_commit } => {
             commands::browse::handle_browse_command(cli, &paths, stdout_is_tty, no_commit)
@@ -6493,16 +6399,6 @@ fn render_dql_diagnostics_markdown(diagnostics: &[vulcan_core::DqlDiagnostic]) -
         )
         .collect::<Vec<_>>()
         .join("\n")
-}
-
-fn print_open_report(output: OutputFormat, report: &OpenReport) -> Result<(), CliError> {
-    match output {
-        OutputFormat::Human | OutputFormat::Markdown => {
-            println!("Opened {} in Obsidian", report.path);
-            Ok(())
-        }
-        OutputFormat::Json => print_json(report),
-    }
 }
 
 fn print_static_search_index_report(
