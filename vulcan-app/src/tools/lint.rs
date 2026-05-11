@@ -243,6 +243,7 @@ fn apply_tool_lint_fixes(
             fixes.push("normalized Vulcan shebang".to_string());
         }
     }
+    #[cfg(unix)]
     if entrypoint_path.exists() && !script_is_executable(entrypoint_path) {
         set_executable_permissions(entrypoint_path)?;
         fixes.push("set executable bit".to_string());
@@ -505,11 +506,6 @@ fn set_executable_permissions(path: &Path) -> Result<(), AppError> {
     let mut permissions = metadata.permissions();
     permissions.set_mode(permissions.mode() | 0o111);
     fs::set_permissions(path, permissions).map_err(AppError::operation)
-}
-
-#[cfg(not(unix))]
-fn set_executable_permissions(_path: &Path) -> Result<(), AppError> {
-    Ok(())
 }
 
 #[cfg(unix)]
