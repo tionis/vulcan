@@ -44,7 +44,8 @@ struct SkillValidateReport {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct SkillRunReport {
     skill: String,
-    command: String,
+    #[serde(rename = "command")]
+    tool: String,
     script: String,
     input: Value,
     result: Value,
@@ -300,7 +301,7 @@ fn run_skill_command(
     }
     Ok(SkillRunReport {
         skill: skill.summary.name,
-        command: command.id.clone(),
+        tool: command.id.clone(),
         script: command.script.clone(),
         input,
         result,
@@ -882,11 +883,11 @@ fn print_skill_run_report(output: OutputFormat, report: &SkillRunReport) -> Resu
     match output {
         OutputFormat::Json => print_json(report),
         OutputFormat::Human | OutputFormat::Markdown => {
-            println!("{}:{}", report.skill, report.command);
-            let result = redact_sensitive_json(&report.result);
+            println!("{}:{}", report.skill, report.tool);
+            let display_value = redact_sensitive_json(&report.result);
             println!(
                 "{}",
-                serde_json::to_string_pretty(&result).map_err(CliError::operation)?
+                serde_json::to_string_pretty(&display_value).map_err(CliError::operation)?
             );
             Ok(())
         }

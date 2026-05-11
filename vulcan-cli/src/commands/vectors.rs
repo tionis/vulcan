@@ -66,18 +66,14 @@ impl VectorIndexProgressReporter {
                         self.palette.dim("Endpoint:"),
                         redacted_endpoint_for_display(&progress.endpoint_url)
                     );
-                    let credential_status =
-                        match (progress.api_key_env.is_some(), progress.api_key_set) {
-                            (_, true) => "configured".to_string(),
-                            (true, false) => "missing".to_string(),
-                            (false, false) => "not configured".to_string(),
-                        };
-                    let credential_status = if progress.api_key_set {
-                        credential_status
+                    eprint!("{} ", self.palette.dim("API key status:"));
+                    if progress.api_key_set {
+                        eprintln!("configured");
+                    } else if progress.api_key_env.is_some() {
+                        eprintln!("{}", self.palette.red("missing"));
                     } else {
-                        self.palette.red(&credential_status).clone()
-                    };
-                    eprintln!("{} {}", self.palette.dim("Credential: "), credential_status);
+                        eprintln!("{}", self.palette.red("not configured"));
+                    }
                 }
                 if progress.pending == 0 {
                     eprintln!(
