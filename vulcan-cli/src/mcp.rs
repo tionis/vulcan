@@ -25,9 +25,10 @@ use crate::{
     OutputFormat, SearchBackendArg, TasksListSourceArg, ToolRegistryEntry, WebFetchMode,
 };
 use catalog::{
-    McpToolCatalogEntry, McpToolId, McpToolPack, McpToolPackMode, McpVisibilityRequirement,
-    MCP_TOOL_CATALOG, PACK_CONFIG, PACK_CUSTOM, PACK_DAILY, PACK_INDEX, PACK_NOTES_MANAGE,
-    PACK_NOTES_READ, PACK_NOTES_WRITE, PACK_SEARCH, PACK_STATUS, PACK_TASKS, PACK_WEB,
+    default_openai_tool_packs, is_default_tool_pack_args, mcp_tool_registry_entry, pack_name_list,
+    parse_tool_pack_selector, resolve_selected_tool_packs, tool_by_name, tool_names_for_pack,
+    tool_visible, visible_tool_catalog, McpToolCatalogEntry, McpToolId, McpToolPack,
+    McpToolPackMode, McpVisibilityRequirement, ALL_MCP_TOOL_PACKS,
 };
 use protocol::{
     McpCompletionParams, McpCompletionReference, McpConfigSetArgs, McpConfigShowArgs,
@@ -65,9 +66,9 @@ use vulcan_core::{
     load_vault_config, query_graph_communities_with_filter, query_notes_with_filter,
     read_vault_agents_file, reject_link_suggestion, render_assistant_prompt,
     resolve_permission_profile, scan_vault_with_progress, search_vault_with_filter, suggest_links,
-    watch_vault, ConfigPermissionMode, LinkSuggestionStatus, NoteQuery, PermissionGuard,
-    PermissionMode, PermissionProfile, PluginEvent, ProfilePermissionGuard, QueryAst, QueryReport,
-    ScanMode, ScanSummary, SearchQuery, SearchSort, VaultPaths, WatchOptions,
+    watch_vault, LinkSuggestionStatus, NoteQuery, PermissionGuard, PermissionMode,
+    PermissionProfile, PluginEvent, ProfilePermissionGuard, QueryAst, QueryReport, ScanMode,
+    ScanSummary, SearchQuery, SearchSort, VaultPaths, WatchOptions,
 };
 #[cfg(feature = "oauth")]
 use vulcan_core::{
@@ -4225,108 +4226,6 @@ fn html_escape(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
-fn tool_by_name(name: &str) -> Option<&'static McpToolCatalogEntry> {
-    MCP_TOOL_CATALOG.iter().find(|tool| tool.name == name)
-}
-
-const ALL_MCP_TOOL_PACKS: &[McpToolPack] = &[
-    McpToolPack::NotesRead,
-    McpToolPack::Search,
-    McpToolPack::Status,
-    McpToolPack::Custom,
-    McpToolPack::Daily,
-    McpToolPack::Tasks,
-    McpToolPack::NotesWrite,
-    McpToolPack::NotesManage,
-    McpToolPack::Web,
-    McpToolPack::Config,
-    McpToolPack::Index,
-    McpToolPack::ToolPacks,
-];
-
-fn expand_tool_pack_arg(value: McpToolPackArg) -> &'static [McpToolPack] {
-    match value {
-        McpToolPackArg::NotesRead => PACK_NOTES_READ,
-        McpToolPackArg::Search => PACK_SEARCH,
-        McpToolPackArg::Status => PACK_STATUS,
-        McpToolPackArg::Custom => PACK_CUSTOM,
-        McpToolPackArg::Daily => PACK_DAILY,
-        McpToolPackArg::Tasks => PACK_TASKS,
-        McpToolPackArg::NotesWrite => PACK_NOTES_WRITE,
-        McpToolPackArg::NotesManage => PACK_NOTES_MANAGE,
-        McpToolPackArg::Web => PACK_WEB,
-        McpToolPackArg::Config => PACK_CONFIG,
-        McpToolPackArg::Index => PACK_INDEX,
-    }
-}
-
-fn resolve_selected_tool_packs(
-    tool_pack_args: &[McpToolPackArg],
-    tool_pack_mode: McpToolPackMode,
-) -> BTreeSet<McpToolPack> {
-    let mut selected = BTreeSet::new();
-    let default_selection = [
-        McpToolPackArg::NotesRead,
-        McpToolPackArg::Search,
-        McpToolPackArg::Status,
-    ];
-    let source = if tool_pack_args.is_empty() {
-        default_selection.as_slice()
-    } else {
-        tool_pack_args
-    };
-    for value in source {
-        selected.extend(expand_tool_pack_arg(*value).iter().copied());
-    }
-    if matches!(tool_pack_mode, McpToolPackMode::Adaptive) {
-        selected.insert(McpToolPack::ToolPacks);
-    }
-    selected
-}
-
-fn is_default_tool_pack_args(tool_pack_args: &[McpToolPackArg]) -> bool {
-    tool_pack_args
-        == [
-            McpToolPackArg::NotesRead,
-            McpToolPackArg::Search,
-            McpToolPackArg::Status,
-        ]
-}
-
-fn default_openai_tool_packs() -> BTreeSet<McpToolPack> {
-    ALL_MCP_TOOL_PACKS
-        .iter()
-        .copied()
-        .filter(|pack| !matches!(pack, McpToolPack::ToolPacks))
-        .collect()
-}
-
-fn pack_name_list(selected_tool_packs: &BTreeSet<McpToolPack>) -> Vec<String> {
-    ALL_MCP_TOOL_PACKS
-        .iter()
-        .copied()
-        .filter(|pack| selected_tool_packs.contains(pack))
-        .map(|pack| pack.as_str().to_string())
-        .collect()
-}
-
-fn parse_tool_pack_selector(value: &str) -> Option<McpToolPackArg> {
-    match value {
-        "notes-read" => Some(McpToolPackArg::NotesRead),
-        "search" => Some(McpToolPackArg::Search),
-        "status" => Some(McpToolPackArg::Status),
-        "custom" => Some(McpToolPackArg::Custom),
-        "daily" => Some(McpToolPackArg::Daily),
-        "tasks" => Some(McpToolPackArg::Tasks),
-        "notes-write" => Some(McpToolPackArg::NotesWrite),
-        "notes-manage" => Some(McpToolPackArg::NotesManage),
-        "web" => Some(McpToolPackArg::Web),
-        "config" => Some(McpToolPackArg::Config),
-        "index" => Some(McpToolPackArg::Index),
-        _ => None,
-    }
-}
-
 fn parse_tool_pack_selection_args(names: &[String]) -> Result<Vec<McpToolPackArg>, McpMethodError> {
     if names.is_empty() {
         return Err(McpMethodError::invalid_params(
@@ -4340,16 +4239,6 @@ fn parse_tool_pack_selection_args(names: &[String]) -> Result<Vec<McpToolPackArg
                 McpMethodError::invalid_params(format!("unknown tool pack `{name}`"))
             })
         })
-        .collect()
-}
-
-fn visible_tool_catalog(
-    selected_tool_packs: &BTreeSet<McpToolPack>,
-    profile: &PermissionProfile,
-) -> Vec<&'static McpToolCatalogEntry> {
-    MCP_TOOL_CATALOG
-        .iter()
-        .filter(|tool| tool_visible(tool, profile, selected_tool_packs))
         .collect()
 }
 
@@ -4402,67 +4291,6 @@ fn custom_tool_matches_selected_packs(
         return selected_pack_names.contains("custom");
     }
     packs.iter().any(|pack| selected_pack_names.contains(pack))
-}
-
-fn tool_visible(
-    tool: &McpToolCatalogEntry,
-    profile: &PermissionProfile,
-    selected_tool_packs: &BTreeSet<McpToolPack>,
-) -> bool {
-    if !tool
-        .packs
-        .iter()
-        .any(|pack| selected_tool_packs.contains(pack))
-    {
-        return false;
-    }
-    tool_allowed_by_profile(tool, profile)
-}
-
-fn tool_allowed_by_profile(tool: &McpToolCatalogEntry, profile: &PermissionProfile) -> bool {
-    match tool.visibility {
-        McpVisibilityRequirement::None => true,
-        McpVisibilityRequirement::Read => !profile.read.is_none(),
-        McpVisibilityRequirement::Write => !profile.write.is_none(),
-        McpVisibilityRequirement::Network => profile.network.is_allowed(),
-        McpVisibilityRequirement::Index => matches!(profile.index, PermissionMode::Allow),
-        McpVisibilityRequirement::ConfigRead => {
-            !matches!(profile.config, ConfigPermissionMode::None)
-        }
-        McpVisibilityRequirement::ConfigWrite => {
-            matches!(profile.config, ConfigPermissionMode::Write)
-        }
-    }
-}
-
-fn tool_names_for_pack(pack: McpToolPack, profile: &PermissionProfile) -> Vec<String> {
-    MCP_TOOL_CATALOG
-        .iter()
-        .filter(|tool| tool.packs.contains(&pack))
-        .filter(|tool| tool_allowed_by_profile(tool, profile))
-        .map(|tool| tool.name.to_string())
-        .collect()
-}
-
-fn mcp_tool_registry_entry(tool: &McpToolCatalogEntry) -> ToolRegistryEntry {
-    ToolRegistryEntry {
-        name: tool.name.to_string(),
-        title: tool.title.to_string(),
-        description: tool.description.to_string(),
-        input_schema: (tool.input_schema)(),
-        output_schema: tool.output_schema.map(|schema| schema()),
-        annotations: tool.annotations,
-        tool_packs: tool
-            .packs
-            .iter()
-            .map(|pack| pack.as_str().to_string())
-            .collect(),
-        examples: tool
-            .examples
-            .iter()
-            .map(|item| (*item).to_string())
-            .collect(),
-    }
 }
 
 fn tool_list_item(tool: &McpToolCatalogEntry) -> Value {
