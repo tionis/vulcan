@@ -31,7 +31,7 @@ rquickjs = "0.11.0"
 rquickjs-serde = "0.5.0"
 rayon = "1.11.0"
 regex = "1.12.2"
-jsonwebtoken = "9.3.0"
+jsonwebtoken = { version = "=10.3.0", features = ["rust_crypto"] }
 rs-trafilatura = "0.2.2"
 rustyline = "13.0.0"
 rusqlite = { version = "0.37.0", features = ["bundled"] }
