@@ -4958,10 +4958,10 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 
 ### 9.29.4 `vulcan-app` module breakup and service contract cleanup
 
-- [ ] Split `vulcan-app/src/site.rs` into smaller modules such as request/types, route planning, rendering, manifest generation, incremental build state, theme/assets, diagnostics, and tests.
-- [ ] Split `vulcan-app/src/tasks.rs` into task mutation workflows, task query/report workflows, task view workflows, time tracking, pomodoro, reminders, and shared helpers.
+- [~] Split `vulcan-app/src/site.rs` into smaller modules such as request/types, route planning, rendering, manifest generation, incremental build state, theme/assets, diagnostics, and tests. (Public site/build/frontend-bundle contract types extracted to `vulcan-app/src/site/types.rs`; route planning/rendering/state/theme splits remain.)
+- [~] Split `vulcan-app/src/tasks.rs` into task mutation workflows, task query/report workflows, task view workflows, time tracking, pomodoro, reminders, and shared helpers. (Public task request/report contract types extracted to `vulcan-app/src/tasks/types.rs`; workflow splits remain.)
 - [~] Split `vulcan-app/src/export.rs` into profile management, query preparation, content transforms, format writers, packaging helpers, and frontend-bundle export support. (SQLite writer, ZIP writer, and text payload renderers extracted under `vulcan-app/src/export/`; remaining EPUB/profile/frontend-bundle splits still open.)
-- [ ] Split `vulcan-app/src/templates.rs` into parsing, native renderer, Templater compatibility, JS-backed execution, file discovery, and workflow services.
+- [~] Split `vulcan-app/src/templates.rs` into parsing, native renderer, Templater compatibility, JS-backed execution, file discovery, and workflow services. (Frontmatter parsing/merging/insertion helpers extracted to `vulcan-app/src/templates/frontmatter.rs`; renderer/discovery/JS splits remain.)
 - [~] Split `vulcan-app/src/tools.rs` into skill command discovery, registry construction, schema validation, runtime execution, compatibility reporting, and authoring/test helpers. (CLI argument helpers, compatibility/lint reporting, TypeScript/schema authoring reports, and tests are split; skill-command discovery/runtime still need extraction.)
 - [~] Keep `vulcan-app` free of terminal/UI concepts: no TUI state, no `clap`, no direct stdout/stderr rendering, no editor/browser launching. (Boundary guard now rejects `clap`, `ratatui`, `crossterm`, and terminal styling in app production code; existing host-exec and stderr compatibility paths still need a follow-up cleanup.)
 - [ ] Normalize app-layer request/report naming so CLI, MCP, and future daemon endpoints can expose the same shapes without adapter-specific structs.
