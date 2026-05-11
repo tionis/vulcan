@@ -5030,16 +5030,16 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 
 ### 9.29.9 Acceptance criteria
 
-- [ ] `cargo fmt --all` passes.
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes.
-- [ ] `cargo test --workspace` passes.
+- [x] `cargo fmt --all` passes.
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` passes.
+- [x] `cargo test --workspace` passes.
 - [x] `cargo check --workspace --no-default-features` passes.
 - [x] New feature-combination checks from 9.29.2 pass and are documented.
 - [x] A non-AI library consumer can depend on Vulcan without pulling embedding/vector provider dependencies.
 - [x] A web-disabled build can still scan/query/render local Markdown and report clear errors for web-only commands.
 - [x] A JS-disabled build can still scan/query/render and reports clear errors for JS-only Dataview/Templater/custom-tool behavior.
-- [ ] `vulcan-cli` remains usable and snapshot-covered; command help and JSON output do not regress.
-- [ ] MCP behavior remains protocol-compatible after splitting: stdio, Streamable HTTP, OAuth/IndieAuth, tool packs, resources, prompts, completions, and skill command tools all retain coverage.
+- [x] `vulcan-cli` remains usable and snapshot-covered; command help and JSON output do not regress.
+- [x] MCP behavior remains protocol-compatible after splitting: stdio, Streamable HTTP, OAuth/IndieAuth, tool packs, resources, prompts, completions, and skill command tools all retain coverage.
 - [ ] Phase 10 can be implemented by depending on shared app/core/MCP-support modules rather than importing `vulcan-cli` internals.
 - [ ] The roadmap and design document reflect the final boundaries before Phase 10 starts.
 
