@@ -4,6 +4,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use rusqlite::Connection;
 use serde_json::Value;
+use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
@@ -50,6 +51,33 @@ fn assert_executable(path: &Path) {
 
 #[cfg(not(unix))]
 fn assert_executable(_path: &Path) {}
+
+fn path_with_vulcan_bin() -> OsString {
+    let vulcan_bin = assert_cmd::cargo::cargo_bin("vulcan");
+    let bin_dir = vulcan_bin
+        .parent()
+        .expect("vulcan binary should have parent");
+    let mut paths = vec![bin_dir.to_path_buf()];
+    if let Some(existing_path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing_path));
+    }
+    std::env::join_paths(paths).expect("PATH should join")
+}
+
+fn skill_script_process(script_path: &Path, path: &OsString) -> ProcessCommand {
+    #[cfg(unix)]
+    let mut command = ProcessCommand::new(script_path);
+
+    #[cfg(not(unix))]
+    let mut command = {
+        let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"));
+        command.arg("skill").arg("exec").arg(script_path);
+        command
+    };
+
+    command.env("PATH", path);
+    command
+}
 
 fn cargo_vulcan_fixed_now() -> Command {
     let mut command = Command::cargo_bin("vulcan").expect("binary should build");
@@ -10227,33 +10255,23 @@ fn skill_init_and_run_execute_agent_skill_command() {
     assert_eq!(run_json["command"].as_str(), Some("echo"));
     assert_eq!(run_json["result"]["input"]["value"].as_i64(), Some(7));
 
-    let vulcan_bin = assert_cmd::cargo::cargo_bin("vulcan");
-    let bin_dir = vulcan_bin
-        .parent()
-        .expect("vulcan binary should have parent");
-    let path = format!(
-        "{}:{}",
-        bin_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let help_output = ProcessCommand::new(&script_path)
+    let path = path_with_vulcan_bin();
+    let help_output = skill_script_process(&script_path, &path)
         .current_dir(&vault_root)
-        .env("PATH", &path)
         .arg("--help")
         .output()
-        .expect("script help should launch through shebang");
+        .expect("script help should launch");
     assert!(help_output.status.success());
     assert!(
         String::from_utf8_lossy(&help_output.stdout).contains("Run a skill command script by path")
     );
 
-    let direct_output = ProcessCommand::new(&script_path)
+    let direct_output = skill_script_process(&script_path, &path)
         .current_dir(&vault_root)
-        .env("PATH", &path)
         .arg("--arg-json")
         .arg("value=9")
         .output()
-        .expect("script should launch through shebang");
+        .expect("script should launch");
     assert!(direct_output.status.success());
     let direct_stdout = String::from_utf8_lossy(&direct_output.stdout);
     assert!(direct_stdout.contains("math:echo"));
@@ -10914,24 +10932,15 @@ fn bundled_conversation_export_skill_writes_callout_note() {
     assert!(exported.contains("> [!assistant]+ Assistant"));
     assert!(exported.contains("> Saturday."));
 
-    let vulcan_bin = assert_cmd::cargo::cargo_bin("vulcan");
-    let bin_dir = vulcan_bin
-        .parent()
-        .expect("vulcan binary should have parent");
-    let path = format!(
-        "{}:{}",
-        bin_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
-    let direct_output = ProcessCommand::new(&script_path)
+    let path = path_with_vulcan_bin();
+    let direct_output = skill_script_process(&script_path, &path)
         .current_dir(temp_dir.path())
-        .env("PATH", &path)
         .arg("--input-json")
         .arg(
             r#"{"title":"Dry Run Chat","source":"chatgpt","date":"2026-05-09","dry_run":true,"transcript":"User: Hello\nAssistant: Hi."}"#,
         )
         .output()
-        .expect("script should infer its vault through the shebang");
+        .expect("script should infer its vault");
     assert!(direct_output.status.success());
     let direct_stdout = String::from_utf8_lossy(&direct_output.stdout);
     assert!(direct_stdout.contains("conversation-export:export"));
