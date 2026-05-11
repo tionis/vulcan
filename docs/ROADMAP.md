@@ -5010,7 +5010,7 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
   - `cargo check --workspace --no-default-features`
   - `cargo test -p vulcan-core --no-default-features --test minimal_non_ai`
   - targeted feature-combination checks introduced in 9.29.2
-- [ ] Add tests or scripts that make it easy to compare feature build sizes/dependency trees before and after cleanup.
+- [x] Add tests or scripts that make it easy to compare feature build sizes/dependency trees before and after cleanup (`scripts/compare_feature_matrix.sh` writes comparable `cargo tree` outputs and a summary under `target/feature-matrix/`).
 - [ ] Add snapshot or contract tests for public request/report structs that daemon endpoints are expected to reuse.
 - [ ] Keep fuzz targets building after module splits, especially parser, DQL, expression, config, tasks, and frontmatter.
 

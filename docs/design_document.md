@@ -142,6 +142,7 @@ Regression strategy for boundary cleanup:
 - Preserve existing CLI JSON snapshots and MCP shape comparisons while moving code.
 - Add feature-combination checks for full, no-default-features, JS-disabled, web-disabled, OAuth-disabled, and vector-disabled builds.
 - Keep a runnable minimal-library smoke test with `cargo test -p vulcan-core --no-default-features --test minimal_non_ai`; it initializes a vault, scans Markdown, queries indexed notes, and renders HTML without JS, web, OAuth, or vector features.
+- Use `scripts/compare_feature_matrix.sh` when changing feature flags or dependencies. It writes default, no-default, and individual optional-feature `cargo tree` outputs plus a short dependency-presence summary under `target/feature-matrix/`.
 - Add boundary tests that prevent production CLI code from reintroducing raw SQL, direct HTTP clients, runtime YAML parsing, shared workflow duplication, daemon runtime crates in `vulcan-core`, or MCP transport coupling to CLI rendering.
 - Prefer small mechanical module splits with focused unit tests before semantic changes.
 
