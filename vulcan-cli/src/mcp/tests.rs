@@ -1,4 +1,5 @@
 use super::*;
+use crate::McpToolPackModeArg;
 
 fn oauth_options() -> McpHttpOptions {
     McpHttpOptions {
