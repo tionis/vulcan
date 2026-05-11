@@ -880,7 +880,6 @@ fn print_skill_run_report(output: OutputFormat, report: &SkillRunReport) -> Resu
     match output {
         OutputFormat::Json => print_json(report),
         OutputFormat::Human | OutputFormat::Markdown => {
-            println!("{}:{}", report.skill, report.tool);
             let display_value = redact_sensitive_json(&report.result);
             println!(
                 "{}",

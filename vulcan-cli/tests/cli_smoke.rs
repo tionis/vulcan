@@ -10274,7 +10274,8 @@ fn skill_init_and_run_execute_agent_skill_command() {
         .expect("script should launch");
     assert!(direct_output.status.success());
     let direct_stdout = String::from_utf8_lossy(&direct_output.stdout);
-    assert!(direct_stdout.contains("math:echo"));
+    assert!(direct_stdout.contains(r#""skill": "math""#));
+    assert!(direct_stdout.contains(r#""command": "echo""#));
     assert!(direct_stdout.contains("\"value\": 9"));
 
     let arg_run_assert = Command::cargo_bin("vulcan")
@@ -10943,7 +10944,6 @@ fn bundled_conversation_export_skill_writes_callout_note() {
         .expect("script should infer its vault");
     assert!(direct_output.status.success());
     let direct_stdout = String::from_utf8_lossy(&direct_output.stdout);
-    assert!(direct_stdout.contains("conversation-export:export"));
     assert!(direct_stdout.contains("AI/Conversations/2026-05-09-dry-run-chat.md"));
 
     let structured_assert = Command::cargo_bin("vulcan")
