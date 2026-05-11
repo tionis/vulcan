@@ -12,7 +12,7 @@ User-facing CLI usage, filter syntax, and examples are documented separately in 
 
 - **Binary name:** `vulcan`
 - **Primary language:** Rust (edition 2021, MSRV 1.86) — Best fit for a fast, portable, single-binary CLI with strong text processing and SQLite integration.
-- **Workspace layout:** Cargo workspace with `vulcan-core` (parser, indexer, data model), `vulcan-embed` (embedding provider trait and implementations), and `vulcan-cli` (CLI binary and command handlers). Start with this structure from the beginning to keep module boundaries clean.
+- **Workspace layout:** Cargo workspace with `vulcan-core` (parser, indexer, data model, cache, query/search/graph/task semantics), `vulcan-app` (reusable synchronous workflow orchestration over core), `vulcan-embed` (embedding provider trait and vector store implementations), and `vulcan-cli` (CLI binary, command handlers, TUI/editor integration, and current MCP transports). Keep reusable business logic in `vulcan-core` or `vulcan-app`; keep terminal/runtime shells outside those crates.
 - **Internal identifiers:** ULIDs — sortable by creation time, compact, no hyphens. Use the `ulid` crate.
 - **Local data directory:** `.vulcan/` in the vault root, containing `cache.db` (SQLite cache), `config.toml` (shared vault configuration), and optional `config.local.toml` (device-local overrides). All commands are vault-scoped; there is no cross-vault global configuration.
 - **Core storage:** SQLite — Excellent embedded relational store for cache tables, FTS, metadata, and query planning.
