@@ -26,6 +26,7 @@ pub mod kanban;
 pub mod maintenance;
 pub mod move_rewrite;
 pub mod note;
+#[cfg(feature = "oauth")]
 pub mod oauth;
 pub mod parser;
 pub mod paths;
@@ -42,8 +43,10 @@ pub mod search;
 pub mod suggestions;
 pub mod tasknotes;
 pub mod tasks;
+#[cfg(feature = "vectors")]
 pub mod vector;
 pub mod watch;
+#[cfg(feature = "web")]
 pub mod web;
 pub mod write_lock;
 
@@ -159,6 +162,7 @@ pub use note::{
     NoteOutlineSection, NoteOutlineSelection, NoteReadOptions, NoteReadSelection, NoteSelectedLine,
     NoteSelectionError,
 };
+#[cfg(feature = "oauth")]
 pub use oauth::{
     discover_indieauth_endpoints, exchange_indieauth_code, pkce_s256_challenge, IndieAuthEndpoints,
     LocalOAuthIssuer, LocalOAuthIssuerConfig, LocalOAuthTokenIdentity, LocalOAuthUserConfig,
@@ -245,6 +249,7 @@ pub use tasks::{
     TasksError, TasksFilter, TasksQuery, TasksQueryCommand, TasksQueryGroup, TasksQueryResult,
     TasksTextField,
 };
+#[cfg(feature = "vectors")]
 pub use vector::{
     cluster_vectors, cluster_vectors_with_filter, drop_vector_model, index_vectors,
     index_vectors_with_progress, inspect_vector_queue, list_vector_models, query_related_notes,
@@ -259,6 +264,7 @@ pub use vector::{
     VectorRepairQuery, VectorRepairReport,
 };
 pub use watch::{watch_vault, watch_vault_until, WatchError, WatchOptions, WatchReport};
+#[cfg(feature = "web")]
 pub use web::{
     fetch_web, fetch_web_content, html_to_markdown as convert_web_html_to_markdown,
     prepare_search_backend, search_web, FetchedWebContent, PreparedWebSearchBackend,

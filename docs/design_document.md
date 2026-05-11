@@ -126,6 +126,17 @@ Public library promise before Phase 10:
 - Internal unless promoted by documentation: individual SQL statements, cache migration internals, CLI renderers, TUI state machines, command parsing structs, and transport session bookkeeping.
 - Feature expectations: default builds include the full local CLI experience. Minimal library builds must support parser/index/query/render basics without AI/vector, web fetch/search, OAuth, or JS runtime dependencies. Feature-disabled commands and APIs must fail with explicit diagnostics rather than silent partial behavior.
 
+Current Phase 9.29 feature matrix:
+
+| Feature | Default | Scope |
+| --- | --- | --- |
+| `js_runtime` | enabled | QuickJS-backed DataviewJS, Templater JS execution, JS runtime helpers, and skill command execution that requires the embedded JS runtime. |
+| `vectors` | enabled | `vulcan-core::vector`, vector indexing/repair/duplicates/clustering/related-note APIs, sqlite-vec extension registration, and vector-backed suggestion/search signals. |
+| `web` | enabled | `vulcan-core::web`, normalized web search/fetch helpers, HTML main-content extraction, and app-layer web workflows. |
+| `oauth` | enabled | Embedded OAuth/IndieAuth issuer/resource-server helpers used by MCP HTTP auth and future server transports. |
+
+Library consumers that only need parser/index/query/render basics should depend on `vulcan-core` with `default-features = false`. That build excludes `vulcan-embed`, `sqlite-vec`, `reqwest`, `rs-trafilatura`, `jsonwebtoken`, `sha2`, and `base64` from `vulcan-core` unless another crate enables the corresponding feature. The CLI currently keeps `vectors`, `web`, and `oauth` enabled even in JS-disabled builds because those command groups are part of the default local binary surface; finer-grained CLI command gating is a later optional size optimization.
+
 Regression strategy for boundary cleanup:
 
 - Preserve existing CLI JSON snapshots and MCP shape comparisons while moving code.

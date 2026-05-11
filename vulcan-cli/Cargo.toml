@@ -15,8 +15,11 @@ name = "vulcan"
 path = "src/main.rs"
 
 [features]
-default = ["js_runtime"]
+default = ["js_runtime", "oauth", "vectors", "web"]
 js_runtime = ["dep:rquickjs", "vulcan-app/js_runtime", "vulcan-core/js_runtime"]
+oauth = ["vulcan-app/oauth", "vulcan-core/oauth"]
+vectors = ["vulcan-app/vectors", "vulcan-core/vectors"]
+web = ["vulcan-app/web", "vulcan-core/web"]
 
 [dependencies]
 clap.workspace = true
@@ -33,8 +36,8 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 ulid.workspace = true
-vulcan-app = { path = "../vulcan-app", default-features = false }
-vulcan-core = { path = "../vulcan-core", default-features = false }
+vulcan-app = { path = "../vulcan-app", default-features = false, features = ["oauth", "vectors", "web"] }
+vulcan-core = { path = "../vulcan-core", default-features = false, features = ["oauth", "vectors", "web"] }
 zip.workspace = true
 
 [dev-dependencies]
