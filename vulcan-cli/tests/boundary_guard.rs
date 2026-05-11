@@ -206,3 +206,117 @@ fn core_production_code_avoids_daemon_runtime_crates() {
         violations.join("\n")
     );
 }
+
+#[test]
+fn js_runtime_usage_stays_in_js_gated_modules() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("cli crate should have workspace parent");
+    let scanned_roots = [
+        workspace_root.join("vulcan-core/src"),
+        workspace_root.join("vulcan-app/src"),
+        workspace_root.join("vulcan-cli/src"),
+    ];
+    let allowed_files = [
+        workspace_root.join("vulcan-core/src/dataview_js.rs"),
+        workspace_root.join("vulcan-app/src/templates.rs"),
+    ];
+
+    let mut violations = Vec::new();
+    for root in scanned_roots {
+        visit_rs_files(&root, &mut |path| {
+            if is_test_module(path) {
+                return;
+            }
+            let source = fs::read_to_string(path).expect("source file should read");
+            let production = production_source(&source);
+            if !production.contains("rquickjs::") {
+                return;
+            }
+            if !allowed_files.iter().any(|allowed| allowed == path) {
+                violations.push(format!(
+                    "{} uses rquickjs outside the approved JS runtime modules",
+                    path.strip_prefix(workspace_root)
+                        .expect("path should be inside workspace")
+                        .display()
+                ));
+                return;
+            }
+            if !production.contains("feature = \"js_runtime\"") {
+                violations.push(format!(
+                    "{} uses rquickjs without an explicit js_runtime cfg guard",
+                    path.strip_prefix(workspace_root)
+                        .expect("path should be inside workspace")
+                        .display()
+                ));
+            }
+        });
+    }
+
+    assert!(
+        violations.is_empty(),
+        "JS runtime boundary violations found:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn vector_dependency_usage_stays_in_vector_gated_modules() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("cli crate should have workspace parent");
+    let scanned_roots = [
+        workspace_root.join("vulcan-core/src"),
+        workspace_root.join("vulcan-app/src"),
+        workspace_root.join("vulcan-cli/src"),
+    ];
+    let allowed_files = [
+        workspace_root.join("vulcan-core/src/cache/mod.rs"),
+        workspace_root.join("vulcan-core/src/suggestions.rs"),
+        workspace_root.join("vulcan-core/src/vector.rs"),
+    ];
+    let vector_patterns = ["vulcan_embed::", "sqlite_vec"];
+
+    let mut violations = Vec::new();
+    for root in scanned_roots {
+        visit_rs_files(&root, &mut |path| {
+            if is_test_module(path) {
+                return;
+            }
+            let source = fs::read_to_string(path).expect("source file should read");
+            let production = production_source(&source);
+            if !vector_patterns
+                .iter()
+                .any(|pattern| production.contains(pattern))
+            {
+                return;
+            }
+            if !allowed_files.iter().any(|allowed| allowed == path) {
+                violations.push(format!(
+                    "{} uses vector backend dependencies outside vector.rs",
+                    path.strip_prefix(workspace_root)
+                        .expect("path should be inside workspace")
+                        .display()
+                ));
+                return;
+            }
+            if path.file_name().and_then(|name| name.to_str()) == Some("vector.rs") {
+                return;
+            }
+            if !production.contains("feature = \"vectors\"") {
+                violations.push(format!(
+                    "{} uses vector backend dependencies without an explicit vectors cfg guard",
+                    path.strip_prefix(workspace_root)
+                        .expect("path should be inside workspace")
+                        .display()
+                ));
+            }
+        });
+    }
+
+    assert!(
+        violations.is_empty(),
+        "vector dependency boundary violations found:\n{}",
+        violations.join("\n")
+    );
+}
