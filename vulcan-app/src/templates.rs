@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
-use std::io::{self, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use vulcan_core::config::TemplatesConfig;
@@ -668,19 +667,11 @@ impl<'a> TemplateSession<'a> {
             )
             .or_else(|| default_value.map(ToOwned::to_owned));
 
-            let value = match supplied {
-                Some(value) => value,
-                None if io::stdin().is_terminal() => {
-                    read_prompt_value(variable_name, default_value)
-                        .map_err(CliError::operation)?
-                        .unwrap_or_default()
-                }
-                None => {
-                    return Err(CliError::operation(format!(
-                        "{{{{VDATE:{variable_name},{format}}}}} needs --var {}=<date> in non-interactive mode",
-                        slugify_var_key(variable_name)
-                    )));
-                }
+            let Some(value) = supplied else {
+                return Err(CliError::operation(format!(
+                    "{{{{VDATE:{variable_name},{format}}}}} needs --var {}=<date> in non-interactive mode",
+                    slugify_var_key(variable_name)
+                )));
             };
             let millis = quickadd_parse_date_input(&value, self.current_timestamp_millis())
                 .ok_or_else(|| {
@@ -735,15 +726,6 @@ impl<'a> TemplateSession<'a> {
             self.lookup_quickadd_value_var(variable_name, default_prompt_name)
         {
             value
-        } else if io::stdin().is_terminal() {
-            let prompt = spec
-                .label
-                .as_deref()
-                .filter(|label| !label.trim().is_empty())
-                .unwrap_or(variable_name);
-            read_prompt_value(prompt, spec.default_value.as_deref())
-                .map_err(CliError::operation)?
-                .unwrap_or_default()
         } else if let Some(default_value) = &spec.default_value {
             default_value.clone()
         } else if let Some(first_option) = spec.choices.first() {
@@ -1306,19 +1288,6 @@ impl<'a> TemplateSession<'a> {
         if let Some(value) = lookup_template_var(self.request.vars, &key, Some(&prompt)) {
             return Ok(TemplateValue::String(value));
         }
-        if io::stdin().is_terminal() {
-            let value = read_prompt_value(&prompt, default.as_deref())
-                .map_err(NativeExpressionError::Message)?;
-            return Ok(match value {
-                Some(value) => TemplateValue::String(value),
-                None if throw_on_cancel => {
-                    return Err(NativeExpressionError::Message(
-                        "tp.system.prompt() was cancelled".to_string(),
-                    ));
-                }
-                None => TemplateValue::Null,
-            });
-        }
         default.map_or_else(
             || {
                 if throw_on_cancel {
@@ -1349,11 +1318,6 @@ impl<'a> TemplateSession<'a> {
         let key = prompt_lookup_key(&placeholder, self.suggester_count);
         if let Some(value) = lookup_template_var(self.request.vars, &key, None) {
             return Ok(TemplateValue::String(value));
-        }
-        if io::stdin().is_terminal() && !items.is_empty() {
-            let value = read_suggester_value(&placeholder, &items)
-                .map_err(NativeExpressionError::Message)?;
-            return Ok(value.map_or(TemplateValue::Null, TemplateValue::String));
         }
         items
             .first()
@@ -3268,53 +3232,6 @@ fn quickadd_next_weekday(reference_ms: i64, target: i64, force_next_week: bool) 
 
 fn quickadd_day_start(ms: i64) -> i64 {
     ms.div_euclid(DAY_MS) * DAY_MS
-}
-
-fn read_prompt_value(prompt: &str, default: Option<&str>) -> Result<Option<String>, String> {
-    let prompt = if prompt.trim().is_empty() {
-        "Value"
-    } else {
-        prompt.trim()
-    };
-    let suffix = default.map_or(String::new(), |value| format!(" [{value}]"));
-    eprint!("{prompt}{suffix}: ");
-    io::stderr().flush().map_err(|error| error.to_string())?;
-    let mut buffer = String::new();
-    io::stdin()
-        .read_line(&mut buffer)
-        .map_err(|error| error.to_string())?;
-    let value = buffer.trim_end_matches(['\n', '\r']).trim().to_string();
-    if value.is_empty() {
-        Ok(default.map(ToOwned::to_owned))
-    } else {
-        Ok(Some(value))
-    }
-}
-
-fn read_suggester_value(prompt: &str, items: &[String]) -> Result<Option<String>, String> {
-    if items.is_empty() {
-        return Ok(None);
-    }
-    if !prompt.trim().is_empty() {
-        eprintln!("{prompt}");
-    }
-    for (index, item) in items.iter().enumerate() {
-        eprintln!("{}: {}", index + 1, item);
-    }
-    eprint!("Select item [1]: ");
-    io::stderr().flush().map_err(|error| error.to_string())?;
-    let mut buffer = String::new();
-    io::stdin()
-        .read_line(&mut buffer)
-        .map_err(|error| error.to_string())?;
-    let selected = buffer.trim();
-    if selected.is_empty() {
-        return Ok(items.first().cloned());
-    }
-    let index = selected
-        .parse::<usize>()
-        .map_err(|error| error.to_string())?;
-    Ok(items.get(index.saturating_sub(1)).cloned())
 }
 
 fn read_clipboard_best_effort() -> String {
