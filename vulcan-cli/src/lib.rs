@@ -3,6 +3,20 @@
 //! Reusable workflow orchestration should live in `vulcan-app` or
 //! `vulcan-core`; this crate owns argument parsing, TUI state, interactive I/O,
 //! terminal rendering, and other CLI-specific behavior.
+//!
+//! Depend on this crate only when embedding the CLI itself or when tests need to
+//! exercise the exact command parser/help/output behavior. Reusable business
+//! logic, daemon endpoints, MCP handlers, and non-terminal integrations should
+//! call `vulcan-app` or `vulcan-core` directly.
+//!
+//! Owned surfaces:
+//!
+//! - `clap` command definitions and shell completions.
+//! - Terminal/TUI/editor/browser interactions.
+//! - Human and JSON output adapters over shared app/core reports.
+//! - Current MCP stdio and Streamable HTTP server adapters. The registry,
+//!   protocol, and transport boundaries are being split so Phase 10 can reuse
+//!   the concepts without importing terminal rendering or CLI-only state.
 
 mod bases_tui;
 mod browse_tui;

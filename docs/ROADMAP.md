@@ -5016,17 +5016,17 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 
 ### 9.29.8 Public API docs and developer ergonomics
 
-- [ ] Add crate-level docs that explain which crate to depend on for common use cases:
+- [x] Add crate-level docs that explain which crate to depend on for common use cases:
   - parser/index/query only
   - full local app workflows
   - CLI embedding
   - MCP/server integration
   - static export/site generation
   - custom tools and skills
-- [ ] Add examples or doctest-style snippets for minimal library consumers where practical.
-- [ ] Update `docs/design_document.md`, `docs/guide/scripting.md`, `docs/guide/chatgpt-mcp.md`, and relevant assistant skills if feature flags or MCP setup flags change.
-- [ ] Keep the integrated `vulcan help` surface aligned with any command-module moves or feature-gated commands.
-- [ ] Document the intended module structure for future contributors so Phase 10 code lands in daemon/app/core boundaries rather than recreating CLI coupling.
+- [x] Add examples or doctest-style snippets for minimal library consumers where practical.
+- [x] Update `docs/design_document.md`, `docs/guide/scripting.md`, `docs/guide/chatgpt-mcp.md`, and relevant assistant skills if feature flags or MCP setup flags change. (No feature flags or MCP setup flags changed in this cleanup item.)
+- [x] Keep the integrated `vulcan help` surface aligned with any command-module moves or feature-gated commands. (No command surface changed in this cleanup item.)
+- [x] Document the intended module structure for future contributors so Phase 10 code lands in daemon/app/core boundaries rather than recreating CLI coupling.
 
 ### 9.29.9 Acceptance criteria
 
