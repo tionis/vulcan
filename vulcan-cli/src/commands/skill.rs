@@ -680,7 +680,9 @@ fn init_skill(
 
 fn write_executable_script(path: &Path, contents: &str) -> Result<(), CliError> {
     fs::write(path, contents).map_err(CliError::operation)?;
-    set_executable_permissions(path)
+    #[cfg(unix)]
+    set_executable_permissions(path)?;
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -691,11 +693,6 @@ fn set_executable_permissions(path: &Path) -> Result<(), CliError> {
     let mut permissions = metadata.permissions();
     permissions.set_mode(permissions.mode() | 0o111);
     fs::set_permissions(path, permissions).map_err(CliError::operation)
-}
-
-#[cfg(not(unix))]
-fn set_executable_permissions(_path: &Path) -> Result<(), CliError> {
-    Ok(())
 }
 
 fn strip_shebang_line(source: &str) -> &str {

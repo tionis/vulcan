@@ -486,6 +486,7 @@ fn write_bundled_text_file(
 ) -> Result<SupportFileReport, CliError> {
     let destination = bundled_text_file_destination(paths, file);
     let status = write_bundled_text_contents(&destination, file.contents, overwrite)?;
+    #[cfg(unix)]
     if bundled_text_file_should_be_executable(file) && destination.exists() {
         set_executable_permissions(&destination)?;
     }
@@ -496,6 +497,7 @@ fn write_bundled_text_file(
     })
 }
 
+#[cfg(unix)]
 fn bundled_text_file_should_be_executable(file: &BundledTextFile) -> bool {
     file.target == BundledFileTarget::SkillsFolder
         && Path::new(file.relative_path)
@@ -569,11 +571,6 @@ fn set_executable_permissions(path: &Path) -> Result<(), CliError> {
     let mut permissions = metadata.permissions();
     permissions.set_mode(permissions.mode() | 0o111);
     fs::set_permissions(path, permissions).map_err(CliError::operation)
-}
-
-#[cfg(not(unix))]
-fn set_executable_permissions(_path: &Path) -> Result<(), CliError> {
-    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

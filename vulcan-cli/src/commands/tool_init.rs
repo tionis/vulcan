@@ -383,7 +383,9 @@ fn relative_path_from_vault(paths: &VaultPaths, path: &Path) -> Result<String, C
 
 fn write_executable_vulcan_tool_script(path: &Path, contents: &str) -> Result<(), CliError> {
     fs::write(path, contents).map_err(CliError::operation)?;
-    set_vulcan_tool_script_executable(path)
+    #[cfg(unix)]
+    set_vulcan_tool_script_executable(path)?;
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -394,9 +396,4 @@ fn set_vulcan_tool_script_executable(path: &Path) -> Result<(), CliError> {
     let mut permissions = metadata.permissions();
     permissions.set_mode(permissions.mode() | 0o111);
     fs::set_permissions(path, permissions).map_err(CliError::operation)
-}
-
-#[cfg(not(unix))]
-fn set_vulcan_tool_script_executable(_path: &Path) -> Result<(), CliError> {
-    Ok(())
 }
