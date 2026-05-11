@@ -1,5 +1,76 @@
+use crate::AppError;
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::BTreeSet;
+use vulcan_core::VaultPaths;
+
+use super::{show_custom_tool, CustomToolRegistryOptions};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CustomToolTypesReport {
+    pub name: String,
+    pub input_type: String,
+    pub output_type: String,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct CustomToolTypesSuiteReport {
+    pub checked: usize,
+    pub tools: Vec<CustomToolTypesReport>,
+    pub source: String,
+}
+
+pub fn build_tool_types_report(
+    paths: &VaultPaths,
+    active_profile: Option<&str>,
+    name: &str,
+    registry_options: &CustomToolRegistryOptions,
+) -> Result<CustomToolTypesReport, AppError> {
+    let show = show_custom_tool(paths, active_profile, name, registry_options)?;
+    let base_name = ts_type_name(&show.tool.summary.name);
+    let input_type = format!("{base_name}Input");
+    let output_type = format!("{base_name}Output");
+    let output_ts = show.tool.summary.output_schema.as_ref().map_or_else(
+        || "unknown".to_string(),
+        |schema| json_schema_to_typescript(schema, 0),
+    );
+    let source = format!(
+        "export type {input_type} = {};\n\nexport type {output_type} = {};\n\nexport declare function {function_name}(input: {input_type}): {output_type};\n",
+        json_schema_to_typescript(&show.tool.summary.input_schema, 0),
+        output_ts,
+        function_name = ts_function_name(&show.tool.summary.name),
+    );
+    Ok(CustomToolTypesReport {
+        name: show.tool.summary.name,
+        input_type,
+        output_type,
+        source,
+    })
+}
+
+pub fn build_all_tool_types_report(
+    paths: &VaultPaths,
+    active_profile: Option<&str>,
+    registry_options: &CustomToolRegistryOptions,
+) -> Result<CustomToolTypesSuiteReport, AppError> {
+    let reports = super::list_custom_tools(paths, active_profile, registry_options)?
+        .iter()
+        .map(|tool| {
+            build_tool_types_report(paths, active_profile, &tool.summary.name, registry_options)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let source = reports
+        .iter()
+        .map(|report| report.source.trim_end())
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    Ok(CustomToolTypesSuiteReport {
+        checked: reports.len(),
+        tools: reports,
+        source: format!("{source}\n"),
+    })
+}
 
 pub fn json_schema_to_typescript(schema: &Value, indent: usize) -> String {
     if let Some(value) = schema.get("const") {
