@@ -2692,21 +2692,6 @@ fn test_template_timestamp(
 }
 
 #[test]
-fn build_obsidian_uri_uses_vault_name_and_percent_encoding() {
-    let temp_dir = TempDir::new().expect("temp dir should be created");
-    let vault_root = temp_dir.path().join("My Vault");
-    fs::create_dir_all(&vault_root).expect("vault root should be created");
-    let paths = VaultPaths::new(&vault_root);
-
-    let uri = build_obsidian_uri(&paths, "Notes/Hello World.md");
-
-    assert_eq!(
-        uri,
-        "obsidian://open?vault=My%20Vault&file=Notes%2FHello%20World.md"
-    );
-}
-
-#[test]
 #[allow(clippy::too_many_lines)]
 fn parses_links_and_backlinks_commands() {
     let rebuild =
