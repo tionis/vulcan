@@ -190,3 +190,53 @@ fn csv_cell_for_value(value: Option<&Value>) -> String {
         Some(other) => serde_json::to_string(other).unwrap_or_else(|_| other.to_string()),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vulcan_core::NoteRecord;
+
+    fn note(path: &str, content: &str) -> ExportedNoteDocument {
+        ExportedNoteDocument {
+            note: NoteRecord {
+                document_id: format!("id-{path}"),
+                document_path: path.to_string(),
+                file_name: path.trim_end_matches(".md").to_string(),
+                file_ext: "md".to_string(),
+                file_mtime: 0,
+                file_ctime: 0,
+                file_size: i64::try_from(content.len()).unwrap_or(0),
+                properties: Value::Object(serde_json::Map::new()),
+                tags: Vec::new(),
+                links: Vec::new(),
+                starred: false,
+                inlinks: Vec::new(),
+                aliases: Vec::new(),
+                frontmatter: Value::Object(serde_json::Map::new()),
+                periodic_type: None,
+                periodic_date: None,
+                list_items: Vec::new(),
+                tasks: Vec::new(),
+                raw_inline_expressions: Vec::new(),
+                inline_expressions: Vec::new(),
+            },
+            content: content.to_string(),
+        }
+    }
+
+    #[test]
+    fn markdown_export_single_note_adds_trailing_newline() {
+        let rendered = render_markdown_export_payload(&[note("Daily.md", "body")], None);
+        assert_eq!(rendered, "body\n");
+    }
+
+    #[test]
+    fn csv_cell_renders_structured_values_as_json() {
+        assert_eq!(
+            csv_cell_for_value(Some(&serde_json::json!(["a", "b"]))),
+            "[\"a\",\"b\"]"
+        );
+        assert_eq!(csv_cell_for_value(Some(&Value::Bool(true))), "true");
+        assert_eq!(csv_cell_for_value(None), "");
+    }
+}
