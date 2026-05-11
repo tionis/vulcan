@@ -4980,14 +4980,14 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 
 ### 9.29.6 MCP module split and daemon-ready transport boundary
 
-- [ ] Split `vulcan-cli/src/mcp.rs` into focused modules:
+- [~] Split `vulcan-cli/src/mcp.rs` into focused modules:
   - auth/OAuth/IndieAuth option resolution and token validation
   - HTTP transport/session management
   - stdio transport/session management
-  - tool catalog and pack filtering
+  - tool catalog and pack filtering (done in `vulcan-cli/src/mcp/catalog.rs`)
   - resource/prompt/completion catalog
   - tool-call handlers
-  - protocol JSON helpers and errors
+  - protocol JSON helpers and errors (protocol constants, method errors, and request parameter types moved to `vulcan-cli/src/mcp/protocol.rs`)
 - [ ] Make the MCP tool registry transport-agnostic so stdio, Streamable HTTP, and the future daemon can share registry construction and permission filtering.
 - [ ] Keep permission profiles as the single authorization model underneath tool-pack exposure and OAuth identity binding.
 - [ ] Keep adaptive pack changes session-local and transport-neutral; split code should not assume a single connection model.
