@@ -4,6 +4,11 @@ use reqwest::blocking::Client;
 use reqwest::header::AUTHORIZATION;
 use rs_trafilatura::{extract_with_options, Options};
 use serde::{Deserialize, Serialize};
+use std::io::Read;
+use std::time::Duration;
+
+const WEB_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_WEB_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WebSearchResult {
@@ -373,6 +378,12 @@ pub fn fetch_web_content(
     }
 
     let response = client.get(url).send().map_err(|error| error.to_string())?;
+    if response.status().is_redirection() {
+        return Err(format!(
+            "web fetch refused HTTP redirect with status {}; fetch the redirected URL separately so network permissions can be checked",
+            response.status()
+        ));
+    }
     let status = response.status().as_u16();
     let content_type = response
         .headers()
@@ -380,7 +391,24 @@ pub fn fetch_web_content(
         .and_then(|value| value.to_str().ok())
         .unwrap_or("application/octet-stream")
         .to_string();
-    let bytes = response.bytes().map_err(|error| error.to_string())?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_WEB_RESPONSE_BYTES as u64)
+    {
+        return Err(format!(
+            "web response exceeds maximum size of {MAX_WEB_RESPONSE_BYTES} bytes"
+        ));
+    }
+    let mut bytes = Vec::new();
+    response
+        .take((MAX_WEB_RESPONSE_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_WEB_RESPONSE_BYTES {
+        return Err(format!(
+            "web response exceeds maximum size of {MAX_WEB_RESPONSE_BYTES} bytes"
+        ));
+    }
 
     Ok(FetchedWebContent {
         report: WebFetchReport {
@@ -391,7 +419,7 @@ pub fn fetch_web_content(
             content: render_fetched_content(&bytes, &content_type, url, mode)?,
             saved: None,
         },
-        raw_bytes: bytes.to_vec(),
+        raw_bytes: bytes,
     })
 }
 
@@ -466,6 +494,8 @@ fn search_backend_name(kind: SearchBackendKind) -> &'static str {
 fn build_web_client(user_agent: &str) -> Result<Client, String> {
     Client::builder()
         .user_agent(user_agent)
+        .timeout(WEB_REQUEST_TIMEOUT)
+        .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|error| error.to_string())
 }
@@ -645,7 +675,7 @@ fn robots_allows_path(robots: &str, path: &str, user_agent: &str) -> bool {
 mod tests {
     use super::{
         fetch_web_content, html_to_markdown, normalize_duckduckgo_result_url,
-        prepare_search_backend,
+        prepare_search_backend, MAX_WEB_RESPONSE_BYTES,
     };
     use crate::config::{SearchBackendKind, WebConfig, WebSearchConfig};
     use std::io::{Read, Write};
@@ -847,5 +877,74 @@ mod tests {
         assert_eq!(fetched.report.mode, "raw");
         assert_eq!(fetched.report.content, "raw-body");
         assert_eq!(fetched.raw_bytes, b"raw-body");
+    }
+
+    #[test]
+    fn fetch_web_content_does_not_follow_redirects() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let address = listener.local_addr().expect("listener address");
+        let handle = thread::spawn(move || {
+            for request_index in 0..2 {
+                let (mut stream, _) = listener.accept().expect("connection should be accepted");
+                let mut buffer = [0_u8; 2048];
+                let _read = stream
+                    .read(&mut buffer)
+                    .expect("request should be readable");
+                let response = if request_index == 0 {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 23\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nUser-agent: *\nAllow: /\n".to_string()
+                } else {
+                    "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/denied\r\nContent-Length: 8\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nredirect".to_string()
+                };
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("response should be writable");
+            }
+        });
+        let config = WebConfig {
+            user_agent: "Vulcan Test".to_string(),
+            search: WebSearchConfig::default(),
+        };
+
+        let error = fetch_web_content(&config, &format!("http://{address}/start"), "raw")
+            .expect_err("redirect response should be rejected without following it");
+        handle.join().expect("server thread should finish");
+
+        assert!(error.contains("refused HTTP redirect"));
+    }
+
+    #[test]
+    fn fetch_web_content_rejects_oversized_content_length_before_reading_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let address = listener.local_addr().expect("listener address");
+        let handle = thread::spawn(move || {
+            for request_index in 0..2 {
+                let (mut stream, _) = listener.accept().expect("connection should be accepted");
+                let mut buffer = [0_u8; 2048];
+                let _read = stream
+                    .read(&mut buffer)
+                    .expect("request should be readable");
+                let response = if request_index == 0 {
+                    "HTTP/1.1 200 OK\r\nContent-Length: 23\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\nUser-agent: *\nAllow: /\n".to_string()
+                } else {
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n",
+                        MAX_WEB_RESPONSE_BYTES + 1
+                    )
+                };
+                stream
+                    .write_all(response.as_bytes())
+                    .expect("response should be writable");
+            }
+        });
+        let config = WebConfig {
+            user_agent: "Vulcan Test".to_string(),
+            search: WebSearchConfig::default(),
+        };
+
+        let error = fetch_web_content(&config, &format!("http://{address}/large"), "raw")
+            .expect_err("oversized response should fail");
+        handle.join().expect("server thread should finish");
+
+        assert!(error.contains("exceeds maximum size"));
     }
 }

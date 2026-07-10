@@ -490,17 +490,17 @@ These items should be implemented once and reused across individual fixes to avo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `H-04`.
-- [ ] Add or update a regression test: Integration test with allowed redirector to denied host must fail.
+- [x] Add or update a regression test: Integration test with allowed redirector to denied host must fail.
 - [ ] Add or update a regression test: Unit test that JS and MCP fetch paths share the redirect policy.
-- [ ] Implement the remediation: Disable automatic redirects or install a redirect policy that re-runs `check_network` against each redirected URL before following it; add timeout and response-size limits.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Implement the remediation: Disable automatic redirects or install a redirect policy that re-runs `check_network` against each redirected URL before following it; add timeout and response-size limits.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
 
 ### H-05. Markdown HTML rendering allows raw script and dangerous URL schemes by default
 
