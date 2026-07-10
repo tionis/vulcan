@@ -1201,6 +1201,14 @@ pub fn cluster_vectors(
     paths: &VaultPaths,
     query: &ClusterQuery,
 ) -> Result<ClusterReport, ClusterError> {
+    cluster_vectors_with_filter(paths, query, None)
+}
+
+pub fn cluster_vectors_with_filter(
+    paths: &VaultPaths,
+    query: &ClusterQuery,
+    filter: Option<&PermissionFilter>,
+) -> Result<ClusterReport, ClusterError> {
     if query.clusters == 0 {
         return Err(VectorError::InvalidQuery(
             "cluster count must be at least 1".to_string(),
@@ -1216,13 +1224,11 @@ pub fn cluster_vectors(
         .ok_or(VectorError::MissingVectorIndex)?;
     validate_requested_provider(&active_model, query.provider.as_deref())?;
 
-    let vectors = store.load_vectors().map_err(VectorError::Store)?;
+    let mut vectors = store.load_vectors().map_err(VectorError::Store)?;
     if vectors.is_empty() {
         return Err(VectorError::MissingVectorIndex);
     }
 
-    let cluster_count = query.clusters.min(vectors.len());
-    let clustering = kmeans(&vectors, cluster_count);
     let chunks = load_chunks_by_ids(
         connection,
         &vectors
@@ -1230,6 +1236,19 @@ pub fn cluster_vectors(
             .map(|vector| vector.chunk_id.clone())
             .collect::<Vec<_>>(),
     )?;
+    if let Some(filter) = filter {
+        vectors.retain(|vector| {
+            chunks
+                .get(&vector.chunk_id)
+                .is_some_and(|chunk| filter.is_allowed(&chunk.document_path))
+        });
+    }
+    if vectors.is_empty() {
+        return Err(VectorError::MissingVectorIndex);
+    }
+
+    let cluster_count = query.clusters.min(vectors.len());
+    let clustering = kmeans(&vectors, cluster_count);
     let clusters = cluster_summaries(
         &vectors,
         &clustering.assignments,
@@ -1274,43 +1293,6 @@ pub fn cluster_vectors(
         clusters,
         assignments: report_assignments,
     })
-}
-
-pub fn cluster_vectors_with_filter(
-    paths: &VaultPaths,
-    query: &ClusterQuery,
-    filter: Option<&PermissionFilter>,
-) -> Result<ClusterReport, ClusterError> {
-    let mut report = cluster_vectors(paths, query)?;
-    if let Some(filter) = filter {
-        report
-            .assignments
-            .retain(|assignment| filter.is_allowed(&assignment.document_path));
-        let allowed_paths = report
-            .assignments
-            .iter()
-            .map(|assignment| assignment.document_path.clone())
-            .collect::<HashSet<_>>();
-        report.clusters.retain(|cluster| {
-            allowed_paths.contains(&cluster.exemplar_document_path)
-                || cluster
-                    .top_documents
-                    .iter()
-                    .any(|document| allowed_paths.contains(&document.document_path))
-        });
-        for cluster in &mut report.clusters {
-            cluster
-                .top_documents
-                .retain(|document| allowed_paths.contains(&document.document_path));
-            cluster.document_count = cluster.top_documents.len();
-            cluster.chunk_count = report
-                .assignments
-                .iter()
-                .filter(|assignment| assignment.cluster_id == cluster.cluster_id)
-                .count();
-        }
-    }
-    Ok(report)
 }
 
 pub(crate) fn query_hybrid_candidates(
@@ -2091,6 +2073,7 @@ fn normalize_in_place(values: &mut [f32]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::permissions::{PathPermission, ResourceSpecifier};
     use crate::{scan_vault, ScanMode};
     use serde_json::Value;
     use std::fs;
@@ -2495,6 +2478,70 @@ mod tests {
                 .expect("cluster row count should be readable"),
             4
         );
+        server.shutdown();
+    }
+
+    #[test]
+    fn filtered_clustering_derives_summaries_only_from_allowed_chunks() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("cache directory");
+        fs::create_dir_all(vault_root.join("Public")).expect("public directory");
+        fs::create_dir_all(vault_root.join("Private")).expect("private directory");
+        fs::write(
+            vault_root.join("Public/Allowed.md"),
+            "# Allowed\n\npublication visible content\n",
+        )
+        .expect("public note");
+        fs::write(
+            vault_root.join("Private/Secret.md"),
+            "# Classified Sentinel\n\nclassifiedsentinel restricted content\n",
+        )
+        .expect("private note");
+        let server = MockEmbeddingServer::spawn();
+        write_embedding_config(&vault_root, &server.base_url());
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("full scan should succeed");
+        index_vectors(
+            &paths,
+            &VectorIndexQuery {
+                provider: None,
+                dry_run: false,
+                verbose: false,
+            },
+        )
+        .expect("vector index should succeed");
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::Folder("Public/**".to_string())],
+            deny: Vec::new(),
+        });
+
+        let report = cluster_vectors_with_filter(
+            &paths,
+            &ClusterQuery {
+                provider: None,
+                clusters: 1,
+                dry_run: true,
+            },
+            Some(&filter),
+        )
+        .expect("filtered cluster command should succeed");
+
+        assert_eq!(report.assignments.len(), 1);
+        assert_eq!(report.clusters.len(), 1);
+        assert_eq!(report.clusters[0].document_count, 1);
+        assert_eq!(report.clusters[0].chunk_count, 1);
+        assert_eq!(
+            report.clusters[0].exemplar_document_path,
+            "Public/Allowed.md"
+        );
+        assert!(report.clusters[0]
+            .top_documents
+            .iter()
+            .all(|document| document.document_path == "Public/Allowed.md"));
+        assert!(!serde_json::to_string(&report)
+            .expect("report should serialize")
+            .contains("classifiedsentinel"));
         server.shutdown();
     }
 

@@ -1136,16 +1136,16 @@ These items should be implemented once and reused across individual fixes to avo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `M-05`.
-- [ ] Add or update a regression test: Fixture with one allowed and one denied note in same cluster returns no denied snippet/path/term.
-- [ ] Implement the remediation: Apply permission filters before clustering or recompute every returned summary from the filtered member set only.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Fixture with one allowed and one denied note in same cluster returns no denied snippet/path/term.
+- [x] Implement the remediation: Apply permission filters before clustering or recompute every returned summary from the filtered member set only.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
 
 ### M-06. Dataview inline and expression evaluation use unrestricted note lookup
 
