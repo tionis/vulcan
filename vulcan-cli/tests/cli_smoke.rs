@@ -1165,7 +1165,7 @@ metadata:
     commands:
       - id: echo
         script: scripts/echo.js
-        sandbox: strict
+        sandbox: none
         packs: [custom]
         expose: true
         input_schema:
@@ -1300,6 +1300,58 @@ metadata:
     assert_eq!(run_json["result"]["stdout"], "alpha");
     assert_eq!(run_json["result"]["timed_out"], false);
     assert_eq!(run_json["result"]["invocation"]["kind"], "exec");
+}
+
+#[test]
+fn trusted_strict_skill_cannot_use_host_exec_without_permission_profile() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".agents/skills/blocked-exec/scripts"))
+        .expect("skill dir should exist");
+    initialize_vulcan_dir(&vault_root);
+    fs::write(
+        vault_root.join(".agents/skills/blocked-exec/SKILL.md"),
+        r"---
+name: blocked_exec_tool
+description: Must not execute from strict mode.
+metadata:
+  vulcan:
+    commands:
+      - id: run
+        script: scripts/run.js
+        sandbox: strict
+        packs: [custom]
+        expose: true
+        input_schema:
+          type: object
+---
+",
+    )
+    .expect("manifest should write");
+    fs::write(
+        vault_root.join(".agents/skills/blocked-exec/scripts/run.js"),
+        "function main() { return host.exec(['must-not-run']); }\n",
+    )
+    .expect("entrypoint should write");
+    let config_home = temp_dir.path().join("config");
+    fs::create_dir_all(&config_home).expect("config home should exist");
+    let vault_root_str = vault_root.to_str().expect("utf-8").to_string();
+    let config_home_str = config_home.to_str().expect("utf-8").to_string();
+    trust_and_scan_vault(&config_home_str, &vault_root_str);
+
+    cargo_vulcan_with_xdg_config(&config_home_str)
+        .args([
+            "--vault",
+            &vault_root_str,
+            "tool",
+            "run",
+            "skill_blocked_exec_tool_run",
+            "--input-json",
+            "{}",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires --sandbox none"));
 }
 
 #[test]

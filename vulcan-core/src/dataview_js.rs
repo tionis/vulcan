@@ -5048,24 +5048,40 @@ globalThis.Function = undefined;
 
     fn ensure_execute_access(state: &JsEvalState, operation: &str) -> Result<(), DataviewJsError> {
         ensure_static_mode_allows(state, operation, "host execution")?;
-        if let Some(permissions) = state.permissions.as_ref() {
-            permissions
-                .check_execute()
-                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        if state.sandbox != JsRuntimeSandbox::None {
+            return Err(DataviewJsError::Message(format!(
+                "{operation} requires --sandbox none"
+            )));
         }
+        let permissions = state.permissions.as_ref().ok_or_else(|| {
+            DataviewJsError::Message(format!(
+                "permission denied: {operation} requires an explicit profile with execute access"
+            ))
+        })?;
+        permissions
+            .check_execute()
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
         Ok(())
     }
 
     fn ensure_shell_access(state: &JsEvalState, operation: &str) -> Result<(), DataviewJsError> {
         ensure_static_mode_allows(state, operation, "shell execution")?;
-        if let Some(permissions) = state.permissions.as_ref() {
-            permissions
-                .check_shell()
-                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
-            permissions
-                .check_execute()
-                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        if state.sandbox != JsRuntimeSandbox::None {
+            return Err(DataviewJsError::Message(format!(
+                "{operation} requires --sandbox none"
+            )));
         }
+        let permissions = state.permissions.as_ref().ok_or_else(|| {
+            DataviewJsError::Message(format!(
+                "permission denied: {operation} requires an explicit profile with shell and execute access"
+            ))
+        })?;
+        permissions
+            .check_shell()
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        permissions
+            .check_execute()
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
         Ok(())
     }
 
@@ -7528,6 +7544,46 @@ cpu_limit_ms = 25
         }
 
         #[test]
+        fn dataviewjs_host_exec_requires_none_sandbox_and_explicit_profile() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
+            copy_fixture_vault("dataview", &vault_root);
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+            let source = r#"host.exec(["must-not-run"])"#;
+
+            let strict_error = evaluate_dataview_js_with_options(
+                &paths,
+                source,
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    sandbox: Some(JsRuntimeSandbox::Strict),
+                    permission_profile: None,
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect_err("strict sandbox must reject host execution");
+            assert!(strict_error.to_string().contains("requires --sandbox none"));
+
+            let missing_profile_error = evaluate_dataview_js_with_options(
+                &paths,
+                source,
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    sandbox: Some(JsRuntimeSandbox::None),
+                    permission_profile: None,
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect_err("missing permission profile must reject host execution");
+            assert!(missing_profile_error
+                .to_string()
+                .contains("requires an explicit profile with execute access"));
+        }
+
+        #[test]
         fn dataviewjs_host_exec_and_shell_respect_permissions() {
             let temp_dir = tempdir().expect("temp dir should be created");
             let vault_root = temp_dir.path().join("vault");
@@ -7547,7 +7603,7 @@ cpu_limit_ms = 25
                 Some("Dashboard.md"),
                 DataviewJsEvalOptions {
                     timeout: Some(Duration::from_secs(1)),
-                    sandbox: Some(JsRuntimeSandbox::Strict),
+                    sandbox: Some(JsRuntimeSandbox::None),
                     permission_profile: Some("exec_only".to_string()),
                     ..DataviewJsEvalOptions::default()
                 },
@@ -7570,7 +7626,7 @@ cpu_limit_ms = 25
                 Some("Dashboard.md"),
                 DataviewJsEvalOptions {
                     timeout: Some(Duration::from_secs(1)),
-                    sandbox: Some(JsRuntimeSandbox::Strict),
+                    sandbox: Some(JsRuntimeSandbox::None),
                     permission_profile: Some("exec_only".to_string()),
                     ..DataviewJsEvalOptions::default()
                 },
@@ -7586,7 +7642,7 @@ cpu_limit_ms = 25
                 Some("Dashboard.md"),
                 DataviewJsEvalOptions {
                     timeout: Some(Duration::from_secs(1)),
-                    sandbox: Some(JsRuntimeSandbox::Strict),
+                    sandbox: Some(JsRuntimeSandbox::None),
                     permission_profile: Some("shell_runner".to_string()),
                     ..DataviewJsEvalOptions::default()
                 },
@@ -7624,7 +7680,7 @@ cpu_limit_ms = 25
                 Some("Dashboard.md"),
                 DataviewJsEvalOptions {
                     timeout: Some(Duration::from_millis(75)),
-                    sandbox: Some(JsRuntimeSandbox::Strict),
+                    sandbox: Some(JsRuntimeSandbox::None),
                     permission_profile: Some("exec_only".to_string()),
                     ..DataviewJsEvalOptions::default()
                 },
@@ -7647,7 +7703,7 @@ cpu_limit_ms = 25
                 Some("Dashboard.md"),
                 DataviewJsEvalOptions {
                     timeout: Some(Duration::from_secs(1)),
-                    sandbox: Some(JsRuntimeSandbox::Strict),
+                    sandbox: Some(JsRuntimeSandbox::None),
                     permission_profile: Some("exec_only".to_string()),
                     ..DataviewJsEvalOptions::default()
                 },

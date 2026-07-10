@@ -405,17 +405,17 @@ These items should be implemented once and reused across individual fixes to avo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `H-02`.
-- [ ] Add or update a regression test: Regression test that `host.exec` fails in strict mode with no profile.
-- [ ] Add or update a regression test: Regression test that trusted skill commands without an explicit profile cannot call host execution APIs.
-- [ ] Implement the remediation: Make sandbox tier checks fail-closed inside `ensure_execute_access` and `ensure_shell_access`; default missing profiles to deny host I/O; require explicit `none`/execute permission for host commands.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Regression test that `host.exec` fails in strict mode with no profile.
+- [x] Add or update a regression test: Regression test that trusted skill commands without an explicit profile cannot call host execution APIs.
+- [x] Implement the remediation: Make sandbox tier checks fail-closed inside `ensure_execute_access` and `ensure_shell_access`; default missing profiles to deny host I/O; require explicit `none`/execute permission for host commands.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
 
 ### H-03. DataviewJS file APIs bypass read profiles and follow symlinks
 
