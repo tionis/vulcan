@@ -593,7 +593,7 @@ pub fn query_notes_with_filter(
 
     let mut note_index = None;
     if !post_filters.is_empty() {
-        let loaded_note_index = load_note_index(paths)?;
+        let loaded_note_index = load_note_index_with_filter(paths, filter)?;
         let formulas = BTreeMap::new();
         let mut filtered = Vec::with_capacity(notes.len());
         let time_zone = DataviewTimeZone::parse(config.dataview.timezone.as_deref());
@@ -649,7 +649,7 @@ pub fn query_notes_with_filter(
     {
         let loaded_note_index = match note_index {
             Some(index) => index,
-            None => load_note_index(paths)?,
+            None => load_note_index_with_filter(paths, filter)?,
         };
         for note in &mut notes {
             note.inline_expressions = evaluate_note_inline_expressions(note, &loaded_note_index);
@@ -667,18 +667,38 @@ pub fn query_notes_with_filter(
 /// Load an index of all notes keyed by `file_name` (basename without extension).
 /// This includes enough derived metadata for expression evaluation on linked notes.
 pub fn load_note_index(paths: &VaultPaths) -> Result<HashMap<String, NoteRecord>, PropertyError> {
+    load_note_index_with_filter(paths, None)
+}
+
+/// Load the expression lookup index after applying the caller's read scope.
+pub fn load_note_index_with_filter(
+    paths: &VaultPaths,
+    filter: Option<&PermissionFilter>,
+) -> Result<HashMap<String, NoteRecord>, PropertyError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
     let bookmarked_paths = load_bookmarked_paths(paths.vault_root());
     let vault_root = paths.vault_root().to_path_buf();
     let config = crate::load_vault_config(paths).config;
-    let mut stmt = connection.prepare(
-        "SELECT d.id, d.path, d.filename, d.extension, d.file_mtime, d.file_size, \
-         COALESCE(p.canonical_json, '{}'), COALESCE(p.raw_yaml, ''), \
-         d.periodic_type, d.periodic_date \
-         FROM documents d LEFT JOIN properties p ON p.document_id = d.id",
-    )?;
-    let rows = stmt.query_map([], |row| {
+    let permission_sql = filter
+        .map(|filter| filter.document_scope_sql("_note_index_permission"))
+        .unwrap_or_default();
+    let mut sql = permission_sql.cte;
+    sql.push_str(
+        "SELECT documents.id, documents.path, documents.filename, documents.extension, \
+         documents.file_mtime, documents.file_size, COALESCE(properties.canonical_json, '{}'), \
+         COALESCE(properties.raw_yaml, ''), documents.periodic_type, documents.periodic_date \
+         FROM documents LEFT JOIN properties ON properties.document_id = documents.id \
+         WHERE 1 = 1",
+    );
+    sql.push_str(&permission_sql.clause);
+    let params = permission_sql
+        .params
+        .into_iter()
+        .map(SqlValue::Text)
+        .collect::<Vec<_>>();
+    let mut stmt = connection.prepare(&sql)?;
+    let rows = stmt.query_map(params_from_iter(params.iter()), |row| {
         let props_json: String = row.get(6)?;
         Ok((
             row.get::<_, String>(0)?,
@@ -2652,10 +2672,98 @@ fn number_to_i64(value: f64) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::permissions::{PathPermission, ResourceSpecifier};
     use crate::{file_metadata::FileMetadataResolver, parse_document, scan_vault, ScanMode};
     use std::fs;
     use std::path::Path;
     use tempfile::TempDir;
+
+    fn public_only_filter() -> PermissionFilter {
+        PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::Folder("Public/**".to_string())],
+            deny: Vec::new(),
+        })
+    }
+
+    #[test]
+    fn filtered_inline_expressions_cannot_read_denied_linked_note_properties() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("cache directory");
+        fs::create_dir_all(vault_root.join("Public")).expect("public directory");
+        fs::create_dir_all(vault_root.join("Private")).expect("private directory");
+        fs::write(
+            vault_root.join("Public/Dashboard.md"),
+            "---\ntarget: \"[[Private/Secret]]\"\n---\n# Dashboard\n\n`= target.secret`\n",
+        )
+        .expect("public note");
+        fs::write(
+            vault_root.join("Private/Secret.md"),
+            "---\nsecret: classified\n---\n# Secret\n",
+        )
+        .expect("private note");
+        assert_eq!(
+            parse_document(
+                "---\ntarget: \"[[Private/Secret]]\"\n---\n# Dashboard\n\n`= target.secret`\n",
+                &VaultConfig::default(),
+            )
+            .inline_expressions
+            .len(),
+            1
+        );
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let report = query_notes_with_filter(
+            &paths,
+            &NoteQuery {
+                filters: Vec::new(),
+                sort_by: None,
+                sort_descending: false,
+            },
+            Some(&public_only_filter()),
+        )
+        .expect("filtered query should succeed");
+
+        assert_eq!(report.notes.len(), 1);
+        assert_eq!(report.notes[0].document_path, "Public/Dashboard.md");
+        assert_eq!(report.notes[0].inline_expressions.len(), 1);
+        assert_eq!(report.notes[0].inline_expressions[0].value, Value::Null);
+    }
+
+    #[test]
+    fn filtered_expression_filters_cannot_use_denied_linked_note_properties() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("cache directory");
+        fs::create_dir_all(vault_root.join("Public")).expect("public directory");
+        fs::create_dir_all(vault_root.join("Private")).expect("private directory");
+        fs::write(
+            vault_root.join("Public/Dashboard.md"),
+            "---\ntarget: \"[[Private/Secret]]\"\n---\n# Dashboard\n",
+        )
+        .expect("public note");
+        fs::write(
+            vault_root.join("Private/Secret.md"),
+            "---\nsecret: classified\n---\n# Secret\n",
+        )
+        .expect("private note");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+
+        let report = query_notes_with_filter(
+            &paths,
+            &NoteQuery {
+                filters: vec!["target.secret = classified".to_string()],
+                sort_by: None,
+                sort_descending: false,
+            },
+            Some(&public_only_filter()),
+        )
+        .expect("filtered query should succeed");
+
+        assert!(report.notes.is_empty());
+    }
 
     #[test]
     fn file_ctime_uses_filesystem_metadata_and_missing_files_fall_back_to_mtime() {

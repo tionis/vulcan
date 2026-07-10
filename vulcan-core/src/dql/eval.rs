@@ -17,8 +17,8 @@ use crate::file_metadata::FileMetadataResolver;
 use crate::paths::VaultPaths;
 use crate::permissions::{combine_cte_fragments, PermissionFilter};
 use crate::properties::{
-    build_note_filter_clause_from_expressions, load_note_index, FilterExpression, FilterField,
-    FilterOperator, FilterValue, NoteRecord, ParsedFilter, PropertyError,
+    build_note_filter_clause_from_expressions, load_note_index_with_filter, FilterExpression,
+    FilterField, FilterOperator, FilterValue, NoteRecord, ParsedFilter, PropertyError,
 };
 use crate::resolve_note_reference as resolve_vault_note_reference;
 
@@ -143,7 +143,7 @@ pub fn evaluate_parsed_dql_with_filter(
     filter: Option<&PermissionFilter>,
 ) -> Result<DqlQueryResult, DqlEvalError> {
     let config = load_vault_config(paths).config;
-    let note_lookup = load_note_index(paths)?;
+    let note_lookup = load_note_index_with_filter(paths, filter)?;
     evaluate_parsed_dql_with_note_index_and_config(
         paths,
         query,
@@ -1544,6 +1544,41 @@ LIMIT 1"#,
             result.rows[0]["File"],
             Value::String("[[Projects/Alpha]]".to_string())
         );
+    }
+
+    #[test]
+    fn evaluate_dql_with_filter_denies_linked_note_property_lookups() {
+        let temp_dir = tempdir().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        std::fs::create_dir_all(vault_root.join("Public")).expect("public directory");
+        std::fs::create_dir_all(vault_root.join("Private")).expect("private directory");
+        std::fs::write(
+            vault_root.join("Public/Dashboard.md"),
+            "---\ntarget: \"[[Private/Secret]]\"\n---\n# Dashboard\n",
+        )
+        .expect("public note");
+        std::fs::write(
+            vault_root.join("Private/Secret.md"),
+            "---\nsecret: classified\n---\n# Secret\n",
+        )
+        .expect("private note");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::Folder("Public/**".to_string())],
+            deny: Vec::new(),
+        });
+
+        let result = evaluate_dql_with_filter(
+            &paths,
+            "LIST file.name WHERE target.secret = \"classified\"",
+            None,
+            Some(&filter),
+        )
+        .expect("filtered DQL should evaluate");
+
+        assert_eq!(result.result_count, 0);
     }
 
     #[test]

@@ -236,10 +236,10 @@ pub use permissions::{
 };
 pub use properties::{
     evaluate_note_inline_expressions, extract_indexed_properties, list_properties,
-    list_query_fields, query_notes, query_notes_with_filter, EvaluatedInlineExpression,
-    IndexedProperties, IndexedPropertyListItem, IndexedPropertyValue, NoteQuery, NoteRecord,
-    NotesReport, PropertyCatalogEntry, PropertyError, PropertyTypeDiagnostic,
-    QueryFieldCatalogEntry,
+    list_query_fields, load_note_index_with_filter, query_notes, query_notes_with_filter,
+    EvaluatedInlineExpression, IndexedProperties, IndexedPropertyListItem, IndexedPropertyValue,
+    NoteQuery, NoteRecord, NotesReport, PropertyCatalogEntry, PropertyError,
+    PropertyTypeDiagnostic, QueryFieldCatalogEntry,
 };
 pub use query::{
     execute_query, execute_query_dsl, execute_query_json, execute_query_report,

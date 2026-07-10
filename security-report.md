@@ -1178,17 +1178,17 @@ These items should be implemented once and reused across individual fixes to avo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `M-06`.
-- [ ] Add or update a regression test: Regression test that inline `[[Private]].secret` under a public-only profile returns denied/empty.
-- [ ] Add or update a regression test: Query test that expression filters cannot use denied note metadata.
-- [ ] Implement the remediation: Load a permission-filtered note lookup for expression evaluation, and make link-field access fail closed for denied notes.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Regression test that inline `[[Private]].secret` under a public-only profile returns denied/empty.
+- [x] Add or update a regression test: Query test that expression filters cannot use denied note metadata.
+- [x] Implement the remediation: Load a permission-filtered note lookup for expression evaluation, and make link-field access fail closed for denied notes.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
 
 ### M-07. Bases, Kanban, and note move rewrites follow symlinked vault files
 
