@@ -1518,17 +1518,17 @@ These items should be implemented once and reused across individual fixes to avo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `M-14`.
-- [ ] Add or update a regression test: Transform test where quoted sensitive key is removed.
-- [ ] Add or update a regression test: Transform test fails closed when source span cannot be matched.
-- [ ] Implement the remediation: Perform redaction on the parsed YAML document or preserve source spans from a YAML parser; fail closed if a selected key cannot be removed from source text.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Transform test where quoted sensitive key is removed.
+- [x] Add or update a regression test: Transform test fails closed when source span cannot be matched.
+- [x] Implement the remediation: Perform redaction on the parsed YAML document or preserve source spans from a YAML parser; fail closed if a selected key cannot be removed from source text.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
 
 ### M-15. Attachment extraction buffers unlimited command output before applying caps
 

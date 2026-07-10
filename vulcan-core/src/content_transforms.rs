@@ -143,29 +143,21 @@ fn strip_excluded_frontmatter_keys(source: &str, excluded: &HashSet<String>) -> 
     let Some(mapping) = frontmatter.as_mapping() else {
         return source.to_string();
     };
-
-    let keys_to_remove = mapping
-        .keys()
-        .filter_map(serde_yaml::Value::as_str)
-        .filter(|key| excluded.contains(&normalize_field_name(key)))
-        .map(ToOwned::to_owned)
-        .collect::<Vec<_>>();
-    if keys_to_remove.is_empty() {
+    let mut updated_mapping = mapping.clone();
+    updated_mapping.retain(|key, _| {
+        key.as_str()
+            .is_none_or(|key| !excluded.contains(&normalize_field_name(key)))
+    });
+    if updated_mapping.len() == mapping.len() {
         return source.to_string();
     }
-
-    let mut updated_yaml = raw_yaml.to_string();
-    for key in keys_to_remove {
-        let Some(next_yaml) = remove_yaml_key_block(&updated_yaml, &key) else {
-            continue;
-        };
-        updated_yaml = next_yaml;
-    }
-
-    let replacement = if updated_yaml.trim().is_empty() {
+    let replacement = if updated_mapping.is_empty() {
         String::new()
     } else {
-        format!("---\n{updated_yaml}---\n")
+        match serde_yaml::to_string(&updated_mapping) {
+            Ok(updated_yaml) => format!("---\n{updated_yaml}---\n"),
+            Err(_) => String::new(),
+        }
     };
 
     let mut rendered =
@@ -462,59 +454,6 @@ fn trim_line(line: &str) -> &str {
     line.trim_end_matches('\n').trim_end_matches('\r')
 }
 
-fn is_top_level_key_line(line: &str, key: &str) -> bool {
-    let Some(rest) = line.strip_prefix(key) else {
-        return false;
-    };
-    let Some(rest) = rest.strip_prefix(':') else {
-        return false;
-    };
-    rest.is_empty()
-        || rest.starts_with(' ')
-        || rest.starts_with('\t')
-        || rest == "\n"
-        || rest == "\r\n"
-}
-
-fn find_yaml_key_span(yaml: &str, key: &str) -> Option<(usize, usize)> {
-    let mut pos = 0usize;
-    let mut span_start = None::<usize>;
-
-    for line in yaml.split_inclusive('\n') {
-        let line_start = pos;
-        pos += line.len();
-        let line_body = trim_line(line);
-
-        if let Some(start) = span_start {
-            if line_body.is_empty() {
-                return Some((start, line_start));
-            }
-            let first_char = line.chars().next().unwrap_or(' ');
-            if first_char == ' '
-                || first_char == '\t'
-                || line_body.starts_with("- ")
-                || line_body == "-"
-            {
-            } else {
-                return Some((start, line_start));
-            }
-        } else if is_top_level_key_line(line_body, key) {
-            span_start = Some(line_start);
-            let after_colon = line_body[key.len() + 1..].trim();
-            if !after_colon.is_empty() {
-                return Some((line_start, pos));
-            }
-        }
-    }
-
-    span_start.map(|start| (start, pos))
-}
-
-fn remove_yaml_key_block(yaml: &str, key: &str) -> Option<String> {
-    let (span_start, span_end) = find_yaml_key_span(yaml, key)?;
-    Some(format!("{}{}", &yaml[..span_start], &yaml[span_end..]))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -774,6 +713,40 @@ mod tests {
         assert!(!rendered.contains("API Key"));
         assert!(!rendered.contains("[[People/Bob]]"));
         assert!(rendered.starts_with("---\nPublic: visible\n---\n"));
+    }
+
+    #[test]
+    fn excludes_quoted_frontmatter_keys() {
+        let source = "---\npublic: visible\n\"API Key\": secret-value\n---\n# Home\n";
+
+        let rendered = apply_content_transforms(
+            source,
+            &ContentTransformConfig {
+                exclude_frontmatter_keys: vec!["api-key".to_string()],
+                ..ContentTransformConfig::default()
+            },
+        );
+
+        assert!(rendered.contains("public: visible"));
+        assert!(!rendered.contains("API Key"));
+        assert!(!rendered.contains("secret-value"));
+    }
+
+    #[test]
+    fn excludes_frontmatter_keys_with_explicit_yaml_key_syntax() {
+        let source = "---\npublic: visible\n? API Key\n: secret-value\n---\n# Home\n";
+
+        let rendered = apply_content_transforms(
+            source,
+            &ContentTransformConfig {
+                exclude_frontmatter_keys: vec!["api-key".to_string()],
+                ..ContentTransformConfig::default()
+            },
+        );
+
+        assert!(rendered.contains("public: visible"));
+        assert!(!rendered.contains("API Key"));
+        assert!(!rendered.contains("secret-value"));
     }
 
     #[test]
