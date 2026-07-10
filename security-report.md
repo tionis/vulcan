@@ -415,7 +415,7 @@ These items should be implemented once and reused across individual fixes to avo
 **Preventive controls:**
 
 - [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
 
 ### H-03. DataviewJS file APIs bypass read profiles and follow symlinks
 
@@ -1561,17 +1561,17 @@ These items should be implemented once and reused across individual fixes to avo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `M-15`.
-- [ ] Add or update a regression test: Extractor test with output over limit terminates without allocating the whole output.
-- [ ] Add or update a regression test: Timeout/kill test for never-ending extractor output.
-- [ ] Implement the remediation: Stream child stdout with a hard byte limit and kill the child when the limit or timeout is exceeded; cap stderr too.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Extractor test with output over limit terminates without allocating the whole output.
+- [x] Add or update a regression test: Timeout/kill test for never-ending extractor output.
+- [x] Implement the remediation: Stream child stdout with a hard byte limit and kill the child when the limit or timeout is exceeded; cap stderr too.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
 
 ### M-16. Parser, query, and expression engines contain unbounded recursion and allocation paths
 

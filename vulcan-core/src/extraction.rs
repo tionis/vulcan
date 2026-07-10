@@ -3,8 +3,15 @@ use crate::config::{AttachmentExtractionConfig, ChunkingConfig, VaultConfig};
 use crate::parser::types::{ChunkText, SemanticBlock, SemanticBlockKind};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::io::Read;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::sync::mpsc;
+use std::thread;
+use std::time::{Duration, Instant};
+
+const EXTRACTION_TIMEOUT: Duration = Duration::from_secs(30);
+const MAX_EXTRACTION_STDERR_BYTES: usize = 64 * 1024;
 
 #[derive(Debug)]
 pub(crate) enum AttachmentExtractionError {
@@ -15,6 +22,13 @@ pub(crate) enum AttachmentExtractionError {
     },
     Io(std::io::Error),
     InvalidUtf8(std::string::FromUtf8Error),
+    OutputLimitExceeded {
+        stream: &'static str,
+        limit: usize,
+    },
+    TimedOut {
+        command: String,
+    },
 }
 
 impl Display for AttachmentExtractionError {
@@ -42,6 +56,13 @@ impl Display for AttachmentExtractionError {
                 formatter,
                 "attachment extractor output was not valid UTF-8: {error}"
             ),
+            Self::OutputLimitExceeded { stream, limit } => write!(
+                formatter,
+                "attachment extractor {stream} exceeded {limit} byte limit"
+            ),
+            Self::TimedOut { command } => {
+                write!(formatter, "attachment extractor `{command}` timed out")
+            }
         }
     }
 }
@@ -51,7 +72,9 @@ impl Error for AttachmentExtractionError {
         match self {
             Self::Io(error) => Some(error),
             Self::InvalidUtf8(error) => Some(error),
-            Self::CommandFailed { .. } => None,
+            Self::CommandFailed { .. }
+            | Self::OutputLimitExceeded { .. }
+            | Self::TimedOut { .. } => None,
         }
     }
 }
@@ -102,6 +125,22 @@ fn run_extractor(
     relative_path: &str,
     extension: &str,
 ) -> Result<String, AttachmentExtractionError> {
+    run_extractor_with_timeout(
+        extraction,
+        absolute_path,
+        relative_path,
+        extension,
+        EXTRACTION_TIMEOUT,
+    )
+}
+
+fn run_extractor_with_timeout(
+    extraction: &AttachmentExtractionConfig,
+    absolute_path: &Path,
+    relative_path: &str,
+    extension: &str,
+    timeout: Duration,
+) -> Result<String, AttachmentExtractionError> {
     let absolute_path = absolute_path.to_string_lossy().into_owned();
     let mut command = Command::new(&extraction.command);
     for argument in &extraction.args {
@@ -113,19 +152,107 @@ fn run_extractor(
         );
     }
 
-    let output = command.output()?;
-    if !output.status.success() {
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = command.spawn()?;
+    let stdout = child.stdout.take().ok_or_else(|| {
+        AttachmentExtractionError::Io(std::io::Error::other("missing extractor stdout"))
+    })?;
+    let stderr = child.stderr.take().ok_or_else(|| {
+        AttachmentExtractionError::Io(std::io::Error::other("missing extractor stderr"))
+    })?;
+    let (limit_tx, limit_rx) = mpsc::channel();
+    let stdout_limit = extraction.max_output_bytes();
+    let stdout_reader = spawn_bounded_reader(stdout, "stdout", stdout_limit, limit_tx.clone());
+    let stderr_reader =
+        spawn_bounded_reader(stderr, "stderr", MAX_EXTRACTION_STDERR_BYTES, limit_tx);
+    let started = Instant::now();
+    let (status, forced_error) = loop {
+        if let Ok(error) = limit_rx.try_recv() {
+            let _ = child.kill();
+            break (child.wait()?, Some(error));
+        }
+        if started.elapsed() >= timeout {
+            let _ = child.kill();
+            break (
+                child.wait()?,
+                Some(AttachmentExtractionError::TimedOut {
+                    command: extraction.command.clone(),
+                }),
+            );
+        }
+        if let Some(status) = child.try_wait()? {
+            break (status, None);
+        }
+        thread::sleep(Duration::from_millis(5));
+    };
+    let stdout = stdout_reader.join().map_err(|_| {
+        AttachmentExtractionError::Io(std::io::Error::other("extractor stdout reader panicked"))
+    })??;
+    let stderr = stderr_reader.join().map_err(|_| {
+        AttachmentExtractionError::Io(std::io::Error::other("extractor stderr reader panicked"))
+    })??;
+    if let Some(error) = forced_error {
+        return Err(error);
+    }
+    if stdout.exceeded {
+        return Err(AttachmentExtractionError::OutputLimitExceeded {
+            stream: "stdout",
+            limit: stdout_limit,
+        });
+    }
+    if stderr.exceeded {
+        return Err(AttachmentExtractionError::OutputLimitExceeded {
+            stream: "stderr",
+            limit: MAX_EXTRACTION_STDERR_BYTES,
+        });
+    }
+    if !status.success() {
         return Err(AttachmentExtractionError::CommandFailed {
             command: extraction.command.clone(),
-            status: output
-                .status
+            status: status
                 .code()
                 .map_or_else(|| "signal".to_string(), |code| format!("exit code {code}")),
-            stderr: String::from_utf8_lossy(&output.stderr).trim().to_string(),
+            stderr: String::from_utf8_lossy(&stderr.bytes).trim().to_string(),
         });
     }
 
-    String::from_utf8(output.stdout).map_err(AttachmentExtractionError::from)
+    String::from_utf8(stdout.bytes).map_err(AttachmentExtractionError::from)
+}
+
+struct BoundedRead {
+    bytes: Vec<u8>,
+    exceeded: bool,
+}
+
+fn spawn_bounded_reader(
+    mut reader: impl Read + Send + 'static,
+    stream: &'static str,
+    limit: usize,
+    limit_tx: mpsc::Sender<AttachmentExtractionError>,
+) -> thread::JoinHandle<Result<BoundedRead, std::io::Error>> {
+    thread::spawn(move || {
+        let mut bytes = Vec::with_capacity(limit.min(8192));
+        let mut chunk = [0_u8; 8192];
+        loop {
+            let read = reader.read(&mut chunk)?;
+            if read == 0 {
+                return Ok(BoundedRead {
+                    bytes,
+                    exceeded: false,
+                });
+            }
+            let remaining = limit.saturating_sub(bytes.len());
+            bytes.extend_from_slice(&chunk[..read.min(remaining)]);
+            if read > remaining {
+                let _ =
+                    limit_tx.send(AttachmentExtractionError::OutputLimitExceeded { stream, limit });
+                return Ok(BoundedRead {
+                    bytes,
+                    exceeded: true,
+                });
+            }
+        }
+    })
 }
 
 fn normalize_extracted_text(text: &str, max_output_bytes: usize) -> String {
@@ -280,5 +407,99 @@ mod tests {
                 .expect("unsupported extension should succeed")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn extractor_stops_streaming_output_at_the_configured_limit() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let attachment_path = temp_dir.path().join("guide.pdf");
+        fs::write(&attachment_path, "pdf fixture").expect("attachment should write");
+        let extraction = AttachmentExtractionConfig {
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "while :; do printf '0123456789abcdef'; done".to_string(),
+            ],
+            extensions: vec!["pdf".to_string()],
+            max_output_bytes: Some(1024),
+        };
+
+        let started = Instant::now();
+        let error = run_extractor_with_timeout(
+            &extraction,
+            &attachment_path,
+            "guide.pdf",
+            "pdf",
+            Duration::from_secs(2),
+        )
+        .expect_err("unlimited extractor output should be rejected");
+
+        assert!(matches!(
+            error,
+            AttachmentExtractionError::OutputLimitExceeded {
+                stream: "stdout",
+                limit: 1024
+            }
+        ));
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn extractor_stops_streaming_stderr_at_the_diagnostic_limit() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let attachment_path = temp_dir.path().join("guide.pdf");
+        fs::write(&attachment_path, "pdf fixture").expect("attachment should write");
+        let extraction = AttachmentExtractionConfig {
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "while :; do printf '0123456789abcdef' >&2; done".to_string(),
+            ],
+            extensions: vec!["pdf".to_string()],
+            max_output_bytes: Some(1024),
+        };
+
+        let error = run_extractor_with_timeout(
+            &extraction,
+            &attachment_path,
+            "guide.pdf",
+            "pdf",
+            Duration::from_secs(2),
+        )
+        .expect_err("unlimited extractor diagnostics should be rejected");
+
+        assert!(matches!(
+            error,
+            AttachmentExtractionError::OutputLimitExceeded {
+                stream: "stderr",
+                limit: MAX_EXTRACTION_STDERR_BYTES
+            }
+        ));
+    }
+
+    #[test]
+    fn extractor_kills_a_command_that_exceeds_its_deadline() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let attachment_path = temp_dir.path().join("guide.pdf");
+        fs::write(&attachment_path, "pdf fixture").expect("attachment should write");
+        let extraction = AttachmentExtractionConfig {
+            command: "sh".to_string(),
+            args: vec!["-c".to_string(), "while :; do :; done".to_string()],
+            extensions: vec!["pdf".to_string()],
+            max_output_bytes: Some(1024),
+        };
+
+        let started = Instant::now();
+        let error = run_extractor_with_timeout(
+            &extraction,
+            &attachment_path,
+            "guide.pdf",
+            "pdf",
+            Duration::from_millis(50),
+        )
+        .expect_err("non-terminating extractor should time out");
+
+        assert!(matches!(error, AttachmentExtractionError::TimedOut { .. }));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }
