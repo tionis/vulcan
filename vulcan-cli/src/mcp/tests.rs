@@ -2,6 +2,28 @@ use super::*;
 use crate::McpToolPackModeArg;
 use vulcan_core::PermissionProfile;
 
+#[test]
+fn http_parser_rejects_oversized_content_length_before_body_read() {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+    let address = listener.local_addr().expect("listener address");
+    let client = thread::spawn(move || {
+        let mut stream = TcpStream::connect(address).expect("client should connect");
+        write!(
+            stream,
+            "POST /mcp HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\n\r\n",
+            MAX_MCP_HTTP_BODY_BYTES + 1
+        )
+        .expect("request headers should write");
+    });
+    let (mut stream, _) = listener.accept().expect("server should accept");
+
+    let error = read_mcp_http_request(&mut stream).expect_err("oversized body should fail");
+    client.join().expect("client thread should finish");
+
+    assert_eq!(error.status, 413);
+    assert!(error.message.contains("exceeds maximum size"));
+}
+
 fn oauth_options() -> McpHttpOptions {
     McpHttpOptions {
         bind: "127.0.0.1:8765".to_string(),

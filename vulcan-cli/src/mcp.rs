@@ -504,7 +504,7 @@ fn handle_mcp_http_connection(
     let request = match read_mcp_http_request(stream) {
         Ok(request) => request,
         Err(error) => {
-            let response = mcp_http_json_error_response(400, error, Value::Null);
+            let response = mcp_http_json_error_response(error.status, error.message, Value::Null);
             write_mcp_http_response(stream, &response).map_err(CliError::operation)?;
             return Ok(());
         }
@@ -3991,13 +3991,41 @@ fn origin_allowed(origin: &str, bind_addr: SocketAddr) -> bool {
     }
 }
 
-fn read_mcp_http_request(stream: &mut TcpStream) -> Result<McpHttpRequest, String> {
+const MAX_MCP_HTTP_BODY_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug)]
+struct McpHttpReadError {
+    status: u16,
+    message: String,
+}
+
+impl McpHttpReadError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: 400,
+            message: message.into(),
+        }
+    }
+
+    fn payload_too_large() -> Self {
+        Self {
+            status: 413,
+            message: format!(
+                "request body exceeds maximum size of {MAX_MCP_HTTP_BODY_BYTES} bytes"
+            ),
+        }
+    }
+}
+
+fn read_mcp_http_request(stream: &mut TcpStream) -> Result<McpHttpRequest, McpHttpReadError> {
     let mut buffer = Vec::new();
     let mut header_end = None;
 
     loop {
         let mut chunk = [0_u8; 1024];
-        let bytes_read = stream.read(&mut chunk).map_err(|error| error.to_string())?;
+        let bytes_read = stream
+            .read(&mut chunk)
+            .map_err(|error| McpHttpReadError::bad_request(error.to_string()))?;
         if bytes_read == 0 {
             break;
         }
@@ -4007,25 +4035,28 @@ fn read_mcp_http_request(stream: &mut TcpStream) -> Result<McpHttpRequest, Strin
             break;
         }
         if buffer.len() > 64 * 1024 {
-            return Err("request headers exceed 64 KiB".to_string());
+            return Err(McpHttpReadError::bad_request(
+                "request headers exceed 64 KiB",
+            ));
         }
     }
 
-    let header_end = header_end.ok_or_else(|| "incomplete HTTP request".to_string())?;
+    let header_end =
+        header_end.ok_or_else(|| McpHttpReadError::bad_request("incomplete HTTP request"))?;
     let header_text = String::from_utf8(buffer[..header_end].to_vec())
-        .map_err(|_| "request headers are not valid UTF-8".to_string())?;
+        .map_err(|_| McpHttpReadError::bad_request("request headers are not valid UTF-8"))?;
     let mut lines = header_text.lines();
     let request_line = lines
         .next()
-        .ok_or_else(|| "missing HTTP request line".to_string())?;
+        .ok_or_else(|| McpHttpReadError::bad_request("missing HTTP request line"))?;
     let mut request_parts = request_line.split_whitespace();
     let method = request_parts
         .next()
-        .ok_or_else(|| "missing HTTP method".to_string())?
+        .ok_or_else(|| McpHttpReadError::bad_request("missing HTTP method"))?
         .to_string();
     let target = request_parts
         .next()
-        .ok_or_else(|| "missing HTTP request target".to_string())?;
+        .ok_or_else(|| McpHttpReadError::bad_request("missing HTTP request target"))?;
     let (path, query) = target
         .split_once('?')
         .map_or((target, ""), |(path, query)| (path, query));
@@ -4043,13 +4074,21 @@ fn read_mcp_http_request(stream: &mut TcpStream) -> Result<McpHttpRequest, Strin
         .get("content-length")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0);
+    if content_length > MAX_MCP_HTTP_BODY_BYTES {
+        return Err(McpHttpReadError::payload_too_large());
+    }
 
     let mut body = buffer[header_end..].to_vec();
+    if body.len() > MAX_MCP_HTTP_BODY_BYTES {
+        return Err(McpHttpReadError::payload_too_large());
+    }
     while body.len() < content_length {
-        let mut chunk = vec![0_u8; content_length - body.len()];
+        let mut chunk = [0_u8; 8192];
+        let remaining = content_length - body.len();
+        let read_length = remaining.min(chunk.len());
         let bytes_read = stream
-            .read(chunk.as_mut_slice())
-            .map_err(|error| error.to_string())?;
+            .read(&mut chunk[..read_length])
+            .map_err(|error| McpHttpReadError::bad_request(error.to_string()))?;
         if bytes_read == 0 {
             break;
         }
@@ -4057,7 +4096,9 @@ fn read_mcp_http_request(stream: &mut TcpStream) -> Result<McpHttpRequest, Strin
     }
 
     if body.len() < content_length {
-        return Err("incomplete HTTP request body".to_string());
+        return Err(McpHttpReadError::bad_request(
+            "incomplete HTTP request body",
+        ));
     }
 
     Ok(McpHttpRequest {
