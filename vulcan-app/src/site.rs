@@ -1291,7 +1291,7 @@ fn resolve_site_profile(
         link_policy: raw.link_policy.unwrap_or(SiteLinkPolicyConfig::Warn),
         asset_policy: raw.asset_policy,
         dataview_js: raw.dataview_js.unwrap_or(SiteDataviewJsPolicyConfig::Off),
-        raw_html: raw.raw_html.unwrap_or(SiteRawHtmlPolicyConfig::Passthrough),
+        raw_html: raw.raw_html.unwrap_or(SiteRawHtmlPolicyConfig::Sanitize),
         theme_overrides,
         content_transform_rules: raw.content_transform_rules.clone(),
         implicit,
@@ -1850,8 +1850,9 @@ fn render_site_plan_note(
                 SiteDataviewJsPolicyConfig::Static => HtmlDataviewJsPolicy::Static,
             },
             raw_html_policy: match plan.profile.raw_html {
-                SiteRawHtmlPolicyConfig::Passthrough => HtmlRawHtmlPolicy::Passthrough,
-                SiteRawHtmlPolicyConfig::Sanitize => HtmlRawHtmlPolicy::Sanitize,
+                SiteRawHtmlPolicyConfig::Passthrough | SiteRawHtmlPolicyConfig::Sanitize => {
+                    HtmlRawHtmlPolicy::Sanitize
+                }
                 SiteRawHtmlPolicyConfig::Strip => HtmlRawHtmlPolicy::Strip,
             },
             max_embed_depth: 4,

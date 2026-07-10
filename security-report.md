@@ -533,17 +533,17 @@ These items should be implemented once and reused across individual fixes to avo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `H-05`.
-- [ ] Add or update a regression test: Renderer test that `<script>` is escaped/removed by default.
-- [ ] Add or update a regression test: Renderer test that `javascript:` and unsafe `data:` URLs are rejected.
-- [ ] Implement the remediation: Make sanitized rendering the default, strip or escape raw HTML unless explicitly trusted, and allowlist safe URL schemes for `href`/`src`.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Renderer test that `<script>` is escaped/removed by default.
+- [x] Add or update a regression test: Renderer test that `javascript:` and unsafe `data:` URLs are rejected.
+- [x] Implement the remediation: Make sanitized rendering the default, strip or escape raw HTML unless explicitly trusted, and allowlist safe URL schemes for `href`/`src`.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
 
 ### H-06. Exports and site builds can publish files outside the active read filter
 

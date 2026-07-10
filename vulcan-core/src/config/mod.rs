@@ -2104,8 +2104,8 @@ pub enum SiteDataviewJsPolicyConfig {
 #[serde(rename_all = "snake_case")]
 pub enum SiteRawHtmlPolicyConfig {
     #[default]
-    Passthrough,
     Sanitize,
+    Passthrough,
     Strip,
 }
 

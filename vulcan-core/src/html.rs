@@ -15,7 +15,7 @@ use crate::tasks::{evaluate_tasks_query, evaluate_tasks_query_with_note_index, T
 use crate::{
     evaluate_base_file, evaluate_dataview_js_with_options, evaluate_dql_with_filter, parse_document,
 };
-use ammonia::clean as sanitize_html_fragment;
+use ammonia::Builder as HtmlSanitizer;
 use pulldown_cmark::{
     html, CowStr, Event as MarkdownEvent, Parser as MarkdownParser, Tag as MarkdownTag,
 };
@@ -38,8 +38,8 @@ pub enum HtmlDataviewJsPolicy {
 #[serde(rename_all = "snake_case")]
 pub enum HtmlRawHtmlPolicy {
     #[default]
-    Passthrough,
     Sanitize,
+    Passthrough,
     Strip,
 }
 
@@ -67,7 +67,7 @@ impl Default for HtmlRenderOptions<'_> {
             full_document: true,
             link_targets: None,
             dataview_js_policy: HtmlDataviewJsPolicy::Off,
-            raw_html_policy: HtmlRawHtmlPolicy::Passthrough,
+            raw_html_policy: HtmlRawHtmlPolicy::Sanitize,
             max_embed_depth: 4,
         }
     }
@@ -1402,12 +1402,21 @@ fn rewrite_raw_html_event<'a>(
     }
 }
 
+fn sanitize_html_fragment(raw: &str) -> String {
+    let mut sanitizer = HtmlSanitizer::default();
+    sanitizer.add_generic_attributes(["class"]);
+    sanitizer.clean(raw).to_string()
+}
+
 fn rewrite_link_destination(
     source_document_path: &str,
     destination: &str,
     note_targets: &HashMap<String, String>,
     asset_targets: &HashMap<String, String>,
 ) -> Option<String> {
+    if !is_safe_render_url(destination) {
+        return Some(String::new());
+    }
     if destination.is_empty() || is_external_href(destination) {
         return None;
     }
@@ -1425,6 +1434,9 @@ fn rewrite_image_destination(
     destination: &str,
     asset_targets: &HashMap<String, String>,
 ) -> Option<String> {
+    if !is_safe_render_url(destination) {
+        return Some(String::new());
+    }
     if destination.is_empty() || is_external_href(destination) {
         return None;
     }
@@ -1730,6 +1742,25 @@ fn is_external_href(destination: &str) -> bool {
         || destination.starts_with("tel:")
         || destination.starts_with("obsidian:")
         || destination.contains("://")
+}
+
+fn is_safe_render_url(destination: &str) -> bool {
+    if destination.trim() != destination || destination.chars().any(char::is_control) {
+        return false;
+    }
+    let Some(colon_index) = destination.find(':') else {
+        return true;
+    };
+    let path_delimiter = destination
+        .find(['/', '?', '#'])
+        .unwrap_or(destination.len());
+    if colon_index > path_delimiter {
+        return true;
+    }
+    matches!(
+        destination[..colon_index].to_ascii_lowercase().as_str(),
+        "http" | "https" | "mailto" | "tel" | "obsidian"
+    )
 }
 
 fn render_message_html(title: &str, message: &str) -> String {
@@ -2043,7 +2074,7 @@ mod tests {
     }
 
     #[test]
-    fn raw_html_passthrough_is_the_default_policy() {
+    fn raw_html_is_sanitized_by_default() {
         let (_temp_dir, paths) = build_render_vault();
         let rendered = render_vault_html(
             &paths,
@@ -2051,11 +2082,26 @@ mod tests {
             &HtmlRenderOptions::default(),
         );
 
+        assert!(rendered.html.contains("Visible"));
+        assert!(!rendered.html.contains("<script>alert('x')</script>"));
         assert!(rendered
-            .html
-            .contains("<aside class=\"callout\">Visible</aside>"));
-        assert!(rendered.html.contains("<script>alert('x')</script>"));
-        assert!(rendered.diagnostics.is_empty());
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == "raw_html_sanitized"));
+    }
+
+    #[test]
+    fn markdown_links_reject_active_url_schemes() {
+        let (_temp_dir, paths) = build_render_vault();
+        let rendered = render_vault_html(
+            &paths,
+            "[script](javascript:alert(1)) ![payload](data:text/html;base64,PHNjcmlwdD4=) [safe](https://example.test)",
+            &HtmlRenderOptions::default(),
+        );
+
+        assert!(!rendered.html.contains("javascript:"));
+        assert!(!rendered.html.contains("data:text/html"));
+        assert!(rendered.html.contains("href=\"https://example.test\""));
     }
 
     #[test]
