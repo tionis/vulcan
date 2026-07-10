@@ -510,7 +510,7 @@ use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::{
     bulk_replace, create_checkpoint, default_assistant_tool_reserved_names, delete_saved_report,
     doctor_fix, doctor_vault, evaluate_base_file, evaluate_dql_with_filter,
-    export_static_search_index, link_mentions, list_checkpoints, list_saved_reports,
+    export_static_search_index_with_filter, link_mentions, list_checkpoints, list_saved_reports,
     load_saved_report, load_vault_config, merge_tags, move_note, plan_base_note_create,
     query_change_report, query_notes, rebuild_vault_with_progress, rename_alias, rename_block_ref,
     rename_heading, rename_property, repair_fts, resolve_note_reference,
@@ -3838,7 +3838,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     }
                 }
                 ExportCommand::SearchIndex { path, pretty } => {
-                    let report = export_static_search_index(&paths).map_err(CliError::operation)?;
+                    let report =
+                        export_static_search_index_with_filter(&paths, read_filter.as_ref())
+                            .map_err(CliError::operation)?;
                     print_static_search_index_report(cli.output, &report, path.as_ref(), *pretty)
                 }
             }
@@ -6836,8 +6838,10 @@ fn run_search_index_export_profile(
     paths: &VaultPaths,
     output_path: &Path,
     pretty: bool,
+    read_filter: Option<&PermissionFilter>,
 ) -> Result<Value, CliError> {
-    let report = export_static_search_index(paths).map_err(CliError::operation)?;
+    let report =
+        export_static_search_index_with_filter(paths, read_filter).map_err(CliError::operation)?;
     let rendered = if pretty {
         serde_json::to_string_pretty(&report).map_err(CliError::operation)?
     } else {
@@ -7035,6 +7039,7 @@ fn run_export_profile(
             paths,
             &output_path,
             profile.pretty.unwrap_or(false),
+            read_filter,
         )?,
         ExportProfileFormat::FrontendBundle => {
             run_frontend_bundle_export_profile(cli.output, paths, name, &output_path, &profile)?

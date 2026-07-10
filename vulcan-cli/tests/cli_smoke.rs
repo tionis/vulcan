@@ -13504,6 +13504,49 @@ fn export_search_index_writes_static_json_payload() {
 }
 
 #[test]
+fn export_search_index_respects_read_permission_profile() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[permissions.profiles.projects_only]
+read = { allow = ["folder:Projects/**"] }
+"#,
+    )
+    .expect("config should be written");
+    run_scan(&vault_root);
+    let export_path = temp_dir.path().join("filtered-search-index.json");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "--permissions",
+            "projects_only",
+            "export",
+            "search-index",
+            "--path",
+            export_path.to_str().expect("export path should be utf-8"),
+        ])
+        .assert()
+        .success();
+
+    let payload: Value = serde_json::from_str(
+        &fs::read_to_string(&export_path).expect("search index export should exist"),
+    )
+    .expect("search index export should parse");
+    assert_eq!(payload["documents"], 1);
+    assert!(payload["entries"]
+        .as_array()
+        .expect("entries should be an array")
+        .iter()
+        .all(|entry| entry["document_path"] == "Projects/Alpha.md"));
+}
+
+#[test]
 fn export_markdown_combines_matched_notes() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

@@ -398,9 +398,16 @@ pub fn search_vault_with_filter(
 pub fn export_static_search_index(
     paths: &VaultPaths,
 ) -> Result<StaticSearchIndexReport, SearchError> {
+    export_static_search_index_with_filter(paths, None)
+}
+
+pub fn export_static_search_index_with_filter(
+    paths: &VaultPaths,
+    filter: Option<&PermissionFilter>,
+) -> Result<StaticSearchIndexReport, SearchError> {
     let database = open_existing_cache(paths)?;
     let connection = database.connection();
-    let entries = load_static_search_index_entries(connection)?;
+    let entries = load_static_search_index_entries(connection, filter)?;
     let documents = entries
         .iter()
         .map(|entry| entry.document_path.as_str())
@@ -425,8 +432,13 @@ fn open_existing_cache(paths: &VaultPaths) -> Result<CacheDatabase, SearchError>
 
 fn load_static_search_index_entries(
     connection: &Connection,
+    filter: Option<&PermissionFilter>,
 ) -> Result<Vec<StaticSearchIndexEntry>, SearchError> {
-    let mut statement = connection.prepare(
+    let permission_sql = filter
+        .map(|filter| filter.document_scope_sql("_static_search_permission"))
+        .unwrap_or_default();
+    let mut sql = permission_sql.cte;
+    sql.push_str(
         "
         SELECT
             documents.path,
@@ -439,11 +451,19 @@ fn load_static_search_index_entries(
         FROM search_chunk_content
         JOIN chunks ON chunks.id = search_chunk_content.chunk_id
         JOIN documents ON documents.id = search_chunk_content.document_id
-        ORDER BY documents.path, chunks.sequence_index
+        WHERE 1 = 1
         ",
-    )?;
+    );
+    sql.push_str(&permission_sql.clause);
+    sql.push_str(" ORDER BY documents.path, chunks.sequence_index");
+    let params = permission_sql
+        .params
+        .into_iter()
+        .map(SqlValue::Text)
+        .collect::<Vec<_>>();
+    let mut statement = connection.prepare(&sql)?;
 
-    let rows = statement.query_map([], |row| {
+    let rows = statement.query_map(params_from_iter(params.iter()), |row| {
         let heading_path =
             serde_json::from_str::<Vec<String>>(&row.get::<_, String>(3)?).unwrap_or_default();
         Ok(StaticSearchIndexEntry {
@@ -3068,6 +3088,7 @@ impl PreparedSearchQuery {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::permissions::{PathPermission, ResourceSpecifier};
     use crate::{scan_vault, CacheDatabase, ScanMode};
     use std::fs;
     use std::path::Path;
@@ -3325,6 +3346,43 @@ mod tests {
                 && entry.heading_path == vec!["Home".to_string()]
                 && entry.content.contains("dashboard")
         }));
+    }
+
+    #[test]
+    fn static_search_index_export_omits_denied_documents_and_content() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        std::fs::create_dir_all(vault_root.join("Public")).expect("public directory");
+        std::fs::create_dir_all(vault_root.join("Private")).expect("private directory");
+        fs::write(
+            vault_root.join("Public/Home.md"),
+            "# Public\n\nVisible publication content.\n",
+        )
+        .expect("public note");
+        fs::write(
+            vault_root.join("Private/Secret.md"),
+            "# Private\n\nClassified search sentinel.\n",
+        )
+        .expect("private note");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::Folder("Public/**".to_string())],
+            deny: Vec::new(),
+        });
+
+        let report = export_static_search_index_with_filter(&paths, Some(&filter))
+            .expect("filtered export should succeed");
+
+        assert_eq!(report.documents, 1);
+        assert!(report
+            .entries
+            .iter()
+            .all(|entry| entry.document_path == "Public/Home.md"));
+        assert!(!serde_json::to_string(&report)
+            .expect("report should serialize")
+            .contains("Classified search sentinel"));
     }
 
     #[test]

@@ -267,9 +267,10 @@ pub use scan::{
     ScanPhase, ScanProgress, ScanSummary,
 };
 pub use search::{
-    export_static_search_index, search_vault, search_vault_with_filter, SearchError,
-    SearchFuzzyExpansion, SearchHit, SearchHitExplain, SearchPlan, SearchQuery, SearchReport,
-    SearchSort, StaticSearchIndexEntry, StaticSearchIndexReport,
+    export_static_search_index, export_static_search_index_with_filter, search_vault,
+    search_vault_with_filter, SearchError, SearchFuzzyExpansion, SearchHit, SearchHitExplain,
+    SearchPlan, SearchQuery, SearchReport, SearchSort, StaticSearchIndexEntry,
+    StaticSearchIndexReport,
 };
 pub use suggestions::{
     accept_link_suggestion, bulk_replace, bulk_replace_on_paths, link_mentions,
