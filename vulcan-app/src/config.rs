@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use toml::Value as TomlValue;
+use vulcan_core::paths::secure_write;
 use vulcan_core::{
     default_config_template, ensure_vulcan_dir, load_permission_profiles,
     load_permission_profiles_with_overrides, load_vault_config, load_vault_config_with_overrides,
@@ -578,7 +579,11 @@ pub fn apply_config_document_save(
 ) -> Result<ConfigDocumentSaveReport, AppError> {
     if report.updated {
         ensure_vulcan_dir(paths).map_err(AppError::operation)?;
-        fs::write(&report.absolute_config_path, &report.rendered_contents)
+        let relative_path = report
+            .absolute_config_path
+            .strip_prefix(paths.vault_root())
+            .map_err(AppError::operation)?;
+        secure_write(paths.vault_root(), relative_path, &report.rendered_contents)
             .map_err(AppError::operation)?;
     }
     report.diagnostics = normalize_config_diagnostics(paths, &load_vault_config(paths).diagnostics);
@@ -2134,7 +2139,11 @@ fn apply_config_mutation_plan(
 ) -> Result<Vec<ConfigDiagnostic>, AppError> {
     if plan.updated {
         ensure_vulcan_dir(paths).map_err(AppError::operation)?;
-        fs::write(&plan.absolute_config_path, &plan.rendered_contents)
+        let relative_path = plan
+            .absolute_config_path
+            .strip_prefix(paths.vault_root())
+            .map_err(AppError::operation)?;
+        secure_write(paths.vault_root(), relative_path, &plan.rendered_contents)
             .map_err(AppError::operation)?;
     }
     Ok(normalize_config_diagnostics(
@@ -2492,6 +2501,30 @@ read = { allow = ["folder:Projects/**"] }
         assert_eq!(
             fs::read_to_string(paths.config_file()).expect("config should be written"),
             rendered
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_config_set_rejects_symlink_without_modifying_target() {
+        use std::os::unix::fs::symlink;
+
+        let (_dir, paths) = test_paths();
+        let outside = tempdir().expect("outside temp dir");
+        let outside_config = outside.path().join("config.toml");
+        let outside_contents = "[links]\nstyle = \"wikilink\"\n";
+        fs::write(&outside_config, outside_contents).expect("outside config");
+        symlink(&outside_config, paths.config_file()).expect("config symlink");
+
+        let planned = plan_config_set_report(&paths, "link_style", "markdown", false)
+            .expect("config set should plan");
+        let error = apply_config_set_report(&paths, planned)
+            .expect_err("symlinked config should be rejected");
+
+        assert!(!error.to_string().is_empty());
+        assert_eq!(
+            fs::read_to_string(outside_config).expect("outside config should remain readable"),
+            outside_contents
         );
     }
 

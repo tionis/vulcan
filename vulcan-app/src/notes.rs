@@ -13,7 +13,10 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use vulcan_core::expression::functions::{date_components, parse_date_like_string};
-use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
+use vulcan_core::paths::{
+    normalize_relative_input_path, secure_create, secure_read_to_string, secure_write,
+    RelativePathOptions,
+};
 use vulcan_core::properties::{extract_indexed_properties, load_note_index};
 use vulcan_core::{
     expected_periodic_note_path, load_vault_config, parse_document, parse_dql_with_diagnostics,
@@ -269,10 +272,8 @@ pub fn apply_note_create(
         &content,
         quiet,
     )?;
-    if let Some(parent) = absolute_path.parent() {
-        fs::create_dir_all(parent).map_err(AppError::operation)?;
-    }
-    fs::write(&absolute_path, &content).map_err(AppError::operation)?;
+    secure_create(paths.vault_root(), Path::new(&final_path), &content)
+        .map_err(AppError::operation)?;
     dispatch_note_create_plugin_hooks(paths, permission_profile, &final_path, &content, quiet);
     changed_paths.push(final_path.clone());
     changed_paths.sort();
@@ -387,10 +388,8 @@ pub fn apply_note_append(
         &content,
         quiet,
     )?;
-    if let Some(parent) = paths.vault_root().join(&target.path).parent() {
-        fs::create_dir_all(parent).map_err(AppError::operation)?;
-    }
-    fs::write(paths.vault_root().join(&target.path), &content).map_err(AppError::operation)?;
+    secure_write(paths.vault_root(), Path::new(&target.path), &content)
+        .map_err(AppError::operation)?;
     if target.created {
         dispatch_note_create_plugin_hooks(paths, permission_profile, &target.path, &content, quiet);
     }
@@ -416,8 +415,8 @@ pub fn apply_note_set(
     quiet: bool,
 ) -> Result<NoteSetReport, AppError> {
     let path = resolve_existing_note_path(paths, &request.note)?;
-    let absolute_path = paths.vault_root().join(&path);
-    let existing = fs::read_to_string(&absolute_path).map_err(AppError::operation)?;
+    let existing =
+        secure_read_to_string(paths.vault_root(), Path::new(&path)).map_err(AppError::operation)?;
     let content = if request.preserve_frontmatter {
         preserve_existing_frontmatter(&existing, &request.replacement)
     } else {
@@ -432,7 +431,7 @@ pub fn apply_note_set(
         &content,
         quiet,
     )?;
-    fs::write(&absolute_path, &content).map_err(AppError::operation)?;
+    secure_write(paths.vault_root(), Path::new(&path), &content).map_err(AppError::operation)?;
 
     Ok(NoteSetReport {
         path: path.clone(),
@@ -448,7 +447,12 @@ pub fn apply_note_patch(
     permission_profile: Option<&str>,
     quiet: bool,
 ) -> Result<NotePatchReport, AppError> {
-    let source = request.target.read_source()?;
+    let source = if let Some(relative_path) = request.target.vault_relative_path.as_deref() {
+        secure_read_to_string(paths.vault_root(), Path::new(relative_path))
+            .map_err(AppError::operation)?
+    } else {
+        request.target.read_source()?
+    };
     let matcher = parse_note_patch_matcher(&request.find)?;
     let scope = resolve_note_patch_scope_selection(
         &source,
@@ -501,8 +505,17 @@ pub fn apply_note_patch(
                 quiet,
             )?;
         }
-        fs::write(&request.target.absolute_path, &application.updated_content)
+        if let Some(relative_path) = request.target.vault_relative_path.as_deref() {
+            secure_write(
+                paths.vault_root(),
+                Path::new(relative_path),
+                &application.updated_content,
+            )
             .map_err(AppError::operation)?;
+        } else {
+            fs::write(&request.target.absolute_path, &application.updated_content)
+                .map_err(AppError::operation)?;
+        }
     }
 
     Ok(NotePatchReport {
@@ -1441,7 +1454,9 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
-    use vulcan_core::{initialize_vulcan_dir, scan_vault_with_progress, ScanMode, VaultPaths};
+    use vulcan_core::{
+        initialize_vulcan_dir, scan_vault_with_progress, ScanMode, VaultConfig, VaultPaths,
+    };
 
     #[test]
     fn parse_note_frontmatter_bindings_parses_yaml_scalars_and_lists() {
@@ -1662,6 +1677,48 @@ mod tests {
             .expect("patched note")
             .replace("\r\n", "\n");
         assert_eq!(updated, "# Title\n\n## Status\nDONE\n\n## Notes\nTODO\n");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn apply_note_patch_rejects_vault_symlink_without_modifying_target() {
+        use std::os::unix::fs::symlink;
+
+        let vault = tempdir().expect("vault temp dir");
+        let outside = tempdir().expect("outside temp dir");
+        let outside_note = outside.path().join("outside.md");
+        fs::write(&outside_note, "secret TODO\n").expect("outside note");
+        symlink(&outside_note, vault.path().join("linked.md")).expect("note symlink");
+        let paths = VaultPaths::new(vault.path());
+
+        let error = apply_note_patch(
+            &paths,
+            &NotePatchRequest {
+                target: MarkdownTarget {
+                    display_path: "linked.md".to_string(),
+                    absolute_path: vault.path().join("linked.md"),
+                    vault_relative_path: Some("linked.md".to_string()),
+                    config: VaultConfig::default(),
+                },
+                section_id: None,
+                heading: None,
+                block_ref: None,
+                lines: None,
+                find: "TODO".to_string(),
+                replace: "DONE".to_string(),
+                replace_all: false,
+                dry_run: false,
+            },
+            None,
+            true,
+        )
+        .expect_err("symlinked vault note should be rejected");
+
+        assert!(!error.to_string().is_empty());
+        assert_eq!(
+            fs::read_to_string(outside_note).expect("outside note should remain readable"),
+            "secret TODO\n"
+        );
     }
 
     #[test]

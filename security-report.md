@@ -833,6 +833,8 @@ These items should be implemented once and reused across individual fixes to avo
 
 **Action checklist:**
 
+- [x] Add descriptor-relative no-follow read/write/create primitives in `vulcan-core::paths`, with traversal, final-symlink, and intermediate-symlink regression tests.
+- [x] Migrate `vulcan-app` note create/set/append/patch and shared/local config mutation writes to the secure path primitives; add hostile note-patch and config-set symlink tests that verify the outside target is unchanged.
 - [ ] Assign an owner and target release for `H-12`.
 - [ ] Add or update a regression test: Fixture with note symlink to `/tmp` must fail for create/set/append/patch.
 - [ ] Add or update a regression test: Fixture with `.vulcan/config.toml` symlink must fail for config set/import.

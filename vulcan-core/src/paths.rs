@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 
 pub const VULCAN_DIR_NAME: &str = ".vulcan";
@@ -190,19 +191,23 @@ fn non_empty_os(value: Option<OsString>) -> Option<OsString> {
 }
 
 pub fn initialize_vulcan_dir(paths: &VaultPaths) -> Result<(), std::io::Error> {
-    fs::create_dir_all(paths.vulcan_dir())?;
+    match fs::create_dir(paths.vulcan_dir()) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error),
+    }
     ensure_vulcan_dir(paths)
 }
 
 pub fn ensure_vulcan_dir(paths: &VaultPaths) -> Result<(), std::io::Error> {
-    let metadata = match fs::metadata(paths.vulcan_dir()) {
+    let metadata = match fs::symlink_metadata(paths.vulcan_dir()) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Err(missing_vulcan_dir_error(paths));
         }
         Err(error) => return Err(error),
     };
-    if !metadata.is_dir() {
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(std::io::Error::new(
             std::io::ErrorKind::InvalidInput,
             format!(
@@ -274,6 +279,236 @@ pub fn normalize_relative_input_path(
     }
 
     Ok(normalized)
+}
+
+pub fn secure_read_to_string(root: &Path, relative_path: &Path) -> Result<String, std::io::Error> {
+    let mut file = secure_open(root, relative_path, SecureOpenMode::Read)?;
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
+    Ok(contents)
+}
+
+pub fn secure_write(
+    root: &Path,
+    relative_path: &Path,
+    contents: impl AsRef<[u8]>,
+) -> Result<(), std::io::Error> {
+    secure_write_with_mode(
+        root,
+        relative_path,
+        contents.as_ref(),
+        SecureOpenMode::Write,
+    )
+}
+
+pub fn secure_create(
+    root: &Path,
+    relative_path: &Path,
+    contents: impl AsRef<[u8]>,
+) -> Result<(), std::io::Error> {
+    secure_write_with_mode(
+        root,
+        relative_path,
+        contents.as_ref(),
+        SecureOpenMode::CreateNew,
+    )
+}
+
+fn secure_write_with_mode(
+    root: &Path,
+    relative_path: &Path,
+    contents: &[u8],
+    mode: SecureOpenMode,
+) -> Result<(), std::io::Error> {
+    let mut file = secure_open(root, relative_path, mode)?;
+    file.write_all(contents)
+}
+
+#[derive(Clone, Copy)]
+enum SecureOpenMode {
+    Read,
+    Write,
+    CreateNew,
+}
+
+fn validated_components(relative_path: &Path) -> Result<Vec<OsString>, std::io::Error> {
+    let mut components = Vec::new();
+    for component in relative_path.components() {
+        match component {
+            Component::Normal(value) if !value.is_empty() => components.push(value.to_os_string()),
+            Component::CurDir => {}
+            Component::Normal(_)
+            | Component::ParentDir
+            | Component::RootDir
+            | Component::Prefix(_) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "expected a non-empty relative path without traversal: {}",
+                        relative_path.display()
+                    ),
+                ));
+            }
+        }
+    }
+    if components.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "expected a non-empty relative path",
+        ));
+    }
+    Ok(components)
+}
+
+#[cfg(unix)]
+fn secure_open(
+    root: &Path,
+    relative_path: &Path,
+    mode: SecureOpenMode,
+) -> Result<fs::File, std::io::Error> {
+    use std::ffi::CString;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::ffi::OsStrExt;
+
+    fn c_string(value: &std::ffi::OsStr) -> Result<CString, std::io::Error> {
+        CString::new(value.as_bytes()).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "paths containing NUL bytes are not supported",
+            )
+        })
+    }
+
+    let components = validated_components(relative_path)?;
+    let root = c_string(root.as_os_str())?;
+    // SAFETY: `root` is a valid NUL-terminated path and the returned descriptor is
+    // immediately owned by `File`. O_NOFOLLOW rejects a symlinked security root.
+    let root_fd = unsafe {
+        libc::open(
+            root.as_ptr(),
+            libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+        )
+    };
+    if root_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `root_fd` was returned by `open` and has not been transferred elsewhere.
+    let mut directory = unsafe { fs::File::from_raw_fd(root_fd) };
+
+    for component in &components[..components.len() - 1] {
+        let component = c_string(component)?;
+        // SAFETY: the directory descriptor and component C string are valid. No path
+        // separators are present because components came from `Path::components`.
+        let mut next_fd = unsafe {
+            libc::openat(
+                directory.as_raw_fd(),
+                component.as_ptr(),
+                libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+            )
+        };
+        if next_fd < 0 && matches!(mode, SecureOpenMode::Write | SecureOpenMode::CreateNew) {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::NotFound {
+                // SAFETY: arguments are valid and mkdirat operates relative to the
+                // already-open, no-follow parent directory.
+                let result =
+                    unsafe { libc::mkdirat(directory.as_raw_fd(), component.as_ptr(), 0o755) };
+                if result < 0 {
+                    let mkdir_error = std::io::Error::last_os_error();
+                    if mkdir_error.kind() != std::io::ErrorKind::AlreadyExists {
+                        return Err(mkdir_error);
+                    }
+                }
+                // SAFETY: same validated descriptor-relative open as above.
+                next_fd = unsafe {
+                    libc::openat(
+                        directory.as_raw_fd(),
+                        component.as_ptr(),
+                        libc::O_RDONLY | libc::O_DIRECTORY | libc::O_CLOEXEC | libc::O_NOFOLLOW,
+                    )
+                };
+            }
+        }
+        if next_fd < 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: `next_fd` was returned by `openat` and is uniquely owned here.
+        directory = unsafe { fs::File::from_raw_fd(next_fd) };
+    }
+
+    let file_name = c_string(components.last().expect("validated path has a file name"))?;
+    let flags = match mode {
+        SecureOpenMode::Read => libc::O_RDONLY,
+        SecureOpenMode::Write => libc::O_WRONLY | libc::O_CREAT | libc::O_TRUNC,
+        SecureOpenMode::CreateNew => libc::O_WRONLY | libc::O_CREAT | libc::O_EXCL,
+    } | libc::O_CLOEXEC
+        | libc::O_NOFOLLOW;
+    // SAFETY: the parent descriptor and file-name C string are valid. O_NOFOLLOW
+    // prevents the final component from redirecting the operation through a symlink.
+    let file_fd = unsafe { libc::openat(directory.as_raw_fd(), file_name.as_ptr(), flags, 0o644) };
+    if file_fd < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: `file_fd` was returned by `openat` and is uniquely owned here.
+    Ok(unsafe { fs::File::from_raw_fd(file_fd) })
+}
+
+#[cfg(not(unix))]
+fn secure_open(
+    root: &Path,
+    relative_path: &Path,
+    mode: SecureOpenMode,
+) -> Result<fs::File, std::io::Error> {
+    use std::fs::OpenOptions;
+
+    let components = validated_components(relative_path)?;
+    let root = root.canonicalize()?;
+    let mut parent = root.clone();
+    for component in &components[..components.len() - 1] {
+        parent.push(component);
+        match fs::symlink_metadata(&parent) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    format!("refusing to follow symlink: {}", parent.display()),
+                ));
+            }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("expected directory: {}", parent.display()),
+                ));
+            }
+            Ok(_) => {}
+            Err(error)
+                if error.kind() == std::io::ErrorKind::NotFound
+                    && matches!(mode, SecureOpenMode::Write | SecureOpenMode::CreateNew) =>
+            {
+                fs::create_dir(&parent)?;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    let target = parent.join(components.last().expect("validated path has a file name"));
+    if fs::symlink_metadata(&target).is_ok_and(|metadata| metadata.file_type().is_symlink()) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!("refusing to follow symlink: {}", target.display()),
+        ));
+    }
+    let mut options = OpenOptions::new();
+    match mode {
+        SecureOpenMode::Read => {
+            options.read(true);
+        }
+        SecureOpenMode::Write => {
+            options.write(true).create(true).truncate(true);
+        }
+        SecureOpenMode::CreateNew => {
+            options.write(true).create_new(true);
+        }
+    }
+    options.open(target)
 }
 
 #[cfg(test)]
@@ -460,6 +695,68 @@ mod tests {
             }
         )
         .is_err());
+    }
+
+    #[test]
+    fn secure_file_helpers_read_write_and_create_contained_files() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        secure_create(temp_dir.path(), Path::new("notes/alpha.md"), "first")
+            .expect("contained file should be created");
+        assert_eq!(
+            secure_read_to_string(temp_dir.path(), Path::new("notes/alpha.md"))
+                .expect("contained file should be readable"),
+            "first"
+        );
+        secure_write(temp_dir.path(), Path::new("notes/alpha.md"), "second")
+            .expect("contained file should be writable");
+        assert_eq!(
+            fs::read_to_string(temp_dir.path().join("notes/alpha.md")).expect("file should exist"),
+            "second"
+        );
+        assert_eq!(
+            secure_create(temp_dir.path(), Path::new("notes/alpha.md"), "overwrite")
+                .expect_err("create must not overwrite")
+                .kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+    }
+
+    #[test]
+    fn secure_file_helpers_reject_absolute_and_parent_paths() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+
+        for path in [Path::new("../outside.md"), Path::new("/tmp/outside.md")] {
+            assert_eq!(
+                secure_write(temp_dir.path(), path, "blocked")
+                    .expect_err("outside path should fail")
+                    .kind(),
+                std::io::ErrorKind::InvalidInput
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secure_file_helpers_reject_symlinked_files_and_directories() {
+        use std::os::unix::fs::symlink;
+
+        let root = TempDir::new().expect("root temp dir should be created");
+        let outside = TempDir::new().expect("outside temp dir should be created");
+        let outside_file = outside.path().join("secret.md");
+        fs::write(&outside_file, "secret").expect("outside file should be seeded");
+        symlink(&outside_file, root.path().join("linked.md")).expect("file symlink should exist");
+        symlink(outside.path(), root.path().join("linked-dir"))
+            .expect("directory symlink should exist");
+
+        assert!(secure_read_to_string(root.path(), Path::new("linked.md")).is_err());
+        assert!(secure_write(root.path(), Path::new("linked.md"), "changed").is_err());
+        assert!(secure_write(root.path(), Path::new("linked-dir/new.md"), "changed").is_err());
+        assert_eq!(
+            fs::read_to_string(outside_file).expect("outside file should remain readable"),
+            "secret"
+        );
+        assert!(!outside.path().join("new.md").exists());
     }
 
     proptest! {
