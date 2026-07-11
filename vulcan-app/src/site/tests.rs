@@ -1351,6 +1351,36 @@ logo = "site/logo.png"
 }
 
 #[test]
+fn site_build_rejects_absolute_and_parent_asset_paths() {
+    let temp_dir = TempDir::new().expect("temp dir should exist");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("attachments", &vault_root);
+    scan_fixture(&vault_root);
+
+    for logo in ["/tmp/outside.png", "../outside.png"] {
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            format!(
+                "[site.profiles.public]\noutput_dir = \".vulcan/site/public\"\ninclude_paths = [\"Home.md\"]\nlogo = \"{logo}\"\n"
+            ),
+        )
+        .expect("config should write");
+
+        let error = build_site(
+            &VaultPaths::new(&vault_root),
+            &SiteBuildRequest {
+                profile: Some("public".to_string()),
+                output_dir: None,
+                clean: false,
+                dry_run: false,
+            },
+        )
+        .expect_err("outside asset path should fail");
+        assert!(error.to_string().contains("expected a relative path"));
+    }
+}
+
+#[test]
 fn site_build_tracks_asset_copy_state_and_repairs_drifted_output_assets() {
     let temp_dir = TempDir::new().expect("temp dir should exist");
     let vault_root = temp_dir.path().join("vault");

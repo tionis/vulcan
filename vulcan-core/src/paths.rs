@@ -288,6 +288,13 @@ pub fn secure_read_to_string(root: &Path, relative_path: &Path) -> Result<String
     Ok(contents)
 }
 
+pub fn secure_read(root: &Path, relative_path: &Path) -> Result<Vec<u8>, std::io::Error> {
+    let mut file = secure_open(root, relative_path, SecureOpenMode::Read)?;
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)?;
+    Ok(contents)
+}
+
 pub fn secure_write(
     root: &Path,
     relative_path: &Path,

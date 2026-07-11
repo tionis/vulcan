@@ -30,6 +30,7 @@ use vulcan_core::html::{
     HtmlDataviewJsPolicy, HtmlLinkTargets, HtmlRawHtmlPolicy, HtmlRenderDiagnostic,
     HtmlRenderHeading, HtmlRenderOptions, VaultHtmlRenderer,
 };
+use vulcan_core::paths::{normalize_relative_input_path, secure_read, RelativePathOptions};
 use vulcan_core::properties::NoteRecord;
 use vulcan_core::query::{execute_query_report, QueryAst, QueryReport};
 use vulcan_core::{ensure_vulcan_dir, export_graph, parse_document, VaultPaths};
@@ -4532,7 +4533,7 @@ fn collect_site_asset_copy_work_items(
     let mut assets = BTreeMap::<String, SiteAssetCopyWorkItem>::new();
 
     for source_path in collect_asset_links(&plan.links, &plan.profile.deploy_path).keys() {
-        insert_site_asset_copy_work_item(&mut assets, output_dir, Path::new(source_path));
+        insert_site_asset_copy_work_item(paths, &mut assets, output_dir, Path::new(source_path))?;
     }
 
     let summary_image_assets = rendered_notes
@@ -4541,7 +4542,7 @@ fn collect_site_asset_copy_work_items(
         .filter_map(summary_image_source_path)
         .collect::<BTreeSet<_>>();
     for summary_image in &summary_image_assets {
-        insert_site_asset_copy_work_item(&mut assets, output_dir, summary_image);
+        insert_site_asset_copy_work_item(paths, &mut assets, output_dir, summary_image)?;
     }
 
     for extra_asset in plan
@@ -4552,12 +4553,12 @@ fn collect_site_asset_copy_work_items(
         .chain(plan.profile.favicon.iter())
         .chain(plan.profile.logo.iter())
     {
-        insert_site_asset_copy_work_item(&mut assets, output_dir, extra_asset);
+        insert_site_asset_copy_work_item(paths, &mut assets, output_dir, extra_asset)?;
     }
 
     for extra_pattern in &plan.profile.asset_policy.include_folders {
         for asset in collect_extra_assets(paths, extra_pattern)? {
-            insert_site_asset_copy_work_item(&mut assets, output_dir, &asset);
+            insert_site_asset_copy_work_item(paths, &mut assets, output_dir, &asset)?;
         }
     }
 
@@ -4565,22 +4566,32 @@ fn collect_site_asset_copy_work_items(
 }
 
 fn insert_site_asset_copy_work_item(
+    paths: &VaultPaths,
     assets: &mut BTreeMap<String, SiteAssetCopyWorkItem>,
     output_dir: &Path,
     relative: &Path,
-) {
-    let source_key = display_path(relative);
+) -> Result<(), AppError> {
+    let source_key = normalize_relative_input_path(
+        &display_path(relative),
+        RelativePathOptions {
+            expected_extension: None,
+            append_extension_if_missing: false,
+        },
+    )
+    .map_err(AppError::operation)?;
+    secure_read(paths.vault_root(), Path::new(&source_key)).map_err(AppError::operation)?;
     let destination = asset_output_path(output_dir, &source_key);
     let relative_output_path =
         display_path(destination.strip_prefix(output_dir).unwrap_or(&destination));
     assets
         .entry(relative_output_path.clone())
         .or_insert_with(|| SiteAssetCopyWorkItem {
-            source_path: relative.to_path_buf(),
+            source_path: PathBuf::from(&source_key),
             source_key,
             relative_output_path,
             destination,
         });
+    Ok(())
 }
 
 fn collect_extra_assets(paths: &VaultPaths, pattern: &str) -> Result<Vec<PathBuf>, AppError> {
@@ -4637,7 +4648,8 @@ fn copy_file_from_vault_with_cache(
         if cached.source_signature == source_signature
             && cached.output_signature == *current_output_signature
         {
-            let contents = fs::read(&source).map_err(AppError::operation)?;
+            let contents =
+                secure_read(paths.vault_root(), relative).map_err(AppError::operation)?;
             if fs::read(destination).ok().as_deref() != Some(contents.as_slice()) {
                 let changed = write_output_bytes_if_changed(destination, &contents)?;
                 let output_signature =
@@ -4667,7 +4679,7 @@ fn copy_file_from_vault_with_cache(
         }
     }
 
-    let contents = fs::read(&source).map_err(AppError::operation)?;
+    let contents = secure_read(paths.vault_root(), relative).map_err(AppError::operation)?;
     let changed = write_output_bytes_if_changed(destination, &contents)?;
     let output_signature = site_input_signature_for_path(destination)?.ok_or_else(|| {
         AppError::operation(format!(
