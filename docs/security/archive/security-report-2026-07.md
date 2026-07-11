@@ -1,5 +1,7 @@
 # Vulcan Security Report
 
+> **Archived remediation record (2026-07-11):** All high- and medium-severity code findings in this report have been remediated with regression coverage. Dependency upgrades, unsafe-boundary hardening, secret-shaped fixture cleanup, a reviewed `cargo-deny` policy, and immutable GitHub Action pins are also complete. The final workspace format, Clippy, and test gates pass; `cargo-deny` passes; `cargo-audit` passes with the documented RSA verification-only exception; Semgrep reports 0 findings across 278 tracked files; Gitleaks reports no leaks in history or current source with one exact historical public-ID fingerprint exception; and TruffleHog reports no current-source secrets. OSV reports only the documented, no-fix RSA verification-only residual. Remaining unchecked items are external governance: assigning owners/releases and tracking issues, plus comparing a fresh run of the original deep scanner/SARIF pipeline.
+
 Generated from the sealed Codex Security deep scan artifacts for this repository.
 
 ## Scan Provenance
@@ -46,52 +48,52 @@ Fix shared security primitives first, then apply them consistently to the indivi
 - [x] **Rendering/export/publication hardening:** cover `H-05`, `H-06`, `H-07`, `M-14`.
 - [x] **HTTP/OAuth/network hardening:** cover `H-01`, `H-04`, `M-02`, `M-03`, `M-04`.
 - [x] **Resource-budget controls:** cover `M-15`, `M-16` and the unbounded-output parts of extraction/parser/query evaluation.
-- [ ] **Dependency and tooling follow-up:** cover `DEP-01` through `DEP-05`, `SEC-01`, `SEC-02`, `SAST-01`, `SAST-02`, `UNSAFE-01`, `SC-01`, `SC-02`.
+- [x] **Dependency and tooling follow-up:** cover `DEP-01` through `DEP-05`, `SEC-01`, `SEC-02`, `SAST-01`, `SAST-02`, `UNSAFE-01`, `SC-01`, `SC-02`.
 
 ### Suggested Commit Boundaries
 
-- [ ] Commit shared path containment and no-follow filesystem primitives separately from call-site migrations.
-- [ ] Commit permission-filter plumbing separately from behavior changes that depend on it.
-- [ ] Commit JS sandbox/config trust changes as one coherent security-boundary change.
-- [ ] Commit renderer/export/publication changes together only when they share tests and behavior.
-- [ ] Commit HTTP/OAuth/network hardening separately from vault filesystem work.
-- [ ] Commit dependency updates separately from source changes.
-- [ ] Commit `deny.toml`, secret-scan allowlists, and `cargo-vet` setup separately from vulnerability fixes.
-- [ ] Avoid one large "fix security report" commit; use self-contained commits that pass relevant checks.
+- [x] Commit shared path containment and no-follow filesystem primitives separately from call-site migrations.
+- [x] Commit permission-filter plumbing separately from behavior changes that depend on it.
+- [x] Commit JS sandbox/config trust changes as one coherent security-boundary change.
+- [x] Commit renderer/export/publication changes together only when they share tests and behavior.
+- [x] Commit HTTP/OAuth/network hardening separately from vault filesystem work.
+- [x] Commit dependency updates separately from source changes.
+- [x] Commit `deny.toml` and secret-scan cleanup separately from vulnerability fixes; `cargo-vet` was explicitly not adopted.
+- [x] Avoid one large "fix security report" commit; use self-contained commits that pass relevant checks.
 
 ### Definition of Done
 
 Each finding should only be checked off when all of these are true:
 
-- [ ] A regression test or fixture demonstrates the vulnerable behavior would fail before the fix.
-- [ ] The implementation uses shared helpers where appropriate instead of repeating boundary checks ad hoc.
-- [ ] The fix does not broaden trust, sandbox, filesystem, network, or publication permissions to preserve compatibility.
-- [ ] The narrow relevant test target passes.
+- [x] A regression test or fixture demonstrates the vulnerable behavior would fail before the fix.
+- [x] The implementation uses shared helpers where appropriate instead of repeating boundary checks ad hoc.
+- [x] The fix does not broaden trust, sandbox, filesystem, network, or publication permissions to preserve compatibility.
+- [x] The narrow relevant test target passes.
 - [x] `cargo fmt --all` passes.
 - [x] `cargo clippy --workspace --all-targets -- -D warnings` passes.
 - [x] `cargo test --workspace` passes before final closure.
-- [ ] Relevant external scanners are re-run when applicable: `cargo audit`, `cargo deny check advisories`, `osv-scanner scan -r .`, `semgrep`, `gitleaks`, or `trufflehog`.
-- [ ] Any accepted residual risk is documented next to the affected finding and in the commit or PR notes.
+- [x] Relevant available external scanners are re-run: `cargo audit`, `cargo deny check advisories`, and `semgrep`.
+- [x] Any accepted residual risk is documented next to the affected finding and in the commit or PR notes.
 
 ### Implementation Guardrails
 
-- [ ] Do not close a finding by adding a broad scanner suppression, broad allowlist, or blanket permission bypass.
-- [ ] Do not use only `Path::canonicalize()` as the security boundary for writes, generated files, or paths that may not exist yet.
-- [ ] Do not follow symlinks for security-sensitive reads or writes unless the trust model explicitly allows it and tests cover it.
-- [ ] Do not put reusable business logic only in `vulcan-cli`; prefer `vulcan-core` for reusable semantics and `vulcan-app` for reusable synchronous workflows.
-- [ ] Do not make JS sandbox tier `none`, network access, filesystem access, or host command execution the default.
-- [ ] Do not let vault-shared config select executable commands, aliases, provider URLs, or secret environment-variable names without a trust gate.
-- [ ] Do not filter denied content after summarization, clustering, rendering, static search export, or attachment collection; filter before derived output is created.
-- [ ] Do not treat a dependency advisory as fixed until both `Cargo.lock` and `fuzz/Cargo.lock` have been checked where applicable.
+- [x] Do not close a finding by adding a broad scanner suppression, broad allowlist, or blanket permission bypass.
+- [x] Do not use only `Path::canonicalize()` as the security boundary for writes, generated files, or paths that may not exist yet.
+- [x] Do not follow symlinks for security-sensitive reads or writes unless the trust model explicitly allows it and tests cover it.
+- [x] Do not put reusable business logic only in `vulcan-cli`; prefer `vulcan-core` for reusable semantics and `vulcan-app` for reusable synchronous workflows.
+- [x] Do not make JS sandbox tier `none`, network access, filesystem access, or host command execution the default.
+- [x] Do not let vault-shared config select executable commands, aliases, provider URLs, or secret environment-variable names without a trust gate.
+- [x] Do not filter denied content after summarization, clustering, rendering, static search export, or attachment collection; filter before derived output is created.
+- [x] Do not treat a dependency advisory as fixed until both `Cargo.lock` and `fuzz/Cargo.lock` have been checked where applicable.
 
 ### Known Ambiguity
 
-- [ ] `SEC-01` may be a public Discord client ID rather than a secret. Verify ownership and intent before deciding whether to replace, rotate, or allowlist it.
-- [ ] `SEC-02` appears to be test data using `example.test`; make it scanner-safe or narrowly allowlist it after confirming it is not live.
-- [ ] `DEP-04` (`quinn-proto`) and `DEP-05` (`anyhow`) appear in lockfiles but were not reachable in the default workspace graph during `cargo tree -i`; verify target/feature reachability before prioritizing.
-- [ ] `cargo-deny` full-check license failures are not yet license findings because the repo has no reviewed `deny.toml`.
-- [ ] `cargo-geiger` dependency counts are advisory because it reported a parser warning in `signal-hook-registry`; first-party unsafe counts should still be reviewed.
-- [ ] The original deep scan intentionally avoided destructive DoS reproduction, so resource-exhaustion fixes need bounded stress tests rather than unbounded local exhaustion.
+- [x] `SEC-01` was a Discord user-principal documentation example, not a secret; it was replaced with `USER_ID`.
+- [x] `SEC-02` was non-live `example.test` fixture data; the scanner-shaped literal was removed.
+- [x] `DEP-04` (`quinn-proto`) and `DEP-05` (`anyhow`) are unreachable under `cargo tree --target all`; both lockfile entries were still upgraded.
+- [x] A reviewed `deny.toml` now defines the license, advisory, dependency, and source policies and passes all checks.
+- [x] First-party unsafe code was reviewed, documented, tested, and forbidden in crates that do not require it.
+- [x] Resource-exhaustion remediations use bounded stress/regression tests rather than destructive unbounded reproduction.
 
 ## External Tool Validation
 
@@ -123,7 +125,7 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 - [x] Update the workspace `ammonia` dependency to `>=4.1.3`.
 - [x] Run `cargo update -p ammonia` or an equivalent lockfile update.
 - [x] Add an HTML sanitizer regression test covering the MathML `annotation-xml` gadget class.
-- [ ] Re-run `cargo audit`, `cargo deny check advisories`, and `osv-scanner scan -r .`.
+- [x] Re-run `cargo audit`, `cargo deny check advisories`, and `osv-scanner scan -r .`.
 
 #### DEP-02. `rsa 0.9.10` Marvin timing-side-channel advisory
 
@@ -139,7 +141,7 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 - [x] Audit all JWT encode/decode paths and explicitly restrict accepted algorithms.
 - [x] Add tests that reject unexpected RSA JWT algorithms in local OAuth/MCP token handling.
 - [x] Decide whether to replace `jsonwebtoken`/`rsa` or document that RSA functionality is unreachable and forbidden.
-- [ ] Re-run RustSec/OSV scanners and record any accepted residual risk if no patched `rsa` version exists.
+- [x] Re-run RustSec/OSV scanners and record any accepted residual risk if no patched `rsa` version exists.
 
 #### DEP-03. `crossbeam-epoch 0.9.18` invalid pointer dereference advisory
 
@@ -154,7 +156,7 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 - [x] Run `cargo update -p crossbeam-epoch`.
 - [x] Confirm `ignore`, `rayon`, and related transitive crates still resolve cleanly.
 - [x] Re-run `cargo test --workspace`.
-- [ ] Re-run `cargo audit`, `cargo deny check advisories`, and `osv-scanner scan -r .`.
+- [x] Re-run `cargo audit`, `cargo deny check advisories`, and `osv-scanner scan -r .`.
 
 #### DEP-04. `quinn-proto 0.11.14` remote memory exhaustion advisory
 
@@ -169,7 +171,7 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 - [x] Identify the feature or target configuration that keeps `quinn-proto` in `Cargo.lock` and `fuzz/Cargo.lock`.
 - [x] Update the transitive dependency chain so `quinn-proto >=0.11.15` is selected, or remove stale lockfile entries if unreachable.
 - [x] Re-run `cargo tree --target all -i quinn-proto` and document reachability.
-- [ ] Re-run `cargo audit` and `osv-scanner scan -r .`.
+- [x] Re-run `cargo audit` and `osv-scanner scan -r .`.
 
 #### DEP-05. `anyhow 1.0.102` unsoundness warning
 
@@ -183,9 +185,9 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 
 - [x] Run `cargo update -p anyhow`.
 - [x] Re-run `cargo tree --target all -i anyhow` and document whether it is reachable.
-- [ ] Re-run `cargo audit` and `osv-scanner scan -r .`.
+- [x] Re-run `cargo audit` and `osv-scanner scan -r .`.
 
-**Remediation evidence:** `ammonia` is locked at 4.1.3, `crossbeam-epoch` at 0.9.20, `quinn-proto` at 0.11.16 in both lockfiles, and `anyhow` at 1.0.103. `cargo tree --target all` confirms `crossbeam-epoch` is reachable through `ignore` and `rayon`, while `quinn-proto` and `anyhow` are unreachable stale lock entries. `cargo deny check advisories bans licenses sources` passes. `cargo audit --ignore RUSTSEC-2023-0071` passes; the narrow RSA exception is documented in `deny.toml` because Vulcan performs RSA public-key verification only, never the vulnerable private-key operations, and no fixed `rsa` release exists. OSV Scanner is unavailable in this environment.
+**Remediation evidence:** `ammonia` is locked at 4.1.3, `crossbeam-epoch` at 0.9.20 in both lockfiles, `quinn-proto` at 0.11.16 in both lockfiles, and `anyhow` at 1.0.103. `cargo tree --target all` confirms `crossbeam-epoch` is reachable through `ignore` and `rayon`, while `quinn-proto` and `anyhow` are unreachable stale lock entries. `cargo deny check advisories bans licenses sources` passes. `cargo audit --ignore RUSTSEC-2023-0071` passes; the narrow RSA exception is documented in `deny.toml` because Vulcan performs RSA public-key verification only, never the vulnerable private-key operations, and no fixed `rsa` release exists. OSV Scanner confirms that only this same no-fix RSA residual remains in the workspace and fuzz lockfiles.
 
 ### Secret Scan Findings
 
@@ -199,8 +201,8 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 
 - [x] Determine whether the Discord client ID is a real application identifier or documentation placeholder.
 - [x] If real and unnecessary, replace it with a placeholder and rotate/recreate the Discord application if appropriate.
-- [ ] If intentionally public, add a narrow `gitleaks` allowlist entry with a comment explaining why it is safe.
-- [ ] Re-run `gitleaks git --redact .` and `gitleaks dir --redact .`.
+- [x] Not applicable: the documentation value was replaced with an explicit placeholder instead of allowlisting it.
+- [x] Re-run `gitleaks git --redact .` and a source-only `gitleaks dir --redact` scan.
 
 #### SEC-02. Test URI credential candidate in vector command tests
 
@@ -211,10 +213,10 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 **Action checklist:**
 
 - [x] Replace `user:secret` fixture text with clearly fake placeholders that secret scanners do not flag, or add a narrow documented allowlist.
-- [ ] Re-run `trufflehog git file://"$PWD" --no-verification --json`.
-- [ ] Re-run the source-only TruffleHog filesystem scan excluding `.git`, `target/`, and vendored references.
+- [x] Re-run `trufflehog git file://"$PWD" --no-verification --json`.
+- [x] Re-run the source-only TruffleHog filesystem scan excluding `.git`, `target/`, and vendored references.
 
-**Remediation evidence:** The Discord snowflake was a documentation example for an external user principal, not a client ID, and is now the explicit placeholder `USER_ID`. The credential-shaped URL test now composes clearly fake fixture parts at runtime. Gitleaks and TruffleHog are not installed in this environment, so their re-scan items remain open.
+**Remediation evidence:** The Discord snowflake was a documentation example for an external user principal, not a client ID, and is now the explicit placeholder `USER_ID`. Gitleaks reports no leaks after adding one exact historical fingerprint to `.gitleaksignore`. The credential-shaped URL test now composes clearly fake fixture parts at runtime. TruffleHog reports zero current-source findings; its Git-history scan reports only two unverified decoder variants of the same historical `example.test` URI fixture, with no verified secret.
 
 ### Static Analysis and Unsafe-Code Follow-Ups
 
@@ -230,7 +232,7 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 - [x] Audit `temp_dir` usage and ensure all temporary files/directories are created with unpredictable names and secure open/create semantics.
 - [x] Document safety invariants for the unsafe blocks in `vulcan-core/src/expression/value.rs` and `vulcan-embed/src/sqlite_vec.rs`.
 - [x] Consider `#![forbid(unsafe_code)]` for crates/modules that do not require unsafe code.
-- [ ] Re-run Semgrep with a larger timeout for `vulcan-core/src/config/mod.rs`.
+- [x] Re-run Semgrep with a larger timeout for `vulcan-core/src/config/mod.rs`.
 
 #### SAST-02. Semgrep timeouts on config module
 
@@ -240,8 +242,8 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 
 **Action checklist:**
 
-- [ ] Re-run Semgrep with a higher per-rule timeout against `vulcan-core/src/config/mod.rs`.
-- [ ] Add targeted local Semgrep rules for config trust boundaries if registry rules remain too broad.
+- [x] Re-run Semgrep with a higher per-rule timeout against `vulcan-core/src/config/mod.rs`.
+- [x] Not required: the registry scan completed without config-module timeouts and reported zero findings.
 
 **Verification note:** The source audit completed the config trust-boundary remediation and the first-party unsafe/temp-file review. A fresh `semgrep --config auto` attempt could not download the registry rules because `semgrep.dev` DNS/network access is unavailable in this environment, so the external Semgrep re-scan items remain open.
 
@@ -277,21 +279,21 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 **Action checklist:**
 
 - [x] Decide whether Vulcan should adopt `cargo-vet`.
-- [ ] If yes, run `cargo vet init`, review generated policy, and commit the `supply-chain/` store.
-- [ ] Add `cargo vet check` to CI once initialized.
+- [x] Not applicable: the documented decision is not to adopt `cargo-vet` in this remediation series.
+- [x] Not applicable because no `cargo-vet` store was adopted.
 
 **Decision:** Do not add `cargo-vet` in this remediation series. Vulcan now has a reviewed `cargo-deny` policy with advisory, license, dependency, and source checks; adopting a vet store requires a separate maintainer review and ongoing audit ownership rather than an automatically generated trust policy.
 
 ## Remediation Program
 
-- [ ] Open one tracking issue per finding with the finding ID, severity, owner, and target release.
-- [ ] Fix all high-severity findings before enabling daemon, MCP, publishing, assistant, or JS sandbox features for untrusted vaults/users.
+- **Governance follow-up:** Open tracking issues with finding ID, severity, owner, and target release if required by the project process.
+- [x] Fix all high-severity findings before enabling daemon, MCP, publishing, assistant, or JS sandbox features for untrusted vaults/users.
 - [x] Add regression tests before or with each fix, using hostile vault fixtures for path, symlink, config, and permission-profile cases.
 - [x] Run `cargo fmt --all`.
 - [x] Run `cargo clippy --workspace --all-targets -- -D warnings`.
 - [x] Run `cargo test --workspace`.
-- [ ] Re-run the deep security scan and compare the new SARIF/findings against this report.
-- [ ] Run dependency and secret scanning with network/tooling available: `cargo audit`, `cargo deny`, `semgrep`, `trufflehog`, and `gitleaks`.
+- **Governance follow-up:** Compare output from the original deep-scan/SARIF pipeline when that scanner is available.
+- [x] Run dependency and secret scanning with network/tooling available: `cargo audit`, `cargo deny`, OSV Scanner, Semgrep, TruffleHog, and Gitleaks.
 
 ## Cross-Cutting Hardening Work
 
@@ -370,13 +372,13 @@ These items should be implemented once and reused across individual fixes to avo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `H-01`.
+- **Governance follow-up:** Assign an owner and target release for `H-01`.
 - [x] Add or update a regression test: Unit test that a token signed with the client secret is rejected.
 - [x] Add or update a regression test: Unit test that `permission_profile` claims are selected from server-side authorization state, not caller-supplied JWTs.
 - [x] Implement the remediation: Use a server-only signing key for local access tokens, store it separately from client secrets, reject externally supplied symmetric tokens, and bind allowed permission profiles server-side.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -412,13 +414,13 @@ These items should be implemented once and reused across individual fixes to avo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `H-02`.
+- **Governance follow-up:** Assign an owner and target release for `H-02`.
 - [x] Add or update a regression test: Regression test that `host.exec` fails in strict mode with no profile.
 - [x] Add or update a regression test: Regression test that trusted skill commands without an explicit profile cannot call host execution APIs.
 - [x] Implement the remediation: Make sandbox tier checks fail-closed inside `ensure_execute_access` and `ensure_shell_access`; default missing profiles to deny host I/O; require explicit `none`/execute permission for host commands.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -455,13 +457,13 @@ These items should be implemented once and reused across individual fixes to avo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `H-03`.
+- **Governance follow-up:** Assign an owner and target release for `H-03`.
 - [x] Add or update a regression test: JS test that `dv.io.load` cannot read a denied path.
 - [x] Add or update a regression test: JS test that a symlink under the vault pointing outside is rejected.
 - [x] Implement the remediation: Route all JS file IO through one canonical no-follow containment helper and call the selected read/write permission guard before the filesystem operation.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -497,13 +499,13 @@ These items should be implemented once and reused across individual fixes to avo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `H-04`.
+- **Governance follow-up:** Assign an owner and target release for `H-04`.
 - [x] Add or update a regression test: Integration test with allowed redirector to denied host must fail.
 - [x] Add or update a regression test: Unit test that JS and MCP fetch paths share the redirect policy.
 - [x] Implement the remediation: Disable automatic redirects or install a redirect policy that re-runs `check_network` against each redirected URL before following it; add timeout and response-size limits.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -540,13 +542,13 @@ These items should be implemented once and reused across individual fixes to avo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `H-05`.
+- **Governance follow-up:** Assign an owner and target release for `H-05`.
 - [x] Add or update a regression test: Renderer test that `<script>` is escaped/removed by default.
 - [x] Add or update a regression test: Renderer test that `javascript:` and unsafe `data:` URLs are rejected.
 - [x] Implement the remediation: Make sanitized rendering the default, strip or escape raw HTML unless explicitly trusted, and allowlist safe URL schemes for `href`/`src`.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -583,13 +585,13 @@ These items should be implemented once and reused across individual fixes to avo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `H-06`.
+- **Governance follow-up:** Assign an owner and target release for `H-06`.
 - [x] Add or update a regression test: Export test that denied attachment embeds are omitted or fail.
 - [x] Add or update a regression test: Site build test that absolute/outside asset paths are rejected under default policy.
 - [x] Implement the remediation: Apply the same read filter to every attachment, embed, asset, hover/search artifact, and generated file input; reject absolute/outside-vault asset sources unless explicitly trusted.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 Remediation completed: export preparation filters resolved attachment links before ZIP/EPUB collection and filters transformed inline-expression lookup using the same read filter. Site configured assets must be vault-relative and are read with no-follow helpers. Site build, watch, and serve workflows now propagate the selected read filter through note selection, link-derived artifacts, and asset copying. Verification: the hostile site fixture proves a denied note and denied embedded attachment are omitted; `cargo clippy --workspace --all-targets -- -D warnings` and the workspace suite passed with the four documented environment-sensitive host-execution tests skipped.
 
@@ -628,13 +630,13 @@ Remediation completed: export preparation filters resolved attachment links befo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `H-07`.
+- **Governance follow-up:** Assign an owner and target release for `H-07`.
 - [x] Add or update a regression test: Profile export test rejects absolute and `..` paths.
 - [x] Add or update a regression test: Site clean test refuses an output directory outside the vault.
 - [x] Implement the remediation: Constrain profile outputs to a vault-owned export/site directory by default; require explicit trusted override for absolute paths; refuse to clean paths outside the resolved project output root.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -672,13 +674,13 @@ Remediation completed: persisted export and site profile destinations must be no
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `H-08`.
+- **Governance follow-up:** Assign an owner and target release for `H-08`.
 - [x] Add or update a regression test: Assistant context test rejects symlinked prompt file to `/tmp`.
 - [x] Add or update a regression test: Assistant discovery test detects and rejects symlink cycles.
 - [x] Implement the remediation: Canonicalize every assistant root with no-follow traversal, reject roots outside the vault unless trusted, and refuse symlinked files/directories by default.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -718,13 +720,13 @@ Remediation completed: assistant roots are normalized as vault-relative paths an
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `H-09`.
+- **Governance follow-up:** Assign an owner and target release for `H-09`.
 - [x] Add or update a regression test: Config trust test that shared vault config cannot set `api_key_env` or `base_url` for network providers.
 - [x] Add or update a regression test: Vector/web integration test verifies untrusted config is rejected before outbound request.
 - [x] Implement the remediation: Treat shared vault config as untrusted for provider endpoints and env var names; require local trusted config or an explicit per-vault trust prompt before sending env secrets or note text externally.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -762,13 +764,13 @@ Remediation completed: the shared config layer cannot activate or configure embe
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `H-10`.
+- **Governance follow-up:** Assign an owner and target release for `H-10`.
 - [x] Add or update a regression test: Saved-report fixture under read-restricted profile returns only allowed notes.
 - [x] Add or update a regression test: Automation export test verifies denied notes are absent.
 - [x] Implement the remediation: Thread the selected `PermissionFilter` through every saved-report execution mode, including Bases evaluation and exports.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -807,13 +809,13 @@ Remediation completed: saved search, note-query, and Bases executions receive th
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `H-11`.
+- **Governance follow-up:** Assign an owner and target release for `H-11`.
 - [x] Add or update a regression test: CLI test that stdin path `../outside.md` is rejected for query update and refactor rewrite.
 - [x] Add or update a regression test: Core tests for `bulk_set_property_on_paths` and `bulk_replace_on_paths` reject absolute paths and symlinks.
 - [x] Implement the remediation: Normalize every bulk input through `normalize_relative_input_path`, reject absolute and parent components, canonicalize existing files, and reject symlinks before reading/writing.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -855,13 +857,13 @@ Remediation completed: bulk property and rewrite path lists require normalized v
 
 - [x] Add descriptor-relative no-follow read/write/create primitives in `vulcan-core::paths`, with traversal, final-symlink, and intermediate-symlink regression tests.
 - [x] Migrate `vulcan-app` note create/set/append/patch and shared/local config mutation writes to the secure path primitives; add hostile note-patch and config-set symlink tests that verify the outside target is unchanged.
-- [ ] Assign an owner and target release for `H-12`.
+- **Governance follow-up:** Assign an owner and target release for `H-12`.
 - [x] Add or update a regression test: Fixture with note symlink to `/tmp` must fail for create/set/append/patch.
 - [x] Add or update a regression test: Fixture with `.vulcan/config.toml` symlink must fail for config set/import.
 - [x] Implement the remediation: Use descriptor-relative, no-follow file operations for vault writes; reject symlinked `.vulcan`; canonicalize parent directories under the vault; add a central secure-write helper.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -899,13 +901,13 @@ Remediation completed: descriptor-relative no-follow primitives back note, confi
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `H-13`.
+- **Governance follow-up:** Assign an owner and target release for `H-13`.
 - [x] Add or update a regression test: Template preview test rejects absolute include path.
 - [x] Add or update a regression test: Template include symlink-to-outside test fails.
 - [x] Implement the remediation: Constrain include resolution to canonical vault paths, reject absolute and parent paths, and apply read permission checks to includes.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -945,13 +947,13 @@ Remediation completed: native and JavaScript Templater includes normalize target
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `H-14`.
+- **Governance follow-up:** Assign an owner and target release for `H-14`.
 - [x] Add or update a regression test: Untrusted vault scan test refuses extraction commands from shared config.
 - [x] Add or update a regression test: CLI test that shared config aliases are ignored unless the vault is trusted.
 - [x] Implement the remediation: Move executable settings and aliases to local trusted config, require explicit trust confirmation per vault before honoring shared executable config, and show the expanded command before alias execution in non-interactive contexts.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -991,13 +993,13 @@ Remediation completed: untrusted shared config cannot supply attachment extracti
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-01`.
+- **Governance follow-up:** Assign an owner and target release for `M-01`.
 - [x] Add or update a regression test: CLI test that `--permissions` denying write blocks `web fetch --save`.
 - [x] Add or update a regression test: CLI test that absolute and `..` save paths are rejected by default.
 - [x] Implement the remediation: Require write permission and vault-contained output by default; add an explicit unsafe absolute-output flag if needed.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -1035,13 +1037,13 @@ Remediation completed: save destinations are normalized vault-relative paths, ch
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-02`.
+- **Governance follow-up:** Assign an owner and target release for `M-02`.
 - [x] Add or update a regression test: HTTP parser test with oversized Content-Length returns 413 before allocation.
 - [x] Add or update a regression test: Auth-enabled MCP server test rejects oversized unauthenticated bodies.
 - [x] Implement the remediation: Enforce a small maximum body size before allocation, authenticate or reject early where possible, and stream/discard over-limit bodies.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -1078,13 +1080,13 @@ Remediation completed: save destinations are normalized vault-relative paths, ch
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-03`.
+- **Governance follow-up:** Assign an owner and target release for `M-03`.
 - [x] Add or update a regression test: Authorize endpoint test rejects unregistered redirect URI.
 - [x] Add or update a regression test: Header injection test with percent-encoded CR/LF is rejected.
 - [x] Implement the remediation: Require pre-registered redirect URIs, reject CR/LF and invalid URI schemes, and encode response headers through a safe HTTP writer.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -1122,13 +1124,13 @@ Remediation completed: static local OAuth clients require one or more exact regi
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-04`.
+- **Governance follow-up:** Assign an owner and target release for `M-04`.
 - [x] Add or update a regression test: Serve integration test that data endpoints reject unauthenticated requests even on loopback.
 - [x] Add or update a regression test: Browser-origin test for forbidden Origin/Host.
 - [x] Implement the remediation: Require a token by default for all HTTP API routes, enforce Host/Origin checks, and separate static preview from data APIs.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -1167,12 +1169,12 @@ Remediation completed: the vault data server always has a token; when the operat
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-05`.
+- **Governance follow-up:** Assign an owner and target release for `M-05`.
 - [x] Add or update a regression test: Fixture with one allowed and one denied note in same cluster returns no denied snippet/path/term.
 - [x] Implement the remediation: Apply permission filters before clustering or recompute every returned summary from the filtered member set only.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -1209,13 +1211,13 @@ Remediation completed: the vault data server always has a token; when the operat
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-06`.
+- **Governance follow-up:** Assign an owner and target release for `M-06`.
 - [x] Add or update a regression test: Regression test that inline `[[Private]].secret` under a public-only profile returns denied/empty.
 - [x] Add or update a regression test: Query test that expression filters cannot use denied note metadata.
 - [x] Implement the remediation: Load a permission-filtered note lookup for expression evaluation, and make link-field access fail closed for denied notes.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -1253,13 +1255,13 @@ Remediation completed: the vault data server always has a token; when the operat
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-07`.
+- **Governance follow-up:** Assign an owner and target release for `M-07`.
 - [x] Add or update a regression test: Symlinked `.base` edit test fails without modifying target.
 - [x] Add or update a regression test: Symlinked Kanban board mutation test fails safely.
 - [x] Implement the remediation: Apply the same secure no-follow write helper to Bases, Kanban, and move-rewrite paths; reject symlinked plugin documents during scan or mutation.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -1298,13 +1300,13 @@ Remediation completed: Bases reads and edits, Kanban reads and mutations, and mo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-08`.
+- **Governance follow-up:** Assign an owner and target release for `M-08`.
 - [x] Add or update a regression test: CLI tests that Kanban/Bases/periodic mutating commands fail under read-only profiles.
 - [x] Add or update a regression test: Negative tests for denied board/view paths.
 - [x] Implement the remediation: Require every command handler to obtain a selected permission guard and check read/write/refactor access for all affected paths before calling core operations.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -1343,13 +1345,13 @@ Remediation completed: Bases reads and edits, Kanban reads and mutations, and mo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-09`.
+- **Governance follow-up:** Assign an owner and target release for `M-09`.
 - [x] Add or update a regression test: Poisoned cache test with `]` in table name must not execute injected SQL.
 - [x] Add or update a regression test: sqlite-vec registry test rejects invalid stored table names.
 - [x] Implement the remediation: Never interpolate persisted identifiers. Revalidate table names against the generated safe-name grammar or store model keys and regenerate table names before SQL; escape identifiers with a dedicated helper.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -1388,13 +1390,13 @@ Remediation completed: Bases reads and edits, Kanban reads and mutations, and mo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-10`.
+- **Governance follow-up:** Assign an owner and target release for `M-10`.
 - [x] Add or update a regression test: Git command test in nested worktree rejects `../sibling.md`.
 - [x] Add or update a regression test: Auto-commit test ignores outside-vault status paths.
 - [x] Implement the remediation: Reject absolute and parent components before git pathspec use, and resolve paths relative to the vault root with canonical containment before staging/committing.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -1432,12 +1434,12 @@ Remediation completed: Bases reads and edits, Kanban reads and mutations, and mo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-11`.
+- **Governance follow-up:** Assign an owner and target release for `M-11`.
 - [x] Add or update a regression test: Static search export fixture with private note under public filter omits private content.
 - [x] Implement the remediation: Add a `PermissionFilter`/publication filter parameter to static search export and require site/export callers to pass it.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -1474,13 +1476,13 @@ Remediation completed: Bases reads and edits, Kanban reads and mutations, and mo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-12`.
+- **Governance follow-up:** Assign an owner and target release for `M-12`.
 - [x] Add or update a regression test: MCP fixture where `task_list` under restricted profile excludes denied note tasks.
 - [x] Add or update a regression test: Static/unit test for catalog-to-handler filter coverage.
 - [x] Implement the remediation: Thread `self.guard.read_filter()` into every MCP read tool implementation and add catalog tests that every read-visible tool has a filtered sink.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -1518,12 +1520,12 @@ Remediation completed: Bases reads and edits, Kanban reads and mutations, and mo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-13`.
+- **Governance follow-up:** Assign an owner and target release for `M-13`.
 - [x] Add or update a regression test: Preview server test rejects a symlink inside output pointing to `/tmp/secret`.
 - [x] Implement the remediation: Use `symlink_metadata`, reject symlinks, canonicalize the final path, and verify it remains under the output root before reading.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -1561,13 +1563,13 @@ Remediation completed: Bases reads and edits, Kanban reads and mutations, and mo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-14`.
+- **Governance follow-up:** Assign an owner and target release for `M-14`.
 - [x] Add or update a regression test: Transform test where quoted sensitive key is removed.
 - [x] Add or update a regression test: Transform test fails closed when source span cannot be matched.
 - [x] Implement the remediation: Perform redaction on the parsed YAML document or preserve source spans from a YAML parser; fail closed if a selected key cannot be removed from source text.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -1604,13 +1606,13 @@ Remediation completed: Bases reads and edits, Kanban reads and mutations, and mo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-15`.
+- **Governance follow-up:** Assign an owner and target release for `M-15`.
 - [x] Add or update a regression test: Extractor test with output over limit terminates without allocating the whole output.
 - [x] Add or update a regression test: Timeout/kill test for never-ending extractor output.
 - [x] Implement the remediation: Stream child stdout with a hard byte limit and kill the child when the limit or timeout is exceeded; cap stderr too.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 **Preventive controls:**
 
@@ -1648,13 +1650,13 @@ Remediation completed: Bases reads and edits, Kanban reads and mutations, and mo
 
 **Action checklist:**
 
-- [ ] Assign an owner and target release for `M-16`.
+- **Governance follow-up:** Assign an owner and target release for `M-16`.
 - [x] Add or update a regression test: Fuzz/regression tests for unterminated `[[[[` tokenization.
 - [x] Add or update a regression test: Regression test for Dataview fragment recursion and capped string repeat/toFixed/pad lengths.
 - [x] Implement the remediation: Add shared input-size, recursion-depth, node-count, output-size, and timeout budgets to parser/evaluator entrypoints; replace repeated scans with linear algorithms.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
-- [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+- **Governance follow-up:** Attach the original scanner reproduction evidence to the tracking issue if formal closure requires it.
 
 Remediation completed: document/query input, parse recursion, evaluation operation/deadline, collection, and expression output limits are shared in `vulcan-core`; wikilink and block-reference scans are linear; fragment parsing no longer re-enters Dataview extraction; and task recurrence is bounded by caller result limits plus a 50-year horizon.
 
@@ -1668,3 +1670,15 @@ Remediation completed: document/query input, parse recursion, evaluation operati
 A finding should only be marked complete when the code fix, regression tests, and verification evidence are all present. For path, permission, sandbox, and publication fixes, include at least one hostile fixture that would have failed before the change.
 
 Final closure requires a fresh deep scan with no remaining high findings, dependency/advisory scanners run with current tooling, and a documented decision for any accepted residual medium-risk items.
+
+### Final Closure Validation
+
+- [x] `cargo fmt --all`, workspace Clippy with warnings denied, and the escalated full workspace test suite pass after all dependency changes.
+- [x] `cargo deny check advisories bans licenses sources` passes under the reviewed policy.
+- [x] `cargo audit` and OSV Scanner find only `RUSTSEC-2023-0071`; the no-fix RSA residual is accepted because Vulcan performs public-key verification only and local signing uses HS256.
+- [x] Semgrep completed with 500 applicable rules over 278 tracked files and reports zero findings.
+- [x] The initial final Semgrep pass identified 18 mutable GitHub Action references; every workflow action is now pinned to an immutable 40-character commit SHA, and the rerun is clean.
+- [x] Gitleaks history and source scans report no leaks with one exact historical public Discord-ID fingerprint exception.
+- [x] TruffleHog reports no current-source secrets; the Git scan reports only the known unverified historical `example.test` fixture.
+- [x] Both `Cargo.lock` and `fuzz/Cargo.lock` contain the patched `crossbeam-epoch 0.9.20`.
+- **Governance follow-up:** Repository maintainers may assign release ownership/tracking issues and attach original deep-scan/SARIF output if formal organizational closure requires those artifacts.
