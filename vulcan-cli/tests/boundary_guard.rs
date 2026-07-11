@@ -112,6 +112,22 @@ fn production_cli_code_avoids_direct_backend_dependencies() {
 }
 
 #[test]
+fn js_and_mcp_web_fetch_adapters_use_the_shared_redirect_policy() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("cli crate should have workspace parent");
+    let js_source = fs::read_to_string(workspace_root.join("vulcan-core/src/dataview_js.rs"))
+        .expect("DataviewJS source should read");
+    let mcp_source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("src/mcp.rs"))
+        .expect("MCP source should read");
+
+    assert!(js_source.contains("fetch_web(&state.web_config, url, mode)"));
+    assert!(mcp_source.contains("run_web_fetch_command("));
+    assert!(!production_source(&js_source).contains("reqwest::"));
+    assert!(!production_source(&mcp_source).contains("reqwest::"));
+}
+
+#[test]
 fn core_optional_backend_dependencies_stay_feature_gated() {
     let core_manifest = fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))

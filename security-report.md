@@ -491,7 +491,7 @@ These items should be implemented once and reused across individual fixes to avo
 
 - [ ] Assign an owner and target release for `H-04`.
 - [x] Add or update a regression test: Integration test with allowed redirector to denied host must fail.
-- [ ] Add or update a regression test: Unit test that JS and MCP fetch paths share the redirect policy.
+- [x] Add or update a regression test: Unit test that JS and MCP fetch paths share the redirect policy.
 - [x] Implement the remediation: Disable automatic redirects or install a redirect policy that re-runs `check_network` against each redirected URL before following it; add timeout and response-size limits.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
