@@ -265,6 +265,7 @@ mod runtime {
         query_graph_components_with_filter, query_graph_dead_ends_with_filter,
         query_graph_hubs_with_filter, query_graph_path_with_filter,
     };
+    use crate::paths::secure_read_to_string;
     use crate::periodic::{
         list_daily_note_events, list_events_between, load_events_for_periodic_note,
         resolve_periodic_note, today_utc_string,
@@ -3712,10 +3713,9 @@ globalThis.Function = undefined;
                     with_note_index(&note_details_state, &ctx, |note_index| {
                         to_json_string(
                             &ctx,
-                            load_note_details(&note_details_state.paths, note_index, &path)
-                                .map_err(|error| {
-                                    Exception::throw_message(&ctx, &error.to_string())
-                                })?,
+                            load_note_details(&note_details_state, note_index, &path).map_err(
+                                |error| Exception::throw_message(&ctx, &error.to_string()),
+                            )?,
                         )
                     })
                 }),
@@ -3731,7 +3731,7 @@ globalThis.Function = undefined;
                     with_note_index(&note_read_state, &ctx, |_note_index| {
                         to_json_string(
                             &ctx,
-                            read_note_selection(&note_read_state.paths, &path, &options).map_err(
+                            read_note_selection(&note_read_state, &path, &options).map_err(
                                 |error| Exception::throw_message(&ctx, &error.to_string()),
                             )?,
                         )
@@ -4039,9 +4039,10 @@ globalThis.Function = undefined;
                 "__vulcan_load",
                 Func::from(move |ctx: Ctx<'_>, path: String| {
                     read_text_file(
-                        load_state.paths.vault_root(),
+                        &load_state,
                         &path,
                         load_state.current_file.as_deref(),
+                        "dv.io.load()",
                     )
                     .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))
                 }),
@@ -4057,7 +4058,7 @@ globalThis.Function = undefined;
                         to_json_string(
                             &ctx,
                             read_csv_file(
-                                csv_state.paths.vault_root(),
+                                &csv_state,
                                 &path,
                                 origin_file.as_deref().or(csv_state.current_file.as_deref()),
                             )
@@ -4094,9 +4095,10 @@ globalThis.Function = undefined;
                 "__vulcan_load_view",
                 Func::from(move |ctx: Ctx<'_>, path: String| {
                     read_text_file(
-                        view_state.paths.vault_root(),
+                        &view_state,
                         &path,
                         view_state.current_file.as_deref(),
+                        "dv.view()",
                     )
                     .map_err(|error| Exception::throw_message(&ctx, &error.to_string()))
                 }),
@@ -4449,12 +4451,14 @@ globalThis.Function = undefined;
     }
 
     fn load_note_details(
-        paths: &VaultPaths,
+        state: &JsEvalState,
         note_index: &HashMap<String, NoteRecord>,
         note: &str,
     ) -> Result<Value, DataviewJsError> {
+        let paths = &state.paths;
         let path = resolve_existing_note_path(paths, note)?;
-        let source = fs::read_to_string(paths.vault_root().join(&path))
+        ensure_read_access(state, &path, "vault.note().details()")?;
+        let source = secure_read_to_string(paths.vault_root(), Path::new(&path))
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
         let note = note_by_path(note_index, &path)
             .ok_or_else(|| DataviewJsError::Message(format!("note is not indexed: {path}")))?;
@@ -4489,12 +4493,14 @@ globalThis.Function = undefined;
     }
 
     fn read_note_selection(
-        paths: &VaultPaths,
+        state: &JsEvalState,
         note: &str,
         options: &crate::NoteReadOptions,
     ) -> Result<crate::NoteReadSelection, DataviewJsError> {
+        let paths = &state.paths;
         let path = resolve_existing_note_path(paths, note)?;
-        let source = fs::read_to_string(paths.vault_root().join(&path))
+        ensure_read_access(state, &path, "vault.note().read()")?;
+        let source = secure_read_to_string(paths.vault_root(), Path::new(&path))
             .map_err(|error| DataviewJsError::Message(error.to_string()))?;
         let config = load_vault_config(paths).config;
         let parsed = parse_document(&source, &config);
@@ -5095,6 +5101,20 @@ globalThis.Function = undefined;
         if let Some(permissions) = state.permissions.as_ref() {
             permissions
                 .check_write_path(path)
+                .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+        }
+        Ok(())
+    }
+
+    fn ensure_read_access(
+        state: &JsEvalState,
+        path: &str,
+        operation: &str,
+    ) -> Result<(), DataviewJsError> {
+        ensure_fs_access(state, operation)?;
+        if let Some(permissions) = state.permissions.as_ref() {
+            permissions
+                .check_read_path(path)
                 .map_err(|error| DataviewJsError::Message(error.to_string()))?;
         }
         Ok(())
@@ -5973,25 +5993,29 @@ globalThis.Function = undefined;
     }
 
     fn read_text_file(
-        vault_root: &Path,
+        state: &JsEvalState,
         path: &str,
         origin_file: Option<&str>,
+        operation: &str,
     ) -> Result<String, DataviewJsError> {
-        let normalized = normalize_vault_path(vault_root, path, origin_file, true)?;
-        fs::read_to_string(vault_root.join(normalized))
+        let normalized = normalize_vault_path(state.paths.vault_root(), path, origin_file, true)?;
+        ensure_read_access(state, &normalized, operation)?;
+        secure_read_to_string(state.paths.vault_root(), Path::new(&normalized))
             .map_err(|error| DataviewJsError::Message(error.to_string()))
     }
 
     fn read_csv_file(
-        vault_root: &Path,
+        state: &JsEvalState,
         path: &str,
         origin_file: Option<&str>,
     ) -> Result<Vec<Map<String, Value>>, DataviewJsError> {
-        let normalized = normalize_vault_path(vault_root, path, origin_file, false)?;
+        let normalized = normalize_vault_path(state.paths.vault_root(), path, origin_file, false)?;
+        ensure_read_access(state, &normalized, "dv.io.csv()")?;
+        let contents = secure_read_to_string(state.paths.vault_root(), Path::new(&normalized))
+            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
         let mut reader = ReaderBuilder::new()
             .flexible(true)
-            .from_path(vault_root.join(normalized))
-            .map_err(|error| DataviewJsError::Message(error.to_string()))?;
+            .from_reader(contents.as_bytes());
         let headers = reader
             .headers()
             .map_err(|error| DataviewJsError::Message(error.to_string()))?
@@ -6374,7 +6398,7 @@ globalThis.Function = undefined;
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
 
-            let result = evaluate_dataview_js_query(
+            let result = evaluate_dataview_js_with_options(
                 &paths,
                 r#"
                 const rows = dv.io.csv("data/owners.csv");
@@ -6382,6 +6406,10 @@ globalThis.Function = undefined;
                 dv.view("views/status-table.js", { title: "Statuses" });
                 "#,
                 Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                    ..DataviewJsEvalOptions::default()
+                },
             )
             .expect("DataviewJS should evaluate");
 
@@ -6648,10 +6676,14 @@ globalThis.Function = undefined;
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
 
-            let error = evaluate_dataview_js_query(
+            let error = evaluate_dataview_js_with_options(
                 &paths,
                 r#"dv.io.load("../outside.md")"#,
                 Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                    ..DataviewJsEvalOptions::default()
+                },
             )
             .expect_err("DataviewJS should reject vault escapes");
             assert!(matches!(
@@ -6659,6 +6691,66 @@ globalThis.Function = undefined;
                 DataviewJsError::Message(message)
                     if message.contains("must stay inside the vault root")
             ));
+        }
+
+        #[test]
+        fn dataviewjs_io_load_respects_the_selected_read_profile() {
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
+            copy_fixture_vault("dataview", &vault_root);
+            fs::write(
+                vault_root.join(".vulcan/config.toml"),
+                "[permissions.profiles.blind]\nread = \"none\"\n",
+            )
+            .expect("permission config should be written");
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let error = evaluate_dataview_js_with_options(
+                &paths,
+                r#"dv.io.load("Projects/Alpha.md")"#,
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                    permission_profile: Some("blind".to_string()),
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect_err("denied file should not be readable");
+
+            assert!(error.to_string().contains("permission denied"));
+        }
+
+        #[cfg(unix)]
+        #[test]
+        fn dataviewjs_io_load_rejects_symlinks_to_outside_files() {
+            use std::os::unix::fs::symlink;
+
+            let temp_dir = tempdir().expect("temp dir should be created");
+            let vault_root = temp_dir.path().join("vault");
+            std::fs::create_dir_all(vault_root.join(".vulcan"))
+                .expect(".vulcan dir should be created");
+            copy_fixture_vault("dataview", &vault_root);
+            let outside = temp_dir.path().join("secret.md");
+            fs::write(&outside, "outside secret").expect("outside file should be written");
+            symlink(&outside, vault_root.join("linked.md")).expect("symlink should be created");
+            let paths = VaultPaths::new(&vault_root);
+            scan_vault(&paths, ScanMode::Full).expect("vault should scan");
+
+            let error = evaluate_dataview_js_with_options(
+                &paths,
+                r#"dv.io.load("linked.md")"#,
+                Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                    ..DataviewJsEvalOptions::default()
+                },
+            )
+            .expect_err("symlinked file should not be readable");
+
+            assert!(!error.to_string().contains("outside secret"));
         }
 
         #[test]
@@ -6772,7 +6864,7 @@ cpu_limit_ms = 25
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
 
-            let result = evaluate_dataview_js_query(
+            let result = evaluate_dataview_js_with_options(
                 &paths,
                 r#"
                 const dashboard = vault.note("Dashboard");
@@ -6791,6 +6883,10 @@ cpu_limit_ms = 25
                 );
                 "#,
                 Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                    ..DataviewJsEvalOptions::default()
+                },
             )
             .expect("DataviewJS should evaluate");
 
@@ -6830,7 +6926,7 @@ cpu_limit_ms = 25
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
 
-            let result = evaluate_dataview_js_query(
+            let result = evaluate_dataview_js_with_options(
                 &paths,
                 r#"
                 const note = vault.note("Dashboard");
@@ -6843,6 +6939,10 @@ cpu_limit_ms = 25
                 );
                 "#,
                 Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                    ..DataviewJsEvalOptions::default()
+                },
             )
             .expect("DataviewJS should evaluate");
 
@@ -6865,7 +6965,7 @@ cpu_limit_ms = 25
             let paths = VaultPaths::new(&vault_root);
             scan_vault(&paths, ScanMode::Full).expect("vault should scan");
 
-            let result = evaluate_dataview_js_query(
+            let result = evaluate_dataview_js_with_options(
                 &paths,
                 r#"
                 const note = vault.note("Dashboard");
@@ -6885,6 +6985,10 @@ cpu_limit_ms = 25
                 );
                 "#,
                 Some("Dashboard.md"),
+                DataviewJsEvalOptions {
+                    sandbox: Some(JsRuntimeSandbox::Fs),
+                    ..DataviewJsEvalOptions::default()
+                },
             )
             .expect("DataviewJS should evaluate");
 
