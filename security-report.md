@@ -984,17 +984,19 @@ Remediation completed: untrusted shared config cannot supply attachment extracti
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `M-01`.
-- [ ] Add or update a regression test: CLI test that `--permissions` denying write blocks `web fetch --save`.
-- [ ] Add or update a regression test: CLI test that absolute and `..` save paths are rejected by default.
-- [ ] Implement the remediation: Require write permission and vault-contained output by default; add an explicit unsafe absolute-output flag if needed.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: CLI test that `--permissions` denying write blocks `web fetch --save`.
+- [x] Add or update a regression test: CLI test that absolute and `..` save paths are rejected by default.
+- [x] Implement the remediation: Require write permission and vault-contained output by default; add an explicit unsafe absolute-output flag if needed.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+Remediation completed: save destinations are normalized vault-relative paths, checked against the selected write permission, and written through the shared no-follow helper. Absolute and parent-traversing destinations are rejected; no unsafe compatibility flag was added. CLI regressions cover both denied write profiles and outside paths.
 
 ### M-02. MCP HTTP allocates unbounded request bodies before authentication
 

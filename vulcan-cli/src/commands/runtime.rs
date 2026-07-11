@@ -400,12 +400,30 @@ pub(crate) fn run_web_fetch_command(
             .check_network(url)
             .map_err(CliError::operation)?;
     }
+    let save = save
+        .map(|path| {
+            vulcan_core::paths::normalize_relative_input_path(
+                &path.to_string_lossy(),
+                vulcan_core::paths::RelativePathOptions {
+                    expected_extension: None,
+                    append_extension_if_missing: false,
+                },
+            )
+            .map(PathBuf::from)
+            .map_err(CliError::operation)
+        })
+        .transpose()?;
+    if let (Some(permissions), Some(save)) = (permissions, save.as_ref()) {
+        permissions
+            .check_write_path(&save.to_string_lossy())
+            .map_err(CliError::operation)?;
+    }
     apply_web_fetch_report(
         paths,
         &WebFetchRequest {
             url: url.to_string(),
             mode: app_web_fetch_mode(mode),
-            save: save.cloned(),
+            save,
         },
     )
     .map_err(CliError::operation)

@@ -4910,7 +4910,8 @@ fn web_fetch_raw_save_writes_response_body() {
     let server = MockWebServer::spawn();
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
-    let output_path = temp_dir.path().join("page.bin");
+    fs::create_dir_all(&vault_root).expect("vault should exist");
+    let output_path = vault_root.join("page.bin");
 
     let assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -4927,9 +4928,7 @@ fn web_fetch_raw_save_writes_response_body() {
             "--mode",
             "raw",
             "--save",
-            output_path
-                .to_str()
-                .expect("output path should be valid utf-8"),
+            "page.bin",
         ])
         .assert()
         .success();
@@ -4940,6 +4939,53 @@ fn web_fetch_raw_save_writes_response_body() {
     assert_eq!(json["status"], 200);
     assert_eq!(json["saved"], output_path.to_string_lossy().as_ref());
     assert_eq!(rendered, b"raw-body");
+}
+
+#[test]
+fn web_fetch_save_rejects_denied_and_outside_destinations() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[permissions.profiles.network_only]\nnetwork = \"allow\"\nwrite = \"none\"\n",
+    )
+    .expect("config");
+    let vault = vault_root.to_str().expect("vault path should be utf-8");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault,
+            "--permissions",
+            "network_only",
+            "web",
+            "fetch",
+            "https://example.com",
+            "--save",
+            "denied.bin",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("permission denied"));
+
+    for unsafe_path in ["/tmp/outside.bin", "../outside.bin"] {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([
+                "--vault",
+                vault,
+                "web",
+                "fetch",
+                "https://example.com",
+                "--save",
+                unsafe_path,
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("expected a relative path"));
+    }
 }
 
 #[test]

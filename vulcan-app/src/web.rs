@@ -1,7 +1,7 @@
 use crate::AppError;
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::path::PathBuf;
+use vulcan_core::paths::{normalize_relative_input_path, secure_write, RelativePathOptions};
 use vulcan_core::{
     fetch_web_content, load_vault_config, prepare_search_backend, search_web,
     PreparedWebSearchBackend, SearchBackendKind, VaultPaths,
@@ -106,18 +106,30 @@ pub fn apply_web_fetch_report(
         .map_err(AppError::operation)?;
 
     if let Some(path) = request.save.as_ref() {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(AppError::operation)?;
-        }
+        let normalized = normalize_relative_input_path(
+            &path.to_string_lossy(),
+            RelativePathOptions {
+                expected_extension: None,
+                append_extension_if_missing: false,
+            },
+        )
+        .map_err(AppError::operation)?;
+        let relative = std::path::Path::new(&normalized);
         match request.mode {
             WebFetchMode::Raw => {
-                fs::write(path, &fetched.raw_bytes).map_err(AppError::operation)?;
+                secure_write(paths.vault_root(), relative, &fetched.raw_bytes)
+                    .map_err(AppError::operation)?;
             }
             WebFetchMode::Html | WebFetchMode::Markdown => {
-                fs::write(path, fetched.report.content.as_bytes()).map_err(AppError::operation)?;
+                secure_write(
+                    paths.vault_root(),
+                    relative,
+                    fetched.report.content.as_bytes(),
+                )
+                .map_err(AppError::operation)?;
             }
         }
-        fetched.report.saved = Some(path.display().to_string());
+        fetched.report.saved = Some(paths.vault_root().join(relative).display().to_string());
     }
 
     Ok(fetched.report)
@@ -267,7 +279,7 @@ base_url = "http://127.0.0.1:4455/search"
             &WebFetchRequest {
                 url: format!("http://{address}/raw"),
                 mode: WebFetchMode::Raw,
-                save: Some(destination.clone()),
+                save: Some(std::path::PathBuf::from("downloads/page.bin")),
             },
         )
         .expect("fetch should succeed");
