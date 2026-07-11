@@ -81,6 +81,7 @@ pub mod query;
 pub mod refactor;
 pub mod render;
 pub mod resolver;
+mod resource_limits;
 pub mod saved_queries;
 pub mod scan;
 pub mod search;

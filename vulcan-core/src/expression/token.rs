@@ -1,3 +1,5 @@
+use crate::resource_limits::WikilinkEndIndex;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Null,
@@ -47,6 +49,7 @@ pub struct Tokenizer<'a> {
     source: &'a str,
     bytes: &'a [u8],
     pos: usize,
+    wikilink_ends: WikilinkEndIndex,
     /// Tracks whether the last meaningful token could end an expression
     /// (used to disambiguate `/` as division vs regex).
     last_was_value: bool,
@@ -59,6 +62,7 @@ impl<'a> Tokenizer<'a> {
             source,
             bytes: source.as_bytes(),
             pos: 0,
+            wikilink_ends: WikilinkEndIndex::new(source.as_bytes()),
             last_was_value: false,
         }
     }
@@ -75,7 +79,7 @@ impl<'a> Tokenizer<'a> {
         let token = match ch {
             b'!' if self.peek_next() == Some(b'[')
                 && self.bytes.get(self.pos + 2) == Some(&b'[')
-                && self.looks_like_wikilink_literal(self.pos) =>
+                && self.wikilink_ends.end(self.bytes, self.pos).is_some() =>
             {
                 let token = self.read_wikilink()?;
                 self.last_was_value = true;
@@ -92,7 +96,7 @@ impl<'a> Tokenizer<'a> {
                 Token::RParen
             }
             b'[' if self.peek_next() == Some(b'[')
-                && self.looks_like_wikilink_literal(self.pos) =>
+                && self.wikilink_ends.end(self.bytes, self.pos).is_some() =>
             {
                 let token = self.read_wikilink()?;
                 self.last_was_value = true;
@@ -259,25 +263,6 @@ impl<'a> Tokenizer<'a> {
         self.bytes.get(self.pos + 1).copied()
     }
 
-    fn looks_like_wikilink_literal(&self, start: usize) -> bool {
-        let mut pos = start;
-        if self.bytes.get(pos) == Some(&b'!') {
-            pos += 1;
-        }
-        if self.bytes.get(pos) != Some(&b'[') || self.bytes.get(pos + 1) != Some(&b'[') {
-            return false;
-        }
-
-        pos += 2;
-        while pos + 1 < self.bytes.len() {
-            if self.bytes[pos] == b']' {
-                return self.bytes[pos + 1] == b']';
-            }
-            pos += 1;
-        }
-        false
-    }
-
     fn read_string(&mut self, quote: u8) -> Result<Token, String> {
         self.pos += 1; // skip opening quote
         let mut s = String::new();
@@ -311,24 +296,12 @@ impl<'a> Tokenizer<'a> {
 
     fn read_wikilink(&mut self) -> Result<Token, String> {
         let start = self.pos;
-        if self.bytes[self.pos] == b'!' {
-            self.pos += 1;
-        }
-
-        if self.bytes.get(self.pos) != Some(&b'[') || self.bytes.get(self.pos + 1) != Some(&b'[') {
-            return Err(format!("invalid wikilink at position {start}"));
-        }
-
-        self.pos += 2;
-        while self.pos + 1 < self.bytes.len() {
-            if self.bytes[self.pos] == b']' && self.bytes[self.pos + 1] == b']' {
-                self.pos += 2;
-                return Ok(Token::Wikilink(self.source[start..self.pos].to_string()));
-            }
-            self.pos += 1;
-        }
-
-        Err("unterminated wikilink".to_string())
+        let end = self
+            .wikilink_ends
+            .end(self.bytes, start)
+            .ok_or_else(|| format!("invalid wikilink at position {start}"))?;
+        self.pos = end;
+        Ok(Token::Wikilink(self.source[start..end].to_string()))
     }
 
     fn read_number(&mut self) -> Token {
@@ -834,5 +807,16 @@ mod tests {
                 Token::Ident("y".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn unterminated_wikilink_prefixes_tokenize_in_linear_space() {
+        let input = "[".repeat(100_000);
+        let mut tokenizer = Tokenizer::new(&input);
+        let mut count = 0;
+        while tokenizer.next_token().expect("tokenization should finish") != Token::Eof {
+            count += 1;
+        }
+        assert_eq!(count, input.len());
     }
 }

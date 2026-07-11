@@ -866,7 +866,9 @@ fn repeat_string(string_value: &Value, count_value: &Value) -> Option<String> {
         return None;
     }
     let count = integer_value_ms(count_value)?;
-    usize::try_from(count).ok().map(|count| text.repeat(count))
+    usize::try_from(count)
+        .ok()
+        .and_then(|count| crate::resource_limits::checked_repeat(text, count))
 }
 
 #[must_use]
@@ -1340,6 +1342,15 @@ mod tests {
     #[test]
     fn eval_string_length() {
         assert_eq!(eval(r#""hello".length"#), serde_json::json!(5));
+    }
+
+    #[test]
+    fn string_multiplication_respects_the_shared_output_budget() {
+        let input = format!(
+            "\"ab\" * {}",
+            crate::resource_limits::MAX_EXPRESSION_OUTPUT_CHARS
+        );
+        assert_eq!(eval(&input), Value::Null);
     }
 
     #[test]

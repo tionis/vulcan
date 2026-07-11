@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::expression::{ast::Expr, parse_expression};
+use crate::resource_limits::ensure_query_input;
 
 use super::ast::{
     DqlDataCommand, DqlLinkTarget, DqlNamedExpr, DqlProjection, DqlQuery, DqlQueryType,
@@ -44,6 +45,7 @@ struct DqlParser {
 
 impl DqlParser {
     fn new(source: &str) -> Result<Self, String> {
+        ensure_query_input(source)?;
         let mut tokenizer = DqlTokenizer::new(source);
         let mut tokens = Vec::new();
         loop {

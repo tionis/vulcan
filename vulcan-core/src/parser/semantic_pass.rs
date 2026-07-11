@@ -22,6 +22,7 @@ pub fn process_events<'a, I>(
     config: &VaultConfig,
     comment_regions: &[Range<usize>],
     mut events: I,
+    extract_dataview: bool,
 ) -> ParsedDocument
 where
     I: Iterator<Item = (Event<'a>, Range<usize>)>,
@@ -44,7 +45,7 @@ where
         }
     }
 
-    state.finish()
+    state.finish(extract_dataview)
 }
 
 fn collect_event_batch<'a, I>(events: &mut I) -> Result<Vec<(Event<'a>, Range<usize>)>, String>
@@ -535,20 +536,23 @@ impl<'a> SemanticProcessor<'a> {
         self.parsed.diagnostics.extend(parsed.diagnostics);
     }
 
-    fn finish(mut self) -> ParsedDocument {
+    fn finish(mut self, extract_dataview: bool) -> ParsedDocument {
         self.parsed.block_refs = detect_block_refs(&self.semantic_blocks);
-        let dataview =
-            extract_dataview_metadata(self.source, self.comment_regions, &self.semantic_blocks);
-        self.parsed.inline_fields = dataview.inline_fields;
-        self.parsed.list_items = dataview.list_items;
-        self.parsed.tasks = dataview.tasks;
-        self.parsed.dataview_blocks = dataview.dataview_blocks;
-        self.parsed.tasks_blocks = dataview.tasks_blocks;
-        for property_range in dataview.property_value_ranges {
-            for link in &mut self.parsed.links {
-                if property_range.start <= link.byte_offset && link.byte_offset < property_range.end
-                {
-                    link.origin_context = OriginContext::Property;
+        if extract_dataview {
+            let dataview =
+                extract_dataview_metadata(self.source, self.comment_regions, &self.semantic_blocks);
+            self.parsed.inline_fields = dataview.inline_fields;
+            self.parsed.list_items = dataview.list_items;
+            self.parsed.tasks = dataview.tasks;
+            self.parsed.dataview_blocks = dataview.dataview_blocks;
+            self.parsed.tasks_blocks = dataview.tasks_blocks;
+            for property_range in dataview.property_value_ranges {
+                for link in &mut self.parsed.links {
+                    if property_range.start <= link.byte_offset
+                        && link.byte_offset < property_range.end
+                    {
+                        link.origin_context = OriginContext::Property;
+                    }
                 }
             }
         }

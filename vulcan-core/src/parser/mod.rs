@@ -53,7 +53,13 @@ fn parse_document_internal(
         fragment_parser_options()
     };
     let parser = Parser::new_ext(source, options).into_offset_iter();
-    process_events(source, config, &comment_regions, parser)
+    process_events(
+        source,
+        config,
+        &comment_regions,
+        parser,
+        include_metadata_blocks,
+    )
 }
 
 fn shift_parsed_document_offsets(parsed: &mut ParsedDocument, base_offset: usize) {
@@ -582,6 +588,16 @@ mod tests {
             .chunk_texts
             .iter()
             .all(|chunk| !chunk.content.contains("dv.table")));
+    }
+
+    #[test]
+    fn fragment_parsing_does_not_reenter_dataview_list_extraction() {
+        let parsed =
+            parse_document_fragment("- item #project [[Target]]", &VaultConfig::default(), 0);
+
+        assert!(parsed.list_items.is_empty());
+        assert_eq!(parsed.tags.len(), 1);
+        assert_eq!(parsed.links.len(), 1);
     }
 
     #[test]

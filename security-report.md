@@ -1605,16 +1605,18 @@ These items should be implemented once and reused across individual fixes to avo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `M-16`.
-- [ ] Add or update a regression test: Fuzz/regression tests for unterminated `[[[[` tokenization.
-- [ ] Add or update a regression test: Regression test for Dataview fragment recursion and capped string repeat/toFixed/pad lengths.
+- [x] Add or update a regression test: Fuzz/regression tests for unterminated `[[[[` tokenization.
+- [x] Add or update a regression test: Regression test for Dataview fragment recursion and capped string repeat/toFixed/pad lengths.
 - [ ] Implement the remediation: Add shared input-size, recursion-depth, node-count, output-size, and timeout budgets to parser/evaluator entrypoints; replace repeated scans with linear algorithms.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+
+Partial remediation completed: query input and expression output limits are shared in `vulcan-core`; expression parsing has a recursion-depth guard; wikilink and block-reference scans are linear; fragment parsing no longer re-enters Dataview extraction; and task recurrence remains bounded by caller result limits plus a 50-year horizon. A general evaluator node/operation budget is still required before the implementation item can close.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
 - [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
 
 ## Closure Criteria

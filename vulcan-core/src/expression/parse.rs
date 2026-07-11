@@ -1,5 +1,6 @@
 use crate::expression::ast::{BinOp, Expr, UnOp};
 use crate::expression::token::{Token, Tokenizer};
+use crate::resource_limits::ensure_query_input;
 
 const MAX_EXPRESSION_RECURSION_DEPTH: usize = 64;
 
@@ -12,6 +13,7 @@ pub struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     pub fn new(source: &'a str) -> Result<Self, String> {
+        ensure_query_input(source)?;
         let mut tokenizer = Tokenizer::new(source);
         let current = tokenizer.next_token()?;
         Ok(Self {
@@ -741,5 +743,14 @@ mod tests {
             err,
             format!("expression nesting exceeds maximum depth of {MAX_EXPRESSION_RECURSION_DEPTH}")
         );
+    }
+
+    #[test]
+    fn rejects_oversized_expression_input_before_tokenization() {
+        let input = "x".repeat(crate::resource_limits::MAX_QUERY_INPUT_BYTES + 1);
+        let Err(error) = Parser::new(&input) else {
+            panic!("oversized input should be rejected");
+        };
+        assert!(error.contains("query input exceeds maximum size"));
     }
 }

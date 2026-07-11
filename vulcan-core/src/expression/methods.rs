@@ -5,6 +5,9 @@ use crate::expression::eval::{
     as_number, compare_values, evaluate, is_truthy, number_to_value, value_to_display, EvalContext,
 };
 use crate::expression::functions::{date_components, format_date, parse_date_like_string};
+use crate::resource_limits::{
+    checked_repeat, ensure_expression_output_chars, MAX_EXPRESSION_OUTPUT_CHARS,
+};
 
 pub fn call_method(
     receiver: &Value,
@@ -79,7 +82,14 @@ fn string_method(s: &str, method: &str, args: &[Expr], ctx: &EvalContext) -> Res
         "reverse" => Ok(Value::String(s.chars().rev().collect())),
         "repeat" => {
             let count = eval_number_arg(args, 0, ctx)? as usize;
-            Ok(Value::String(s.repeat(count)))
+            checked_repeat(s, count).map_or_else(
+                || {
+                    Err(format!(
+                        "expression output exceeds maximum length of {MAX_EXPRESSION_OUTPUT_CHARS} characters"
+                    ))
+                },
+                |output| Ok(Value::String(output)),
+            )
         }
         "replace" => {
             let pattern = eval_string_arg(args, 0, ctx)?;
@@ -226,6 +236,7 @@ fn number_method(n: f64, method: &str, args: &[Expr], ctx: &EvalContext) -> Resu
         }
         "toFixed" => {
             let precision = eval_number_arg(args, 0, ctx)? as usize;
+            ensure_expression_output_chars(precision.saturating_add(32))?;
             Ok(Value::String(format!("{n:.precision$}")))
         }
         "isEmpty" => Ok(Value::Bool(false)),
@@ -613,6 +624,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn eval(input: &str) -> Value {
+        eval_result(input).unwrap()
+    }
+
+    fn eval_result(input: &str) -> Result<Value, String> {
         let expr = Parser::new(input).unwrap().parse().unwrap();
         let note = NoteRecord {
             document_id: "note-id".to_string(),
@@ -638,7 +653,7 @@ mod tests {
         };
         let formulas = BTreeMap::new();
         let ctx = EvalContext::new(&note, &formulas);
-        evaluate(&expr, &ctx).unwrap()
+        evaluate(&expr, &ctx)
     }
 
     // ── String methods ──────────────────────────────────────────────
@@ -710,6 +725,19 @@ mod tests {
             eval(r#""ab".repeat(3)"#),
             Value::String("ababab".to_string())
         );
+    }
+
+    #[test]
+    fn allocation_heavy_methods_respect_the_shared_output_budget() {
+        let over_limit = MAX_EXPRESSION_OUTPUT_CHARS + 1;
+        for input in [
+            format!("\"x\".repeat({over_limit})"),
+            format!("(3.14).toFixed({over_limit})"),
+            format!("padleft(\"x\", {over_limit}, \"!\")"),
+        ] {
+            let error = eval_result(&input).expect_err("oversized output should be rejected");
+            assert!(error.contains("expression output exceeds maximum length"));
+        }
     }
 
     #[test]

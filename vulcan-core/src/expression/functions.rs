@@ -12,6 +12,7 @@ use crate::expression::eval::{
 use crate::expression::methods::{call_method, evaluate_callback};
 use crate::expression::value::dataview_value_type;
 use crate::file_metadata::FileMetadataResolver;
+use crate::resource_limits::ensure_expression_output_chars;
 
 #[allow(clippy::too_many_lines)]
 pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
@@ -612,6 +613,7 @@ fn func_pad(args: &[Expr], ctx: &EvalContext, left: bool) -> Result<Value, Strin
                     let Some(target_length) = nonnegative_index_value(&target_length) else {
                         return Ok(Value::Null);
                     };
+                    ensure_expression_output_chars(target_length)?;
                     Ok(Value::String(pad_string(
                         &text,
                         target_length,
@@ -633,6 +635,7 @@ fn func_pad(args: &[Expr], ctx: &EvalContext, left: bool) -> Result<Value, Strin
                     let Some(target_length) = nonnegative_index_value(&target_length) else {
                         return Ok(Value::Null);
                     };
+                    ensure_expression_output_chars(target_length)?;
                     Ok(Value::String(pad_string(&text, target_length, " ", left)))
                 }
                 _ => Ok(Value::Null),

@@ -1,3 +1,5 @@
+use crate::resource_limits::WikilinkEndIndex;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum DqlToken {
     Table,
@@ -59,6 +61,7 @@ pub struct DqlTokenizer<'a> {
     source: &'a str,
     bytes: &'a [u8],
     pos: usize,
+    wikilink_ends: WikilinkEndIndex,
 }
 
 impl<'a> DqlTokenizer<'a> {
@@ -68,6 +71,7 @@ impl<'a> DqlTokenizer<'a> {
             source,
             bytes: source.as_bytes(),
             pos: 0,
+            wikilink_ends: WikilinkEndIndex::new(source.as_bytes()),
         }
     }
 
@@ -83,7 +87,7 @@ impl<'a> DqlTokenizer<'a> {
         let token = match ch {
             b'!' if self.peek_next() == Some(b'[')
                 && self.bytes.get(self.pos + 2) == Some(&b'[')
-                && self.looks_like_wikilink_literal(self.pos) =>
+                && self.wikilink_ends.end(self.bytes, self.pos).is_some() =>
             {
                 self.read_wikilink()?
             }
@@ -96,7 +100,7 @@ impl<'a> DqlTokenizer<'a> {
                 DqlToken::RParen
             }
             b'[' if self.peek_next() == Some(b'[')
-                && self.looks_like_wikilink_literal(self.pos) =>
+                && self.wikilink_ends.end(self.bytes, self.pos).is_some() =>
             {
                 self.read_wikilink()?
             }
@@ -201,25 +205,6 @@ impl<'a> DqlTokenizer<'a> {
         self.bytes.get(self.pos + 1).copied()
     }
 
-    fn looks_like_wikilink_literal(&self, start: usize) -> bool {
-        let mut pos = start;
-        if self.bytes.get(pos) == Some(&b'!') {
-            pos += 1;
-        }
-        if self.bytes.get(pos) != Some(&b'[') || self.bytes.get(pos + 1) != Some(&b'[') {
-            return false;
-        }
-
-        pos += 2;
-        while pos + 1 < self.bytes.len() {
-            if self.bytes[pos] == b']' {
-                return self.bytes[pos + 1] == b']';
-            }
-            pos += 1;
-        }
-        false
-    }
-
     fn read_string(&mut self, quote: u8) -> Result<DqlToken, String> {
         self.pos += 1;
         let mut value = String::new();
@@ -272,24 +257,12 @@ impl<'a> DqlTokenizer<'a> {
 
     fn read_wikilink(&mut self) -> Result<DqlToken, String> {
         let start = self.pos;
-        if self.bytes[self.pos] == b'!' {
-            self.pos += 1;
-        }
-
-        if self.bytes.get(self.pos) != Some(&b'[') || self.bytes.get(self.pos + 1) != Some(&b'[') {
-            return Err(format!("invalid wikilink at position {start}"));
-        }
-
-        self.pos += 2;
-        while self.pos + 1 < self.bytes.len() {
-            if self.bytes[self.pos] == b']' && self.bytes[self.pos + 1] == b']' {
-                self.pos += 2;
-                return Ok(DqlToken::Wikilink(self.source[start..self.pos].to_string()));
-            }
-            self.pos += 1;
-        }
-
-        Err("unterminated wikilink".to_string())
+        let end = self
+            .wikilink_ends
+            .end(self.bytes, start)
+            .ok_or_else(|| format!("invalid wikilink at position {start}"))?;
+        self.pos = end;
+        Ok(DqlToken::Wikilink(self.source[start..end].to_string()))
     }
 
     fn read_number(&mut self) -> DqlToken {
@@ -693,5 +666,16 @@ mod tests {
                 DqlToken::Ident("name".to_string()),
             ]
         );
+    }
+
+    #[test]
+    fn unterminated_wikilink_prefixes_tokenize_in_linear_space() {
+        let input = "[".repeat(100_000);
+        let mut tokenizer = DqlTokenizer::new(&input);
+        let mut count = 0;
+        while tokenizer.next_token().expect("tokenization should finish") != DqlToken::Eof {
+            count += 1;
+        }
+        assert_eq!(count, input.len());
     }
 }
