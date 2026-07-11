@@ -1320,6 +1320,38 @@ fn site_build_omits_notes_and_assets_denied_by_the_read_filter() {
 }
 
 #[test]
+fn site_clean_refuses_an_output_directory_outside_the_vault() {
+    let temp_dir = TempDir::new().expect("temp dir should exist");
+    let vault_root = temp_dir.path().join("vault");
+    let outside_output = temp_dir.path().join("outside-site");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::create_dir_all(&outside_output).expect("outside output should exist");
+    fs::write(vault_root.join("Home.md"), "# Home\n").expect("home note should write");
+    fs::write(outside_output.join("marker.txt"), "must remain")
+        .expect("outside marker should write");
+    scan_fixture(&vault_root);
+
+    let error = build_site(
+        &VaultPaths::new(&vault_root),
+        &SiteBuildRequest {
+            profile: None,
+            output_dir: Some(outside_output.clone()),
+            clean: true,
+            dry_run: false,
+        },
+    )
+    .expect_err("outside site output must not be cleaned");
+
+    assert!(error
+        .to_string()
+        .contains("refusing to clean site output outside the vault"));
+    assert_eq!(
+        fs::read_to_string(outside_output.join("marker.txt")).expect("marker should remain"),
+        "must remain"
+    );
+}
+
+#[test]
 fn site_build_applies_frontmatter_metadata_overrides_and_logo_assets() {
     let temp_dir = TempDir::new().expect("temp dir should exist");
     let vault_root = temp_dir.path().join("vault");

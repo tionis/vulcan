@@ -385,7 +385,7 @@ where
     };
     let cached_asset_state = load_site_asset_copy_state(paths, &plan.profile)?;
     if request.clean && !request.dry_run && plan.profile.output_dir.exists() {
-        fs::remove_dir_all(&plan.profile.output_dir).map_err(AppError::operation)?;
+        remove_site_output_dir(paths, &plan.profile.output_dir)?;
     }
     let output_dir = plan.profile.output_dir.clone();
     let SiteRenderOutcome {
@@ -808,7 +808,7 @@ pub fn build_frontend_bundle(
         None,
     )?;
     if request.clean && !request.dry_run && plan.profile.output_dir.exists() {
-        fs::remove_dir_all(&plan.profile.output_dir).map_err(AppError::operation)?;
+        remove_site_output_dir(paths, &plan.profile.output_dir)?;
     }
 
     let output_dir = plan.profile.output_dir.clone();
@@ -1233,14 +1233,30 @@ fn resolve_site_profile(
             "site profile `{requested_name}` must set only one of `include_query` or `include_query_json`"
         )));
     }
-    let output_dir = output_override
-        .map(Path::to_path_buf)
-        .or_else(|| raw.output_dir.clone())
-        .unwrap_or_else(|| PathBuf::from(format!(".vulcan/site/{requested_name}")));
-    let output_dir = if output_dir.is_absolute() {
-        output_dir
+    let output_dir = if let Some(output_override) = output_override {
+        if output_override.is_absolute() {
+            output_override.to_path_buf()
+        } else {
+            paths.vault_root().join(output_override)
+        }
     } else {
-        paths.vault_root().join(output_dir)
+        let configured = raw
+            .output_dir
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(format!(".vulcan/site/{requested_name}")));
+        let normalized = normalize_relative_input_path(
+            &configured.to_string_lossy(),
+            RelativePathOptions {
+                expected_extension: None,
+                append_extension_if_missing: false,
+            },
+        )
+        .map_err(|error| {
+            AppError::operation(format!(
+                "site profile `{requested_name}` has an unsafe output_dir: {error}"
+            ))
+        })?;
+        paths.vault_root().join(normalized)
     };
     let theme = raw.theme.clone().unwrap_or_else(|| "default".to_string());
     let theme_overrides = resolve_site_theme(paths, &theme)?;
@@ -5186,6 +5202,18 @@ fn remove_stale_output_files(
     remove_stale_output_files_recursive(output_dir, output_dir, expected_files, &mut deleted)?;
     deleted.sort();
     Ok(deleted)
+}
+
+fn remove_site_output_dir(paths: &VaultPaths, output_dir: &Path) -> Result<(), AppError> {
+    let vault_root = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let resolved_output = fs::canonicalize(output_dir).map_err(AppError::operation)?;
+    if resolved_output == vault_root || !resolved_output.starts_with(&vault_root) {
+        return Err(AppError::operation(format!(
+            "refusing to clean site output outside the vault: {}",
+            output_dir.display()
+        )));
+    }
+    fs::remove_dir_all(resolved_output).map_err(AppError::operation)
 }
 
 fn remove_stale_output_files_recursive(

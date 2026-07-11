@@ -27,6 +27,7 @@ use vulcan_core::content_transforms::{
     ContentReplacementRuleConfig, ContentTransformConfig, ContentTransformRuleConfig,
 };
 use vulcan_core::parser::{LinkKind, OriginContext};
+use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
 use vulcan_core::permissions::PermissionFilter;
 use vulcan_core::properties::load_note_index;
 use vulcan_core::properties::{evaluate_note_inline_expressions, extract_indexed_properties};
@@ -2555,10 +2556,10 @@ pub fn build_export_profile_list(paths: &VaultPaths) -> Vec<ExportProfileListEnt
         .profiles
         .into_iter()
         .map(|(name, profile)| ExportProfileListEntry {
-            resolved_path: profile.path.as_deref().map(|path| {
+            resolved_path: profile.path.as_deref().and_then(|path| {
                 resolve_export_profile_output_path(paths, path)
-                    .display()
-                    .to_string()
+                    .ok()
+                    .map(|path| path.display().to_string())
             }),
             path: profile.path.map(|path| path.display().to_string()),
             format: profile
@@ -2950,13 +2951,19 @@ pub fn export_profile_format_label(format: ExportProfileFormat) -> &'static str 
     }
 }
 
-#[must_use]
-pub fn resolve_export_profile_output_path(paths: &VaultPaths, path: &Path) -> PathBuf {
-    if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        paths.vault_root().join(path)
-    }
+pub fn resolve_export_profile_output_path(
+    paths: &VaultPaths,
+    path: &Path,
+) -> Result<PathBuf, AppError> {
+    let normalized = normalize_relative_input_path(
+        &path.to_string_lossy(),
+        RelativePathOptions {
+            expected_extension: None,
+            append_extension_if_missing: false,
+        },
+    )
+    .map_err(AppError::operation)?;
+    Ok(paths.vault_root().join(normalized))
 }
 
 pub fn require_export_profile_format(
@@ -2979,7 +2986,7 @@ pub fn require_export_profile_path(
                 "export profile `{name}` is missing `path`"
             )))
         },
-        |path| Ok(resolve_export_profile_output_path(paths, path)),
+        |path| resolve_export_profile_output_path(paths, path),
     )
 }
 

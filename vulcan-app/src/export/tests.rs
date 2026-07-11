@@ -7,11 +7,12 @@ use super::{
     collect_export_attachment_paths, execute_export_query, inject_epub_heading_ids,
     load_export_links, load_exported_notes, prepare_export_data, render_csv_export_payload,
     render_epub_nav_document, render_json_export_payload, render_markdown_export_payload,
-    rewrite_epub_link_destination, write_epub_export, write_sqlite_export, write_zip_export,
-    BoolConfigUpdate, ConfigValueUpdate, EpubChapter, EpubExportOptions, EpubHeading,
-    EpubRenderCallbacks, ExportLinkRecord, ExportProfileCreateRequest, ExportProfileFormat,
-    ExportProfileRuleMoveRequest, ExportProfileRuleRequest, ExportProfileRuleWriteAction,
-    ExportProfileSetRequest, ExportProfileWriteAction, ExportedNoteDocument,
+    require_export_profile_path, rewrite_epub_link_destination, write_epub_export,
+    write_sqlite_export, write_zip_export, BoolConfigUpdate, ConfigValueUpdate, EpubChapter,
+    EpubExportOptions, EpubHeading, EpubRenderCallbacks, ExportLinkRecord,
+    ExportProfileCreateRequest, ExportProfileFormat, ExportProfileRuleMoveRequest,
+    ExportProfileRuleRequest, ExportProfileRuleWriteAction, ExportProfileSetRequest,
+    ExportProfileWriteAction, ExportedNoteDocument,
 };
 use serde_json::{Map, Value};
 use std::collections::HashMap;
@@ -19,7 +20,7 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
-use vulcan_core::config::ExportEpubTocStyleConfig;
+use vulcan_core::config::{ExportEpubTocStyleConfig, ExportProfileConfig};
 use vulcan_core::permissions::{PathPermission, PermissionFilter, ResourceSpecifier};
 use vulcan_core::properties::NoteTaskRecord;
 use vulcan_core::{
@@ -133,6 +134,20 @@ fn export_profile_create_list_and_show_reports_share_app_layer_logic() {
     assert_eq!(show.profile["pretty"], Value::Bool(true));
     assert!(show.rendered_toml.contains("pretty = true"));
     assert!(config_contents(paths.vault_root()).contains("format = \"json\""));
+}
+
+#[test]
+fn export_profile_output_rejects_absolute_and_traversing_paths() {
+    let (_temp_dir, paths) = export_paths();
+    for unsafe_path in [Path::new("/tmp/public.zip"), Path::new("../public.zip")] {
+        let profile = ExportProfileConfig {
+            path: Some(unsafe_path.to_path_buf()),
+            ..ExportProfileConfig::default()
+        };
+        let error = require_export_profile_path(&paths, "public", &profile)
+            .expect_err("untrusted profile output should be rejected");
+        assert!(error.to_string().contains("expected a relative path"));
+    }
 }
 
 #[test]

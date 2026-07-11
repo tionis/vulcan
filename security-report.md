@@ -621,17 +621,19 @@ Remediation completed: export preparation filters resolved attachment links befo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `H-07`.
-- [ ] Add or update a regression test: Profile export test rejects absolute and `..` paths.
-- [ ] Add or update a regression test: Site clean test refuses an output directory outside the vault.
-- [ ] Implement the remediation: Constrain profile outputs to a vault-owned export/site directory by default; require explicit trusted override for absolute paths; refuse to clean paths outside the resolved project output root.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Profile export test rejects absolute and `..` paths.
+- [x] Add or update a regression test: Site clean test refuses an output directory outside the vault.
+- [x] Implement the remediation: Constrain profile outputs to a vault-owned export/site directory by default; require explicit trusted override for absolute paths; refuse to clean paths outside the resolved project output root.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+Remediation completed: persisted export and site profile destinations must be normalized vault-relative paths, while explicit CLI output overrides remain the trusted escape hatch for non-destructive writes. Site clean operations additionally canonicalize the vault and destination and refuse deletion at or outside the vault root. Verification covers absolute and parent-traversing export profiles plus an outside site directory whose marker survives a refused clean.
 
 ### H-08. Assistant prompt and skill roots can read host files through config or symlinks
 
