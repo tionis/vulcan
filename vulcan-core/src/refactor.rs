@@ -1,5 +1,8 @@
 use crate::graph::{resolve_note_reference, GraphQueryError};
 use crate::parser::{parse_document, RawBlockRef, RawHeading, RawLink};
+use crate::paths::{
+    normalize_relative_input_path, secure_read_to_string, secure_write, RelativePathOptions,
+};
 use crate::scan::{discover_relative_paths, scan_vault_unlocked, ScanError, ScanMode};
 use crate::write_lock::acquire_write_lock;
 use crate::{load_vault_config, VaultPaths};
@@ -10,6 +13,7 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
+use std::path::Path;
 
 #[derive(Debug)]
 pub enum RefactorError {
@@ -420,13 +424,14 @@ pub fn bulk_set_property_on_paths(
     let mut plans = Vec::new();
 
     for path in note_paths {
-        let source = fs::read_to_string(paths.vault_root().join(path))?;
+        let normalized = normalize_bulk_note_path(path)?;
+        let source = secure_read_to_string(paths.vault_root(), Path::new(&normalized))?;
         let Some((edit, changes)) =
-            plan_set_note_property_replacement(&source, path, key, desired_value.as_ref())?
+            plan_set_note_property_replacement(&source, &normalized, key, desired_value.as_ref())?
         else {
             continue;
         };
-        if let Some(plan) = build_file_plan(path, &source, &[edit], changes) {
+        if let Some(plan) = build_file_plan(&normalized, &source, &[edit], changes) {
             plans.push(plan);
         }
     }
@@ -578,7 +583,12 @@ fn finalize_refactor(
 ) -> Result<RefactorReport, RefactorError> {
     if !dry_run {
         for plan in &plans {
-            fs::write(paths.vault_root().join(&plan.path), &plan.updated_contents)?;
+            let normalized = normalize_bulk_note_path(&plan.path)?;
+            secure_write(
+                paths.vault_root(),
+                Path::new(&normalized),
+                &plan.updated_contents,
+            )?;
         }
         if !plans.is_empty() {
             scan_vault_unlocked(paths, ScanMode::Incremental)?;
@@ -596,6 +606,17 @@ fn finalize_refactor(
             })
             .collect(),
     })
+}
+
+fn normalize_bulk_note_path(path: &str) -> Result<String, RefactorError> {
+    normalize_relative_input_path(
+        path,
+        RelativePathOptions {
+            expected_extension: Some("md"),
+            append_extension_if_missing: false,
+        },
+    )
+    .map_err(|error| RefactorError::Io(std::io::Error::other(error)))
 }
 
 fn markdown_note_paths(paths: &VaultPaths) -> Result<Vec<String>, RefactorError> {
@@ -1592,6 +1613,51 @@ mod tests {
     use crate::{doctor_vault, query_notes, resolve_note_reference, scan_vault, NoteQuery};
     use std::path::Path;
     use tempfile::TempDir;
+
+    #[test]
+    fn bulk_set_property_rejects_absolute_and_parent_paths() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+        let paths = VaultPaths::new(&vault_root);
+        for unsafe_path in ["/tmp/outside.md", "../outside.md"] {
+            let error = bulk_set_property_on_paths(
+                &paths,
+                &[unsafe_path.to_string()],
+                "status",
+                Some("open"),
+                false,
+            )
+            .expect_err("unsafe bulk path must be rejected");
+            assert!(error.to_string().contains("expected a relative .md path"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bulk_set_property_rejects_a_symlinked_note() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+        let outside = temp_dir.path().join("outside.md");
+        fs::write(&outside, "# Outside\n").expect("outside note");
+        symlink(&outside, vault_root.join("Linked.md")).expect("note symlink");
+
+        bulk_set_property_on_paths(
+            &VaultPaths::new(&vault_root),
+            &["Linked.md".to_string()],
+            "status",
+            Some("open"),
+            false,
+        )
+        .expect_err("symlinked bulk note must be rejected");
+        assert_eq!(
+            fs::read_to_string(outside).expect("outside note"),
+            "# Outside\n"
+        );
+    }
 
     #[test]
     fn rename_property_updates_frontmatter_and_reindexes() {

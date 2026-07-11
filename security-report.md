@@ -800,17 +800,19 @@ Remediation completed: saved search, note-query, and Bases executions receive th
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `H-11`.
-- [ ] Add or update a regression test: CLI test that stdin path `../outside.md` is rejected for query update and refactor rewrite.
-- [ ] Add or update a regression test: Core tests for `bulk_set_property_on_paths` and `bulk_replace_on_paths` reject absolute paths and symlinks.
-- [ ] Implement the remediation: Normalize every bulk input through `normalize_relative_input_path`, reject absolute and parent components, canonicalize existing files, and reject symlinks before reading/writing.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: CLI test that stdin path `../outside.md` is rejected for query update and refactor rewrite.
+- [x] Add or update a regression test: Core tests for `bulk_set_property_on_paths` and `bulk_replace_on_paths` reject absolute paths and symlinks.
+- [x] Implement the remediation: Normalize every bulk input through `normalize_relative_input_path`, reject absolute and parent components, canonicalize existing files, and reject symlinks before reading/writing.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+Remediation completed: bulk property and rewrite path lists require normalized vault-relative Markdown paths, use no-follow reads, and revalidate and securely open every final write. CLI stdin tests prove `../outside.md` is rejected without modifying the outside file; core tests cover absolute paths, parent traversal, and final-component symlinks for both reusable APIs.
 
 ### H-12. Vault note and state-file writes follow symlinks outside the vault
 

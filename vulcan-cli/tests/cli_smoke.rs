@@ -18218,6 +18218,58 @@ fn note_update_command_reads_note_paths_from_stdin() {
 }
 
 #[test]
+fn bulk_stdin_mutations_reject_parent_paths() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+    let outside = temp_dir.path().join("outside.md");
+    fs::write(&outside, "# Outside\n\nrelease\n").expect("outside note");
+    run_scan(&vault_root);
+    let vault = vault_root.to_str().expect("vault path should be utf-8");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .write_stdin("../outside.md\n")
+        .args([
+            "--vault",
+            vault,
+            "note",
+            "update",
+            "--stdin",
+            "--key",
+            "status",
+            "--value",
+            "done",
+            "--no-commit",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("expected a relative .md path"));
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .write_stdin("../outside.md\n")
+        .args([
+            "--vault",
+            vault,
+            "refactor",
+            "rewrite",
+            "--stdin",
+            "--find",
+            "release",
+            "--replace",
+            "launch",
+            "--no-commit",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("expected a relative .md path"));
+    assert_eq!(
+        fs::read_to_string(outside).expect("outside note"),
+        "# Outside\n\nrelease\n"
+    );
+}
+
+#[test]
 fn update_command_dry_run_does_not_modify_files() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

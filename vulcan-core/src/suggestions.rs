@@ -1,5 +1,8 @@
 use crate::graph::{resolve_note_reference, GraphQueryError};
 use crate::parser::parse_document;
+use crate::paths::{
+    normalize_relative_input_path, secure_read_to_string, secure_write, RelativePathOptions,
+};
 use crate::refactor::{RefactorChange, RefactorFileReport, RefactorReport};
 use crate::scan::{scan_vault_unlocked, ScanError, ScanMode};
 use crate::write_lock::acquire_write_lock;
@@ -900,7 +903,8 @@ fn bulk_replace_plans(
     let mut plans = Vec::new();
 
     for path in note_paths {
-        let source = fs::read_to_string(paths.vault_root().join(path))?;
+        let normalized = normalize_bulk_note_path(path)?;
+        let source = secure_read_to_string(paths.vault_root(), Path::new(&normalized))?;
         let mut edits = Vec::new();
         let mut changes = Vec::new();
 
@@ -917,7 +921,7 @@ fn bulk_replace_plans(
             });
         }
 
-        if let Some(plan) = build_file_plan(path, &source, &edits, changes) {
+        if let Some(plan) = build_file_plan(&normalized, &source, &edits, changes) {
             plans.push(plan);
         }
     }
@@ -1628,7 +1632,12 @@ fn finalize_refactor(
 ) -> Result<RefactorReport, SuggestionError> {
     if !dry_run {
         for plan in &plans {
-            fs::write(paths.vault_root().join(&plan.path), &plan.updated_contents)?;
+            let normalized = normalize_bulk_note_path(&plan.path)?;
+            secure_write(
+                paths.vault_root(),
+                Path::new(&normalized),
+                &plan.updated_contents,
+            )?;
         }
         if !plans.is_empty() {
             scan_vault_unlocked(paths, ScanMode::Incremental)?;
@@ -1646,6 +1655,17 @@ fn finalize_refactor(
             })
             .collect(),
     })
+}
+
+fn normalize_bulk_note_path(path: &str) -> Result<String, SuggestionError> {
+    normalize_relative_input_path(
+        path,
+        RelativePathOptions {
+            expected_extension: Some("md"),
+            append_extension_if_missing: false,
+        },
+    )
+    .map_err(|error| SuggestionError::InvalidRewrite(error.to_string()))
 }
 
 fn levenshtein(left: &str, right: &str) -> usize {
@@ -1677,6 +1697,46 @@ mod tests {
     use tempfile::TempDir;
     #[cfg(feature = "vectors")]
     use vulcan_embed::{SqliteVecStore, StoredModel, StoredVector, VectorStore};
+
+    #[test]
+    fn bulk_replace_rejects_absolute_and_parent_paths() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+        let paths = VaultPaths::new(&vault_root);
+        for unsafe_path in ["/tmp/outside.md", "../outside.md"] {
+            let error =
+                bulk_replace_on_paths(&paths, &[unsafe_path.to_string()], "before", "after", false)
+                    .expect_err("unsafe bulk path must be rejected");
+            assert!(error.to_string().contains("expected a relative .md path"));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bulk_replace_rejects_a_symlinked_note() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+        let outside = temp_dir.path().join("outside.md");
+        fs::write(&outside, "before\n").expect("outside note");
+        symlink(&outside, vault_root.join("Linked.md")).expect("note symlink");
+
+        bulk_replace_on_paths(
+            &VaultPaths::new(&vault_root),
+            &["Linked.md".to_string()],
+            "before",
+            "after",
+            false,
+        )
+        .expect_err("symlinked bulk note must be rejected");
+        assert_eq!(
+            fs::read_to_string(outside).expect("outside note"),
+            "before\n"
+        );
+    }
 
     #[test]
     fn suggest_mentions_reports_unambiguous_and_ambiguous_candidates() {
