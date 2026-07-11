@@ -153,6 +153,7 @@ pub enum ParseDiagnosticKind {
     LinkInComment,
     MalformedFrontmatter,
     UnsupportedSyntax,
+    ResourceLimit,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

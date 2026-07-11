@@ -1,8 +1,10 @@
 use super::ast::{
     TasksDateField, TasksDateRelation, TasksFilter, TasksQuery, TasksQueryCommand, TasksTextField,
 };
+use crate::resource_limits::ensure_query_input;
 
 pub fn parse_tasks_query(source: &str) -> Result<TasksQuery, String> {
+    ensure_query_input(source)?;
     let mut commands = Vec::new();
 
     for (index, line) in source.lines().enumerate() {
@@ -705,5 +707,12 @@ mod tests {
     fn rejects_unknown_filters() {
         let error = parse_tasks_query("mystery filter").expect_err("query should fail");
         assert_eq!(error, "line 1: unsupported tasks filter `mystery filter`");
+    }
+
+    #[test]
+    fn rejects_oversized_tasks_query_input() {
+        let input = "x".repeat(crate::resource_limits::MAX_QUERY_INPUT_BYTES + 1);
+        let error = parse_tasks_query(&input).expect_err("oversized query should fail");
+        assert!(error.contains("query input exceeds maximum size"));
     }
 }

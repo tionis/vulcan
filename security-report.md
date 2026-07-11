@@ -45,7 +45,7 @@ Fix shared security primitives first, then apply them consistently to the indivi
 - [ ] **Sandbox/config trust gate:** cover `H-02`, `H-09`, `H-14` and the executable parts of `SAST-01`.
 - [ ] **Rendering/export/publication hardening:** cover `H-05`, `H-06`, `H-07`, `M-14`.
 - [ ] **HTTP/OAuth/network hardening:** cover `H-01`, `H-04`, `M-02`, `M-03`, `M-04`.
-- [ ] **Resource-budget controls:** cover `M-15`, `M-16` and the unbounded-output parts of extraction/parser/query evaluation.
+- [x] **Resource-budget controls:** cover `M-15`, `M-16` and the unbounded-output parts of extraction/parser/query evaluation.
 - [ ] **Dependency and tooling follow-up:** cover `DEP-01` through `DEP-05`, `SEC-01`, `SEC-02`, `SAST-01`, `SAST-02`, `UNSAFE-01`, `SC-01`, `SC-02`.
 
 ### Suggested Commit Boundaries
@@ -1607,12 +1607,12 @@ These items should be implemented once and reused across individual fixes to avo
 - [ ] Assign an owner and target release for `M-16`.
 - [x] Add or update a regression test: Fuzz/regression tests for unterminated `[[[[` tokenization.
 - [x] Add or update a regression test: Regression test for Dataview fragment recursion and capped string repeat/toFixed/pad lengths.
-- [ ] Implement the remediation: Add shared input-size, recursion-depth, node-count, output-size, and timeout budgets to parser/evaluator entrypoints; replace repeated scans with linear algorithms.
+- [x] Implement the remediation: Add shared input-size, recursion-depth, node-count, output-size, and timeout budgets to parser/evaluator entrypoints; replace repeated scans with linear algorithms.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
-Partial remediation completed: query input and expression output limits are shared in `vulcan-core`; expression parsing has a recursion-depth guard; wikilink and block-reference scans are linear; fragment parsing no longer re-enters Dataview extraction; and task recurrence remains bounded by caller result limits plus a 50-year horizon. A general evaluator node/operation budget is still required before the implementation item can close.
+Remediation completed: document/query input, parse recursion, evaluation operation/deadline, collection, and expression output limits are shared in `vulcan-core`; wikilink and block-reference scans are linear; fragment parsing no longer re-enters Dataview extraction; and task recurrence is bounded by caller result limits plus a 50-year horizon.
 
 **Preventive controls:**
 

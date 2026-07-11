@@ -6,7 +6,8 @@ use crate::expression::eval::{
 };
 use crate::expression::functions::{date_components, format_date, parse_date_like_string};
 use crate::resource_limits::{
-    checked_repeat, ensure_expression_output_chars, MAX_EXPRESSION_OUTPUT_CHARS,
+    checked_repeat, ensure_collection_items, ensure_expression_output_chars,
+    MAX_EXPRESSION_OUTPUT_CHARS,
 };
 
 pub fn call_method(
@@ -335,6 +336,7 @@ fn array_method(
     args: &[Expr],
     ctx: &EvalContext,
 ) -> Result<Value, String> {
+    ensure_collection_items(arr.len())?;
     match method {
         "contains" => {
             let needle = eval_arg(args, 0, ctx)?;
@@ -531,6 +533,7 @@ pub(crate) fn evaluate_callback(
         note_lookup: ctx.note_lookup,
         this_note: ctx.this_note,
         this_null_when_missing: ctx.this_null_when_missing,
+        budget: ctx.budget.clone(),
     };
 
     if let Expr::Lambda(params, body) = expr {

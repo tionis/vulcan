@@ -1802,6 +1802,7 @@ fn parse_diagnostic_kind_name(kind: ParseDiagnosticKind) -> &'static str {
         ParseDiagnosticKind::LinkInComment => "link_in_comment",
         ParseDiagnosticKind::MalformedFrontmatter => "malformed_frontmatter",
         ParseDiagnosticKind::UnsupportedSyntax => "unsupported_syntax",
+        ParseDiagnosticKind::ResourceLimit => "resource_limit",
     }
 }
 

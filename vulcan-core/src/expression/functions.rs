@@ -12,7 +12,7 @@ use crate::expression::eval::{
 use crate::expression::methods::{call_method, evaluate_callback};
 use crate::expression::value::dataview_value_type;
 use crate::file_metadata::FileMetadataResolver;
-use crate::resource_limits::ensure_expression_output_chars;
+use crate::resource_limits::{ensure_collection_items, ensure_expression_output_chars};
 
 #[allow(clippy::too_many_lines)]
 pub fn call_function(name: &str, args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
@@ -1066,12 +1066,15 @@ where
     F: Fn(Value) -> Result<Value, String>,
 {
     match value {
-        Value::Array(values) => Ok(Value::Array(
-            values
-                .into_iter()
-                .map(|value| vectorize_unary(value, op))
-                .collect::<Result<Vec<_>, _>>()?,
-        )),
+        Value::Array(values) => {
+            ensure_collection_items(values.len())?;
+            Ok(Value::Array(
+                values
+                    .into_iter()
+                    .map(|value| vectorize_unary(value, op))
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
         value => op(value),
     }
 }
@@ -1091,6 +1094,7 @@ where
             if vectorize_left && vectorize_right =>
         {
             let len = left_values.len().min(right_values.len());
+            ensure_collection_items(len)?;
             Ok(Value::Array(
                 (0..len)
                     .map(|index| {
@@ -1105,22 +1109,28 @@ where
                     .collect::<Result<Vec<_>, _>>()?,
             ))
         }
-        (Value::Array(values), right) if vectorize_left => Ok(Value::Array(
-            values
-                .into_iter()
-                .map(|value| {
-                    vectorize_binary(value, right.clone(), vectorize_left, vectorize_right, op)
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        )),
-        (left, Value::Array(values)) if vectorize_right => Ok(Value::Array(
-            values
-                .into_iter()
-                .map(|value| {
-                    vectorize_binary(left.clone(), value, vectorize_left, vectorize_right, op)
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        )),
+        (Value::Array(values), right) if vectorize_left => {
+            ensure_collection_items(values.len())?;
+            Ok(Value::Array(
+                values
+                    .into_iter()
+                    .map(|value| {
+                        vectorize_binary(value, right.clone(), vectorize_left, vectorize_right, op)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
+        (left, Value::Array(values)) if vectorize_right => {
+            ensure_collection_items(values.len())?;
+            Ok(Value::Array(
+                values
+                    .into_iter()
+                    .map(|value| {
+                        vectorize_binary(left.clone(), value, vectorize_left, vectorize_right, op)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?,
+            ))
+        }
         (left, right) => op(left, right),
     }
 }
@@ -1154,6 +1164,7 @@ where
         })
         .min()
         .unwrap_or(0);
+        ensure_collection_items(len)?;
 
         return Ok(Value::Array(
             (0..len)

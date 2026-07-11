@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::expression::{ast::Expr, parse_expression};
-use crate::resource_limits::ensure_query_input;
+use crate::resource_limits::{ensure_query_input, MAX_PARSE_RECURSION_DEPTH};
 
 use super::ast::{
     DqlDataCommand, DqlLinkTarget, DqlNamedExpr, DqlProjection, DqlQuery, DqlQueryType,
@@ -41,6 +41,7 @@ pub fn parse_dql_with_diagnostics(source: &str) -> DqlParseOutput {
 struct DqlParser {
     tokens: Vec<DqlToken>,
     pos: usize,
+    recursion_depth: usize,
 }
 
 impl DqlParser {
@@ -55,7 +56,26 @@ impl DqlParser {
             }
             tokens.push(token);
         }
-        Ok(Self { tokens, pos: 0 })
+        Ok(Self {
+            tokens,
+            pos: 0,
+            recursion_depth: 0,
+        })
+    }
+
+    fn with_recursion_guard<T>(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if self.recursion_depth >= MAX_PARSE_RECURSION_DEPTH {
+            return Err(format!(
+                "DQL nesting exceeds maximum depth of {MAX_PARSE_RECURSION_DEPTH}"
+            ));
+        }
+        self.recursion_depth += 1;
+        let result = parse(self);
+        self.recursion_depth -= 1;
+        result
     }
 
     fn parse(mut self) -> Result<DqlQuery, String> {
@@ -217,7 +237,8 @@ impl DqlParser {
             Some(DqlToken::Bang | DqlToken::Minus | DqlToken::Not)
         ) {
             self.advance();
-            return Ok(DqlSourceExpr::Not(Box::new(self.parse_source_atom()?)));
+            let source = self.with_recursion_guard(Self::parse_source_atom)?;
+            return Ok(DqlSourceExpr::Not(Box::new(source)));
         }
 
         self.parse_source_primary()
@@ -235,7 +256,7 @@ impl DqlParser {
                 self.parse_outgoing_source()
             }
             DqlToken::LParen => {
-                let source = self.parse_source_expression()?;
+                let source = self.with_recursion_guard(Self::parse_source_expression)?;
                 self.expect(&DqlToken::RParen, "expected ')' to close FROM source group")?;
                 Ok(source)
             }
@@ -755,5 +776,24 @@ LIMIT 3"##,
         assert!(output.diagnostics[0]
             .message
             .contains("expected source expression"));
+    }
+
+    #[test]
+    fn rejects_excessively_nested_dql_sources() {
+        let depth = MAX_PARSE_RECURSION_DEPTH + 1;
+        let input = format!(
+            "LIST FROM {}#project{}",
+            "(".repeat(depth),
+            ")".repeat(depth)
+        );
+        let error = parse_dql(&input).expect_err("excessive nesting should fail");
+        assert!(error.contains("DQL nesting exceeds maximum depth"));
+    }
+
+    #[test]
+    fn rejects_oversized_dql_input() {
+        let input = "x".repeat(crate::resource_limits::MAX_QUERY_INPUT_BYTES + 1);
+        let error = parse_dql(&input).expect_err("oversized query should fail");
+        assert!(error.contains("query input exceeds maximum size"));
     }
 }

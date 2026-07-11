@@ -1,8 +1,6 @@
 use crate::expression::ast::{BinOp, Expr, UnOp};
 use crate::expression::token::{Token, Tokenizer};
-use crate::resource_limits::ensure_query_input;
-
-const MAX_EXPRESSION_RECURSION_DEPTH: usize = 64;
+use crate::resource_limits::{ensure_query_input, MAX_PARSE_RECURSION_DEPTH};
 
 #[derive(Clone)]
 pub struct Parser<'a> {
@@ -53,9 +51,9 @@ impl<'a> Parser<'a> {
         &mut self,
         parse: impl FnOnce(&mut Self) -> Result<T, String>,
     ) -> Result<T, String> {
-        if self.recursion_depth >= MAX_EXPRESSION_RECURSION_DEPTH {
+        if self.recursion_depth >= MAX_PARSE_RECURSION_DEPTH {
             return Err(format!(
-                "expression nesting exceeds maximum depth of {MAX_EXPRESSION_RECURSION_DEPTH}"
+                "expression nesting exceeds maximum depth of {MAX_PARSE_RECURSION_DEPTH}"
             ));
         }
         self.recursion_depth += 1;
@@ -722,7 +720,7 @@ mod tests {
 
     #[test]
     fn reject_expressions_with_excessive_argument_nesting() {
-        let depth = MAX_EXPRESSION_RECURSION_DEPTH + 1;
+        let depth = MAX_PARSE_RECURSION_DEPTH + 1;
         let mut input = "f(".repeat(depth);
         input.push('0');
         input.push_str(&")".repeat(depth));
@@ -730,18 +728,18 @@ mod tests {
         let err = Parser::new(&input).unwrap().parse().unwrap_err();
         assert_eq!(
             err,
-            format!("expression nesting exceeds maximum depth of {MAX_EXPRESSION_RECURSION_DEPTH}")
+            format!("expression nesting exceeds maximum depth of {MAX_PARSE_RECURSION_DEPTH}")
         );
     }
 
     #[test]
     fn reject_expressions_with_excessive_unary_nesting() {
-        let input = format!("{}true", "!".repeat(MAX_EXPRESSION_RECURSION_DEPTH + 1));
+        let input = format!("{}true", "!".repeat(MAX_PARSE_RECURSION_DEPTH + 1));
 
         let err = Parser::new(&input).unwrap().parse().unwrap_err();
         assert_eq!(
             err,
-            format!("expression nesting exceeds maximum depth of {MAX_EXPRESSION_RECURSION_DEPTH}")
+            format!("expression nesting exceeds maximum depth of {MAX_PARSE_RECURSION_DEPTH}")
         );
     }
 

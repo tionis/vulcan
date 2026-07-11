@@ -46,6 +46,19 @@ fn parse_document_internal(
     config: &VaultConfig,
     include_metadata_blocks: bool,
 ) -> ParsedDocument {
+    if source.len() > crate::resource_limits::MAX_DOCUMENT_INPUT_BYTES {
+        return ParsedDocument {
+            diagnostics: vec![ParseDiagnostic {
+                kind: ParseDiagnosticKind::ResourceLimit,
+                message: format!(
+                    "document input exceeds maximum size of {} bytes",
+                    crate::resource_limits::MAX_DOCUMENT_INPUT_BYTES
+                ),
+                byte_range: None,
+            }],
+            ..ParsedDocument::default()
+        };
+    }
     let comment_regions = scan_comment_regions(source);
     let options = if include_metadata_blocks {
         parser_options()
@@ -642,5 +655,18 @@ mod tests {
 
         assert_eq!(config.link_resolution, LinkResolutionMode::Shortest);
         assert_eq!(config.link_style, LinkStylePreference::Wikilink);
+    }
+
+    #[test]
+    fn oversized_documents_fail_with_a_resource_limit_diagnostic() {
+        let source = "x".repeat(crate::resource_limits::MAX_DOCUMENT_INPUT_BYTES + 1);
+        let parsed = parse_document(&source, &VaultConfig::default());
+
+        assert!(parsed.chunk_texts.is_empty());
+        assert_eq!(parsed.diagnostics.len(), 1);
+        assert_eq!(
+            parsed.diagnostics[0].kind,
+            ParseDiagnosticKind::ResourceLimit
+        );
     }
 }

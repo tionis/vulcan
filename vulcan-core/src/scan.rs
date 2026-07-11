@@ -2812,7 +2812,9 @@ fn origin_context_name(origin_context: OriginContext) -> &'static str {
 
 fn diagnostic_kind_name(kind: ParseDiagnosticKind) -> &'static str {
     match kind {
-        ParseDiagnosticKind::MalformedFrontmatter => "parse_error",
+        ParseDiagnosticKind::MalformedFrontmatter | ParseDiagnosticKind::ResourceLimit => {
+            "parse_error"
+        }
         ParseDiagnosticKind::HtmlLink
         | ParseDiagnosticKind::LinkInComment
         | ParseDiagnosticKind::UnsupportedSyntax => "unsupported_syntax",

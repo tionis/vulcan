@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, HashMap};
+use std::rc::Rc;
 
 use serde_json::Value;
 
@@ -9,6 +10,7 @@ use crate::expression::methods::call_method;
 use crate::expression::value::DataviewTimeZone;
 use crate::file_metadata::FileMetadataResolver;
 use crate::properties::NoteRecord;
+use crate::resource_limits::EvaluationBudget;
 
 /// Context for evaluating expressions against a single note row.
 pub struct EvalContext<'a> {
@@ -29,6 +31,7 @@ pub struct EvalContext<'a> {
     /// to the current row.  This is the correct behavior for DQL queries run from the CLI where
     /// there is no source note — `file.name != this.file.name` should be vacuously true.
     pub this_null_when_missing: bool,
+    pub(crate) budget: Rc<EvaluationBudget>,
 }
 
 impl<'a> EvalContext<'a> {
@@ -43,6 +46,7 @@ impl<'a> EvalContext<'a> {
             note_lookup: None,
             this_note: None,
             this_null_when_missing: false,
+            budget: Rc::new(EvaluationBudget::default()),
         }
     }
 
@@ -75,6 +79,7 @@ impl<'a> EvalContext<'a> {
 }
 
 pub fn evaluate(expr: &Expr, ctx: &EvalContext) -> Result<Value, String> {
+    let _budget_guard = ctx.budget.enter()?;
     match expr {
         Expr::Null => Ok(Value::Null),
         Expr::Bool(b) => Ok(Value::Bool(*b)),
@@ -937,9 +942,36 @@ mod tests {
     use crate::expression::parse::Parser;
     use crate::expression::value::DataviewTimeZone;
     use serde_json::json;
+    use std::rc::Rc;
+    use std::time::Duration;
 
     fn eval(input: &str) -> Value {
         eval_with_now(input, 1_776_482_700_000)
+    }
+
+    fn test_note() -> NoteRecord {
+        NoteRecord {
+            document_id: "note-id".to_string(),
+            document_path: "note.md".to_string(),
+            file_name: "note".to_string(),
+            file_ext: "md".to_string(),
+            file_mtime: 0,
+            file_ctime: 0,
+            file_size: 0,
+            properties: serde_json::json!({}),
+            tags: Vec::new(),
+            links: Vec::new(),
+            starred: false,
+            inlinks: Vec::new(),
+            aliases: Vec::new(),
+            frontmatter: serde_json::json!({}),
+            periodic_type: None,
+            periodic_date: None,
+            list_items: Vec::new(),
+            tasks: Vec::new(),
+            raw_inline_expressions: Vec::new(),
+            inline_expressions: Vec::new(),
+        }
     }
 
     fn eval_with_now(input: &str, now_ms: i64) -> Value {
@@ -1351,6 +1383,49 @@ mod tests {
             crate::resource_limits::MAX_EXPRESSION_OUTPUT_CHARS
         );
         assert_eq!(eval(&input), Value::Null);
+    }
+
+    #[test]
+    fn evaluation_rejects_excessive_ast_operations() {
+        let note = test_note();
+        let formulas = BTreeMap::new();
+        let mut ctx = EvalContext::new(&note, &formulas);
+        ctx.budget = Rc::new(crate::resource_limits::EvaluationBudget::with_limits(
+            3,
+            Duration::from_secs(1),
+        ));
+        let expr = Expr::Array(vec![Expr::Null, Expr::Null, Expr::Null]);
+
+        let error = evaluate(&expr, &ctx).expect_err("operation budget should be enforced");
+        assert!(error.contains("maximum operation count of 3"));
+    }
+
+    #[test]
+    fn evaluation_rejects_an_expired_deadline() {
+        let note = test_note();
+        let formulas = BTreeMap::new();
+        let mut ctx = EvalContext::new(&note, &formulas);
+        ctx.budget = Rc::new(crate::resource_limits::EvaluationBudget::with_limits(
+            3,
+            Duration::ZERO,
+        ));
+
+        let error = evaluate(&Expr::Null, &ctx).expect_err("deadline should be enforced");
+        assert!(error.contains("time budget"));
+    }
+
+    #[test]
+    fn evaluation_budget_resets_between_top_level_calls() {
+        let note = test_note();
+        let formulas = BTreeMap::new();
+        let mut ctx = EvalContext::new(&note, &formulas);
+        ctx.budget = Rc::new(crate::resource_limits::EvaluationBudget::with_limits(
+            1,
+            Duration::from_secs(1),
+        ));
+
+        assert_eq!(evaluate(&Expr::Null, &ctx), Ok(Value::Null));
+        assert_eq!(evaluate(&Expr::Null, &ctx), Ok(Value::Null));
     }
 
     #[test]
