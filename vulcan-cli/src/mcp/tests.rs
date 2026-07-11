@@ -36,6 +36,7 @@ fn oauth_options() -> McpHttpOptions {
         oauth_allowed_sub: vec!["user-id".to_string()],
         oauth_allowed_email: Vec::new(),
         oauth_local_client_id: None,
+        oauth_local_redirect_uri: Vec::new(),
         oauth_local_client_secret: None,
         oauth_local_approval_token: None,
         oauth_local_subject: Some("local-user".to_string()),
@@ -50,6 +51,33 @@ fn oauth_options() -> McpHttpOptions {
         oauth_local_user: Vec::new(),
         request_timeout: DEFAULT_MCP_REQUEST_TIMEOUT,
     }
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn static_local_oauth_requires_registered_safe_redirects() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let mut options = oauth_options();
+    options.oauth_issuer = None;
+    options.oauth_audience.clear();
+    options.oauth_jwks_url = None;
+    options.oauth_allowed_sub.clear();
+    options.oauth_local_client_id = Some("client".to_string());
+    options.oauth_local_client_secret = Some("client-secret".to_string());
+    options.oauth_local_approval_token = Some("approval".to_string());
+
+    let error = build_mcp_oauth_validator(&paths, &options)
+        .expect_err("missing redirect registration must fail");
+    assert!(error.to_string().contains("--oauth-local-redirect-uri"));
+
+    options.oauth_local_redirect_uri = vec!["https://client.example/callback".to_string()];
+    assert!(build_mcp_oauth_validator(&paths, &options).is_ok());
+    assert!(valid_oauth_redirect_uri("https://client.example/callback"));
+    assert!(!valid_oauth_redirect_uri(
+        "https://client.example/callback\r\nX-Injected: yes"
+    ));
+    assert!(!valid_oauth_redirect_uri("http://client.example/callback"));
 }
 
 #[test]

@@ -94,6 +94,7 @@ pub(crate) struct McpHttpOptions {
     pub oauth_allowed_sub: Vec<String>,
     pub oauth_allowed_email: Vec<String>,
     pub oauth_local_client_id: Option<String>,
+    pub oauth_local_redirect_uri: Vec<String>,
     pub oauth_local_client_secret: Option<String>,
     pub oauth_local_approval_token: Option<String>,
     pub oauth_local_subject: Option<String>,
@@ -285,6 +286,8 @@ struct McpHttpServerContext {
     #[cfg(feature = "oauth")]
     oauth_dcr_allowed_redirect_hosts: Vec<String>,
     #[cfg(feature = "oauth")]
+    oauth_local_redirect_uris: Vec<String>,
+    #[cfg(feature = "oauth")]
     oauth_indieauth: Option<LocalOAuthIndieAuthConfig>,
     #[cfg(feature = "oauth")]
     oauth_clients_path: Option<std::path::PathBuf>,
@@ -439,6 +442,8 @@ fn run_mcp_http_server(
         } else {
             options.oauth_dcr_allowed_redirect_host.clone()
         },
+        #[cfg(feature = "oauth")]
+        oauth_local_redirect_uris: options.oauth_local_redirect_uri.clone(),
         #[cfg(feature = "oauth")]
         oauth_indieauth: build_indieauth_config(options)?,
         #[cfg(feature = "oauth")]
@@ -2984,6 +2989,7 @@ fn build_mcp_oauth_validator(
     options: &McpHttpOptions,
 ) -> Result<Option<McpOAuthMode>, CliError> {
     let local_requested = options.oauth_local_client_id.is_some()
+        || !options.oauth_local_redirect_uri.is_empty()
         || options.oauth_local_client_secret.is_some()
         || options.oauth_local_approval_token.is_some()
         || options.oauth_dcr
@@ -3003,6 +3009,17 @@ fn build_mcp_oauth_validator(
             .oauth_local_client_id
             .as_deref()
             .unwrap_or("vulcan-mcp");
+        if options.oauth_local_client_id.is_some()
+            && (options.oauth_local_redirect_uri.is_empty()
+                || !options
+                    .oauth_local_redirect_uri
+                    .iter()
+                    .all(|uri| valid_oauth_redirect_uri(uri)))
+        {
+            return Err(CliError::operation(
+                "static local OAuth clients require at least one valid --oauth-local-redirect-uri",
+            ));
+        }
         let client_secret = match options.oauth_local_client_secret.as_deref() {
             Some(secret) => secret.to_string(),
             None if options.oauth_dcr => load_or_create_local_oauth_issuer_secret(paths)?,
@@ -3577,8 +3594,11 @@ fn local_oauth_client_redirect_allowed(
     client_id: &str,
     redirect_uri: &str,
 ) -> bool {
-    if client_id == issuer.client_id() && !redirect_uri.is_empty() {
-        return true;
+    if client_id == issuer.client_id() {
+        return context
+            .oauth_local_redirect_uris
+            .iter()
+            .any(|uri| uri == redirect_uri);
     }
     context
         .oauth_clients
@@ -3604,23 +3624,38 @@ fn local_oauth_registered_client_valid(
 
 #[cfg(feature = "oauth")]
 fn local_oauth_redirect_host_allowed(context: &McpHttpServerContext, redirect_uri: &str) -> bool {
-    let Some((scheme, rest)) = redirect_uri.split_once("://") else {
-        return false;
-    };
-    if scheme != "https" {
+    if !valid_oauth_redirect_uri(redirect_uri) {
         return false;
     }
-    let host = rest
-        .split('/')
-        .next()
-        .unwrap_or_default()
-        .split(':')
-        .next()
-        .unwrap_or_default();
+    let Some(host) = oauth_redirect_host(redirect_uri) else {
+        return false;
+    };
     context
         .oauth_dcr_allowed_redirect_hosts
         .iter()
         .any(|allowed| host == allowed || host.ends_with(&format!(".{allowed}")))
+}
+
+#[cfg(feature = "oauth")]
+fn valid_oauth_redirect_uri(redirect_uri: &str) -> bool {
+    oauth_redirect_host(redirect_uri).is_some()
+}
+
+#[cfg(feature = "oauth")]
+fn oauth_redirect_host(redirect_uri: &str) -> Option<&str> {
+    if redirect_uri
+        .chars()
+        .any(|character| character.is_control() || character.is_whitespace())
+    {
+        return None;
+    }
+    let rest = redirect_uri.strip_prefix("https://")?;
+    let authority = rest.split(['/', '?', '#']).next()?;
+    if authority.is_empty() || authority.contains('@') {
+        return None;
+    }
+    let host = authority.split(':').next().unwrap_or_default();
+    (!host.is_empty()).then_some(host)
 }
 
 #[cfg(feature = "oauth")]
@@ -4157,6 +4192,16 @@ fn write_mcp_http_response(
         headers.push_str("\r\n");
     }
     for (name, value) in &response.extra_headers {
+        if name.chars().any(char::is_control)
+            || value
+                .chars()
+                .any(|character| matches!(character, '\r' | '\n'))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid HTTP response header",
+            ));
+        }
         headers.push_str(name);
         headers.push_str(": ");
         headers.push_str(value);

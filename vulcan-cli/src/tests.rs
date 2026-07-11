@@ -4012,6 +4012,7 @@ fn parses_help_and_describe_format_commands() {
             oauth_allowed_sub: Vec::new(),
             oauth_allowed_email: Vec::new(),
             oauth_local_client_id: None,
+            oauth_local_redirect_uri: Vec::new(),
             oauth_local_client_secret: None,
             oauth_local_approval_token: None,
             oauth_local_subject: Some("local-user".to_string()),

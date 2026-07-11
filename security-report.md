@@ -1071,17 +1071,19 @@ Remediation completed: save destinations are normalized vault-relative paths, ch
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `M-03`.
-- [ ] Add or update a regression test: Authorize endpoint test rejects unregistered redirect URI.
-- [ ] Add or update a regression test: Header injection test with percent-encoded CR/LF is rejected.
-- [ ] Implement the remediation: Require pre-registered redirect URIs, reject CR/LF and invalid URI schemes, and encode response headers through a safe HTTP writer.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Authorize endpoint test rejects unregistered redirect URI.
+- [x] Add or update a regression test: Header injection test with percent-encoded CR/LF is rejected.
+- [x] Implement the remediation: Require pre-registered redirect URIs, reject CR/LF and invalid URI schemes, and encode response headers through a safe HTTP writer.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+Remediation completed: static local OAuth clients require one or more exact registered HTTPS redirect URIs, and authorization compares against those values rather than accepting any non-empty URI. DCR redirects use the same scheme/control/authority validation before host allowlisting. HTTP response serialization rejects control characters in header names and CR/LF in values. Tests cover missing registration, non-HTTPS redirects, and decoded CR/LF payloads.
 
 ### M-04. Loopback serve API exposes vault data without default auth or browser origin checks
 

@@ -5533,6 +5533,11 @@ Examples:
         oauth_local_client_id: Option<String>,
         #[arg(
             long,
+            help = "Exact HTTPS redirect URI registered for the static local OAuth client; repeat for multiple URIs"
+        )]
+        oauth_local_redirect_uri: Vec<String>,
+        #[arg(
+            long,
             env = "VULCAN_MCP_OAUTH_CLIENT_SECRET",
             hide_env_values = true,
             help = "Optional static OAuth client/signing secret override for Vulcan's built-in MCP OAuth issuer"

@@ -11762,6 +11762,17 @@
             ]
           },
           {
+            "help": "Exact HTTPS redirect URI registered for the static local OAuth client; repeat for multiple URIs",
+            "id": "oauth_local_redirect_uri",
+            "long": "oauth-local-redirect-uri",
+            "possible_values": [],
+            "required": false,
+            "short": null,
+            "value_names": [
+              "OAUTH_LOCAL_REDIRECT_URI"
+            ]
+          },
+          {
             "help": "Optional static OAuth client/signing secret override for Vulcan's built-in MCP OAuth issuer",
             "id": "oauth_local_client_secret",
             "long": "oauth-local-client-secret",
