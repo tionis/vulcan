@@ -3,6 +3,43 @@ use crate::McpToolPackModeArg;
 use vulcan_core::PermissionProfile;
 
 #[test]
+fn restricted_mcp_read_reports_exclude_denied_task_paths() {
+    let temp_dir = tempfile::TempDir::new().expect("temp dir should create");
+    let paths = VaultPaths::new(temp_dir.path());
+    fs::create_dir_all(paths.vulcan_dir()).expect("config directory should create");
+    fs::write(
+        paths.config_file(),
+        "[permissions.profiles.public]\nread = { allow = [\"folder:Public/**\"] }\n",
+    )
+    .expect("config should write");
+    let guard = ProfilePermissionGuard::new(
+        &paths,
+        resolve_permission_profile(&paths, Some("public")).expect("profile should resolve"),
+    );
+    let public = serde_json::json!({"path": "Public/Task.md", "text": "visible"});
+    let private = serde_json::json!({"path": "Private/Task.md", "text": "secret"});
+    let mut report = TasksQueryResult {
+        tasks: vec![public.clone(), private.clone()],
+        groups: vec![vulcan_core::TasksQueryGroup {
+            field: "path".to_string(),
+            key: Value::String("all".to_string()),
+            tasks: vec![public, private],
+        }],
+        result_count: 2,
+        hidden_fields: Vec::new(),
+        shown_fields: Vec::new(),
+        short_mode: false,
+        plan: None,
+    };
+
+    filter_tasks_query_report(&guard, &mut report);
+
+    assert_eq!(report.result_count, 1);
+    assert_eq!(report.tasks[0]["path"], "Public/Task.md");
+    assert_eq!(report.groups[0].tasks.len(), 1);
+}
+
+#[test]
 fn http_parser_rejects_oversized_content_length_before_body_read() {
     let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
     let address = listener.local_addr().expect("listener address");

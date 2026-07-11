@@ -1467,17 +1467,19 @@ Remediation completed: Bases reads and edits, Kanban reads and mutations, and mo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `M-12`.
-- [ ] Add or update a regression test: MCP fixture where `task_list` under restricted profile excludes denied note tasks.
-- [ ] Add or update a regression test: Static/unit test for catalog-to-handler filter coverage.
-- [ ] Implement the remediation: Thread `self.guard.read_filter()` into every MCP read tool implementation and add catalog tests that every read-visible tool has a filtered sink.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: MCP fixture where `task_list` under restricted profile excludes denied note tasks.
+- [x] Add or update a regression test: Static/unit test for catalog-to-handler filter coverage.
+- [x] Implement the remediation: Thread `self.guard.read_filter()` into every MCP read tool implementation and add catalog tests that every read-visible tool has a filtered sink.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+**Remediation:** MCP task-list and task-query reports now pass through one guard-backed filter before serialization; it filters flat and grouped rows, removes empty groups, and recomputes the result count. Link suggestions require both source and target paths to be readable. The restricted-profile unit fixture verifies denied task paths are absent from every report shape, while the handler audit confirms all three read-visible catalog entries call the shared filters.
 
 ### M-13. Site preview server serves symlinked files outside the output directory
 

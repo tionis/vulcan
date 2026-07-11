@@ -68,7 +68,7 @@ use vulcan_core::{
     resolve_permission_profile, scan_vault_with_progress, search_vault_with_filter, suggest_links,
     watch_vault, LinkSuggestionStatus, NoteQuery, PermissionGuard, PermissionMode,
     PermissionProfile, PluginEvent, ProfilePermissionGuard, QueryAst, QueryReport, ScanMode,
-    ScanSummary, SearchQuery, SearchSort, VaultPaths, WatchOptions,
+    ScanSummary, SearchQuery, SearchSort, TasksQueryResult, VaultPaths, WatchOptions,
 };
 #[cfg(feature = "oauth")]
 use vulcan_core::{
@@ -80,6 +80,30 @@ const MCP_HTTP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const MCP_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const DEFAULT_MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MCP_REQUEST_WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
+
+fn filter_tasks_query_report(guard: &ProfilePermissionGuard, report: &mut TasksQueryResult) {
+    let readable = |task: &Value| {
+        task.get("path")
+            .and_then(Value::as_str)
+            .is_some_and(|path| guard.check_read_path(path).is_ok())
+    };
+    report.tasks.retain(&readable);
+    for group in &mut report.groups {
+        group.tasks.retain(&readable);
+    }
+    report.groups.retain(|group| !group.tasks.is_empty());
+    report.result_count = report.tasks.len();
+}
+
+fn filter_link_suggestions_report(
+    guard: &ProfilePermissionGuard,
+    report: &mut vulcan_core::LinkSuggestionsReport,
+) {
+    report.suggestions.retain(|suggestion| {
+        guard.check_read_path(&suggestion.source_path).is_ok()
+            && guard.check_read_path(&suggestion.target_path).is_ok()
+    });
+}
 
 #[derive(Debug, Clone)]
 pub(crate) struct McpHttpOptions {
@@ -2063,7 +2087,7 @@ impl McpServerCore {
                     .as_deref()
                     .map(parse_link_suggestion_status)
                     .transpose()?;
-                let report = suggest_links(
+                let mut report = suggest_links(
                     &self.paths,
                     args.note.as_deref(),
                     args.limit,
@@ -2071,11 +2095,12 @@ impl McpServerCore {
                     status,
                 )
                 .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                filter_link_suggestions_report(&self.guard, &mut report);
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::TaskList => {
                 let args: McpTaskListArgs = parse_tool_arguments(arguments)?;
-                let report = run_tasks_list_command(
+                let mut report = run_tasks_list_command(
                     &self.paths,
                     TasksListOptions {
                         filter: args.filter.as_deref(),
@@ -2092,12 +2117,14 @@ impl McpServerCore {
                     },
                 )
                 .map_err(cli_tool_error)?;
+                filter_tasks_query_report(&self.guard, &mut report);
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::TaskQuery => {
                 let args: McpTaskQueryArgs = parse_tool_arguments(arguments)?;
-                let report =
+                let mut report =
                     run_tasks_query_command(&self.paths, &args.query).map_err(cli_tool_error)?;
+                filter_tasks_query_report(&self.guard, &mut report);
                 self.serialize_tool_report(tool.name, &report)
             }
             McpToolId::TaskCreate => {
