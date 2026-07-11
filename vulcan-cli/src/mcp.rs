@@ -220,8 +220,6 @@ struct LocalOAuthCode {
     redirect_uri: String,
     code_challenge: String,
     subject: String,
-    email: Option<String>,
-    permission_profile: Option<String>,
     expires_at: std::time::Instant,
 }
 
@@ -3031,6 +3029,7 @@ fn build_mcp_oauth_validator(
             public_url: public_url.to_string(),
             client_id: client_id.to_string(),
             client_secret,
+            signing_key: load_or_create_local_oauth_signing_key(paths)?,
             approval_token: approval_token.to_string(),
             subject: subject.to_string(),
             email: options.oauth_local_email.clone(),
@@ -3256,8 +3255,6 @@ fn handle_local_oauth_authorize(
                 redirect_uri: redirect_uri.clone(),
                 code_challenge,
                 subject: user.subject,
-                email: user.email,
-                permission_profile: user.permission_profile,
                 expires_at: std::time::Instant::now() + Duration::from_secs(300),
             },
         );
@@ -3421,11 +3418,7 @@ fn handle_local_oauth_token(
     if !issuer.verify_pkce_s256(code_verifier, &code_record.code_challenge) {
         return oauth_json_error_response(400, "invalid_grant", "invalid PKCE verifier");
     }
-    match issuer.issue_access_token_for(
-        &code_record.subject,
-        code_record.email,
-        code_record.permission_profile,
-    ) {
+    match issuer.issue_access_token_for(&code_record.subject) {
         Ok(access_token) => {
             let body = serde_json::json!({
                 "access_token": access_token,
@@ -3502,8 +3495,6 @@ fn handle_local_oauth_indieauth_callback(
                 redirect_uri: pending.redirect_uri.clone(),
                 code_challenge: pending.code_challenge,
                 subject: user.subject,
-                email: user.email,
-                permission_profile: user.permission_profile,
                 expires_at: std::time::Instant::now() + Duration::from_secs(300),
             },
         );
@@ -3643,6 +3634,11 @@ fn oauth_issuer_secret_path(paths: &VaultPaths) -> PathBuf {
 }
 
 #[cfg(feature = "oauth")]
+fn oauth_signing_key_path(paths: &VaultPaths) -> PathBuf {
+    paths.vulcan_dir().join("mcp-oauth-signing-key")
+}
+
+#[cfg(feature = "oauth")]
 fn generate_pkce_verifier() -> String {
     format!(
         "{}{}{}{}",
@@ -3672,6 +3668,32 @@ fn load_or_create_local_oauth_issuer_secret(paths: &VaultPaths) -> Result<String
     }
     let secret = generate_pkce_verifier();
     write_secret_file(&path, &secret)?;
+    Ok(secret)
+}
+
+#[cfg(feature = "oauth")]
+fn load_or_create_local_oauth_signing_key(paths: &VaultPaths) -> Result<String, CliError> {
+    load_or_create_secret_file(&oauth_signing_key_path(paths), "OAuth signing key")
+}
+
+#[cfg(feature = "oauth")]
+fn load_or_create_secret_file(path: &Path, label: &str) -> Result<String, CliError> {
+    if path.exists() {
+        let secret = fs::read_to_string(path).map_err(CliError::operation)?;
+        let secret = secret.trim().to_string();
+        if secret.is_empty() {
+            return Err(CliError::operation(format!(
+                "{} is empty; remove it so Vulcan can regenerate the {label}",
+                path.display()
+            )));
+        }
+        return Ok(secret);
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(CliError::operation)?;
+    }
+    let secret = generate_pkce_verifier();
+    write_secret_file(path, &secret)?;
     Ok(secret)
 }
 

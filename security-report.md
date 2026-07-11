@@ -363,17 +363,17 @@ These items should be implemented once and reused across individual fixes to avo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `H-01`.
-- [ ] Add or update a regression test: Unit test that a token signed with the client secret is rejected.
-- [ ] Add or update a regression test: Unit test that `permission_profile` claims are selected from server-side authorization state, not caller-supplied JWTs.
-- [ ] Implement the remediation: Use a server-only signing key for local access tokens, store it separately from client secrets, reject externally supplied symmetric tokens, and bind allowed permission profiles server-side.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Unit test that a token signed with the client secret is rejected.
+- [x] Add or update a regression test: Unit test that `permission_profile` claims are selected from server-side authorization state, not caller-supplied JWTs.
+- [x] Implement the remediation: Use a server-only signing key for local access tokens, store it separately from client secrets, reject externally supplied symmetric tokens, and bind allowed permission profiles server-side.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
 
 ### H-02. Strict JavaScript sandboxes can still execute host commands
 

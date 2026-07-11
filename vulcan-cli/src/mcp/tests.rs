@@ -160,7 +160,12 @@ fn local_oauth_dcr_generates_and_reuses_issuer_secret() {
         .is_some());
     let secret_path = oauth_issuer_secret_path(&paths);
     let first_secret = fs::read_to_string(&secret_path).expect("issuer secret should be persisted");
+    let signing_key_path = oauth_signing_key_path(&paths);
+    let first_signing_key =
+        fs::read_to_string(&signing_key_path).expect("signing key should be persisted");
     assert!(!first_secret.trim().is_empty());
+    assert!(!first_signing_key.trim().is_empty());
+    assert_ne!(first_secret, first_signing_key);
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -170,13 +175,22 @@ fn local_oauth_dcr_generates_and_reuses_issuer_secret() {
             .mode()
             & 0o777;
         assert_eq!(mode, 0o600);
+        let signing_mode = fs::metadata(&signing_key_path)
+            .expect("signing key metadata should be readable")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(signing_mode, 0o600);
     }
 
     assert!(build_mcp_oauth_validator(&paths, &options)
         .expect("DCR local issuer should reuse persisted secret")
         .is_some());
     let second_secret = fs::read_to_string(&secret_path).expect("issuer secret should still exist");
+    let second_signing_key =
+        fs::read_to_string(&signing_key_path).expect("signing key should still exist");
     assert_eq!(first_secret, second_secret);
+    assert_eq!(first_signing_key, second_signing_key);
 }
 
 #[test]

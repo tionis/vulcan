@@ -26,6 +26,7 @@ pub struct LocalOAuthIssuerConfig {
     pub public_url: String,
     pub client_id: String,
     pub client_secret: String,
+    pub signing_key: String,
     pub approval_token: String,
     pub subject: String,
     pub email: Option<String>,
@@ -58,6 +59,7 @@ pub struct LocalOAuthIssuer {
     public_url: String,
     client_id: String,
     client_secret: String,
+    signing_key: String,
     approval_token: String,
     subject: String,
     email: Option<String>,
@@ -188,11 +190,17 @@ impl LocalOAuthIssuer {
         }
         if config.client_id.is_empty()
             || config.client_secret.is_empty()
+            || config.signing_key.is_empty()
             || config.subject.is_empty()
         {
             return Err(OAuthError::Config(
-                "local OAuth issuer requires non-empty client id, client secret, and subject"
+                "local OAuth issuer requires non-empty client id, client secret, signing key, and subject"
                     .to_string(),
+            ));
+        }
+        if config.client_secret == config.signing_key {
+            return Err(OAuthError::Config(
+                "local OAuth token signing key must be distinct from the client secret".to_string(),
             ));
         }
         let protected_resource_metadata_url = protected_resource_metadata_url(&config.public_url)?;
@@ -215,6 +223,7 @@ impl LocalOAuthIssuer {
             public_url: config.public_url,
             client_id: config.client_id,
             client_secret: config.client_secret,
+            signing_key: config.signing_key,
             approval_token: config.approval_token,
             subject: config.subject,
             email: config.email,
@@ -234,15 +243,15 @@ impl LocalOAuthIssuer {
         validation.leeway = 60;
         let token = decode::<LocalOAuthClaims>(
             token,
-            &DecodingKey::from_secret(self.client_secret.as_bytes()),
+            &DecodingKey::from_secret(self.signing_key.as_bytes()),
             &validation,
         )
         .map_err(|error| OAuthError::Token(format!("invalid local OAuth bearer token: {error}")))?;
-        if self.subject_allowed(&token.claims.sub) {
+        if let Some(user) = self.user_for_subject(&token.claims.sub) {
             Ok(LocalOAuthTokenIdentity {
                 subject: token.claims.sub,
-                email: token.claims.email,
-                permission_profile: token.claims.permission_profile,
+                email: user.email,
+                permission_profile: user.permission_profile,
             })
         } else {
             Err(OAuthError::Token(
@@ -252,20 +261,15 @@ impl LocalOAuthIssuer {
     }
 
     pub fn issue_access_token(&self) -> Result<String, OAuthError> {
-        self.issue_access_token_for(&self.subject, self.email.clone(), None)
+        self.issue_access_token_for(&self.subject)
     }
 
-    pub fn issue_access_token_for(
-        &self,
-        subject: &str,
-        email: Option<String>,
-        permission_profile: Option<String>,
-    ) -> Result<String, OAuthError> {
-        if !self.subject_allowed(subject) {
+    pub fn issue_access_token_for(&self, subject: &str) -> Result<String, OAuthError> {
+        let Some(user) = self.user_for_subject(subject) else {
             return Err(OAuthError::Token(
                 "local OAuth token subject is not allowed".to_string(),
             ));
-        }
+        };
         let now = unix_timestamp();
         let claims = LocalOAuthClaims {
             iss: self.public_url.clone(),
@@ -273,13 +277,13 @@ impl LocalOAuthIssuer {
             aud: vec![self.public_url.clone()],
             exp: now + 3600,
             iat: now,
-            email,
-            permission_profile,
+            email: user.email,
+            permission_profile: user.permission_profile,
         };
         encode(
             &Header::new(Algorithm::HS256),
             &claims,
-            &EncodingKey::from_secret(self.client_secret.as_bytes()),
+            &EncodingKey::from_secret(self.signing_key.as_bytes()),
         )
         .map_err(|error| OAuthError::Token(format!("failed to issue OAuth token: {error}")))
     }
@@ -316,15 +320,6 @@ impl LocalOAuthIssuer {
             email: self.email.clone(),
             permission_profile: None,
         }
-    }
-
-    #[must_use]
-    fn subject_allowed(&self, subject: &str) -> bool {
-        subjects_match(&self.subject, subject)
-            || self
-                .users
-                .iter()
-                .any(|user| subjects_match(&user.subject, subject))
     }
 
     #[must_use]
@@ -865,6 +860,7 @@ mod tests {
             public_url: "https://wiki.example.test/mcp".to_string(),
             client_id: "vulcan-mcp".to_string(),
             client_secret: "secret".to_string(),
+            signing_key: "server-signing-key".to_string(),
             approval_token: "approve".to_string(),
             subject: "eric".to_string(),
             email: Some("eric@example.test".to_string()),
@@ -889,6 +885,7 @@ mod tests {
             public_url: "https://wiki.example.test/mcp".to_string(),
             client_id: "vulcan-mcp".to_string(),
             client_secret: "secret".to_string(),
+            signing_key: "server-signing-key".to_string(),
             approval_token: String::new(),
             subject: "fallback".to_string(),
             email: None,
@@ -902,9 +899,7 @@ mod tests {
         .unwrap();
         assert!(issuer.authorization_server_metadata()["registration_endpoint"].is_string());
         let user = issuer.user_for_subject("https://tionis.dev/").unwrap();
-        let token = issuer
-            .issue_access_token_for(&user.subject, user.email, user.permission_profile)
-            .unwrap();
+        let token = issuer.issue_access_token_for(&user.subject).unwrap();
         let identity = issuer.validate_bearer_token(&token).unwrap();
         assert_eq!(identity.subject, "https://tionis.dev/");
         assert_eq!(
@@ -914,11 +909,84 @@ mod tests {
     }
 
     #[test]
+    fn local_oauth_rejects_tokens_signed_with_the_client_secret() {
+        let issuer = LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://wiki.example.test/mcp".to_string(),
+            client_id: "vulcan-mcp".to_string(),
+            client_secret: "client-secret".to_string(),
+            signing_key: "server-signing-key".to_string(),
+            approval_token: "approve".to_string(),
+            subject: "eric".to_string(),
+            email: None,
+            users: Vec::new(),
+            dcr_enabled: false,
+        })
+        .unwrap();
+        let now = unix_timestamp();
+        let forged = encode(
+            &Header::new(Algorithm::HS256),
+            &LocalOAuthClaims {
+                iss: issuer.public_url.clone(),
+                sub: "eric".to_string(),
+                aud: vec![issuer.public_url.clone()],
+                exp: now + 3600,
+                iat: now,
+                email: None,
+                permission_profile: Some("admin".to_string()),
+            },
+            &EncodingKey::from_secret(b"client-secret"),
+        )
+        .unwrap();
+
+        assert!(issuer.validate_bearer_token(&forged).is_err());
+    }
+
+    #[test]
+    fn local_oauth_uses_server_side_permission_profile_binding() {
+        let issuer = LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
+            public_url: "https://wiki.example.test/mcp".to_string(),
+            client_id: "vulcan-mcp".to_string(),
+            client_secret: "client-secret".to_string(),
+            signing_key: "server-signing-key".to_string(),
+            approval_token: "approve".to_string(),
+            subject: "fallback".to_string(),
+            email: None,
+            users: vec![LocalOAuthUserConfig {
+                subject: "eric".to_string(),
+                email: Some("eric@example.test".to_string()),
+                permission_profile: Some("readonly".to_string()),
+            }],
+            dcr_enabled: false,
+        })
+        .unwrap();
+        let now = unix_timestamp();
+        let forged_claim = encode(
+            &Header::new(Algorithm::HS256),
+            &LocalOAuthClaims {
+                iss: issuer.public_url.clone(),
+                sub: "eric".to_string(),
+                aud: vec![issuer.public_url.clone()],
+                exp: now + 3600,
+                iat: now,
+                email: Some("attacker@example.test".to_string()),
+                permission_profile: Some("admin".to_string()),
+            },
+            &EncodingKey::from_secret(b"server-signing-key"),
+        )
+        .unwrap();
+
+        let identity = issuer.validate_bearer_token(&forged_claim).unwrap();
+        assert_eq!(identity.email.as_deref(), Some("eric@example.test"));
+        assert_eq!(identity.permission_profile.as_deref(), Some("readonly"));
+    }
+
+    #[test]
     fn local_oauth_issuer_matches_indieauth_url_subjects_canonically() {
         let issuer = LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
             public_url: "https://wiki.example.test/mcp".to_string(),
             client_id: "vulcan-mcp".to_string(),
             client_secret: "secret".to_string(),
+            signing_key: "server-signing-key".to_string(),
             approval_token: String::new(),
             subject: "fallback".to_string(),
             email: None,
@@ -936,11 +1004,7 @@ mod tests {
             .unwrap();
         assert_eq!(user.subject, "https://eric.wendland.dev");
         let token = issuer
-            .issue_access_token_for(
-                "https://eric.wendland.dev/",
-                user.email,
-                user.permission_profile,
-            )
+            .issue_access_token_for("https://eric.wendland.dev/")
             .unwrap();
         let identity = issuer.validate_bearer_token(&token).unwrap();
         assert_eq!(identity.subject, "https://eric.wendland.dev/");
