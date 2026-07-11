@@ -4,7 +4,10 @@ use crate::commit::AutoCommitPolicy;
 use crate::output::{
     paginated_items, print_json, print_json_lines, print_selected_human_fields, ListOutputControls,
 };
-use crate::{warn_auto_commit_if_needed, AnsiPalette, Cli, CliError, KanbanCommand, OutputFormat};
+use crate::{
+    selected_permission_guard, warn_auto_commit_if_needed, AnsiPalette, Cli, CliError,
+    KanbanCommand, OutputFormat, PermissionGuard,
+};
 use serde::Serialize;
 use serde_json::Value;
 use vulcan_core::{
@@ -66,6 +69,9 @@ pub(crate) fn handle_kanban_command(
             verbose,
             include_archive,
         } => {
+            selected_permission_guard(cli, paths)?
+                .check_read_path(board)
+                .map_err(CliError::operation)?;
             let report =
                 load_kanban_board(paths, board, *include_archive).map_err(CliError::operation)?;
             print_kanban_board_report(cli.output, &report, *verbose)
@@ -75,6 +81,9 @@ pub(crate) fn handle_kanban_command(
             column,
             status,
         } => {
+            selected_permission_guard(cli, paths)?
+                .check_read_path(board)
+                .map_err(CliError::operation)?;
             let report =
                 run_kanban_cards_command(paths, board, column.as_deref(), status.as_deref())?;
             print_kanban_cards_report(
@@ -91,6 +100,9 @@ pub(crate) fn handle_kanban_command(
             dry_run,
             no_commit,
         } => {
+            selected_permission_guard(cli, paths)?
+                .check_write_path(board)
+                .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = run_kanban_archive_command(paths, board, card, *dry_run)?;
@@ -114,6 +126,9 @@ pub(crate) fn handle_kanban_command(
             dry_run,
             no_commit,
         } => {
+            selected_permission_guard(cli, paths)?
+                .check_write_path(board)
+                .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = run_kanban_move_command(paths, board, card, target_column, *dry_run)?;
@@ -137,6 +152,9 @@ pub(crate) fn handle_kanban_command(
             dry_run,
             no_commit,
         } => {
+            selected_permission_guard(cli, paths)?
+                .check_write_path(board)
+                .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = run_kanban_add_command(paths, board, column, text, *dry_run)?;

@@ -1291,17 +1291,19 @@ Remediation completed: Bases reads and edits, Kanban reads and mutations, and mo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `M-08`.
-- [ ] Add or update a regression test: CLI tests that Kanban/Bases/periodic mutating commands fail under read-only profiles.
-- [ ] Add or update a regression test: Negative tests for denied board/view paths.
-- [ ] Implement the remediation: Require every command handler to obtain a selected permission guard and check read/write/refactor access for all affected paths before calling core operations.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: CLI tests that Kanban/Bases/periodic mutating commands fail under read-only profiles.
+- [x] Add or update a regression test: Negative tests for denied board/view paths.
+- [x] Implement the remediation: Require every command handler to obtain a selected permission guard and check read/write/refactor access for all affected paths before calling core operations.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+**Remediation:** Plugin-compatible CLI handlers now obtain the shared selected permission guard before accessing Bases and Kanban inputs or mutating periodic-note targets. Read-only profiles fail before mutation or dry-run evaluation, path-scoped profiles fail before denied board/view reads, and periodic target paths are resolved before the shared write check. The CLI regression exercises all three mutation families and hostile denied paths.
 
 ### M-09. Cache-controlled table names are interpolated into `execute_batch` SQL
 

@@ -23428,6 +23428,89 @@ fn readonly_cli_profile_rejects_note_writes() {
 }
 
 #[test]
+fn plugin_compatible_commands_enforce_selected_permission_profiles() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[permissions.profiles.public_only]
+read = { allow = ["folder:Public/**"] }
+write = "none"
+"#,
+    )
+    .expect("config should be written");
+
+    let vault = vault_root.to_str().expect("utf-8");
+    for arguments in [
+        vec![
+            "--permissions",
+            "readonly",
+            "kanban",
+            "add",
+            "Boards/Work.md",
+            "Todo",
+            "denied",
+            "--dry-run",
+        ],
+        vec![
+            "--permissions",
+            "readonly",
+            "bases",
+            "view-add",
+            "Views/Work.base",
+            "Denied",
+            "--dry-run",
+        ],
+        vec!["--permissions", "readonly", "daily", "append", "denied"],
+    ] {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .arg("--vault")
+            .arg(vault)
+            .args(arguments)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("does not allow write"));
+    }
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault,
+            "--permissions",
+            "public_only",
+            "kanban",
+            "show",
+            "Private/Board.md",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "does not allow read `Private/Board.md`",
+        ));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault,
+            "--permissions",
+            "public_only",
+            "bases",
+            "eval",
+            "Private/Notes.base",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "does not allow read `Private/Notes.base`",
+        ));
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn sandboxed_cli_profile_rejects_refactor_git_network_config_execute_and_index_commands() {
     let temp_dir = TempDir::new().expect("temp dir should be created");

@@ -8,7 +8,7 @@ use crate::output::{
 use crate::{
     append_at_end, append_under_heading, print_markdown_output, run_incremental_scan,
     warn_auto_commit_if_needed, Cli, CliError, DailyCommand, OutputFormat, PeriodicOpenArgs,
-    PeriodicSubcommand,
+    PeriodicSubcommand, PermissionGuard,
 };
 use serde::Serialize;
 use serde_json::Value;
@@ -120,6 +120,7 @@ pub(crate) fn handle_daily_command(
 ) -> Result<(), CliError> {
     match command {
         DailyCommand::Today { no_edit, no_commit } => {
+            check_periodic_write_access(cli, paths, "daily", None)?;
             let report = run_periodic_open_command(
                 paths,
                 "daily",
@@ -170,6 +171,7 @@ pub(crate) fn handle_daily_command(
             date,
             no_commit,
         } => {
+            check_periodic_write_access(cli, paths, "daily", date.as_deref())?;
             let report = run_daily_append_command(
                 paths,
                 text,
@@ -191,6 +193,7 @@ pub(crate) fn handle_today_command(
     no_commit: bool,
     interactive_note_selection: bool,
 ) -> Result<(), CliError> {
+    check_periodic_write_access(cli, paths, "daily", None)?;
     let report = run_periodic_open_command(
         paths,
         "daily",
@@ -209,6 +212,7 @@ pub(crate) fn handle_weekly_command(
     args: &PeriodicOpenArgs,
     interactive_note_selection: bool,
 ) -> Result<(), CliError> {
+    check_periodic_write_access(cli, paths, "weekly", args.date.as_deref())?;
     let report = run_periodic_open_command(
         paths,
         "weekly",
@@ -227,6 +231,7 @@ pub(crate) fn handle_monthly_command(
     args: &PeriodicOpenArgs,
     interactive_note_selection: bool,
 ) -> Result<(), CliError> {
+    check_periodic_write_access(cli, paths, "monthly", args.date.as_deref())?;
     let report = run_periodic_open_command(
         paths,
         "monthly",
@@ -282,6 +287,7 @@ pub(crate) fn handle_periodic_command(
             date,
             no_commit,
         }) => {
+            check_periodic_write_access(cli, paths, period_type, date.as_deref())?;
             let report = run_daily_append_command(
                 paths,
                 text,
@@ -322,6 +328,7 @@ pub(crate) fn handle_periodic_command(
                     "`periodic` requires a period type unless `list` or `gaps` is used",
                 )
             })?;
+            check_periodic_write_access(cli, paths, period_type, date)?;
             let report = run_periodic_open_command(
                 paths,
                 period_type,
@@ -334,6 +341,19 @@ pub(crate) fn handle_periodic_command(
             print_periodic_open_report(cli.output, &report)
         }
     }
+}
+
+fn check_periodic_write_access(
+    cli: &Cli,
+    paths: &VaultPaths,
+    period_type: &str,
+    date: Option<&str>,
+) -> Result<(), CliError> {
+    let config = load_vault_config(paths).config;
+    let target = resolve_periodic_target(&config.periodic, period_type, date, true)?;
+    crate::selected_permission_guard(cli, paths)?
+        .check_write_path(&target.path)
+        .map_err(CliError::operation)
 }
 
 pub(crate) fn current_utc_date_string() -> String {

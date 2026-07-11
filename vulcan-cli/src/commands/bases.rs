@@ -14,7 +14,8 @@ use serde_json::Value;
 use std::io::{self, IsTerminal};
 use vulcan_core::{
     bases_view_add, bases_view_delete, bases_view_edit, bases_view_rename, evaluate_base_file,
-    BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport, VaultPaths,
+    BaseViewGroupBy, BaseViewPatch, BaseViewSpec, BasesEvalReport, BasesViewEditReport,
+    PermissionGuard, VaultPaths,
 };
 
 pub(crate) fn print_bases_report(
@@ -361,6 +362,9 @@ pub(crate) fn handle_bases_command(
 ) -> Result<(), CliError> {
     match command {
         BasesCommand::Eval { file, export } => {
+            crate::selected_permission_guard(cli, paths)?
+                .check_read_path(file)
+                .map_err(CliError::operation)?;
             let report = evaluate_base_file(paths, file).map_err(CliError::operation)?;
             let export = crate::resolve_cli_export(export)?;
             print_bases_report(
@@ -379,6 +383,12 @@ pub(crate) fn handle_bases_command(
             dry_run,
             no_commit,
         } => {
+            crate::selected_permission_guard(cli, paths)?
+                .check_read_path(file)
+                .map_err(CliError::operation)?;
+            crate::selected_permission_guard(cli, paths)?
+                .check_write_path(file)
+                .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report =
@@ -398,6 +408,9 @@ pub(crate) fn handle_bases_command(
             print_bases_create_report(cli.output, &report)
         }
         BasesCommand::Tui { file } => {
+            crate::selected_permission_guard(cli, paths)?
+                .check_read_path(file)
+                .map_err(CliError::operation)?;
             let report = evaluate_base_file(paths, file).map_err(CliError::operation)?;
             if cli.output == OutputFormat::Human && stdout_is_tty && io::stdin().is_terminal() {
                 bases_tui::run_bases_tui(paths, file, &report).map_err(CliError::operation)
@@ -424,6 +437,9 @@ pub(crate) fn handle_bases_command(
             dry_run,
             no_commit,
         } => {
+            crate::selected_permission_guard(cli, paths)?
+                .check_write_path(file)
+                .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let spec = BaseViewSpec {
@@ -459,6 +475,9 @@ pub(crate) fn handle_bases_command(
             dry_run,
             no_commit,
         } => {
+            crate::selected_permission_guard(cli, paths)?
+                .check_write_path(file)
+                .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report =
@@ -483,6 +502,9 @@ pub(crate) fn handle_bases_command(
             dry_run,
             no_commit,
         } => {
+            crate::selected_permission_guard(cli, paths)?
+                .check_write_path(file)
+                .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let report = bases_view_rename(paths, file, old_name, new_name, *dry_run)
@@ -513,6 +535,9 @@ pub(crate) fn handle_bases_command(
             dry_run,
             no_commit,
         } => {
+            crate::selected_permission_guard(cli, paths)?
+                .check_write_path(file)
+                .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             let patch = BaseViewPatch {
