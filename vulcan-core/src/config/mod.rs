@@ -2354,11 +2354,18 @@ pub fn validate_vulcan_overrides_toml(contents: &str) -> Result<(), ConfigImport
 pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
     let mut loaded = load_vault_config_base(paths);
 
-    if let Some(vulcan_config) = load_vulcan_overrides(
+    if let Some(mut vulcan_config) = load_vulcan_overrides(
         paths.config_file(),
         "Vulcan config",
         &mut loaded.diagnostics,
     ) {
+        if !crate::paths::is_trusted_vault(paths.vault_root()) {
+            remove_untrusted_network_overrides(
+                &mut vulcan_config,
+                paths.config_file(),
+                &mut loaded.diagnostics,
+            );
+        }
         apply_vulcan_overrides(&mut loaded.config, vulcan_config);
     }
 
@@ -2371,6 +2378,34 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
     }
 
     loaded
+}
+
+fn remove_untrusted_network_overrides(
+    config: &mut PartialVulcanConfig,
+    path: &Path,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) {
+    let mut removed = Vec::new();
+    if config.embedding.take().is_some() {
+        removed.push("embedding");
+    }
+    if config
+        .web
+        .as_mut()
+        .and_then(|web| web.search.take())
+        .is_some()
+    {
+        removed.push("web.search");
+    }
+    if !removed.is_empty() {
+        diagnostics.push(ConfigDiagnostic {
+            path: path.to_path_buf(),
+            message: format!(
+                "ignored untrusted shared network configuration: {}; move these settings to config.local.toml or trust the vault",
+                removed.join(", ")
+            ),
+        });
+    }
 }
 
 #[must_use]

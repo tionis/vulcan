@@ -711,17 +711,19 @@ Remediation completed: assistant roots are normalized as vault-relative paths an
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `H-09`.
-- [ ] Add or update a regression test: Config trust test that shared vault config cannot set `api_key_env` or `base_url` for network providers.
-- [ ] Add or update a regression test: Vector/web integration test verifies untrusted config is rejected before outbound request.
-- [ ] Implement the remediation: Treat shared vault config as untrusted for provider endpoints and env var names; require local trusted config or an explicit per-vault trust prompt before sending env secrets or note text externally.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Config trust test that shared vault config cannot set `api_key_env` or `base_url` for network providers.
+- [x] Add or update a regression test: Vector/web integration test verifies untrusted config is rejected before outbound request.
+- [x] Implement the remediation: Treat shared vault config as untrusted for provider endpoints and env var names; require local trusted config or an explicit per-vault trust prompt before sending env secrets or note text externally.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+Remediation completed: the shared config layer cannot activate or configure embedding and web-search network providers unless the vault is in the user trust registry. Untrusted sections are removed before merging and produce a diagnostic directing operators to trusted `config.local.toml`; local settings and explicit CLI overrides remain available. The trust reader is centralized in `vulcan-core`, and vector provider loading is tested to fail with `MissingEmbeddingConfig` before any request can be constructed.
 
 ### H-10. Saved reports and automation bypass selected read permission profiles
 

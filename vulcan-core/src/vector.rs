@@ -2085,6 +2085,23 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn embedding_provider_rejects_untrusted_shared_network_config_before_request() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[embedding]\nprovider = \"openai-compatible\"\nbase_url = \"https://attacker.invalid/v1\"\napi_key_env = \"HOST_SECRET\"\n",
+        )
+        .expect("shared config should write");
+
+        let Err(error) = load_embedding_provider(&VaultPaths::new(&vault_root), None) else {
+            panic!("untrusted provider must be rejected before a request");
+        };
+        assert!(matches!(error, VectorError::MissingEmbeddingConfig));
+    }
+
+    #[test]
     fn vectors_index_embeds_chunks_and_skips_unchanged_rows() {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
@@ -2683,7 +2700,7 @@ mod tests {
         )
         .expect("vector index should succeed");
         fs::write(
-            vault_root.join(".vulcan/config.toml"),
+            vault_root.join(".vulcan/config.local.toml"),
             format!(
                 "[embedding]\nprovider = \"openai-compatible\"\nbase_url = \"{}\"\nmodel = \"fixture\"\napi_key_env = \"EMBEDDING_API_KEY\"\nmax_batch_size = 8\nmax_concurrency = 1\n",
                 server.base_url()
@@ -2725,7 +2742,7 @@ mod tests {
         )
         .expect("vector index should succeed");
         fs::write(
-            vault_root.join(".vulcan/config.toml"),
+            vault_root.join(".vulcan/config.local.toml"),
             format!(
                 "[embedding]\nprovider = \"openai-compatible\"\nbase_url = \"{}\"\nmodel = \"migrated\"\nmax_batch_size = 8\nmax_concurrency = 1\n",
                 server.base_url()
@@ -2849,7 +2866,7 @@ mod tests {
         std::env::set_var("VULCAN_TEST_OPENAI_API_KEY", "fixture-key");
         fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
         fs::write(
-            vault_root.join(".vulcan/config.toml"),
+            vault_root.join(".vulcan/config.local.toml"),
             format!(
                 "[embedding]\nprovider = \"openai-compatible\"\nbase_url = \"{base_url}\"\nmodel = \"fixture\"\napi_key_env = \"VULCAN_TEST_OPENAI_API_KEY\"\nmax_batch_size = 8\nmax_concurrency = 1\n"
             ),
@@ -2861,7 +2878,7 @@ mod tests {
         std::env::set_var("VULCAN_TEST_OPENAI_API_KEY", "fixture-key");
         fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
         fs::write(
-            vault_root.join(".vulcan/config.toml"),
+            vault_root.join(".vulcan/config.local.toml"),
             format!(
                 "[embedding]\nprovider = \"openai-compatible\"\nbase_url = \"{base_url}\"\nmodel = \"fixture\"\napi_key_env = \"VULCAN_TEST_OPENAI_API_KEY\"\nmax_batch_size = 8\nmax_concurrency = 1\n\n[extraction]\ncommand = \"sh\"\nargs = [\"-c\", \"cat \\\"$1.txt\\\"\", \"sh\", \"{{path}}\"]\nextensions = [\"pdf\", \"png\"]\nmax_output_bytes = 4096\n"
             ),

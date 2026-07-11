@@ -147,7 +147,7 @@ mod tests {
     fn prepare_web_search_uses_configured_endpoint() {
         let (_dir, paths) = test_paths();
         fs::write(
-            paths.config_file(),
+            paths.local_config_file(),
             r#"[web.search]
 base_url = "http://127.0.0.1:4455/search"
 "#,
@@ -177,7 +177,7 @@ base_url = "http://127.0.0.1:4455/search"
             .local_addr()
             .expect("listener should expose address");
         fs::write(
-            paths.config_file(),
+            paths.local_config_file(),
             format!(
                 "[web.search]\nbase_url = \"http://{address}/search\"\nbackend = \"duckduckgo\"\n"
             ),

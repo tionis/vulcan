@@ -147,6 +147,32 @@ pub fn trusted_vaults_file() -> Option<PathBuf> {
     vulcan_user_config_dir().map(|path| path.join(TRUSTED_VAULTS_FILE_NAME))
 }
 
+#[must_use]
+pub fn is_trusted_vault(vault_root: &Path) -> bool {
+    let Some(path) = trusted_vaults_file() else {
+        return false;
+    };
+    let Ok(canonical_root) = vault_root.canonicalize() else {
+        return false;
+    };
+    let Ok(content) = fs::read_to_string(path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+    value
+        .get("vaults")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|vaults| {
+            vaults
+                .iter()
+                .filter_map(serde_json::Value::as_str)
+                .filter_map(|entry| PathBuf::from(entry).canonicalize().ok())
+                .any(|entry| entry == canonical_root)
+        })
+}
+
 fn user_config_dir_from_env(mut env: impl FnMut(&str) -> Option<OsString>) -> Option<PathBuf> {
     if let Some(path) = env_path(&mut env, "XDG_CONFIG_HOME") {
         return Some(path);

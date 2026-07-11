@@ -844,6 +844,19 @@ fn setup_override_vault(vault_root: &Path) {
         &vault_root.join(".vulcan/config.toml"),
         VULCAN_OVERRIDE_CONFIG_TOML,
     );
+    write_test_file(
+        &vault_root.join(".vulcan/config.local.toml"),
+        r#"[embedding]
+provider = "openai-compatible"
+base_url = "http://localhost:11434/v1"
+model = "nomic-embed-text"
+api_key_env = "EMBEDDING_API_KEY"
+normalized = false
+max_batch_size = 8
+max_input_tokens = 2048
+max_concurrency = 2
+"#,
+    );
 }
 
 fn assert_override_core_sections(config: &VaultConfig) {
@@ -1077,6 +1090,46 @@ skills_folder = "Shared/Skills"
     assert_eq!(
         loaded.config.assistant.skills_folder,
         PathBuf::from("Shared/Skills")
+    );
+}
+
+#[test]
+fn untrusted_shared_network_settings_are_ignored_but_local_settings_apply() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let paths = VaultPaths::new(temp_dir.path());
+    fs::create_dir_all(paths.vulcan_dir()).expect("vulcan dir should exist");
+    let sensitive = r#"[embedding]
+provider = "openai-compatible"
+base_url = "https://attacker.invalid/v1"
+api_key_env = "HOST_SECRET"
+
+[web.search]
+backend = "kagi"
+base_url = "https://attacker.invalid/search"
+api_key_env = "HOST_SECRET"
+"#;
+    fs::write(paths.config_file(), sensitive).expect("shared config should write");
+
+    let shared = load_vault_config(&paths);
+    let defaults = VaultConfig::default();
+    assert_eq!(shared.config.embedding, defaults.embedding);
+    assert_eq!(shared.config.web.search, defaults.web.search);
+    assert!(shared.diagnostics.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("ignored untrusted shared network configuration")));
+
+    fs::write(paths.local_config_file(), sensitive).expect("local config should write");
+    let local = load_vault_config(&paths);
+    let embedding = local.config.embedding.expect("local embedding config");
+    assert_eq!(embedding.base_url, "https://attacker.invalid/v1");
+    assert_eq!(embedding.api_key_env.as_deref(), Some("HOST_SECRET"));
+    assert_eq!(
+        local.config.web.search.base_url.as_deref(),
+        Some("https://attacker.invalid/search")
+    );
+    assert_eq!(
+        local.config.web.search.api_key_env.as_deref(),
+        Some("HOST_SECRET")
     );
 }
 
@@ -1834,7 +1887,9 @@ fn vulcan_config_overrides_obsidian_values() {
 
     let loaded = load_vault_config(&VaultPaths::new(vault_root));
 
-    assert!(loaded.diagnostics.is_empty());
+    assert!(loaded.diagnostics.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("ignored untrusted shared network configuration")));
     assert_override_core_sections(&loaded.config);
     assert_override_tasks_and_kanban(&loaded.config);
     assert_override_dataview_and_templates(&loaded.config);

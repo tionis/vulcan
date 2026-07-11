@@ -4439,7 +4439,7 @@ fn web_search_json_output_uses_configured_backend_and_env_key() {
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
+        vault_root.join(".vulcan/config.local.toml"),
         format!(
             "[web.search]\nbackend = \"kagi\"\napi_key_env = \"TEST_KAGI_TOKEN\"\nbase_url = \"{}\"\n",
             server.url("/api/v0/search")
@@ -4481,7 +4481,7 @@ fn web_search_defaults_to_duckduckgo_without_api_key() {
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
+        vault_root.join(".vulcan/config.local.toml"),
         format!("[web.search]\nbase_url = \"{}\"\n", server.url("/html/")),
     )
     .expect("config should be written");
@@ -4518,7 +4518,7 @@ fn web_search_auto_falls_back_to_duckduckgo_without_api_keys() {
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
+        vault_root.join(".vulcan/config.local.toml"),
         format!(
             "[web.search]\nbackend = \"auto\"\nbase_url = \"{}\"\n",
             server.url("/html/")
@@ -4562,7 +4562,7 @@ fn web_search_exa_backend_uses_x_api_key_header_and_parses_text_field() {
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
+        vault_root.join(".vulcan/config.local.toml"),
         format!(
             "[web.search]\nbackend = \"exa\"\napi_key_env = \"TEST_EXA_KEY\"\nbase_url = \"{}\"\n",
             server.url("/exa/search")
@@ -4603,7 +4603,7 @@ fn web_search_tavily_backend_posts_json_and_parses_content_field() {
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
+        vault_root.join(".vulcan/config.local.toml"),
         format!(
             "[web.search]\nbackend = \"tavily\"\napi_key_env = \"TEST_TAVILY_KEY\"\nbase_url = \"{}\"\n",
             server.url("/tavily/search")
@@ -4642,7 +4642,7 @@ fn web_search_brave_backend_uses_subscription_token_header_and_parses_descriptio
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
+        vault_root.join(".vulcan/config.local.toml"),
         format!(
             "[web.search]\nbackend = \"brave\"\napi_key_env = \"TEST_BRAVE_KEY\"\nbase_url = \"{}\"\n",
             server.url("/brave/search")
@@ -4682,7 +4682,7 @@ fn web_search_ollama_backend_uses_bearer_auth_and_parses_content_field() {
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
+        vault_root.join(".vulcan/config.local.toml"),
         format!(
             "[web.search]\nbackend = \"ollama\"\napi_key_env = \"TEST_OLLAMA_KEY\"\nbase_url = \"{}\"\n",
             server.url("/api/web_search")
@@ -4722,7 +4722,7 @@ fn web_search_disabled_backend_fails_cleanly() {
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
+        vault_root.join(".vulcan/config.local.toml"),
         "[web.search]\nbackend = \"disabled\"\n",
     )
     .expect("config should be written");
@@ -4749,7 +4749,7 @@ fn web_search_auto_prefers_api_key_backends_over_duckduckgo() {
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should be created");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
+        vault_root.join(".vulcan/config.local.toml"),
         // No backend specified → defaults to auto; override base_url for Exa via explicit config
         // We configure exa base_url to point at our mock, but in auto mode the URL falls
         // through to the default. Instead test with --backend flag override.
@@ -17391,7 +17391,7 @@ fn run_json_output_net_sandbox_exposes_web_helpers() {
     let base_url = format!("http://{address}");
     fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
+        vault_root.join(".vulcan/config.local.toml"),
         format!(
             "[web.search]\nbackend = \"kagi\"\napi_key_env = \"VULCAN_JS_TEST_KAGI_KEY\"\nbase_url = \"{base_url}/search\"\n"
         ),
@@ -17491,7 +17491,7 @@ fn web_cli_and_js_entrypoints_share_normalized_reports() {
 
     fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
+        vault_root.join(".vulcan/config.local.toml"),
         format!(
             "[web.search]\nbackend = \"duckduckgo\"\nbase_url = \"{}\"\n",
             server.url("/html/")
@@ -19922,7 +19922,7 @@ fn write_embedding_config(vault_root: &Path, base_url: &str) {
     std::env::set_var("VULCAN_TEST_OPENAI_API_KEY", "fixture-key");
     fs::create_dir_all(vault_root.join(".vulcan")).expect("config directory should exist");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
+        vault_root.join(".vulcan/config.local.toml"),
         format!(
             "[embedding]\nprovider = \"openai-compatible\"\nbase_url = \"{base_url}\"\napi_key_env = \"VULCAN_TEST_OPENAI_API_KEY\"\nmodel = \"fixture\"\nmax_batch_size = 8\nmax_concurrency = 1\n"
         ),

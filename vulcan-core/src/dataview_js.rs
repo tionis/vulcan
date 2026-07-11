@@ -6469,7 +6469,7 @@ globalThis.Function = undefined;
                 .expect(".vulcan dir should be created");
             fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
             fs::write(
-                vault_root.join(".vulcan/config.toml"),
+                vault_root.join(".vulcan/config.local.toml"),
                 "[periodic.daily]\nschedule_heading = \"Schedule\"\n",
             )
             .expect("config should be written");
@@ -7265,7 +7265,7 @@ cpu_limit_ms = 25
                 }
             });
             fs::write(
-                vault_root.join(".vulcan/config.toml"),
+                vault_root.join(".vulcan/config.local.toml"),
                 format!("[web.search]\nbase_url = \"{base_url}/search\"\n"),
             )
             .expect("config should be written");

@@ -386,7 +386,7 @@ impl ProfilePermissionGuard {
         let Some(policy_hook) = self.selection.profile.policy_hook.as_ref() else {
             return Ok(());
         };
-        if !is_trusted_vault(self.paths.vault_root()) {
+        if !crate::paths::is_trusted_vault(self.paths.vault_root()) {
             return Err(PermissionError::PolicyHookDenied {
                 profile: self.profile_name().to_string(),
                 action,
@@ -1008,34 +1008,6 @@ fn interpret_policy_hook_result(
             reason: "policy hook must return `pass` or `deny`".to_string(),
         }),
     }
-}
-
-fn is_trusted_vault(vault_root: &Path) -> bool {
-    let Some(path) = crate::paths::trusted_vaults_file() else {
-        return false;
-    };
-    let Ok(canonical_root) = vault_root.canonicalize() else {
-        return false;
-    };
-    let Ok(content) = fs::read_to_string(path) else {
-        return false;
-    };
-    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
-        return false;
-    };
-    value
-        .get("vaults")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|vaults| {
-            vaults
-                .iter()
-                .filter_map(serde_json::Value::as_str)
-                .any(|entry| {
-                    PathBuf::from(entry)
-                        .canonicalize()
-                        .is_ok_and(|candidate| candidate == canonical_root)
-                })
-        })
 }
 
 fn network_target_matches(domain: &str, target: &str) -> bool {
