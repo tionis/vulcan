@@ -776,7 +776,10 @@ pub fn clear_cache_tables(transaction: &Transaction<'_>) -> Result<(), rusqlite:
         rows.collect::<Result<Vec<_>, _>>()?
     };
     for table in &vector_tables {
-        transaction.execute_batch(&format!("DROP TABLE IF EXISTS [{table}]"))?;
+        transaction.execute(
+            &format!("DROP TABLE IF EXISTS {}", quote_sqlite_identifier(table)),
+            [],
+        )?;
     }
     transaction.execute_batch("DROP TABLE IF EXISTS vectors;")?;
 
@@ -786,4 +789,37 @@ pub fn clear_cache_tables(transaction: &Transaction<'_>) -> Result<(), rusqlite:
     }
 
     Ok(())
+}
+
+fn quote_sqlite_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    #[test]
+    fn cache_cleanup_does_not_execute_sql_embedded_in_table_names() {
+        let mut connection = Connection::open_in_memory().expect("database should open");
+        connection
+            .execute_batch(
+                "CREATE TABLE sentinel (id INTEGER);
+                 CREATE TABLE \"vectors_bad]; DROP TABLE sentinel;--\" (id INTEGER);",
+            )
+            .expect("hostile fixture should create");
+        let transaction = connection.transaction().expect("transaction should start");
+
+        let _ = clear_cache_tables(&transaction);
+
+        let sentinel_exists: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sentinel'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("sentinel query should succeed");
+        assert_eq!(sentinel_exists, 1);
+    }
 }

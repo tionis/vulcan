@@ -93,6 +93,9 @@ impl VectorStore for SqliteVecStore<'_> {
             )
             .optional()
             .map_err(|error| format!("failed to query registry: {error}"))?;
+        if let Some((existing_table, _)) = &existing {
+            validate_stored_table_name(&model.cache_key, existing_table)?;
+        }
 
         let needs_recreate = match &existing {
             Some((existing_table, existing_dims)) => {
@@ -107,6 +110,7 @@ impl VectorStore for SqliteVecStore<'_> {
         if needs_recreate {
             // Drop old table for this cache_key if it exists.
             if let Some((old_table, _)) = &existing {
+                validate_stored_table_name(&model.cache_key, old_table)?;
                 self.connection
                     .execute_batch(&format!("DROP TABLE IF EXISTS [{old_table}]"))
                     .map_err(|error| format!("failed to drop old vector table: {error}"))?;
@@ -453,6 +457,7 @@ impl VectorStore for SqliteVecStore<'_> {
                 normalized,
                 is_active,
             ) = row.map_err(|error| format!("failed to read model row: {error}"))?;
+            validate_stored_table_name(&cache_key, &table_name)?;
 
             let chunk_count = if table_exists(self.connection, &table_name)? {
                 self.connection
@@ -493,6 +498,7 @@ impl VectorStore for SqliteVecStore<'_> {
         let Some(table_name) = table_name else {
             return Ok(false);
         };
+        validate_stored_table_name(cache_key, &table_name)?;
 
         self.connection
             .execute_batch(&format!("DROP TABLE IF EXISTS [{table_name}]"))
@@ -789,7 +795,10 @@ fn load_active_model_info(
         .map_err(|error| format!("failed to load active model info: {error}"))?;
 
     match result {
-        Some((key, table)) => Ok((Some(key), Some(table))),
+        Some((key, table)) => {
+            validate_stored_table_name(&key, &table)?;
+            Ok((Some(key), Some(table)))
+        }
         None => Ok((None, None)),
     }
 }
@@ -817,6 +826,17 @@ fn sanitized_table_name(cache_key: &str) -> String {
         })
         .collect();
     format!("vectors_{sanitized}")
+}
+
+fn validate_stored_table_name(cache_key: &str, table_name: &str) -> Result<(), String> {
+    let expected = sanitized_table_name(cache_key);
+    if table_name == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid vector table name `{table_name}` for cache key `{cache_key}`"
+        ))
+    }
 }
 
 fn load_stored_vectors(connection: &Connection, table: &str) -> Result<Vec<StoredVector>, String> {
@@ -1189,5 +1209,31 @@ mod tests {
             sanitized_table_name("my_custom_key"),
             "vectors_my_custom_key"
         );
+    }
+
+    #[test]
+    fn drop_model_rejects_a_poisoned_registry_table_name() {
+        register_sqlite_vec_extension();
+        let connection = Connection::open_in_memory().expect("database should open");
+        let mut store = SqliteVecStore::new(&connection).expect("store should initialize");
+        connection
+            .execute_batch("CREATE TABLE sentinel (id INTEGER)")
+            .expect("sentinel should create");
+        connection
+            .execute(
+                "INSERT INTO vector_model_registry (
+                    cache_key, table_name, provider_name, model_name,
+                    dimensions, normalized, is_active, created_at
+                 ) VALUES (?1, ?2, 'test', 'test', 2, 1, 0, datetime('now'))",
+                params!["poisoned", "vectors_bad]; DROP TABLE sentinel;--"],
+            )
+            .expect("poisoned registry row should insert");
+
+        let error = store
+            .drop_model("poisoned")
+            .expect_err("poisoned registry must be rejected");
+
+        assert!(error.contains("invalid vector table name"));
+        assert!(table_exists(&connection, "sentinel").expect("table check should work"));
     }
 }

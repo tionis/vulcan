@@ -1336,17 +1336,19 @@ Remediation completed: Bases reads and edits, Kanban reads and mutations, and mo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `M-09`.
-- [ ] Add or update a regression test: Poisoned cache test with `]` in table name must not execute injected SQL.
-- [ ] Add or update a regression test: sqlite-vec registry test rejects invalid stored table names.
-- [ ] Implement the remediation: Never interpolate persisted identifiers. Revalidate table names against the generated safe-name grammar or store model keys and regenerate table names before SQL; escape identifiers with a dedicated helper.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Poisoned cache test with `]` in table name must not execute injected SQL.
+- [x] Add or update a regression test: sqlite-vec registry test rejects invalid stored table names.
+- [x] Implement the remediation: Never interpolate persisted identifiers. Revalidate table names against the generated safe-name grammar or store model keys and regenerate table names before SQL; escape identifiers with a dedicated helper.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+**Remediation:** Cache cleanup now quotes SQLite object names with a dedicated identifier helper and executes each drop as a single statement. The sqlite-vec store validates every persisted registry table name against the deterministic name regenerated from its cache key before making it active, listing it, recreating it, or dropping it. Poisoned cache and registry fixtures prove embedded SQL is not executed and invalid mappings are rejected.
 
 ### M-10. Git commands can access paths outside a vault nested in a larger worktree
 
