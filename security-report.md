@@ -1381,17 +1381,19 @@ Remediation completed: Bases reads and edits, Kanban reads and mutations, and mo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `M-10`.
-- [ ] Add or update a regression test: Git command test in nested worktree rejects `../sibling.md`.
-- [ ] Add or update a regression test: Auto-commit test ignores outside-vault status paths.
-- [ ] Implement the remediation: Reject absolute and parent components before git pathspec use, and resolve paths relative to the vault root with canonical containment before staging/committing.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Git command test in nested worktree rejects `../sibling.md`.
+- [x] Add or update a regression test: Auto-commit test ignores outside-vault status paths.
+- [x] Implement the remediation: Reject absolute and parent components before git pathspec use, and resolve paths relative to the vault root with canonical containment before staging/committing.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+**Remediation:** Git paths now pass through a shared vault-relative validator that rejects absolute and parent components. Status, staged-path discovery, recent log, diff, staging, and commits are scoped to the vault pathspec; nested-worktree status paths are converted back to vault-relative names; and commit commands name only validated vault files so pre-staged sibling changes are not included. A nested-worktree regression proves `../Sibling.md` is rejected and outside changes remain uncommitted.
 
 ### M-11. Static search export emits all indexed content without a permission filter
 

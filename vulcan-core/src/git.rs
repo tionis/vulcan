@@ -188,7 +188,10 @@ pub fn auto_commit(
 
     let message = render_commit_message(&config.message, action, &staged_paths);
     run_git(vault_root, "create commit", |command| {
-        command.arg("commit").arg("-m").arg(&message);
+        command.arg("commit").arg("-m").arg(&message).arg("--");
+        for path in &staged_paths {
+            command.arg(path);
+        }
     })?;
     let sha = run_git_capture(vault_root, |command| {
         command.args(["rev-parse", "HEAD"]);
@@ -210,7 +213,8 @@ pub fn git_log(
     limit: usize,
 ) -> Result<Vec<GitLogEntry>, GitError> {
     ensure_git_repo(vault_root)?;
-    collect_git_log(vault_root, limit, Some(file_path))
+    let file_path = validate_git_path(file_path)?;
+    collect_git_log(vault_root, limit, Some(&file_path))
 }
 
 pub fn git_recent_log(vault_root: &Path, limit: usize) -> Result<Vec<GitLogEntry>, GitError> {
@@ -220,8 +224,12 @@ pub fn git_recent_log(vault_root: &Path, limit: usize) -> Result<Vec<GitLogEntry
 
 pub fn git_status(vault_root: &Path) -> Result<GitStatusReport, GitError> {
     ensure_git_repo(vault_root)?;
+    let worktree_prefix = run_git_capture(vault_root, |command| {
+        command.args(["rev-parse", "--show-prefix"]);
+    })?;
+    let worktree_prefix = worktree_prefix.trim();
     let stdout = run_git_capture(vault_root, |command| {
-        command.args(["status", "--short", "--untracked-files=all"]);
+        command.args(["status", "--short", "--untracked-files=all", "--", "."]);
     })?;
 
     let mut staged = BTreeSet::new();
@@ -236,6 +244,10 @@ pub fn git_status(vault_root: &Path) -> Result<GitStatusReport, GitError> {
         let x = bytes[0] as char;
         let y = bytes[1] as char;
         let path = parse_status_path(&line[3..]);
+        let path = path
+            .strip_prefix(worktree_prefix)
+            .unwrap_or(&path)
+            .to_string();
         if path.is_empty() {
             continue;
         }
@@ -267,7 +279,7 @@ pub fn git_diff(vault_root: &Path, path: Option<&str>) -> Result<String, GitErro
     let untracked_paths = status.untracked.iter().cloned().collect::<BTreeSet<_>>();
     let paths = match path {
         Some(path) => {
-            let normalized = normalize_git_path(path);
+            let normalized = validate_git_path(path)?;
             if path_is_excluded(&normalized, &[]) {
                 return Err(GitError::CommandFailed(format!(
                     "refusing to diff an internal path: {normalized}"
@@ -322,7 +334,10 @@ pub fn git_commit(vault_root: &Path, message: &str) -> Result<GitCommitReport, G
     }
 
     run_git(vault_root, "create commit", |command| {
-        command.arg("commit").arg("-m").arg(message);
+        command.arg("commit").arg("-m").arg(message).arg("--");
+        for path in &staged {
+            command.arg(path);
+        }
     })?;
     let sha = run_git_capture(vault_root, |command| {
         command.args(["rev-parse", "HEAD"]);
@@ -340,7 +355,7 @@ pub fn git_commit(vault_root: &Path, message: &str) -> Result<GitCommitReport, G
 
 pub fn git_blame(vault_root: &Path, path: &str) -> Result<Vec<GitBlameLine>, GitError> {
     ensure_git_repo(vault_root)?;
-    let normalized = normalize_git_path(path);
+    let normalized = validate_git_path(path)?;
     if path_is_excluded(&normalized, &[]) {
         return Err(GitError::CommandFailed(format!(
             "refusing to blame an internal path: {normalized}"
@@ -420,7 +435,7 @@ fn resolve_commit_paths(
 
     Ok(paths
         .into_iter()
-        .map(|path| normalize_git_path(&path))
+        .filter_map(|path| validate_git_path(&path).ok())
         .filter(|path| !path.is_empty())
         .filter(|path| !path_is_excluded(path, &config.exclude))
         .collect::<BTreeSet<_>>()
@@ -443,7 +458,7 @@ fn stageable_path(vault_root: &Path, path: &str) -> Result<bool, GitError> {
 
 fn staged_paths(vault_root: &Path) -> Result<Vec<String>, GitError> {
     let stdout = run_git_capture(vault_root, |command| {
-        command.args(["diff", "--cached", "--name-only"]);
+        command.args(["diff", "--cached", "--name-only", "--relative", "--", "."]);
     })?;
 
     Ok(stdout
@@ -470,6 +485,8 @@ fn collect_git_log(
         ]);
         if let Some(file_path) = file_path {
             command.arg("--follow").arg("--").arg(file_path);
+        } else {
+            command.arg("--").arg(".");
         }
     })?;
 
@@ -555,6 +572,23 @@ fn parse_status_path(path: &str) -> String {
 
 fn normalize_git_path(path: &str) -> String {
     path.replace('\\', "/").trim_start_matches("./").to_string()
+}
+
+fn validate_git_path(path: &str) -> Result<String, GitError> {
+    let candidate = Path::new(path);
+    if candidate.is_absolute()
+        || candidate.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::ParentDir | std::path::Component::RootDir
+            )
+        })
+    {
+        return Err(GitError::CommandFailed(format!(
+            "git path must stay within the vault: {path}"
+        )));
+    }
+    Ok(normalize_git_path(path))
 }
 
 fn path_is_excluded(path: &str, exclude: &[String]) -> bool {
@@ -850,6 +884,49 @@ mod tests {
                 .expect("status should succeed")
                 .clean
         );
+    }
+
+    #[test]
+    fn nested_vault_git_operations_reject_and_ignore_outside_paths() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir(&vault_root).expect("vault should create");
+        init_git_repo(temp_dir.path());
+        fs::write(vault_root.join("Note.md"), "inside\n").expect("vault note should write");
+        fs::write(temp_dir.path().join("Sibling.md"), "outside\n").expect("sibling should write");
+        commit_all(temp_dir.path(), "Initial");
+
+        fs::write(vault_root.join("Note.md"), "inside changed\n")
+            .expect("vault note should update");
+        fs::write(temp_dir.path().join("Sibling.md"), "outside changed\n")
+            .expect("sibling should update");
+
+        let error =
+            git_diff(&vault_root, Some("../Sibling.md")).expect_err("parent path must be rejected");
+        assert!(
+            error.to_string().contains("must stay within the vault"),
+            "unexpected error: {error}"
+        );
+
+        let report = auto_commit(
+            &vault_root,
+            &GitConfig {
+                auto_commit: true,
+                scope: GitScope::All,
+                message: "vault only".to_string(),
+                ..GitConfig::default()
+            },
+            "scan",
+            &["../Sibling.md".to_string(), "Note.md".to_string()],
+        )
+        .expect("vault commit should succeed");
+
+        assert_eq!(report.files, vec!["Note.md".to_string()]);
+        let sibling_status = run_git_capture(temp_dir.path(), |command| {
+            command.args(["status", "--short", "--", "Sibling.md"]);
+        })
+        .expect("sibling status should load");
+        assert!(!sibling_status.trim().is_empty());
     }
 
     #[test]
