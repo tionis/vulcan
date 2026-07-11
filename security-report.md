@@ -1115,17 +1115,19 @@ Remediation completed: static local OAuth clients require one or more exact regi
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `M-04`.
-- [ ] Add or update a regression test: Serve integration test that data endpoints reject unauthenticated requests even on loopback.
-- [ ] Add or update a regression test: Browser-origin test for forbidden Origin/Host.
-- [ ] Implement the remediation: Require a token by default for all HTTP API routes, enforce Host/Origin checks, and separate static preview from data APIs.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Serve integration test that data endpoints reject unauthenticated requests even on loopback.
+- [x] Add or update a regression test: Browser-origin test for forbidden Origin/Host.
+- [x] Implement the remediation: Require a token by default for all HTTP API routes, enforce Host/Origin checks, and separate static preview from data APIs.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+Remediation completed: the vault data server always has a token; when the operator omits one, a per-process token is generated and printed to stderr. Every route requires that token, Host must match the bound loopback authority, and browser Origin is rejected unless it matches the same authority. Static site preview remains a separate server implementation. Integration tests cover unauthenticated, hostile Host, and cross-origin requests.
 
 ### M-05. Filtered vector clustering summarizes denied chunks before filtering
 

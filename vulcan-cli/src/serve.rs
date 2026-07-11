@@ -65,7 +65,15 @@ pub fn serve_forever(paths: &VaultPaths, options: &ServeOptions) -> Result<(), C
     Ok(())
 }
 
-pub fn spawn_server(paths: VaultPaths, options: ServeOptions) -> Result<ServeHandle, CliError> {
+pub fn spawn_server(paths: VaultPaths, mut options: ServeOptions) -> Result<ServeHandle, CliError> {
+    if options.auth_token.is_none() {
+        #[cfg(test)]
+        let token = "generated-test-token".to_string();
+        #[cfg(not(test))]
+        let token = ulid::Ulid::new().to_string();
+        eprintln!("Vulcan serve token: {token}");
+        options.auth_token = Some(token);
+    }
     let bind_addr = parse_bind_addr(&options.bind, options.auth_token.is_some())?;
     let listener = TcpListener::bind(bind_addr).map_err(CliError::operation)?;
     listener
@@ -138,7 +146,13 @@ fn run_server_loop(
                 let _ = stream.set_nonblocking(false);
                 let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
                 let response = match read_request(&mut stream) {
-                    Ok(request) => route_request(paths, options, state, &request),
+                    Ok(request) => route_request(
+                        paths,
+                        options,
+                        state,
+                        &request,
+                        listener.local_addr().map_err(CliError::operation)?,
+                    ),
                     Err(error) => response_error(400, error),
                 };
                 write_response(&mut stream, &response).map_err(CliError::operation)?;
@@ -158,16 +172,32 @@ fn route_request(
     options: &ServeOptions,
     state: &Arc<Mutex<ServeHealthState>>,
     request: &Request,
+    local_addr: SocketAddr,
 ) -> AppServeResponse {
-    if let Some(expected_token) = options.auth_token.as_deref() {
-        let actual_token = request
-            .headers
-            .get("x-vulcan-token")
-            .map(String::as_str)
-            .unwrap_or_default();
-        if actual_token != expected_token {
-            return response_error(401, "missing or invalid X-Vulcan-Token header");
-        }
+    let host = request
+        .headers
+        .get("host")
+        .map(String::as_str)
+        .unwrap_or_default();
+    let expected_host = local_addr.to_string();
+    let localhost_host = format!("localhost:{}", local_addr.port());
+    if host != expected_host && host != localhost_host {
+        return response_error(403, "forbidden Host header");
+    }
+    if request.headers.get("origin").is_some_and(|origin| {
+        origin != &format!("http://{expected_host}")
+            && origin != &format!("http://{localhost_host}")
+    }) {
+        return response_error(403, "forbidden Origin header");
+    }
+    let expected_token = options.auth_token.as_deref().unwrap_or_default();
+    let actual_token = request
+        .headers
+        .get("x-vulcan-token")
+        .map(String::as_str)
+        .unwrap_or_default();
+    if expected_token.is_empty() || actual_token != expected_token {
+        return response_error(401, "missing or invalid X-Vulcan-Token header");
     }
 
     let state = state
@@ -650,6 +680,15 @@ mod tests {
         assert_eq!(unauthorized["ok"], false);
         assert_eq!(authorized["ok"], true);
 
+        let bad_host = get_json_with_authority(handle.addr(), "evil.example", None);
+        let bad_origin = get_json_with_authority(
+            handle.addr(),
+            &handle.addr().to_string(),
+            Some("https://evil.example"),
+        );
+        assert_eq!(bad_host["error"], "forbidden Host header");
+        assert_eq!(bad_origin["error"], "forbidden Origin header");
+
         handle.shutdown().expect("server should shut down");
     }
 
@@ -764,6 +803,7 @@ shell = "deny"
     }
 
     fn try_get_json(addr: SocketAddr, path: &str, token: Option<&str>) -> Option<Value> {
+        let token = token.or(Some("generated-test-token"));
         let mut stream = TcpStream::connect(addr).ok()?;
         let mut request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
         if let Some(token) = token {
@@ -780,6 +820,7 @@ shell = "deny"
     }
 
     fn get_json(addr: SocketAddr, path: &str, token: Option<&str>) -> Value {
+        let token = token.or(Some("generated-test-token"));
         let mut stream = TcpStream::connect(addr).expect("server should accept connections");
         let mut request = format!("GET {path} HTTP/1.1\r\nHost: {addr}\r\nConnection: close\r\n");
         if let Some(token) = token {
@@ -800,5 +841,27 @@ shell = "deny"
             .nth(1)
             .expect("response should contain a body");
         serde_json::from_str(body).expect("response body should parse")
+    }
+
+    fn get_json_with_authority(addr: SocketAddr, host: &str, origin: Option<&str>) -> Value {
+        let mut stream = TcpStream::connect(addr).expect("server should accept connections");
+        let mut request = format!(
+            "GET /health HTTP/1.1\r\nHost: {host}\r\nX-Vulcan-Token: secret\r\nConnection: close\r\n"
+        );
+        if let Some(origin) = origin {
+            request.push_str("Origin: ");
+            request.push_str(origin);
+            request.push_str("\r\n");
+        }
+        request.push_str("\r\n");
+        stream
+            .write_all(request.as_bytes())
+            .expect("request should write");
+        let mut response = String::new();
+        stream
+            .read_to_string(&mut response)
+            .expect("response should read");
+        serde_json::from_str(response.split("\r\n\r\n").nth(1).expect("response body"))
+            .expect("response JSON")
     }
 }
