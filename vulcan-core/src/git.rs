@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::path::Path;
 use std::process::Command;
 
@@ -518,12 +518,13 @@ fn render_git_path_diff(
     untracked: bool,
 ) -> Result<String, GitError> {
     let output = if untracked {
-        let empty_path = std::env::temp_dir().join(format!(
-            "vulcan-empty-diff-{}-{}",
-            std::process::id(),
-            path.replace('/', "_")
-        ));
-        fs::write(&empty_path, "").map_err(GitError::Io)?;
+        let empty_path =
+            std::env::temp_dir().join(format!("vulcan-empty-diff-{}", ulid::Ulid::new()));
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&empty_path)
+            .map_err(GitError::Io)?;
         let output = run_git_output(vault_root, |command| {
             command
                 .args(["diff", "--no-index", "--no-color"])

@@ -4618,7 +4618,7 @@ Do not make Telegram the architecture. If native chat is revived, start by defin
 - [x] Define canonical external user principal strings for bindings and audit logs:
   - `telegram:123456`
   - `matrix:@alice:example.com`
-  - `discord:123456789012345678`
+  - `discord:USER_ID`
 - [x] Define canonical external chat-space IDs for sessions and policy lookup:
   - `telegram:-1001234567890` for a Telegram group/chat
   - `matrix:!roomid:example.com` for a Matrix room

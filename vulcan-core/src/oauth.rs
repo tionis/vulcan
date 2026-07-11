@@ -803,6 +803,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn external_oauth_rejects_unexpected_jwt_algorithms() {
+        assert!(oauth_algorithm_allowed(Algorithm::RS256));
+        assert!(oauth_algorithm_allowed(Algorithm::ES256));
+        assert!(!oauth_algorithm_allowed(Algorithm::HS256));
+        assert!(!oauth_algorithm_allowed(Algorithm::HS384));
+        assert!(!oauth_algorithm_allowed(Algorithm::EdDSA));
+    }
+
+    #[test]
     fn protected_resource_metadata_url_tracks_endpoint_path() {
         assert_eq!(
             protected_resource_metadata_url("https://wiki.example.test/mcp").unwrap(),

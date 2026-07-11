@@ -11,6 +11,8 @@ use std::sync::Once;
 static REGISTER_EXTENSION: Once = Once::new();
 
 pub fn register_sqlite_vec_extension() {
+    // SAFETY: sqlite-vec exposes the generic SQLite extension ABI. The function pointer is
+    // registered once for process lifetime, and SQLite supplies the arguments when invoking it.
     REGISTER_EXTENSION.call_once(|| unsafe {
         type SqliteExtensionInit = unsafe extern "C" fn(
             *mut sqlite3,

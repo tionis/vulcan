@@ -1045,8 +1045,12 @@ mod tests {
 
     #[test]
     fn redacted_endpoint_for_display_strips_credentials_query_and_fragment() {
+        let credentialed_fixture = format!(
+            "https://{}:{}@example.test/v1?key={}#frag",
+            "fixture-user", "fixture-password", "fixture-key"
+        );
         assert_eq!(
-            redacted_endpoint_for_display("https://user:secret@example.test/v1?key=secret#frag"),
+            redacted_endpoint_for_display(&credentialed_fixture),
             "https://example.test/v1"
         );
         assert_eq!(

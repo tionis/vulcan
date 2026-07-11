@@ -36,8 +36,8 @@ serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
 ulid.workspace = true
-vulcan-app = { path = "../vulcan-app", default-features = false }
-vulcan-core = { path = "../vulcan-core", default-features = false }
+vulcan-app = { path = "../vulcan-app", version = "0.1.0", default-features = false }
+vulcan-core = { path = "../vulcan-core", version = "0.1.0", default-features = false }
 zip.workspace = true
 
 [dev-dependencies]

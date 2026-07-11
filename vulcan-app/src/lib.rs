@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Reusable application-layer workflow services for Vulcan.
 //!
 //! `vulcan-core` owns vault semantics, parsing, indexing, config models, and

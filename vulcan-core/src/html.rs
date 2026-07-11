@@ -2092,6 +2092,19 @@ mod tests {
     }
 
     #[test]
+    fn raw_html_sanitizer_removes_annotation_xml_script_gadgets() {
+        let (_temp_dir, paths) = build_render_vault();
+        let rendered = render_vault_html(
+            &paths,
+            "<math><annotation-xml encoding=\"text/html\"><script>alert(1)</script></annotation-xml></math>",
+            &HtmlRenderOptions::default(),
+        );
+
+        assert!(!rendered.html.contains("annotation-xml"));
+        assert!(!rendered.html.contains("<script"));
+    }
+
+    #[test]
     fn markdown_links_reject_active_url_schemes() {
         let (_temp_dir, paths) = build_render_vault();
         let rendered = render_vault_html(

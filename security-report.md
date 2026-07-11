@@ -40,11 +40,11 @@ Fix shared security primitives first, then apply them consistently to the indivi
 
 ### Suggested Work Packages
 
-- [ ] **Shared path and secure write helper:** cover `H-03`, `H-08`, `H-11`, `H-12`, `H-13`, `M-01`, `M-07`, `M-10`, `M-13`.
-- [ ] **Permission-filter propagation:** cover `H-06`, `H-10`, `M-05`, `M-06`, `M-08`, `M-11`, `M-12`.
-- [ ] **Sandbox/config trust gate:** cover `H-02`, `H-09`, `H-14` and the executable parts of `SAST-01`.
-- [ ] **Rendering/export/publication hardening:** cover `H-05`, `H-06`, `H-07`, `M-14`.
-- [ ] **HTTP/OAuth/network hardening:** cover `H-01`, `H-04`, `M-02`, `M-03`, `M-04`.
+- [x] **Shared path and secure write helper:** cover `H-03`, `H-08`, `H-11`, `H-12`, `H-13`, `M-01`, `M-07`, `M-10`, `M-13`.
+- [x] **Permission-filter propagation:** cover `H-06`, `H-10`, `M-05`, `M-06`, `M-08`, `M-11`, `M-12`.
+- [x] **Sandbox/config trust gate:** cover `H-02`, `H-09`, `H-14` and the executable parts of `SAST-01`.
+- [x] **Rendering/export/publication hardening:** cover `H-05`, `H-06`, `H-07`, `M-14`.
+- [x] **HTTP/OAuth/network hardening:** cover `H-01`, `H-04`, `M-02`, `M-03`, `M-04`.
 - [x] **Resource-budget controls:** cover `M-15`, `M-16` and the unbounded-output parts of extraction/parser/query evaluation.
 - [ ] **Dependency and tooling follow-up:** cover `DEP-01` through `DEP-05`, `SEC-01`, `SEC-02`, `SAST-01`, `SAST-02`, `UNSAFE-01`, `SC-01`, `SC-02`.
 
@@ -67,9 +67,9 @@ Each finding should only be checked off when all of these are true:
 - [ ] The implementation uses shared helpers where appropriate instead of repeating boundary checks ad hoc.
 - [ ] The fix does not broaden trust, sandbox, filesystem, network, or publication permissions to preserve compatibility.
 - [ ] The narrow relevant test target passes.
-- [ ] `cargo fmt --all` passes.
-- [ ] `cargo clippy --workspace --all-targets -- -D warnings` passes.
-- [ ] `cargo test --workspace` passes before final closure.
+- [x] `cargo fmt --all` passes.
+- [x] `cargo clippy --workspace --all-targets -- -D warnings` passes.
+- [x] `cargo test --workspace` passes before final closure.
 - [ ] Relevant external scanners are re-run when applicable: `cargo audit`, `cargo deny check advisories`, `osv-scanner scan -r .`, `semgrep`, `gitleaks`, or `trufflehog`.
 - [ ] Any accepted residual risk is documented next to the affected finding and in the commit or PR notes.
 
@@ -120,9 +120,9 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 
 **Action checklist:**
 
-- [ ] Update the workspace `ammonia` dependency to `>=4.1.3`.
-- [ ] Run `cargo update -p ammonia` or an equivalent lockfile update.
-- [ ] Add an HTML sanitizer regression test covering the MathML `annotation-xml` gadget class.
+- [x] Update the workspace `ammonia` dependency to `>=4.1.3`.
+- [x] Run `cargo update -p ammonia` or an equivalent lockfile update.
+- [x] Add an HTML sanitizer regression test covering the MathML `annotation-xml` gadget class.
 - [ ] Re-run `cargo audit`, `cargo deny check advisories`, and `osv-scanner scan -r .`.
 
 #### DEP-02. `rsa 0.9.10` Marvin timing-side-channel advisory
@@ -136,9 +136,9 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 
 **Action checklist:**
 
-- [ ] Audit all JWT encode/decode paths and explicitly restrict accepted algorithms.
-- [ ] Add tests that reject unexpected RSA JWT algorithms in local OAuth/MCP token handling.
-- [ ] Decide whether to replace `jsonwebtoken`/`rsa` or document that RSA functionality is unreachable and forbidden.
+- [x] Audit all JWT encode/decode paths and explicitly restrict accepted algorithms.
+- [x] Add tests that reject unexpected RSA JWT algorithms in local OAuth/MCP token handling.
+- [x] Decide whether to replace `jsonwebtoken`/`rsa` or document that RSA functionality is unreachable and forbidden.
 - [ ] Re-run RustSec/OSV scanners and record any accepted residual risk if no patched `rsa` version exists.
 
 #### DEP-03. `crossbeam-epoch 0.9.18` invalid pointer dereference advisory
@@ -151,9 +151,9 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 
 **Action checklist:**
 
-- [ ] Run `cargo update -p crossbeam-epoch`.
-- [ ] Confirm `ignore`, `rayon`, and related transitive crates still resolve cleanly.
-- [ ] Re-run `cargo test --workspace`.
+- [x] Run `cargo update -p crossbeam-epoch`.
+- [x] Confirm `ignore`, `rayon`, and related transitive crates still resolve cleanly.
+- [x] Re-run `cargo test --workspace`.
 - [ ] Re-run `cargo audit`, `cargo deny check advisories`, and `osv-scanner scan -r .`.
 
 #### DEP-04. `quinn-proto 0.11.14` remote memory exhaustion advisory
@@ -166,9 +166,9 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 
 **Action checklist:**
 
-- [ ] Identify the feature or target configuration that keeps `quinn-proto` in `Cargo.lock` and `fuzz/Cargo.lock`.
-- [ ] Update the transitive dependency chain so `quinn-proto >=0.11.15` is selected, or remove stale lockfile entries if unreachable.
-- [ ] Re-run `cargo tree --target all -i quinn-proto` and document reachability.
+- [x] Identify the feature or target configuration that keeps `quinn-proto` in `Cargo.lock` and `fuzz/Cargo.lock`.
+- [x] Update the transitive dependency chain so `quinn-proto >=0.11.15` is selected, or remove stale lockfile entries if unreachable.
+- [x] Re-run `cargo tree --target all -i quinn-proto` and document reachability.
 - [ ] Re-run `cargo audit` and `osv-scanner scan -r .`.
 
 #### DEP-05. `anyhow 1.0.102` unsoundness warning
@@ -181,9 +181,11 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 
 **Action checklist:**
 
-- [ ] Run `cargo update -p anyhow`.
-- [ ] Re-run `cargo tree --target all -i anyhow` and document whether it is reachable.
+- [x] Run `cargo update -p anyhow`.
+- [x] Re-run `cargo tree --target all -i anyhow` and document whether it is reachable.
 - [ ] Re-run `cargo audit` and `osv-scanner scan -r .`.
+
+**Remediation evidence:** `ammonia` is locked at 4.1.3, `crossbeam-epoch` at 0.9.20, `quinn-proto` at 0.11.16 in both lockfiles, and `anyhow` at 1.0.103. `cargo tree --target all` confirms `crossbeam-epoch` is reachable through `ignore` and `rayon`, while `quinn-proto` and `anyhow` are unreachable stale lock entries. `cargo deny check advisories bans licenses sources` passes. `cargo audit --ignore RUSTSEC-2023-0071` passes; the narrow RSA exception is documented in `deny.toml` because Vulcan performs RSA public-key verification only, never the vulnerable private-key operations, and no fixed `rsa` release exists. OSV Scanner is unavailable in this environment.
 
 ### Secret Scan Findings
 
@@ -195,8 +197,8 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 
 **Action checklist:**
 
-- [ ] Determine whether the Discord client ID is a real application identifier or documentation placeholder.
-- [ ] If real and unnecessary, replace it with a placeholder and rotate/recreate the Discord application if appropriate.
+- [x] Determine whether the Discord client ID is a real application identifier or documentation placeholder.
+- [x] If real and unnecessary, replace it with a placeholder and rotate/recreate the Discord application if appropriate.
 - [ ] If intentionally public, add a narrow `gitleaks` allowlist entry with a comment explaining why it is safe.
 - [ ] Re-run `gitleaks git --redact .` and `gitleaks dir --redact .`.
 
@@ -208,9 +210,11 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 
 **Action checklist:**
 
-- [ ] Replace `user:secret` fixture text with clearly fake placeholders that secret scanners do not flag, or add a narrow documented allowlist.
+- [x] Replace `user:secret` fixture text with clearly fake placeholders that secret scanners do not flag, or add a narrow documented allowlist.
 - [ ] Re-run `trufflehog git file://"$PWD" --no-verification --json`.
 - [ ] Re-run the source-only TruffleHog filesystem scan excluding `.git`, `target/`, and vendored references.
+
+**Remediation evidence:** The Discord snowflake was a documentation example for an external user principal, not a client ID, and is now the explicit placeholder `USER_ID`. The credential-shaped URL test now composes clearly fake fixture parts at runtime. Gitleaks and TruffleHog are not installed in this environment, so their re-scan items remain open.
 
 ### Static Analysis and Unsafe-Code Follow-Ups
 
@@ -222,10 +226,10 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 
 **Action checklist:**
 
-- [ ] Audit `current_exe` and `args_os` usage and confirm they are not trusted for security decisions.
-- [ ] Audit `temp_dir` usage and ensure all temporary files/directories are created with unpredictable names and secure open/create semantics.
-- [ ] Document safety invariants for the unsafe blocks in `vulcan-core/src/expression/value.rs` and `vulcan-embed/src/sqlite_vec.rs`.
-- [ ] Consider `#![forbid(unsafe_code)]` for crates/modules that do not require unsafe code.
+- [x] Audit `current_exe` and `args_os` usage and confirm they are not trusted for security decisions.
+- [x] Audit `temp_dir` usage and ensure all temporary files/directories are created with unpredictable names and secure open/create semantics.
+- [x] Document safety invariants for the unsafe blocks in `vulcan-core/src/expression/value.rs` and `vulcan-embed/src/sqlite_vec.rs`.
+- [x] Consider `#![forbid(unsafe_code)]` for crates/modules that do not require unsafe code.
 - [ ] Re-run Semgrep with a larger timeout for `vulcan-core/src/config/mod.rs`.
 
 #### SAST-02. Semgrep timeouts on config module
@@ -239,6 +243,8 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 - [ ] Re-run Semgrep with a higher per-rule timeout against `vulcan-core/src/config/mod.rs`.
 - [ ] Add targeted local Semgrep rules for config trust boundaries if registry rules remain too broad.
 
+**Verification note:** The source audit completed the config trust-boundary remediation and the first-party unsafe/temp-file review. A fresh `semgrep --config auto` attempt could not download the registry rules because `semgrep.dev` DNS/network access is unavailable in this environment, so the external Semgrep re-scan items remain open.
+
 #### UNSAFE-01. `cargo-geiger` unsafe inventory
 
 - **Detected by:** `cargo-geiger`
@@ -247,9 +253,9 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 
 **Action checklist:**
 
-- [ ] Add or tighten comments documenting every first-party unsafe invariant.
-- [ ] Add regression tests around unsafe conversion and SQLite extension-loading boundaries.
-- [ ] Decide whether `vulcan-app` and `vulcan-cli` should explicitly forbid unsafe code.
+- [x] Add or tighten comments documenting every first-party unsafe invariant.
+- [x] Add regression tests around unsafe conversion and SQLite extension-loading boundaries.
+- [x] Decide whether `vulcan-app` and `vulcan-cli` should explicitly forbid unsafe code.
 
 ### Supply-Chain Policy Follow-Ups
 
@@ -260,8 +266,8 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 
 **Action checklist:**
 
-- [ ] Add a reviewed `deny.toml` with allowed licenses, source policy, duplicate-crate policy, and advisory policy.
-- [ ] Run `cargo deny check advisories bans licenses sources` in CI.
+- [x] Add a reviewed `deny.toml` with allowed licenses, source policy, duplicate-crate policy, and advisory policy.
+- [x] Run `cargo deny check advisories bans licenses sources` in CI.
 
 #### SC-02. Missing `cargo-vet` store
 
@@ -270,18 +276,20 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 
 **Action checklist:**
 
-- [ ] Decide whether Vulcan should adopt `cargo-vet`.
+- [x] Decide whether Vulcan should adopt `cargo-vet`.
 - [ ] If yes, run `cargo vet init`, review generated policy, and commit the `supply-chain/` store.
 - [ ] Add `cargo vet check` to CI once initialized.
+
+**Decision:** Do not add `cargo-vet` in this remediation series. Vulcan now has a reviewed `cargo-deny` policy with advisory, license, dependency, and source checks; adopting a vet store requires a separate maintainer review and ongoing audit ownership rather than an automatically generated trust policy.
 
 ## Remediation Program
 
 - [ ] Open one tracking issue per finding with the finding ID, severity, owner, and target release.
 - [ ] Fix all high-severity findings before enabling daemon, MCP, publishing, assistant, or JS sandbox features for untrusted vaults/users.
-- [ ] Add regression tests before or with each fix, using hostile vault fixtures for path, symlink, config, and permission-profile cases.
-- [ ] Run `cargo fmt --all`.
-- [ ] Run `cargo clippy --workspace --all-targets -- -D warnings`.
-- [ ] Run `cargo test --workspace`.
+- [x] Add regression tests before or with each fix, using hostile vault fixtures for path, symlink, config, and permission-profile cases.
+- [x] Run `cargo fmt --all`.
+- [x] Run `cargo clippy --workspace --all-targets -- -D warnings`.
+- [x] Run `cargo test --workspace`.
 - [ ] Re-run the deep security scan and compare the new SARIF/findings against this report.
 - [ ] Run dependency and secret scanning with network/tooling available: `cargo audit`, `cargo deny`, `semgrep`, `trufflehog`, and `gitleaks`.
 
@@ -289,12 +297,12 @@ Additional tooling was installed and run after the sealed Codex Security scan. R
 
 These items should be implemented once and reused across individual fixes to avoid call-site drift.
 
-- [ ] Create a central vault path containment helper that rejects absolute paths, parent traversal, and symlink escapes using no-follow metadata where mutation is possible.
-- [ ] Thread the selected `PermissionFilter` through every read, export, report, MCP, plugin, DataviewJS, search, vector, and publication path.
-- [ ] Make sandbox permissions fail closed: missing profiles deny host I/O, network, process execution, and filesystem access.
-- [ ] Separate trusted local configuration from vault-shared configuration for executable commands, aliases, provider URLs, and secret environment-variable names.
-- [ ] Add output, request-body, recursion-depth, node-count, and timeout budgets to parser, expression, extraction, MCP, and HTTP surfaces.
-- [ ] Add a security fixture suite with malicious symlinks, outside-vault paths, hostile frontmatter, raw HTML/JavaScript, redirecting HTTP endpoints, and restrictive permission profiles.
+- [x] Create a central vault path containment helper that rejects absolute paths, parent traversal, and symlink escapes using no-follow metadata where mutation is possible.
+- [x] Thread the selected `PermissionFilter` through every read, export, report, MCP, plugin, DataviewJS, search, vector, and publication path.
+- [x] Make sandbox permissions fail closed: missing profiles deny host I/O, network, process execution, and filesystem access.
+- [x] Separate trusted local configuration from vault-shared configuration for executable commands, aliases, provider URLs, and secret environment-variable names.
+- [x] Add output, request-body, recursion-depth, node-count, and timeout budgets to parser, expression, extraction, MCP, and HTTP surfaces.
+- [x] Add a security fixture suite with malicious symlinks, outside-vault paths, hostile frontmatter, raw HTML/JavaScript, redirecting HTTP endpoints, and restrictive permission profiles.
 
 ## Finding Index
 
@@ -1653,7 +1661,7 @@ Remediation completed: document/query input, parse recursion, evaluation operati
 **Preventive controls:**
 
 - [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
 
 ## Closure Criteria
 

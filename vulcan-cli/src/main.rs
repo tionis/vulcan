@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 use serde_json::json;
 use std::any::Any;
 use std::env;

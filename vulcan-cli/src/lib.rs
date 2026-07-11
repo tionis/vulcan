@@ -1,3 +1,5 @@
+#![cfg_attr(not(test), forbid(unsafe_code))]
+
 //! CLI and terminal-facing adapters for Vulcan.
 //!
 //! Reusable workflow orchestration should live in `vulcan-app` or

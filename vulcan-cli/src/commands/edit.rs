@@ -211,12 +211,13 @@ type ChangeKindStatus = vulcan_core::ChangeStatus;
 
 fn render_git_diff(vault_root: &Path, path: &str, untracked: bool) -> Result<String, CliError> {
     let output = if untracked {
-        let empty_path = std::env::temp_dir().join(format!(
-            "vulcan-empty-diff-{}-{}",
-            std::process::id(),
-            path.replace('/', "_")
-        ));
-        fs::write(&empty_path, "").map_err(CliError::operation)?;
+        let empty_path =
+            std::env::temp_dir().join(format!("vulcan-empty-diff-{}", ulid::Ulid::new()));
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&empty_path)
+            .map_err(CliError::operation)?;
         let output = ProcessCommand::new("git")
             .arg("-C")
             .arg(vault_root)
