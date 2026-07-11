@@ -4147,6 +4147,7 @@ fn write_mcp_http_response(
         403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        413 => "Payload Too Large",
         _ => "Internal Server Error",
     };
     let mut headers = format!("HTTP/1.1 {} {}\r\n", response.status, status_text);

@@ -448,6 +448,23 @@ impl McpHttpSession {
         let _ = stream.shutdown(Shutdown::Write);
         read_http_response(stream)
     }
+
+    fn post_oversized_unauthenticated(&self) -> HttpResponse {
+        let mut stream = TcpStream::connect(&self.bind_addr).expect("HTTP connection should open");
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .expect("read timeout should be configurable");
+        let request = format!(
+            "POST {} HTTP/1.1\r\nHost: {}\r\nContent-Length: 1048577\r\nConnection: close\r\n\r\n",
+            self.endpoint, self.bind_addr
+        );
+        stream
+            .write_all(request.as_bytes())
+            .expect("request headers should write");
+        stream.flush().expect("request should flush");
+        let _ = stream.shutdown(Shutdown::Write);
+        read_http_response(stream)
+    }
 }
 
 impl Drop for McpHttpSession {
@@ -21434,6 +21451,9 @@ fn mcp_http_transport_enforces_auth_tokens() {
         authorized.headers.contains_key("mcp-session-id"),
         "authorized initialize should succeed and return a session id"
     );
+
+    let oversized = session.post_oversized_unauthenticated();
+    assert_eq!(oversized.status_line, "HTTP/1.1 413 Payload Too Large");
 }
 
 #[test]

@@ -1029,7 +1029,7 @@ Remediation completed: save destinations are normalized vault-relative paths, ch
 
 - [ ] Assign an owner and target release for `M-02`.
 - [x] Add or update a regression test: HTTP parser test with oversized Content-Length returns 413 before allocation.
-- [ ] Add or update a regression test: Auth-enabled MCP server test rejects oversized unauthenticated bodies.
+- [x] Add or update a regression test: Auth-enabled MCP server test rejects oversized unauthenticated bodies.
 - [x] Implement the remediation: Enforce a small maximum body size before allocation, authenticate or reject early where possible, and stream/discard over-limit bodies.
 - [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
