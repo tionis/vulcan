@@ -9,12 +9,12 @@ use crate::{
 use serde::Serialize;
 use std::io::{self, IsTerminal};
 use vulcan_app::templates::{
-    apply_template_create, apply_template_insert, build_template_list_report,
-    build_template_preview_report, build_template_show_report, parse_template_var_bindings,
-    TemplateCreateRequest, TemplateEngineKind, TemplateInsertMode, TemplateInsertRequest,
-    TemplatePreviewRequest,
+    apply_template_create_with_filter, apply_template_insert_with_filter,
+    build_template_list_report, build_template_preview_report_with_filter,
+    build_template_show_report, parse_template_var_bindings, TemplateCreateRequest,
+    TemplateEngineKind, TemplateInsertMode, TemplateInsertRequest, TemplatePreviewRequest,
 };
-use vulcan_core::VaultPaths;
+use vulcan_core::{PermissionFilter, VaultPaths};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct TemplateListReport {
@@ -80,6 +80,7 @@ pub(crate) fn run_template_command(
     no_commit: bool,
     quiet: bool,
     stdout_is_tty: bool,
+    read_filter: Option<&PermissionFilter>,
 ) -> Result<TemplateCommandResult, CliError> {
     if list {
         let report = build_template_list_report(paths)?;
@@ -100,7 +101,7 @@ pub(crate) fn run_template_command(
     let template_name = name.ok_or_else(|| {
         CliError::operation("`template` requires a template name unless --list is used")
     })?;
-    let created = apply_template_create(
+    let created = apply_template_create_with_filter(
         paths,
         &TemplateCreateRequest {
             template: template_name.to_string(),
@@ -108,6 +109,7 @@ pub(crate) fn run_template_command(
             engine: template_engine_kind(engine),
             vars: parse_template_var_bindings(vars)?,
         },
+        read_filter,
     )?;
 
     let mut opened_editor = false;
@@ -145,6 +147,7 @@ pub(crate) fn run_template_insert_command(
     no_commit: bool,
     quiet: bool,
     interactive_note_selection: bool,
+    read_filter: Option<&PermissionFilter>,
 ) -> Result<TemplateInsertReport, CliError> {
     let target_identifier = resolve_note_argument(
         paths,
@@ -152,7 +155,7 @@ pub(crate) fn run_template_insert_command(
         interactive_note_selection,
         "template insert target note",
     )?;
-    let report = apply_template_insert(
+    let report = apply_template_insert_with_filter(
         paths,
         &TemplateInsertRequest {
             template: template_name.to_string(),
@@ -161,6 +164,7 @@ pub(crate) fn run_template_insert_command(
             engine: template_engine_kind(engine),
             vars: parse_template_var_bindings(vars)?,
         },
+        read_filter,
     )?;
 
     run_incremental_scan(paths, OutputFormat::Human, false, false)?;
@@ -187,8 +191,9 @@ pub(crate) fn run_template_preview_command(
     output_path: Option<&str>,
     engine: TemplateEngineArg,
     vars: &[String],
+    read_filter: Option<&PermissionFilter>,
 ) -> Result<TemplatePreviewReport, CliError> {
-    let report = build_template_preview_report(
+    let report = build_template_preview_report_with_filter(
         paths,
         &TemplatePreviewRequest {
             template: template_name.to_string(),
@@ -196,6 +201,7 @@ pub(crate) fn run_template_preview_command(
             engine: template_engine_kind(engine),
             vars: parse_template_var_bindings(vars)?,
         },
+        read_filter,
     )?;
     Ok(TemplatePreviewReport {
         template: report.template,

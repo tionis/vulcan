@@ -2,10 +2,10 @@ use super::{
     apply_right_trim, apply_template_create, apply_template_insert, build_template_list_report,
     build_template_preview_report, build_template_show_report, parse_native_expression,
     parse_template_var_bindings, parse_templater_tag, random_picture_markdown,
-    render_template_request, template_value_to_string, TemplateCandidate, TemplateCreateRequest,
-    TemplateEngineKind, TemplateInsertMode, TemplateInsertRequest, TemplatePreviewRequest,
-    TemplateRenderRequest, TemplateRunMode, TemplateSession, TemplateTimestamp, TemplateValue,
-    TrimMode,
+    render_template_request, render_template_request_with_filter, template_value_to_string,
+    TemplateCandidate, TemplateCreateRequest, TemplateEngineKind, TemplateInsertMode,
+    TemplateInsertRequest, TemplatePreviewRequest, TemplateRenderRequest, TemplateRunMode,
+    TemplateSession, TemplateTimestamp, TemplateValue, TrimMode,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -17,7 +17,8 @@ use std::net::TcpListener;
 use std::path::Path;
 use std::path::PathBuf;
 use tempfile::tempdir;
-use vulcan_core::{scan_vault, ScanMode, VaultConfig, VaultPaths};
+use vulcan_core::permissions::{PathPermission, ResourceSpecifier};
+use vulcan_core::{scan_vault, PermissionFilter, ScanMode, VaultConfig, VaultPaths};
 
 fn fixed_template_timestamp() -> TemplateTimestamp {
     TemplateTimestamp::from_millis(
@@ -125,6 +126,94 @@ fn templater_native_interpolation_reads_file_and_frontmatter_context() {
 }
 
 #[test]
+fn templater_include_rejects_an_absolute_path() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let vars = HashMap::new();
+
+    let error = render_template_request(TemplateRenderRequest {
+        paths: &paths,
+        vault_config: &config,
+        templates: &[],
+        template_path: None,
+        template_text: "<% tp.file.include(\"/tmp/outside.md\") %>",
+        target_path: "Output.md",
+        target_contents: None,
+        engine: TemplateEngineKind::Templater,
+        vars: &vars,
+        allow_mutations: false,
+        run_mode: TemplateRunMode::Dynamic,
+    })
+    .expect_err("absolute include must be rejected");
+    assert!(error.to_string().contains("doesn't exist"));
+}
+
+#[cfg(unix)]
+#[test]
+fn templater_include_rejects_a_symlink_to_an_outside_file() {
+    use std::os::unix::fs::symlink;
+
+    let vault = tempdir().expect("vault dir");
+    let outside = tempdir().expect("outside dir");
+    let outside_note = outside.path().join("outside.md");
+    fs::write(&outside_note, "outside secret").expect("outside note");
+    symlink(&outside_note, vault.path().join("Linked.md")).expect("include symlink");
+    let paths = VaultPaths::new(vault.path());
+    let config = VaultConfig::default();
+    let vars = HashMap::new();
+
+    let error = render_template_request(TemplateRenderRequest {
+        paths: &paths,
+        vault_config: &config,
+        templates: &[],
+        template_path: None,
+        template_text: "<% tp.file.include(\"Linked.md\") %>",
+        target_path: "Output.md",
+        target_contents: None,
+        engine: TemplateEngineKind::Templater,
+        vars: &vars,
+        allow_mutations: false,
+        run_mode: TemplateRunMode::Dynamic,
+    })
+    .expect_err("symlinked include must be rejected");
+    assert!(error.to_string().contains("doesn't exist"));
+}
+
+#[test]
+fn templater_include_respects_the_active_read_filter() {
+    let temp_dir = tempdir().expect("temp dir");
+    fs::create_dir_all(temp_dir.path().join("Private")).expect("private dir");
+    fs::write(temp_dir.path().join("Private/Secret.md"), "private secret").expect("private note");
+    let paths = VaultPaths::new(temp_dir.path());
+    let config = VaultConfig::default();
+    let vars = HashMap::new();
+    let filter = PermissionFilter::new(PathPermission {
+        allow: vec![ResourceSpecifier::All],
+        deny: vec![ResourceSpecifier::Folder("Private/**".to_string())],
+    });
+
+    let error = render_template_request_with_filter(
+        TemplateRenderRequest {
+            paths: &paths,
+            vault_config: &config,
+            templates: &[],
+            template_path: None,
+            template_text: "<% tp.file.include(\"Private/Secret.md\") %>",
+            target_path: "Output.md",
+            target_contents: None,
+            engine: TemplateEngineKind::Templater,
+            vars: &vars,
+            allow_mutations: false,
+            run_mode: TemplateRunMode::Dynamic,
+        },
+        Some(&filter),
+    )
+    .expect_err("denied include must be rejected");
+    assert!(error.to_string().contains("doesn't exist"));
+}
+
+#[test]
 fn native_renderer_supports_quickadd_date_and_file_tokens() {
     let temp_dir = tempdir().expect("temp dir");
     let paths = VaultPaths::new(temp_dir.path());
@@ -143,7 +232,7 @@ fn native_renderer_supports_quickadd_date_and_file_tokens() {
         allow_mutations: false,
         run_mode: TemplateRunMode::Append,
     };
-    let mut session = TemplateSession::new(request, TemplateEngineKind::Native);
+    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None);
     session.timestamp = fixed_template_timestamp();
 
     let rendered = session
@@ -182,7 +271,7 @@ fn native_renderer_supports_quickadd_value_and_vdate_tokens() {
         allow_mutations: false,
         run_mode: TemplateRunMode::Append,
     };
-    let mut session = TemplateSession::new(request, TemplateEngineKind::Native);
+    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None);
     session.timestamp = fixed_template_timestamp();
 
     let rendered = session
@@ -228,7 +317,7 @@ fn native_renderer_supports_quickadd_global_variables() {
         allow_mutations: false,
         run_mode: TemplateRunMode::Append,
     };
-    let mut session = TemplateSession::new(request, TemplateEngineKind::Native);
+    let mut session = TemplateSession::new(request, TemplateEngineKind::Native, None);
     session.timestamp = fixed_template_timestamp();
 
     let rendered = session

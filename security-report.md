@@ -892,17 +892,19 @@ Remediation completed: descriptor-relative no-follow primitives back note, confi
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `H-13`.
-- [ ] Add or update a regression test: Template preview test rejects absolute include path.
-- [ ] Add or update a regression test: Template include symlink-to-outside test fails.
-- [ ] Implement the remediation: Constrain include resolution to canonical vault paths, reject absolute and parent paths, and apply read permission checks to includes.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Template preview test rejects absolute include path.
+- [x] Add or update a regression test: Template include symlink-to-outside test fails.
+- [x] Implement the remediation: Constrain include resolution to canonical vault paths, reject absolute and parent paths, and apply read permission checks to includes.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+Remediation completed: native and JavaScript Templater includes normalize targets as vault-relative Markdown paths and open them through no-follow reads. Template preview, create, and insert workflows propagate the selected CLI read filter into nested rendering. Regression tests cover absolute paths, a symlink to an outside file, and an existing include denied by the active filter.
 
 ### H-14. Shared vault config can trigger command execution or command rewriting without a trust gate
 

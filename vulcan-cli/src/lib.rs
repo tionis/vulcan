@@ -3983,6 +3983,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             ref render,
             no_commit,
         } => {
+            let read_filter = selected_read_permission_filter(cli, &paths)?;
             let result = match command {
                 Some(TemplateSubcommand::List) => run_template_command(
                     &paths,
@@ -3994,6 +3995,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     no_commit,
                     cli.quiet,
                     stdout_is_tty,
+                    read_filter.as_ref(),
                 )?,
                 Some(TemplateSubcommand::Show { name: tname }) => {
                     return run_template_show_command(&paths, tname, cli.output);
@@ -4019,6 +4021,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     *no_commit,
                     cli.quiet,
                     interactive_note_selection,
+                    read_filter.as_ref(),
                 )?),
                 Some(TemplateSubcommand::Preview {
                     template,
@@ -4030,6 +4033,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     path.as_deref(),
                     render.engine,
                     &render.vars,
+                    read_filter.as_ref(),
                 )?),
                 None => run_template_command(
                     &paths,
@@ -4041,6 +4045,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     no_commit,
                     cli.quiet,
                     stdout_is_tty,
+                    read_filter.as_ref(),
                 )?,
             };
 

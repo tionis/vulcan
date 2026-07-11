@@ -2383,6 +2383,7 @@ fn template_command_lists_obsidian_templates_with_sources_and_conflicts() {
         false,
         false,
         false,
+        None,
     )
     .expect("template list should succeed");
     let TemplateCommandResult::List(report) = result else {
@@ -2440,6 +2441,7 @@ fn template_command_lists_templater_templates_with_sources() {
         false,
         false,
         false,
+        None,
     )
     .expect("template list should succeed");
     let TemplateCommandResult::List(report) = result else {
@@ -2490,6 +2492,7 @@ fn template_command_prefers_vulcan_template_over_obsidian_conflict() {
         false,
         false,
         false,
+        None,
     )
     .expect("template command should succeed");
 
@@ -2575,6 +2578,7 @@ fn template_command_creates_note_and_renders_variables() {
         false,
         false,
         false,
+        None,
     )
     .expect("template command should succeed");
 
@@ -2616,6 +2620,7 @@ fn template_insert_command_prepends_and_merges_frontmatter() {
         false,
         false,
         false,
+        None,
     )
     .expect("template insert should succeed");
 
@@ -2669,6 +2674,7 @@ fn template_insert_command_appends_and_auto_commits() {
         false,
         false,
         false,
+        None,
     )
     .expect("template insert should succeed");
 

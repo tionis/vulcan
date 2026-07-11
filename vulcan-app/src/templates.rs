@@ -12,8 +12,12 @@ use vulcan_core::expression::functions::{
 };
 use vulcan_core::move_note;
 use vulcan_core::parser::parse_document;
-use vulcan_core::paths::{normalize_relative_input_path, RelativePathOptions};
-use vulcan_core::{load_vault_config, resolve_note_reference, VaultConfig, VaultPaths};
+use vulcan_core::paths::{
+    normalize_relative_input_path, secure_read_to_string, RelativePathOptions,
+};
+use vulcan_core::{
+    load_vault_config, resolve_note_reference, PermissionFilter, VaultConfig, VaultPaths,
+};
 
 mod frontmatter;
 
@@ -240,9 +244,16 @@ pub fn detect_template_engine(source: &str, requested: TemplateEngineKind) -> Te
 pub fn render_template_request(
     request: TemplateRenderRequest<'_>,
 ) -> Result<TemplateRenderOutput, CliError> {
+    render_template_request_with_filter(request, None)
+}
+
+pub fn render_template_request_with_filter(
+    request: TemplateRenderRequest<'_>,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<TemplateRenderOutput, CliError> {
     let engine = detect_template_engine(request.template_text, request.engine);
     let template_text = request.template_text;
-    let mut session = TemplateSession::new(request, engine);
+    let mut session = TemplateSession::new(request, engine, read_filter);
     let content = session.render_source(template_text, engine, 0)?;
     let content = session.merge_pending_frontmatter(&content)?;
     #[cfg(feature = "js_runtime")]
@@ -303,19 +314,32 @@ pub fn render_loaded_template(
     loaded: &LoadedTemplateSource,
     request: &LoadedTemplateRenderRequest<'_>,
 ) -> Result<TemplateRenderOutput, AppError> {
-    render_template_request(TemplateRenderRequest {
-        paths,
-        vault_config,
-        templates: &loaded.templates,
-        template_path: Some(&loaded.template.absolute_path),
-        template_text: &loaded.source,
-        target_path: request.target_path,
-        target_contents: request.target_contents,
-        engine: request.engine,
-        vars: request.vars,
-        allow_mutations: request.allow_mutations,
-        run_mode: request.run_mode,
-    })
+    render_loaded_template_with_filter(paths, vault_config, loaded, request, None)
+}
+
+pub fn render_loaded_template_with_filter(
+    paths: &VaultPaths,
+    vault_config: &VaultConfig,
+    loaded: &LoadedTemplateSource,
+    request: &LoadedTemplateRenderRequest<'_>,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<TemplateRenderOutput, AppError> {
+    render_template_request_with_filter(
+        TemplateRenderRequest {
+            paths,
+            vault_config,
+            templates: &loaded.templates,
+            template_path: Some(&loaded.template.absolute_path),
+            template_text: &loaded.source,
+            target_path: request.target_path,
+            target_contents: request.target_contents,
+            engine: request.engine,
+            vars: request.vars,
+            allow_mutations: request.allow_mutations,
+            run_mode: request.run_mode,
+        },
+        read_filter,
+    )
 }
 
 pub fn build_template_show_report(
@@ -336,6 +360,14 @@ pub fn build_template_preview_report(
     paths: &VaultPaths,
     request: &TemplatePreviewRequest,
 ) -> Result<TemplatePreviewReport, AppError> {
+    build_template_preview_report_with_filter(paths, request, None)
+}
+
+pub fn build_template_preview_report_with_filter(
+    paths: &VaultPaths,
+    request: &TemplatePreviewRequest,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<TemplatePreviewReport, AppError> {
     let config = load_vault_config(paths).config;
     let loaded = load_named_template(paths, &config, &request.template)?;
     let output_path = template_output_path(
@@ -343,7 +375,7 @@ pub fn build_template_preview_report(
         request.output_path.as_deref(),
         &TemplateTimestamp::current(),
     )?;
-    let rendered = render_loaded_template(
+    let rendered = render_loaded_template_with_filter(
         paths,
         &config,
         &loaded,
@@ -355,6 +387,7 @@ pub fn build_template_preview_report(
             allow_mutations: false,
             run_mode: TemplateRunMode::Dynamic,
         },
+        read_filter,
     )?;
     Ok(TemplatePreviewReport {
         template: loaded.template.name,
@@ -376,6 +409,14 @@ pub fn apply_template_create(
     paths: &VaultPaths,
     request: &TemplateCreateRequest,
 ) -> Result<TemplateCreateReport, AppError> {
+    apply_template_create_with_filter(paths, request, None)
+}
+
+pub fn apply_template_create_with_filter(
+    paths: &VaultPaths,
+    request: &TemplateCreateRequest,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<TemplateCreateReport, AppError> {
     let config = load_vault_config(paths).config;
     let loaded = load_named_template(paths, &config, &request.template)?;
     let output_path = template_output_path(
@@ -383,7 +424,7 @@ pub fn apply_template_create(
         request.output_path.as_deref(),
         &TemplateTimestamp::current(),
     )?;
-    let rendered = render_loaded_template(
+    let rendered = render_loaded_template_with_filter(
         paths,
         &config,
         &loaded,
@@ -395,6 +436,7 @@ pub fn apply_template_create(
             allow_mutations: true,
             run_mode: TemplateRunMode::Create,
         },
+        read_filter,
     )?;
     let absolute_output = paths.vault_root().join(&rendered.target_path);
     if absolute_output.exists() {
@@ -434,13 +476,21 @@ pub fn apply_template_insert(
     paths: &VaultPaths,
     request: &TemplateInsertRequest,
 ) -> Result<TemplateInsertReport, AppError> {
+    apply_template_insert_with_filter(paths, request, None)
+}
+
+pub fn apply_template_insert_with_filter(
+    paths: &VaultPaths,
+    request: &TemplateInsertRequest,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<TemplateInsertReport, AppError> {
     let config = load_vault_config(paths).config;
     let loaded = load_named_template(paths, &config, &request.template)?;
     let resolved = resolve_note_reference(paths, &request.note).map_err(AppError::operation)?;
     let target_path = resolved.path;
     let target_absolute = paths.vault_root().join(&target_path);
     let target_source = fs::read_to_string(&target_absolute).map_err(AppError::operation)?;
-    let rendered = render_loaded_template(
+    let rendered = render_loaded_template_with_filter(
         paths,
         &config,
         &loaded,
@@ -452,6 +502,7 @@ pub fn apply_template_insert(
             allow_mutations: true,
             run_mode: TemplateRunMode::Append,
         },
+        read_filter,
     )?;
     let final_target_absolute = paths.vault_root().join(&rendered.target_path);
     let prepared = prepare_template_insertion(&target_source, &rendered.content)
@@ -495,12 +546,17 @@ struct TemplateSession<'a> {
     suggester_count: usize,
     quickadd_value_vars: HashMap<String, String>,
     quickadd_date_vars: HashMap<String, i64>,
+    read_filter: Option<PermissionFilter>,
     #[cfg(feature = "js_runtime")]
     js_runtime: Option<JsTemplateRuntime>,
 }
 
 impl<'a> TemplateSession<'a> {
-    fn new(request: TemplateRenderRequest<'a>, _engine: TemplateEngineKind) -> Self {
+    fn new(
+        request: TemplateRenderRequest<'a>,
+        _engine: TemplateEngineKind,
+        read_filter: Option<&PermissionFilter>,
+    ) -> Self {
         Self {
             target_path: request.target_path.to_string(),
             target_contents: request.target_contents.unwrap_or_default().to_string(),
@@ -514,6 +570,7 @@ impl<'a> TemplateSession<'a> {
             suggester_count: 0,
             quickadd_value_vars: HashMap::new(),
             quickadd_date_vars: HashMap::new(),
+            read_filter: read_filter.cloned(),
             #[cfg(feature = "js_runtime")]
             js_runtime: None,
         }
@@ -1157,8 +1214,9 @@ impl<'a> TemplateSession<'a> {
             return Ok(TemplateValue::Null);
         };
         let include_path = self.resolve_include_target(&path)?;
-        let source = fs::read_to_string(self.request.paths.vault_root().join(&include_path))
-            .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
+        let source =
+            secure_read_to_string(self.request.paths.vault_root(), Path::new(&include_path))
+                .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
         let rendered = self
             .render_source(&source, TemplateEngineKind::Templater, include_depth + 1)
             .map_err(|error| NativeExpressionError::Message(error.to_string()))?;
@@ -1350,7 +1408,10 @@ impl<'a> TemplateSession<'a> {
 
     fn resolve_vault_path(&self, identifier: &str) -> Option<String> {
         if let Ok(reference) = resolve_note_reference(self.request.paths, identifier) {
-            return Some(reference.path);
+            let normalized = normalize_template_include_path(&reference.path)?;
+            return self
+                .include_path_is_allowed(&normalized)
+                .then_some(normalized);
         }
         let path = Path::new(identifier);
         let candidate = if path.extension().is_none() {
@@ -1358,10 +1419,18 @@ impl<'a> TemplateSession<'a> {
         } else {
             path.to_path_buf()
         };
-        let absolute = self.request.paths.vault_root().join(&candidate);
-        absolute
-            .is_file()
-            .then(|| candidate.to_string_lossy().replace('\\', "/"))
+        let normalized = normalize_template_include_path(&candidate.to_string_lossy())?;
+        self.include_path_is_allowed(&normalized)
+            .then(|| normalized.clone())
+            .filter(|path| {
+                secure_read_to_string(self.request.paths.vault_root(), Path::new(path)).is_ok()
+            })
+    }
+
+    fn include_path_is_allowed(&self, path: &str) -> bool {
+        self.read_filter
+            .as_ref()
+            .is_none_or(|filter| filter.is_allowed(path))
     }
 
     fn capture_frontmatter_from_rendered_include(
@@ -1662,6 +1731,7 @@ struct JsTemplateState {
     run_mode_code: i64,
     changed_paths: BTreeSet<String>,
     diagnostics: Vec<String>,
+    read_filter: Option<PermissionFilter>,
 }
 
 #[cfg(feature = "js_runtime")]
@@ -1679,6 +1749,7 @@ impl JsTemplateState {
             run_mode_code: session.request.run_mode.config_code(),
             changed_paths: session.changed_paths.clone(),
             diagnostics: session.diagnostics.clone(),
+            read_filter: session.read_filter.clone(),
         }
     }
 
@@ -2099,7 +2170,26 @@ fn js_file_include(state: &JsTemplateState, args: &[JsonValue]) -> Result<String
     let path = args.first().and_then(JsonValue::as_str).unwrap_or_default();
     let target = resolve_vault_path_from_state(state, path)
         .ok_or_else(|| format!("File {path} doesn't exist"))?;
-    fs::read_to_string(state.paths.vault_root().join(target)).map_err(|error| error.to_string())
+    if state
+        .read_filter
+        .as_ref()
+        .is_some_and(|filter| !filter.is_allowed(&target))
+    {
+        return Err(format!("File {path} doesn't exist"));
+    }
+    secure_read_to_string(state.paths.vault_root(), Path::new(&target))
+        .map_err(|error| error.to_string())
+}
+
+fn normalize_template_include_path(path: &str) -> Option<String> {
+    normalize_relative_input_path(
+        path,
+        RelativePathOptions {
+            expected_extension: Some("md"),
+            append_extension_if_missing: true,
+        },
+    )
+    .ok()
 }
 
 #[cfg(feature = "js_runtime")]
@@ -3458,7 +3548,7 @@ fn path_to_relative_file_json(path: &Path) -> JsonMap<String, JsonValue> {
 #[cfg(feature = "js_runtime")]
 fn resolve_vault_path_from_state(state: &JsTemplateState, identifier: &str) -> Option<String> {
     if let Ok(reference) = resolve_note_reference(&state.paths, identifier) {
-        return Some(reference.path);
+        return normalize_template_include_path(&reference.path);
     }
     let trimmed = identifier
         .trim()
@@ -3475,12 +3565,10 @@ fn resolve_vault_path_from_state(state: &JsTemplateState, identifier: &str) -> O
     } else {
         path.to_path_buf()
     };
-    state
-        .paths
-        .vault_root()
-        .join(&candidate)
-        .is_file()
-        .then(|| candidate.to_string_lossy().replace('\\', "/"))
+    let normalized = normalize_template_include_path(&candidate.to_string_lossy())?;
+    secure_read_to_string(state.paths.vault_root(), Path::new(&normalized))
+        .is_ok()
+        .then_some(normalized)
 }
 
 #[cfg(feature = "js_runtime")]
