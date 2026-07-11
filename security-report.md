@@ -576,12 +576,14 @@ These items should be implemented once and reused across individual fixes to avo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `H-06`.
-- [ ] Add or update a regression test: Export test that denied attachment embeds are omitted or fail.
+- [x] Add or update a regression test: Export test that denied attachment embeds are omitted or fail.
 - [ ] Add or update a regression test: Site build test that absolute/outside asset paths are rejected under default policy.
 - [ ] Implement the remediation: Apply the same read filter to every attachment, embed, asset, hover/search artifact, and generated file input; reject absolute/outside-vault asset sources unless explicitly trusted.
 - [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
 - [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
+
+Partial remediation completed: export preparation now filters resolved attachment links before ZIP/EPUB collection and filters transformed inline-expression lookup using the same read filter. Site build asset filtering remains open.
 
 **Preventive controls:**
 

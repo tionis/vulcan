@@ -20,6 +20,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 use vulcan_core::config::ExportEpubTocStyleConfig;
+use vulcan_core::permissions::{PathPermission, PermissionFilter, ResourceSpecifier};
 use vulcan_core::properties::NoteTaskRecord;
 use vulcan_core::{
     scan_vault, EvaluatedInlineExpression, NoteRecord, QueryAst, QueryProjection, QueryReport,
@@ -535,6 +536,43 @@ fn write_zip_export_packages_transformed_notes_and_manifest() {
         .expect("notes json read");
     assert!(notes_json.contains("assets/public.png"));
     assert!(!notes_json.contains("assets/secret.png"));
+}
+
+#[test]
+fn write_zip_export_omits_attachments_denied_by_the_read_filter() {
+    let (_temp_dir, paths) = export_paths();
+    fs::create_dir_all(paths.vault_root().join("Private")).expect("private dir");
+    fs::write(
+        paths.vault_root().join("Home.md"),
+        "# Home\n\n![[Private/secret.txt]]\n",
+    )
+    .expect("home note");
+    fs::write(paths.vault_root().join("Private/secret.txt"), "secret").expect("secret asset");
+    scan_vault(&paths, ScanMode::Full).expect("vault scan");
+    let filter = PermissionFilter::new(PathPermission {
+        allow: vec![ResourceSpecifier::All],
+        deny: vec![ResourceSpecifier::Folder("Private/**".to_string())],
+    });
+    let report = execute_export_query(&paths, Some("from notes"), None, Some(&filter))
+        .expect("query report");
+    let prepared =
+        prepare_export_data(&paths, &report, Some(&filter), None).expect("prepared export");
+    let output_path = paths.vault_root().join("public.zip");
+
+    let summary = write_zip_export(
+        &paths,
+        &output_path,
+        &report,
+        &prepared.notes,
+        &prepared.links,
+    )
+    .expect("zip export");
+
+    assert_eq!(summary.attachment_count, 0);
+    let file = fs::File::open(output_path).expect("zip file");
+    let mut archive = ZipArchive::new(file).expect("zip archive");
+    assert!(archive.by_name("Home.md").is_ok());
+    assert!(archive.by_name("Private/secret.txt").is_err());
 }
 
 #[test]

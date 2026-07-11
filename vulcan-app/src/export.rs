@@ -603,25 +603,40 @@ pub fn prepare_export_data(
     let Some(transform_rules) =
         transform_rules.filter(|rules| content_transform_rules_have_effective_transforms(rules))
     else {
-        let links = load_export_links(paths, &notes)?;
+        let links = filter_export_links(load_export_links(paths, &notes)?, read_filter);
         return Ok(PreparedExportData { notes, links });
     };
     let effective_transforms =
         build_effective_content_transforms(paths, report, read_filter, transform_rules)?;
     if effective_transforms.is_empty() {
-        let links = load_export_links(paths, &notes)?;
+        let links = filter_export_links(load_export_links(paths, &notes)?, read_filter);
         return Ok(PreparedExportData { notes, links });
     }
 
-    prepare_transformed_export_data(paths, notes, &effective_transforms)
+    prepare_transformed_export_data(paths, notes, read_filter, &effective_transforms)
+}
+
+fn filter_export_links(
+    mut links: Vec<ExportLinkRecord>,
+    read_filter: Option<&PermissionFilter>,
+) -> Vec<ExportLinkRecord> {
+    if let Some(read_filter) = read_filter {
+        links.retain(|link| {
+            link.resolved_target_path
+                .as_deref()
+                .is_none_or(|path| read_filter.is_allowed(path))
+        });
+    }
+    links
 }
 
 fn prepare_transformed_export_data(
     paths: &VaultPaths,
     notes: Vec<ExportedNoteDocument>,
+    read_filter: Option<&PermissionFilter>,
     effective_transforms: &HashMap<String, ContentTransformConfig>,
 ) -> Result<PreparedExportData, AppError> {
-    let original_links = load_export_links(paths, &notes)?;
+    let original_links = filter_export_links(load_export_links(paths, &notes)?, read_filter);
     let config = load_vault_config(paths).config;
     let parsed_notes = notes
         .into_iter()
@@ -638,8 +653,10 @@ fn prepare_transformed_export_data(
             }
         })
         .collect::<Vec<_>>();
-    let transformed_links =
-        derive_export_links_from_notes(paths, &parsed_notes, config.link_resolution)?;
+    let transformed_links = filter_export_links(
+        derive_export_links_from_notes(paths, &parsed_notes, config.link_resolution)?,
+        read_filter,
+    );
     let transformed_targets = note_targets_by_source(&transformed_links);
     let original_targets = note_targets_by_source(&original_links);
     let transformed_note_links = transformed_note_links_by_source(&transformed_links);
@@ -651,7 +668,7 @@ fn prepare_transformed_export_data(
         &original_targets,
         &transformed_targets,
     );
-    evaluate_transformed_export_inline_expressions(paths, &mut exported_notes)?;
+    evaluate_transformed_export_inline_expressions(paths, &mut exported_notes, read_filter)?;
 
     Ok(PreparedExportData {
         notes: exported_notes,
@@ -755,8 +772,12 @@ fn apply_transformed_backlink_adjustments(
 fn evaluate_transformed_export_inline_expressions(
     paths: &VaultPaths,
     exported_notes: &mut [ExportedNoteDocument],
+    read_filter: Option<&PermissionFilter>,
 ) -> Result<(), AppError> {
     let mut note_lookup = load_note_index(paths).map_err(AppError::operation)?;
+    if let Some(read_filter) = read_filter {
+        note_lookup.retain(|_, note| read_filter.is_allowed(&note.document_path));
+    }
     for export_note in exported_notes.iter() {
         note_lookup.insert(export_note.note.file_name.clone(), export_note.note.clone());
     }
