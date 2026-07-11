@@ -1,5 +1,7 @@
 use crate::config::load_vault_config;
-use crate::paths::VaultPaths;
+use crate::paths::{
+    normalize_relative_input_path, secure_read_to_string, RelativePathOptions, VaultPaths,
+};
 use crate::JsRuntimeSandbox;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
@@ -282,24 +284,20 @@ pub fn assistant_config_summary(paths: &VaultPaths) -> AssistantConfigSummary {
     }
 }
 
-#[must_use]
-pub fn assistant_prompts_root(paths: &VaultPaths) -> PathBuf {
-    paths
-        .vault_root()
-        .join(load_vault_config(paths).config.assistant.prompts_folder)
+pub fn assistant_prompts_root(paths: &VaultPaths) -> Result<PathBuf, AssistantError> {
+    let folder = load_vault_config(paths).config.assistant.prompts_folder;
+    validated_assistant_root(paths, &folder, "prompts")
 }
 
-#[must_use]
-pub fn assistant_skills_root(paths: &VaultPaths) -> PathBuf {
-    paths
-        .vault_root()
-        .join(load_vault_config(paths).config.assistant.skills_folder)
+pub fn assistant_skills_root(paths: &VaultPaths) -> Result<PathBuf, AssistantError> {
+    let folder = load_vault_config(paths).config.assistant.skills_folder;
+    validated_assistant_root(paths, &folder, "skills")
 }
 
 pub fn list_assistant_prompts(
     paths: &VaultPaths,
 ) -> Result<Vec<AssistantPromptSummary>, AssistantError> {
-    let root = assistant_prompts_root(paths);
+    let root = assistant_prompts_root(paths)?;
     let mut prompts = Vec::new();
     for path in collect_markdown_files(&root)? {
         let prompt = parse_prompt_file(&root, &path)?;
@@ -313,7 +311,7 @@ pub fn load_assistant_prompt(
     paths: &VaultPaths,
     identifier: &str,
 ) -> Result<AssistantPrompt, AssistantError> {
-    let root = assistant_prompts_root(paths);
+    let root = assistant_prompts_root(paths)?;
     let candidates = collect_markdown_files(&root)?;
     find_prompt_by_identifier(&root, &candidates, identifier)?
         .ok_or_else(|| AssistantError::message(format!("unknown prompt `{identifier}`")))
@@ -344,7 +342,7 @@ pub fn render_assistant_prompt(
 pub fn list_assistant_skills(
     paths: &VaultPaths,
 ) -> Result<Vec<AssistantSkillSummary>, AssistantError> {
-    let root = assistant_skills_root(paths);
+    let root = assistant_skills_root(paths)?;
     let mut skills = Vec::new();
     for path in collect_skill_files(&root)? {
         let skill = parse_skill_file(&root, &path)?;
@@ -358,7 +356,7 @@ pub fn load_assistant_skill(
     paths: &VaultPaths,
     identifier: &str,
 ) -> Result<AssistantSkill, AssistantError> {
-    let root = assistant_skills_root(paths);
+    let root = assistant_skills_root(paths)?;
     let candidates = collect_skill_files(&root)?;
     find_skill_by_identifier(&root, &candidates, identifier)?
         .ok_or_else(|| AssistantError::message(format!("unknown skill `{identifier}`")))
@@ -381,11 +379,12 @@ pub fn default_assistant_tool_reserved_names() -> Vec<String> {
 }
 
 pub fn read_vault_agents_file(paths: &VaultPaths) -> Result<Option<String>, AssistantError> {
-    let path = paths.vault_root().join("AGENTS.md");
-    if !path.is_file() {
+    let relative = Path::new("AGENTS.md");
+    let path = paths.vault_root().join(relative);
+    if !path.exists() {
         return Ok(None);
     }
-    fs::read_to_string(&path)
+    secure_read_to_string(paths.vault_root(), relative)
         .map(Some)
         .map_err(|error| AssistantError::io(&path, error))
 }
@@ -428,7 +427,11 @@ fn find_skill_by_identifier(
 
 fn parse_prompt_file(root: &Path, path: &Path) -> Result<AssistantPrompt, AssistantError> {
     let relative = relative_display(root, path)?;
-    let source = fs::read_to_string(path).map_err(|error| AssistantError::io(path, error))?;
+    let relative_path = path
+        .strip_prefix(root)
+        .map_err(|error| AssistantError::io(path, error))?;
+    let source = secure_read_to_string(root, relative_path)
+        .map_err(|error| AssistantError::io(path, error))?;
     let (frontmatter, body) = split_markdown_frontmatter(&source, path)?;
     let frontmatter = frontmatter
         .map(parse_yaml_frontmatter::<PromptFrontmatter>)
@@ -453,7 +456,11 @@ fn parse_prompt_file(root: &Path, path: &Path) -> Result<AssistantPrompt, Assist
 
 fn parse_skill_file(root: &Path, path: &Path) -> Result<AssistantSkill, AssistantError> {
     let relative = relative_display(root, path)?;
-    let source = fs::read_to_string(path).map_err(|error| AssistantError::io(path, error))?;
+    let relative_path = path
+        .strip_prefix(root)
+        .map_err(|error| AssistantError::io(path, error))?;
+    let source = secure_read_to_string(root, relative_path)
+        .map_err(|error| AssistantError::io(path, error))?;
     let (frontmatter, body) = split_markdown_frontmatter(&source, path)?;
     let frontmatter = frontmatter
         .map(parse_yaml_frontmatter::<SkillFrontmatter>)
@@ -753,6 +760,38 @@ fn collect_skill_files(root: &Path) -> Result<Vec<PathBuf>, AssistantError> {
     Ok(files)
 }
 
+fn validated_assistant_root(
+    paths: &VaultPaths,
+    configured: &Path,
+    kind: &str,
+) -> Result<PathBuf, AssistantError> {
+    let normalized = normalize_relative_input_path(
+        &configured.to_string_lossy(),
+        RelativePathOptions {
+            expected_extension: None,
+            append_extension_if_missing: false,
+        },
+    )
+    .map_err(|error| AssistantError::message(format!("unsafe assistant {kind} root: {error}")))?;
+    let root = paths.vault_root().join(&normalized);
+    let mut current = paths.vault_root().to_path_buf();
+    for component in Path::new(&normalized).components() {
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(AssistantError::message(format!(
+                    "assistant {kind} root contains a symlink: {}",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+            Err(error) => return Err(AssistantError::io(&current, error)),
+        }
+    }
+    Ok(root)
+}
+
 fn collect_matching_files(
     root: &Path,
     files: &mut Vec<PathBuf>,
@@ -768,9 +807,17 @@ fn collect_matching_files(
         .map_err(|error| AssistantError::io(root, error))?;
     paths.sort();
     for path in paths {
-        if path.is_dir() {
+        let metadata =
+            fs::symlink_metadata(&path).map_err(|error| AssistantError::io(&path, error))?;
+        if metadata.file_type().is_symlink() {
+            return Err(AssistantError::message(format!(
+                "assistant discovery refuses symlink: {}",
+                path.display()
+            )));
+        }
+        if metadata.is_dir() {
             collect_matching_files(&path, files, include)?;
-        } else if include(&path) {
+        } else if metadata.is_file() && include(&path) {
             files.push(path);
         }
     }
@@ -1060,5 +1107,49 @@ Use this skill to curate links.
         assert!(read_vault_agents_file(&paths)
             .expect("agents file read should succeed")
             .is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prompt_loader_rejects_a_symlinked_prompt_file() {
+        use std::os::unix::fs::symlink;
+
+        let (_vault, paths) = test_paths();
+        let outside = tempdir().expect("outside dir");
+        let prompts_root = paths.vault_root().join("AI/Prompts");
+        fs::create_dir_all(&prompts_root).expect("prompts dir");
+        let secret = outside.path().join("outside-secret.md");
+        fs::write(&secret, "outside secret").expect("outside file");
+        symlink(&secret, prompts_root.join("leak.md")).expect("prompt symlink");
+
+        let error = list_assistant_prompts(&paths).expect_err("symlink must be rejected");
+        assert!(error.to_string().contains("refuses symlink"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn skill_discovery_rejects_a_symlink_cycle() {
+        use std::os::unix::fs::symlink;
+
+        let (_dir, paths) = test_paths();
+        let skills_root = paths.vault_root().join(".agents/skills/cycle");
+        fs::create_dir_all(&skills_root).expect("skills dir");
+        symlink(&skills_root, skills_root.join("again")).expect("cycle symlink");
+
+        let error = list_assistant_skills(&paths).expect_err("cycle must be rejected");
+        assert!(error.to_string().contains("refuses symlink"));
+    }
+
+    #[test]
+    fn assistant_discovery_rejects_an_outside_configured_root() {
+        let (_dir, paths) = test_paths();
+        fs::write(
+            paths.config_file(),
+            "[assistant]\nprompts_folder = \"../outside-prompts\"\n",
+        )
+        .expect("config file");
+
+        let error = list_assistant_prompts(&paths).expect_err("outside root must be rejected");
+        assert!(error.to_string().contains("unsafe assistant prompts root"));
     }
 }

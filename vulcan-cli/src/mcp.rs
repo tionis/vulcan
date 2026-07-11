@@ -4761,24 +4761,33 @@ fn tool_fingerprint(
                     .into_iter()
                     .map(|tool| format!("custom:{}", tool.summary.name)),
             );
-            parts.push(path_tree_fingerprint(&assistant_skills_root(paths)));
+            if let Ok(root) = assistant_skills_root(paths) {
+                parts.push(path_tree_fingerprint(&root));
+            }
         }
     }
     parts.join("\n")
 }
 
 fn prompt_files_fingerprint(paths: &VaultPaths) -> String {
-    path_tree_fingerprint(&assistant_prompts_root(paths))
+    assistant_prompts_root(paths)
+        .map(|root| path_tree_fingerprint(&root))
+        .unwrap_or_default()
 }
 
 fn resource_files_fingerprint(paths: &VaultPaths) -> String {
-    let mut parts = vec![
-        path_tree_fingerprint(&assistant_prompts_root(paths)),
-        path_tree_fingerprint(&assistant_skills_root(paths)),
+    let mut parts = Vec::new();
+    if let Ok(root) = assistant_prompts_root(paths) {
+        parts.push(path_tree_fingerprint(&root));
+    }
+    if let Ok(root) = assistant_skills_root(paths) {
+        parts.push(path_tree_fingerprint(&root));
+    }
+    parts.extend([
         path_tree_fingerprint(&paths.vault_root().join("AGENTS.md")),
         path_tree_fingerprint(paths.config_file()),
         path_tree_fingerprint(&paths.vulcan_dir().join("config.local.toml")),
-    ];
+    ]);
     parts.retain(|part| !part.is_empty());
     parts.join("\n--\n")
 }
@@ -4790,10 +4799,13 @@ fn path_tree_fingerprint(path: &Path) -> String {
 }
 
 fn collect_path_tree_fingerprint(path: &Path, lines: &mut Vec<String>) {
-    if !path.exists() {
+    let Ok(metadata) = fs::symlink_metadata(path) else {
+        return;
+    };
+    if metadata.file_type().is_symlink() {
         return;
     }
-    if path.is_dir() {
+    if metadata.is_dir() {
         let Ok(entries) = fs::read_dir(path) else {
             return;
         };
@@ -4809,7 +4821,10 @@ fn collect_path_tree_fingerprint(path: &Path, lines: &mut Vec<String>) {
     }
 
     lines.push(path.display().to_string());
-    if let Ok(contents) = fs::read(path) {
+    if metadata.is_file() {
+        let Ok(contents) = fs::read(path) else {
+            return;
+        };
         lines.push(contents.len().to_string());
         lines.push(String::from_utf8_lossy(&contents).into_owned());
     }

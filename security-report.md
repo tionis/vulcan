@@ -665,17 +665,19 @@ Remediation completed: persisted export and site profile destinations must be no
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `H-08`.
-- [ ] Add or update a regression test: Assistant context test rejects symlinked prompt file to `/tmp`.
-- [ ] Add or update a regression test: Assistant discovery test detects and rejects symlink cycles.
-- [ ] Implement the remediation: Canonicalize every assistant root with no-follow traversal, reject roots outside the vault unless trusted, and refuse symlinked files/directories by default.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Assistant context test rejects symlinked prompt file to `/tmp`.
+- [x] Add or update a regression test: Assistant discovery test detects and rejects symlink cycles.
+- [x] Implement the remediation: Canonicalize every assistant root with no-follow traversal, reject roots outside the vault unless trusted, and refuse symlinked files/directories by default.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+Remediation completed: assistant roots are normalized as vault-relative paths and every existing root component is checked with symlink metadata. Recursive prompt/skill discovery rejects symlinked files and directories, discovered Markdown is opened through no-follow helpers, and `AGENTS.md` uses the same read primitive. MCP resource fingerprints and agent import discovery were audited and made symlink-safe. Hostile tests cover a prompt symlink to an outside temporary file, a recursive skill-directory symlink, and a traversal-configured prompt root.
 
 ### H-09. Vault configuration can exfiltrate env secrets and note text through HTTP backends
 

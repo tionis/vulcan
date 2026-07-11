@@ -721,6 +721,8 @@ fn build_agent_print_config_report(
     let agents_present = read_vault_agents_file(paths)
         .map_err(CliError::operation)?
         .is_some();
+    let prompts_root = assistant_prompts_root(paths).map_err(CliError::operation)?;
+    let skills_root = assistant_skills_root(paths).map_err(CliError::operation)?;
     let runtime_name = agent_runtime_name(runtime).to_string();
     let commands = agent_print_config_commands(paths);
     let snippets = AgentPrintConfigSnippets {
@@ -742,9 +744,9 @@ fn build_agent_print_config_report(
         files: AgentPrintConfigFiles {
             agents_path: path_to_forward_slashes(&paths.vault_root().join("AGENTS.md")),
             agents_present,
-            prompts_path: path_to_forward_slashes(&assistant_prompts_root(paths)),
+            prompts_path: path_to_forward_slashes(&prompts_root),
             visible_prompt_count: prompt_count,
-            skills_path: path_to_forward_slashes(&assistant_skills_root(paths)),
+            skills_path: path_to_forward_slashes(&skills_root),
             visible_skill_count: skill_count,
         },
         commands,
@@ -991,7 +993,8 @@ fn detect_agent_assets(
         ("gemini", "GEMINI.md"),
     ] {
         let source_path = paths.vault_root().join(relative_path);
-        if source_path.is_file() && guard.check_read_path(relative_path).is_ok() {
+        if is_regular_file_no_symlink(&source_path) && guard.check_read_path(relative_path).is_ok()
+        {
             detected.push(DetectedAgentAsset {
                 source_layout: layout,
                 kind: "instructions",
@@ -1042,11 +1045,7 @@ fn detect_agent_assets(
         ),
     ] {
         let root = paths.vault_root().join(relative_root);
-        let destination_root = if kind == "prompt" {
-            assistant_prompts_root(paths)
-        } else {
-            assistant_skills_root(paths)
-        };
+        let destination_root = assistant_asset_destination_root(paths, kind)?;
         for source_path in collect_agent_asset_files(&root, predicate)? {
             let source_display = path_to_forward_slashes(
                 source_path
@@ -1087,6 +1086,20 @@ fn detect_agent_assets(
     Ok(detected)
 }
 
+fn is_regular_file_no_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.is_file() && !metadata.file_type().is_symlink())
+}
+
+fn assistant_asset_destination_root(paths: &VaultPaths, kind: &str) -> Result<PathBuf, CliError> {
+    if kind == "prompt" {
+        assistant_prompts_root(paths)
+    } else {
+        assistant_skills_root(paths)
+    }
+    .map_err(CliError::operation)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AgentAssetPredicate {
     Markdown,
@@ -1106,6 +1119,12 @@ fn collect_agent_asset_files(
         let metadata = fs::symlink_metadata(&path).map_err(|error| {
             CliError::operation(format!("failed to inspect `{}`: {error}", path.display()))
         })?;
+        if metadata.file_type().is_symlink() {
+            return Err(CliError::operation(format!(
+                "agent asset discovery refuses symlink: {}",
+                path.display()
+            )));
+        }
         if metadata.is_dir() {
             let mut entries = fs::read_dir(&path)
                 .map_err(|error| {
