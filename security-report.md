@@ -848,17 +848,19 @@ Remediation completed: bulk property and rewrite path lists require normalized v
 - [x] Add descriptor-relative no-follow read/write/create primitives in `vulcan-core::paths`, with traversal, final-symlink, and intermediate-symlink regression tests.
 - [x] Migrate `vulcan-app` note create/set/append/patch and shared/local config mutation writes to the secure path primitives; add hostile note-patch and config-set symlink tests that verify the outside target is unchanged.
 - [ ] Assign an owner and target release for `H-12`.
-- [ ] Add or update a regression test: Fixture with note symlink to `/tmp` must fail for create/set/append/patch.
-- [ ] Add or update a regression test: Fixture with `.vulcan/config.toml` symlink must fail for config set/import.
-- [ ] Implement the remediation: Use descriptor-relative, no-follow file operations for vault writes; reject symlinked `.vulcan`; canonicalize parent directories under the vault; add a central secure-write helper.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Fixture with note symlink to `/tmp` must fail for create/set/append/patch.
+- [x] Add or update a regression test: Fixture with `.vulcan/config.toml` symlink must fail for config set/import.
+- [x] Implement the remediation: Use descriptor-relative, no-follow file operations for vault writes; reject symlinked `.vulcan`; canonicalize parent directories under the vault; add a central secure-write helper.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+Remediation completed: descriptor-relative no-follow primitives back note, config, bulk refactor, and saved-report reads/writes. `.vulcan` and `.vulcan/reports` are verified as real directories, default state-file creation is no-follow, and tool lint fixes use secure writes and descriptor-backed permission changes. Hostile regressions cover traversal, final and intermediate symlinks, note patch/config set, bulk mutations, and a symlinked saved-report definition, with outside targets unchanged.
 
 ### H-13. Templater include resolves absolute and parent paths outside the vault
 

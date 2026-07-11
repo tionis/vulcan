@@ -243,14 +243,35 @@ pub fn ensure_vulcan_dir(paths: &VaultPaths) -> Result<(), std::io::Error> {
         ));
     }
 
-    fs::create_dir_all(paths.reports_dir())?;
+    ensure_directory_no_symlink(paths.reports_dir())?;
 
-    let gitignore = paths.gitignore_file();
-    if !gitignore.exists() {
-        fs::write(gitignore, DEFAULT_VULCAN_GITIGNORE)?;
+    if !paths.gitignore_file().exists() {
+        secure_create(
+            paths.vault_root(),
+            Path::new(".vulcan/.gitignore"),
+            DEFAULT_VULCAN_GITIGNORE,
+        )?;
     }
 
     Ok(())
+}
+
+fn ensure_directory_no_symlink(path: &Path) -> Result<(), std::io::Error> {
+    match fs::create_dir(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let metadata = fs::symlink_metadata(path)?;
+            if metadata.is_dir() && !metadata.file_type().is_symlink() {
+                Ok(())
+            } else {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("expected {} to be a non-symlink directory", path.display()),
+                ))
+            }
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn normalize_relative_input_path(
@@ -345,6 +366,14 @@ pub fn secure_create(
         contents.as_ref(),
         SecureOpenMode::CreateNew,
     )
+}
+
+pub fn secure_set_permissions(
+    root: &Path,
+    relative_path: &Path,
+    permissions: fs::Permissions,
+) -> Result<(), std::io::Error> {
+    secure_open(root, relative_path, SecureOpenMode::Read)?.set_permissions(permissions)
 }
 
 fn secure_write_with_mode(

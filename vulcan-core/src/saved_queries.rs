@@ -1,4 +1,4 @@
-use crate::paths::ensure_vulcan_dir;
+use crate::paths::{ensure_vulcan_dir, secure_read_to_string, secure_write};
 use crate::{search::SearchMode, SearchSort, VaultPaths};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -170,7 +170,10 @@ pub fn save_saved_report(
     if !rendered.ends_with('\n') {
         rendered.push('\n');
     }
-    fs::write(&report_path, rendered)?;
+    let relative = report_path
+        .strip_prefix(paths.vault_root())
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    secure_write(paths.vault_root(), relative, rendered)?;
     Ok(report_path)
 }
 
@@ -179,7 +182,10 @@ pub fn load_saved_report(
     name: &str,
 ) -> Result<SavedReportDefinition, SavedReportError> {
     let report_path = report_definition_path(paths, name)?;
-    let source = fs::read_to_string(report_path)?;
+    let relative = report_path
+        .strip_prefix(paths.vault_root())
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    let source = secure_read_to_string(paths.vault_root(), relative)?;
     let stored = toml::from_str::<SavedReportFile>(&source)?;
 
     Ok(SavedReportDefinition {
@@ -275,6 +281,37 @@ fn is_false(value: &bool) -> bool {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn save_saved_report_rejects_a_symlinked_definition() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        let paths = VaultPaths::new(temp_dir.path().join("vault"));
+        fs::create_dir_all(paths.reports_dir()).expect("reports dir");
+        let outside = temp_dir.path().join("outside.toml");
+        fs::write(&outside, "outside = true\n").expect("outside report");
+        symlink(&outside, paths.reports_dir().join("weekly.toml")).expect("report symlink");
+        let definition = SavedReportDefinition {
+            name: "weekly".to_string(),
+            description: None,
+            fields: None,
+            limit: None,
+            export: None,
+            query: SavedReportQuery::Notes {
+                filters: Vec::new(),
+                sort_by: None,
+                sort_descending: false,
+            },
+        };
+
+        save_saved_report(&paths, &definition).expect_err("report symlink must be rejected");
+        assert_eq!(
+            fs::read_to_string(outside).expect("outside report"),
+            "outside = true\n"
+        );
+    }
 
     #[test]
     fn save_and_load_saved_report_round_trip() {

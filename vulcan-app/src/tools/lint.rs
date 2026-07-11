@@ -5,6 +5,7 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Component;
 use std::path::{Path, PathBuf};
+use vulcan_core::paths::{secure_read_to_string, secure_set_permissions, secure_write};
 use vulcan_core::{
     load_vault_config, resolve_permission_profile, AssistantToolSummary, JsRuntimeSandbox,
     VaultPaths,
@@ -236,16 +237,20 @@ fn apply_tool_lint_fixes(
     entrypoint_path: &Path,
 ) -> Result<Vec<String>, AppError> {
     let mut fixes = Vec::new();
-    if let Ok(source) = fs::read_to_string(entrypoint_path) {
+    let relative_entrypoint = entrypoint_path
+        .strip_prefix(paths.vault_root())
+        .map_err(AppError::operation)?;
+    if let Ok(source) = secure_read_to_string(paths.vault_root(), relative_entrypoint) {
         let fixed_source = normalize_tool_script_shebang(&source);
         if fixed_source != source {
-            fs::write(entrypoint_path, fixed_source).map_err(AppError::operation)?;
+            secure_write(paths.vault_root(), relative_entrypoint, fixed_source)
+                .map_err(AppError::operation)?;
             fixes.push("normalized Vulcan shebang".to_string());
         }
     }
     #[cfg(unix)]
     if entrypoint_path.exists() && !script_is_executable(entrypoint_path) {
-        set_executable_permissions(entrypoint_path)?;
+        set_executable_permissions(paths, relative_entrypoint)?;
         fixes.push("set executable bit".to_string());
     }
     if tool.examples.is_empty() {
@@ -499,13 +504,15 @@ fn safe_relative_example_path(value: &str) -> Result<PathBuf, AppError> {
 }
 
 #[cfg(unix)]
-fn set_executable_permissions(path: &Path) -> Result<(), AppError> {
+fn set_executable_permissions(paths: &VaultPaths, relative_path: &Path) -> Result<(), AppError> {
     use std::os::unix::fs::PermissionsExt;
 
-    let metadata = fs::metadata(path).map_err(AppError::operation)?;
+    let path = paths.vault_root().join(relative_path);
+    let metadata = fs::symlink_metadata(&path).map_err(AppError::operation)?;
     let mut permissions = metadata.permissions();
     permissions.set_mode(permissions.mode() | 0o111);
-    fs::set_permissions(path, permissions).map_err(AppError::operation)
+    secure_set_permissions(paths.vault_root(), relative_path, permissions)
+        .map_err(AppError::operation)
 }
 
 #[cfg(unix)]
