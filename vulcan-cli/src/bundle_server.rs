@@ -12,6 +12,7 @@ use vulcan_app::site::{
     build_frontend_bundle as app_build_frontend_bundle, FrontendBundleBuildReport,
     FrontendBundleRequest,
 };
+use vulcan_core::paths::secure_read;
 use vulcan_core::{watch_vault_until, VaultPaths, WatchOptions};
 
 #[derive(Debug, Clone)]
@@ -259,15 +260,22 @@ fn route_request(state: &Arc<Mutex<FrontendBundleServeState>>, request: &Request
         return response_text(404, "text/plain; charset=utf-8", "not found");
     };
 
-    let candidate = output_dir.join(body_path);
-    match fs::read(&candidate) {
+    let candidate = output_dir.join(&body_path);
+    match secure_read(&output_dir, &body_path) {
         Ok(body) => Response {
             status: 200,
             content_type: content_type_for_path(&candidate),
             body,
             cache_control: Some("no-store"),
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::InvalidInput
+                    | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
             response_text(404, "text/plain; charset=utf-8", "not found")
         }
         Err(error) => response_text(
@@ -355,7 +363,9 @@ fn resolve_bundle_path(output_dir: &Path, request_path: &str) -> Option<PathBuf>
         relative
     };
     let candidate = output_dir.join(&normalized);
-    candidate.is_file().then_some(normalized)
+    fs::symlink_metadata(candidate)
+        .is_ok_and(|metadata| metadata.file_type().is_file() && !metadata.file_type().is_symlink())
+        .then_some(normalized)
 }
 
 fn read_request(stream: &mut TcpStream) -> Result<Request, String> {
@@ -498,6 +508,21 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
     use vulcan_core::{scan_vault, ScanMode};
+
+    #[cfg(unix)]
+    #[test]
+    fn bundle_preview_path_resolution_rejects_symlinked_output_files() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = TempDir::new().expect("temp dir should create");
+        let output_dir = temp_dir.path().join("output");
+        let secret = temp_dir.path().join("secret.json");
+        fs::create_dir(&output_dir).expect("output directory should create");
+        fs::write(&secret, "{\"secret\":true}").expect("secret should write");
+        symlink(&secret, output_dir.join("leak.json")).expect("symlink should create");
+
+        assert_eq!(resolve_bundle_path(&output_dir, "/leak.json"), None);
+    }
 
     #[test]
     fn copy_vault_tree_prepares_fresh_vulcan_dir_when_source_omits_it() {

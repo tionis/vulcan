@@ -1511,16 +1511,18 @@ Remediation completed: Bases reads and edits, Kanban reads and mutations, and mo
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `M-13`.
-- [ ] Add or update a regression test: Preview server test rejects a symlink inside output pointing to `/tmp/secret`.
-- [ ] Implement the remediation: Use `symlink_metadata`, reject symlinks, canonicalize the final path, and verify it remains under the output root before reading.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Preview server test rejects a symlink inside output pointing to `/tmp/secret`.
+- [x] Implement the remediation: Use `symlink_metadata`, reject symlinks, canonicalize the final path, and verify it remains under the output root before reading.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+**Remediation:** Static-site and frontend-bundle preview servers now reject final-component symlinks during route resolution and read response bodies through the shared component-by-component no-follow filesystem primitive. Missing, invalid, permission-denied, and containment failures return 404 without host-path details. Hostile symlink fixtures cover both preview implementations.
 
 ### M-14. Frontmatter redaction can miss valid YAML keys during publication transforms
 

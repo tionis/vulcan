@@ -14,6 +14,7 @@ use vulcan_app::site::{
     build_site_with_filter_and_progress as app_build_site_with_filter_and_progress,
     SiteBuildProgress, SiteBuildReport, SiteBuildRequest,
 };
+use vulcan_core::paths::secure_read;
 use vulcan_core::permissions::PermissionFilter;
 use vulcan_core::{watch_vault_until, VaultPaths, WatchOptions};
 
@@ -403,15 +404,22 @@ fn route_request(state: &Arc<Mutex<SiteServeState>>, request: &Request) -> Respo
         return response_text(404, "text/plain; charset=utf-8", "not found");
     };
 
-    let candidate = output_dir.join(body_path);
-    match fs::read(&candidate) {
+    let candidate = output_dir.join(&body_path);
+    match secure_read(&output_dir, &body_path) {
         Ok(body) => Response {
             status: 200,
             content_type: content_type_for_path(&candidate),
             body,
             cache_control: Some("no-store"),
         },
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound
+                    | std::io::ErrorKind::InvalidInput
+                    | std::io::ErrorKind::PermissionDenied
+            ) =>
+        {
             response_text(404, "text/plain; charset=utf-8", "not found")
         }
         Err(error) => response_text(
@@ -569,25 +577,30 @@ fn resolve_site_path(output_dir: &Path, request_path: &str, deploy_path: &str) -
     };
 
     let direct = output_dir.join(&normalized);
-    if direct.is_file() {
+    if is_regular_file_no_symlink(&direct) {
         return Some(normalized);
     }
 
     if direct.is_dir() {
         let nested = normalized.join("index.html");
-        if output_dir.join(&nested).is_file() {
+        if is_regular_file_no_symlink(&output_dir.join(&nested)) {
             return Some(nested);
         }
     }
 
     if normalized.extension().is_none() {
         let nested = normalized.join("index.html");
-        if output_dir.join(&nested).is_file() {
+        if is_regular_file_no_symlink(&output_dir.join(&nested)) {
             return Some(nested);
         }
     }
 
     None
+}
+
+fn is_regular_file_no_symlink(path: &Path) -> bool {
+    fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.file_type().is_file() && !metadata.file_type().is_symlink())
 }
 
 fn strip_deploy_path<'a>(request_path: &'a str, deploy_path: &str) -> Option<&'a str> {
@@ -767,6 +780,21 @@ mod tests {
     use std::fs;
     use tempfile::TempDir;
     use vulcan_core::{scan_vault, ScanMode};
+
+    #[cfg(unix)]
+    #[test]
+    fn preview_path_resolution_rejects_symlinked_output_files() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = TempDir::new().expect("temp dir should create");
+        let output_dir = temp_dir.path().join("output");
+        let secret = temp_dir.path().join("secret.txt");
+        fs::create_dir(&output_dir).expect("output directory should create");
+        fs::write(&secret, "host secret").expect("secret should write");
+        symlink(&secret, output_dir.join("leak.txt")).expect("symlink should create");
+
+        assert_eq!(resolve_site_path(&output_dir, "/leak.txt", ""), None);
+    }
 
     #[test]
     fn site_serve_serves_static_output_and_live_reload_state() {
