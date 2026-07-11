@@ -6,8 +6,8 @@
 )]
 
 use crate::export::{
-    content_transform_rules_have_effective_transforms, load_export_links_for_notes,
-    prepare_export_data, ExportLinkRecord,
+    content_transform_rules_have_effective_transforms, filter_export_links,
+    load_export_links_for_notes, prepare_export_data, ExportLinkRecord,
 };
 use crate::AppError;
 use regex::Regex;
@@ -31,6 +31,7 @@ use vulcan_core::html::{
     HtmlRenderHeading, HtmlRenderOptions, VaultHtmlRenderer,
 };
 use vulcan_core::paths::{normalize_relative_input_path, secure_read, RelativePathOptions};
+use vulcan_core::permissions::PermissionFilter;
 use vulcan_core::properties::NoteRecord;
 use vulcan_core::query::{execute_query_report, QueryAst, QueryReport};
 use vulcan_core::{ensure_vulcan_dir, export_graph, parse_document, VaultPaths};
@@ -304,7 +305,7 @@ pub fn build_site_profiles_report(
         .into_iter()
         .map(|name| {
             let profile = resolve_site_profile(paths, Some(name.as_str()), None)?;
-            let note_count = select_site_notes(paths, &profile)?.selected.len();
+            let note_count = select_site_notes(paths, &profile, None)?.selected.len();
             Ok(SiteProfileListEntry {
                 name: profile.name.clone(),
                 title: profile.title.clone(),
@@ -326,7 +327,7 @@ pub fn build_site_doctor_report(
     paths: &VaultPaths,
     profile_name: Option<&str>,
 ) -> Result<SiteDoctorReport, AppError> {
-    let plan = plan_site(paths, profile_name, None)?;
+    let plan = plan_site(paths, profile_name, None, None)?;
     Ok(SiteDoctorReport {
         profile: plan.profile.name,
         note_count: plan.notes.len(),
@@ -339,12 +340,32 @@ pub fn build_site(
     paths: &VaultPaths,
     request: &SiteBuildRequest,
 ) -> Result<SiteBuildReport, AppError> {
-    build_site_with_progress(paths, request, |_| {})
+    build_site_with_filter(paths, request, None)
+}
+
+pub fn build_site_with_filter(
+    paths: &VaultPaths,
+    request: &SiteBuildRequest,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<SiteBuildReport, AppError> {
+    build_site_with_filter_and_progress(paths, request, read_filter, |_| {})
 }
 
 pub fn build_site_with_progress<F>(
     paths: &VaultPaths,
     request: &SiteBuildRequest,
+    progress: F,
+) -> Result<SiteBuildReport, AppError>
+where
+    F: FnMut(&SiteBuildProgress),
+{
+    build_site_with_filter_and_progress(paths, request, None, progress)
+}
+
+pub fn build_site_with_filter_and_progress<F>(
+    paths: &VaultPaths,
+    request: &SiteBuildRequest,
+    read_filter: Option<&PermissionFilter>,
     mut progress: F,
 ) -> Result<SiteBuildReport, AppError>
 where
@@ -355,6 +376,7 @@ where
         paths,
         request.profile.as_deref(),
         request.output_dir.as_deref(),
+        read_filter,
     )?;
     let cached_state = if plan.transforms_active {
         None
@@ -381,8 +403,13 @@ where
     let cached_assets_by_source = cached_asset_state
         .as_ref()
         .map(site_asset_copy_state_by_source);
-    let asset_work_items =
-        collect_site_asset_copy_work_items(paths, &plan, &rendered_notes, &output_dir)?;
+    let asset_work_items = collect_site_asset_copy_work_items(
+        paths,
+        &plan,
+        &rendered_notes,
+        &output_dir,
+        read_filter,
+    )?;
     let mut files = BTreeSet::<String>::new();
     let mut changed_files = BTreeSet::<String>::new();
     let asset_count = asset_work_items.len();
@@ -778,6 +805,7 @@ pub fn build_frontend_bundle(
         paths,
         request.profile.as_deref(),
         Some(request.output_dir.as_path()),
+        None,
     )?;
     if request.clean && !request.dry_run && plan.profile.output_dir.exists() {
         fs::remove_dir_all(&plan.profile.output_dir).map_err(AppError::operation)?;
@@ -796,7 +824,7 @@ pub fn build_frontend_bundle(
         .as_ref()
         .map(site_asset_copy_state_by_source);
     let asset_work_items =
-        collect_site_asset_copy_work_items(paths, &plan, &rendered_notes, &output_dir)?;
+        collect_site_asset_copy_work_items(paths, &plan, &rendered_notes, &output_dir, None)?;
 
     let context = RenderContext {
         profile: plan.profile.name.clone(),
@@ -1303,9 +1331,10 @@ fn plan_site(
     paths: &VaultPaths,
     profile_name: Option<&str>,
     output_override: Option<&Path>,
+    read_filter: Option<&PermissionFilter>,
 ) -> Result<SitePlan, AppError> {
     let profile = resolve_site_profile(paths, profile_name, output_override)?;
-    let selected = select_site_notes(paths, &profile)?;
+    let selected = select_site_notes(paths, &profile, read_filter)?;
     let transforms_active = profile
         .content_transform_rules
         .as_deref()
@@ -1319,7 +1348,7 @@ fn plan_site(
         let prepared = prepare_export_data(
             paths,
             &report,
-            None,
+            read_filter,
             profile.content_transform_rules.as_deref(),
         )
         .map_err(AppError::operation)?;
@@ -1335,7 +1364,10 @@ fn plan_site(
             prepared.links,
         )
     } else {
-        let links = load_export_links_for_notes(paths, &selected.selected)?;
+        let links = filter_export_links(
+            load_export_links_for_notes(paths, &selected.selected)?,
+            read_filter,
+        );
         (
             selected
                 .selected
@@ -1377,6 +1409,7 @@ fn build_profile_query_ast(profile: &ResolvedSiteProfile) -> Result<QueryAst, Ap
 fn select_site_notes(
     paths: &VaultPaths,
     profile: &ResolvedSiteProfile,
+    read_filter: Option<&PermissionFilter>,
 ) -> Result<SiteSelectedNotes, AppError> {
     let all_report = execute_query_report(
         paths,
@@ -1386,6 +1419,7 @@ fn select_site_notes(
     let all_note_signatures = all_report
         .notes
         .iter()
+        .filter(|note| read_filter.is_none_or(|filter| filter.is_allowed(&note.document_path)))
         .map(|note| {
             (
                 note.document_path.clone(),
@@ -1454,6 +1488,7 @@ fn select_site_notes(
     let mut notes = all_report
         .notes
         .into_iter()
+        .filter(|note| read_filter.is_none_or(|filter| filter.is_allowed(&note.document_path)))
         .filter(|note| selected.contains(&note.document_path))
         .filter(|note| !excluded_paths.contains(&note.document_path))
         .filter(|note| {
@@ -4529,11 +4564,18 @@ fn collect_site_asset_copy_work_items(
     plan: &SitePlan,
     rendered_notes: &[RenderedNote],
     output_dir: &Path,
+    read_filter: Option<&PermissionFilter>,
 ) -> Result<Vec<SiteAssetCopyWorkItem>, AppError> {
     let mut assets = BTreeMap::<String, SiteAssetCopyWorkItem>::new();
 
     for source_path in collect_asset_links(&plan.links, &plan.profile.deploy_path).keys() {
-        insert_site_asset_copy_work_item(paths, &mut assets, output_dir, Path::new(source_path))?;
+        insert_site_asset_copy_work_item(
+            paths,
+            &mut assets,
+            output_dir,
+            Path::new(source_path),
+            read_filter,
+        )?;
     }
 
     let summary_image_assets = rendered_notes
@@ -4542,7 +4584,13 @@ fn collect_site_asset_copy_work_items(
         .filter_map(summary_image_source_path)
         .collect::<BTreeSet<_>>();
     for summary_image in &summary_image_assets {
-        insert_site_asset_copy_work_item(paths, &mut assets, output_dir, summary_image)?;
+        insert_site_asset_copy_work_item(
+            paths,
+            &mut assets,
+            output_dir,
+            summary_image,
+            read_filter,
+        )?;
     }
 
     for extra_asset in plan
@@ -4553,12 +4601,12 @@ fn collect_site_asset_copy_work_items(
         .chain(plan.profile.favicon.iter())
         .chain(plan.profile.logo.iter())
     {
-        insert_site_asset_copy_work_item(paths, &mut assets, output_dir, extra_asset)?;
+        insert_site_asset_copy_work_item(paths, &mut assets, output_dir, extra_asset, read_filter)?;
     }
 
     for extra_pattern in &plan.profile.asset_policy.include_folders {
         for asset in collect_extra_assets(paths, extra_pattern)? {
-            insert_site_asset_copy_work_item(paths, &mut assets, output_dir, &asset)?;
+            insert_site_asset_copy_work_item(paths, &mut assets, output_dir, &asset, read_filter)?;
         }
     }
 
@@ -4570,6 +4618,7 @@ fn insert_site_asset_copy_work_item(
     assets: &mut BTreeMap<String, SiteAssetCopyWorkItem>,
     output_dir: &Path,
     relative: &Path,
+    read_filter: Option<&PermissionFilter>,
 ) -> Result<(), AppError> {
     let source_key = normalize_relative_input_path(
         &display_path(relative),
@@ -4579,6 +4628,9 @@ fn insert_site_asset_copy_work_item(
         },
     )
     .map_err(AppError::operation)?;
+    if read_filter.is_some_and(|filter| !filter.is_allowed(&source_key)) {
+        return Ok(());
+    }
     secure_read(paths.vault_root(), Path::new(&source_key)).map_err(AppError::operation)?;
     let destination = asset_output_path(output_dir, &source_key);
     let relative_output_path =

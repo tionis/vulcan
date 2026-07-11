@@ -2492,7 +2492,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         ),
         Command::Tool { ref command } => commands::tool::handle_tool_command(cli, &paths, command),
         Command::Site { ref command } => {
-            handle_site_command(cli.output, &paths, command, use_stderr_color)
+            handle_site_command(cli, &paths, command, use_stderr_color)
         }
         Command::Agent { ref command } => {
             commands::agent::handle_agent_command(cli, &paths, command)
@@ -5326,11 +5326,13 @@ fn print_export_profile_rule_list(
 }
 
 fn handle_site_command(
-    output: OutputFormat,
+    cli: &Cli,
     paths: &VaultPaths,
     command: &SiteCommand,
     use_stderr_color: bool,
 ) -> Result<(), CliError> {
+    let output = cli.output;
+    let read_filter = selected_read_permission_filter(cli, paths)?;
     match command {
         SiteCommand::Build {
             profile,
@@ -5355,6 +5357,7 @@ fn handle_site_command(
                 &request,
                 *strict,
                 *fail_on_warning,
+                read_filter.as_ref(),
                 |event| {
                     if let Some(progress) = progress.as_mut() {
                         progress.record(event);
@@ -5368,8 +5371,8 @@ fn handle_site_command(
                     paths,
                     &request,
                     *debounce_ms,
-                    *strict,
-                    *fail_on_warning,
+                    (*strict, *fail_on_warning),
+                    read_filter.as_ref(),
                     use_stderr_color,
                 )?;
             }
@@ -5394,6 +5397,7 @@ fn handle_site_command(
                     debounce_ms: *debounce_ms,
                     strict: *strict,
                     fail_on_warning: *fail_on_warning,
+                    read_filter: read_filter.clone(),
                 },
             )?;
             let addr = handle.addr();
@@ -5522,8 +5526,8 @@ fn watch_site_builds_forever(
     paths: &VaultPaths,
     request: &SiteBuildRequest,
     debounce_ms: u64,
-    strict: bool,
-    fail_on_warning: bool,
+    policy: (bool, bool),
+    read_filter: Option<&PermissionFilter>,
     use_stderr_color: bool,
 ) -> Result<(), CliError> {
     watch_vault(paths, &WatchOptions { debounce_ms }, |watch_report| {
@@ -5540,8 +5544,9 @@ fn watch_site_builds_forever(
                 clean: false,
                 dry_run: request.dry_run,
             },
-            strict,
-            fail_on_warning,
+            policy.0,
+            policy.1,
+            read_filter,
             |event| {
                 if let Some(progress) = progress.as_mut() {
                     progress.record(event);

@@ -2,6 +2,7 @@ use super::*;
 use std::borrow::Cow;
 use std::fs;
 use tempfile::TempDir;
+use vulcan_core::permissions::{PathPermission, PermissionFilter, ResourceSpecifier};
 use vulcan_core::{scan_vault, ScanMode};
 
 fn copy_fixture_vault(name: &str, destination: &Path) {
@@ -1271,6 +1272,51 @@ graph = true
     assert!(!tree_contains_text(&public_root, "Secret launch checklist"));
     assert!(!tree_contains_text(&docs_root, "Public landing page"));
     assert!(!tree_contains_text(&docs_root, "Secret launch checklist"));
+}
+
+#[test]
+fn site_build_omits_notes_and_assets_denied_by_the_read_filter() {
+    let temp_dir = TempDir::new().expect("temp dir should exist");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Private")).expect("private dir should exist");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join("Home.md"),
+        "# Home\n\n![[Private/secret.txt]]\n",
+    )
+    .expect("home note should write");
+    fs::write(
+        vault_root.join("Private/Hidden.md"),
+        "# Hidden\n\nSecret launch checklist.\n",
+    )
+    .expect("private note should write");
+    fs::write(vault_root.join("Private/secret.txt"), "private attachment")
+        .expect("private asset should write");
+    scan_fixture(&vault_root);
+    let paths = VaultPaths::new(&vault_root);
+    let filter = PermissionFilter::new(PathPermission {
+        allow: vec![ResourceSpecifier::All],
+        deny: vec![ResourceSpecifier::Folder("Private/**".to_string())],
+    });
+
+    let report = build_site_with_filter(
+        &paths,
+        &SiteBuildRequest {
+            profile: None,
+            output_dir: None,
+            clean: true,
+            dry_run: false,
+        },
+        Some(&filter),
+    )
+    .expect("filtered site build should succeed");
+
+    let output_root = vault_root.join(".vulcan/site/default");
+    assert_eq!(report.note_count, 1);
+    assert!(output_root.join("notes/home/index.html").exists());
+    assert!(!output_root.join("notes/private/hidden/index.html").exists());
+    assert!(!output_root.join("assets/Private/secret.txt").exists());
+    assert!(!tree_contains_text(&output_root, "Secret launch checklist"));
 }
 
 #[test]

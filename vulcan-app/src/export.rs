@@ -616,7 +616,7 @@ pub fn prepare_export_data(
     prepare_transformed_export_data(paths, notes, read_filter, &effective_transforms)
 }
 
-fn filter_export_links(
+pub(crate) fn filter_export_links(
     mut links: Vec<ExportLinkRecord>,
     read_filter: Option<&PermissionFilter>,
 ) -> Vec<ExportLinkRecord> {

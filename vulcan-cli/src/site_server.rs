@@ -10,9 +10,11 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
 use vulcan_app::site::{
-    build_site as app_build_site, build_site_with_progress as app_build_site_with_progress,
+    build_site_with_filter as app_build_site_with_filter,
+    build_site_with_filter_and_progress as app_build_site_with_filter_and_progress,
     SiteBuildProgress, SiteBuildReport, SiteBuildRequest,
 };
+use vulcan_core::permissions::PermissionFilter;
 use vulcan_core::{watch_vault_until, VaultPaths, WatchOptions};
 
 #[derive(Debug, Clone)]
@@ -24,6 +26,7 @@ pub struct SiteServeOptions {
     pub debounce_ms: u64,
     pub strict: bool,
     pub fail_on_warning: bool,
+    pub read_filter: Option<PermissionFilter>,
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -124,8 +127,16 @@ pub(crate) fn build_site_with_policy(
     request: &SiteBuildRequest,
     strict: bool,
     fail_on_warning: bool,
+    read_filter: Option<&PermissionFilter>,
 ) -> Result<SiteBuildReport, CliError> {
-    build_site_with_policy_and_progress(paths, request, strict, fail_on_warning, |_| {})
+    build_site_with_policy_and_progress(
+        paths,
+        request,
+        strict,
+        fail_on_warning,
+        read_filter,
+        |_| {},
+    )
 }
 
 pub(crate) fn build_site_with_policy_and_progress<F>(
@@ -133,6 +144,7 @@ pub(crate) fn build_site_with_policy_and_progress<F>(
     request: &SiteBuildRequest,
     strict: bool,
     fail_on_warning: bool,
+    read_filter: Option<&PermissionFilter>,
     mut progress: F,
 ) -> Result<SiteBuildReport, CliError>
 where
@@ -141,12 +153,13 @@ where
     if strict || fail_on_warning {
         let mut preflight = request.clone();
         preflight.dry_run = true;
-        let preflight_report = app_build_site(paths, &preflight).map_err(CliError::operation)?;
+        let preflight_report = app_build_site_with_filter(paths, &preflight, read_filter)
+            .map_err(CliError::operation)?;
         if let Some(message) = site_build_policy_error(&preflight_report, strict, fail_on_warning) {
             return Err(CliError::operation(message));
         }
     }
-    app_build_site_with_progress(paths, request, |event| progress(event))
+    app_build_site_with_filter_and_progress(paths, request, read_filter, |event| progress(event))
         .map_err(CliError::operation)
 }
 
@@ -166,6 +179,7 @@ pub fn spawn_site_server(
         &initial_request,
         options.strict,
         options.fail_on_warning,
+        options.read_filter.as_ref(),
     )?;
     let initial_output_dir = PathBuf::from(&initial_report.output_dir);
 
@@ -207,6 +221,7 @@ pub fn spawn_site_server(
             };
             let watch_strict = options.strict;
             let watch_fail_on_warning = options.fail_on_warning;
+            let watch_read_filter = options.read_filter.clone();
             let mut watch_ready_sender = watch_ready_sender;
             Some(thread::spawn(move || {
                 let result = watch_vault_until(
@@ -225,6 +240,7 @@ pub fn spawn_site_server(
                             &watch_request,
                             watch_strict,
                             watch_fail_on_warning,
+                            watch_read_filter.as_ref(),
                         ) {
                             Ok(report) => {
                                 log_watch_rebuild_success(&report);
@@ -783,6 +799,7 @@ rss = true
                 debounce_ms: 50,
                 strict: false,
                 fail_on_warning: false,
+                read_filter: None,
             },
         )
         .expect("site server should start");
@@ -837,6 +854,7 @@ graph = true
                 debounce_ms: 50,
                 strict: false,
                 fail_on_warning: false,
+                read_filter: None,
             },
         )
         .expect("site server should start");
@@ -928,6 +946,7 @@ link_policy = "warn"
                 debounce_ms: 50,
                 strict: true,
                 fail_on_warning: false,
+                read_filter: None,
             },
         )
         .expect("site server should start");
@@ -1015,6 +1034,7 @@ link_policy = "warn"
                 debounce_ms: 50,
                 strict: false,
                 fail_on_warning: false,
+                read_filter: None,
             },
         )
         .expect("site server should start");
@@ -1065,6 +1085,7 @@ graph = true
                 debounce_ms: 50,
                 strict: false,
                 fail_on_warning: false,
+                read_filter: None,
             },
         )
         .expect("site server should start");
@@ -1144,6 +1165,7 @@ graph = true
                 debounce_ms: 50,
                 strict: false,
                 fail_on_warning: false,
+                read_filter: None,
             },
         )
         .expect("site server should start");
