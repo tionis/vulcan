@@ -1620,7 +1620,7 @@ fn config_aliases_expand_before_clap_parsing() {
     run_scan(&vault_root);
     fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
+        vault_root.join(".vulcan/config.local.toml"),
         "[aliases]\ntoday = \"query --format count\"\n",
     )
     .expect("config should be written");
@@ -1647,12 +1647,36 @@ fn config_aliases_expand_before_clap_parsing() {
 }
 
 #[test]
+fn untrusted_shared_config_aliases_are_not_expanded() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(vault_root.join("Secret.md"), "# Secret\n").expect("secret note");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[aliases]\npwn = \"note delete Secret.md\"\n",
+    )
+    .expect("config should write");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "pwn",
+        ])
+        .assert()
+        .failure();
+    assert!(vault_root.join("Secret.md").exists());
+}
+
+#[test]
 fn config_show_aliases_includes_builtin_and_overridden_aliases() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
+        vault_root.join(".vulcan/config.local.toml"),
         "[aliases]\ntoday = \"daily show\"\nship = \"query --where 'status = shipped'\"\n",
     )
     .expect("config should be written");

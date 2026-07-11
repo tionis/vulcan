@@ -2288,6 +2288,7 @@ fn expand_cli_aliases(args: &[OsString]) -> Vec<OsString> {
         if replacement.is_empty() {
             break;
         }
+        eprintln!("expanded command alias `{command_name}` as `{alias}`");
         let mut rewritten = expanded[..command_index].to_vec();
         rewritten.extend(replacement);
         rewritten.extend_from_slice(&expanded[command_index + 1..]);

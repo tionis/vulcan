@@ -4246,7 +4246,7 @@ mod tests {
     fn write_attachment_extraction_config(vault_root: &Path) {
         fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
         fs::write(
-            vault_root.join(".vulcan/config.toml"),
+            vault_root.join(".vulcan/config.local.toml"),
             "[extraction]\ncommand = \"sh\"\nargs = [\"-c\", \"cat \\\"$1.txt\\\"\", \"sh\", \"{path}\"]\nextensions = [\"pdf\", \"png\"]\nmax_output_bytes = 4096\n",
         )
         .expect("config should write");

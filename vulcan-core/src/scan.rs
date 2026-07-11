@@ -2878,6 +2878,28 @@ mod tests {
         String,
         String,
     );
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_ignores_untrusted_shared_extraction_commands() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        let marker = temp_dir.path().join("extraction-ran");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+        fs::write(vault_root.join("attachment.pdf"), b"not a real pdf").expect("attachment");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            format!(
+                "[extraction]\ncommand = \"touch\"\nargs = [\"{}\"]\nextensions = [\"pdf\"]\n",
+                marker.display()
+            ),
+        )
+        .expect("config");
+
+        scan_vault(&VaultPaths::new(&vault_root), ScanMode::Full).expect("scan should succeed");
+
+        assert!(!marker.exists());
+    }
     type DashboardPropertyRow = (
         String,
         String,
@@ -5101,7 +5123,7 @@ mod tests {
     fn write_attachment_extraction_config(vault_root: &Path) {
         fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
         fs::write(
-            vault_root.join(".vulcan/config.toml"),
+            vault_root.join(".vulcan/config.local.toml"),
             "[extraction]\ncommand = \"sh\"\nargs = [\"-c\", \"cat \\\"$1.txt\\\"\", \"sh\", \"{path}\"]\nextensions = [\"pdf\", \"png\"]\nmax_output_bytes = 4096\n",
         )
         .expect("config should write");

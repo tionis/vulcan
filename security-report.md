@@ -938,17 +938,19 @@ Remediation completed: native and JavaScript Templater includes normalize target
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `H-14`.
-- [ ] Add or update a regression test: Untrusted vault scan test refuses extraction commands from shared config.
-- [ ] Add or update a regression test: CLI test that shared config aliases are ignored unless the vault is trusted.
-- [ ] Implement the remediation: Move executable settings and aliases to local trusted config, require explicit trust confirmation per vault before honoring shared executable config, and show the expanded command before alias execution in non-interactive contexts.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Untrusted vault scan test refuses extraction commands from shared config.
+- [x] Add or update a regression test: CLI test that shared config aliases are ignored unless the vault is trusted.
+- [x] Implement the remediation: Move executable settings and aliases to local trusted config, require explicit trust confirmation per vault before honoring shared executable config, and show the expanded command before alias execution in non-interactive contexts.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+Remediation completed: untrusted shared config cannot supply attachment extraction commands or CLI aliases; those sections are removed before config merge with a diagnostic and remain available through local config or an explicitly trusted vault. Alias expansion reports the selected mapping before dispatch. Regression tests prove an untrusted scan does not execute a marker command and an untrusted alias cannot delete a note.
 
 ## Medium Severity Findings
 

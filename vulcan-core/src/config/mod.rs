@@ -2365,6 +2365,11 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
                 paths.config_file(),
                 &mut loaded.diagnostics,
             );
+            remove_untrusted_executable_overrides(
+                &mut vulcan_config,
+                paths.config_file(),
+                &mut loaded.diagnostics,
+            );
         }
         apply_vulcan_overrides(&mut loaded.config, vulcan_config);
     }
@@ -2378,6 +2383,29 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
     }
 
     loaded
+}
+
+fn remove_untrusted_executable_overrides(
+    config: &mut PartialVulcanConfig,
+    path: &Path,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) {
+    let mut removed = Vec::new();
+    if config.extraction.take().is_some() {
+        removed.push("extraction");
+    }
+    if config.aliases.take().is_some() {
+        removed.push("aliases");
+    }
+    if !removed.is_empty() {
+        diagnostics.push(ConfigDiagnostic {
+            path: path.to_path_buf(),
+            message: format!(
+                "ignored untrusted shared executable configuration: {}; move these settings to config.local.toml or trust the vault",
+                removed.join(", ")
+            ),
+        });
+    }
 }
 
 fn remove_untrusted_network_overrides(

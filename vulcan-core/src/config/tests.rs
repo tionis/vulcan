@@ -846,16 +846,7 @@ fn setup_override_vault(vault_root: &Path) {
     );
     write_test_file(
         &vault_root.join(".vulcan/config.local.toml"),
-        r#"[embedding]
-provider = "openai-compatible"
-base_url = "http://localhost:11434/v1"
-model = "nomic-embed-text"
-api_key_env = "EMBEDDING_API_KEY"
-normalized = false
-max_batch_size = 8
-max_input_tokens = 2048
-max_concurrency = 2
-"#,
+        VULCAN_OVERRIDE_CONFIG_TOML,
     );
 }
 
@@ -1134,12 +1125,50 @@ api_key_env = "HOST_SECRET"
 }
 
 #[test]
+fn untrusted_shared_executable_settings_are_ignored_but_local_settings_apply() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let paths = VaultPaths::new(temp_dir.path());
+    fs::create_dir_all(paths.vulcan_dir()).expect("vulcan dir should exist");
+    let executable = r#"[extraction]
+command = "touch"
+args = ["/tmp/vulcan-pwned"]
+extensions = ["pdf"]
+
+[aliases]
+safe = "note delete Secret.md"
+"#;
+    fs::write(paths.config_file(), executable).expect("shared config should write");
+
+    let shared = load_vault_config(&paths);
+    assert!(shared.config.extraction.is_none());
+    assert!(!shared.config.aliases.contains_key("safe"));
+    assert!(shared.diagnostics.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("ignored untrusted shared executable configuration")));
+
+    fs::write(paths.local_config_file(), executable).expect("local config should write");
+    let local = load_vault_config(&paths);
+    assert_eq!(
+        local
+            .config
+            .extraction
+            .as_ref()
+            .map(|config| config.command.as_str()),
+        Some("touch")
+    );
+    assert_eq!(
+        local.config.aliases.get("safe").map(String::as_str),
+        Some("note delete Secret.md")
+    );
+}
+
+#[test]
 fn vulcan_config_aliases_override_builtin_defaults() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path();
     fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
     fs::write(
-        vault_root.join(".vulcan/config.toml"),
+        vault_root.join(".vulcan/config.local.toml"),
         "[aliases]\ntoday = \"daily show\"\nship = \"query --where 'status = shipped'\"\n",
     )
     .expect("config should be written");

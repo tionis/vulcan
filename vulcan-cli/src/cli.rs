@@ -2411,7 +2411,7 @@ pub enum ConfigAliasCommand {
         #[arg(
             long,
             value_enum,
-            default_value_t = ConfigTargetArg::Shared,
+            default_value_t = ConfigTargetArg::Local,
             help = "Config file to write: shared vault config or local override"
         )]
         target: ConfigTargetArg,
@@ -2427,7 +2427,7 @@ pub enum ConfigAliasCommand {
         #[arg(
             long,
             value_enum,
-            default_value_t = ConfigTargetArg::Shared,
+            default_value_t = ConfigTargetArg::Local,
             help = "Config file to write: shared vault config or local override"
         )]
         target: ConfigTargetArg,
