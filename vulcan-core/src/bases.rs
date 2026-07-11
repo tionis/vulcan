@@ -1,7 +1,10 @@
 use crate::expression::eval::EvalContext;
 use crate::expression::parse_expression;
 use crate::expression::value::DataviewTimeZone;
-use crate::paths::{normalize_relative_input_path, RelativePathError, RelativePathOptions};
+use crate::paths::{
+    normalize_relative_input_path, secure_read_to_string, secure_write, RelativePathError,
+    RelativePathOptions,
+};
 use crate::permissions::PermissionFilter;
 use crate::properties::{
     load_note_index_with_filter, parse_note_filter_expression, query_notes_with_filter,
@@ -15,7 +18,7 @@ use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
-use std::fs;
+use std::path::Path;
 use std::sync::Arc;
 
 #[derive(Debug)]
@@ -245,7 +248,7 @@ impl BasesEvaluator {
         read_filter: Option<&PermissionFilter>,
     ) -> Result<BasesEvalReport, BasesError> {
         let normalized = normalize_base_path(relative_path)?;
-        let source = fs::read_to_string(paths.vault_root().join(&normalized))?;
+        let source = secure_read_to_string(paths.vault_root(), Path::new(&normalized))?;
         self.evaluate_yaml_with_filter(paths, &normalized, &source, read_filter)
     }
 
@@ -621,8 +624,7 @@ pub fn bases_view_add(
     dry_run: bool,
 ) -> Result<BasesViewEditReport, BasesError> {
     let normalized = normalize_base_path(relative_path)?;
-    let file_path = paths.vault_root().join(&normalized);
-    let source = fs::read_to_string(&file_path)?;
+    let source = secure_read_to_string(paths.vault_root(), Path::new(&normalized))?;
     let mut parsed = parse_base_file(&source)?;
 
     let view_name = spec.name.clone().unwrap_or_else(|| "(unnamed)".to_string());
@@ -633,7 +635,7 @@ pub fn bases_view_add(
 
     if !dry_run {
         let _lock = crate::write_lock::acquire_write_lock(paths).map_err(BasesError::Io)?;
-        fs::write(&file_path, &yaml)?;
+        secure_write(paths.vault_root(), Path::new(&normalized), &yaml)?;
     }
 
     let eval = evaluate_base_from_yaml(paths, &normalized, &yaml)?;
@@ -652,8 +654,7 @@ pub fn bases_view_delete(
     dry_run: bool,
 ) -> Result<BasesViewEditReport, BasesError> {
     let normalized = normalize_base_path(relative_path)?;
-    let file_path = paths.vault_root().join(&normalized);
-    let source = fs::read_to_string(&file_path)?;
+    let source = secure_read_to_string(paths.vault_root(), Path::new(&normalized))?;
     let mut parsed = parse_base_file(&source)?;
 
     let pos = parsed
@@ -668,7 +669,7 @@ pub fn bases_view_delete(
 
     if !dry_run {
         let _lock = crate::write_lock::acquire_write_lock(paths).map_err(BasesError::Io)?;
-        fs::write(&file_path, &yaml)?;
+        secure_write(paths.vault_root(), Path::new(&normalized), &yaml)?;
     }
 
     let eval = evaluate_base_from_yaml(paths, &normalized, &yaml)?;
@@ -688,8 +689,7 @@ pub fn bases_view_rename(
     dry_run: bool,
 ) -> Result<BasesViewEditReport, BasesError> {
     let normalized = normalize_base_path(relative_path)?;
-    let file_path = paths.vault_root().join(&normalized);
-    let source = fs::read_to_string(&file_path)?;
+    let source = secure_read_to_string(paths.vault_root(), Path::new(&normalized))?;
     let mut parsed = parse_base_file(&source)?;
 
     let view = parsed
@@ -706,7 +706,7 @@ pub fn bases_view_rename(
 
     if !dry_run {
         let _lock = crate::write_lock::acquire_write_lock(paths).map_err(BasesError::Io)?;
-        fs::write(&file_path, &yaml)?;
+        secure_write(paths.vault_root(), Path::new(&normalized), &yaml)?;
     }
 
     let eval = evaluate_base_from_yaml(paths, &normalized, &yaml)?;
@@ -726,8 +726,7 @@ pub fn bases_view_edit(
     dry_run: bool,
 ) -> Result<BasesViewEditReport, BasesError> {
     let normalized = normalize_base_path(relative_path)?;
-    let file_path = paths.vault_root().join(&normalized);
-    let source = fs::read_to_string(&file_path)?;
+    let source = secure_read_to_string(paths.vault_root(), Path::new(&normalized))?;
     let mut parsed = parse_base_file(&source)?;
 
     let view = parsed
@@ -766,7 +765,7 @@ pub fn bases_view_edit(
 
     if !dry_run {
         let _lock = crate::write_lock::acquire_write_lock(paths).map_err(BasesError::Io)?;
-        fs::write(&file_path, &yaml)?;
+        secure_write(paths.vault_root(), Path::new(&normalized), &yaml)?;
     }
 
     let eval = evaluate_base_from_yaml(paths, &normalized, &yaml)?;
@@ -784,7 +783,7 @@ pub fn plan_base_note_create(
     view_index: usize,
 ) -> Result<BasesCreateContext, BasesError> {
     let normalized = normalize_base_path(relative_path)?;
-    let source = fs::read_to_string(paths.vault_root().join(&normalized))?;
+    let source = secure_read_to_string(paths.vault_root(), Path::new(&normalized))?;
     let parsed = parse_base_file(&source)?;
     if parsed.source.source_type != "file" {
         return Err(BasesError::Source(format!(
@@ -832,7 +831,7 @@ pub fn inspect_base_file(
     relative_path: &str,
 ) -> Result<BasesFileInfo, BasesError> {
     let normalized = normalize_base_path(relative_path)?;
-    let source = fs::read_to_string(paths.vault_root().join(&normalized))?;
+    let source = secure_read_to_string(paths.vault_root(), Path::new(&normalized))?;
     BasesEvaluator::new().inspect_yaml(&normalized, &source)
 }
 
@@ -2336,9 +2335,37 @@ mod tests {
     use crate::permissions::{PathPermission, ResourceSpecifier};
     use crate::{scan_vault, ScanMode};
     use serde_json::json;
-    use std::path::Path;
+    use std::fs;
     use std::sync::{Arc, Mutex};
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn bases_view_edit_rejects_a_symlinked_base_file() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(&vault_root).expect("vault dir");
+        let outside = temp_dir.path().join("outside.base");
+        fs::write(&outside, "views: []\n").expect("outside base");
+        symlink(&outside, vault_root.join("linked.base")).expect("base symlink");
+
+        bases_view_add(
+            &VaultPaths::new(&vault_root),
+            "linked.base",
+            BaseViewSpec {
+                view_type: "table".to_string(),
+                ..BaseViewSpec::default()
+            },
+            false,
+        )
+        .expect_err("symlinked base must be rejected");
+        assert_eq!(
+            fs::read_to_string(outside).expect("outside base"),
+            "views: []\n"
+        );
+    }
 
     #[test]
     fn parser_accepts_real_world_base_fields() {

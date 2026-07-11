@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter, Write as _};
-use std::fs;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -15,7 +14,7 @@ use crate::expression::functions::parse_wikilink;
 use crate::extract_indexed_properties;
 use crate::file_metadata::FileMetadataResolver;
 use crate::parse_document;
-use crate::paths::VaultPaths;
+use crate::paths::{secure_read_to_string, secure_write, VaultPaths};
 use crate::properties::{load_note_index, NoteRecord};
 use crate::resolve_note_reference;
 use crate::{scan_vault, ParsedDocument, ScanMode, VaultConfig};
@@ -320,10 +319,10 @@ pub fn archive_kanban_card(
         )));
     };
 
-    let source_path = paths.vault_root().join(&board_row.path);
-    let source = fs::read_to_string(&source_path).map_err(|error| {
-        KanbanError::Message(format!("failed to read {}: {error}", board_row.path))
-    })?;
+    let source =
+        secure_read_to_string(paths.vault_root(), Path::new(&board_row.path)).map_err(|error| {
+            KanbanError::Message(format!("failed to read {}: {error}", board_row.path))
+        })?;
     let column_states =
         load_board_column_states(paths, connection, &board_row, &config, true, None)?;
     let (source_column_index, card_index) = resolve_card_match(&column_states, card)?;
@@ -390,7 +389,7 @@ pub fn archive_kanban_card(
     };
 
     if !dry_run {
-        fs::write(&source_path, updated).map_err(|error| {
+        secure_write(paths.vault_root(), Path::new(&board_row.path), updated).map_err(|error| {
             KanbanError::Message(format!("failed to write {}: {error}", board_row.path))
         })?;
         scan_vault(paths, ScanMode::Incremental)
@@ -440,10 +439,10 @@ pub fn move_kanban_card(
         )));
     };
 
-    let source_path = paths.vault_root().join(&board_row.path);
-    let source = fs::read_to_string(&source_path).map_err(|error| {
-        KanbanError::Message(format!("failed to read {}: {error}", board_row.path))
-    })?;
+    let source =
+        secure_read_to_string(paths.vault_root(), Path::new(&board_row.path)).map_err(|error| {
+            KanbanError::Message(format!("failed to read {}: {error}", board_row.path))
+        })?;
     let column_states =
         load_board_column_states(paths, connection, &board_row, &config, true, None)?;
     let (source_column_index, card_index) = resolve_card_match(&column_states, card)?;
@@ -504,7 +503,7 @@ pub fn move_kanban_card(
     );
 
     if !dry_run {
-        fs::write(&source_path, updated).map_err(|error| {
+        secure_write(paths.vault_root(), Path::new(&board_row.path), updated).map_err(|error| {
             KanbanError::Message(format!("failed to write {}: {error}", board_row.path))
         })?;
         scan_vault(paths, ScanMode::Incremental)
@@ -544,10 +543,10 @@ pub fn add_kanban_card(
         )));
     };
 
-    let source_path = paths.vault_root().join(&board_row.path);
-    let source = fs::read_to_string(&source_path).map_err(|error| {
-        KanbanError::Message(format!("failed to read {}: {error}", board_row.path))
-    })?;
+    let source =
+        secure_read_to_string(paths.vault_root(), Path::new(&board_row.path)).map_err(|error| {
+            KanbanError::Message(format!("failed to read {}: {error}", board_row.path))
+        })?;
     let column_states =
         load_board_column_states(paths, connection, &board_row, &config, true, None)?;
     let target_column_index = resolve_column_match(&column_states, column)?;
@@ -574,7 +573,7 @@ pub fn add_kanban_card(
     );
 
     if !dry_run {
-        fs::write(&source_path, updated).map_err(|error| {
+        secure_write(paths.vault_root(), Path::new(&board_row.path), updated).map_err(|error| {
             KanbanError::Message(format!("failed to write {}: {error}", board_row.path))
         })?;
         scan_vault(paths, ScanMode::Incremental)
@@ -1295,7 +1294,7 @@ fn load_column_layouts(
     board_path: &str,
     headings: &[HeadingRow],
 ) -> Vec<ColumnLayout> {
-    let Ok(source) = fs::read_to_string(paths.vault_root().join(board_path)) else {
+    let Ok(source) = secure_read_to_string(paths.vault_root(), Path::new(board_path)) else {
         return headings
             .iter()
             .map(|heading| default_column_layout(heading.text.as_str()))
@@ -1567,6 +1566,28 @@ mod tests {
     use crate::{scan_vault, ScanMode};
 
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn kanban_mutation_rejects_a_symlinked_board() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+        let board = "---\nkanban-plugin: board\n---\n\n## Todo\n\n- Existing\n";
+        fs::write(vault_root.join("Board.md"), board).expect("board");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+        let outside = temp_dir.path().join("outside.md");
+        fs::write(&outside, board).expect("outside board");
+        fs::remove_file(vault_root.join("Board.md")).expect("remove board");
+        symlink(&outside, vault_root.join("Board.md")).expect("board symlink");
+
+        add_kanban_card(&paths, "Board", "Todo", "Injected", false)
+            .expect_err("symlinked board must be rejected");
+        assert_eq!(fs::read_to_string(outside).expect("outside board"), board);
+    }
 
     #[test]
     fn extracts_indexed_kanban_board_from_frontmatter_settings() {

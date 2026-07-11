@@ -1,6 +1,9 @@
 use crate::graph::resolve_note_reference;
 use crate::parser::{parse_document, RawLink};
-use crate::paths::{normalize_relative_input_path, RelativePathError, RelativePathOptions};
+use crate::paths::{
+    normalize_relative_input_path, secure_create, secure_read, secure_write, RelativePathError,
+    RelativePathOptions,
+};
 use crate::scan::scan_vault_unlocked;
 use crate::write_lock::acquire_write_lock;
 use crate::{
@@ -199,20 +202,21 @@ pub fn move_note(
         });
     }
 
-    if let Some(parent) = destination_absolute.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::rename(
-        paths.vault_root().join(&source.path),
-        paths.vault_root().join(&destination_path),
+    let source_contents = secure_read(paths.vault_root(), Path::new(&source.path))?;
+    secure_create(
+        paths.vault_root(),
+        Path::new(&destination_path),
+        source_contents,
     )?;
+    fs::remove_file(paths.vault_root().join(&source.path))?;
     for plan in &rewrite_plans {
         if plan.changes.is_empty() {
             continue;
         }
 
-        fs::write(
-            paths.vault_root().join(&plan.output_path),
+        secure_write(
+            paths.vault_root(),
+            Path::new(&plan.output_path),
             &plan.updated_contents,
         )?;
     }
@@ -655,6 +659,31 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
     use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn move_note_rejects_a_symlinked_source() {
+        use std::os::unix::fs::symlink;
+
+        let temp_dir = TempDir::new().expect("temp dir");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+        fs::write(vault_root.join("Source.md"), "# Source\n").expect("source note");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+        let outside = temp_dir.path().join("outside.md");
+        fs::write(&outside, "# Outside\n").expect("outside note");
+        fs::remove_file(vault_root.join("Source.md")).expect("remove source");
+        symlink(&outside, vault_root.join("Source.md")).expect("source symlink");
+
+        move_note(&paths, "Source.md", "Moved.md", false)
+            .expect_err("symlinked source must be rejected");
+        assert_eq!(
+            fs::read_to_string(outside).expect("outside note"),
+            "# Outside\n"
+        );
+        assert!(!vault_root.join("Moved.md").exists());
+    }
 
     #[test]
     fn rewrite_link_preserves_style_and_subpaths() {

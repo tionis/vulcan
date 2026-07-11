@@ -1246,17 +1246,19 @@ Remediation completed: the vault data server always has a token; when the operat
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `M-07`.
-- [ ] Add or update a regression test: Symlinked `.base` edit test fails without modifying target.
-- [ ] Add or update a regression test: Symlinked Kanban board mutation test fails safely.
-- [ ] Implement the remediation: Apply the same secure no-follow write helper to Bases, Kanban, and move-rewrite paths; reject symlinked plugin documents during scan or mutation.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Symlinked `.base` edit test fails without modifying target.
+- [x] Add or update a regression test: Symlinked Kanban board mutation test fails safely.
+- [x] Implement the remediation: Apply the same secure no-follow write helper to Bases, Kanban, and move-rewrite paths; reject symlinked plugin documents during scan or mutation.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+Remediation completed: Bases reads and edits, Kanban reads and mutations, and move-rewrite outputs use vault-relative no-follow primitives. Note moves securely read the source and exclusively create a contained destination before removing the validated source. Hostile tests confirm symlinked Bases, boards, and move sources fail without changing outside targets.
 
 ### M-08. Plugin command handlers skip selected permission profiles
 
