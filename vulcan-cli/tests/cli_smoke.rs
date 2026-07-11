@@ -15964,6 +15964,80 @@ fn saved_reports_can_be_listed_run_and_batched() {
 }
 
 #[test]
+fn saved_reports_and_automation_exports_respect_read_permissions() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Public")).expect("public dir should exist");
+    fs::create_dir_all(vault_root.join("Private")).expect("private dir should exist");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+    fs::write(vault_root.join("Public/Visible.md"), "# Visible\n")
+        .expect("public note should write");
+    fs::write(vault_root.join("Private/Secret.md"), "# Secret\n")
+        .expect("private note should write");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[permissions.profiles.public_only]\nread = { allow = [\"folder:Public/**\"] }\n",
+    )
+    .expect("config should write");
+    run_scan(&vault_root);
+    let vault = vault_root.to_str().expect("vault path should be utf-8");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault,
+            "saved",
+            "create",
+            "notes",
+            "all-notes",
+            "--export",
+            "jsonl",
+            "--export-path",
+            "exports/restricted.jsonl",
+        ])
+        .assert()
+        .success();
+
+    let run = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault,
+            "--permissions",
+            "public_only",
+            "--output",
+            "json",
+            "saved",
+            "run",
+            "all-notes",
+        ])
+        .assert()
+        .success();
+    let rows = parse_stdout_json_lines(&run);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["document_path"], "Public/Visible.md");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault,
+            "--permissions",
+            "public_only",
+            "automation",
+            "run",
+            "--all-reports",
+        ])
+        .assert()
+        .success();
+    let exported = fs::read_to_string(vault_root.join("exports/restricted.jsonl"))
+        .expect("automation export should exist");
+    assert!(exported.contains("Public/Visible.md"));
+    assert!(!exported.contains("Private/Secret.md"));
+}
+
+#[test]
 fn doctor_and_cache_verify_support_issue_exit_codes() {
     let broken_dir = TempDir::new().expect("temp dir should be created");
     let broken_vault = broken_dir.path().join("vault");

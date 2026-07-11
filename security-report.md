@@ -755,17 +755,19 @@ Remediation completed: the shared config layer cannot activate or configure embe
 **Action checklist:**
 
 - [ ] Assign an owner and target release for `H-10`.
-- [ ] Add or update a regression test: Saved-report fixture under read-restricted profile returns only allowed notes.
-- [ ] Add or update a regression test: Automation export test verifies denied notes are absent.
-- [ ] Implement the remediation: Thread the selected `PermissionFilter` through every saved-report execution mode, including Bases evaluation and exports.
-- [ ] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
-- [ ] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
+- [x] Add or update a regression test: Saved-report fixture under read-restricted profile returns only allowed notes.
+- [x] Add or update a regression test: Automation export test verifies denied notes are absent.
+- [x] Implement the remediation: Thread the selected `PermissionFilter` through every saved-report execution mode, including Bases evaluation and exports.
+- [x] Audit adjacent command handlers, MCP tools, app workflows, and tests for the same boundary issue.
+- [x] Run the narrowest relevant test target, then `cargo test --workspace` before closing.
 - [ ] Re-run the original reproduction or security scan and attach the verification evidence to the tracking issue.
 
 **Preventive controls:**
 
-- [ ] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
-- [ ] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+- [x] Add regression tests that run the affected command under a restrictive permission profile or hostile-vault fixture.
+- [x] Centralize containment, permission, and sandbox checks in reusable helpers instead of relying on call-site convention.
+
+Remediation completed: saved search, note-query, and Bases executions receive the selected read filter in direct and automation/batch paths. Bases source queries and the auxiliary formula/link-resolution note index are filtered before derived rows are produced. A restrictive CLI fixture verifies both direct output and persisted automation export, and a core Bases test verifies denied rows never enter evaluation.
 
 ### H-11. Bulk mutation APIs accept `../` and absolute paths before writing
 

@@ -2,11 +2,13 @@ use crate::expression::eval::EvalContext;
 use crate::expression::parse_expression;
 use crate::expression::value::DataviewTimeZone;
 use crate::paths::{normalize_relative_input_path, RelativePathError, RelativePathOptions};
+use crate::permissions::PermissionFilter;
 use crate::properties::{
-    load_note_index, parse_note_filter_expression, FilterField, FilterOperator, FilterValue,
+    load_note_index_with_filter, parse_note_filter_expression, query_notes_with_filter,
+    FilterField, FilterOperator, FilterValue,
 };
 use crate::tasknotes::extract_tasknote;
-use crate::{load_vault_config, query_notes, NoteQuery, NoteRecord, PropertyError, VaultPaths};
+use crate::{load_vault_config, NoteQuery, NoteRecord, PropertyError, VaultPaths};
 use serde::Serialize;
 use serde_json::Value;
 use std::cmp::Ordering;
@@ -136,6 +138,8 @@ pub struct BasesSourceRequest {
     pub filters: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub config: Option<Value>,
+    #[serde(skip)]
+    pub read_filter: Option<PermissionFilter>,
 }
 
 pub trait BasesSource: Send + Sync {
@@ -155,13 +159,14 @@ impl BasesSource for FileSource {
         paths: &VaultPaths,
         request: &BasesSourceRequest,
     ) -> Result<Vec<NoteRecord>, BasesError> {
-        query_notes(
+        query_notes_with_filter(
             paths,
             &NoteQuery {
                 filters: request.filters.clone(),
                 sort_by: None,
                 sort_descending: false,
             },
+            request.read_filter.as_ref(),
         )
         .map(|report| report.notes)
         .map_err(BasesError::Property)
@@ -179,13 +184,14 @@ impl BasesSource for TaskNotesSource {
     ) -> Result<Vec<NoteRecord>, BasesError> {
         let config = load_vault_config(paths).config;
         let include_archived = tasknotes_source_include_archived(request.config.as_ref());
-        let mut rows = query_notes(
+        let mut rows = query_notes_with_filter(
             paths,
             &NoteQuery {
                 filters: request.filters.clone(),
                 sort_by: None,
                 sort_descending: false,
             },
+            request.read_filter.as_ref(),
         )
         .map_err(BasesError::Property)?
         .notes;
@@ -229,9 +235,18 @@ impl BasesEvaluator {
         paths: &VaultPaths,
         relative_path: &str,
     ) -> Result<BasesEvalReport, BasesError> {
+        self.evaluate_file_with_filter(paths, relative_path, None)
+    }
+
+    pub fn evaluate_file_with_filter(
+        &self,
+        paths: &VaultPaths,
+        relative_path: &str,
+        read_filter: Option<&PermissionFilter>,
+    ) -> Result<BasesEvalReport, BasesError> {
         let normalized = normalize_base_path(relative_path)?;
         let source = fs::read_to_string(paths.vault_root().join(&normalized))?;
-        self.evaluate_yaml(paths, &normalized, &source)
+        self.evaluate_yaml_with_filter(paths, &normalized, &source, read_filter)
     }
 
     pub fn evaluate_yaml(
@@ -240,8 +255,18 @@ impl BasesEvaluator {
         normalized: &str,
         yaml: &str,
     ) -> Result<BasesEvalReport, BasesError> {
+        self.evaluate_yaml_with_filter(paths, normalized, yaml, None)
+    }
+
+    pub fn evaluate_yaml_with_filter(
+        &self,
+        paths: &VaultPaths,
+        normalized: &str,
+        yaml: &str,
+        read_filter: Option<&PermissionFilter>,
+    ) -> Result<BasesEvalReport, BasesError> {
         let parsed = parse_base_file(yaml)?;
-        self.evaluate_parsed(paths, normalized, parsed)
+        self.evaluate_parsed(paths, normalized, parsed, read_filter)
     }
 
     fn evaluate_parsed(
@@ -249,6 +274,7 @@ impl BasesEvaluator {
         paths: &VaultPaths,
         normalized: &str,
         parsed: ParsedBaseFile,
+        read_filter: Option<&PermissionFilter>,
     ) -> Result<BasesEvalReport, BasesError> {
         let ParsedBaseFile {
             source,
@@ -260,6 +286,10 @@ impl BasesEvaluator {
         } = parsed;
         let mut diagnostics = parsed_diagnostics;
         let mut views = Vec::new();
+        let mut context = BaseEvaluationContext {
+            diagnostics: &mut diagnostics,
+            read_filter,
+        };
 
         for view in parsed_views {
             if let Some(evaluated_view) = evaluate_base_view(
@@ -269,7 +299,7 @@ impl BasesEvaluator {
                 &base_filters,
                 &property_display_names,
                 view,
-                &mut diagnostics,
+                &mut context,
             )? {
                 views.push(evaluated_view);
             }
@@ -302,6 +332,11 @@ impl BasesEvaluator {
     fn source(&self, source_type: &str) -> Option<&Arc<dyn BasesSource>> {
         self.sources.get(&normalize_source_type(source_type))
     }
+}
+
+struct BaseEvaluationContext<'a> {
+    diagnostics: &'a mut Vec<BasesDiagnostic>,
+    read_filter: Option<&'a PermissionFilter>,
 }
 
 // ── View-spec public structs ────────────────────────────────────────────────
@@ -784,6 +819,14 @@ pub fn evaluate_base_file(
     BasesEvaluator::new().evaluate_file(paths, relative_path)
 }
 
+pub fn evaluate_base_file_with_filter(
+    paths: &VaultPaths,
+    relative_path: &str,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<BasesEvalReport, BasesError> {
+    BasesEvaluator::new().evaluate_file_with_filter(paths, relative_path, read_filter)
+}
+
 pub fn inspect_base_file(
     paths: &VaultPaths,
     relative_path: &str,
@@ -801,8 +844,10 @@ fn evaluate_base_view(
     base_filters: &[String],
     property_display_names: &BTreeMap<String, String>,
     view: ParsedBaseView,
-    diagnostics: &mut Vec<BasesDiagnostic>,
+    context: &mut BaseEvaluationContext<'_>,
 ) -> Result<Option<BasesEvaluatedView>, BasesError> {
+    let diagnostics = &mut *context.diagnostics;
+    let read_filter = context.read_filter;
     let view_filters = combined_filters(base_filters, &view.filters);
     if !supports_cli_base_view_type(&view.view_type) {
         diagnostics.push(BasesDiagnostic {
@@ -825,6 +870,7 @@ fn evaluate_base_view(
         &BasesSourceRequest {
             filters: view_filters.clone(),
             config: source.config.clone(),
+            read_filter: read_filter.cloned(),
         },
     ) {
         Ok(rows) => rows,
@@ -851,7 +897,8 @@ fn evaluate_base_view(
     // Build a vault-wide note index for link resolution (asFile / linksTo).
     // Start with a lightweight full-vault index (properties only, no tags/links),
     // then overlay the current query's notes which have tags/links fully loaded.
-    let mut note_index: HashMap<String, NoteRecord> = load_note_index(paths).unwrap_or_default();
+    let mut note_index: HashMap<String, NoteRecord> =
+        load_note_index_with_filter(paths, read_filter).unwrap_or_default();
     for note in &notes {
         note_index.insert(note.file_name.clone(), note.clone());
     }
@@ -2286,6 +2333,7 @@ fn normalize_base_path(path: &str) -> Result<String, BasesError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::permissions::{PathPermission, ResourceSpecifier};
     use crate::{scan_vault, ScanMode};
     use serde_json::json;
     use std::path::Path;
@@ -2443,6 +2491,34 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.message.contains("unsupported view type `board`")));
+    }
+
+    #[test]
+    fn filtered_bases_evaluation_excludes_denied_notes_before_rows_are_derived() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        std::fs::create_dir_all(vault_root.join("Public")).expect("public dir");
+        std::fs::create_dir_all(vault_root.join("Private")).expect("private dir");
+        std::fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+        std::fs::write(vault_root.join("Public/Visible.md"), "# Visible\n").expect("public note");
+        std::fs::write(vault_root.join("Private/Secret.md"), "# Secret\n").expect("private note");
+        std::fs::write(
+            vault_root.join("all.base"),
+            "views:\n  - type: table\n    name: All\n    order: [file.name]\n",
+        )
+        .expect("base file");
+        let paths = VaultPaths::new(&vault_root);
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let filter = PermissionFilter::new(PathPermission {
+            allow: vec![ResourceSpecifier::Folder("Public/**".to_string())],
+            deny: Vec::new(),
+        });
+
+        let report = evaluate_base_file_with_filter(&paths, "all.base", Some(&filter))
+            .expect("filtered base should evaluate");
+
+        assert_eq!(report.views[0].rows.len(), 1);
+        assert_eq!(report.views[0].rows[0].document_path, "Public/Visible.md");
     }
 
     #[test]
