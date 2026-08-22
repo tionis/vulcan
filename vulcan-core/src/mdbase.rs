@@ -69,6 +69,69 @@ pub fn bundled_mdbase_schema(canonical_id: &str) -> Option<&'static MdbaseBundle
         .find(|schema| schema.canonical_id == canonical_id)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MdbaseSchemaDiagnostic {
+    pub code: String,
+    pub message: String,
+    pub instance_path: String,
+    pub schema_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MdbaseSchemaCompileError(pub String);
+
+impl Display for MdbaseSchemaCompileError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for MdbaseSchemaCompileError {}
+
+/// Validate a JSON-compatible frontmatter value with the mdbase Draft 2020-12
+/// profile. Date, time, and date-time formats are assertions, as required by
+/// mdbase rather than annotations.
+pub fn validate_mdbase_schema_value(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+) -> Result<Vec<MdbaseSchemaDiagnostic>, MdbaseSchemaCompileError> {
+    let validator = jsonschema::draft202012::options()
+        .should_validate_formats(true)
+        .build(schema)
+        .map_err(|error| MdbaseSchemaCompileError(error.to_string()))?;
+    Ok(validator
+        .iter_errors(value)
+        .map(|error| {
+            let keyword = error.kind().keyword();
+            MdbaseSchemaDiagnostic {
+                code: if keyword == "format" {
+                    "format_invalid".to_string()
+                } else {
+                    format!("schema_{}", camel_to_snake(keyword))
+                },
+                message: error.to_string(),
+                instance_path: error.instance_path().to_string(),
+                schema_path: error.schema_path().to_string(),
+            }
+        })
+        .collect())
+}
+
+fn camel_to_snake(value: &str) -> String {
+    let mut output = String::with_capacity(value.len());
+    for character in value.chars() {
+        if character.is_ascii_uppercase() {
+            if !output.is_empty() {
+                output.push('_');
+            }
+            output.push(character.to_ascii_lowercase());
+        } else {
+            output.push(character);
+        }
+    }
+    output
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum MdbaseValidationLevel {
@@ -1141,6 +1204,45 @@ settings:
             bundled_mdbase_schema("https://mdbase.dev/schemas/latest/config.schema.json").is_none()
         );
         assert!(bundled_mdbase_schema("https://example.com/schema.json").is_none());
+    }
+
+    #[test]
+    fn schema_validation_asserts_formats_and_emits_canonical_codes() {
+        let schema = serde_json::json!({
+            "type": "object",
+            "required": ["due", "created"],
+            "properties": {
+                "due": {"type": "string", "format": "date"},
+                "created": {"type": "string", "format": "date-time"}
+            },
+            "additionalProperties": false
+        });
+        let value = serde_json::json!({"due": "2026-02-30", "created": "2026-08-22T10:00:00"});
+
+        let diagnostics =
+            validate_mdbase_schema_value(&schema, &value).expect("schema should compile");
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code.as_str())
+                .collect::<Vec<_>>(),
+            ["format_invalid", "format_invalid"]
+        );
+    }
+
+    #[test]
+    fn schema_validation_resolves_fragment_references() {
+        let schema = serde_json::json!({
+            "$defs": {"identifier": {"type": "string", "minLength": 2}},
+            "type": "object",
+            "properties": {"id": {"$ref": "#/$defs/identifier"}}
+        });
+        let diagnostics = validate_mdbase_schema_value(&schema, &serde_json::json!({"id": "x"}))
+            .expect("fragment reference should compile");
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "schema_min_length");
+        assert_eq!(diagnostics[0].instance_path, "/id");
     }
 
     #[test]

@@ -22,6 +22,7 @@ csv.workspace = true
 fs2.workspace = true
 globset.workspace = true
 ignore.workspace = true
+jsonschema.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
 libc.workspace = true
 notify.workspace = true
