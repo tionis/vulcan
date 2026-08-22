@@ -9,7 +9,7 @@ use chrono_tz::Tz;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -23,6 +23,9 @@ pub const MDBASE_SPEC_UPSTREAM_URL: &str = "https://github.com/mdbase-dev/mdbase
 pub const MDBASE_BUNDLED_ASSET_DIGEST: &str =
     "9b4c7d477dc914099a5a40092d6543caca9c626d5ca0ff3ed5a4d47646c29e52";
 pub const MDBASE_CANONICAL_SCHEMA_BASE: &str = "https://mdbase.dev/schemas/v0.3/";
+const MDBASE_SCHEMA_MAX_FILES: usize = 64;
+const MDBASE_SCHEMA_MAX_DEPTH: usize = 32;
+const MDBASE_SCHEMA_MAX_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MdbaseBundledSchema {
@@ -99,7 +102,66 @@ pub fn validate_mdbase_schema_value(
         .should_validate_formats(true)
         .build(schema)
         .map_err(|error| MdbaseSchemaCompileError(error.to_string()))?;
-    Ok(validator
+    Ok(schema_diagnostics(&validator, value))
+}
+
+/// Validate with offline canonical schemas and collection-confined local file
+/// references. The base file establishes the location for relative `$ref`
+/// values; it and every referenced schema must remain inside `collection_root`.
+pub fn validate_mdbase_schema_value_with_local_refs(
+    schema: &serde_json::Value,
+    value: &serde_json::Value,
+    base_file: &Path,
+    collection_root: &Path,
+) -> Result<Vec<MdbaseSchemaDiagnostic>, MdbaseSchemaCompileError> {
+    let collection_root = fs::canonicalize(collection_root).map_err(|error| {
+        MdbaseSchemaCompileError(format!(
+            "failed to resolve mdbase collection root {}: {error}",
+            collection_root.display()
+        ))
+    })?;
+    let base_file = fs::canonicalize(base_file).map_err(|error| {
+        MdbaseSchemaCompileError(format!(
+            "failed to resolve schema base file {}: {error}",
+            base_file.display()
+        ))
+    })?;
+    ensure_schema_path_is_contained(&base_file, &collection_root)?;
+
+    let base_uri = schema_file_uri(&base_file)?;
+    let mut schemas = HashMap::new();
+    for bundled in MDBASE_BUNDLED_SCHEMAS {
+        let parsed = serde_json::from_str(bundled.json).map_err(|error| {
+            MdbaseSchemaCompileError(format!(
+                "bundled mdbase schema {} is invalid JSON: {error}",
+                bundled.file_name
+            ))
+        })?;
+        schemas.insert(bundled.canonical_id.to_string(), parsed);
+    }
+
+    let mut loader = LocalSchemaLoader {
+        collection_root: &collection_root,
+        schemas: &mut schemas,
+        loaded_paths: BTreeSet::new(),
+        visiting: vec![base_file.clone()],
+    };
+    loader.load_references(schema, &base_file, 0)?;
+
+    let validator = jsonschema::draft202012::options()
+        .should_validate_formats(true)
+        .with_base_uri(base_uri)
+        .with_retriever(MdbaseSchemaRetriever { schemas })
+        .build(schema)
+        .map_err(|error| MdbaseSchemaCompileError(error.to_string()))?;
+    Ok(schema_diagnostics(&validator, value))
+}
+
+fn schema_diagnostics(
+    validator: &jsonschema::Validator,
+    value: &serde_json::Value,
+) -> Vec<MdbaseSchemaDiagnostic> {
+    let mut diagnostics = validator
         .iter_errors(value)
         .map(|error| {
             let keyword = error.kind().keyword();
@@ -114,7 +176,228 @@ pub fn validate_mdbase_schema_value(
                 schema_path: error.schema_path().to_string(),
             }
         })
-        .collect())
+        .collect::<Vec<_>>();
+    diagnostics.sort_by(|left, right| {
+        left.instance_path
+            .cmp(&right.instance_path)
+            .then_with(|| left.schema_path.cmp(&right.schema_path))
+            .then_with(|| left.code.cmp(&right.code))
+            .then_with(|| left.message.cmp(&right.message))
+    });
+    diagnostics
+}
+
+struct MdbaseSchemaRetriever {
+    schemas: HashMap<String, serde_json::Value>,
+}
+
+impl jsonschema::Retrieve for MdbaseSchemaRetriever {
+    fn retrieve(
+        &self,
+        uri: &jsonschema::Uri<String>,
+    ) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
+        self.schemas
+            .get(uri.as_str())
+            .cloned()
+            .ok_or_else(|| format!("schema reference is not available offline: {uri}").into())
+    }
+}
+
+struct LocalSchemaLoader<'a> {
+    collection_root: &'a Path,
+    schemas: &'a mut HashMap<String, serde_json::Value>,
+    loaded_paths: BTreeSet<PathBuf>,
+    visiting: Vec<PathBuf>,
+}
+
+impl LocalSchemaLoader<'_> {
+    fn load_references(
+        &mut self,
+        schema: &serde_json::Value,
+        source_file: &Path,
+        depth: usize,
+    ) -> Result<(), MdbaseSchemaCompileError> {
+        if depth > MDBASE_SCHEMA_MAX_DEPTH {
+            return Err(MdbaseSchemaCompileError(format!(
+                "schema reference depth exceeds {MDBASE_SCHEMA_MAX_DEPTH}"
+            )));
+        }
+        let mut references = Vec::new();
+        collect_external_schema_references(schema, &mut references);
+        references.sort_unstable();
+        references.dedup();
+
+        for reference in references {
+            let Some(resolved) = self.resolve_reference(reference, source_file)? else {
+                continue;
+            };
+            if let Some(cycle_start) = self.visiting.iter().position(|path| path == &resolved) {
+                return Err(self.cycle_error(cycle_start, &resolved));
+            }
+            if self.loaded_paths.contains(&resolved) {
+                continue;
+            }
+            if self.loaded_paths.len() >= MDBASE_SCHEMA_MAX_FILES {
+                return Err(MdbaseSchemaCompileError(format!(
+                    "schema reference count exceeds {MDBASE_SCHEMA_MAX_FILES}"
+                )));
+            }
+            let referenced_schema = read_local_schema(&resolved)?;
+            let uri = schema_file_uri(&resolved)?;
+            self.schemas.insert(uri, referenced_schema.clone());
+            self.visiting.push(resolved.clone());
+            self.load_references(&referenced_schema, &resolved, depth + 1)?;
+            self.visiting.pop();
+            self.loaded_paths.insert(resolved);
+        }
+        Ok(())
+    }
+
+    fn resolve_reference(
+        &self,
+        reference: &str,
+        source_file: &Path,
+    ) -> Result<Option<PathBuf>, MdbaseSchemaCompileError> {
+        let reference = reference.split('#').next().unwrap_or_default();
+        if reference.is_empty() || bundled_mdbase_schema(reference).is_some() {
+            return Ok(None);
+        }
+        if reference.contains("://") || reference.starts_with("urn:") {
+            return Err(MdbaseSchemaCompileError(format!(
+                "remote schema reference is not allowed: {reference}"
+            )));
+        }
+        if reference.contains('?') {
+            return Err(MdbaseSchemaCompileError(format!(
+                "schema reference queries are not supported: {reference}"
+            )));
+        }
+        let parent = source_file.parent().ok_or_else(|| {
+            MdbaseSchemaCompileError(format!(
+                "schema base file has no parent: {}",
+                source_file.display()
+            ))
+        })?;
+        let resolved = fs::canonicalize(parent.join(reference)).map_err(|error| {
+            MdbaseSchemaCompileError(format!(
+                "failed to resolve schema reference {reference} from {}: {error}",
+                source_file.display()
+            ))
+        })?;
+        ensure_schema_path_is_contained(&resolved, self.collection_root)?;
+        Ok(Some(resolved))
+    }
+
+    fn cycle_error(&self, cycle_start: usize, resolved: &Path) -> MdbaseSchemaCompileError {
+        let mut cycle = self.visiting[cycle_start..]
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>();
+        cycle.push(resolved.display().to_string());
+        MdbaseSchemaCompileError(format!(
+            "schema reference cycle detected: {}",
+            cycle.join(" -> ")
+        ))
+    }
+}
+
+fn read_local_schema(path: &Path) -> Result<serde_json::Value, MdbaseSchemaCompileError> {
+    let metadata = fs::metadata(path).map_err(|error| {
+        MdbaseSchemaCompileError(format!(
+            "failed to inspect schema reference {}: {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(MdbaseSchemaCompileError(format!(
+            "schema reference is not a regular file: {}",
+            path.display()
+        )));
+    }
+    if metadata.len() > MDBASE_SCHEMA_MAX_BYTES {
+        return Err(MdbaseSchemaCompileError(format!(
+            "schema reference exceeds {MDBASE_SCHEMA_MAX_BYTES} bytes: {}",
+            path.display()
+        )));
+    }
+    let contents = fs::read(path).map_err(|error| {
+        MdbaseSchemaCompileError(format!(
+            "failed to read schema reference {}: {error}",
+            path.display()
+        ))
+    })?;
+    let yaml: serde_yaml::Value = serde_yaml::from_slice(&contents).map_err(|error| {
+        MdbaseSchemaCompileError(format!(
+            "failed to parse schema reference {}: {error}",
+            path.display()
+        ))
+    })?;
+    serde_json::to_value(yaml).map_err(|error| {
+        MdbaseSchemaCompileError(format!(
+            "schema reference {} is not JSON-compatible: {error}",
+            path.display()
+        ))
+    })
+}
+
+fn collect_external_schema_references<'a>(
+    value: &'a serde_json::Value,
+    references: &mut Vec<&'a str>,
+) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if let Some(reference) = object.get("$ref").and_then(serde_json::Value::as_str) {
+                references.push(reference);
+            }
+            for child in object.values() {
+                collect_external_schema_references(child, references);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                collect_external_schema_references(child, references);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn ensure_schema_path_is_contained(
+    path: &Path,
+    collection_root: &Path,
+) -> Result<(), MdbaseSchemaCompileError> {
+    if path.starts_with(collection_root) {
+        Ok(())
+    } else {
+        Err(MdbaseSchemaCompileError(format!(
+            "schema reference escapes collection root: {}",
+            path.display()
+        )))
+    }
+}
+
+fn schema_file_uri(path: &Path) -> Result<String, MdbaseSchemaCompileError> {
+    let path = path.to_str().ok_or_else(|| {
+        MdbaseSchemaCompileError(format!(
+            "schema path is not valid UTF-8: {}",
+            path.display()
+        ))
+    })?;
+    let normalized = path.replace('\\', "/");
+    let mut encoded = String::with_capacity(normalized.len());
+    for byte in normalized.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'-' | b'_' | b'.' | b'~' | b':') {
+            encoded.push(char::from(byte));
+        } else {
+            use std::fmt::Write;
+            write!(encoded, "%{byte:02X}").expect("writing to a string cannot fail");
+        }
+    }
+    if encoded.starts_with('/') {
+        Ok(format!("file://{encoded}"))
+    } else {
+        Ok(format!("file:///{encoded}"))
+    }
 }
 
 fn camel_to_snake(value: &str) -> String {
@@ -1243,6 +1526,145 @@ settings:
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].code, "schema_min_length");
         assert_eq!(diagnostics[0].instance_path, "/id");
+    }
+
+    #[test]
+    fn schema_validation_resolves_bounded_local_file_references() {
+        let temporary = tempdir().expect("temporary collection should exist");
+        let schema_directory = temporary.path().join("_types/schemas");
+        fs::create_dir_all(&schema_directory).expect("schema directory should exist");
+        let base_file = temporary.path().join("_types/contact.md");
+        fs::write(&base_file, "type definition placeholder").expect("base file should be written");
+        fs::write(
+            schema_directory.join("identifier.json"),
+            r#"{"type":"string","minLength":3}"#,
+        )
+        .expect("referenced schema should be written");
+        let schema = serde_json::json!({
+            "type": "object",
+            "properties": {"id": {"$ref": "schemas/identifier.json"}}
+        });
+
+        let diagnostics = validate_mdbase_schema_value_with_local_refs(
+            &schema,
+            &serde_json::json!({"id": "x"}),
+            &base_file,
+            temporary.path(),
+        )
+        .expect("local reference should compile");
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].code, "schema_min_length");
+        assert_eq!(diagnostics[0].instance_path, "/id");
+    }
+
+    #[test]
+    fn schema_validation_resolves_canonical_schemas_offline() {
+        let temporary = tempdir().expect("temporary collection should exist");
+        let base_file = temporary.path().join("type.md");
+        fs::write(&base_file, "type definition placeholder").expect("base file should be written");
+        let schema = serde_json::json!({
+            "$ref": "https://mdbase.dev/schemas/v0.3/diagnostic.schema.json"
+        });
+
+        let diagnostics = validate_mdbase_schema_value_with_local_refs(
+            &schema,
+            &serde_json::json!({}),
+            &base_file,
+            temporary.path(),
+        )
+        .expect("canonical reference should resolve from the bundle");
+
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "schema_required"));
+    }
+
+    #[test]
+    fn schema_validation_rejects_reference_cycles() {
+        let temporary = tempdir().expect("temporary collection should exist");
+        let base_file = temporary.path().join("base.json");
+        let other_file = temporary.path().join("other.json");
+        fs::write(&base_file, r#"{"$ref":"other.json"}"#).expect("base schema should write");
+        fs::write(&other_file, r#"{"$ref":"base.json"}"#).expect("other schema should write");
+        let schema = serde_json::json!({"$ref": "other.json"});
+
+        let error = validate_mdbase_schema_value_with_local_refs(
+            &schema,
+            &serde_json::json!({}),
+            &base_file,
+            temporary.path(),
+        )
+        .expect_err("reference cycle should fail");
+
+        assert!(error
+            .to_string()
+            .contains("schema reference cycle detected"));
+    }
+
+    #[test]
+    fn schema_validation_rejects_references_outside_collection() {
+        let temporary = tempdir().expect("temporary directory should exist");
+        let collection = temporary.path().join("collection");
+        fs::create_dir_all(&collection).expect("collection should exist");
+        let base_file = collection.join("base.json");
+        fs::write(&base_file, r#"{"$ref":"../outside.json"}"#).expect("base schema should write");
+        fs::write(
+            temporary.path().join("outside.json"),
+            r#"{"type":"object"}"#,
+        )
+        .expect("outside schema should write");
+        let schema = serde_json::json!({"$ref": "../outside.json"});
+
+        let error = validate_mdbase_schema_value_with_local_refs(
+            &schema,
+            &serde_json::json!({}),
+            &base_file,
+            &collection,
+        )
+        .expect_err("escaping reference should fail");
+
+        assert!(error.to_string().contains("escapes collection root"));
+    }
+
+    #[test]
+    fn schema_validation_rejects_remote_and_oversized_references() {
+        let temporary = tempdir().expect("temporary collection should exist");
+        let base_file = temporary.path().join("base.json");
+        fs::write(&base_file, "{}\n").expect("base schema should write");
+
+        let remote_error = validate_mdbase_schema_value_with_local_refs(
+            &serde_json::json!({"$ref": "https://example.com/schema.json"}),
+            &serde_json::json!({}),
+            &base_file,
+            temporary.path(),
+        )
+        .expect_err("remote reference should fail offline");
+        assert!(remote_error
+            .to_string()
+            .contains("remote schema reference is not allowed"));
+
+        let oversized_file = temporary.path().join("oversized.json");
+        fs::write(
+            &oversized_file,
+            vec![
+                b' ';
+                usize::try_from(MDBASE_SCHEMA_MAX_BYTES)
+                    .expect("schema byte limit should fit usize")
+                    + 1
+            ],
+        )
+        .expect("oversized schema should write");
+        let oversized_error = validate_mdbase_schema_value_with_local_refs(
+            &serde_json::json!({"$ref": "oversized.json"}),
+            &serde_json::json!({}),
+            &base_file,
+            temporary.path(),
+        )
+        .expect_err("oversized reference should fail before parsing");
+        assert!(oversized_error
+            .to_string()
+            .contains("schema reference exceeds"));
     }
 
     #[test]

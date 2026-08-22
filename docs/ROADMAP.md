@@ -6379,7 +6379,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 ### 9.32.2 JSON Schema, type registry, and data contracts
 
-- [ ] Replace or supplement the small internal tool-schema validator with an MSRV-compatible JSON Schema 2020-12 implementation that covers every mdbase-required keyword, asserted date/time/date-time formats, fragment references, bounded local file references, cycle detection, and canonical `schema_*` diagnostics.
+- [x] Replace or supplement the small internal tool-schema validator with an MSRV-compatible JSON Schema 2020-12 implementation that covers every mdbase-required keyword, asserted date/time/date-time formats, fragment references, bounded local file references, cycle detection, and canonical `schema_*` diagnostics.
 - [ ] Load and validate `kind: mdbase.type` control files into a deterministic case-insensitive registry while preserving authored names and reporting conflicts independently of filesystem order.
 - [ ] Implement explicit type declaration precedence and structured inferred matching (`path_glob`, `fields_present`, and `match.where`) against persisted frontmatter, including multiple matched types and deterministic ordering.
 - [ ] Implement compatible multi-type composition for schemas, defaults, links, uniqueness, paths, lifecycle declarations, projections, and display metadata; report `type_conflict` before applying conflicted behavior.
