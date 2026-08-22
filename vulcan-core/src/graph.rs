@@ -808,13 +808,9 @@ pub fn query_links_with_filter(
         .map(|row| {
             let row = row?;
             let has_resolved_target = row.resolved_target_path.is_some();
-            let resolved_target_path = row.resolved_target_path.and_then(|path| {
-                if filter.is_none_or(|filter| filter.is_allowed(&path)) {
-                    Some(path)
-                } else {
-                    None
-                }
-            });
+            let resolved_target_path = row
+                .resolved_target_path
+                .filter(|path| filter.is_none_or(|filter| filter.is_allowed(path)));
             Ok(OutgoingLinkRecord {
                 raw_text: row.raw_text,
                 link_kind: row.link_kind.clone(),
