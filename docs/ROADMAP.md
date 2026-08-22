@@ -5246,7 +5246,25 @@ trait SyncBackend: Send + Sync {
 - [ ] Sync status is always "external" — daemon doesn't control it
 - [ ] Useful for users who already have sync set up and just want the daemon's API layer
 
-### 12.5 Sync API endpoints
+### 12.5 Seafile process backend
+
+- [ ] Prefer supervising a maintained standalone Seafile sync client or a separately reusable engine extracted from Seafile Sync Improved; do not duplicate Seafile block-transfer, encryption, history, conflict, and recovery code inside `vulcan-core`.
+- [ ] Materialize a complete local vault directory before exposing it to Vulcan. The SQLite cache remains local and rebuildable, and remote Seafile objects never become cache rows without a coherent local filesystem snapshot.
+- [ ] Model backend capabilities explicitly: initialize/pull/push or continuous sync, progress, remote revision, conflict copies, authentication state, offline state, recovery/rebuild, and whether pause/cancel is safe.
+- [ ] Keep server/library identifiers and non-secret policy in daemon config; read account/repository tokens and encrypted-library passwords from environment variables or a device secret store. Never copy Obsidian SecretStorage values into shared Vulcan config.
+- [ ] Reuse standard `seafile-ignore.txt` and define precedence for Vulcan internal files, Obsidian settings categories, plugin data, and user rules. Exclude `.vulcan/cache.db` and transient lock/temp files by default while allowing intentional shared config and durable state.
+- [ ] Coordinate sync publication with Vulcan's write lock, watcher coalescing, scan refresh, mass-deletion guard, git checkpoint policy, and conflict diagnostics. Never run a scan over a partially materialized remote commit.
+- [ ] Test initialization, incremental and realtime/fallback sync, interruption, authentication failure, encrypted repositories, mass deletion, conflicts, ignored paths, stale remote state, client crashes/restarts, and cache rebuild using a mock/fake process boundary.
+
+### 12.6 Storage virtualization decision gate
+
+- [ ] Keep `Path`-backed local files as the default and initial daemon contract. Sync backends populate a real working tree rather than making every core call remote-aware.
+- [ ] Before introducing a `VaultStorage` trait, document at least one concrete embedded use case that cannot use a materialized temporary/persistent workspace and measure the affected `vulcan-core`/`vulcan-app` boundaries.
+- [ ] Require any storage abstraction to provide safe path normalization, deterministic enumeration, coherent read snapshots, atomic create/replace/rename, locking or compare-and-swap, metadata/identity, change notifications, crash recovery, and streaming attachment access.
+- [ ] Keep cache placement and lifecycle separate from canonical storage: SQLite and search indexes remain local derived artifacts that can be discarded and rebuilt from one coherent storage snapshot.
+- [ ] Prototype at the application boundary first. Do not weaken filesystem security checks, write serialization, git behavior, or source-of-truth guarantees merely to support an object-store-shaped backend.
+
+### 12.7 Sync API endpoints
 
 - [ ] `GET /{id}/sync/status` — current sync state
 - [ ] `POST /{id}/sync/trigger` — force a sync cycle
@@ -5313,6 +5331,11 @@ trait SyncBackend: Send + Sync {
 - [ ] Wikilink autocomplete (uses `/notes` API for suggestions)
 - [ ] Tag autocomplete
 - [ ] Frontmatter property editor (structured form UI, not raw YAML editing)
+- [ ] Optional Wikilink Types relationship autocomplete sourced from the imported type registry; author ordinary alias annotations/frontmatter and preserve non-type `@` text.
+- [ ] Optional configurable symbol-link autocomplete (including @ Symbol Linking-style folder, alias, and template mappings) implemented as editor assistance over ordinary Markdown links and existing note/template APIs.
+- [ ] Auto Link Title paste/selection action using the explicit Phase 9.33 fetch/refactor service; never fetch merely because a document is opened or rendered.
+- [ ] LanguageTool inline diagnostics and accept/reject controls using the Phase 9.33 provider and source-range contracts, with per-user network permissions and request throttling.
+- [ ] VCF Contacts create/edit/search/quick-action forms over canonical contact-note frontmatter; keep CardDAV status/conflicts separate from the editor form.
 - [ ] Materialization pipeline: flush Automerge doc state to disk via `PATCH /{id}/notes/{path}`, which rescans and optionally commits
 - [ ] Optional session persistence: store Automerge binary doc in `.vulcan/` for crash recovery, discard after successful materialization
 - [ ] **Advanced table editing** (inspired by Advanced Tables plugin):
@@ -5408,6 +5431,14 @@ trait SyncBackend: Send + Sync {
 - [ ] Rust trait for daemon plugins: `on_event`, `register_routes`, `on_startup`, `on_shutdown`
 - [ ] Plugins compiled into the binary (feature flags) or loaded as dynamic libraries
 - [ ] This is a future direction — start with the webhook and built-in endpoint system first
+
+### 15.5 Supervised external tools and contact providers
+
+- [ ] Define a capability-declared external-tool adapter that uses explicit executable paths/argument templates, bounded execution, sanitized output, environment allowlists, permission profiles, cancellation, and structured status. Do not expose a generic unaudited shell hook through daemon configuration.
+- [ ] Add an optional HedgeSync adapter that delegates note push/pull/create/open operations to the maintained `hedgesync` CLI, validates the configured frontmatter mapping, rescans changed local files, and reports conflicts without making HedgeDoc an implicit source for search, publication, or unrelated daemon jobs.
+- [ ] Keep HedgeSync live operational-transform sessions outside Vulcan unless the external tool exposes a stable supervised protocol. Vulcan should not implement a second HedgeDoc merge engine.
+- [ ] Add a CardDAV provider boundary for VCF Contacts only after Phase 9.33 establishes loss-aware local Markdown/vCard round trips. Keep remote address-book identifiers and durable source mappings outside the rebuildable cache, credentials in environment/device-local secret storage, and conflicts user-visible rather than last-writer-wins.
+- [ ] Test executable replacement/path attacks, secret redaction, timeouts, cancellation, partial local mutations, rescan failures, CardDAV pagination/authentication/ETags, remote deletion policy, retry safety, malformed durable mappings, and unmanaged remote contacts with mock tools/providers.
 
 ---
 
@@ -6410,6 +6441,124 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 ### Deferred mdbase runtime work
 
 The mdbase event/action interoperability, durable runtime, workflow execution, provider registry, type-pack installation, and migration profiles are not part of Phase 9.32. Revisit them after the Phase 10 daemon and Vulcan's shared plugin/skill-command/permission boundaries are stable. Any later integration must adapt those contracts to the daemon rather than introducing executable behavior into `vulcan-core` or bypassing Vulcan authorization.
+
+---
+
+## Phase 9.33: Additional Obsidian plugin compatibility and vault workflows
+
+**Goal:** Cover the remaining plugins used by the project where their durable behavior affects Markdown, links, attachments, properties, or explicit headless workflows. Preserve graceful degradation: a vault authored with these plugins must remain understandable without Obsidian, and Vulcan must not require a plugin to be installed merely to index or export its files.
+
+**Depends on:** Phase 1 link/attachment indexing, Phase 2 safe rewrites, Phase 7 diagnostics and asset maintenance, Phase 9.13 QuickAdd compatibility, Phase 9.17 settings import, Phase 9.18 command and permission surfaces, Phase 9.31 configurable folder notes, and the shared publication pipeline from Phase 9.20/9.30.
+
+**Compatibility boundary:** Implement persisted formats and reusable headless operations, not Obsidian editor chrome. Markdown and ordinary vault files remain canonical; plugin settings are optional read-only import sources; SQLite rows and network results remain rebuildable or ephemeral. Mutating commands require deterministic plans, `--dry-run`, structured JSON reports, normal permission checks, atomic writes, link-safe rewrites, optional git commits, and no implicit network access during scan, doctor, export, or ordinary note reads.
+
+**Initial upstream references:** [HedgeSync](https://community.obsidian.md/plugins/hedgesync), [Seafile Sync Improved](https://community.obsidian.md/plugins/seafile-improved), [Broken Links](https://community.obsidian.md/plugins/broken-links), [Waypoint](https://github.com/IdreesInc/Waypoint), [Wikilink Types](https://github.com/penfieldlabs/obsidian-wikilink-types), [VCF Contacts](https://github.com/broekema41/obsidian-vcf-contacts), [QuickAdd](https://quickadd.obsidian.guide/docs/), [Local Images Plus](https://github.com/Sergei-Korneev/obsidian-local-images-plus), [LanguageTool](https://github.com/wrenger/obsidian-languagetool), [Auto Link Title](https://github.com/zolrath/obsidian-auto-link-title), [@ Symbol Linking](https://community.obsidian.md/plugins/at-symbol-linking), and [Wayback Archiver](https://community.obsidian.md/plugins/wayback-archiver). Pin exact reviewed versions or commits during 9.33.1; these moving links are discovery pointers, not conformance claims.
+
+### 9.33.1 Compatibility inventory, fixtures, and explicit non-work
+
+- [ ] Add a versioned compatibility matrix covering HedgeSync, Seafile Sync Improved, Broken Links, Waypoint, Wikilink Types, VCF Contacts, QuickAdd, Local Images Plus, LanguageTool, Auto Link Title, and @ Symbol Linking. Distinguish persisted-format compatibility, settings import, headless commands, daemon integration, and WebUI-only behavior.
+- [ ] Pin reviewed upstream plugin versions or commits and record relevant settings keys, marker syntax, frontmatter schemas, mutation rules, licenses, and graceful-degradation behavior. Vendor only the minimal permitted fixtures needed for conformance tests, with provenance metadata.
+- [ ] Add focused fixture vaults for each persisted format instead of depending on a user's installed `.obsidian/plugins/` tree. Fixtures must cover absent plugins, malformed settings, legacy settings, case-sensitive paths, Unicode, nested folders, and mixed-plugin interactions.
+- [ ] Confirm and document the existing QuickAdd boundary rather than building a duplicate macro engine: capture/template variables and settings import are supported; Macro/Multi choices map to `vulcan run` or shell workflows; editor selection and command-palette actions remain UI-only.
+- [ ] Confirm that @ Symbol Linking output needs no special parser mode: emitted Markdown links, aliases, folders, and template-created notes use existing Vulcan semantics. Defer symbol-trigger autocomplete and paste/editor interception to Phase 14.
+- [ ] Keep HedgeSync as an external `hedgesync` CLI integration. Do not reimplement HedgeDoc transport, bidirectional merge, or live operational-transform synchronization in Vulcan; document safe invocation followed by incremental rescan and route any future supervised external-command integration through Phase 15.
+
+### 9.33.2 Broken link and subpath diagnostics
+
+- [ ] Extend link resolution diagnostics beyond missing documents to distinguish a missing document, missing heading, missing block reference, malformed subpath, ambiguous document, and unsupported target form while retaining raw and resolved link representations.
+- [ ] Validate heading anchors using Obsidian-compatible slug/duplicate-heading behavior and validate block IDs against indexed block references for wikilinks, Markdown links, and embeds.
+- [ ] Report source path, byte range, raw target, resolved document, missing subpath, and stable diagnostic code through `doctor`, `note ... --check`, JSON output, and daemon-compatible report types.
+- [ ] Add `doctor` grouping and filtering useful for Broken Links-style folder/file/target views without putting presentation-only tree state in the cache.
+- [ ] Add safe repair suggestions for creating a missing note, selecting an unambiguous target, removing only the missing subpath, or rewriting to an existing heading/block. Do not auto-apply guesses; route accepted changes through existing note/refactor workflows.
+- [ ] Test duplicate headings, renamed headings and blocks, self-links, percent encoding, aliases, Unicode anchors, excluded paths, embeds, stale caches, and dry-run repair plans.
+
+### 9.33.3 Waypoint and Landmark generated MOCs
+
+- [ ] Import Waypoint settings explicitly from `.obsidian/plugins/waypoint/data.json`, including configured waypoint/landmark markers, folder-note behavior, sorting, exclusions, title/alias preferences, and nearest-folder-note policy. Unknown or unsupported settings must produce migration diagnostics.
+- [ ] Parse the standard Waypoint and Landmark percent-comment triggers plus generated begin/end regions without treating generated links as unsupported syntax. Preserve marker spelling and content outside owned regions exactly.
+- [ ] Build a deterministic hierarchy planner on the shared folder-note model from Phase 9.31. Support nested waypoints, landmark pass-through, pruning at child waypoints, nearest-folder-note mode, excluded files/folders, aliases/titles, and every configured folder-note placement/name convention.
+- [ ] Add `vulcan waypoint plan|reconcile [query] [--dry-run]` in `vulcan-app` with a thin CLI adapter. Reconciliation replaces only a well-formed owned region, fails on duplicate/unbalanced markers or path collisions, and never silently repairs hand-edited ambiguous regions.
+- [ ] Add `doctor` diagnostics for stale generated regions, orphan markers, multiple waypoint regions, waypoints outside valid folder notes, and folder notes made invalid by external moves.
+- [ ] Integrate reconciliation planning with Vulcan note/folder moves, folder-note conversion, and daemon watch events. Direct mutating commands should either update affected waypoints in the same planned operation or report that reconciliation is required; read-only export must never mutate the vault.
+- [ ] Let exports choose an explicit policy: require current canonical generated Markdown, fail/warn when stale, or render a temporary regenerated publication projection. Temporary projections must use the same planner and must not be written back to source files.
+- [ ] Test normal waypoints, landmarks, nested pruning, custom markers, all folder-note conventions, aliases, moves, deletions, malformed regions, deterministic ordering, idempotency, export projections, and mutation-free dry runs.
+
+### 9.33.4 Wikilink Types typed relationships
+
+- [ ] Import the configured relationship registry from `.obsidian/plugins/wikilink-types/data.json`, preserving authored key, label, description, and order while rejecting unsafe/duplicate frontmatter keys.
+- [ ] Parse configured `@type` annotations in wikilink aliases without changing ordinary alias text or interpreting unconfigured `@words`, email addresses, code, comments, or escaped text as relationships.
+- [ ] Project typed relationships as derived graph-edge metadata while keeping the raw link and authoritative YAML property values intact. Extend graph/query/JSON surfaces to filter or group by relationship type without replacing the canonical untyped link graph.
+- [ ] Add `vulcan refactor wikilink-types reconcile [query] [--direction alias-to-frontmatter|frontmatter-to-alias] --dry-run`. Default to conflict reporting when alias annotations and frontmatter disagree; never silently choose one source or reorder unrelated YAML.
+- [ ] Add doctor diagnostics for unknown types, malformed annotations, duplicate typed targets, alias/frontmatter drift, property type mismatches, unresolved typed targets, and conflicting relationship definitions.
+- [ ] Ensure move/rename, property rename, export, static rendering, Outline publishing, Dataview, Bases, and mdbase adapters preserve typed relationships and do not duplicate them during repeated scans or transforms.
+- [ ] Test multiple types on one link, multiple links to one target, aliases containing natural `@` text, YAML scalar/list forms, renamed targets, custom registries, conflicts, idempotent reconciliation, and dry-run immutability.
+
+### 9.33.5 VCF Contacts interchange
+
+- [ ] Pin the supported VCF Contacts Markdown/frontmatter schema and vCard 4.0 mapping. Model contact identity, names, organization, email/phone collections, addresses, URLs, birthdays, notes, categories/groups, UID, avatars, and plugin extension fields without flattening unknown properties.
+- [ ] Import VCF Contacts settings explicitly, including contacts folder, templates, avatar paths, enabled/default fields, and safe filename policy. Never import CardDAV credentials from plugin data into shared config.
+- [ ] Add reusable `vulcan-app` workflows and thin CLI commands for `vulcan contacts import-vcf`, `export-vcf`, `validate`, and `query`, with full-vault/query selection, deterministic plans, structured reports, collision handling, and dry-run for Markdown mutations.
+- [ ] Preserve vCard parameter/value escaping, folding, repeated properties, Unicode, stable UID, timezone/date distinctions, unknown `X-` properties, and round-trip information where the Markdown schema can represent it. Report lossy mappings before writing.
+- [ ] Treat avatars as normal resolved attachments: validate containment and existence, copy/embed them deterministically on import/export where requested, and reuse attachment move/export/publication policies.
+- [ ] Keep contact notes ordinary Markdown/frontmatter so existing query, Bases, Dataview, search, export, and graph operations work without a special runtime.
+- [ ] Test single and multi-card files, organization/group cards, repeated fields, quoted-printable/base64 or explicitly unsupported encodings, folded lines, malformed cards, UID/path collisions, avatars, unknown fields, deterministic output, and import-export-import round trips.
+- [ ] Defer CardDAV synchronization, remote conflict resolution, address-book discovery, and scheduled refresh to the daemon integration boundary in Phases 12/15.
+
+### 9.33.6 Local Images Plus-compatible asset localization
+
+- [ ] Add `vulcan assets localize [query] [--dry-run]` to discover remote Markdown/HTML image references and base64 data images from parsed/resolved content, plan deterministic local paths, download or decode them, and rewrite only successfully materialized references.
+- [ ] Reuse configured attachment-folder semantics and offer explicit naming strategies such as content hash, source filename, note-relative folder, and note-named folder. Detect exact, case-insensitive, Unicode-normalization, hash, and extension/MIME collisions before writing.
+- [ ] Apply existing network permissions and SSRF protections, HTTPS policy, redirect limits, content-length and decoded-size limits, MIME sniffing, bounded concurrency/retries/timeouts, sanitized errors, and optional allowed-domain filters. Scanning and rendering must never trigger downloads.
+- [ ] Write assets through verified temporary files plus atomic rename, then rewrite notes through the shared mutation engine. On interruption, leave either the original remote reference or a fully verified local asset; do not leave a rewritten reference to a partial file.
+- [ ] Add hash-based duplicate reporting and an explicit deduplication plan that rewrites references before removing duplicates. Keep orphan cleanup a separate opt-in command with trash/recoverable behavior; never delete assets as a side effect of localization.
+- [ ] Keep image conversion/quality changes opt-in and separate from localization so byte-preserving downloads remain the default. Record format-loss diagnostics and preserve originals unless explicitly requested.
+- [ ] Integrate localized assets with doctor, moves, exports, static sites, Outline publishing, OCR/extraction, and watcher refresh.
+- [ ] Test remote URLs with queries/fragments, HTML and Markdown images, base64 data, redirects, MIME mismatches, oversized bodies, duplicate content, missing/failed downloads, path traversal attempts, retries, partial failures, deterministic plans, and mutation-free dry runs using mock servers.
+
+### 9.33.7 Wayback archival workflows
+
+- [ ] Define a provider trait for archive lookup/submission and implement the supported Wayback Machine operations from reviewed official APIs. Treat archive.today/Web Gyotaku or other providers as separate capability-declared adapters rather than emulating browser-only flows.
+- [ ] Add non-secret archive profiles to shared config and device-local endpoint overrides, credential environment-variable names, timeouts, retry limits, and provider secrets to `.vulcan/config.local.toml` or environment variables only. Never log request credentials or signed provider URLs.
+- [ ] Add `vulcan web archive [query] --profile <name> [--dry-run]` to parse external URLs from Markdown links, HTML links, plain URLs, and image references; apply include/exclude/domain/substitution rules; and report a deterministic archive plan before network or file mutation.
+- [ ] Support explicit append, replace, and metadata/frontmatter recording policies with nearby-existing-archive detection. Preserve the original URL by default, make repeated runs idempotent, and report remote drift or ambiguous existing annotations instead of duplicating/replacing them.
+- [ ] Bound pagination, concurrency, timeouts, retries, response sizes, and total work. Surface rate limits and provider-specific failure states with sanitized structured reports, and make interrupted batches safely retryable from canonical note content.
+- [ ] Route successful Markdown changes through atomic app workflows, permissions, incremental scan, plugin hooks, and optional git commit. Dry-run may validate local plans but must not submit captures or mutate provider state.
+- [ ] Test current-note/query/full-vault selection, filtering, substitutions, existing archives, idempotent repeats, provider fallback, authentication failure, rate limiting, retries, malformed responses, partial batches, interruption recovery, and mutation-free dry runs with mock providers.
+
+### 9.33.8 LanguageTool-compatible language diagnostics
+
+- [ ] Define a language-check provider boundary with a LanguageTool HTTP implementation supporting self-hosted and explicitly configured remote endpoints. Keep the provider outside the Markdown parser and make checking an explicit network-capable operation.
+- [ ] Add `vulcan lint language [query] [--profile <name>]` with language selection/auto-detection, configurable disabled rules/categories, personal dictionaries, ignored paths/regions, bounded note/request batching, timeouts, retries, and structured diagnostics tied to source byte ranges.
+- [ ] Exclude frontmatter keys/values, code, math, URLs, generated regions, templates, and other configured syntax using parser spans rather than destructive preprocessing; retain stable offset mapping back to original Markdown.
+- [ ] Add an explicit suggestion-application workflow that checks the expected original text, detects overlapping/stale edits, previews every patch, and applies accepted replacements atomically. Never auto-correct during scan, save, export, or daemon indexing.
+- [ ] Store only configuration and optional vault dictionaries canonically. LanguageTool responses are ephemeral/derived and must not be required to rebuild the vault cache.
+- [ ] Test multilingual notes, Unicode offsets, ignored syntax, overlapping suggestions, stale content, unavailable/auth-failing servers, oversized notes, batching, retries, permission denial, deterministic reports, and mutation-free checks with a mock server.
+- [ ] Defer interactive underlines, hover explanations, accept/reject controls, and as-you-type requests to the authenticated Phase 14 editor.
+
+### 9.33.9 Auto Link Title headless refactoring
+
+- [ ] Extend the safe web-fetch result with normalized HTML title metadata and well-defined fallbacks without weakening existing network permissions, SSRF protections, redirect limits, content limits, or sanitization.
+- [ ] Add `vulcan refactor link-titles [query] [--dry-run]` for bare URLs, empty Markdown labels, or explicitly selected existing labels. Default to filling missing titles only; require an overwrite flag to replace authored link text.
+- [ ] Preserve URL spelling/destination, surrounding Markdown, reference-style links, fragments, and duplicate occurrences. Skip code, autolinks where conversion is disabled, images, unsupported schemes, and URLs excluded by policy.
+- [ ] Deduplicate requests by normalized URL, use bounded concurrency/timeouts/retries, report per-URL failures without corrupting notes, and revalidate source spans/content before applying atomic patches.
+- [ ] Test title entities/Unicode, missing or malformed titles, redirects, duplicate URLs, existing labels, reference links, inaccessible hosts, partial failures, deterministic plans, and mutation-free dry runs with mock servers.
+- [ ] Defer clipboard interception, selection-sensitive replacement, keyboard shortcuts, and automatic paste behavior to Phase 14; the headless command remains independently useful for CLI, agents, and CI.
+
+### 9.33.10 Cross-plugin integration and completion gate
+
+- [ ] Define ordering when one operation affects several compatibility layers: secure filesystem mutation, folder-note/Waypoint planning, link and typed-link rewrites, attachment updates, scan refresh, doctor diagnostics, hooks, then optional git commit.
+- [ ] Add combined fixtures for folder notes plus Waypoints, Wikilink Types plus Dataview/Bases/mdbase, contacts plus avatars, and remote-image localization plus Wayback annotations. Reindex twice and assert identical cache state.
+- [ ] Verify all new commands under human, Markdown, and JSON output; non-interactive operation; permission denial; feature-disabled builds; dry-run; auto-commit opt-in; and daemon-compatible report serialization.
+- [ ] Update config descriptors, generated reference docs, integrated help, assistant skills, limitations, migration guidance, and the compatibility matrix as each subphase lands.
+- [ ] Do not mark Phase 9.33 complete merely because ordinary Markdown degrades gracefully. Each claimed plugin surface needs pinned upstream evidence, focused fixtures, mutation safety tests, and an explicit statement of unsupported UI/network/sync behavior.
+
+### Deferred compatibility work
+
+- **Seafile and general vault synchronization:** implement in Phase 12 after the daemon and conflict/versioning contracts exist. Prefer a supervised standalone Seafile client or reusable sync engine over duplicating Seafile's protocol in `vulcan-core`.
+- **Virtual or remote vault storage:** do not retrofit during Phase 9.33. The initial daemon keeps a materialized local vault as canonical. Revisit a `VaultStorage` boundary only for a concrete embedded deployment and only if it can provide coherent snapshots, safe enumeration, atomic writes/renames, locking, metadata, change notifications, and a fully rebuildable local cache.
+- **CardDAV and contact synchronization:** defer to Phases 12/15; Phase 9.33 covers deterministic local Markdown/vCard interchange only.
+- **Editor-only compatibility:** Wikilink Types and @ Symbol autocomplete, Auto Link Title paste interception, LanguageTool inline feedback, contact forms/actions, and other cursor/clipboard/command-palette behavior belong in Phase 14.
+- **HedgeDoc live/bidirectional synchronization:** remain delegated to HedgeSync. A later daemon integration may supervise its CLI as an external process, but HedgeDoc content must not become a second Vulcan cache or an implicit input to unrelated publication flows.
 
 ---
 
