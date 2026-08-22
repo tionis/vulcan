@@ -6341,7 +6341,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 ### 9.32.1 Specification pinning, collection discovery, and configuration
 
-- [ ] Pin one exact supported mdbase v0.3 specification revision in source/docs, bundle required canonical schemas and fixtures with license/provenance metadata, and make upgrades explicit reviewable changes.
+- [x] Pin one exact supported mdbase v0.3 specification revision in source/docs, bundle required canonical schemas and fixtures with license/provenance metadata, and make upgrades explicit reviewable changes.
 - [x] Add a transport-neutral `vulcan-core::mdbase` collection detector and `mdbase.yaml` loader with v0.3 version checks, documented defaults, unknown-key warnings, safe relative control-folder paths, record-extension validation, explicit type-key configuration, validation level, and durable IANA timezone validation.
 - [x] Model configured `_types/` and `_contracts/` folders, `.mdbase/`, `mdbase.lock.yaml`, configured exclusions, and nested `mdbase.yaml` roots as mdbase control/discovery boundaries without hiding those Markdown files from ordinary Obsidian-oriented Vulcan browsing unless the caller requests the mdbase record set.
 - [x] Add an `mdbase` fixture vault covering a minimal collection, customized folders/extensions, malformed YAML, unknown keys, unsupported versions, unsafe paths, invalid timezone identifiers, exclusions, and nested collections.

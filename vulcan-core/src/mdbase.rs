@@ -16,7 +16,12 @@ use std::path::{Path, PathBuf};
 
 pub const MDBASE_CONFIG_FILE_NAME: &str = "mdbase.yaml";
 pub const MDBASE_LOCK_FILE_NAME: &str = "mdbase.lock.yaml";
+pub const MDBASE_SPEC_VERSION: &str = "0.3.0";
 pub const SUPPORTED_MDBASE_SPEC_MINOR: &str = "0.3";
+pub const MDBASE_SPEC_UPSTREAM_COMMIT: &str = "68b9a97969bf9472f0d42b8faf8a2e349553f4ea";
+pub const MDBASE_SPEC_UPSTREAM_URL: &str = "https://github.com/mdbase-dev/mdbase-spec";
+pub const MDBASE_BUNDLED_ASSET_DIGEST: &str =
+    "9b4c7d477dc914099a5a40092d6543caca9c626d5ca0ff3ed5a4d47646c29e52";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -700,6 +705,31 @@ mod tests {
         }
     }
 
+    fn bundled_resource_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("resources/mdbase/v0.3")
+    }
+
+    fn collect_files(root: &Path, directory: &Path, output: &mut Vec<(String, PathBuf)>) {
+        for entry in fs::read_dir(directory).expect("bundled resource directory should be readable")
+        {
+            let entry = entry.expect("bundled resource entry should be readable");
+            let file_type = entry
+                .file_type()
+                .expect("bundled resource file type should be readable");
+            assert!(
+                !file_type.is_symlink(),
+                "bundled resources must not be symlinks"
+            );
+            if file_type.is_dir() {
+                collect_files(root, &entry.path(), output);
+            } else {
+                let relative = relative_utf8_path(root, &entry.path())
+                    .expect("bundled resource paths should be UTF-8");
+                output.push((format!("./{relative}"), entry.path()));
+            }
+        }
+    }
+
     #[test]
     fn missing_marker_is_not_an_mdbase_collection() {
         let directory = tempdir().expect("temporary directory should exist");
@@ -1002,5 +1032,64 @@ settings:
 
         assert!(paths.contains(&"Schema/Types/Person.md".to_string()));
         assert!(paths.contains(&"Schema/Contracts/People.md".to_string()));
+    }
+
+    #[test]
+    fn bundled_upstream_assets_match_the_pinned_revision_digest() {
+        let upstream = bundled_resource_root().join("upstream");
+        let mut files = Vec::new();
+        collect_files(&upstream, &upstream, &mut files);
+        files.sort_by(|left, right| left.0.cmp(&right.0));
+
+        let mut hasher = blake3::Hasher::new();
+        for (relative, path) in &files {
+            hasher.update(relative.as_bytes());
+            hasher.update(&[0]);
+            hasher.update(&fs::read(path).expect("bundled resource should be readable"));
+        }
+
+        assert_eq!(files.len(), 48);
+        assert_eq!(
+            hasher.finalize().to_hex().as_str(),
+            MDBASE_BUNDLED_ASSET_DIGEST
+        );
+    }
+
+    #[test]
+    fn bundled_canonical_schemas_are_json_with_stable_mdbase_ids() {
+        let schemas = bundled_resource_root().join("upstream/schemas");
+        let mut files = Vec::new();
+        collect_files(&schemas, &schemas, &mut files);
+        let schema_files = files
+            .into_iter()
+            .filter(|(relative, _)| relative.ends_with(".schema.json"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(schema_files.len(), 12);
+        for (_, path) in schema_files {
+            let schema: serde_json::Value = serde_json::from_slice(
+                &fs::read(&path).expect("canonical schema should be readable"),
+            )
+            .expect("canonical schema should be valid JSON");
+            assert!(schema
+                .get("$id")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|id| id.starts_with("https://mdbase.dev/schemas/v0.3/")));
+        }
+    }
+
+    #[test]
+    fn provenance_records_the_source_pin_and_license() {
+        let provenance = fs::read_to_string(bundled_resource_root().join("PROVENANCE.md"))
+            .expect("provenance should be readable");
+        let license = fs::read_to_string(bundled_resource_root().join("upstream/LICENSE"))
+            .expect("license should be readable");
+
+        assert!(provenance.contains(MDBASE_SPEC_UPSTREAM_URL));
+        assert!(provenance.contains(MDBASE_SPEC_UPSTREAM_COMMIT));
+        assert!(provenance.contains(MDBASE_SPEC_VERSION));
+        assert!(provenance.contains(MDBASE_BUNDLED_ASSET_DIGEST));
+        assert!(license.starts_with("MIT License\n"));
+        assert!(license.contains("Copyright (c) 2025 Callum Alpass"));
     }
 }

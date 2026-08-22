@@ -1,0 +1,279 @@
+name: "v0.3 CEL profile conformance"
+spec_version: "0.3.0"
+fixture_set: cel
+category: cel
+spec_ref: "v0.3/10, v0.3/11, v0.3/14"
+
+groups:
+  - name: "record query host bindings"
+    setup:
+      config: |
+        spec_version: "0.3.0"
+      types:
+        task.md: |
+          ---
+          kind: mdbase.type
+          name: task
+          version: 1
+          match:
+            path_glob: "tasks/**/*.md"
+          schema:
+            dialect: json-schema-2020-12
+            value:
+              type: object
+              properties:
+                type: { const: task }
+                title: { type: string }
+                status: { enum: [open, done] }
+                due: { type: string, format: date }
+                tags:
+                  type: array
+                  items: { type: string }
+          collection:
+            read_defaults:
+              status: open
+          ---
+        cel-matched.md: |
+          ---
+          kind: mdbase.type
+          name: cel_matched
+          version: 1
+          match:
+            path_glob: "cel-matched/**/*.md"
+            expr:
+              $expr: 'present.raw.marker && marker == "selected" && status == null'
+          schema:
+            dialect: json-schema-2020-12
+            value:
+              type: object
+              properties:
+                marker: { type: string }
+                status: { type: string }
+          collection:
+            read_defaults:
+              status: open
+          ---
+      files:
+        tasks/open.md: |
+          ---
+          type: task
+          title: Open task
+          due: "2026-06-20"
+          tags: [project/alpha, urgent]
+          ---
+          Body mentions runtime.
+        tasks/done.md: |
+          ---
+          type: task
+          title: Done task
+          status: done
+          tags: [project/beta]
+          ---
+        tasks/null-status.md: |
+          ---
+          type: task
+          title: Null status
+          status:
+          ---
+        cel-matched/selected.md: |
+          ---
+          marker: selected
+          ---
+        cel-matched/rejected.md: |
+          ---
+          marker: other
+          ---
+        other/selected.md: |
+          ---
+          marker: selected
+          ---
+    tests:
+      - name: "query where uses CEL over effective values"
+        id: cel.query_effective_values
+        covers:
+          - cel.portable_evaluation
+          - cel_query.query_context
+          - cel_query.query_filtering
+        operation: query
+        input:
+          types: [task]
+          where: 'status == "open"'
+          order_by:
+            - field: file.path
+        expect:
+          valid: true
+          results:
+            - path: "tasks/open.md"
+
+      - name: "presence maps distinguish missing from effective default"
+        id: cel.presence_maps
+        covers:
+          - cel.context_bindings
+          - cel.missing_and_null
+        operation: evaluate_cel
+        input:
+          path: "tasks/open.md"
+          expression: 'present.raw.status == false && present.record.status'
+        expect:
+          valid: true
+          value: true
+
+      - name: "explicit null is not replaced by read default"
+        operation: evaluate_cel
+        input:
+          path: "tasks/null-status.md"
+          expression: 'status == null'
+        expect:
+          valid: true
+          value: true
+
+      - name: "type errors return null in query expressions"
+        id: cel.query_evaluation_error
+        covers:
+          - cel.expression_diagnostics
+          - cel_query.query_evaluation_diagnostics
+        operation: evaluate_cel
+        input:
+          path: "tasks/open.md"
+          expression: 'due + 1'
+        expect:
+          valid: true
+          value: null
+          diagnostics:
+            - code: expression_evaluation_error
+
+      - name: "file host binding exposes path and folder helpers"
+        operation: evaluate_cel
+        input:
+          path: "tasks/open.md"
+          expression: 'file.path == "tasks/open.md" && file.inFolder("tasks")'
+        expect:
+          valid: true
+          value: true
+
+      - name: "file tag helper uses segment prefix semantics"
+        operation: evaluate_cel
+        input:
+          path: "tasks/open.md"
+          expression: 'file.hasTag("project") && !file.hasTag("proj")'
+        expect:
+          valid: true
+          value: true
+
+      - name: "file body can be filtered without being returned"
+        operation: query
+        input:
+          where: 'file.body.contains("runtime")'
+          include_body: false
+        expect:
+          valid: true
+          results:
+            - path: "tasks/open.md"
+          body_returned: false
+
+      - name: "CEL match evaluates raw candidate fields before read defaults"
+        id: cel_match.raw_candidate
+        covers:
+          - cel_match.raw_candidate_context
+          - cel_match.boolean_match_result
+        operation: get_types
+        input:
+          path: "cel-matched/selected.md"
+        expect:
+          valid: true
+          types: [cel_matched]
+
+      - name: "CEL match false result is a non-match"
+        id: cel_match.false_result
+        operation: get_types
+        input:
+          path: "cel-matched/rejected.md"
+        expect:
+          valid: true
+          types: []
+
+      - name: "CEL match combines with structured match members using AND"
+        id: cel_match.combined_match
+        covers: [cel_match.combined_match_semantics]
+        operation: get_types
+        input:
+          path: "other/selected.md"
+        expect:
+          valid: true
+          types: []
+
+  - name: "runtime expression host bindings"
+    setup:
+      event:
+        specversion: "1.0"
+        type: canvas.drop
+        id: evt_01J0V1CANVASDROP
+        time: "2026-06-14T08:15:00Z"
+        source: urn:mdbase:app:canvas:canvas-bases
+        data:
+          file:
+            path: tasks/card-001.md
+          types: [pickle_request]
+          zone:
+            id: doing
+      steps:
+        patch-task-status:
+          status: succeeded
+          output:
+            path: tasks/card-001.md
+    tests:
+      - name: "event payload binding works in workflow context"
+        operation: evaluate_cel
+        input:
+          context: workflow
+          expression: 'event.data.file.path == "tasks/card-001.md" && event.data.zone.id == "doing"'
+        expect:
+          valid: true
+          value: true
+
+      - name: "record event type membership uses the CEL in operator"
+        id: cel.record_type_membership
+        covers:
+          - cel.portable_evaluation
+        operation: evaluate_cel
+        input:
+          context: workflow
+          expression: '"pickle_request" in event.data.types'
+        expect:
+          valid: true
+          value: true
+
+      - name: "workflow CEL supports presence and comprehension macros"
+        id: cel.workflow_macros
+        covers:
+          - cel.portable_evaluation
+          - cel.context_bindings
+        operation: evaluate_cel
+        input:
+          context: workflow
+          expression: 'has(event.data.file) && !has(event.data.missing) && event.data.types.exists(t, t == "pickle_request")'
+        expect:
+          valid: true
+          value: true
+
+      - name: "step result binding works in workflow context"
+        operation: evaluate_cel
+        input:
+          context: workflow
+          expression: 'steps["patch-task-status"].status == "succeeded"'
+        expect:
+          valid: true
+          value: true
+
+      - name: "workflow input expression object is evaluated but plain strings are not"
+        operation: evaluate_workflow_input
+        input:
+          template:
+            path:
+              $expr: 'event.data.file.path'
+            literal: 'event.data.file.path'
+        expect:
+          valid: true
+          value:
+            path: tasks/card-001.md
+            literal: event.data.file.path
