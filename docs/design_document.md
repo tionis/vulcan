@@ -1326,16 +1326,18 @@ Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 
 - **Phase 7:** Post-v1 workflow features (move/rename variants, suggest, saved reports, link-mentions, automation)
 - **Phase 8:** Performance optimizations
-- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), external agent integration with `pi` first plus vault-native prompts/skills and deferred native chat-runtime notes (9.12), QuickAdd automation (9.13), plugin compatibility notes (9.14), TaskNotes full integration with Bases views (9.15), periodic notes with daily events (9.16), unified plugin settings import (9.17), **CLI redesign — two-level command hierarchy, note CRUD, query enhancements, JS runtime/REPL, web tools, git ops, integrated docs, task mutations (9.18)**, MCP/tooling hardening (9.19, 9.23), and vault-native programmable skill command tools (9.24)
+- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), external agent integration with `pi` first plus vault-native prompts/skills and deferred native chat-runtime notes (9.12), QuickAdd automation (9.13), plugin compatibility notes (9.14), TaskNotes full integration with Bases views (9.15), periodic notes with daily events (9.16), unified plugin settings import (9.17), **CLI redesign — two-level command hierarchy, note CRUD, query enhancements, JS runtime/REPL, web tools, git ops, integrated docs, task mutations (9.18)**, MCP/tooling hardening (9.19, 9.23), vault-native programmable skill command tools (9.24), and the completed pre-daemon boundary gate (9.29). Outline publishing (9.30) and folder-note normalization (9.31) are completed optional additions, not extensions of the Phase 10 prerequisite chain.
 - **Phase 10:** Multi-vault daemon with REST API (depends on Phase 9 foundation work being well-advanced)
 - **Phase 11:** Git auto-versioning at the daemon level
-- **Phase 12:** Sync integration
+- **Phase 12:** Sync integration, with SilverBullet server/client protocol roles as an optional promoted backend rather than a completion requirement
 - **Phase 13:** WebUI — admin panel and vault browser
 - **Phase 14:** WebUI — note editor with Automerge CRDT sessions, advanced table editing (Advanced Tables-style)
-- **Phase 15:** Extensibility and integrations (webhooks, custom endpoints, optional notification/chat bridges after the daemon exists)
+- **Phase 15:** Extensibility and integrations (webhooks, custom endpoints, optional notification/chat bridges, supervised runtimes, and promoted first-party external plugs after the daemon exists)
 - **Phase 16:** Wiki mode with live collaborative editing
 - **Phase 17:** User management, group-based ACLs, document-level secrets, share links
 - **Phase 18:** Canvas support (parsing, indexing, CLI, WebUI rendering, interactive editor) and Excalidraw support (18.8)
+
+Detailed mdbase, additional Obsidian-plugin workflow, and SilverBullet plans are maintained as **candidate capability tracks**, not numbered delivery gates. Their durable Markdown/core slices may be promoted independently; daemon, sync, editor, and runtime slices belong to Phases 10, 12, 14, and 15 respectively. A candidate does not block the next numbered phase unless the roadmap explicitly promotes it and records the concrete use case and maintenance commitment.
 
 The design decisions in this document (three-layer architecture, cache as derived index, vault as source of truth, provider abstraction, parser pipeline) are load-bearing for all later phases. See the roadmap for dependency edges and implementation details.
 

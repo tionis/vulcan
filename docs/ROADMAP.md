@@ -5,6 +5,18 @@ Derived from `docs/design_document.md`. Update task status as work progresses.
 
 **Status legend:** `[ ]` not started | `[~]` in progress | `[x]` complete | `[-]` cut/deferred
 
+## Delivery horizons and phase gates
+
+The numbered phases describe dependency order, not a requirement to implement every documented idea before advancing. A later capability may be designed early and implemented opportunistically when its prerequisites are already available.
+
+- **Committed delivery path:** Phase 9's pre-daemon gate ends at 9.29 and is complete. Phase 10 is therefore the next architectural milestone; unfinished candidate integrations do not block it.
+- **Completed optional additions:** 9.30 (Outline publishing) and 9.31 (folder-note normalization) landed as independently useful work after the Phase 9 gate. Their numbering records implementation history rather than extending the daemon prerequisite chain.
+- **Candidate capability tracks:** mdbase expansion, additional plugin workflows, and SilverBullet interoperability are maintained below as detailed design backlogs. They retain no implied promise of implementation order or completion before Phase 10.
+- **Promotion gate:** move a candidate into the committed path only when there is a concrete use case, an identified dependency/ownership boundary, a sustainable upstream compatibility and testing strategy, and enough maintenance budget to support the advertised surface. Promote only the smallest independently useful slice.
+- **Placement rule:** durable Markdown semantics, parsing, diagnostics, and mutation-free exports may live in core/app tracks; daemon transports belong to Phase 10+, sync protocols to Phase 12, editor behavior to Phase 14, and supervised runtimes or first-party external integrations to Phase 15.
+
+This keeps Vulcan's long-term interoperability ambition without treating every plausible adapter, plugin behavior, or external runtime as a prerequisite for the next platform layer.
+
 ---
 
 ## Phase 1: Core indexing
@@ -5049,7 +5061,7 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 
 **Goal:** A long-running process that serves multiple vaults over a proper REST API. The CLI can connect to it instead of opening the cache directly, eliminating per-command startup cost and enabling multi-vault workflows.
 
-**Depends on:** Phase 7 complete. Phases 9.8–9.17 (Dataview, Templater, Tasks, Kanban, AI, QuickAdd, TaskNotes, Periodic Notes) are CLI-phase foundation work that should be complete or well-advanced before daemon work begins. **Phase 9.20 is intentionally scheduled before this phase in roadmap priority order to solidify shared rendering/export contracts, but Phase 10 does not technically require it. Phase 9.29 is a hard pre-daemon cleanup gate: daemon implementation should not start until the library/CLI/MCP boundaries and feature matrix are ready.**
+**Depends on:** Phase 7 complete. Phases 9.8–9.17 (Dataview, Templater, Tasks, Kanban, AI, QuickAdd, TaskNotes, Periodic Notes) are CLI-phase foundation work that should be complete or well-advanced before daemon work begins. **Phase 9.20 is intentionally scheduled before this phase in roadmap priority order to solidify shared rendering/export contracts, but Phase 10 does not technically require it. Phase 9.29 is the hard pre-daemon cleanup gate and is complete. The MDB, OBS, and SB candidate tracks explicitly do not block daemon implementation.**
 **Design refs:** Existing `serve.rs` (single-vault HTTP server, hand-rolled), `watch.rs` (file watcher).
 
 Search API note: search request semantics are already defined earlier by the shared `SearchQuery` contract from Phase 9.6. Phase 10 daemon work reuses that surface; it does not introduce a second search-parameter design step.
@@ -5270,6 +5282,16 @@ trait SyncBackend: Send + Sync {
 - [ ] `POST /{id}/sync/trigger` — force a sync cycle
 - [ ] `GET /{id}/sync/conflicts` — list files with unresolved conflicts (if applicable)
 
+### 12.8 Candidate: SilverBullet protocol roles
+
+Promote this subphase only for a concrete deployment that cannot use a shared materialized directory or a supported external SilverBullet process. The detailed compatibility and safety contract lives in candidate track SB; completing Phase 12 does not require this optional backend.
+
+- [ ] Complete SB.1's exact upstream pin and conformance harness before advertising protocol compatibility.
+- [ ] Implement SB.4 when Vulcan must act as the file-protocol server behind an upstream SilverBullet client.
+- [ ] Implement SB.5 when Vulcan must mirror an existing SilverBullet server into a materialized local vault.
+- [ ] Advertise the server and client roles independently, with explicit authority/deletion policy, durable state outside `cache.db`, conflict preservation, version rejection, and mock plus pinned-upstream conformance tests.
+- [ ] Reuse the standard sync lifecycle, daemon status/conflict endpoints, write locking, watcher quiescence, mass-deletion guard, checkpoint policy, secret handling, and storage-virtualization decision gate rather than building a SilverBullet-specific parallel sync platform.
+
 ---
 
 ## Phase 13: WebUI — Admin and Browse
@@ -5333,8 +5355,8 @@ trait SyncBackend: Send + Sync {
 - [ ] Frontmatter property editor (structured form UI, not raw YAML editing)
 - [ ] Optional Wikilink Types relationship autocomplete sourced from the imported type registry; author ordinary alias annotations/frontmatter and preserve non-type `@` text.
 - [ ] Optional configurable symbol-link autocomplete (including @ Symbol Linking-style folder, alias, and template mappings) implemented as editor assistance over ordinary Markdown links and existing note/template APIs.
-- [ ] Auto Link Title paste/selection action using the explicit Phase 9.33 fetch/refactor service; never fetch merely because a document is opened or rendered.
-- [ ] LanguageTool inline diagnostics and accept/reject controls using the Phase 9.33 provider and source-range contracts, with per-user network permissions and request throttling.
+- [ ] Auto Link Title paste/selection action using the promoted OBS.9 fetch/refactor service; never fetch merely because a document is opened or rendered.
+- [ ] LanguageTool inline diagnostics and accept/reject controls using the promoted OBS.8 provider and source-range contracts, with per-user network permissions and request throttling.
 - [ ] VCF Contacts create/edit/search/quick-action forms over canonical contact-note frontmatter; keep CardDAV status/conflicts separate from the editor form.
 - [ ] Materialization pipeline: flush Automerge doc state to disk via `PATCH /{id}/notes/{path}`, which rescans and optionally commits
 - [ ] Optional session persistence: store Automerge binary doc in `.vulcan/` for crash recovery, discard after successful materialization
@@ -5437,8 +5459,17 @@ trait SyncBackend: Send + Sync {
 - [ ] Define a capability-declared external-tool adapter that uses explicit executable paths/argument templates, bounded execution, sanitized output, environment allowlists, permission profiles, cancellation, and structured status. Do not expose a generic unaudited shell hook through daemon configuration.
 - [ ] Add an optional HedgeSync adapter that delegates note push/pull/create/open operations to the maintained `hedgesync` CLI, validates the configured frontmatter mapping, rescans changed local files, and reports conflicts without making HedgeDoc an implicit source for search, publication, or unrelated daemon jobs.
 - [ ] Keep HedgeSync live operational-transform sessions outside Vulcan unless the external tool exposes a stable supervised protocol. Vulcan should not implement a second HedgeDoc merge engine.
-- [ ] Add a CardDAV provider boundary for VCF Contacts only after Phase 9.33 establishes loss-aware local Markdown/vCard round trips. Keep remote address-book identifiers and durable source mappings outside the rebuildable cache, credentials in environment/device-local secret storage, and conflicts user-visible rather than last-writer-wins.
+- [ ] Add a CardDAV provider boundary for VCF Contacts only after promoted OBS.5 work establishes loss-aware local Markdown/vCard round trips. Keep remote address-book identifiers and durable source mappings outside the rebuildable cache, credentials in environment/device-local secret storage, and conflicts user-visible rather than last-writer-wins.
 - [ ] Test executable replacement/path attacks, secret redaction, timeouts, cancellation, partial local mutations, rescan failures, CardDAV pagination/authentication/ETags, remote deletion policy, retry safety, malformed durable mappings, and unmanaged remote contacts with mock tools/providers.
+
+### 15.6 Candidate: SilverBullet runtime adapter and first-party plug
+
+Promote these independently after the daemon API, authentication, and supervised-tool boundaries are stable. The detailed contracts live in SB.6–SB.8; Phase 15 does not require SilverBullet integration to be considered complete.
+
+- [ ] Implement SB.7 as a versioned first-party plug over authenticated daemon APIs, starting read-only and keeping credentials device-local. The plug remains semantic UI integration and never owns file sync or opens Vulcan's cache.
+- [ ] Promote SB.6 only for a concrete Space Lua/SLIQ/generated-content workload that cannot be handled statically. Prefer a pinned official SilverBullet or `sb` process; do not emulate PlugOS, browser APIs, or the full SilverBullet runtime in QuickJS.
+- [ ] Reuse proposal/apply mutation contracts, permission profiles, OAuth/pairing, origin protections, offline degradation, supervised-process limits, and secret sanitization.
+- [ ] Keep plug and runtime compatibility versions independent from the optional Phase 12 protocol roles, and require SB.8's cross-layer tests for every advertised combination.
 
 ---
 
@@ -6362,7 +6393,11 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 ---
 
-## Phase 9.32: mdbase typed Markdown collection interoperability
+## Candidate capability tracks
+
+The following tracks preserve implementation research and acceptance criteria without extending the Phase 9 completion gate. They are not a serial queue: promote and schedule a bounded slice only under the roadmap promotion gate above, then place daemon, sync, UI, and runtime work in the numbered phase that owns that infrastructure.
+
+### MDB: mdbase typed Markdown collection interoperability (formerly 9.32)
 
 **Goal:** Let Vulcan detect, validate, query, and safely mutate [mdbase v0.3](https://mdbase.dev/spec/) collections without replacing Vulcan's Obsidian-compatible semantics, canonical query model, permission system, or rebuildable cache architecture.
 
@@ -6370,14 +6405,16 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 **Initial conformance target:** implement and verify the mdbase `core_read` and `collection_semantics` profiles first. Do not claim `cel`, `cel_match`, `cel_query`, `links`, `core_write`, `lifecycle`, or `watch` until every required behavior has focused tests and the corresponding upstream conformance fixtures pass. The optional runtime, workflow, type-pack installation, and event/action interoperability profiles are explicitly deferred.
 
-### 9.32.1 Specification pinning, collection discovery, and configuration
+**Delivery placement:** MDB.1–MDB.8 are independently promotable local/core capability slices and do not block Phase 10. Watch/daemon integration in MDB.9 follows Phase 10; executable runtime/workflow interoperability remains a Phase 15-era candidate.
+
+#### MDB.1 Specification pinning, collection discovery, and configuration
 
 - [x] Pin one exact supported mdbase v0.3 specification revision in source/docs, bundle required canonical schemas and fixtures with license/provenance metadata, and make upgrades explicit reviewable changes.
 - [x] Add a transport-neutral `vulcan-core::mdbase` collection detector and `mdbase.yaml` loader with v0.3 version checks, documented defaults, unknown-key warnings, safe relative control-folder paths, record-extension validation, explicit type-key configuration, validation level, and durable IANA timezone validation.
 - [x] Model configured `_types/` and `_contracts/` folders, `.mdbase/`, `mdbase.lock.yaml`, configured exclusions, and nested `mdbase.yaml` roots as mdbase control/discovery boundaries without hiding those Markdown files from ordinary Obsidian-oriented Vulcan browsing unless the caller requests the mdbase record set.
 - [x] Add an `mdbase` fixture vault covering a minimal collection, customized folders/extensions, malformed YAML, unknown keys, unsupported versions, unsafe paths, invalid timezone identifiers, exclusions, and nested collections.
 
-### 9.32.2 JSON Schema, type registry, and data contracts
+#### MDB.2 JSON Schema, type registry, and data contracts
 
 - [x] Replace or supplement the small internal tool-schema validator with an MSRV-compatible JSON Schema 2020-12 implementation that covers every mdbase-required keyword, asserted date/time/date-time formats, fragment references, bounded local file references, cycle detection, and canonical `schema_*` diagnostics.
 - [ ] Load and validate `kind: mdbase.type` control files into a deterministic case-insensitive registry while preserving authored names and reporting conflicts independently of filesystem order.
@@ -6385,21 +6422,21 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [ ] Implement compatible multi-type composition for schemas, defaults, links, uniqueness, paths, lifecycle declarations, projections, and display metadata; report `type_conflict` before applying conflicted behavior.
 - [ ] Load exact-version `mdbase.contract` files, validate `implements` bindings, produce deterministic contract/implementation digests, and expose projected record contract views required by `core_read`.
 
-### 9.32.3 Persisted and effective record model
+#### MDB.3 Persisted and effective record model
 
 - [ ] Introduce shared record-domain types that keep exact source, body, persisted frontmatter, effective frontmatter, matched types, revision, file metadata, and diagnostics distinct; never populate mdbase frontmatter from Dataview inline fields.
 - [ ] Apply `collection.read_defaults` only to missing effective fields while preserving missing, explicit null, empty string, and empty list as distinct states; validate JSON Schema `required` against persisted frontmatter only.
 - [ ] Implement cross-file uniqueness scopes, advisory display metadata, and portable path-pattern validation with deterministic collection-relative forward-slash paths.
 - [ ] Cache type membership, effective projections, and validation results as versioned derived data with rebuild and incremental invalidation when config, types, contracts, schemas, or records change.
 
-### 9.32.4 Core read surface and conformance gate
+#### MDB.4 Core read surface and conformance gate
 
 - [ ] Add `vulcan mdbase status|types|contracts|validate|read` over reusable core/app services, with `--output json`, permission filtering, exact source opt-in, canonical diagnostics, and no implicit mutation.
 - [ ] Return the canonical mdbase complete-record and operation envelopes from explicit mdbase commands while keeping existing Vulcan JSON contracts backward compatible.
 - [ ] Add a spec-fixture adapter and evidence command that runs the upstream v0.3 `core_read` and `collection_semantics` suites against Vulcan.
 - [ ] Publish a machine-readable conformance claim only after every required fixture passes on the pinned artifact; report unsupported profiles explicitly instead of approximating them.
 
-### 9.32.5 CEL and canonical mdbase querying
+#### MDB.5 CEL and canonical mdbase querying
 
 - [ ] Select or implement an MSRV-compatible CEL engine behind a Vulcan-owned adapter; bound source size, AST depth, evaluation work, memory, list iteration, and link traversal.
 - [ ] Implement mdbase raw/effective/presence namespaces, reserved bindings, fixed per-operation clock, IANA timezone context, date/duration values, null propagation, and context-specific diagnostics without changing Bases/Dataview expression behavior.
@@ -6407,14 +6444,14 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [ ] Extend the internal query representation as needed for named projections, invocation context (`this`), CEL filters/selections, multi-key ordering, grouping, summaries, frontmatter modes, and canonical pagination metadata; keep mdbase as another frontend rather than the product-wide canonical syntax.
 - [ ] Add `vulcan mdbase query` and pass the `cel`, `cel_match`, and `cel_query` conformance gates before advertising those profiles.
 
-### 9.32.6 mdbase link semantics
+#### MDB.6 mdbase link semantics
 
 - [ ] Add a scoped mdbase resolver mode for declared frontmatter links and body links: configured-ID lookup, collection/file-relative paths, stable ambiguity behavior, target-type constraints, and `validate_exists` diagnostics.
 - [ ] Preserve raw, parsed, and resolved link forms; keep ordinary Vulcan/Obsidian shortest-path and alias behavior unchanged outside explicit mdbase operations.
 - [ ] Implement bounded CEL link helpers plus `file.links`, `file.embeds`, and `file.tags`, ignoring code spans/fences consistently with the parser pipeline.
 - [ ] Pass the upstream Links profile before claiming it; do not claim Links before its CEL dependency is satisfied.
 
-### 9.32.7 Core write, concurrency, and lifecycle
+#### MDB.7 Core write, concurrency, and lifecycle
 
 - [ ] Centralize mdbase create/update/delete/rename/batch orchestration in `vulcan-app`, reusing secure path handling, atomic writes, scan refresh, permission checks, dry-run reports, plugin events, and opt-in git commits.
 - [ ] Add opaque content-derived revisions and `if_revision` preconditions; preserve the current file and return `concurrent_modification` on mismatch.
@@ -6423,14 +6460,14 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [ ] Preserve unrelated Markdown, link style, aliases, anchors, line endings, and exact supplied source when policy does not require reserialization; update references on rename through the existing rewrite planner.
 - [ ] Pass Core Write and Lifecycle suites independently before claiming either profile, and add crash/concurrency regression tests around batch and rename operations.
 
-### 9.32.8 Portable views, Obsidian Bases, and TaskNotes
+#### MDB.8 Portable views, Obsidian Bases, and TaskNotes
 
 - [ ] Load canonical `type: view` records as ordinary mdbase records and implement stable named-view discovery, inheritance/merge rules, invocation context, advisory presentation, and headless execution.
 - [ ] Adapt existing `.base` discovery/evaluation to the mdbase saved-view source envelope without converting `.base` files or making mdbase CEL the Bases expression language; keep source revisions and full-document writable operations explicit.
 - [ ] Evaluate the upstream `obsidian_bases_views` optional feature against Vulcan's existing oracle/snapshot corpus and claim it only when source ordering, formulas, filters, grouping, properties, and diagnostics match.
 - [ ] Import TaskNotes `enableMdbaseSpec` and generated collection assets through an explicit preview/apply workflow that preserves unrelated settings and never partially migrates a live collection.
 
-### 9.32.9 Watch, daemon, permissions, and rollout
+#### MDB.9 Watch, daemon, permissions, and rollout
 
 - [ ] Invalidate derived mdbase state when `mdbase.yaml`, type, contract, external schema, or record files change; publish logical notifications only after read/query state is consistent.
 - [ ] Keep collection loading passive: opening a vault, type, contract, provider, or workflow record must never activate executable behavior.
@@ -6438,13 +6475,13 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [ ] Add help/reference documentation, an mdbase-focused assistant skill, example collections, feature-disabled behavior, and upgrade notes for each newly claimed profile.
 - [ ] Re-evaluate upstream stability, MSRV, and crate boundaries before each profile expansion. Do not depend directly on `mdbase-rs` while it would raise Vulcan's MSRV or introduce a second authoritative cache/watcher/mutation engine.
 
-### Deferred mdbase runtime work
+#### Deferred mdbase runtime work
 
-The mdbase event/action interoperability, durable runtime, workflow execution, provider registry, type-pack installation, and migration profiles are not part of Phase 9.32. Revisit them after the Phase 10 daemon and Vulcan's shared plugin/skill-command/permission boundaries are stable. Any later integration must adapt those contracts to the daemon rather than introducing executable behavior into `vulcan-core` or bypassing Vulcan authorization.
+The mdbase event/action interoperability, durable runtime, workflow execution, provider registry, type-pack installation, and migration profiles are not part of the initial MDB track. Revisit them after the Phase 10 daemon and Vulcan's shared plugin/skill-command/permission boundaries are stable. Any later integration must adapt those contracts to the daemon rather than introducing executable behavior into `vulcan-core` or bypassing Vulcan authorization.
 
 ---
 
-## Phase 9.33: Additional Obsidian plugin compatibility and vault workflows
+### OBS: Additional Obsidian plugin compatibility and vault workflows (formerly 9.33)
 
 **Goal:** Cover the remaining plugins used by the project where their durable behavior affects Markdown, links, attachments, properties, or explicit headless workflows. Preserve graceful degradation: a vault authored with these plugins must remain understandable without Obsidian, and Vulcan must not require a plugin to be installed merely to index or export its files.
 
@@ -6452,9 +6489,11 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 
 **Compatibility boundary:** Implement persisted formats and reusable headless operations, not Obsidian editor chrome. Markdown and ordinary vault files remain canonical; plugin settings are optional read-only import sources; SQLite rows and network results remain rebuildable or ephemeral. Mutating commands require deterministic plans, `--dry-run`, structured JSON reports, normal permission checks, atomic writes, link-safe rewrites, optional git commits, and no implicit network access during scan, doctor, export, or ordinary note reads.
 
-**Initial upstream references:** [HedgeSync](https://community.obsidian.md/plugins/hedgesync), [Seafile Sync Improved](https://community.obsidian.md/plugins/seafile-improved), [Broken Links](https://community.obsidian.md/plugins/broken-links), [Waypoint](https://github.com/IdreesInc/Waypoint), [Wikilink Types](https://github.com/penfieldlabs/obsidian-wikilink-types), [VCF Contacts](https://github.com/broekema41/obsidian-vcf-contacts), [QuickAdd](https://quickadd.obsidian.guide/docs/), [Local Images Plus](https://github.com/Sergei-Korneev/obsidian-local-images-plus), [LanguageTool](https://github.com/wrenger/obsidian-languagetool), [Auto Link Title](https://github.com/zolrath/obsidian-auto-link-title), [@ Symbol Linking](https://community.obsidian.md/plugins/at-symbol-linking), and [Wayback Archiver](https://community.obsidian.md/plugins/wayback-archiver). Pin exact reviewed versions or commits during 9.33.1; these moving links are discovery pointers, not conformance claims.
+**Initial upstream references:** [HedgeSync](https://community.obsidian.md/plugins/hedgesync), [Seafile Sync Improved](https://community.obsidian.md/plugins/seafile-improved), [Broken Links](https://community.obsidian.md/plugins/broken-links), [Waypoint](https://github.com/IdreesInc/Waypoint), [Wikilink Types](https://github.com/penfieldlabs/obsidian-wikilink-types), [VCF Contacts](https://github.com/broekema41/obsidian-vcf-contacts), [QuickAdd](https://quickadd.obsidian.guide/docs/), [Local Images Plus](https://github.com/Sergei-Korneev/obsidian-local-images-plus), [LanguageTool](https://github.com/wrenger/obsidian-languagetool), [Auto Link Title](https://github.com/zolrath/obsidian-auto-link-title), [@ Symbol Linking](https://community.obsidian.md/plugins/at-symbol-linking), and [Wayback Archiver](https://community.obsidian.md/plugins/wayback-archiver). Pin exact reviewed versions or commits during OBS.1; these moving links are discovery pointers, not conformance claims.
 
-### 9.33.1 Compatibility inventory, fixtures, and explicit non-work
+**Delivery placement:** persisted-format understanding and independently useful headless workflows may be promoted one at a time. Seafile/CardDAV synchronization stays in Phases 12/15, editor-only behavior stays in Phase 14, and supervised external tools stay in Phase 15. The track as a whole never blocks the daemon.
+
+#### OBS.1 Compatibility inventory, fixtures, and explicit non-work
 
 - [ ] Add a versioned compatibility matrix covering HedgeSync, Seafile Sync Improved, Broken Links, Waypoint, Wikilink Types, VCF Contacts, QuickAdd, Local Images Plus, LanguageTool, Auto Link Title, and @ Symbol Linking. Distinguish persisted-format compatibility, settings import, headless commands, daemon integration, and WebUI-only behavior.
 - [ ] Pin reviewed upstream plugin versions or commits and record relevant settings keys, marker syntax, frontmatter schemas, mutation rules, licenses, and graceful-degradation behavior. Vendor only the minimal permitted fixtures needed for conformance tests, with provenance metadata.
@@ -6463,7 +6502,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Confirm that @ Symbol Linking output needs no special parser mode: emitted Markdown links, aliases, folders, and template-created notes use existing Vulcan semantics. Defer symbol-trigger autocomplete and paste/editor interception to Phase 14.
 - [ ] Keep HedgeSync as an external `hedgesync` CLI integration. Do not reimplement HedgeDoc transport, bidirectional merge, or live operational-transform synchronization in Vulcan; document safe invocation followed by incremental rescan and route any future supervised external-command integration through Phase 15.
 
-### 9.33.2 Broken link and subpath diagnostics
+#### OBS.2 Broken link and subpath diagnostics
 
 - [ ] Extend link resolution diagnostics beyond missing documents to distinguish a missing document, missing heading, missing block reference, malformed subpath, ambiguous document, and unsupported target form while retaining raw and resolved link representations.
 - [ ] Validate heading anchors using Obsidian-compatible slug/duplicate-heading behavior and validate block IDs against indexed block references for wikilinks, Markdown links, and embeds.
@@ -6472,7 +6511,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Add safe repair suggestions for creating a missing note, selecting an unambiguous target, removing only the missing subpath, or rewriting to an existing heading/block. Do not auto-apply guesses; route accepted changes through existing note/refactor workflows.
 - [ ] Test duplicate headings, renamed headings and blocks, self-links, percent encoding, aliases, Unicode anchors, excluded paths, embeds, stale caches, and dry-run repair plans.
 
-### 9.33.3 Waypoint and Landmark generated MOCs
+#### OBS.3 Waypoint and Landmark generated MOCs
 
 - [ ] Import Waypoint settings explicitly from `.obsidian/plugins/waypoint/data.json`, including configured waypoint/landmark markers, folder-note behavior, sorting, exclusions, title/alias preferences, and nearest-folder-note policy. Unknown or unsupported settings must produce migration diagnostics.
 - [ ] Parse the standard Waypoint and Landmark percent-comment triggers plus generated begin/end regions without treating generated links as unsupported syntax. Preserve marker spelling and content outside owned regions exactly.
@@ -6483,7 +6522,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Let exports choose an explicit policy: require current canonical generated Markdown, fail/warn when stale, or render a temporary regenerated publication projection. Temporary projections must use the same planner and must not be written back to source files.
 - [ ] Test normal waypoints, landmarks, nested pruning, custom markers, all folder-note conventions, aliases, moves, deletions, malformed regions, deterministic ordering, idempotency, export projections, and mutation-free dry runs.
 
-### 9.33.4 Wikilink Types typed relationships
+#### OBS.4 Wikilink Types typed relationships
 
 - [ ] Import the configured relationship registry from `.obsidian/plugins/wikilink-types/data.json`, preserving authored key, label, description, and order while rejecting unsafe/duplicate frontmatter keys.
 - [ ] Parse configured `@type` annotations in wikilink aliases without changing ordinary alias text or interpreting unconfigured `@words`, email addresses, code, comments, or escaped text as relationships.
@@ -6493,7 +6532,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Ensure move/rename, property rename, export, static rendering, Outline publishing, Dataview, Bases, and mdbase adapters preserve typed relationships and do not duplicate them during repeated scans or transforms.
 - [ ] Test multiple types on one link, multiple links to one target, aliases containing natural `@` text, YAML scalar/list forms, renamed targets, custom registries, conflicts, idempotent reconciliation, and dry-run immutability.
 
-### 9.33.5 VCF Contacts interchange
+#### OBS.5 VCF Contacts interchange
 
 - [ ] Pin the supported VCF Contacts Markdown/frontmatter schema and vCard 4.0 mapping. Model contact identity, names, organization, email/phone collections, addresses, URLs, birthdays, notes, categories/groups, UID, avatars, and plugin extension fields without flattening unknown properties.
 - [ ] Import VCF Contacts settings explicitly, including contacts folder, templates, avatar paths, enabled/default fields, and safe filename policy. Never import CardDAV credentials from plugin data into shared config.
@@ -6504,7 +6543,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Test single and multi-card files, organization/group cards, repeated fields, quoted-printable/base64 or explicitly unsupported encodings, folded lines, malformed cards, UID/path collisions, avatars, unknown fields, deterministic output, and import-export-import round trips.
 - [ ] Defer CardDAV synchronization, remote conflict resolution, address-book discovery, and scheduled refresh to the daemon integration boundary in Phases 12/15.
 
-### 9.33.6 Local Images Plus-compatible asset localization
+#### OBS.6 Local Images Plus-compatible asset localization
 
 - [ ] Add `vulcan assets localize [query] [--dry-run]` to discover remote Markdown/HTML image references and base64 data images from parsed/resolved content, plan deterministic local paths, download or decode them, and rewrite only successfully materialized references.
 - [ ] Reuse configured attachment-folder semantics and offer explicit naming strategies such as content hash, source filename, note-relative folder, and note-named folder. Detect exact, case-insensitive, Unicode-normalization, hash, and extension/MIME collisions before writing.
@@ -6515,7 +6554,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Integrate localized assets with doctor, moves, exports, static sites, Outline publishing, OCR/extraction, and watcher refresh.
 - [ ] Test remote URLs with queries/fragments, HTML and Markdown images, base64 data, redirects, MIME mismatches, oversized bodies, duplicate content, missing/failed downloads, path traversal attempts, retries, partial failures, deterministic plans, and mutation-free dry runs using mock servers.
 
-### 9.33.7 Wayback archival workflows
+#### OBS.7 Wayback archival workflows
 
 - [ ] Define a provider trait for archive lookup/submission and implement the supported Wayback Machine operations from reviewed official APIs. Treat archive.today/Web Gyotaku or other providers as separate capability-declared adapters rather than emulating browser-only flows.
 - [ ] Add non-secret archive profiles to shared config and device-local endpoint overrides, credential environment-variable names, timeouts, retry limits, and provider secrets to `.vulcan/config.local.toml` or environment variables only. Never log request credentials or signed provider URLs.
@@ -6525,7 +6564,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Route successful Markdown changes through atomic app workflows, permissions, incremental scan, plugin hooks, and optional git commit. Dry-run may validate local plans but must not submit captures or mutate provider state.
 - [ ] Test current-note/query/full-vault selection, filtering, substitutions, existing archives, idempotent repeats, provider fallback, authentication failure, rate limiting, retries, malformed responses, partial batches, interruption recovery, and mutation-free dry runs with mock providers.
 
-### 9.33.8 LanguageTool-compatible language diagnostics
+#### OBS.8 LanguageTool-compatible language diagnostics
 
 - [ ] Define a language-check provider boundary with a LanguageTool HTTP implementation supporting self-hosted and explicitly configured remote endpoints. Keep the provider outside the Markdown parser and make checking an explicit network-capable operation.
 - [ ] Add `vulcan lint language [query] [--profile <name>]` with language selection/auto-detection, configurable disabled rules/categories, personal dictionaries, ignored paths/regions, bounded note/request batching, timeouts, retries, and structured diagnostics tied to source byte ranges.
@@ -6535,7 +6574,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Test multilingual notes, Unicode offsets, ignored syntax, overlapping suggestions, stale content, unavailable/auth-failing servers, oversized notes, batching, retries, permission denial, deterministic reports, and mutation-free checks with a mock server.
 - [ ] Defer interactive underlines, hover explanations, accept/reject controls, and as-you-type requests to the authenticated Phase 14 editor.
 
-### 9.33.9 Auto Link Title headless refactoring
+#### OBS.9 Auto Link Title headless refactoring
 
 - [ ] Extend the safe web-fetch result with normalized HTML title metadata and well-defined fallbacks without weakening existing network permissions, SSRF protections, redirect limits, content limits, or sanitization.
 - [ ] Add `vulcan refactor link-titles [query] [--dry-run]` for bare URLs, empty Markdown labels, or explicitly selected existing labels. Default to filling missing titles only; require an overwrite flag to replace authored link text.
@@ -6544,25 +6583,25 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Test title entities/Unicode, missing or malformed titles, redirects, duplicate URLs, existing labels, reference links, inaccessible hosts, partial failures, deterministic plans, and mutation-free dry runs with mock servers.
 - [ ] Defer clipboard interception, selection-sensitive replacement, keyboard shortcuts, and automatic paste behavior to Phase 14; the headless command remains independently useful for CLI, agents, and CI.
 
-### 9.33.10 Cross-plugin integration and completion gate
+#### OBS.10 Cross-plugin integration and completion gate
 
 - [ ] Define ordering when one operation affects several compatibility layers: secure filesystem mutation, folder-note/Waypoint planning, link and typed-link rewrites, attachment updates, scan refresh, doctor diagnostics, hooks, then optional git commit.
 - [ ] Add combined fixtures for folder notes plus Waypoints, Wikilink Types plus Dataview/Bases/mdbase, contacts plus avatars, and remote-image localization plus Wayback annotations. Reindex twice and assert identical cache state.
 - [ ] Verify all new commands under human, Markdown, and JSON output; non-interactive operation; permission denial; feature-disabled builds; dry-run; auto-commit opt-in; and daemon-compatible report serialization.
 - [ ] Update config descriptors, generated reference docs, integrated help, assistant skills, limitations, migration guidance, and the compatibility matrix as each subphase lands.
-- [ ] Do not mark Phase 9.33 complete merely because ordinary Markdown degrades gracefully. Each claimed plugin surface needs pinned upstream evidence, focused fixtures, mutation safety tests, and an explicit statement of unsupported UI/network/sync behavior.
+- [ ] Do not claim the OBS track complete merely because ordinary Markdown degrades gracefully. Each advertised plugin surface needs pinned upstream evidence, focused fixtures, mutation safety tests, and an explicit statement of unsupported UI/network/sync behavior.
 
-### Deferred compatibility work
+#### Deferred compatibility work
 
 - **Seafile and general vault synchronization:** implement in Phase 12 after the daemon and conflict/versioning contracts exist. Prefer a supervised standalone Seafile client or reusable sync engine over duplicating Seafile's protocol in `vulcan-core`.
-- **Virtual or remote vault storage:** do not retrofit during Phase 9.33. The initial daemon keeps a materialized local vault as canonical. Revisit a `VaultStorage` boundary only for a concrete embedded deployment and only if it can provide coherent snapshots, safe enumeration, atomic writes/renames, locking, metadata, change notifications, and a fully rebuildable local cache.
-- **CardDAV and contact synchronization:** defer to Phases 12/15; Phase 9.33 covers deterministic local Markdown/vCard interchange only.
+- **Virtual or remote vault storage:** do not retrofit as OBS compatibility work. The initial daemon keeps a materialized local vault as canonical. Revisit a `VaultStorage` boundary only for a concrete embedded deployment and only if it can provide coherent snapshots, safe enumeration, atomic writes/renames, locking, metadata, change notifications, and a fully rebuildable local cache.
+- **CardDAV and contact synchronization:** defer to Phases 12/15; OBS.5 covers deterministic local Markdown/vCard interchange only.
 - **Editor-only compatibility:** Wikilink Types and @ Symbol autocomplete, Auto Link Title paste interception, LanguageTool inline feedback, contact forms/actions, and other cursor/clipboard/command-palette behavior belong in Phase 14.
 - **HedgeDoc live/bidirectional synchronization:** remain delegated to HedgeSync. A later daemon integration may supervise its CLI as an external process, but HedgeDoc content must not become a second Vulcan cache or an implicit input to unrelated publication flows.
 
 ---
 
-## Phase 9.34: SilverBullet interoperability, sync, and first-party plug
+### SB: SilverBullet interoperability, sync, and first-party plug (formerly 9.34)
 
 **Goal:** Let a Markdown vault participate safely in SilverBullet workflows at three independent layers: native understanding of SilverBullet-authored Markdown, an optional SilverBullet-compatible file-sync peer, and a first-party SilverBullet plug backed by Vulcan's daemon API. Keep ordinary files canonical, keep every index rebuildable, and avoid making SilverBullet's browser runtime or object index a second source of truth.
 
@@ -6572,7 +6611,9 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 
 **Initial upstream reference:** start from an exact reviewed SilverBullet 2.x release and commit. The current upstream client implements filesystem operations through `client/spaces/http_space_primitives.ts`, the two-sided snapshot algorithm through `client/spaces/sync.ts`, and browser scheduling/state through `client/service_worker/sync_engine.ts`; its current transport uses `/.fs` file operations and `/.ping` version discovery. These are implementation references, not a promise of a stable public protocol. Record licenses and provenance, and require an explicit compatibility review before changing the pinned release.
 
-### 9.34.1 Upstream inventory, version pinning, and conformance harness
+**Delivery placement:** SB.1–SB.3 are optional local compatibility/export slices. SB.4–SB.5 are Phase 12 protocol work. SB.6–SB.7 are Phase 15 runtime/integration work after the daemon API is stable. SB.8 applies whenever any slice is promoted. None of this track blocks Phase 10.
+
+#### SB.1 Upstream inventory, version pinning, and conformance harness
 
 - [ ] Pin one exact supported SilverBullet release and commit. Inventory the file protocol, metadata/header contract, authentication behavior, path encoding, error statuses, sync-ignore semantics, document/asset policy, conflict-copy naming, standard-library/plug handling, server version discovery, Space Lua syntax, PlugOS APIs, and Markdown extensions used by that version.
 - [ ] Document two distinct protocol roles: a **server peer**, where an upstream SilverBullet browser syncs directly with a Vulcan-backed materialized vault; and a **client/mirror backend**, where Vulcan synchronizes with an existing SilverBullet server. Do not imply that implementing one role provides the other.
@@ -6580,7 +6621,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Introduce a machine-readable compatibility matrix covering supported SilverBullet versions, protocol role, Markdown extensions, runtime features, plug API version, and known deviations. Read `X-Server-Version` or the pinned equivalent and fail with a structured incompatibility error for unreviewed versions rather than continuing optimistically.
 - [ ] Re-evaluate whether upstream has published a stable protocol or reusable runtime library at implementation time. Prefer a documented public API or official `sb` command when it satisfies the use case; isolate unavoidable private-protocol code behind a versioned Vulcan adapter.
 
-### 9.34.2 Native SilverBullet Markdown and link semantics
+#### SB.2 Native SilverBullet Markdown and link semantics
 
 - [ ] Add a scoped SilverBullet compatibility mode in `vulcan-core` that recognizes the pinned release's page links, relative and absolute paths, headings, line/column and offset positions, meta-page references, stable `$anchor` references, transclusions, page attributes, task states, admonitions, fenced extensions, and executable Space Lua blocks/expressions. Unsupported or version-mismatched constructs produce diagnostics instead of disappearing.
 - [ ] Preserve exact source plus raw, parsed, and resolved link representations. Keep Obsidian shortest-path/alias resolution as the normal default; enable SilverBullet's path-oriented resolution only for explicit compatibility profiles or SilverBullet-authored operations, with deterministic ambiguity and case-sensitivity behavior.
@@ -6589,7 +6630,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Add `vulcan doctor --compat silverbullet` and reusable report types for incompatible links, unsupported syntax, stale/generated regions, unavailable runtime-dependent output, path-resolution differences, and control/runtime files that should not be published.
 - [ ] Add a `silverbullet` fixture vault covering every claimed syntax form, nested paths, duplicate names, Unicode/case conflicts, malformed constructs, links and transclusions to attachments, mixed Obsidian/SilverBullet syntax, and parse-render-reparse/source-preservation behavior.
 
-### 9.34.3 Space export and explicit transformation policies
+#### SB.3 Space export and explicit transformation policies
 
 - [ ] Add a reusable `vulcan-app` planner and thin CLI surface such as `vulcan export silverbullet-space [query] --path <directory-or-archive>`. Follow the shared export convention that an omitted query selects the whole vault, while an explicit query restricts the publication set.
 - [ ] Reuse canonical query selection, publication transforms, resolved links, attachments, folder-note planning, exclusions, and deterministic collision checks. Never mutate the source vault, and fail on missing assets, excluded link targets, unresolved required references, unsafe paths, case/Unicode-normalization conflicts, or ambiguous representation changes.
@@ -6597,7 +6638,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Support deterministic dry-run/planning and structured JSON reports including selected files, rewritten references, copied assets, preserved executable regions, required runtime capabilities, warnings, and output hashes.
 - [ ] Test full-vault and query exports, nested pages, all configured folder-note conventions, links, transclusions, anchors, attachments, mixed syntax, exclusions, collisions, missing files, deterministic output, runtime-disabled policies, and mutation-free planning.
 
-### 9.34.4 SilverBullet-compatible server peer
+#### SB.4 SilverBullet-compatible server peer
 
 - [ ] After Phase 10, implement the pinned server-side file protocol in an async daemon adapter, not in `vulcan-core`. Serve only explicitly configured vaults and routes; keep protocol request/response types separate from transport-neutral vault mutation services.
 - [ ] Implement the reviewed file-list, metadata, read, write, delete, ping/version, authentication, path-encoding, sync-mode, and error contracts. Preserve file bytes and required safe metadata while refusing platform-unsafe permissions or unsupported metadata with explicit diagnostics.
@@ -6607,7 +6648,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Provide explicit deployment support for serving or reverse-proxying the pinned SilverBullet client separately from Vulcan's API. Do not fork or silently patch upstream browser assets as part of the protocol adapter.
 - [ ] Test initial listing, metadata-only reads, binary assets, creates, replacements, deletes, interruption, concurrent direct edits, clock skew, equal timestamps with differing sizes/content, conflict copies, ignore/control paths, authentication/authorization failures, path attacks, oversized requests, restarts, cache rebuild, and compatibility rejection against mock and pinned upstream clients.
 
-### 9.34.5 SilverBullet client and mirror sync backend
+#### SB.5 SilverBullet client and mirror sync backend
 
 - [ ] After Phase 12, add a `vulcan-sync` SilverBullet backend that connects to an existing reviewed SilverBullet server through the pinned file protocol or official supported CLI/API. Keep a materialized local working tree; do not make remote HTTP objects masquerade as cache rows or retrofit remote I/O throughout `vulcan-core`.
 - [ ] Require an explicit authority mode and deletion policy. A peer/mirror mode may accept edits from both endpoints and must use a durable two-sided snapshot; a one-way import/export mode must state its authoritative side and may not reuse bidirectional deletion semantics accidentally.
@@ -6618,7 +6659,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Add `sync status|plan|trigger` reporting for the backend. Planning must not write local files, remote files, or durable snapshots; ordinary retries after interruption must be idempotent.
 - [ ] Test initial import/export, unchanged repeats, changes on either side, simultaneous edits, creates, moves represented by protocol operations, deletions/tombstones, binary assets, ignored/non-materialized files, plug ordering, timestamp collisions, stale/malformed snapshots, process restart, pagination or oversized-list behavior of the pinned version, retries, authentication failure, unknown server versions, mass deletion, and mutation-free plans with a mock server plus upstream conformance jobs.
 
-### 9.34.6 Optional SilverBullet runtime boundary
+#### SB.6 Optional SilverBullet runtime boundary
 
 - [ ] Do not present Vulcan's QuickJS runtime as a SilverBullet runtime. Inventory which pinned features are Space Lua, which TypeScript plug sources compile to browser JavaScript, and which depend on PlugOS syscalls, Web Workers, IndexedDB, DOM/browser state, or the upstream headless-Chrome server runtime.
 - [ ] Implement syntax preservation and pure static semantics in Rust. Reuse an upstream TypeScript module in-process only if it is separately licensed, version-pinned, deterministic, browser-independent, resource-bounded, and demonstrably smaller to maintain than a native adapter; do not emulate the full SilverBullet browser/PlugOS environment in QuickJS.
@@ -6626,7 +6667,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Require an explicit command/export policy and permission profile before runtime execution. Never execute during scan, watch, sync, doctor, preview, or default rendering; never let runtime output mutate canonical Markdown without a normal dry-run/apply workflow and stale-input checks.
 - [ ] Test malicious and nonterminating scripts, memory/output exhaustion, filesystem and network denial, unavailable/wrong runtime versions, malformed output, cancellation, secret redaction, deterministic pure evaluations where promised, and zero execution in all passive workflows.
 
-### 9.34.7 First-party SilverBullet plug
+#### SB.7 First-party SilverBullet plug
 
 - [ ] After the Phase 10 API is stable, create a versioned first-party plug that talks only to Vulcan's authenticated daemon API. The plug must not open `.vulcan/cache.db`, assume shell access, invoke the CLI from the browser, or become the owner of vault synchronization.
 - [ ] Start read-only with connection/scan/sync status, doctor diagnostics, full-text and semantic search, backlinks, graph relations, related notes, and compatibility reports. Degrade gracefully when Vulcan is offline so ordinary SilverBullet editing and its native sync continue working.
@@ -6636,7 +6677,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Provide an explicit `vulcan integration silverbullet plug plan|install|update` workflow that pins compatible plug/API versions, verifies bundle hashes, previews the destination, preserves unrelated Space files, and never embeds credentials. Manual installation remains supported.
 - [ ] Test the plug against a mock daemon and pinned SilverBullet host for first connection, offline behavior, read-only features, permission denial, token expiry/revocation, API/version mismatch, multiple vaults, save-event storms, proposal/apply conflicts, interrupted mutations, installation collisions, updates, and absence of secrets in synchronized files and logs.
 
-### 9.34.8 Cross-layer safety and completion gates
+#### SB.8 Cross-layer safety and completion gates
 
 - [ ] Define ownership and event ordering across SilverBullet writes: authenticate and validate path, acquire the vault lock, optionally checkpoint, atomically materialize bytes, refresh derived state, publish daemon events, then allow plug status refresh. Sync transport must never invoke publication transforms or runtime evaluation implicitly.
 - [ ] Add combined fixtures for SilverBullet links/anchors plus Obsidian links, folder notes and Waypoints, executable blocks, attachments, direct filesystem edits during browser sync, protocol conflict copies, and first-party plug operations. Reindex twice and rebuild from scratch to assert equivalent derived state.
@@ -6644,7 +6685,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 - [ ] Publish setup, threat model, compatibility matrix, upgrade/downgrade procedure, state recovery, conflict handling, backup guidance, and limitations. Clearly distinguish shared-directory operation, Vulcan server-peer mode, remote mirror mode, static compatibility/export, and plug-only integration.
 - [ ] Do not claim SilverBullet protocol compatibility until the pinned upstream conformance suite passes for the advertised role. Do not claim runtime compatibility based only on parsing executable syntax, and do not call the integration complete until unmanaged ordinary files remain untouched and a vault can be recovered from canonical files plus durable sync state without `cache.db`.
 
-### Deferred SilverBullet work
+#### Deferred SilverBullet work
 
 - **General runtime emulation:** a full PlugOS, browser, IndexedDB, Web Worker, DOM, or headless-Chrome reimplementation inside Vulcan is out of scope. Revisit only if upstream publishes a stable embeddable runtime and concrete use cases cannot use the supervised official process.
 - **Collaborative semantic merge:** the pinned SilverBullet conflict-copy behavior is the compatibility baseline. CRDT/Automerge merging, shared cursors, and live multi-user editing belong to Phase 14/16 and must not be smuggled into file sync.
