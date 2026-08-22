@@ -3085,6 +3085,64 @@ fn default_config_template_documents_site_profiles() {
 }
 
 #[test]
+fn outline_publish_profiles_merge_shared_and_local_fields() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[publish.outline.profiles.wiki]
+base_url = "https://outline.example.test"
+collection_id = "collection-id"
+collection_title = "Wiki"
+query = "from notes"
+token_env = "OUTLINE_TOKEN"
+timeout_seconds = 30
+max_retries = 3
+page_size = 100
+"#,
+    )
+    .expect("shared config should be written");
+    fs::write(
+        vault_root.join(".vulcan/config.local.toml"),
+        r#"
+[publish.outline.profiles.wiki]
+base_url = "http://127.0.0.1:3000"
+token_env = "OUTLINE_DEVICE_TOKEN"
+timeout_seconds = 5
+"#,
+    )
+    .expect("local config should be written");
+
+    let loaded = load_vault_config(&VaultPaths::new(vault_root));
+    let profile = loaded
+        .config
+        .publish
+        .outline
+        .profiles
+        .get("wiki")
+        .expect("Outline profile should load");
+    assert_eq!(profile.base_url.as_deref(), Some("http://127.0.0.1:3000"));
+    assert_eq!(profile.collection_id.as_deref(), Some("collection-id"));
+    assert_eq!(profile.collection_title.as_deref(), Some("Wiki"));
+    assert_eq!(profile.query.as_deref(), Some("from notes"));
+    assert_eq!(profile.token_env.as_deref(), Some("OUTLINE_DEVICE_TOKEN"));
+    assert_eq!(profile.timeout_seconds, Some(5));
+    assert_eq!(profile.max_retries, Some(3));
+    assert_eq!(profile.page_size, Some(100));
+}
+
+#[test]
+fn default_outline_publish_config_is_empty_and_template_never_contains_a_token() {
+    assert!(VaultConfig::default().publish.outline.profiles.is_empty());
+    let template = default_config_template();
+    assert!(template.contains("[publish.outline.profiles.wiki]"));
+    assert!(template.contains("token_env = \"OUTLINE_API_TOKEN\""));
+    assert!(!template.contains("api_token ="));
+}
+
+#[test]
 fn web_search_defaults_to_duckduckgo_without_api_key_env() {
     let config = WebSearchConfig::default();
 

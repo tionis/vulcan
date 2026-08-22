@@ -2074,6 +2074,31 @@ pub struct ExportProfileConfig {
     pub content_transform_rules: Option<Vec<ContentTransformRuleConfig>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct PublishConfig {
+    #[serde(default)]
+    pub outline: OutlinePublishConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct OutlinePublishConfig {
+    #[serde(default)]
+    pub profiles: BTreeMap<String, OutlinePublishProfileConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct OutlinePublishProfileConfig {
+    pub base_url: Option<String>,
+    pub collection_id: Option<String>,
+    pub collection_title: Option<String>,
+    pub query: Option<String>,
+    pub query_json: Option<String>,
+    pub token_env: Option<String>,
+    pub timeout_seconds: Option<u64>,
+    pub max_retries: Option<u32>,
+    pub page_size: Option<usize>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum SiteLinkPolicyConfig {
@@ -2263,6 +2288,8 @@ pub struct VaultConfig {
     pub periodic: PeriodicConfig,
     pub export: ExportConfig,
     #[serde(default)]
+    pub publish: PublishConfig,
+    #[serde(default)]
     pub site: SiteConfig,
     #[serde(default)]
     pub plugins: BTreeMap<String, PluginRegistration>,
@@ -2295,6 +2322,7 @@ impl Default for VaultConfig {
             web: WebConfig::default(),
             periodic: PeriodicConfig::default(),
             export: ExportConfig::default(),
+            publish: PublishConfig::default(),
             site: SiteConfig::default(),
             plugins: BTreeMap::new(),
             aliases: builtin_command_aliases(),
@@ -3607,6 +3635,39 @@ fn merge_export_profile_config(target: &mut ExportProfileConfig, profile: Export
     }
 }
 
+fn merge_outline_publish_profile_config(
+    target: &mut OutlinePublishProfileConfig,
+    profile: OutlinePublishProfileConfig,
+) {
+    if let Some(base_url) = profile.base_url {
+        target.base_url = Some(base_url);
+    }
+    if let Some(collection_id) = profile.collection_id {
+        target.collection_id = Some(collection_id);
+    }
+    if let Some(collection_title) = profile.collection_title {
+        target.collection_title = Some(collection_title);
+    }
+    if let Some(query) = profile.query {
+        target.query = Some(query);
+    }
+    if let Some(query_json) = profile.query_json {
+        target.query_json = Some(query_json);
+    }
+    if let Some(token_env) = profile.token_env {
+        target.token_env = Some(token_env);
+    }
+    if let Some(timeout_seconds) = profile.timeout_seconds {
+        target.timeout_seconds = Some(timeout_seconds);
+    }
+    if let Some(max_retries) = profile.max_retries {
+        target.max_retries = Some(max_retries);
+    }
+    if let Some(page_size) = profile.page_size {
+        target.page_size = Some(page_size);
+    }
+}
+
 fn merge_site_shell_options_config(
     target: &mut SiteShellOptionsConfig,
     options: &SiteShellOptionsConfig,
@@ -4386,6 +4447,17 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
             for (name, profile) in profiles {
                 let target = config.export.profiles.entry(name).or_default();
                 merge_export_profile_config(target, profile);
+            }
+        }
+    }
+
+    if let Some(publish) = overrides.publish {
+        if let Some(outline) = publish.outline {
+            if let Some(profiles) = outline.profiles {
+                for (name, profile) in profiles {
+                    let target = config.publish.outline.profiles.entry(name).or_default();
+                    merge_outline_publish_profile_config(target, profile);
+                }
             }
         }
     }

@@ -3972,6 +3972,7 @@ version = "0.1.0"
 dependencies = [
  "blake3",
  "csv",
+ "fs2",
  "pulldown-cmark",
  "regex",
  "reqwest",
@@ -3982,6 +3983,7 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "toml",
+ "ulid",
  "vulcan-core",
  "zip",
 ]

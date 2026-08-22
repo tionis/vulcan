@@ -35,6 +35,7 @@ pub mod config;
 pub mod export;
 pub mod notes;
 pub mod plugins;
+pub mod publish;
 pub mod scan;
 pub mod serve;
 pub mod site;
