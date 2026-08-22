@@ -465,6 +465,7 @@ use toml::Value as TomlValue;
 use vulcan_app::browse::{
     DataviewBlockResult as AppDataviewBlockResult, DataviewEvalReport as AppDataviewEvalReport,
 };
+use vulcan_app::export::outline::{plan_outline_publication, write_outline_zip};
 use vulcan_app::export::{
     apply_export_profile_create, apply_export_profile_delete, apply_export_profile_rule_add,
     apply_export_profile_rule_delete, apply_export_profile_rule_move,
@@ -3830,6 +3831,74 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                             Ok(())
                         }
                         OutputFormat::Json => print_json(&summary),
+                    }
+                }
+                ExportCommand::OutlineZip {
+                    query,
+                    transforms,
+                    collection_title,
+                    path,
+                    dry_run,
+                } => {
+                    let report = execute_export_query(
+                        &paths,
+                        query.query.as_deref(),
+                        query.query_json.as_deref(),
+                        read_filter.as_ref(),
+                    )
+                    .map_err(CliError::operation)?;
+                    let transform_rules = build_content_transform_rules(
+                        &transforms.exclude_callouts,
+                        &transforms.exclude_headings,
+                        &transforms.exclude_frontmatter_keys,
+                        &transforms.exclude_inline_fields,
+                        &transforms.replace_rules,
+                    )
+                    .map_err(CliError::operation)?;
+                    let prepared = prepare_export_data(
+                        &paths,
+                        &report,
+                        read_filter.as_ref(),
+                        transform_rules.as_deref(),
+                    )
+                    .map_err(CliError::operation)?;
+                    let plan = plan_outline_publication(
+                        &paths,
+                        collection_title,
+                        &prepared.notes,
+                        &prepared.links,
+                    )
+                    .map_err(CliError::operation)?;
+                    let report = write_outline_zip(&paths, path, plan, *dry_run)
+                        .map_err(CliError::operation)?;
+                    let valid = report.plan.is_valid();
+                    match cli.output {
+                        OutputFormat::Json => print_json(&report)?,
+                        OutputFormat::Human | OutputFormat::Markdown => {
+                            if valid {
+                                if report.wrote_archive {
+                                    println!("{}", report.path);
+                                } else {
+                                    for document in &report.plan.documents {
+                                        println!("{}", document.archive_path);
+                                    }
+                                    for attachment in &report.plan.attachments {
+                                        println!("{}", attachment.archive_path);
+                                    }
+                                }
+                            } else {
+                                for diagnostic in &report.plan.diagnostics {
+                                    eprintln!("{}", diagnostic.message);
+                                }
+                            }
+                        }
+                    }
+                    if valid {
+                        Ok(())
+                    } else {
+                        Err(CliError::operation(
+                            "Outline publication plan contains unsafe diagnostics",
+                        ))
                     }
                 }
                 ExportCommand::Sqlite { query, path } => {

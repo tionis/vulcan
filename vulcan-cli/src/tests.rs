@@ -965,6 +965,38 @@ fn parses_note_outline_command() {
 }
 
 #[test]
+fn parses_outline_zip_export_command() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "export",
+        "outline-zip",
+        "from notes",
+        "--collection-title",
+        "Wiki",
+        "--path",
+        "wiki.zip",
+        "--dry-run",
+    ])
+    .expect("Outline ZIP command should parse");
+
+    assert_eq!(
+        cli.command,
+        Command::Export {
+            command: ExportCommand::OutlineZip {
+                query: ExportQueryArgs {
+                    query: Some("from notes".to_string()),
+                    query_json: None,
+                },
+                transforms: ExportTransformArgs::default(),
+                collection_title: "Wiki".to_string(),
+                path: PathBuf::from("wiki.zip"),
+                dry_run: true,
+            },
+        }
+    );
+}
+
+#[test]
 fn parses_note_checkbox_command() {
     let cli = Cli::try_parse_from([
         "vulcan",

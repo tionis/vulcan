@@ -163,7 +163,7 @@ Behavior:
 - `vulcan cache vacuum [--dry-run]`: run SQLite `VACUUM` on the cache.
 - `vulcan checkpoint create <name>`: capture the current cache state under a checkpoint name.
 - `vulcan checkpoint list`: list saved scan and manual checkpoints.
-- `vulcan export markdown|json|csv|epub|zip|sqlite <query> ...`: materialize matched notes as combined documents, datasets, books, or archives.
+- `vulcan export markdown|json|csv|epub|zip|outline-zip|sqlite <query> ...`: materialize matched notes as combined documents, datasets, books, or archives. `outline-zip` plans Outline's sibling file/directory hierarchy; see [Outline publishing](guide/outline-publishing.md).
 - `vulcan export search-index [--path <FILE>] [--pretty]`: write the cached search corpus as a static JSON index.
 - `vulcan changes [--checkpoint <name>]`: report note, link, property, and embedding changes since the last scan or a named checkpoint.
 - `vulcan note diff <note> [--since <checkpoint>]`: show one note's changes since git `HEAD`, the last scan, or a named checkpoint.

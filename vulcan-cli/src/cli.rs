@@ -1043,6 +1043,7 @@ Subcommands:
   graph         Export the resolved link graph for external tools
   epub          Render matched notes as an EPUB book
   zip           Export matched notes and linked attachments as a ZIP archive
+  outline-zip   Export an Outline-compatible Markdown hierarchy ZIP
   sqlite        Export matched notes into a standalone SQLite database
   search-index  Write the cached search corpus as a static JSON index
 
@@ -2254,6 +2255,27 @@ pub enum ExportCommand {
             help = "Destination ZIP archive"
         )]
         path: PathBuf,
+    },
+    #[command(about = "Export matched notes as an Outline-compatible hierarchy ZIP")]
+    OutlineZip {
+        #[command(flatten)]
+        query: ExportQueryArgs,
+        #[command(flatten)]
+        transforms: ExportTransformArgs,
+        #[arg(long, help = "Top-level Outline collection directory and import title")]
+        collection_title: String,
+        #[arg(
+            short = 'o',
+            long = "path",
+            required = true,
+            help = "Destination Outline ZIP archive"
+        )]
+        path: PathBuf,
+        #[arg(
+            long,
+            help = "Validate and print the deterministic archive plan without writing"
+        )]
+        dry_run: bool,
     },
     #[command(about = "Export matched notes into a standalone SQLite database")]
     Sqlite {

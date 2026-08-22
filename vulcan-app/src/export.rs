@@ -39,6 +39,7 @@ use vulcan_core::{
 };
 use zip::write::FileOptions;
 
+pub mod outline;
 mod sqlite;
 mod text;
 #[path = "export/zip.rs"]

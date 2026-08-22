@@ -14578,6 +14578,56 @@ fn export_zip_includes_notes_attachments_and_manifest() {
 }
 
 #[test]
+fn export_outline_zip_reports_structured_mutation_free_dry_run() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Projects")).expect("projects folder");
+    fs::write(
+        vault_root.join("Projects/Projects.md"),
+        "# Projects\n\n[[Child]]\n",
+    )
+    .expect("folder note");
+    fs::write(vault_root.join("Projects/Child.md"), "# Child\n").expect("child note");
+    run_scan(&vault_root);
+    let export_path = temp_dir.path().join("wiki.zip");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "export",
+            "outline-zip",
+            "from notes",
+            "--collection-title",
+            "Wiki",
+            "--path",
+            export_path
+                .to_str()
+                .expect("export path should be valid utf-8"),
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+
+    let report: Value = serde_json::from_slice(&assert.get_output().stdout)
+        .expect("Outline plan should be valid JSON");
+    assert_eq!(report["dry_run"], true);
+    assert_eq!(report["wrote_archive"], false);
+    assert_eq!(report["collection_directory"], "Wiki");
+    assert_eq!(report["documents"][0]["archive_path"], "Wiki/Projects.md");
+    assert_eq!(
+        report["documents"][1]["archive_path"],
+        "Wiki/Projects/Child.md"
+    );
+    assert!(!export_path.exists());
+}
+
+#[test]
 fn export_epub_writes_book_archive_with_nav_and_backlinks() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
