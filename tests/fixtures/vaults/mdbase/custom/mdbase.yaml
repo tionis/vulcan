@@ -1,0 +1,13 @@
+spec_version: "0.3.4"
+name: Custom fixture
+settings:
+  timezone: Europe/Berlin
+  types_folder: Schema/Types
+  contracts_folder: Schema/Contracts
+  record_extensions: [md, markdown]
+  validation: warn
+  explicit_type_keys: [type, types, kind]
+  id_field: record_id
+  include_subfolders: true
+  exclude: [Archive/**, "**/*.draft.md"]
+  future_setting: preserved-as-warning

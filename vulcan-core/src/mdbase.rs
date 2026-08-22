@@ -663,6 +663,7 @@ fn invalid_config<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{scan_vault, CacheDatabase, ScanMode, VaultPaths};
     use tempfile::tempdir;
 
     fn write_config(root: &Path, content: &str) {
@@ -674,6 +675,29 @@ mod tests {
         fs::create_dir_all(path.parent().expect("file should have a parent"))
             .expect("parent should be created");
         fs::write(path, "---\ntitle: Fixture\n---\n").expect("file should be written");
+    }
+
+    fn fixture_collection(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/vaults/mdbase")
+            .join(name)
+    }
+
+    fn copy_directory(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination).expect("destination should be created");
+        for entry in fs::read_dir(source).expect("fixture should be readable") {
+            let entry = entry.expect("fixture entry should be readable");
+            let destination_path = destination.join(entry.file_name());
+            if entry
+                .file_type()
+                .expect("fixture file type should be readable")
+                .is_dir()
+            {
+                copy_directory(&entry.path(), &destination_path);
+            } else {
+                fs::copy(entry.path(), destination_path).expect("fixture file should be copied");
+            }
+        }
     }
 
     #[test]
@@ -918,5 +942,65 @@ settings:
         assert_eq!(discovered.records, ["Root.md"]);
         assert_eq!(discovered.type_files, ["_types/Nested/Person.md"]);
         assert!(discovered.nested_collections.is_empty());
+    }
+
+    #[test]
+    fn fixture_suite_covers_valid_and_invalid_collection_configs() {
+        let minimal = load_mdbase_collection(&fixture_collection("minimal"))
+            .expect("minimal fixture should load")
+            .expect("minimal fixture should be detected");
+        assert_eq!(minimal.config.settings, MdbaseSettings::default());
+
+        let custom = load_mdbase_collection(&fixture_collection("custom"))
+            .expect("custom fixture should load")
+            .expect("custom fixture should be detected");
+        assert_eq!(custom.diagnostics.len(), 2);
+        assert_eq!(
+            discover_mdbase_files(&custom).expect("custom fixture should be discovered"),
+            MdbaseDiscovery {
+                records: vec![
+                    "People/Ada.markdown".to_string(),
+                    "Schema/Other.md".to_string(),
+                ],
+                type_files: vec!["Schema/Types/Person.md".to_string()],
+                contract_files: vec!["Schema/Contracts/People.md".to_string()],
+                nested_collections: vec!["Nested".to_string()],
+            }
+        );
+
+        assert!(matches!(
+            load_mdbase_collection(&fixture_collection("malformed")),
+            Err(MdbaseConfigError::InvalidYaml { .. })
+        ));
+        for name in ["unsupported", "unsafe-path", "invalid-timezone"] {
+            assert!(matches!(
+                load_mdbase_collection(&fixture_collection(name)),
+                Err(MdbaseConfigError::InvalidConfig { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn ordinary_vulcan_scan_keeps_mdbase_control_markdown_visible() {
+        let directory = tempdir().expect("temporary directory should exist");
+        let vault_root = directory.path().join("vault");
+        copy_directory(&fixture_collection("custom"), &vault_root);
+        fs::create_dir_all(vault_root.join(".vulcan")).expect("Vulcan directory should exist");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("ordinary scan should succeed");
+        let database = CacheDatabase::open(&paths).expect("cache should open");
+        let mut statement = database
+            .connection()
+            .prepare("SELECT path FROM documents ORDER BY path")
+            .expect("document query should prepare");
+        let paths = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .expect("document query should execute")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("document paths should deserialize");
+
+        assert!(paths.contains(&"Schema/Types/Person.md".to_string()));
+        assert!(paths.contains(&"Schema/Contracts/People.md".to_string()));
     }
 }

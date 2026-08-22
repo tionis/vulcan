@@ -1,0 +1,3 @@
+---
+title: Nested collection record
+---
