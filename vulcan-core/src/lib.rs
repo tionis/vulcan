@@ -69,6 +69,7 @@ pub mod init;
 pub mod json_schema;
 pub mod kanban;
 pub mod maintenance;
+pub mod mdbase;
 pub mod move_rewrite;
 pub mod note;
 #[cfg(feature = "oauth")]
@@ -203,6 +204,11 @@ pub use maintenance::{
     verify_cache, CacheInspectReport, CacheVacuumQuery, CacheVacuumReport, CacheVerifyCheck,
     CacheVerifyReport, MaintenanceError, RebuildQuery, RebuildReport, RepairFtsQuery,
     RepairFtsReport,
+};
+pub use mdbase::{
+    load_mdbase_collection, MdbaseCollection, MdbaseConfig, MdbaseConfigDiagnostic,
+    MdbaseConfigError, MdbaseDiagnosticSeverity, MdbaseSettings, MdbaseValidationLevel,
+    MDBASE_CONFIG_FILE_NAME, SUPPORTED_MDBASE_SPEC_MINOR,
 };
 pub use move_rewrite::{move_note, LinkChange, MoveError, MoveSummary, RewrittenFile};
 pub use note::{
