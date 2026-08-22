@@ -6331,6 +6331,88 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 ---
 
+## Phase 9.32: mdbase typed Markdown collection interoperability
+
+**Goal:** Let Vulcan detect, validate, query, and safely mutate [mdbase v0.3](https://mdbase.dev/spec/) collections without replacing Vulcan's Obsidian-compatible semantics, canonical query model, permission system, or rebuildable cache architecture.
+
+**Compatibility boundary:** mdbase behavior is opt-in and collection-scoped. A valid root-level `mdbase.yaml` activates the mdbase adapter for explicit mdbase surfaces; ordinary Vulcan commands and vaults without that marker keep their existing semantics. `mdbase.yaml`, `_types/`, `_contracts/`, and record Markdown remain authoritative. `.vulcan/cache.db` only stores rebuildable derived state, and `.vulcan/config*.toml` remains Vulcan runtime/application configuration rather than a second source for portable mdbase semantics.
+
+**Initial conformance target:** implement and verify the mdbase `core_read` and `collection_semantics` profiles first. Do not claim `cel`, `cel_match`, `cel_query`, `links`, `core_write`, `lifecycle`, or `watch` until every required behavior has focused tests and the corresponding upstream conformance fixtures pass. The optional runtime, workflow, type-pack installation, and event/action interoperability profiles are explicitly deferred.
+
+### 9.32.1 Specification pinning, collection discovery, and configuration
+
+- [ ] Pin one exact supported mdbase v0.3 specification revision in source/docs, bundle required canonical schemas and fixtures with license/provenance metadata, and make upgrades explicit reviewable changes.
+- [ ] Add a transport-neutral `vulcan-core::mdbase` collection detector and `mdbase.yaml` loader with v0.3 version checks, documented defaults, unknown-key warnings, safe relative control-folder paths, record-extension validation, explicit type-key configuration, validation level, and durable IANA timezone validation.
+- [ ] Model configured `_types/` and `_contracts/` folders, `.mdbase/`, `mdbase.lock.yaml`, configured exclusions, and nested `mdbase.yaml` roots as mdbase control/discovery boundaries without hiding those Markdown files from ordinary Obsidian-oriented Vulcan browsing unless the caller requests the mdbase record set.
+- [ ] Add an `mdbase` fixture vault covering a minimal collection, customized folders/extensions, malformed YAML, unknown keys, unsupported versions, unsafe paths, invalid timezone identifiers, exclusions, and nested collections.
+
+### 9.32.2 JSON Schema, type registry, and data contracts
+
+- [ ] Replace or supplement the small internal tool-schema validator with an MSRV-compatible JSON Schema 2020-12 implementation that covers every mdbase-required keyword, asserted date/time/date-time formats, fragment references, bounded local file references, cycle detection, and canonical `schema_*` diagnostics.
+- [ ] Load and validate `kind: mdbase.type` control files into a deterministic case-insensitive registry while preserving authored names and reporting conflicts independently of filesystem order.
+- [ ] Implement explicit type declaration precedence and structured inferred matching (`path_glob`, `fields_present`, and `match.where`) against persisted frontmatter, including multiple matched types and deterministic ordering.
+- [ ] Implement compatible multi-type composition for schemas, defaults, links, uniqueness, paths, lifecycle declarations, projections, and display metadata; report `type_conflict` before applying conflicted behavior.
+- [ ] Load exact-version `mdbase.contract` files, validate `implements` bindings, produce deterministic contract/implementation digests, and expose projected record contract views required by `core_read`.
+
+### 9.32.3 Persisted and effective record model
+
+- [ ] Introduce shared record-domain types that keep exact source, body, persisted frontmatter, effective frontmatter, matched types, revision, file metadata, and diagnostics distinct; never populate mdbase frontmatter from Dataview inline fields.
+- [ ] Apply `collection.read_defaults` only to missing effective fields while preserving missing, explicit null, empty string, and empty list as distinct states; validate JSON Schema `required` against persisted frontmatter only.
+- [ ] Implement cross-file uniqueness scopes, advisory display metadata, and portable path-pattern validation with deterministic collection-relative forward-slash paths.
+- [ ] Cache type membership, effective projections, and validation results as versioned derived data with rebuild and incremental invalidation when config, types, contracts, schemas, or records change.
+
+### 9.32.4 Core read surface and conformance gate
+
+- [ ] Add `vulcan mdbase status|types|contracts|validate|read` over reusable core/app services, with `--output json`, permission filtering, exact source opt-in, canonical diagnostics, and no implicit mutation.
+- [ ] Return the canonical mdbase complete-record and operation envelopes from explicit mdbase commands while keeping existing Vulcan JSON contracts backward compatible.
+- [ ] Add a spec-fixture adapter and evidence command that runs the upstream v0.3 `core_read` and `collection_semantics` suites against Vulcan.
+- [ ] Publish a machine-readable conformance claim only after every required fixture passes on the pinned artifact; report unsupported profiles explicitly instead of approximating them.
+
+### 9.32.5 CEL and canonical mdbase querying
+
+- [ ] Select or implement an MSRV-compatible CEL engine behind a Vulcan-owned adapter; bound source size, AST depth, evaluation work, memory, list iteration, and link traversal.
+- [ ] Implement mdbase raw/effective/presence namespaces, reserved bindings, fixed per-operation clock, IANA timezone context, date/duration values, null propagation, and context-specific diagnostics without changing Bases/Dataview expression behavior.
+- [ ] Add `match.expr` only after the base CEL profile passes, with raw candidate bindings and compile-time type-file preflight.
+- [ ] Extend the internal query representation as needed for named projections, invocation context (`this`), CEL filters/selections, multi-key ordering, grouping, summaries, frontmatter modes, and canonical pagination metadata; keep mdbase as another frontend rather than the product-wide canonical syntax.
+- [ ] Add `vulcan mdbase query` and pass the `cel`, `cel_match`, and `cel_query` conformance gates before advertising those profiles.
+
+### 9.32.6 mdbase link semantics
+
+- [ ] Add a scoped mdbase resolver mode for declared frontmatter links and body links: configured-ID lookup, collection/file-relative paths, stable ambiguity behavior, target-type constraints, and `validate_exists` diagnostics.
+- [ ] Preserve raw, parsed, and resolved link forms; keep ordinary Vulcan/Obsidian shortest-path and alias behavior unchanged outside explicit mdbase operations.
+- [ ] Implement bounded CEL link helpers plus `file.links`, `file.embeds`, and `file.tags`, ignoring code spans/fences consistently with the parser pipeline.
+- [ ] Pass the upstream Links profile before claiming it; do not claim Links before its CEL dependency is satisfied.
+
+### 9.32.7 Core write, concurrency, and lifecycle
+
+- [ ] Centralize mdbase create/update/delete/rename/batch orchestration in `vulcan-app`, reusing secure path handling, atomic writes, scan refresh, permission checks, dry-run reports, plugin events, and opt-in git commits.
+- [ ] Add opaque content-derived revisions and `if_revision` preconditions; preserve the current file and return `concurrent_modification` on mismatch.
+- [ ] Implement the normative draft pipeline: draft type membership, lifecycle, one post-lifecycle membership check, JSON Schema validation, collection validators, atomic persistence, derived-state refresh, then events.
+- [ ] Implement `now`, `today`, `uuid`, `ulid`, `slugify`, `copy`, and `literal` lifecycle providers, guarded lifecycle actions after CEL, and deterministic conflict diagnostics across matched types.
+- [ ] Preserve unrelated Markdown, link style, aliases, anchors, line endings, and exact supplied source when policy does not require reserialization; update references on rename through the existing rewrite planner.
+- [ ] Pass Core Write and Lifecycle suites independently before claiming either profile, and add crash/concurrency regression tests around batch and rename operations.
+
+### 9.32.8 Portable views, Obsidian Bases, and TaskNotes
+
+- [ ] Load canonical `type: view` records as ordinary mdbase records and implement stable named-view discovery, inheritance/merge rules, invocation context, advisory presentation, and headless execution.
+- [ ] Adapt existing `.base` discovery/evaluation to the mdbase saved-view source envelope without converting `.base` files or making mdbase CEL the Bases expression language; keep source revisions and full-document writable operations explicit.
+- [ ] Evaluate the upstream `obsidian_bases_views` optional feature against Vulcan's existing oracle/snapshot corpus and claim it only when source ordering, formulas, filters, grouping, properties, and diagnostics match.
+- [ ] Import TaskNotes `enableMdbaseSpec` and generated collection assets through an explicit preview/apply workflow that preserves unrelated settings and never partially migrates a live collection.
+
+### 9.32.9 Watch, daemon, permissions, and rollout
+
+- [ ] Invalidate derived mdbase state when `mdbase.yaml`, type, contract, external schema, or record files change; publish logical notifications only after read/query state is consistent.
+- [ ] Keep collection loading passive: opening a vault, type, contract, provider, or workflow record must never activate executable behavior.
+- [ ] Apply existing permission profiles to mdbase read/query/write paths and keep control files, contracts, diagnostics, and exact source subject to normal path/read restrictions.
+- [ ] Add help/reference documentation, an mdbase-focused assistant skill, example collections, feature-disabled behavior, and upgrade notes for each newly claimed profile.
+- [ ] Re-evaluate upstream stability, MSRV, and crate boundaries before each profile expansion. Do not depend directly on `mdbase-rs` while it would raise Vulcan's MSRV or introduce a second authoritative cache/watcher/mutation engine.
+
+### Deferred mdbase runtime work
+
+The mdbase event/action interoperability, durable runtime, workflow execution, provider registry, type-pack installation, and migration profiles are not part of Phase 9.32. Revisit them after the Phase 10 daemon and Vulcan's shared plugin/skill-command/permission boundaries are stable. Any later integration must adapt those contracts to the daemon rather than introducing executable behavior into `vulcan-core` or bypassing Vulcan authorization.
+
+---
+
 ## New crates (Phases 10+)
 
 | Crate | Type | Purpose |
