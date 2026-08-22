@@ -22,6 +22,52 @@ pub const MDBASE_SPEC_UPSTREAM_COMMIT: &str = "68b9a97969bf9472f0d42b8faf8a2e349
 pub const MDBASE_SPEC_UPSTREAM_URL: &str = "https://github.com/mdbase-dev/mdbase-spec";
 pub const MDBASE_BUNDLED_ASSET_DIGEST: &str =
     "9b4c7d477dc914099a5a40092d6543caca9c626d5ca0ff3ed5a4d47646c29e52";
+pub const MDBASE_CANONICAL_SCHEMA_BASE: &str = "https://mdbase.dev/schemas/v0.3/";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MdbaseBundledSchema {
+    pub canonical_id: &'static str,
+    pub file_name: &'static str,
+    pub json: &'static str,
+}
+
+macro_rules! bundled_schema {
+    ($file_name:literal) => {
+        MdbaseBundledSchema {
+            canonical_id: concat!("https://mdbase.dev/schemas/v0.3/", $file_name),
+            file_name: $file_name,
+            json: include_str!(concat!(
+                "../resources/mdbase/v0.3/upstream/schemas/",
+                $file_name
+            )),
+        }
+    };
+}
+
+pub const MDBASE_BUNDLED_SCHEMAS: [MdbaseBundledSchema; 12] = [
+    bundled_schema!("config.schema.json"),
+    bundled_schema!("conformance-claim.schema.json"),
+    bundled_schema!("data-contract.schema.json"),
+    bundled_schema!("diagnostic.schema.json"),
+    bundled_schema!("operation-result.schema.json"),
+    bundled_schema!("query-result.schema.json"),
+    bundled_schema!("query.schema.json"),
+    bundled_schema!("record-document.schema.json"),
+    bundled_schema!("type-file.schema.json"),
+    bundled_schema!("type-pack-lock.schema.json"),
+    bundled_schema!("type-pack.schema.json"),
+    bundled_schema!("view.schema.json"),
+];
+
+/// Resolve an exact canonical v0.3 schema identifier from Vulcan's offline
+/// bundle. Mutable aliases such as `latest` and arbitrary network URLs are not
+/// resolved by this registry.
+#[must_use]
+pub fn bundled_mdbase_schema(canonical_id: &str) -> Option<&'static MdbaseBundledSchema> {
+    MDBASE_BUNDLED_SCHEMAS
+        .iter()
+        .find(|schema| schema.canonical_id == canonical_id)
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -1074,8 +1120,27 @@ settings:
             assert!(schema
                 .get("$id")
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|id| id.starts_with("https://mdbase.dev/schemas/v0.3/")));
+                .is_some_and(|id| id.starts_with(MDBASE_CANONICAL_SCHEMA_BASE)));
         }
+    }
+
+    #[test]
+    fn canonical_schema_registry_resolves_exact_ids_offline() {
+        assert_eq!(MDBASE_BUNDLED_SCHEMAS.len(), 12);
+        for bundled in MDBASE_BUNDLED_SCHEMAS {
+            let parsed: serde_json::Value =
+                serde_json::from_str(bundled.json).expect("bundled schema should be valid JSON");
+            assert_eq!(
+                parsed.get("$id").and_then(serde_json::Value::as_str),
+                Some(bundled.canonical_id)
+            );
+            assert_eq!(bundled_mdbase_schema(bundled.canonical_id), Some(&bundled));
+        }
+
+        assert!(
+            bundled_mdbase_schema("https://mdbase.dev/schemas/latest/config.schema.json").is_none()
+        );
+        assert!(bundled_mdbase_schema("https://example.com/schema.json").is_none());
     }
 
     #[test]
