@@ -19,9 +19,9 @@ use toml::Value as TomlValue;
 use vulcan_core::config::QuickAddImporter;
 use vulcan_core::{
     all_importers, annotate_import_conflicts, load_permission_profiles, ConfigImportReport,
-    CoreImporter, DataviewImporter, ImportTarget, KanbanImporter, PeriodicNotesImporter,
-    PermissionGuard, PermissionProfile, PluginImporter, TaskNotesImporter, TasksImporter,
-    TemplaterImporter, VaultPaths,
+    CoreImporter, DataviewImporter, FolderNotesImporter, ImportTarget, KanbanImporter,
+    PeriodicNotesImporter, PermissionGuard, PermissionProfile, PluginImporter, TaskNotesImporter,
+    TasksImporter, TemplaterImporter, VaultPaths,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -228,6 +228,7 @@ fn importer_for_command(command: &ConfigImportCommand) -> Box<dyn PluginImporter
     match command {
         ConfigImportCommand::Core => Box::new(CoreImporter),
         ConfigImportCommand::Dataview => Box::new(DataviewImporter),
+        ConfigImportCommand::FolderNotes => Box::new(FolderNotesImporter),
         ConfigImportCommand::Templater => Box::new(TemplaterImporter),
         ConfigImportCommand::Quickadd => Box::new(QuickAddImporter),
         ConfigImportCommand::Kanban => Box::new(KanbanImporter),

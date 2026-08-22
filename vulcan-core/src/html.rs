@@ -244,6 +244,7 @@ fn render_html_internal(
         source_path,
         full_document,
         env.link_targets,
+        &env.config.folder_notes,
         env.raw_html_policy,
     );
     if rendered.sanitized_raw_html_events > 0 {
@@ -1276,6 +1277,7 @@ fn render_markdown_html_with_targets(
     source_path: Option<&str>,
     full_document: bool,
     link_targets: &HtmlLinkTargets,
+    folder_notes: &crate::folder_notes::FolderNotesConfig,
     raw_html_policy: HtmlRawHtmlPolicy,
 ) -> RenderedMarkdownHtml {
     let empty_path = String::new();
@@ -1299,6 +1301,7 @@ fn render_markdown_html_with_targets(
                 &dest_url,
                 &link_targets.note_hrefs,
                 &link_targets.asset_hrefs,
+                folder_notes,
             )
             .map(CowStr::from)
             .unwrap_or(dest_url),
@@ -1413,6 +1416,7 @@ fn rewrite_link_destination(
     destination: &str,
     note_targets: &HashMap<String, String>,
     asset_targets: &HashMap<String, String>,
+    folder_notes: &crate::folder_notes::FolderNotesConfig,
 ) -> Option<String> {
     if !is_safe_render_url(destination) {
         return Some(String::new());
@@ -1425,8 +1429,14 @@ fn rewrite_link_destination(
         .map_or((destination, None), |(path, fragment)| {
             (path, Some(fragment))
         });
-    resolve_note_href(source_document_path, path_part, fragment, note_targets)
-        .or_else(|| resolve_asset_href(source_document_path, path_part, fragment, asset_targets))
+    resolve_note_href(
+        source_document_path,
+        path_part,
+        fragment,
+        note_targets,
+        folder_notes,
+    )
+    .or_else(|| resolve_asset_href(source_document_path, path_part, fragment, asset_targets))
 }
 
 fn rewrite_image_destination(
@@ -1656,6 +1666,7 @@ fn resolve_note_href(
     path_part: &str,
     fragment: Option<&str>,
     targets: &HashMap<String, String>,
+    folder_notes: &crate::folder_notes::FolderNotesConfig,
 ) -> Option<String> {
     for key in resolve_lookup_keys(source_document_path, path_part) {
         let mut candidates = vec![key.clone()];
@@ -1664,10 +1675,8 @@ fn resolve_note_href(
             .is_some_and(|extension| extension.eq_ignore_ascii_case("md"));
         if !has_markdown_extension {
             candidates.push(format!("{key}.md"));
-            candidates.push(format!("{key}/index.md"));
-            if let Some(last_segment) = key.rsplit('/').next().filter(|segment| !segment.is_empty())
-            {
-                candidates.push(format!("{key}/{last_segment}.md"));
+            if let Some(folder_note) = folder_notes.note_path_for_folder(&key) {
+                candidates.push(folder_note);
             }
         }
         if has_markdown_extension {
@@ -1927,6 +1936,11 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
         fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should exist");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[folder_notes]\nplacement = \"inside\"\nname = \"index\"\n",
+        )
+        .expect("folder-note config should write");
         let paths = VaultPaths::new(&vault_root);
         let link_targets = super::HtmlLinkTargets {
             note_hrefs: std::collections::HashMap::from([

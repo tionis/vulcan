@@ -25,6 +25,7 @@ use vulcan_core::config::{
     SiteFolderClickBehaviorConfig, SiteLinkPolicyConfig, SitePaletteModeConfig, SiteProfileConfig,
     SiteRawHtmlPolicyConfig,
 };
+use vulcan_core::folder_notes::FolderNotesConfig;
 use vulcan_core::graph::resolve_note_reference;
 use vulcan_core::html::{
     HtmlDataviewJsPolicy, HtmlLinkTargets, HtmlRawHtmlPolicy, HtmlRenderDiagnostic,
@@ -94,6 +95,7 @@ struct SitePlanNote {
 #[derive(Debug, Clone)]
 struct SitePlan {
     profile: ResolvedSiteProfile,
+    folder_notes: FolderNotesConfig,
     notes: Vec<SitePlanNote>,
     links: Vec<ExportLinkRecord>,
     routes: Vec<SiteRoute>,
@@ -438,7 +440,8 @@ where
     let tag_index = build_tag_index(&rendered_notes);
     let folder_index = build_folder_index(&rendered_notes);
     let home_note = resolve_home_note(&plan.profile, &rendered_notes);
-    let navigation_tree = build_navigation_tree(&context.deploy_path, &rendered_notes);
+    let navigation_tree =
+        build_navigation_tree(&context.deploy_path, &rendered_notes, &plan.folder_notes);
     let next_state_note_indices = next_state.as_ref().map(|state| {
         state
             .notes
@@ -835,7 +838,8 @@ pub fn build_frontend_bundle(
         deploy_path: plan.profile.deploy_path.clone(),
     };
     let tag_index = build_tag_index(&rendered_notes);
-    let navigation_tree = build_navigation_tree(&context.deploy_path, &rendered_notes);
+    let navigation_tree =
+        build_navigation_tree(&context.deploy_path, &rendered_notes, &plan.folder_notes);
     let note_documents = rendered_notes
         .iter()
         .map(|note| FrontendBundleNoteDocument {
@@ -1397,11 +1401,13 @@ fn plan_site(
             links,
         )
     };
-    let routes = plan_note_routes(&notes, &profile.name, &profile.deploy_path);
+    let folder_notes = load_vault_config(paths).config.folder_notes;
+    let routes = plan_note_routes(&notes, &profile.name, &profile.deploy_path, &folder_notes);
     let diagnostics = collect_site_diagnostics(paths, &profile, &notes, &links, &routes);
     let config_signature = site_build_config_signature(paths, &profile);
     Ok(SitePlan {
         profile,
+        folder_notes,
         notes,
         links,
         routes,
@@ -1531,12 +1537,13 @@ fn plan_note_routes(
     notes: &[SitePlanNote],
     profile_name: &str,
     deploy_path: &str,
+    folder_notes: &FolderNotesConfig,
 ) -> Vec<SiteRoute> {
     let mut routes = notes
         .iter()
         .map(|document| {
             let title = note_title(&document.note, profile_name, None);
-            let slug = note_route_slug(&document.note, profile_name);
+            let slug = note_route_slug(&document.note, profile_name, folder_notes);
             let route_segments = slug
                 .split('/')
                 .filter(|segment| !segment.is_empty())
@@ -1833,7 +1840,7 @@ fn build_site_render_shared(plan: &SitePlan) -> SiteRenderShared<'_> {
     let asset_hrefs = collect_asset_links(&plan.links, &plan.profile.deploy_path);
     let mut note_hrefs = HashMap::new();
     for (path, route) in &route_map {
-        for alias in note_route_aliases(path) {
+        for alias in note_route_aliases(path, &plan.folder_notes) {
             note_hrefs.insert(alias, route.url_path.clone());
         }
     }
@@ -2481,7 +2488,11 @@ fn site_folder_state_name(mode: SiteExplorerFolderStateConfig) -> &'static str {
 
 // Build a published-only explorer tree. Nested index notes become folder landing pages so the
 // left rail can prefer folder notes while still falling back to generated folder listings.
-fn build_navigation_tree(deploy_path: &str, notes: &[RenderedNote]) -> Vec<SiteNavigationNode> {
+fn build_navigation_tree(
+    deploy_path: &str,
+    notes: &[RenderedNote],
+    folder_notes: &FolderNotesConfig,
+) -> Vec<SiteNavigationNode> {
     #[derive(Debug, Default)]
     struct FolderBuilder {
         title: String,
@@ -2523,7 +2534,7 @@ fn build_navigation_tree(deploy_path: &str, notes: &[RenderedNote]) -> Vec<SiteN
     let mut root = FolderBuilder::default();
     for note in notes {
         let folder = folder_for_note(&note.source_path);
-        let folder_note = folder_note_path(&note.source_path);
+        let folder_note = folder_notes.folder_for_note_path(&note.source_path);
         let mut current = &mut root;
         if !folder.is_empty() {
             let mut assembled = String::new();
@@ -4356,9 +4367,13 @@ fn is_internal_asset_link(link: &ExportLinkRecord) -> bool {
             .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
 }
 
-fn note_route_slug(note: &NoteRecord, profile_name: &str) -> String {
+fn note_route_slug(
+    note: &NoteRecord,
+    profile_name: &str,
+    folder_notes: &FolderNotesConfig,
+) -> String {
     frontmatter_override(note, profile_name, "slug")
-        .or_else(|| folder_note_path(&note.document_path))
+        .or_else(|| folder_notes.folder_for_note_path(&note.document_path))
         .unwrap_or_else(|| trim_markdown_extension(&note.document_path).to_string())
 }
 
@@ -4524,22 +4539,7 @@ fn folder_for_note(path: &str) -> String {
         .map_or_else(String::new, |(folder, _)| folder.to_string())
 }
 
-fn folder_note_path(path: &str) -> Option<String> {
-    let normalized = normalize_path(path);
-    let (folder, file_name) = normalized.rsplit_once('/')?;
-    if folder.is_empty() {
-        return None;
-    }
-    if file_name.eq_ignore_ascii_case("index.md") {
-        return Some(folder.to_string());
-    }
-    let folder_name = folder.rsplit('/').next().unwrap_or(folder);
-    trim_markdown_extension(file_name)
-        .eq_ignore_ascii_case(folder_name)
-        .then_some(folder.to_string())
-}
-
-fn note_route_aliases(path: &str) -> Vec<String> {
+fn note_route_aliases(path: &str, folder_notes: &FolderNotesConfig) -> Vec<String> {
     let normalized = normalize_path(path);
     let mut aliases = Vec::new();
     let mut push_alias = |candidate: String| {
@@ -4551,7 +4551,7 @@ fn note_route_aliases(path: &str) -> Vec<String> {
     if let Some(stem) = normalized.strip_suffix(".md") {
         push_alias(stem.to_string());
     }
-    if let Some(folder_note) = folder_note_path(&normalized) {
+    if let Some(folder_note) = folder_notes.folder_for_note_path(&normalized) {
         push_alias(folder_note);
     }
     aliases

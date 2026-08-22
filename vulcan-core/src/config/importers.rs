@@ -196,6 +196,9 @@ pub struct CoreImporter;
 pub struct DataviewImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
+pub struct FolderNotesImporter;
+
+#[derive(Debug, Clone, Copy, Default)]
 pub struct KanbanImporter;
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -218,6 +221,7 @@ pub fn all_importers() -> Vec<Box<dyn PluginImporter>> {
     vec![
         Box::new(CoreImporter),
         Box::new(DataviewImporter),
+        Box::new(FolderNotesImporter),
         Box::new(KanbanImporter),
         Box::new(PeriodicNotesImporter),
         Box::new(QuickAddImporter),
@@ -231,6 +235,12 @@ pub fn import_tasks_plugin_config(
     paths: &VaultPaths,
 ) -> Result<ConfigImportReport, ConfigImportError> {
     TasksImporter.import(paths, ImportTarget::Shared)
+}
+
+pub fn import_folder_notes_plugin_config(
+    paths: &VaultPaths,
+) -> Result<ConfigImportReport, ConfigImportError> {
+    FolderNotesImporter.import(paths, ImportTarget::Shared)
 }
 
 pub fn import_tasknotes_plugin_config(
@@ -906,6 +916,92 @@ impl PluginImporter for DataviewImporter {
         let imported_dataview = imported_dataview_config(obsidian);
         let settings =
             import_settings_from_mappings(dataview_config_import_mappings(&imported_dataview)?);
+        apply_import_settings(
+            paths,
+            self.name(),
+            source_path.clone(),
+            vec![source_path],
+            &settings,
+            target,
+            dry_run,
+        )
+    }
+}
+
+impl PluginImporter for FolderNotesImporter {
+    fn name(&self) -> &'static str {
+        "folder-notes"
+    }
+
+    fn display_name(&self) -> &'static str {
+        "Obsidian Folder Notes plugin"
+    }
+
+    fn source_paths(&self, paths: &VaultPaths) -> Vec<PathBuf> {
+        vec![importer_source_path(
+            paths,
+            ".obsidian/plugins/folder-notes/data.json",
+        )]
+    }
+
+    fn import_with_mode(
+        &self,
+        paths: &VaultPaths,
+        target: ImportTarget,
+        dry_run: bool,
+    ) -> Result<ConfigImportReport, ConfigImportError> {
+        if target == ImportTarget::Local {
+            return Err(ConfigImportError::InvalidConfig(
+                "Folder Notes conventions are repository-level and must be imported into shared config"
+                    .to_string(),
+            ));
+        }
+        let source_path = self
+            .source_paths(paths)
+            .into_iter()
+            .next()
+            .expect("source path");
+        if !source_path.exists() {
+            return Err(ConfigImportError::MissingSource(source_path));
+        }
+        let raw = serde_json::from_str::<Value>(&fs::read_to_string(&source_path)?)?;
+        let name = raw
+            .get("folderNoteName")
+            .and_then(Value::as_str)
+            .unwrap_or(crate::folder_notes::FOLDER_NAME_TOKEN);
+        let placement = match raw
+            .get("storageLocation")
+            .and_then(Value::as_str)
+            .unwrap_or("insideFolder")
+        {
+            "insideFolder" => FolderNotePlacement::Inside,
+            "parentFolder" => FolderNotePlacement::Outside,
+            value => {
+                return Err(ConfigImportError::InvalidConfig(format!(
+                    "unsupported Folder Notes storageLocation `{value}`"
+                )))
+            }
+        };
+        let config = FolderNotesConfig {
+            placement,
+            name: name.to_string(),
+        };
+        config
+            .validate()
+            .map_err(ConfigImportError::InvalidConfig)?;
+        let mappings = vec![
+            ConfigImportMapping {
+                source: "storageLocation".to_string(),
+                target: "folder_notes.placement".to_string(),
+                value: serde_json::to_value(config.placement)?,
+            },
+            ConfigImportMapping {
+                source: "folderNoteName".to_string(),
+                target: "folder_notes.name".to_string(),
+                value: Value::String(config.name),
+            },
+        ];
+        let settings = import_settings_from_mappings(mappings);
         apply_import_settings(
             paths,
             self.name(),

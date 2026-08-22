@@ -110,8 +110,9 @@ pub struct LinkChange {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct CachedInboundLink {
+struct CachedMoveLink {
     source_path: String,
+    target_path: String,
     raw_text: String,
     byte_offset: usize,
 }
@@ -163,7 +164,7 @@ pub fn move_note(
     }
 
     let config = load_vault_config(paths).config;
-    let inbound_links = load_inbound_links(&connection, &source.id)?;
+    let move_links = load_move_links(&connection, &source.id)?;
     let document_paths = load_document_paths(&connection)?;
     let document_paths_after_move = document_paths
         .into_iter()
@@ -179,7 +180,7 @@ pub fn move_note(
         paths,
         &source.path,
         &destination_path,
-        &inbound_links,
+        &move_links,
         &document_paths_after_move,
         &config,
         config.link_resolution,
@@ -313,24 +314,26 @@ fn normalize_destination_path(
     }
 }
 
-fn load_inbound_links(
+fn load_move_links(
     connection: &Connection,
     document_id: &str,
-) -> Result<Vec<CachedInboundLink>, MoveError> {
+) -> Result<Vec<CachedMoveLink>, MoveError> {
     let mut statement = connection.prepare(
         "
-        SELECT source.path, links.raw_text, links.byte_offset
+        SELECT source.path, target.path, links.raw_text, links.byte_offset
         FROM links
         JOIN documents AS source ON source.id = links.source_document_id
-        WHERE links.resolved_target_id = ?1
+        JOIN documents AS target ON target.id = links.resolved_target_id
+        WHERE links.resolved_target_id = ?1 OR links.source_document_id = ?1
         ORDER BY source.path, links.byte_offset
         ",
     )?;
     let rows = statement.query_map(params![document_id], |row| {
-        Ok(CachedInboundLink {
+        Ok(CachedMoveLink {
             source_path: row.get(0)?,
-            raw_text: row.get(1)?,
-            byte_offset: row.get(2)?,
+            target_path: row.get(1)?,
+            raw_text: row.get(2)?,
+            byte_offset: row.get(3)?,
         })
     })?;
 
@@ -348,21 +351,21 @@ fn plan_rewrites(
     paths: &VaultPaths,
     source_path: &str,
     destination_path: &str,
-    inbound_links: &[CachedInboundLink],
+    move_links: &[CachedMoveLink],
     document_paths_after_move: &[String],
     config: &crate::VaultConfig,
     resolution_mode: LinkResolutionMode,
 ) -> Result<Vec<FileRewritePlan>, MoveError> {
-    let mut inbound_by_file = BTreeMap::<String, Vec<CachedInboundLink>>::new();
-    for inbound_link in inbound_links {
-        inbound_by_file
-            .entry(inbound_link.source_path.clone())
+    let mut links_by_file = BTreeMap::<String, Vec<CachedMoveLink>>::new();
+    for move_link in move_links {
+        links_by_file
+            .entry(move_link.source_path.clone())
             .or_default()
-            .push(inbound_link.clone());
+            .push(move_link.clone());
     }
 
     let mut plans = Vec::new();
-    for (original_path, links) in inbound_by_file {
+    for (original_path, links) in links_by_file {
         let source_contents = fs::read_to_string(paths.vault_root().join(&original_path))?;
         let parsed = parse_document(&source_contents, config);
         let output_path = if original_path == source_path {
@@ -373,22 +376,26 @@ fn plan_rewrites(
         let mut edits = Vec::new();
         let mut changes = Vec::new();
 
-        for inbound_link in links {
+        for move_link in links {
             let raw_link = parsed
                 .links
                 .iter()
                 .find(|link| {
-                    link.byte_offset == inbound_link.byte_offset
-                        && link.raw_text == inbound_link.raw_text
+                    link.byte_offset == move_link.byte_offset && link.raw_text == move_link.raw_text
                 })
                 .ok_or_else(|| MoveError::MissingLinkSpan {
                     path: original_path.clone(),
-                    byte_offset: inbound_link.byte_offset,
+                    byte_offset: move_link.byte_offset,
                 })?;
+            let target_path = if move_link.target_path == source_path {
+                destination_path
+            } else {
+                &move_link.target_path
+            };
             let replacement = rewrite_link(
                 raw_link,
                 &output_path,
-                destination_path,
+                target_path,
                 document_paths_after_move,
                 resolution_mode,
                 config.link_style,
@@ -848,6 +855,55 @@ mod tests {
         assert!(home.contains("[Alpha > Status](Archive/Alpha.md#Status)"));
         assert!(home.contains("![[Archive/Alpha]]"));
         assert!(bob.contains("[[../Archive/Alpha|Project Alpha]]"));
+    }
+
+    #[test]
+    fn moving_a_note_rewrites_its_outbound_relative_links() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let vault_root = temp_dir.path().join("vault");
+        fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+        fs::create_dir_all(vault_root.join("Projects")).expect("projects dir should be created");
+        fs::write(
+            vault_root.join(".vulcan/config.toml"),
+            "[links]\nresolution = \"relative\"\nstyle = \"markdown\"\n",
+        )
+        .expect("config should be written");
+        fs::write(
+            vault_root.join("Projects.md"),
+            "# Projects\n\n[Child](Projects/Child.md)\n",
+        )
+        .expect("folder note should be written");
+        fs::write(vault_root.join("Projects/Child.md"), "# Child\n")
+            .expect("child should be written");
+        let paths = VaultPaths::new(&vault_root);
+
+        scan_vault(&paths, ScanMode::Full).expect("scan should succeed");
+        let dry_run = move_note(&paths, "Projects.md", "Projects/Projects.md", true)
+            .expect("dry run should succeed");
+        assert_eq!(dry_run.rewritten_files.len(), 1);
+        assert_eq!(dry_run.rewritten_files[0].path, "Projects/Projects.md");
+        assert_eq!(
+            dry_run.rewritten_files[0].changes,
+            vec![LinkChange {
+                before: "[Child](Projects/Child.md)".to_string(),
+                after: "[Child](Child.md)".to_string(),
+            }]
+        );
+
+        move_note(&paths, "Projects.md", "Projects/Projects.md", false)
+            .expect("move should succeed");
+        assert_eq!(
+            fs::read_to_string(vault_root.join("Projects/Projects.md"))
+                .expect("moved note should be readable"),
+            "# Projects\n\n[Child](Child.md)\n"
+        );
+        assert_eq!(
+            doctor_vault(&paths)
+                .expect("doctor should succeed")
+                .summary
+                .unresolved_links,
+            0
+        );
     }
 
     #[test]

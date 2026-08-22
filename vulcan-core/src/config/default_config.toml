@@ -18,6 +18,10 @@
 # style = "wikilink"
 # attachment_folder = "."
 
+[folder_notes]
+placement = "inside"       # inside | outside
+name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folder_name}}
+
 # [embedding]
 # provider = "openai-compatible"
 # base_url = "http://localhost:11434/v1"

@@ -6156,6 +6156,12 @@
                 "subcommands": []
               },
               {
+                "about": "Import Obsidian Folder Notes plugin settings",
+                "name": "folder-notes",
+                "options": [],
+                "subcommands": []
+              },
+              {
                 "about": "Import Obsidian Templater plugin settings",
                 "name": "templater",
                 "options": [],
@@ -10747,6 +10753,91 @@
               },
               {
                 "help": "Report rewrite changes without moving files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Convert folder notes to another configured layout",
+            "name": "folder-notes",
+            "options": [
+              {
+                "help": "Source placement; defaults to the configured convention",
+                "id": "from_placement",
+                "long": "from-placement",
+                "possible_values": [
+                  "inside",
+                  "outside"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FROM_PLACEMENT"
+                ]
+              },
+              {
+                "help": "Source filename stem/template, such as index, README, or {{folder_name}}",
+                "id": "from_name",
+                "long": "from-name",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FROM_NAME"
+                ]
+              },
+              {
+                "help": "Destination placement",
+                "id": "to_placement",
+                "long": "to-placement",
+                "possible_values": [
+                  "inside",
+                  "outside"
+                ],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TO_PLACEMENT"
+                ]
+              },
+              {
+                "help": "Destination filename stem/template, such as index, README, or {{folder_name}}",
+                "id": "to_name",
+                "long": "to-name",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TO_NAME"
+                ]
+              },
+              {
+                "help": "Report planned moves and rewrites without modifying files",
                 "id": "dry_run",
                 "long": "dry-run",
                 "possible_values": [

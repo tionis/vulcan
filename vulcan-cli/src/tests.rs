@@ -3980,6 +3980,63 @@ fn parses_ls_and_refactor_group_commands() {
 }
 
 #[test]
+fn parses_folder_note_conversion_command() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "refactor",
+        "folder-notes",
+        "--from-placement",
+        "inside",
+        "--from-name",
+        "README",
+        "--to-placement",
+        "outside",
+        "--to-name",
+        "{{folder_name}}",
+        "--dry-run",
+        "--no-commit",
+    ])
+    .expect("folder-note conversion should parse");
+
+    assert_eq!(
+        cli.command,
+        Command::Refactor {
+            command: RefactorCommand::FolderNotes {
+                from_placement: Some(FolderNotePlacementArg::Inside),
+                from_name: Some("README".to_string()),
+                to_placement: FolderNotePlacementArg::Outside,
+                to_name: "{{folder_name}}".to_string(),
+                dry_run: true,
+                no_commit: true,
+            },
+        }
+    );
+}
+
+#[test]
+fn parses_config_import_folder_notes_command() {
+    let cli = Cli::try_parse_from(["vulcan", "config", "import", "folder-notes"])
+        .expect("folder-notes import should parse");
+
+    assert_eq!(
+        cli.command,
+        Command::Config {
+            command: ConfigCommand::Import(ConfigImportSelection {
+                command: Some(ConfigImportCommand::FolderNotes),
+                all: false,
+                list: false,
+                args: ConfigImportArgs {
+                    dry_run: false,
+                    apply: false,
+                    target: ConfigTargetArg::Shared,
+                    no_commit: false,
+                },
+            }),
+        }
+    );
+}
+
+#[test]
 fn parses_help_and_describe_format_commands() {
     let help = Cli::try_parse_from(["vulcan", "help", "note", "get", "--output", "json"])
         .expect("help should parse");

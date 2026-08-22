@@ -3579,6 +3579,105 @@ fn import_dataview_plugin_config_errors_when_source_is_missing() {
 }
 
 #[test]
+fn import_folder_notes_plugin_config_maps_name_and_storage_location() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/folder-notes"))
+        .expect("folder-notes plugin dir should be created");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/plugins/folder-notes/data.json"),
+        r#"{"folderNoteName":"README","storageLocation":"insideFolder"}"#,
+    )
+    .expect("folder-notes config should be written");
+    let paths = VaultPaths::new(vault_root);
+
+    let report = import_folder_notes_plugin_config(&paths).expect("import should succeed");
+
+    assert_eq!(report.plugin, "folder-notes");
+    assert!(report.updated);
+    assert_eq!(
+        load_vault_config(&paths).config.folder_notes,
+        FolderNotesConfig {
+            placement: FolderNotePlacement::Inside,
+            name: "README".to_string(),
+        }
+    );
+    let second = import_folder_notes_plugin_config(&paths).expect("repeat import should succeed");
+    assert!(!second.updated);
+}
+
+#[test]
+fn import_folder_notes_plugin_config_rejects_ambiguous_outside_literal_name() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/folder-notes"))
+        .expect("folder-notes plugin dir should be created");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/plugins/folder-notes/data.json"),
+        r#"{"folderNoteName":"README","storageLocation":"parentFolder"}"#,
+    )
+    .expect("folder-notes config should be written");
+
+    let error = import_folder_notes_plugin_config(&VaultPaths::new(vault_root))
+        .expect_err("ambiguous convention should fail");
+    assert!(error
+        .to_string()
+        .contains("outside folder notes require {{folder_name}}"));
+}
+
+#[test]
+fn folder_note_convention_is_shared_and_local_override_is_ignored() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[folder_notes]\nplacement = \"inside\"\nname = \"README\"\n",
+    )
+    .expect("shared config");
+    fs::write(
+        vault_root.join(".vulcan/config.local.toml"),
+        "[folder_notes]\nplacement = \"inside\"\nname = \"index\"\n",
+    )
+    .expect("local config");
+
+    let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+    assert_eq!(
+        loaded.config.folder_notes,
+        FolderNotesConfig {
+            placement: FolderNotePlacement::Inside,
+            name: "README".to_string(),
+        }
+    );
+    assert!(loaded
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.message.contains("repository-level")));
+}
+
+#[test]
+fn folder_notes_import_rejects_local_target() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/folder-notes")).expect("plugin dir");
+    fs::write(
+        vault_root.join(".obsidian/plugins/folder-notes/data.json"),
+        r#"{"folderNoteName":"index","storageLocation":"insideFolder"}"#,
+    )
+    .expect("plugin config");
+
+    let error = FolderNotesImporter
+        .import(&VaultPaths::new(vault_root), ImportTarget::Local)
+        .expect_err("local import must fail");
+
+    assert!(error.to_string().contains("repository-level"));
+    assert!(!vault_root.join(".vulcan/config.local.toml").exists());
+}
+
+#[test]
 fn import_kanban_plugin_config_preserves_existing_sections_and_is_idempotent() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path();
@@ -4159,6 +4258,7 @@ fn importer_registry_dispatches_existing_importers_in_priority_order() {
         [
             "core",
             "dataview",
+            "folder-notes",
             "kanban",
             "periodic-notes",
             "quickadd",

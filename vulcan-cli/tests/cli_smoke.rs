@@ -6191,6 +6191,105 @@ fn config_import_tasks_json_output_writes_config_and_reports_mapping() {
 }
 
 #[test]
+fn config_import_folder_notes_writes_explicit_repo_convention() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/folder-notes"))
+        .expect("plugin dir should exist");
+    initialize_vulcan_dir(&vault_root);
+    fs::write(
+        vault_root.join(".obsidian/plugins/folder-notes/data.json"),
+        r#"{"folderNoteName":"README","storageLocation":"insideFolder"}"#,
+    )
+    .expect("plugin config should write");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8 vault path"),
+            "--output",
+            "json",
+            "config",
+            "import",
+            "folder-notes",
+            "--apply",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["plugin"], "folder-notes");
+    assert!(json["mappings"]
+        .as_array()
+        .is_some_and(|mappings| mappings.iter().any(|mapping| {
+            mapping["target"] == "folder_notes.name" && mapping["value"] == "README"
+        })));
+    let config = fs::read_to_string(vault_root.join(".vulcan/config.toml"))
+        .expect("shared config should exist");
+    assert!(config.contains("[folder_notes]"));
+    assert!(config.contains("placement = \"inside\""));
+    assert!(config.contains("name = \"README\""));
+}
+
+#[test]
+fn refactor_folder_notes_dry_run_and_apply_are_structured_and_mutation_safe() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Projects")).expect("projects dir");
+    fs::write(vault_root.join("Projects/Projects.md"), "# Projects\n").expect("folder note");
+    run_scan(&vault_root);
+    let vault = vault_root.to_str().expect("utf-8 vault path");
+
+    let dry_run = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault,
+            "--output",
+            "json",
+            "refactor",
+            "folder-notes",
+            "--to-placement",
+            "inside",
+            "--to-name",
+            "index",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let plan = parse_stdout_json(&dry_run);
+    assert_eq!(plan["dry_run"], true);
+    assert_eq!(plan["moves"][0]["source_path"], "Projects/Projects.md");
+    assert_eq!(plan["moves"][0]["destination_path"], "Projects/index.md");
+    assert!(vault_root.join("Projects/Projects.md").is_file());
+    assert!(!vault_root.join("Projects/index.md").exists());
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault,
+            "refactor",
+            "folder-notes",
+            "--to-placement",
+            "inside",
+            "--to-name",
+            "index",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+
+    assert!(!vault_root.join("Projects/Projects.md").exists());
+    assert!(vault_root.join("Projects/index.md").is_file());
+    assert!(fs::read_to_string(vault_root.join(".vulcan/config.toml"))
+        .expect("config")
+        .contains("name = \"index\""));
+}
+
+#[test]
 fn config_import_preview_shows_diff_without_writing_files() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

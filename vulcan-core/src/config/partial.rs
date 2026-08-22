@@ -7,6 +7,7 @@ pub(super) struct PartialVulcanConfig {
     pub(super) scan: Option<PartialScanConfig>,
     pub(super) chunking: Option<PartialChunkingConfig>,
     pub(super) links: Option<PartialLinksConfig>,
+    pub(super) folder_notes: Option<PartialFolderNotesConfig>,
     pub(super) embedding: Option<PartialEmbeddingProviderConfig>,
     pub(super) extraction: Option<PartialAttachmentExtractionConfig>,
     pub(super) git: Option<PartialGitConfig>,
@@ -27,6 +28,12 @@ pub(super) struct PartialVulcanConfig {
     pub(super) permissions: Option<PartialPermissionsConfig>,
     pub(super) plugins: Option<BTreeMap<String, PartialPluginRegistration>>,
     pub(super) aliases: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct PartialFolderNotesConfig {
+    pub(super) placement: Option<FolderNotePlacement>,
+    pub(super) name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]

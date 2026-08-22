@@ -6,6 +6,8 @@ use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use vulcan_core::config::load_vault_config;
+use vulcan_core::folder_notes::FolderNotesConfig;
 use vulcan_core::VaultPaths;
 use zip::write::FileOptions;
 
@@ -135,11 +137,13 @@ pub fn plan_outline_publication(
         });
     }
 
-    let folder_notes = identify_folder_notes(notes, &mut diagnostics);
+    let folder_notes_config = load_vault_config(paths).config.folder_notes;
+    let folder_notes = identify_folder_notes(notes, &folder_notes_config, &mut diagnostics);
     let document_paths = plan_document_paths(
         &collection_directory,
         notes,
         &folder_notes,
+        &folder_notes_config,
         &mut diagnostics,
     );
     let selected_paths = document_paths
@@ -291,11 +295,12 @@ fn write_outline_zip_file(
 
 fn identify_folder_notes(
     notes: &[ExportedNoteDocument],
+    config: &FolderNotesConfig,
     diagnostics: &mut Vec<OutlineDiagnostic>,
 ) -> BTreeMap<String, String> {
     let mut candidates = BTreeMap::<String, Vec<String>>::new();
     for note in notes {
-        if let Some(folder) = folder_note_folder(&note.note.document_path) {
+        if let Some(folder) = config.folder_for_note_path(&note.note.document_path) {
             candidates
                 .entry(folder)
                 .or_default()
@@ -311,7 +316,7 @@ fn identify_folder_notes(
                 source_path: Some(paths.join(", ")),
                 target: Some(folder.clone()),
                 message: format!(
-                    "folder `{folder}` has multiple folder notes; keep either index.md or the same-name note"
+                    "folder `{folder}` has multiple notes matching the configured folder-note convention"
                 ),
             });
         } else if let Some(path) = paths.pop() {
@@ -325,6 +330,7 @@ fn plan_document_paths(
     collection_directory: &str,
     notes: &[ExportedNoteDocument],
     folder_notes: &BTreeMap<String, String>,
+    folder_notes_config: &FolderNotesConfig,
     diagnostics: &mut Vec<OutlineDiagnostic>,
 ) -> Vec<DocumentPathPlan> {
     let mut planned = Vec::new();
@@ -342,7 +348,7 @@ fn plan_document_paths(
             continue;
         }
         let folder = parent_path(&normalized);
-        let folder_note = folder_note_folder(&normalized);
+        let folder_note = folder_notes_config.folder_for_note_path(&normalized);
         let (logical_path, title, parent_folder) = if let Some(folder_note) = folder_note {
             let title = file_name(&folder_note).to_string();
             let parent = parent_path(&folder_note);
@@ -375,7 +381,7 @@ fn plan_document_paths(
                 source_path: Some(note.note.document_path.clone()),
                 target: Some(parent_folder.clone()),
                 message: format!(
-                    "folder `{parent_folder}` needs an included index.md or same-name folder note to preserve Outline hierarchy"
+                    "folder `{parent_folder}` needs its configured folder note included to preserve Outline hierarchy"
                 ),
             });
             None
@@ -587,22 +593,6 @@ fn rewrite_document_links(
     content
 }
 
-fn folder_note_folder(path: &str) -> Option<String> {
-    let normalized = normalize_path(path);
-    let folder = parent_path(&normalized);
-    if folder.is_empty() {
-        return None;
-    }
-    let name = file_name(&normalized);
-    if name.eq_ignore_ascii_case("index.md") {
-        return Some(folder);
-    }
-    let folder_name = file_name(&folder);
-    markdown_stem(name)
-        .eq_ignore_ascii_case(folder_name)
-        .then_some(folder)
-}
-
 fn serialize_path(path: &str) -> String {
     path.split('/')
         .filter(|segment| !segment.is_empty())
@@ -753,6 +743,14 @@ mod tests {
             .expect("plan Outline publication")
     }
 
+    fn configure_folder_notes(paths: &VaultPaths, placement: &str, name: &str) {
+        fs::write(
+            paths.config_file(),
+            format!("[folder_notes]\nplacement = \"{placement}\"\nname = \"{name}\"\n"),
+        )
+        .expect("folder-note config");
+    }
+
     #[test]
     fn outline_filename_serialization_matches_upstream_windows_rules() {
         assert_eq!(serialize_outline_filename("A:B? "), "A%3AB%3F%20");
@@ -772,11 +770,11 @@ mod tests {
     }
 
     #[test]
-    fn plans_same_name_and_index_folder_notes_as_outline_siblings() {
+    fn plans_configured_same_name_folder_notes_as_outline_siblings() {
         let (_temp, paths) = outline_vault(&[
             ("Projects/Projects.md", b"# Projects\n"),
             ("Projects/Child.md", b"# Child\n"),
-            ("Guides/index.md", b"# Guides\n"),
+            ("Guides/Guides.md", b"# Guides\n"),
             ("Guides/Start.md", b"# Start\n"),
         ]);
         let plan = plan_all(&paths);
@@ -807,6 +805,60 @@ mod tests {
     }
 
     #[test]
+    fn configured_index_folder_notes_are_not_auto_detected() {
+        let (_temp, paths) = outline_vault(&[
+            ("Guides/index.md", b"# Guides\n"),
+            ("Guides/Start.md", b"# Start\n"),
+        ]);
+        let unconfigured = plan_all(&paths);
+        assert!(unconfigured
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == OutlineDiagnosticKind::MissingFolderNote));
+
+        configure_folder_notes(&paths, "inside", "index");
+        let configured = plan_all(&paths);
+        assert!(
+            configured.diagnostics.is_empty(),
+            "{:?}",
+            configured.diagnostics
+        );
+        assert_eq!(configured.documents[0].archive_path, "Wiki/Guides.md");
+        assert_eq!(configured.documents[1].archive_path, "Wiki/Guides/Start.md");
+    }
+
+    #[test]
+    fn plans_readme_and_outside_folder_note_conventions() {
+        for (placement, name, folder_note) in [
+            ("inside", "README", "Guides/README.md"),
+            ("inside", "readme", "Guides/readme.md"),
+            ("outside", "{{folder_name}}", "Guides.md"),
+        ] {
+            let (_temp, paths) = outline_vault(&[
+                (folder_note, b"# Guides\n"),
+                ("Guides/Start.md", b"# Start\n"),
+            ]);
+            configure_folder_notes(&paths, placement, name);
+
+            let plan = plan_all(&paths);
+
+            assert!(plan.diagnostics.is_empty(), "{:?}", plan.diagnostics);
+            let parent = plan
+                .documents
+                .iter()
+                .find(|document| document.source_path == folder_note)
+                .expect("configured folder note should be the parent");
+            assert_eq!(parent.archive_path, "Wiki/Guides.md");
+            let child = plan
+                .documents
+                .iter()
+                .find(|document| document.source_path == "Guides/Start.md")
+                .expect("child should be present");
+            assert_eq!(child.parent_source_path.as_deref(), Some(folder_note));
+        }
+    }
+
+    #[test]
     fn plans_nested_folder_notes_links_embeds_and_deterministic_attachments() {
         let (_temp, paths) = outline_vault(&[
             (
@@ -814,7 +866,7 @@ mod tests {
                 b"# Projects\n\n[[Projects/Child]]\n",
             ),
             ("Projects/Child.md", b"# Child\n\n![[assets/logo.png]]\n"),
-            ("Projects/Deep/index.md", b"# Deep\n"),
+            ("Projects/Deep/Deep.md", b"# Deep\n"),
             ("Projects/Deep/Leaf.md", b"# Leaf\n\n[[../Child]]\n"),
             ("assets/logo.png", b"png bytes"),
         ]);
@@ -847,13 +899,13 @@ mod tests {
             .expect("leaf document");
         assert_eq!(
             leaf.parent_source_path.as_deref(),
-            Some("Projects/Deep/index.md")
+            Some("Projects/Deep/Deep.md")
         );
         assert!(leaf.content.contains("[../Child](../Child.md)"));
     }
 
     #[test]
-    fn reports_duplicate_folder_notes_case_collisions_and_excluded_targets() {
+    fn reports_case_collisions_and_excluded_targets() {
         let (_temp, paths) = outline_vault(&[
             ("Projects/index.md", b"# Index\n"),
             ("Projects/Projects.md", b"# Projects\n"),
@@ -876,7 +928,6 @@ mod tests {
             .iter()
             .map(|diagnostic| diagnostic.kind.clone())
             .collect::<Vec<_>>();
-        assert!(kinds.contains(&OutlineDiagnosticKind::DuplicateFolderNote));
         assert!(kinds.contains(&OutlineDiagnosticKind::Collision));
         assert!(kinds.contains(&OutlineDiagnosticKind::ExcludedTarget));
     }

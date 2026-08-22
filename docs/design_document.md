@@ -350,7 +350,7 @@ vulcan-core/src/parser/
 ### Move-safe rewrite approach
 
 - Persist both raw token text and resolved target identity.
-- During a move or rename, query inbound references by resolved target document id, re-parse only the affected source files, and rewrite only the destination segment of each affected link.
+- During a move or rename, query both inbound references to the moved identity and resolved outbound references originating in the moved document. Re-parse only affected source files and rewrite only the destination segment of each affected link; outbound relative links must be recalculated from the document's new location.
 - Preserve original style choices such as wikilink vs Markdown-link syntax, embed marker, display text/alias, and heading or block suffix.
 - Apply edits from the end of the file toward the start so offsets remain valid while patching.
 
@@ -946,12 +946,13 @@ This is Vulcan's primary configuration file, stored in the `.vulcan/` directory 
 - Link resolution defaults (shortest-path, relative, or absolute) when no `.obsidian/app.json` is present
 - Whether to prefer wikilink or Markdown-link syntax for generated links
 - Attachment folder path override
+- Folder-note placement and filename template (`[folder_notes]`), interpreted exactly rather than auto-detected during normal operation
 - Automatic cache refresh policy for cache-backed commands (`[scan]`)
 - Template default date/time formats for `{{date}}` / `{{time}}` (`[templates]`)
 
 ### `.vulcan/config.local.toml` (optional device-local override)
 
-This file is loaded after `.vulcan/config.toml` and may override any Vulcan setting for one device or machine. It is intended for device-local concerns such as endpoint URLs, API key environment variable names, auto-refresh preferences, or editor-adjacent workflow tuning that should not be synced back into the shared vault config.
+This file is loaded after `.vulcan/config.toml` and may override device-local Vulcan settings. It is intended for concerns such as endpoint URLs, API key environment variable names, auto-refresh preferences, or editor-adjacent workflow tuning that should not be synced back into the shared vault config. Repository identity and structure settings such as `[folder_notes]` remain shared-only and local attempts to override them are diagnosed and ignored.
 
 The default `.vulcan/.gitignore` should ignore `config.local.toml` while still tracking `config.toml`.
 
@@ -980,6 +981,7 @@ If an `.obsidian` directory is present, the following files are read to provide 
 
 - **`.obsidian/types.json`** — Property type assignments (text, number, date, checkbox, etc.). Used to seed the property catalog. Without this file, the tool infers types from observed values but may produce weaker type diagnostics.
 - **`.obsidian/templates.json`** — Templates core-plugin settings. Vulcan may read `dateFormat` and `timeFormat` as defaults for Obsidian-compatible template rendering when `.vulcan` does not override them, and may discover the configured `folder` as an additional template source alongside `.vulcan/templates/`.
+- **`.obsidian/plugins/folder-notes/data.json`** — Read only by explicit init/config-import workflows to seed `[folder_notes]` from the Folder Notes plugin's `folderNoteName` and `storageLocation`. Runtime folder-note matching never probes this file or guesses from vault contents.
 
 Template insertion into an existing note is a vault mutation, not a cache rewrite. The inserted template is first rendered against the target note context, then any template frontmatter is merged into the target note frontmatter by adding missing keys, preserving existing scalar values, and union-merging list properties such as `tags`.
 
@@ -990,7 +992,7 @@ Template insertion into an existing note is a vault mutation, not a cache rewrit
 
 **Explicitly ignored:**
 
-- Community plugin configuration directories (`.obsidian/plugins/*/`). Parsing plugin-specific data is a non-goal for v1 (see §3).
+- Community plugin configuration directories without a registered explicit importer. Supported importers are opt-in setup/migration inputs, never runtime authorities.
 - Theme and appearance files (`.obsidian/themes/`, `appearance.json`).
 - Workspace and layout files (`workspace.json`, `workspaces.json`).
 - Hotkey configuration (`hotkeys.json`).
@@ -1005,6 +1007,7 @@ When no `.obsidian` directory exists and neither `.vulcan/config.toml` nor `.vul
 - Property types: inferred from observed values
 - Strict line breaks: disabled
 - Automatic cache refresh: blocking before one-shot cache-backed commands, background on `browse`
+- Folder notes: `inside` placement with the exact `{{folder_name}}` filename template
 
 ## 15. Operational and schema recommendations
 

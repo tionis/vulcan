@@ -64,6 +64,7 @@ Examples:
     import           Import compatible Obsidian plugin settings
       core             Import Obsidian core settings
       dataview         Import Obsidian Dataview plugin settings
+      folder-notes     Import Obsidian Folder Notes plugin settings
       templater        Import Obsidian Templater plugin settings
       quickadd         Import Obsidian QuickAdd plugin settings
       kanban           Import Obsidian Kanban plugin settings
@@ -1010,6 +1011,19 @@ Named export profiles stored in config and managed by dedicated export commands.
   Named export profile metadata; dedicated `export profile` commands are preferred for edits.
   Preferred command: `vulcan export profile set`
   Example: `vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub`
+
+### Folder Notes
+
+Explicit folder-note placement and filename convention used across Vulcan.
+
+- `folder_notes.name` — type: `string`; target: `shared`; default: `{{folder_name}}`
+  Set the exact folder-note stem/template; `{{folder_name}}` expands to the folder's basename.
+  Preferred command: `vulcan refactor folder-notes`
+  Example: `vulcan config set folder_notes.name <value>`
+- `folder_notes.placement` — type: `enum`; target: `shared`; default: `inside`; values: `inside`, `outside`
+  Choose whether a folder note lives inside its folder or beside it in the parent folder.
+  Preferred command: `vulcan refactor folder-notes`
+  Example: `vulcan config set folder_notes.placement <value>`
 
 ### Publishing
 

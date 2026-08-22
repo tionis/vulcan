@@ -6304,7 +6304,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 **Goal:** Publish a query-selected, folder-note-aware Markdown hierarchy one-way into Outline while keeping the vault canonical and synchronization identity outside the rebuildable cache.
 
-- [x] Add shared deterministic folder-note hierarchy planning for same-name and `index.md` conventions, including nested parents and collision diagnostics.
+- [x] Add shared deterministic folder-note hierarchy planning driven by the repository's explicit folder-note convention, including nested parents and collision diagnostics.
 - [x] Add `vulcan export outline-zip` with transformed/resolved links, deterministic attachment paths, mutation-free dry runs, structured reports, and fail-closed validation.
 - [x] Standardize omitted queries across direct and profile-based exports as the full-vault `from notes` selection.
 - [x] Add non-secret Outline profiles in shared config with device-local endpoint/token bindings.
@@ -6314,6 +6314,20 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Complete CLI/reference documentation and full workspace verification.
 
 **Deferred possibility, not currently planned:** A separate one-way Outline-to-vault importer could reconstruct collection hierarchy, links, and attachments as local Markdown. Revisit only when there is a concrete use case and an acceptable scaling, conflict, and source-of-truth model. Do not evolve the current publisher into implicit bidirectional synchronization.
+
+---
+
+## Phase 9.31: Configurable folder notes and vault structure normalization
+
+**Goal:** Give every Vulcan workflow one deterministic repository-level folder-note convention and provide safe tools for normalizing existing vault layouts.
+
+- [x] Add shared `inside` / `outside` placement plus an exact filename stem/template with `{{folder_name}}` substitution; never auto-detect during runtime.
+- [x] Support `index.md`, `README.md` / `readme.md`, same-name notes inside a folder, and same-name notes beside a folder.
+- [x] Import the Obsidian Folder Notes plugin convention explicitly during init/config import without making plugin state a runtime authority.
+- [x] Use the shared convention for HTML runtime link routing, static-site navigation/routes, and Outline ZIP/API hierarchy planning.
+- [x] Add a dry-run/JSON-capable `refactor folder-notes` conversion workflow with overwrite, case-collision, unsafe-config, and deterministic-planning checks.
+- [x] Recalculate resolved outbound relative links as well as inbound links when structural conversions move a note.
+- [x] Document configuration, conversion, retry behavior, supported layouts, and limitations; cover the shared semantics and CLI with focused tests.
 
 ---
 

@@ -2,6 +2,8 @@ use crate::bases::inspect_base_file;
 pub use crate::content_transforms::{
     ContentReplacementRuleConfig, ContentTransformConfig, ContentTransformRuleConfig,
 };
+pub use crate::folder_notes::FolderNotePlacement;
+use crate::folder_notes::FolderNotesConfig;
 use crate::paths::{
     ensure_vulcan_dir, normalize_relative_input_path, RelativePathOptions, VaultPaths,
 };
@@ -41,13 +43,13 @@ use defaults::{
 
 pub use importers::{
     all_importers, annotate_import_conflicts, import_core_plugin_config,
-    import_dataview_plugin_config, import_kanban_plugin_config,
+    import_dataview_plugin_config, import_folder_notes_plugin_config, import_kanban_plugin_config,
     import_periodic_notes_plugin_config, import_quickadd_plugin_config,
     import_tasknotes_plugin_config, import_tasks_plugin_config, import_templater_plugin_config,
     ConfigImportError, ConfigImportMapping, ConfigImportReport, CoreImporter, DataviewImporter,
-    ImportConflict, ImportMigratedFile, ImportMigratedFileAction, ImportSkippedSetting,
-    ImportTarget, KanbanImporter, PeriodicNotesImporter, PluginImporter, QuickAddImporter,
-    TaskNotesImporter, TasksImporter, TemplaterImporter,
+    FolderNotesImporter, ImportConflict, ImportMigratedFile, ImportMigratedFileAction,
+    ImportSkippedSetting, ImportTarget, KanbanImporter, PeriodicNotesImporter, PluginImporter,
+    QuickAddImporter, TaskNotesImporter, TasksImporter, TemplaterImporter,
 };
 mod obsidian;
 
@@ -2276,6 +2278,7 @@ pub struct VaultConfig {
     pub link_resolution: LinkResolutionMode,
     pub link_style: LinkStylePreference,
     pub attachment_folder: PathBuf,
+    pub folder_notes: FolderNotesConfig,
     pub strict_line_breaks: bool,
     pub property_types: BTreeMap<String, String>,
     pub embedding: Option<EmbeddingProviderConfig>,
@@ -2312,6 +2315,7 @@ impl Default for VaultConfig {
             link_resolution: LinkResolutionMode::Shortest,
             link_style: LinkStylePreference::Wikilink,
             attachment_folder: PathBuf::from("."),
+            folder_notes: FolderNotesConfig::default(),
             strict_line_breaks: false,
             property_types: BTreeMap::new(),
             embedding: None,
@@ -2380,9 +2384,24 @@ pub fn create_default_config(paths: &VaultPaths) -> Result<bool, std::io::Error>
 }
 
 pub fn validate_vulcan_overrides_toml(contents: &str) -> Result<(), ConfigImportError> {
-    toml::from_str::<PartialVulcanConfig>(contents)
-        .map(|_| ())
-        .map_err(ConfigImportError::from)
+    let config = toml::from_str::<PartialVulcanConfig>(contents)?;
+    validate_partial_vulcan_config(&config)
+}
+
+fn validate_partial_vulcan_config(config: &PartialVulcanConfig) -> Result<(), ConfigImportError> {
+    if let Some(folder_notes) = &config.folder_notes {
+        let candidate = FolderNotesConfig {
+            placement: folder_notes.placement.unwrap_or_default(),
+            name: folder_notes
+                .name
+                .clone()
+                .unwrap_or_else(|| crate::folder_notes::FOLDER_NAME_TOKEN.to_string()),
+        };
+        candidate
+            .validate()
+            .map_err(ConfigImportError::InvalidConfig)?;
+    }
+    Ok(())
 }
 
 #[must_use]
@@ -2409,11 +2428,17 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
         apply_vulcan_overrides(&mut loaded.config, vulcan_config);
     }
 
-    if let Some(local_config) = load_vulcan_overrides(
+    if let Some(mut local_config) = load_vulcan_overrides(
         paths.local_config_file(),
         "local Vulcan config",
         &mut loaded.diagnostics,
     ) {
+        if local_config.folder_notes.take().is_some() {
+            loaded.diagnostics.push(ConfigDiagnostic {
+                path: paths.local_config_file().to_path_buf(),
+                message: "ignored local [folder_notes]: folder-note conventions are repository-level shared configuration".to_string(),
+            });
+        }
         apply_vulcan_overrides(&mut loaded.config, local_config);
     }
 
@@ -2841,7 +2866,16 @@ fn load_vulcan_overrides(
 
     match fs::read_to_string(path) {
         Ok(contents) => match toml::from_str::<PartialVulcanConfig>(&contents) {
-            Ok(config) => Some(config),
+            Ok(config) => match validate_partial_vulcan_config(&config) {
+                Ok(()) => Some(config),
+                Err(error) => {
+                    diagnostics.push(ConfigDiagnostic {
+                        path: path.to_path_buf(),
+                        message: format!("failed to parse {description}: {error}"),
+                    });
+                    None
+                }
+            },
             Err(error) => {
                 diagnostics.push(ConfigDiagnostic {
                     path: path.to_path_buf(),
@@ -3867,6 +3901,15 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(attachment_folder) = links.attachment_folder {
             config.attachment_folder = attachment_folder;
+        }
+    }
+
+    if let Some(folder_notes) = overrides.folder_notes {
+        if let Some(placement) = folder_notes.placement {
+            config.folder_notes.placement = placement;
+        }
+        if let Some(name) = folder_notes.name {
+            config.folder_notes.name = name;
         }
     }
 

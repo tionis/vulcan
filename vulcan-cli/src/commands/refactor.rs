@@ -1,17 +1,23 @@
 #![allow(clippy::too_many_lines)]
 
 use crate::commit::AutoCommitPolicy;
+use crate::output::print_json;
 use crate::output::ListOutputControls;
 use crate::resolve::resolve_note_argument;
 use crate::{
     resolve_bulk_note_selection, selected_permission_guard, warn_auto_commit_if_needed,
-    BulkNoteSelection, Cli, CliError, RefactorCommand, SuggestCommand, SuggestLinkStatusArg,
+    BulkNoteSelection, Cli, CliError, FolderNotePlacementArg, OutputFormat, RefactorCommand,
+    SuggestCommand, SuggestLinkStatusArg,
+};
+use vulcan_app::folder_notes::{
+    convert_folder_notes, FolderNoteConversionReport, FolderNoteConversionRequest,
 };
 use vulcan_core::{
     accept_link_suggestion, bulk_replace_on_paths, link_mentions, merge_tags, move_note,
     query_notes_with_filter, reject_link_suggestion, rename_alias, rename_block_ref,
     rename_heading, rename_property, suggest_duplicates, suggest_links, suggest_mentions,
-    LinkSuggestionStatus, NoteQuery, PermissionGuard, PluginEvent, VaultPaths,
+    FolderNotePlacement, FolderNotesConfig, LinkSuggestionStatus, NoteQuery, PermissionGuard,
+    PluginEvent, VaultPaths,
 };
 
 fn dispatch_refactor_plugin_hooks(
@@ -271,6 +277,54 @@ pub(crate) fn handle_refactor_command(
             }
             crate::print_move_summary(cli.output, &summary)
         }
+        RefactorCommand::FolderNotes {
+            from_placement,
+            from_name,
+            to_placement,
+            to_name,
+            dry_run,
+            no_commit,
+        } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            let guard = selected_permission_guard(cli, paths)?;
+            if !guard.refactor_filter().path_permission().is_unrestricted() {
+                return Err(CliError::operation(
+                    "permission denied: folder-note conversion requires unrestricted refactor scope under the selected profile",
+                ));
+            }
+            let source = from_placement
+                .zip(from_name.as_ref())
+                .map(|(placement, name)| FolderNotesConfig {
+                    placement: core_folder_note_placement(placement),
+                    name: name.clone(),
+                });
+            let report = convert_folder_notes(
+                paths,
+                &FolderNoteConversionRequest {
+                    source,
+                    destination: FolderNotesConfig {
+                        placement: core_folder_note_placement(*to_placement),
+                        name: to_name.clone(),
+                    },
+                    dry_run: *dry_run,
+                },
+            )
+            .map_err(CliError::operation)?;
+            if !dry_run {
+                auto_commit
+                    .commit(
+                        paths,
+                        "folder-notes",
+                        &report.changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
+                    .map_err(CliError::operation)?;
+                dispatch_refactor_plugin_hooks(cli, paths, "folder-notes", &report.changed_paths);
+            }
+            print_folder_note_conversion(cli.output, &report)
+        }
         RefactorCommand::LinkMentions {
             note,
             dry_run,
@@ -310,6 +364,50 @@ pub(crate) fn handle_refactor_command(
             stdout_is_tty,
             use_stdout_color,
         ),
+    }
+}
+
+fn core_folder_note_placement(value: FolderNotePlacementArg) -> FolderNotePlacement {
+    match value {
+        FolderNotePlacementArg::Inside => FolderNotePlacement::Inside,
+        FolderNotePlacementArg::Outside => FolderNotePlacement::Outside,
+    }
+}
+
+fn print_folder_note_conversion(
+    output: OutputFormat,
+    report: &FolderNoteConversionReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            let action = if report.dry_run {
+                "Would move"
+            } else {
+                "Moved"
+            };
+            for entry in &report.moves {
+                println!(
+                    "{action} {} -> {} ({})",
+                    entry.source_path, entry.destination_path, entry.folder
+                );
+            }
+            if report.moves.is_empty() {
+                println!("No folder notes needed moving.");
+            }
+            if report.config_updated {
+                println!(
+                    "{} folder-note config: {}",
+                    if report.dry_run {
+                        "Would update"
+                    } else {
+                        "Updated"
+                    },
+                    report.config_path.display()
+                );
+            }
+            Ok(())
+        }
     }
 }
 

@@ -254,7 +254,7 @@ Current defaults and semantics:
 - The explorer includes a local filter box; folder and note titles are matched client-side without
   touching the published search index.
 - `navigation.folder_click = "collapse"` is the built-in default and makes folder rows behave like a
-  collapsible explorer; when a folder note such as `Guides/index.md` or `Guides/Guides.md` exists,
+  collapsible explorer; when a note matches the repository's explicit `[folder_notes]` convention,
   the built-in shell also renders a separate `Open` affordance for that folder landing page
 - `navigation.folder_click = "link"` makes folder rows navigate directly to folder notes or generated
   folder listing pages instead of using the row label as the collapse toggle

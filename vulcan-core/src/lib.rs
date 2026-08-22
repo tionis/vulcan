@@ -60,6 +60,7 @@ pub mod dql;
 pub mod expression;
 mod extraction;
 mod file_metadata;
+pub mod folder_notes;
 pub mod git;
 pub mod graph;
 pub mod history;
@@ -116,23 +117,24 @@ pub use bases::{
 pub use cache::{CacheDatabase, CacheError, Migration, MigrationRegistry, BUSY_TIMEOUT_MS};
 pub use config::{
     all_importers, annotate_import_conflicts, create_default_config, default_config_template,
-    import_core_plugin_config, import_dataview_plugin_config, import_kanban_plugin_config,
-    import_periodic_notes_plugin_config, import_tasknotes_plugin_config,
-    import_tasks_plugin_config, import_templater_plugin_config, load_permission_profiles,
-    load_permission_profiles_with_overrides, load_vault_config, load_vault_config_with_overrides,
-    validate_vulcan_overrides_toml, AssistantConfig, AttachmentExtractionConfig, AutoScanMode,
-    ChunkingConfig, ChunkingStrategy, ConfigDiagnostic, ConfigImportError, ConfigImportMapping,
-    ConfigImportReport, ConfigLoadResult, ConfigPermissionMode, ContentTransformConfig,
-    ContentTransformRuleConfig, CoreImporter, DataviewConfig, DataviewImporter,
-    EmbeddingProviderConfig, GitConfig, GitScope, GitTrigger, ImportConflict, ImportMigratedFile,
-    ImportMigratedFileAction, ImportSkippedSetting, ImportTarget, InboxConfig, JsRuntimeConfig,
-    JsRuntimeSandbox, KanbanConfig, KanbanImporter, LinkResolutionMode, LinkStylePreference,
-    NetworkPermissionConfig, PathPermissionConfig, PathPermissionKeyword, PathPermissionRules,
-    PeriodicCadenceUnit, PeriodicConfig, PeriodicNoteConfig, PeriodicNotesImporter,
-    PeriodicStartOfWeek, PermissionLimit, PermissionLimitKeyword, PermissionMode,
-    PermissionProfile, PermissionProfilesLoadResult, PermissionsConfig, PluginEvent,
-    PluginImporter, PluginRegistration, ScanConfig, SearchBackendKind, TaskNotesConfig,
-    TaskNotesDateDefault, TaskNotesFieldMapping, TaskNotesIdentificationMethod, TaskNotesImporter,
+    import_core_plugin_config, import_dataview_plugin_config, import_folder_notes_plugin_config,
+    import_kanban_plugin_config, import_periodic_notes_plugin_config,
+    import_tasknotes_plugin_config, import_tasks_plugin_config, import_templater_plugin_config,
+    load_permission_profiles, load_permission_profiles_with_overrides, load_vault_config,
+    load_vault_config_with_overrides, validate_vulcan_overrides_toml, AssistantConfig,
+    AttachmentExtractionConfig, AutoScanMode, ChunkingConfig, ChunkingStrategy, ConfigDiagnostic,
+    ConfigImportError, ConfigImportMapping, ConfigImportReport, ConfigLoadResult,
+    ConfigPermissionMode, ContentTransformConfig, ContentTransformRuleConfig, CoreImporter,
+    DataviewConfig, DataviewImporter, EmbeddingProviderConfig, FolderNotesImporter, GitConfig,
+    GitScope, GitTrigger, ImportConflict, ImportMigratedFile, ImportMigratedFileAction,
+    ImportSkippedSetting, ImportTarget, InboxConfig, JsRuntimeConfig, JsRuntimeSandbox,
+    KanbanConfig, KanbanImporter, LinkResolutionMode, LinkStylePreference, NetworkPermissionConfig,
+    PathPermissionConfig, PathPermissionKeyword, PathPermissionRules, PeriodicCadenceUnit,
+    PeriodicConfig, PeriodicNoteConfig, PeriodicNotesImporter, PeriodicStartOfWeek,
+    PermissionLimit, PermissionLimitKeyword, PermissionMode, PermissionProfile,
+    PermissionProfilesLoadResult, PermissionsConfig, PluginEvent, PluginImporter,
+    PluginRegistration, ScanConfig, SearchBackendKind, TaskNotesConfig, TaskNotesDateDefault,
+    TaskNotesFieldMapping, TaskNotesIdentificationMethod, TaskNotesImporter,
     TaskNotesNlpTriggerConfig, TaskNotesPriorityConfig, TaskNotesRecurrenceDefault,
     TaskNotesSavedViewCondition, TaskNotesSavedViewConfig, TaskNotesSavedViewFilterValue,
     TaskNotesSavedViewGroup, TaskNotesSavedViewNode, TaskNotesSavedViewOptionValue,
@@ -156,6 +158,7 @@ pub use dql::{
     load_dataview_blocks, parse_dql_with_diagnostics, DataviewBlockRecord, DqlDiagnostic,
     DqlEvalError, DqlParseOutput, DqlQueryResult,
 };
+pub use folder_notes::{FolderNotePlacement, FolderNotesConfig};
 pub use git::{
     auto_commit, git_blame, git_commit, git_diff, git_log, git_recent_log, git_status, is_git_repo,
     AutoCommitReport, GitBlameLine, GitCommitReport, GitError, GitLogEntry, GitStatusReport,

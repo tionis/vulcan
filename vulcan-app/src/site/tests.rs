@@ -2035,6 +2035,10 @@ search = false
 graph = false
 backlinks = false
 
+[folder_notes]
+placement = "inside"
+name = "index"
+
 [site.profiles.public.shell]
 reader_mode = false
 default_palette = "dark"

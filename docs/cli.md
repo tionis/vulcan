@@ -183,6 +183,7 @@ Behavior:
 - `vulcan plugin set|delete ...`: manage full plugin registration metadata under `[plugins.<name>]`, including path, events, sandbox, permission profile, and description.
 - `vulcan config import core [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian core settings from `.obsidian/app.json`, `.obsidian/templates.json`, and `.obsidian/types.json`.
 - `vulcan config import dataview [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian Dataview plugin settings.
+- `vulcan config import folder-notes [--preview|--dry-run|--apply] [--target shared] [--no-commit]`: import the Obsidian Folder Notes plugin's explicit filename and placement convention. Folder-note structure is shared repository state, so a local target is rejected.
 - `vulcan config import kanban [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian Kanban plugin settings.
 - `vulcan config import periodic-notes [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian Daily Notes core plugin settings plus the community Periodic Notes plugin settings.
 - `vulcan config import tasks [--preview|--dry-run|--apply] [--target <shared|local>] [--no-commit]`: import Obsidian Tasks plugin settings.
@@ -468,6 +469,30 @@ vulcan refactor rewrite --where 'file.path starts_with "Archive/"' --find TODO -
 vulcan bases view-add release.base Inbox --filter 'status = idea'
 ```
 
+## Folder-note conventions and conversion
+
+Folder-note matching is configured once per repository and is never inferred from filenames during normal commands:
+
+```toml
+[folder_notes]
+placement = "inside"       # inside | outside
+name = "{{folder_name}}"   # exact stem/template; no .md suffix
+```
+
+The supported patterns include `Folder/index.md`, `Folder/README.md`, `Folder/readme.md`, `Folder/Folder.md`, and—with `placement = "outside"`—`Folder.md` beside `Folder/`. `{{folder_name}}` expands to the folder basename; literal names are matched case-sensitively. Outside placement requires the placeholder because a literal sibling filename cannot identify which adjacent folder it belongs to.
+
+Preview or apply a vault-wide conversion with:
+
+```bash
+vulcan --output json refactor folder-notes \
+  --to-placement inside --to-name index --dry-run
+vulcan refactor folder-notes \
+  --from-placement inside --from-name README \
+  --to-placement outside --to-name '{{folder_name}}'
+```
+
+When `--from-*` is omitted, the source is the effective repository config. The command preflights every move, rejects overwrites and case-insensitive conflicts, uses the normal resolved-link move engine, and updates shared config only after every move succeeds. A dry run changes neither notes nor config. `vulcan init --import` or `vulcan config import folder-notes` can seed the convention from `.obsidian/plugins/folder-notes/data.json`; that setup import does not enable runtime auto-detection.
+
 ## Searching with `search`
 
 `vulcan search` searches indexed note content and can be combined with typed filters.
@@ -683,6 +708,7 @@ Common mutating commands:
 
 - `note`
 - `refactor move`
+- `refactor folder-notes`
 - `refactor link-mentions`
 - `refactor rewrite`
 - `refactor rename-property`

@@ -937,6 +937,14 @@ fn dynamic_config_descriptors() -> Vec<ConfigDescriptor> {
         &[],
     );
     push(
+        "folder_notes.placement",
+        ConfigValueKind::Enum,
+        ConfigTargetSupport::SharedOnly,
+        Some("vulcan refactor folder-notes"),
+        Some(TomlValue::String("inside".to_string())),
+        &["inside", "outside"],
+    );
+    push(
         "property_types.<name>",
         ConfigValueKind::String,
         ConfigTargetSupport::SharedAndLocal,
@@ -1545,7 +1553,11 @@ fn resolve_config_descriptor(key: &str) -> Result<ConfigDescriptorMatch, AppErro
 }
 
 fn config_target_support_for_key(key: &str) -> ConfigTargetSupport {
-    if key == "export" || key.starts_with("export.") {
+    if key == "export"
+        || key.starts_with("export.")
+        || key == "folder_notes"
+        || key.starts_with("folder_notes.")
+    {
         ConfigTargetSupport::SharedOnly
     } else {
         ConfigTargetSupport::SharedAndLocal
@@ -1621,6 +1633,12 @@ fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
             key: "properties",
             title: "Properties",
             description: "Typed frontmatter and property parsing overrides.",
+        },
+        Some("folder_notes") => CategoryDescriptor {
+            key: "folder_notes",
+            title: "Folder Notes",
+            description:
+                "Explicit folder-note placement and filename convention used across Vulcan.",
         },
         Some("templates") => CategoryDescriptor {
             key: "templates",
@@ -1706,6 +1724,8 @@ fn config_path_description(path: &str) -> String {
         "link_style" => "Select wikilink or Markdown link formatting for generated links.".to_string(),
         "attachment_folder" => "Override the preferred folder for new attachments.".to_string(),
         "strict_line_breaks" => "Mirror Obsidian's strict line break behavior when rendering Markdown.".to_string(),
+        "folder_notes.placement" => "Choose whether a folder note lives inside its folder or beside it in the parent folder.".to_string(),
+        "folder_notes.name" => "Set the exact folder-note stem/template; `{{folder_name}}` expands to the folder's basename.".to_string(),
         _ if path.starts_with("periodic.") => {
             "Periodic note folder, filename format, template, cadence, and schedule heading.".to_string()
         }
@@ -1772,6 +1792,7 @@ fn preferred_command_for_key(path: &str) -> Option<String> {
         _ if path.starts_with("export.profiles.") => Some("vulcan export profile set".to_string()),
         _ if path.starts_with("publish.outline.profiles.") => Some("vulcan config set".to_string()),
         _ if path.starts_with("site.profiles.") => Some("vulcan config set".to_string()),
+        _ if path.starts_with("folder_notes.") => Some("vulcan refactor folder-notes".to_string()),
         _ => None,
     }
 }
@@ -2655,6 +2676,18 @@ read = { allow = ["folder:Projects/**"] }
         assert_eq!(
             metadata_keys_descriptor.default_display.as_deref(),
             Some("[0 items]")
+        );
+
+        let placement = catalog
+            .iter()
+            .find(|descriptor| descriptor.key == "folder_notes.placement")
+            .expect("folder-note placement descriptor should exist");
+        assert_eq!(placement.section, "folder_notes");
+        assert_eq!(placement.kind, ConfigValueKind::Enum);
+        assert_eq!(placement.enum_values, ["inside", "outside"]);
+        assert_eq!(
+            placement.preferred_command.as_deref(),
+            Some("vulcan refactor folder-notes")
         );
 
         for descriptor in &catalog {

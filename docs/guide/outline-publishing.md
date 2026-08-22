@@ -26,14 +26,15 @@ Wiki/
     Child.md
 ```
 
-Vulcan converts both common Obsidian folder-note conventions into that layout:
+Vulcan converts the single convention configured for the repository into that layout. Runtime and export planning do not auto-detect conventions:
 
-```text
-Projects/Projects.md
-Projects/index.md
+```toml
+[folder_notes]
+placement = "inside"       # inside | outside
+name = "{{folder_name}}"   # exact stem/template: index, README, readme, ...
 ```
 
-Only one convention may be present for a folder. Nested folders must have an included folder note at every hierarchy level; Vulcan does not invent synthetic remote documents for missing folder notes.
+This represents `Projects/Projects.md`. Use `name = "index"`, `"README"`, or `"readme"` for those inside-folder forms. Use `placement = "outside"` with `name = "{{folder_name}}"` for `Projects.md` beside `Projects/`. Matching is exact and case-sensitive. Nested folders must have an included folder note at every hierarchy level; Vulcan does not invent synthetic remote documents for missing folder notes. `vulcan config import folder-notes` can import the Obsidian Folder Notes plugin setting during setup.
 
 The exporter uses the publication query and content-transform pipeline, then reparses transformed Markdown and uses resolved link data to rewrite note links and attachment references. Referenced attachments are copied below a deterministic `uploads/<source-path-hash>/` path. The source vault is never modified.
 
@@ -44,7 +45,7 @@ Planning fails on duplicate folder notes, unsafe or case-insensitive archive col
 - Compatibility is based on Outline 1.9.x's upstream `ExportDocumentTreeTask` and `ExportMarkdownZipTask` sibling-file layout and filename encoding.
 - Obsidian note embeds become normal Markdown links because Outline has no equivalent transclusion in imported Markdown.
 - Block-reference targets are rejected. Heading targets are retained as URL fragments.
-- A directory without an included `index.md` or same-name folder note cannot be represented as a document parent and is rejected.
+- A directory without an included note matching `[folder_notes]` cannot be represented as a document parent and is rejected.
 
 ## API publishing
 

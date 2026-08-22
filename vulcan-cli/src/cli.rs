@@ -2364,6 +2364,8 @@ pub enum ConfigImportCommand {
     Core,
     #[command(about = "Import Obsidian Dataview plugin settings")]
     Dataview,
+    #[command(about = "Import Obsidian Folder Notes plugin settings")]
+    FolderNotes,
     #[command(about = "Import Obsidian Templater plugin settings")]
     Templater,
     #[command(about = "Import Obsidian QuickAdd plugin settings")]
@@ -3987,6 +3989,39 @@ pub enum RefactorCommand {
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
+    #[command(
+        name = "folder-notes",
+        about = "Convert folder notes to another configured layout"
+    )]
+    FolderNotes {
+        #[arg(
+            long,
+            value_enum,
+            requires = "from_name",
+            help = "Source placement; defaults to the configured convention"
+        )]
+        from_placement: Option<FolderNotePlacementArg>,
+        #[arg(
+            long,
+            requires = "from_placement",
+            help = "Source filename stem/template, such as index, README, or {{folder_name}}"
+        )]
+        from_name: Option<String>,
+        #[arg(long, value_enum, help = "Destination placement")]
+        to_placement: FolderNotePlacementArg,
+        #[arg(
+            long,
+            help = "Destination filename stem/template, such as index, README, or {{folder_name}}"
+        )]
+        to_name: String,
+        #[arg(
+            long,
+            help = "Report planned moves and rewrites without modifying files"
+        )]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
     #[command(about = "Convert unambiguous plain-text note mentions into links")]
     LinkMentions {
         #[arg(help = "Optional note path, filename, or alias to update")]
@@ -4004,6 +4039,12 @@ pub enum RefactorCommand {
         #[command(subcommand)]
         command: SuggestCommand,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum FolderNotePlacementArg {
+    Inside,
+    Outside,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
