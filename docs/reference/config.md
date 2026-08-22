@@ -1011,6 +1011,55 @@ Named export profiles stored in config and managed by dedicated export commands.
   Preferred command: `vulcan export profile set`
   Example: `vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub`
 
+### Publishing
+
+One-way remote publication profiles and reconciliation settings.
+
+- `publish.outline.profiles.<name>` — type: `object`; target: `shared|local`
+  One-way Outline target, query, credential environment binding, and request limits.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
+- `publish.outline.profiles.<name>.base_url` — type: `string`; target: `shared|local`
+  One-way Outline target, query, credential environment binding, and request limits.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
+- `publish.outline.profiles.<name>.collection_id` — type: `string`; target: `shared|local`
+  One-way Outline target, query, credential environment binding, and request limits.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
+- `publish.outline.profiles.<name>.collection_title` — type: `string`; target: `shared|local`
+  One-way Outline target, query, credential environment binding, and request limits.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
+- `publish.outline.profiles.<name>.content_transforms` — type: `array`; target: `shared|local`; default: `[0 items]`
+  One-way Outline target, query, credential environment binding, and request limits.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
+- `publish.outline.profiles.<name>.max_retries` — type: `integer`; target: `shared|local`
+  One-way Outline target, query, credential environment binding, and request limits.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
+- `publish.outline.profiles.<name>.page_size` — type: `integer`; target: `shared|local`
+  One-way Outline target, query, credential environment binding, and request limits.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
+- `publish.outline.profiles.<name>.query` — type: `string`; target: `shared|local`
+  One-way Outline target, query, credential environment binding, and request limits.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
+- `publish.outline.profiles.<name>.query_json` — type: `string`; target: `shared|local`
+  One-way Outline target, query, credential environment binding, and request limits.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
+- `publish.outline.profiles.<name>.timeout_seconds` — type: `integer`; target: `shared|local`
+  One-way Outline target, query, credential environment binding, and request limits.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
+- `publish.outline.profiles.<name>.token_env` — type: `string`; target: `shared|local`
+  One-way Outline target, query, credential environment binding, and request limits.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
+
 ### Static Site
 
 Static-site publication profiles, filters, route policies, and theme assets.

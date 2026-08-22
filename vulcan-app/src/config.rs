@@ -1148,6 +1148,53 @@ fn dynamic_config_descriptors() -> Vec<ConfigDescriptor> {
         &[],
     );
     push(
+        "publish.outline.profiles.<name>",
+        ConfigValueKind::Object,
+        ConfigTargetSupport::SharedAndLocal,
+        Some("vulcan config set"),
+        None,
+        &[],
+    );
+    for key in [
+        "publish.outline.profiles.<name>.base_url",
+        "publish.outline.profiles.<name>.collection_id",
+        "publish.outline.profiles.<name>.collection_title",
+        "publish.outline.profiles.<name>.query",
+        "publish.outline.profiles.<name>.query_json",
+        "publish.outline.profiles.<name>.token_env",
+    ] {
+        push(
+            key,
+            ConfigValueKind::String,
+            ConfigTargetSupport::SharedAndLocal,
+            Some("vulcan config set"),
+            None,
+            &[],
+        );
+    }
+    for key in [
+        "publish.outline.profiles.<name>.timeout_seconds",
+        "publish.outline.profiles.<name>.max_retries",
+        "publish.outline.profiles.<name>.page_size",
+    ] {
+        push(
+            key,
+            ConfigValueKind::Integer,
+            ConfigTargetSupport::SharedAndLocal,
+            Some("vulcan config set"),
+            None,
+            &[],
+        );
+    }
+    push(
+        "publish.outline.profiles.<name>.content_transforms",
+        ConfigValueKind::Array,
+        ConfigTargetSupport::SharedAndLocal,
+        Some("vulcan config set"),
+        Some(TomlValue::Array(Vec::new())),
+        &[],
+    );
+    push(
         "site.profiles.<name>",
         ConfigValueKind::Object,
         ConfigTargetSupport::SharedAndLocal,
@@ -1518,6 +1565,10 @@ fn is_sample_dynamic_storage_path(segments: &[String]) -> bool {
     ) || matches!(
         segments,
         [first, second, _, ..] if first == "site" && second == "profiles"
+    ) || matches!(
+        segments,
+        [first, second, third, _, ..]
+            if first == "publish" && second == "outline" && third == "profiles"
     )
 }
 
@@ -1631,6 +1682,11 @@ fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
             title: "Export Profiles",
             description: "Named export profiles stored in config and managed by dedicated export commands.",
         },
+        Some("publish") => CategoryDescriptor {
+            key: "publish",
+            title: "Publishing",
+            description: "One-way remote publication profiles and reconciliation settings.",
+        },
         Some("site") => CategoryDescriptor {
             key: "site",
             title: "Static Site",
@@ -1692,6 +1748,10 @@ fn config_path_description(path: &str) -> String {
         _ if path.starts_with("export.profiles.") => {
             "Named export profile metadata; dedicated `export profile` commands are preferred for edits.".to_string()
         }
+        _ if path.starts_with("publish.outline.profiles.") => {
+            "One-way Outline target, query, credential environment binding, and request limits."
+                .to_string()
+        }
         _ if path == "site.profiles.<name>.page_title_template" => {
             "Template for the HTML `<title>` tag on built pages. Supported placeholders: `{page}`, `{site}`, and `{profile}`.".to_string()
         }
@@ -1710,6 +1770,7 @@ fn preferred_command_for_key(path: &str) -> Option<String> {
         }
         _ if path.starts_with("plugins.") => Some("vulcan plugin set".to_string()),
         _ if path.starts_with("export.profiles.") => Some("vulcan export profile set".to_string()),
+        _ if path.starts_with("publish.outline.profiles.") => Some("vulcan config set".to_string()),
         _ if path.starts_with("site.profiles.") => Some("vulcan config set".to_string()),
         _ => None,
     }
@@ -1731,6 +1792,10 @@ fn config_path_examples(path: &str) -> Vec<String> {
         ],
         _ if path.starts_with("export.profiles.<name>.") || path == "export.profiles.<name>" => vec![
             "vulcan export profile create team-book --format epub 'from notes' -o exports/team.epub".to_string(),
+        ],
+        _ if path.starts_with("publish.outline.profiles.<name>.")
+            || path == "publish.outline.profiles.<name>" => vec![
+            r#"vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'"#.to_string(),
         ],
         _ if path == "site.profiles.<name>" => vec![
             "vulcan config set site.profiles.public '{}'".to_string(),
@@ -2559,6 +2624,8 @@ read = { allow = ["folder:Projects/**"] }
             "permissions.profiles.<name>.network",
             "export.profiles.<name>",
             "export.profiles.<name>.format",
+            "publish.outline.profiles.<name>",
+            "publish.outline.profiles.<name>.token_env",
             "site.profiles.<name>",
             "site.profiles.<name>.page_title_template",
             "site.profiles.<name>.link_policy",

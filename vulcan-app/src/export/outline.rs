@@ -2,6 +2,7 @@ use super::{ExportLinkRecord, ExportedNoteDocument};
 use crate::AppError;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::fmt::Write as _;
 use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
@@ -66,6 +67,35 @@ impl OutlinePublicationPlan {
     pub fn is_valid(&self) -> bool {
         self.diagnostics.is_empty()
     }
+}
+
+#[must_use]
+pub fn render_remote_document_content(
+    document: &OutlinePlannedDocument,
+    attachments: &[OutlinePlannedAttachment],
+    remote_urls: &BTreeMap<String, String>,
+) -> String {
+    let mut content = document.content.clone();
+    for attachment in attachments {
+        let Some(remote_url) = remote_urls.get(&attachment.source_path) else {
+            continue;
+        };
+        let relative = relative_archive_path(&document.archive_path, &attachment.archive_path);
+        let href = encode_uri_path(&relative);
+        content = content.replace(&format!("]({href})"), &format!("]({remote_url})"));
+    }
+    content
+}
+
+#[must_use]
+pub fn planned_document_references_attachment(
+    document: &OutlinePlannedDocument,
+    attachment: &OutlinePlannedAttachment,
+) -> bool {
+    let relative = relative_archive_path(&document.archive_path, &attachment.archive_path);
+    document
+        .content
+        .contains(&format!("]({})", encode_uri_path(&relative)))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -496,9 +526,7 @@ fn validate_archive_collisions(
     }
 }
 
-fn group_links_by_source<'a>(
-    links: &'a [ExportLinkRecord],
-) -> HashMap<String, Vec<&'a ExportLinkRecord>> {
+fn group_links_by_source(links: &[ExportLinkRecord]) -> HashMap<String, Vec<&ExportLinkRecord>> {
     let mut grouped = HashMap::<String, Vec<&ExportLinkRecord>>::new();
     for link in links {
         grouped
@@ -592,7 +620,7 @@ pub fn serialize_outline_filename(value: &str) -> String {
             '\\' | '/' | ':' | '*' | '?' | '"' | '<' | '>' | '|'
         ) {
             for byte in character.to_string().as_bytes() {
-                encoded.push_str(&format!("%{byte:02X}"));
+                let _ = write!(encoded, "%{byte:02X}");
             }
         } else {
             encoded.push(character);
@@ -602,7 +630,7 @@ pub fn serialize_outline_filename(value: &str) -> String {
     let trailing = encoded[trailing_start..].to_string();
     encoded.truncate(trailing_start);
     for byte in trailing.as_bytes() {
-        encoded.push_str(&format!("%{byte:02X}"));
+        let _ = write!(encoded, "%{byte:02X}");
     }
     encoded
 }
@@ -673,7 +701,7 @@ fn percent_encode(value: &str, allow_slash: bool) -> String {
         if allowed {
             encoded.push(char::from(*byte));
         } else {
-            encoded.push_str(&format!("%{byte:02X}"));
+            let _ = write!(encoded, "%{byte:02X}");
         }
     }
     encoded

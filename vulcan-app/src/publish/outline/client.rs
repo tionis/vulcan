@@ -1,14 +1,15 @@
-use super::{OutlineApi, OutlineRemoteDocument};
+use super::{OutlineApi, OutlineRemoteAttachment, OutlineRemoteDocument};
 use crate::AppError;
 use reqwest::blocking::{Client, RequestBuilder};
 use reqwest::{StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::BTreeMap;
 use std::thread;
 use std::time::Duration;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct HttpOutlineClient {
     client: Client,
     base_url: Url,
@@ -83,7 +84,7 @@ impl HttpOutlineClient {
                 .post(endpoint.clone())
                 .bearer_auth(&self.token)
                 .json(body);
-            match self.send::<R>(request) {
+            match Self::send::<R>(request) {
                 Ok(value) => return Ok(value),
                 Err(RequestFailure::Retryable(message)) if attempt < self.max_retries => {
                     let delay = 100_u64.saturating_mul(1_u64 << attempt.min(4));
@@ -98,7 +99,7 @@ impl HttpOutlineClient {
         Err(AppError::operation("Outline request exhausted retries"))
     }
 
-    fn send<R: DeserializeOwned>(&self, request: RequestBuilder) -> Result<R, RequestFailure> {
+    fn send<R: DeserializeOwned>(request: RequestBuilder) -> Result<R, RequestFailure> {
         let response = request.send().map_err(|error| {
             if error.is_timeout() || error.is_connect() {
                 RequestFailure::Retryable(
@@ -158,21 +159,27 @@ impl OutlineApi for HttpOutlineClient {
 
     fn create_document(
         &self,
+        id: &str,
         collection_id: &str,
         parent_document_id: Option<&str>,
         title: &str,
         text: &str,
     ) -> Result<OutlineRemoteDocument, AppError> {
-        self.post(
+        let result = self.post(
             "documents.create",
             &json!({
+                "id": id,
                 "collectionId": collection_id,
                 "parentDocumentId": parent_document_id,
                 "title": title,
                 "text": text,
                 "publish": true,
             }),
-        )
+        );
+        match result {
+            Ok(document) => Ok(document),
+            Err(create_error) => self.document_info(id).or(Err(create_error)),
+        }
     }
 
     fn update_document(
@@ -206,6 +213,90 @@ impl OutlineApi for HttpOutlineClient {
     fn archive_document(&self, id: &str) -> Result<OutlineRemoteDocument, AppError> {
         self.post("documents.archive", &json!({ "id": id }))
     }
+
+    fn upload_attachment(
+        &self,
+        document_id: &str,
+        name: &str,
+        content_type: &str,
+        bytes: &[u8],
+    ) -> Result<OutlineRemoteAttachment, AppError> {
+        let upload: AttachmentCreateData = self.post(
+            "attachments.create",
+            &json!({
+                "documentId": document_id,
+                "name": name,
+                "contentType": content_type,
+                "size": bytes.len(),
+            }),
+        )?;
+        if let Some(upload_url) = upload.upload_url {
+            let fields = upload.form.unwrap_or_default();
+            self.send_attachment_with_retries(|| {
+                let mut form = reqwest::blocking::multipart::Form::new();
+                for (key, value) in &fields {
+                    form = form.text(key.clone(), value.clone());
+                }
+                let part = reqwest::blocking::multipart::Part::bytes(bytes.to_vec())
+                    .file_name(name.to_string())
+                    .mime_str(content_type)
+                    .map_err(|_| AppError::operation("invalid attachment content type"))?;
+                Ok(self
+                    .client
+                    .post(&upload_url)
+                    .multipart(form.part("file", part)))
+            })?;
+        } else if let Some(url) = upload.url {
+            let headers = upload.headers.unwrap_or_default();
+            self.send_attachment_with_retries(|| {
+                let mut request = self.client.put(&url).body(bytes.to_vec());
+                for (name, value) in &headers {
+                    request = request.header(name, value);
+                }
+                Ok(request)
+            })?;
+        } else {
+            return Err(AppError::operation(
+                "Outline attachments.create response did not include an upload URL",
+            ));
+        }
+        Ok(OutlineRemoteAttachment {
+            id: upload.attachment.id,
+            url: upload.attachment.url,
+        })
+    }
+}
+
+impl HttpOutlineClient {
+    fn send_attachment_with_retries(
+        &self,
+        request: impl Fn() -> Result<RequestBuilder, AppError>,
+    ) -> Result<(), AppError> {
+        for attempt in 0..=self.max_retries {
+            match request()?.send() {
+                Ok(response) if response.status().is_success() => return Ok(()),
+                Ok(response)
+                    if attempt < self.max_retries
+                        && (response.status() == StatusCode::TOO_MANY_REQUESTS
+                            || response.status().is_server_error()) => {}
+                Ok(response) => {
+                    return Err(AppError::operation(format!(
+                        "Outline attachment upload returned {}",
+                        response.status()
+                    )))
+                }
+                Err(error)
+                    if attempt < self.max_retries && (error.is_timeout() || error.is_connect()) => {
+                }
+                Err(_) => return Err(AppError::operation("Outline attachment upload failed")),
+            }
+            let delay = 100_u64.saturating_mul(1_u64 << attempt.min(4));
+            thread::sleep(Duration::from_millis(delay));
+        }
+        Err(AppError::operation(
+            "Outline attachment upload exhausted retries",
+        ))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -223,6 +314,22 @@ struct DocumentPage {
 #[derive(Debug, Deserialize)]
 struct Pagination {
     total: usize,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AttachmentCreateData {
+    attachment: AttachmentData,
+    upload_url: Option<String>,
+    url: Option<String>,
+    form: Option<BTreeMap<String, String>>,
+    headers: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AttachmentData {
+    id: String,
+    url: String,
 }
 
 enum RequestFailure {
@@ -344,5 +451,57 @@ mod tests {
             .expect_err("authentication failure");
         assert!(error.to_string().contains("401"));
         assert!(!error.to_string().contains("top-secret"));
+    }
+
+    #[test]
+    fn attachment_create_put_mode_uploads_bytes() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("mock listener");
+        let address = listener.local_addr().expect("listener address");
+        let handle = std::thread::spawn(move || {
+            let (mut create_stream, _) = listener.accept().expect("attachment create request");
+            let mut request = vec![0_u8; 16 * 1024];
+            let read = create_stream
+                .read(&mut request)
+                .expect("read create request");
+            let create_request = String::from_utf8_lossy(&request[..read]);
+            assert!(create_request.contains("/api/attachments.create"));
+            assert!(create_request.contains("\"documentId\":\"document\""));
+            let body = format!(
+                r#"{{"data":{{"attachment":{{"id":"asset","url":"https://outline.test/asset"}},"url":"http://{address}/upload","headers":{{"Content-Type":"image/png"}}}}}}"#
+            );
+            write!(
+                create_stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("create response");
+
+            let (mut upload_stream, _) = listener.accept().expect("attachment upload request");
+            let mut upload = vec![0_u8; 16 * 1024];
+            let read = upload_stream
+                .read(&mut upload)
+                .expect("read upload request");
+            let upload = &upload[..read];
+            assert!(upload.starts_with(b"PUT /upload"));
+            assert!(upload.ends_with(b"png bytes"));
+            upload_stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .expect("upload response");
+        });
+        let client = HttpOutlineClient::new(
+            &format!("http://{address}"),
+            "secret".to_string(),
+            Duration::from_secs(2),
+            0,
+            100,
+        )
+        .expect("client");
+        let attachment = client
+            .upload_attachment("document", "logo.png", "image/png", b"png bytes")
+            .expect("attachment upload");
+        assert_eq!(attachment.id, "asset");
+        assert_eq!(attachment.url, "https://outline.test/asset");
+        handle.join().expect("mock server");
     }
 }

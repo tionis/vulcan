@@ -38,6 +38,7 @@
 # timeout_seconds = 30
 # max_retries = 3
 # page_size = 100
+# content_transforms can use the same ordered rules as export profiles.
 
 # [extraction]
 # command = "sh"

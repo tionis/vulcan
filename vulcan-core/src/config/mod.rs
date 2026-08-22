@@ -2087,6 +2087,7 @@ pub struct OutlinePublishConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct OutlinePublishProfileConfig {
     pub base_url: Option<String>,
     pub collection_id: Option<String>,
@@ -2097,6 +2098,12 @@ pub struct OutlinePublishProfileConfig {
     pub timeout_seconds: Option<u64>,
     pub max_retries: Option<u32>,
     pub page_size: Option<usize>,
+    #[serde(
+        default,
+        rename = "content_transforms",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub content_transform_rules: Option<Vec<ContentTransformRuleConfig>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -3665,6 +3672,9 @@ fn merge_outline_publish_profile_config(
     }
     if let Some(page_size) = profile.page_size {
         target.page_size = Some(page_size);
+    }
+    if let Some(content_transform_rules) = profile.content_transform_rules {
+        target.content_transform_rules = Some(content_transform_rules);
     }
 }
 

@@ -63,6 +63,16 @@ impl OutlinePublishState {
                     "Outline mapping state assigns one remote document to multiple sources",
                 ));
             }
+            if mapping.attachments.values().any(|attachment| {
+                attachment.remote_attachment_id.is_empty()
+                    || attachment.remote_url.is_empty()
+                    || attachment.content_hash.is_empty()
+                    || attachment.owner_remote_document_id.is_empty()
+            }) {
+                return Err(AppError::operation(
+                    "Outline mapping state contains an incomplete attachment entry",
+                ));
+            }
         }
         Ok(())
     }
@@ -78,7 +88,20 @@ pub struct OutlineDocumentMapping {
     pub last_published_title: String,
     pub remote_parent_id: Option<String>,
     #[serde(default)]
-    pub attachments: BTreeMap<String, String>,
+    pub pending_create: bool,
+    #[serde(default)]
+    pub pending_archive: bool,
+    #[serde(default)]
+    pub attachments: BTreeMap<String, OutlineAttachmentMapping>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutlineAttachmentMapping {
+    pub remote_attachment_id: String,
+    pub remote_url: String,
+    pub content_hash: String,
+    pub owner_remote_document_id: String,
 }
 
 pub struct OutlineStateLock {
@@ -155,6 +178,7 @@ pub fn lock_outline_state(paths: &VaultPaths, profile: &str) -> Result<OutlineSt
     let lock_path = state_path.with_extension("lock");
     let file = OpenOptions::new()
         .create(true)
+        .truncate(false)
         .read(true)
         .write(true)
         .open(&lock_path)
@@ -197,6 +221,8 @@ mod tests {
             last_published_content_hash: "hash".to_string(),
             last_published_title: "Projects".to_string(),
             remote_parent_id: None,
+            pending_create: false,
+            pending_archive: false,
             attachments: BTreeMap::new(),
         }
     }

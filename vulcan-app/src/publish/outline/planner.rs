@@ -1,5 +1,7 @@
-use super::{OutlineApi, OutlineDocumentMapping, OutlinePublishState, OutlineRemoteDocument};
-use crate::export::outline::OutlinePublicationPlan;
+use super::{OutlineApi, OutlineDocumentMapping, OutlinePublishState};
+use crate::export::outline::{
+    planned_document_references_attachment, render_remote_document_content, OutlinePublicationPlan,
+};
 use crate::AppError;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -11,6 +13,7 @@ pub enum OutlinePublishActionKind {
     Update,
     Move,
     UpdateAndMove,
+    UploadAttachment,
     Archive,
     AdoptRemoteResult,
     Conflict,
@@ -46,6 +49,7 @@ impl OutlinePublishPlan {
     }
 }
 
+#[allow(clippy::too_many_lines)]
 pub fn plan_outline_reconciliation(
     api: &dyn OutlineApi,
     profile: &str,
@@ -74,18 +78,24 @@ pub fn plan_outline_reconciliation(
         .filter(|document| !managed_ids.contains(document.id.as_str()))
         .count();
 
-    let matches = match_local_documents(publication, state);
+    let document_matches = match_local_documents(publication, state);
+    let remote_urls = state
+        .documents
+        .values()
+        .flat_map(|mapping| &mapping.attachments)
+        .map(|(path, attachment)| (path.clone(), attachment.remote_url.clone()))
+        .collect::<BTreeMap<_, _>>();
     let mut matched_identities = BTreeSet::new();
     let mut actions = Vec::new();
     for document in &publication.documents {
-        let matched = matches.get(&document.source_path).copied();
+        let mapped_identity = document_matches.get(&document.source_path).copied();
         let desired_parent_remote_id = document
             .parent_source_path
             .as_deref()
-            .and_then(|parent| matches.get(parent))
+            .and_then(|parent| document_matches.get(parent))
             .and_then(|identity| state.documents.get(*identity))
             .map(|mapping| mapping.remote_document_id.clone());
-        let Some(source_identity) = matched else {
+        let Some(source_identity) = mapped_identity else {
             actions.push(OutlinePublishAction {
                 kind: OutlinePublishActionKind::Create,
                 source_identity: None,
@@ -100,19 +110,34 @@ pub fn plan_outline_reconciliation(
         matched_identities.insert(source_identity.to_string());
         let mapping = &state.documents[source_identity];
         if !listed_by_id.contains_key(mapping.remote_document_id.as_str()) {
-            actions.push(conflict_action(
-                source_identity,
-                mapping,
-                "managed remote document is missing from the collection",
-            ));
+            if mapping.pending_create {
+                actions.push(OutlinePublishAction {
+                    kind: OutlinePublishActionKind::Create,
+                    source_identity: Some(source_identity.to_string()),
+                    source_path: Some(document.source_path.clone()),
+                    remote_document_id: Some(mapping.remote_document_id.clone()),
+                    parent_source_path: document.parent_source_path.clone(),
+                    desired_parent_remote_id,
+                    reason: "resume a provisionally mapped document create".to_string(),
+                });
+            } else {
+                actions.push(conflict_action(
+                    source_identity,
+                    mapping,
+                    "managed remote document is missing from the collection",
+                ));
+            }
             continue;
         }
         let remote = api.document_info(&mapping.remote_document_id)?;
+        let desired_content =
+            render_remote_document_content(document, &publication.attachments, &remote_urls);
+        let desired_hash = content_hash(&desired_content);
         let remote_hash = content_hash(&remote.text);
         let remote_drift = remote_hash != mapping.last_published_content_hash
             || remote.title != mapping.last_published_title
             || remote.parent_document_id != mapping.remote_parent_id;
-        let desired_matches_remote = remote_hash == document.content_hash
+        let desired_matches_remote = remote_hash == desired_hash
             && remote.title == document.title
             && remote.parent_document_id == desired_parent_remote_id;
         if remote_drift && !desired_matches_remote {
@@ -123,7 +148,7 @@ pub fn plan_outline_reconciliation(
             ));
             continue;
         }
-        let local_content_changed = document.content_hash != mapping.last_published_content_hash
+        let local_content_changed = desired_hash != mapping.last_published_content_hash
             || document.title != mapping.last_published_title;
         let local_parent_changed = desired_parent_remote_id != mapping.remote_parent_id;
         let (kind, reason) = if remote_drift && desired_matches_remote {
@@ -160,8 +185,55 @@ pub fn plan_outline_reconciliation(
         });
     }
 
+    let mapped_attachments = state
+        .documents
+        .values()
+        .flat_map(|mapping| &mapping.attachments)
+        .collect::<BTreeMap<_, _>>();
+    for attachment in &publication.attachments {
+        let unchanged = mapped_attachments
+            .get(&attachment.source_path)
+            .is_some_and(|mapping| mapping.content_hash == attachment.content_hash);
+        if unchanged {
+            continue;
+        }
+        let owner = publication
+            .documents
+            .iter()
+            .find(|document| planned_document_references_attachment(document, attachment));
+        actions.push(OutlinePublishAction {
+            kind: OutlinePublishActionKind::UploadAttachment,
+            source_identity: None,
+            source_path: Some(attachment.source_path.clone()),
+            remote_document_id: owner
+                .and_then(|document| document_matches.get(&document.source_path))
+                .and_then(|identity| state.documents.get(*identity))
+                .map(|mapping| mapping.remote_document_id.clone()),
+            parent_source_path: owner.map(|document| document.source_path.clone()),
+            desired_parent_remote_id: None,
+            reason: if mapped_attachments.contains_key(&attachment.source_path) {
+                "local attachment content changed"
+            } else {
+                "referenced attachment has not been uploaded"
+            }
+            .to_string(),
+        });
+    }
+
     for (source_identity, mapping) in &state.documents {
         if matched_identities.contains(source_identity) {
+            continue;
+        }
+        if mapping.pending_archive {
+            actions.push(OutlinePublishAction {
+                kind: OutlinePublishActionKind::Archive,
+                source_identity: Some(source_identity.clone()),
+                source_path: Some(mapping.source_path.clone()),
+                remote_document_id: Some(mapping.remote_document_id.clone()),
+                parent_source_path: None,
+                desired_parent_remote_id: None,
+                reason: "resume an interrupted managed-document archive".to_string(),
+            });
             continue;
         }
         if !listed_by_id.contains_key(mapping.remote_document_id.as_str()) {
@@ -218,14 +290,14 @@ fn match_local_documents<'a>(
     publication: &OutlinePublicationPlan,
     state: &'a OutlinePublishState,
 ) -> BTreeMap<String, &'a str> {
-    let mut matches = BTreeMap::new();
+    let mut document_matches = BTreeMap::new();
     let mut available = state
         .documents
         .keys()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
     for document in &publication.documents {
-        let matched = unique_mapping(&available, state, |mapping| {
+        let mapped_identity = unique_mapping(&available, state, |mapping| {
             mapping.source_document_id == document.source_document_id
         })
         .or_else(|| {
@@ -238,12 +310,12 @@ fn match_local_documents<'a>(
                 mapping.last_published_content_hash == document.content_hash
             })
         });
-        if let Some(source_identity) = matched {
+        if let Some(source_identity) = mapped_identity {
             available.remove(source_identity);
-            matches.insert(document.source_path.clone(), source_identity);
+            document_matches.insert(document.source_path.clone(), source_identity);
         }
     }
-    matches
+    document_matches
 }
 
 fn unique_mapping<'a>(
@@ -283,6 +355,7 @@ fn content_hash(content: &str) -> String {
 mod tests {
     use super::*;
     use crate::export::outline::{OutlinePlannedDocument, SUPPORTED_OUTLINE_VERSION};
+    use crate::publish::outline::OutlineRemoteDocument;
     use std::cell::RefCell;
 
     #[derive(Default)]
@@ -309,6 +382,7 @@ mod tests {
 
         fn create_document(
             &self,
+            _id: &str,
             _collection_id: &str,
             _parent_document_id: Option<&str>,
             _title: &str,
@@ -336,6 +410,16 @@ mod tests {
         }
 
         fn archive_document(&self, _id: &str) -> Result<OutlineRemoteDocument, AppError> {
+            unreachable!("dry-run planner must not mutate")
+        }
+
+        fn upload_attachment(
+            &self,
+            _document_id: &str,
+            _name: &str,
+            _content_type: &str,
+            _bytes: &[u8],
+        ) -> Result<super::super::OutlineRemoteAttachment, AppError> {
             unreachable!("dry-run planner must not mutate")
         }
     }
@@ -381,6 +465,8 @@ mod tests {
             last_published_content_hash: content_hash(&remote.text),
             last_published_title: remote.title.clone(),
             remote_parent_id: remote.parent_document_id.clone(),
+            pending_create: false,
+            pending_archive: false,
             attachments: BTreeMap::new(),
         }
     }
@@ -412,13 +498,18 @@ mod tests {
     fn plans_idempotent_update_move_archive_and_leaves_unmanaged_documents_untouched() {
         let parent = remote("parent", "Projects", "parent", None);
         let child = remote("child", "Projects/Child", "child", Some("parent"));
-        let stale = remote("stale", "Old", "old", None);
+        let stale_remote = remote("stale", "Old", "old", None);
         let unmanaged = remote("unmanaged", "Personal", "remote", None);
         let api = MockApi {
-            documents: [parent.clone(), child.clone(), stale.clone(), unmanaged]
-                .into_iter()
-                .map(|document| (document.id.clone(), document))
-                .collect(),
+            documents: [
+                parent.clone(),
+                child.clone(),
+                stale_remote.clone(),
+                unmanaged,
+            ]
+            .into_iter()
+            .map(|document| (document.id.clone(), document))
+            .collect(),
             info_calls: RefCell::new(Vec::new()),
         };
         let mut state = OutlinePublishState::empty("wiki", "collection");
@@ -430,9 +521,10 @@ mod tests {
             "source-child".to_string(),
             state_entry("Projects/Child.md", &child),
         );
-        state
-            .documents
-            .insert("source-stale".to_string(), state_entry("Old.md", &stale));
+        state.documents.insert(
+            "source-stale".to_string(),
+            state_entry("Old.md", &stale_remote),
+        );
         let publication = publication(&[
             ("Projects.md", "parent changed", None),
             ("Moved.md", "child", None),
@@ -489,5 +581,20 @@ mod tests {
             plan.actions[0].kind,
             OutlinePublishActionKind::AdoptRemoteResult
         );
+    }
+
+    #[test]
+    fn interrupted_archive_is_resumed_without_requiring_collection_visibility() {
+        let prior = remote("remote", "Home", "home", None);
+        let mut mapping = state_entry("Home.md", &prior);
+        mapping.pending_archive = true;
+        let mut state = OutlinePublishState::empty("wiki", "collection");
+        state.documents.insert("source".to_string(), mapping);
+        let api = MockApi::default();
+        let plan =
+            plan_outline_reconciliation(&api, "wiki", "collection", &publication(&[]), &state)
+                .expect("resume archive plan");
+        assert_eq!(plan.actions[0].kind, OutlinePublishActionKind::Archive);
+        assert!(api.info_calls.borrow().is_empty());
     }
 }

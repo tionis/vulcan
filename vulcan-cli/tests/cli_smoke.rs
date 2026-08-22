@@ -14628,6 +14628,73 @@ fn export_outline_zip_reports_structured_mutation_free_dry_run() {
 }
 
 #[test]
+fn publish_outline_dry_run_reports_creates_without_remote_or_state_mutation() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Projects")).expect("projects folder");
+    fs::write(vault_root.join("Projects/Projects.md"), "# Projects\n").expect("folder note");
+    fs::write(vault_root.join("Projects/Child.md"), "# Child\n").expect("child note");
+    run_scan(&vault_root);
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("mock Outline listener");
+    let address = listener.local_addr().expect("mock Outline address");
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("Outline list request");
+        let mut request = [0_u8; 8192];
+        let read = stream.read(&mut request).expect("read Outline request");
+        let request = String::from_utf8_lossy(&request[..read]);
+        assert!(request.contains("/api/documents.list"));
+        assert!(request.contains("Bearer test-outline-token"));
+        let body = r#"{"data":[],"pagination":{"total":0}}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .expect("write Outline response");
+    });
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        format!(
+            r#"
+[publish.outline.profiles.wiki]
+base_url = "http://{address}"
+collection_id = "collection"
+collection_title = "Wiki"
+query = "from notes"
+token_env = "VULCAN_TEST_OUTLINE_TOKEN"
+max_retries = 0
+"#
+        ),
+    )
+    .expect("Outline config");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("VULCAN_TEST_OUTLINE_TOKEN", "test-outline-token")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "--output",
+            "json",
+            "publish",
+            "outline",
+            "wiki",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    handle.join().expect("mock Outline server should join");
+    let report = parse_stdout_json(&assert);
+    assert_eq!(report["dry_run"], true);
+    assert_eq!(report["applied"], false);
+    assert_eq!(report["conflicts"], 0);
+    assert_eq!(report["actions"][0]["kind"], "create");
+    assert!(!vault_root.join(".vulcan/publish").exists());
+}
+
+#[test]
 fn export_epub_writes_book_archive_with_nav_and_backlinks() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

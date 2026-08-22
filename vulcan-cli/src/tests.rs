@@ -997,6 +997,21 @@ fn parses_outline_zip_export_command() {
 }
 
 #[test]
+fn parses_outline_publish_dry_run_command() {
+    let cli = Cli::try_parse_from(["vulcan", "publish", "outline", "wiki", "--dry-run"])
+        .expect("Outline publish command should parse");
+    assert_eq!(
+        cli.command,
+        Command::Publish {
+            command: PublishCommand::Outline {
+                profile: "wiki".to_string(),
+                dry_run: true,
+            },
+        }
+    );
+}
+
+#[test]
 fn parses_note_checkbox_command() {
     let cli = Cli::try_parse_from([
         "vulcan",

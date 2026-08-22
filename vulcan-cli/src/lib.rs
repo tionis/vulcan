@@ -428,13 +428,13 @@ pub use cli::{
     GraphExportFormat, IndexCommand, InitArgs, KanbanCommand, McpToolPackArg, McpToolPackModeArg,
     McpTransportArg, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
     OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg,
-    PluginSandboxArg, PropertySortArg, QueryEngineArg, QueryFormatArg, RefactorCommand,
-    RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand, SavedCreateCommand,
-    SearchBackendArg, SearchMode, SearchSortArg, SiteCommand, SkillCommand, SuggestCommand,
-    SuggestLinkStatusArg, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
-    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
-    TemplateRenderArgs, TemplateSubcommand, ToolCommand, ToolInitTemplateArg, TrustCommand,
-    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    PluginSandboxArg, PropertySortArg, PublishCommand, QueryEngineArg, QueryFormatArg,
+    RefactorCommand, RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand,
+    SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg, SiteCommand, SkillCommand,
+    SuggestCommand, SuggestLinkStatusArg, TagSortArg, TasksCommand, TasksListSourceArg,
+    TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
+    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, ToolCommand, ToolInitTemplateArg,
+    TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -485,6 +485,8 @@ use vulcan_app::export::{
     MarkdownExportSummary,
 };
 use vulcan_app::notes::json_properties_to_frontmatter;
+#[cfg(feature = "web")]
+use vulcan_app::publish::outline::{publish_outline, HttpOutlineClient};
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::site::{
     build_frontend_bundle as app_build_frontend_bundle,
@@ -1150,6 +1152,118 @@ fn slash_display_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+#[cfg(feature = "web")]
+fn run_publish_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &PublishCommand,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<(), CliError> {
+    let PublishCommand::Outline { profile, dry_run } = command;
+    let loaded = load_vault_config(paths);
+    let profile_config = loaded
+        .config
+        .publish
+        .outline
+        .profiles
+        .get(profile)
+        .ok_or_else(|| {
+            CliError::operation(format!("Outline publish profile `{profile}` was not found"))
+        })?;
+    let required = |value: &Option<String>, name: &str| {
+        value
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                CliError::operation(format!(
+                    "Outline publish profile `{profile}` requires `{name}`"
+                ))
+            })
+    };
+    let base_url = required(&profile_config.base_url, "base_url")?;
+    let collection_id = required(&profile_config.collection_id, "collection_id")?;
+    let token_env = required(&profile_config.token_env, "token_env")?;
+    let token = std::env::var(&token_env).map_err(|_| {
+        CliError::operation(format!(
+            "Outline token environment variable `{token_env}` is not set"
+        ))
+    })?;
+    let query = profile_config.query.as_deref();
+    let query_json = profile_config.query_json.as_deref();
+    if query.is_some() == query_json.is_some() {
+        return Err(CliError::operation(format!(
+            "Outline publish profile `{profile}` must set exactly one of `query` or `query_json`"
+        )));
+    }
+    let collection_title = profile_config
+        .collection_title
+        .as_deref()
+        .unwrap_or(profile);
+    let query_report =
+        execute_export_query(paths, query, query_json, read_filter).map_err(CliError::operation)?;
+    let prepared = prepare_export_data(
+        paths,
+        &query_report,
+        read_filter,
+        profile_config.content_transform_rules.as_deref(),
+    )
+    .map_err(CliError::operation)?;
+    let publication =
+        plan_outline_publication(paths, collection_title, &prepared.notes, &prepared.links)
+            .map_err(CliError::operation)?;
+    let client = HttpOutlineClient::new(
+        &base_url,
+        token,
+        Duration::from_secs(profile_config.timeout_seconds.unwrap_or(30).clamp(1, 300)),
+        profile_config.max_retries.unwrap_or(3),
+        profile_config.page_size.unwrap_or(100),
+    )
+    .map_err(CliError::operation)?;
+    let report = publish_outline(
+        paths,
+        &client,
+        profile,
+        &collection_id,
+        &publication,
+        *dry_run,
+    )
+    .map_err(CliError::operation)?;
+    match cli.output {
+        OutputFormat::Json => print_json(&report)?,
+        OutputFormat::Human | OutputFormat::Markdown => {
+            for action in &report.plan.actions {
+                println!(
+                    "{:?}\t{}\t{}",
+                    action.kind,
+                    action.source_path.as_deref().unwrap_or("-"),
+                    action.reason
+                );
+            }
+        }
+    }
+    if report.conflicts == 0 {
+        Ok(())
+    } else {
+        Err(CliError::operation(format!(
+            "Outline publication stopped with {} remote conflict(s)",
+            report.conflicts
+        )))
+    }
+}
+
+#[cfg(not(feature = "web"))]
+fn run_publish_command(
+    _cli: &Cli,
+    _paths: &VaultPaths,
+    _command: &PublishCommand,
+    _read_filter: Option<&PermissionFilter>,
+) -> Result<(), CliError> {
+    Err(CliError::operation(
+        "Outline publishing requires the `web` feature",
+    ))
+}
+
 fn run_incremental_scan(
     paths: &VaultPaths,
     output: OutputFormat,
@@ -1213,6 +1327,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Refactor { .. }
         | Command::Checkpoint { .. }
         | Command::Export { .. }
+        | Command::Publish { .. }
         | Command::Site { .. } => true,
         Command::Daily { command } => matches!(
             command,
@@ -3276,6 +3391,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 )
             }
         },
+        Command::Publish { ref command } => {
+            let read_filter = selected_read_permission_filter(cli, &paths)?;
+            run_publish_command(cli, &paths, command, read_filter.as_ref())
+        }
         Command::Export { ref command } => {
             let read_filter = selected_read_permission_filter(cli, &paths)?;
             match command {

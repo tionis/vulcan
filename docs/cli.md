@@ -165,6 +165,7 @@ Behavior:
 - `vulcan checkpoint list`: list saved scan and manual checkpoints.
 - `vulcan export markdown|json|csv|epub|zip|outline-zip|sqlite <query> ...`: materialize matched notes as combined documents, datasets, books, or archives. `outline-zip` plans Outline's sibling file/directory hierarchy; see [Outline publishing](guide/outline-publishing.md).
 - `vulcan export search-index [--path <FILE>] [--pretty]`: write the cached search corpus as a static JSON index.
+- `vulcan publish outline <profile> [--dry-run]`: reconcile a configured one-way publication into an existing Outline collection; see [Outline publishing](guide/outline-publishing.md).
 - `vulcan changes [--checkpoint <name>]`: report note, link, property, and embedding changes since the last scan or a named checkpoint.
 - `vulcan note diff <note> [--since <checkpoint>]`: show one note's changes since git `HEAD`, the last scan, or a named checkpoint.
 

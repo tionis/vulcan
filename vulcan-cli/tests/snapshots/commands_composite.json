@@ -5464,6 +5464,45 @@
         ]
       },
       {
+        "about": "Publish vault-derived content to configured external targets",
+        "name": "publish",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Publish and reconcile a configured Outline collection",
+            "name": "outline",
+            "options": [
+              {
+                "help": "Profile name under [publish.outline.profiles.<name>]",
+                "id": "profile",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "PROFILE"
+                ]
+              },
+              {
+                "help": "Plan remote changes without mutating Outline or mapping state",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
         "about": "Inspect and import effective Vulcan configuration",
         "after_help": "Subcommands:\n  show [section] print effective Vulcan config as TOML or JSON\n  list [section] list supported config keys from the schema registry\n  get <key>      read a single effective config value\n  edit           open the interactive settings editor for .vulcan/config.toml\n  set <key> <value> write one config value with type validation\n  unset <key>    remove one config override and prune empty tables\n  alias          manage command aliases under [aliases]\n  permissions    manage named permission profiles under [permissions.profiles]\n  import core    import Obsidian core settings into Vulcan config\n  import dataview import Obsidian Dataview plugin settings into .vulcan/config.toml\n  import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml\n  import periodic-notes import Obsidian Daily Notes + Periodic Notes settings into .vulcan/config.toml\n  import quickadd import Obsidian QuickAdd plugin settings into .vulcan/config.toml\n  import tasknotes import Obsidian TaskNotes plugin settings into .vulcan/config.toml\n  import templater import Obsidian Templater plugin settings into .vulcan/config.toml\n  import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml\n\nNotes:\n  `config show` merges built-in defaults with `.vulcan/config.toml` and `.vulcan/config.local.toml` when present.\n  `config list` is derived from the schema registry used by config mutation commands and the settings TUI.\n  `config edit` requires an interactive terminal, is schema-driven, and can edit shared or local overrides before saving.\n  `config set` and `config unset` accept `--target <shared|local>`; quote strings when the shell would otherwise strip them.\n  Use `config alias ...`, `config permissions profile ...`, `plugin set`, and `export profile ...` when a dedicated command is available.\n  Import commands preserve unrelated config sections and overwrite the mapped target keys.\n  Import flags: --preview/--dry-run, --apply, --target <shared|local>, --no-commit\n  Use `config import --all` to apply every detected importer in registry order.\n  Use `config import --list` to inspect detectable sources without writing.\n  When git auto-commit is enabled for mutations, config edits, config CRUD, plugin config changes, and config imports participate like other mutating commands.\n\nExamples:\n  vulcan config show\n  vulcan config list web\n  vulcan config show periodic.daily\n  vulcan config get periodic.daily.template\n  vulcan config edit\n  vulcan config set periodic.daily.template \"Templates/Daily\"\n  vulcan config set web.search.backend brave --target local\n  vulcan config unset web.search.backend --target local\n  vulcan config alias set ship \"query --where 'status = shipped'\"\n  vulcan config permissions profile create agent --clone readonly\n  vulcan config permissions profile set agent network '{ allow = true, domains = [\"example.com\"] }'\n  vulcan config import core --preview\n  vulcan config import core --apply\n  vulcan config import dataview\n  vulcan config import kanban\n  vulcan config import --all --preview\n  vulcan config import --list\n  vulcan config import periodic-notes\n  vulcan config import quickadd\n  vulcan config import tasknotes --preview\n  vulcan config import tasks --preview\n  vulcan config import templater --target local\n  vulcan --output json config get web.search.backend\n  vulcan --output json config list plugins\n  vulcan --output json config show web.search\n  vulcan --output json config import tasks",
         "name": "config",

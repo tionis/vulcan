@@ -6309,8 +6309,8 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add non-secret Outline profiles in shared config with device-local endpoint/token bindings.
 - [x] Add a bounded-retry, paginated Outline API client and mock transport tests.
 - [x] Add durable, locked, atomically-written source-to-Outline mapping state outside `cache.db`.
-- [ ] Add create/update/move/archive reconciliation, remote-drift conflicts, attachment uploads, idempotency, and mutation-free publish dry runs.
-- [ ] Complete CLI/reference documentation and full workspace verification.
+- [x] Add create/update/move/archive reconciliation, remote-drift conflicts, attachment uploads, idempotency, and mutation-free publish dry runs.
+- [x] Complete CLI/reference documentation and full workspace verification.
 
 ---
 

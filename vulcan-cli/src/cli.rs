@@ -2301,6 +2301,20 @@ pub enum ExportCommand {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum PublishCommand {
+    #[command(about = "Publish and reconcile a configured Outline collection")]
+    Outline {
+        #[arg(help = "Profile name under [publish.outline.profiles.<name>]")]
+        profile: String,
+        #[arg(
+            long,
+            help = "Plan remote changes without mutating Outline or mapping state"
+        )]
+        dry_run: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct ExportQueryArgs {
     #[arg(help = "Native note query DSL string; omit with --query-json")]
@@ -4825,6 +4839,11 @@ pub enum Command {
     Export {
         #[command(subcommand)]
         command: ExportCommand,
+    },
+    #[command(about = "Publish vault-derived content to configured external targets")]
+    Publish {
+        #[command(subcommand)]
+        command: PublishCommand,
     },
     #[command(
         about = "Inspect and import effective Vulcan configuration",

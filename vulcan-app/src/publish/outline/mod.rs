@@ -3,6 +3,7 @@
 #[cfg(feature = "web")]
 mod client;
 mod planner;
+mod publisher;
 mod state;
 
 #[cfg(feature = "web")]
@@ -10,9 +11,10 @@ pub use client::HttpOutlineClient;
 pub use planner::{
     plan_outline_reconciliation, OutlinePublishAction, OutlinePublishActionKind, OutlinePublishPlan,
 };
+pub use publisher::{publish_outline, OutlinePublishReport};
 pub use state::{
-    load_outline_state, lock_outline_state, OutlineDocumentMapping, OutlinePublishState,
-    OutlineStateLock,
+    load_outline_state, lock_outline_state, OutlineAttachmentMapping, OutlineDocumentMapping,
+    OutlinePublishState, OutlineStateLock,
 };
 
 use crate::AppError;
@@ -31,6 +33,12 @@ pub struct OutlineRemoteDocument {
     pub archived_at: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlineRemoteAttachment {
+    pub id: String,
+    pub url: String,
+}
+
 pub trait OutlineApi {
     fn list_collection_documents(
         &self,
@@ -39,6 +47,7 @@ pub trait OutlineApi {
     fn document_info(&self, id: &str) -> Result<OutlineRemoteDocument, AppError>;
     fn create_document(
         &self,
+        id: &str,
         collection_id: &str,
         parent_document_id: Option<&str>,
         title: &str,
@@ -57,4 +66,11 @@ pub trait OutlineApi {
         parent_document_id: Option<&str>,
     ) -> Result<OutlineRemoteDocument, AppError>;
     fn archive_document(&self, id: &str) -> Result<OutlineRemoteDocument, AppError>;
+    fn upload_attachment(
+        &self,
+        document_id: &str,
+        name: &str,
+        content_type: &str,
+        bytes: &[u8],
+    ) -> Result<OutlineRemoteAttachment, AppError>;
 }

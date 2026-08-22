@@ -46,4 +46,44 @@ Planning fails on duplicate folder notes, unsafe or case-insensitive archive col
 
 ## API publishing
 
-The `publish outline` profile, durable mapping state, reconciliation behavior, and attachment upload configuration are documented below as those milestones are implemented.
+Configure a named target in shared `.vulcan/config.toml`:
+
+```toml
+[publish.outline.profiles.wiki]
+base_url = "https://outline.example.com"
+collection_id = "00000000-0000-0000-0000-000000000000"
+collection_title = "Wiki"
+query = "from notes"
+token_env = "OUTLINE_API_TOKEN"
+timeout_seconds = 30
+max_retries = 3
+page_size = 100
+```
+
+The token value is not a valid profile field. Put it in the named environment variable; device-specific non-secret overrides such as `base_url` or `token_env` may go in ignored `.vulcan/config.local.toml`. Then preview and apply:
+
+```sh
+OUTLINE_API_TOKEN=... vulcan --output json publish outline wiki --dry-run
+OUTLINE_API_TOKEN=... vulcan --output json publish outline wiki
+```
+
+The profile must select exactly one of `query` or `query_json`. It may also contain the same ordered `[[publish.outline.profiles.wiki.content_transforms]]` rules used by export profiles. Publishing uses the same folder-note, resolved-link, attachment, collision, and excluded-target validation as ZIP export.
+
+Vulcan uses Outline's documented `documents.list`, `documents.info`, `documents.create`, `documents.update`, `documents.move`, `documents.archive`, and `attachments.create` POST APIs. Collection listing is paginated. Requests have bounded timeouts and retries; credentials and response bodies that appear credential-bearing are not included in errors. Attachment uploads support Outline's returned POST-form and PUT upload modes. See Outline's [official API documentation](https://docs.getoutline.com/s/guide/doc/api-1rEIXDfLF6) and [OpenAPI specification](https://github.com/outline/openapi/blob/main/spec3.yml).
+
+### Mapping and reconciliation
+
+Durable mappings are stored in `.vulcan/publish/outline/<profile>.json`, outside the rebuildable SQLite cache. Writes use an exclusive lock, a temporary file, `fsync`, and atomic rename. Each entry records Vulcan's own source identity, current source path and cache document ID, remote document ID and parent, last published title/content hash, and attachment IDs, URLs, owners, and hashes.
+
+Cache document IDs are hints, not durable synchronization identity. Vulcan first matches an existing cache ID (which preserves ordinary indexed moves), then the last path, then a unique prior content hash. Ambiguous recovery fails safe by planning a create/archive pair rather than claiming the wrong remote document.
+
+Reconciliation creates parents before children, updates changed Markdown, moves changed parents, uploads changed attachments, and archives managed documents whose local source is no longer selected. It never permanently deletes documents and never changes remote documents absent from the mapping state. State is saved after each successful remote operation, and new documents use a preselected UUID so an interrupted create can be looked up and adopted on retry.
+
+Before any mutation, Vulcan fetches every managed remote document. A changed remote title, body, or parent is a conflict unless it already equals the desired result of an interrupted prior publication. Conflicts stop the entire mutation pass by default and are included in the structured report. `--dry-run` performs remote reads only and creates neither locks nor mapping directories.
+
+### API publisher limitations
+
+- Publishing is one-way. It does not ingest Outline changes, webhooks, or the separate Outline-to-Git backup/audit trail.
+- A simultaneous note move and content edit after a complete cache rebuild cannot always be identified without a source marker. Vulcan intentionally does not mutate frontmatter; if cache ID, old path, and prior hash all differ, it treats the file as a new source.
+- Replacing a changed attachment uploads a new Outline attachment and rewrites managed document links. Old, now-unreferenced attachment objects are left for Outline's own cleanup because the public API has no archive operation for attachments.
+- Compatibility targets Outline 1.9.x and the current official API. Validate against a staging collection before upgrading across a major Outline release.
