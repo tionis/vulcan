@@ -6312,6 +6312,8 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add create/update/move/archive reconciliation, remote-drift conflicts, attachment uploads, idempotency, and mutation-free publish dry runs.
 - [x] Complete CLI/reference documentation and full workspace verification.
 
+**Deferred possibility, not currently planned:** A separate one-way Outline-to-vault importer could reconstruct collection hierarchy, links, and attachments as local Markdown. Revisit only when there is a concrete use case and an acceptable scaling, conflict, and source-of-truth model. Do not evolve the current publisher into implicit bidirectional synchronization.
+
 ---
 
 ## New crates (Phases 10+)

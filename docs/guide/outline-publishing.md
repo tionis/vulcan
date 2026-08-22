@@ -87,3 +87,7 @@ Before any mutation, Vulcan fetches every managed remote document. A changed rem
 - A simultaneous note move and content edit after a complete cache rebuild cannot always be identified without a source marker. Vulcan intentionally does not mutate frontmatter; if cache ID, old path, and prior hash all differ, it treats the file as a new source.
 - Replacing a changed attachment uploads a new Outline attachment and rewrites managed document links. Old, now-unreferenced attachment objects are left for Outline's own cleanup because the public API has no archive operation for attachments.
 - Compatibility targets Outline 1.9.x and the current official API. Validate against a staging collection before upgrading across a major Outline release.
+
+### Possible future import direction
+
+A separate one-way `Outline -> Vulcan -> local Markdown` importer may be useful in the future, but it is not currently planned. It would need a concrete use case plus explicit decisions for large-collection pagination, attachment volume, rate limits, local/remote conflict handling, deletions, and source-of-truth ownership. If pursued, it should remain separate from this publisher rather than turning publication into implicit bidirectional synchronization.
