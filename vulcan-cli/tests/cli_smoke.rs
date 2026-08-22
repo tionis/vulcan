@@ -14450,6 +14450,34 @@ fn export_json_emits_note_metadata_and_content() {
 }
 
 #[test]
+fn export_json_without_query_exports_full_vault() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    run_scan(&vault_root);
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "json",
+        ])
+        .assert()
+        .success();
+    let json: Value = serde_json::from_slice(&assert.get_output().stdout)
+        .expect("json export should emit valid JSON");
+
+    assert!(json["result_count"].as_u64().is_some_and(|count| count > 1));
+    assert!(json["notes"]
+        .as_array()
+        .is_some_and(|notes| notes.iter().any(|note| note["document_path"] == "Home.md")));
+}
+
+#[test]
 fn export_csv_writes_query_rows() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -14602,7 +14630,6 @@ fn export_outline_zip_reports_structured_mutation_free_dry_run() {
             "json",
             "export",
             "outline-zip",
-            "from notes",
             "--collection-title",
             "Wiki",
             "--path",

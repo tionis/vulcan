@@ -5,15 +5,17 @@ Vulcan can package a selected Markdown hierarchy for Outline and can publish the
 ## Outline ZIP export
 
 ```sh
-vulcan export outline-zip "from notes" \
+vulcan export outline-zip \
   --collection-title "Wiki" \
   --path wiki.zip
 
-vulcan --output json export outline-zip "from notes" \
+vulcan --output json export outline-zip \
   --collection-title "Wiki" \
   --path wiki.zip \
   --dry-run
 ```
+
+As with every query-based export command, omitting both the positional query and `--query-json` selects the full vault (`from notes`). Pass either form when you want a filtered export.
 
 The archive layout follows Outline 1.9.x Markdown exports. An Outline document with children is represented by a Markdown file and a sibling directory with the same name:
 

@@ -298,9 +298,7 @@ fn resolve_export_query_ast(
         )),
         (Some(query), None) => QueryAst::from_dsl(query).map_err(AppError::operation),
         (None, Some(query_json)) => QueryAst::from_json(query_json).map_err(AppError::operation),
-        (None, None) => Err(AppError::operation(
-            "provide a note query DSL argument or --query-json payload",
-        )),
+        (None, None) => QueryAst::from_dsl("from notes").map_err(AppError::operation),
     }
 }
 
@@ -2999,15 +2997,7 @@ pub fn export_profile_query_args<'a>(
     let query = profile.query.as_deref();
     let query_json = profile.query_json.as_deref();
     let has_query = query.is_some() || query_json.is_some();
-    let needs_query = export_profile_requires_query(format);
-
-    if needs_query && !has_query {
-        return Err(AppError::operation(format!(
-            "export profile `{name}` requires `query` or `query_json` for {} exports",
-            export_profile_format_label(format)
-        )));
-    }
-    if !needs_query && has_query {
+    if !export_profile_supports_query(format) && has_query {
         return Err(AppError::operation(format!(
             "export profile `{name}` does not use `query` or `query_json` for {} exports",
             export_profile_format_label(format)
@@ -3027,13 +3017,7 @@ pub fn validate_export_profile_config(
     })?;
     let has_query = profile.query.is_some() || profile.query_json.is_some();
 
-    if export_profile_requires_query(format) && !has_query {
-        return Err(AppError::operation(format!(
-            "export profile `{name}` requires `query` or `query_json` for {} exports",
-            export_profile_format_label(format)
-        )));
-    }
-    if !export_profile_requires_query(format) && has_query {
+    if !export_profile_supports_query(format) && has_query {
         return Err(AppError::operation(format!(
             "export profile `{name}` does not use `query` or `query_json` for {} exports",
             export_profile_format_label(format)
@@ -3427,7 +3411,7 @@ fn export_profile_set_request_has_changes(request: &ExportProfileSetRequest) -> 
         || request.graph_format.has_change()
 }
 
-fn export_profile_requires_query(format: ExportProfileFormat) -> bool {
+fn export_profile_supports_query(format: ExportProfileFormat) -> bool {
     matches!(
         format,
         ExportProfileFormat::Markdown

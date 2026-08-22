@@ -1051,7 +1051,8 @@ Notes:
   Profiles live under `[export.profiles.<name>]` in `.vulcan/config.toml`.
   `export profile run <name>` resolves relative profile paths from the vault root.
   `export profile create|set|delete` updates shared `.vulcan/config.toml`; `show` prints the effective merged profile.
-  `markdown`, `json`, `csv`, `epub`, `zip`, and `sqlite` accept the native note query DSL or `--query-json`.
+  `markdown`, `json`, `csv`, `epub`, `zip`, `outline-zip`, and `sqlite` accept the native note query DSL or `--query-json`; omitting both exports the full vault.
+  Query-capable export profiles use the same full-vault default when neither query field is configured.
   `markdown`, `json`, `epub`, and `zip` support publication-oriented content transforms such as `--exclude-callout`, `--exclude-heading`, `--exclude-frontmatter-key`, `--exclude-inline-field`, and ordered `--replace-rule` rewrites.
   Direct export flags build one implicit transform rule that applies to all exported notes.
   Profile config stores transforms as ordered `[[export.profiles.<name>.content_transforms]]` rules; `export profile rule ...` edits those rules explicitly.
@@ -2317,11 +2318,11 @@ pub enum PublishCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct ExportQueryArgs {
-    #[arg(help = "Native note query DSL string; omit with --query-json")]
+    #[arg(help = "Native note query DSL string; omit to export the full vault")]
     pub query: Option<String>,
     #[arg(
         long = "query-json",
-        help = "JSON note query payload; mutually exclusive with the positional query"
+        help = "JSON note query payload; mutually exclusive with the positional query; omit both to export the full vault"
     )]
     pub query_json: Option<String>,
 }

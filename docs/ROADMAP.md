@@ -6306,6 +6306,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 - [x] Add shared deterministic folder-note hierarchy planning for same-name and `index.md` conventions, including nested parents and collision diagnostics.
 - [x] Add `vulcan export outline-zip` with transformed/resolved links, deterministic attachment paths, mutation-free dry runs, structured reports, and fail-closed validation.
+- [x] Standardize omitted queries across direct and profile-based exports as the full-vault `from notes` selection.
 - [x] Add non-secret Outline profiles in shared config with device-local endpoint/token bindings.
 - [x] Add a bounded-retry, paginated Outline API client and mock transport tests.
 - [x] Add durable, locked, atomically-written source-to-Outline mapping state outside `cache.db`.

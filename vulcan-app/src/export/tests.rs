@@ -7,9 +7,9 @@ use super::{
     collect_export_attachment_paths, execute_export_query, inject_epub_heading_ids,
     load_export_links, load_exported_notes, prepare_export_data, render_csv_export_payload,
     render_epub_nav_document, render_json_export_payload, render_markdown_export_payload,
-    require_export_profile_path, rewrite_epub_link_destination, write_epub_export,
-    write_sqlite_export, write_zip_export, BoolConfigUpdate, ConfigValueUpdate, EpubChapter,
-    EpubExportOptions, EpubHeading, EpubRenderCallbacks, ExportLinkRecord,
+    require_export_profile_path, resolve_export_query_ast, rewrite_epub_link_destination,
+    write_epub_export, write_sqlite_export, write_zip_export, BoolConfigUpdate, ConfigValueUpdate,
+    EpubChapter, EpubExportOptions, EpubHeading, EpubRenderCallbacks, ExportLinkRecord,
     ExportProfileCreateRequest, ExportProfileFormat, ExportProfileRuleMoveRequest,
     ExportProfileRuleRequest, ExportProfileRuleWriteAction, ExportProfileSetRequest,
     ExportProfileWriteAction, ExportedNoteDocument,
@@ -53,6 +53,27 @@ fn create_json_profile_request() -> ExportProfileCreateRequest {
         pretty: true,
         graph_format: None,
     }
+}
+
+#[test]
+fn omitted_export_query_defaults_to_all_notes() {
+    assert_eq!(
+        resolve_export_query_ast(None, None).expect("default export query"),
+        QueryAst::from_dsl("from notes").expect("all-notes query")
+    );
+}
+
+#[test]
+fn query_based_export_profile_can_omit_query() {
+    let (_temp_dir, paths) = export_paths();
+    let mut request = create_json_profile_request();
+    request.query = None;
+
+    let report = apply_export_profile_create(&paths, "full_vault", &request, false, false)
+        .expect("create full-vault export profile");
+
+    assert!(report.profile["query"].is_null());
+    assert!(report.profile["query_json"].is_null());
 }
 
 fn config_contents(path: &Path) -> String {

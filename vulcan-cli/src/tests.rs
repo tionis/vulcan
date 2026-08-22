@@ -970,7 +970,6 @@ fn parses_outline_zip_export_command() {
         "vulcan",
         "export",
         "outline-zip",
-        "from notes",
         "--collection-title",
         "Wiki",
         "--path",
@@ -984,7 +983,7 @@ fn parses_outline_zip_export_command() {
         Command::Export {
             command: ExportCommand::OutlineZip {
                 query: ExportQueryArgs {
-                    query: Some("from notes".to_string()),
+                    query: None,
                     query_json: None,
                 },
                 transforms: ExportTransformArgs::default(),
