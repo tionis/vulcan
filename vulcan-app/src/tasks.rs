@@ -2993,7 +2993,7 @@ pub fn apply_task_pomodoro_stop(
                         else {
                             return Err(AppError::operation(format!(
                                 "failed to locate the active pomodoro session in {path}",
-                                path = &loaded.path
+                                path = loaded.path
                             )));
                         };
                         sessions[index] = task_pomodoro_session_yaml_value(&updated_session)?;
@@ -4830,7 +4830,7 @@ fn process_due_task_pomodoros(paths: &VaultPaths, dry_run: bool) -> Result<Vec<S
                             else {
                                 return Err(AppError::operation(format!(
                                     "failed to locate the active pomodoro session in {path}",
-                                    path = &loaded.path
+                                    path = loaded.path
                                 )));
                             };
                             let updated = finalize_task_pomodoro_session(
@@ -4881,7 +4881,7 @@ fn process_due_task_pomodoros(paths: &VaultPaths, dry_run: bool) -> Result<Vec<S
                             else {
                                 return Err(AppError::operation(format!(
                                     "failed to locate the active pomodoro session in {storage_note_path}",
-                                    storage_note_path = &stored.storage_note_path
+                                    storage_note_path = stored.storage_note_path
                                 )));
                             };
                             let updated = finalize_task_pomodoro_session(
