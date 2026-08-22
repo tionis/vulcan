@@ -6562,6 +6562,97 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 
 ---
 
+## Phase 9.34: SilverBullet interoperability, sync, and first-party plug
+
+**Goal:** Let a Markdown vault participate safely in SilverBullet workflows at three independent layers: native understanding of SilverBullet-authored Markdown, an optional SilverBullet-compatible file-sync peer, and a first-party SilverBullet plug backed by Vulcan's daemon API. Keep ordinary files canonical, keep every index rebuildable, and avoid making SilverBullet's browser runtime or object index a second source of truth.
+
+**Depends on:** Phase 1 parser/link/attachment indexing, Phase 2 serialized and atomic vault writes, Phase 7 diagnostics and exports, Phase 9.18 permission-aware command services, Phase 9.20 publication transforms, Phase 9.31 folder-note configuration, Phase 10 daemon/API/authentication for the plug and server peer, Phase 11 checkpoint/conflict support, and Phase 12 sync-backend lifecycle for remote mirroring. Native syntax discovery, fixtures, diagnostics, and byte-preserving export may begin before the daemon; network sync and the plug must not bypass their later dependencies.
+
+**Compatibility boundary:** SilverBullet's Space is still a directory of ordinary Markdown and assets. Sync transports bytes and metadata without rewriting representations; compatibility transforms are explicit export/refactor operations. Incoming accepted writes materialize atomically in the local working tree before Vulcan rebuilds derived state. SilverBullet's client-side object index, Vulcan's SQLite cache, browser databases, generated query results, and runtime state are all disposable derivatives rather than authorities.
+
+**Initial upstream reference:** start from an exact reviewed SilverBullet 2.x release and commit. The current upstream client implements filesystem operations through `client/spaces/http_space_primitives.ts`, the two-sided snapshot algorithm through `client/spaces/sync.ts`, and browser scheduling/state through `client/service_worker/sync_engine.ts`; its current transport uses `/.fs` file operations and `/.ping` version discovery. These are implementation references, not a promise of a stable public protocol. Record licenses and provenance, and require an explicit compatibility review before changing the pinned release.
+
+### 9.34.1 Upstream inventory, version pinning, and conformance harness
+
+- [ ] Pin one exact supported SilverBullet release and commit. Inventory the file protocol, metadata/header contract, authentication behavior, path encoding, error statuses, sync-ignore semantics, document/asset policy, conflict-copy naming, standard-library/plug handling, server version discovery, Space Lua syntax, PlugOS APIs, and Markdown extensions used by that version.
+- [ ] Document two distinct protocol roles: a **server peer**, where an upstream SilverBullet browser syncs directly with a Vulcan-backed materialized vault; and a **client/mirror backend**, where Vulcan synchronizes with an existing SilverBullet server. Do not imply that implementing one role provides the other.
+- [ ] Add licensed, provenance-recorded protocol and Markdown fixtures plus a mock SilverBullet peer. Add an opt-in conformance suite that runs against the pinned upstream server/client implementation as the oracle, without requiring network access in normal workspace tests.
+- [ ] Introduce a machine-readable compatibility matrix covering supported SilverBullet versions, protocol role, Markdown extensions, runtime features, plug API version, and known deviations. Read `X-Server-Version` or the pinned equivalent and fail with a structured incompatibility error for unreviewed versions rather than continuing optimistically.
+- [ ] Re-evaluate whether upstream has published a stable protocol or reusable runtime library at implementation time. Prefer a documented public API or official `sb` command when it satisfies the use case; isolate unavoidable private-protocol code behind a versioned Vulcan adapter.
+
+### 9.34.2 Native SilverBullet Markdown and link semantics
+
+- [ ] Add a scoped SilverBullet compatibility mode in `vulcan-core` that recognizes the pinned release's page links, relative and absolute paths, headings, line/column and offset positions, meta-page references, stable `$anchor` references, transclusions, page attributes, task states, admonitions, fenced extensions, and executable Space Lua blocks/expressions. Unsupported or version-mismatched constructs produce diagnostics instead of disappearing.
+- [ ] Preserve exact source plus raw, parsed, and resolved link representations. Keep Obsidian shortest-path/alias resolution as the normal default; enable SilverBullet's path-oriented resolution only for explicit compatibility profiles or SilverBullet-authored operations, with deterministic ambiguity and case-sensitivity behavior.
+- [ ] Index stable anchors and SilverBullet-specific subpaths as derived metadata so backlinks, graph queries, doctor, moves, exports, and publication can distinguish a missing document from a missing anchor, header, line, or position.
+- [ ] Treat Space Lua, plug bundles, and other executable content as inert during scan, index, doctor, ordinary rendering, and default export. Merely opening a Space must never execute vault code or fetch network resources.
+- [ ] Add `vulcan doctor --compat silverbullet` and reusable report types for incompatible links, unsupported syntax, stale/generated regions, unavailable runtime-dependent output, path-resolution differences, and control/runtime files that should not be published.
+- [ ] Add a `silverbullet` fixture vault covering every claimed syntax form, nested paths, duplicate names, Unicode/case conflicts, malformed constructs, links and transclusions to attachments, mixed Obsidian/SilverBullet syntax, and parse-render-reparse/source-preservation behavior.
+
+### 9.34.3 Space export and explicit transformation policies
+
+- [ ] Add a reusable `vulcan-app` planner and thin CLI surface such as `vulcan export silverbullet-space [query] --path <directory-or-archive>`. Follow the shared export convention that an omitted query selects the whole vault, while an explicit query restricts the publication set.
+- [ ] Reuse canonical query selection, publication transforms, resolved links, attachments, folder-note planning, exclusions, and deterministic collision checks. Never mutate the source vault, and fail on missing assets, excluded link targets, unresolved required references, unsafe paths, case/Unicode-normalization conflicts, or ambiguous representation changes.
+- [ ] Make executable and generated content policy explicit and independently configurable: `preserve`, `evaluate`, `strip`, or `error` where meaningful. Default to byte/source preservation; `evaluate` is unavailable unless the separately gated runtime is enabled and authorized, and generated results must be marked as projections rather than written back implicitly.
+- [ ] Support deterministic dry-run/planning and structured JSON reports including selected files, rewritten references, copied assets, preserved executable regions, required runtime capabilities, warnings, and output hashes.
+- [ ] Test full-vault and query exports, nested pages, all configured folder-note conventions, links, transclusions, anchors, attachments, mixed syntax, exclusions, collisions, missing files, deterministic output, runtime-disabled policies, and mutation-free planning.
+
+### 9.34.4 SilverBullet-compatible server peer
+
+- [ ] After Phase 10, implement the pinned server-side file protocol in an async daemon adapter, not in `vulcan-core`. Serve only explicitly configured vaults and routes; keep protocol request/response types separate from transport-neutral vault mutation services.
+- [ ] Implement the reviewed file-list, metadata, read, write, delete, ping/version, authentication, path-encoding, sync-mode, and error contracts. Preserve file bytes and required safe metadata while refusing platform-unsafe permissions or unsupported metadata with explicit diagnostics.
+- [ ] Normalize percent-decoded paths once; reject traversal, absolute paths, reserved/control paths, NULs, invalid Unicode policy, symlink escapes, special files, case/normalization aliases, oversized lists/bodies, and writes outside the selected vault. Apply daemon authentication, vault ACLs, rate/body limits, timeouts, cancellation, and sanitized logs.
+- [ ] Route accepted writes and deletes through Vulcan's cross-process vault lock, verified temporary file plus atomic replacement, mass-deletion guard, watcher coalescing, incremental scan, optional git checkpoint, and event reporting. A successful protocol response must never expose a partial file or claim an unindexed permanent mutation.
+- [ ] Let the upstream SilverBullet client retain its own sync snapshot and conflict algorithm when Vulcan is only the server peer. Surface conflict copies as ordinary canonical files plus diagnostics; do not silently merge, discard, or reinterpret them.
+- [ ] Provide explicit deployment support for serving or reverse-proxying the pinned SilverBullet client separately from Vulcan's API. Do not fork or silently patch upstream browser assets as part of the protocol adapter.
+- [ ] Test initial listing, metadata-only reads, binary assets, creates, replacements, deletes, interruption, concurrent direct edits, clock skew, equal timestamps with differing sizes/content, conflict copies, ignore/control paths, authentication/authorization failures, path attacks, oversized requests, restarts, cache rebuild, and compatibility rejection against mock and pinned upstream clients.
+
+### 9.34.5 SilverBullet client and mirror sync backend
+
+- [ ] After Phase 12, add a `vulcan-sync` SilverBullet backend that connects to an existing reviewed SilverBullet server through the pinned file protocol or official supported CLI/API. Keep a materialized local working tree; do not make remote HTTP objects masquerade as cache rows or retrofit remote I/O throughout `vulcan-core`.
+- [ ] Require an explicit authority mode and deletion policy. A peer/mirror mode may accept edits from both endpoints and must use a durable two-sided snapshot; a one-way import/export mode must state its authoritative side and may not reuse bidirectional deletion semantics accidentally.
+- [ ] Store remote identity, source identity/path, both last-seen revisions/metadata, content hash where available, tombstones, ignored/non-materialized entries, and protocol version in locked, atomically replaced durable state outside `.vulcan/cache.db`. Malformed or incompatible state must stop reconciliation without mutating either side and offer a reviewable rebuild/resync plan.
+- [ ] Reproduce the pinned conflict behavior where compatibility requires it, including byte comparison and conflict-copy naming, while adding content hashes to guard against unchanged timestamps. Never use last-writer-wins silently; preserve both versions and report conflicts through CLI JSON, daemon status, and `GET /{id}/sync/conflicts`.
+- [ ] Integrate bounded concurrency, list/body limits, timeouts, cancellation, jittered bounded retries, authentication expiry, offline status, safe interruption/resume, ignore rules, plug/control-file policy, watcher quiescence, write locking, mass-deletion protection, scan refresh, and optional pre-sync git checkpoints.
+- [ ] Keep endpoint URLs, vault/space identifiers, and non-secret policy in shared or daemon config as appropriate. Read bearer tokens and device-local values from environment variables, secret storage, or ignored local config; redact authorization headers, redirect targets containing secrets, and response bodies from errors.
+- [ ] Add `sync status|plan|trigger` reporting for the backend. Planning must not write local files, remote files, or durable snapshots; ordinary retries after interruption must be idempotent.
+- [ ] Test initial import/export, unchanged repeats, changes on either side, simultaneous edits, creates, moves represented by protocol operations, deletions/tombstones, binary assets, ignored/non-materialized files, plug ordering, timestamp collisions, stale/malformed snapshots, process restart, pagination or oversized-list behavior of the pinned version, retries, authentication failure, unknown server versions, mass deletion, and mutation-free plans with a mock server plus upstream conformance jobs.
+
+### 9.34.6 Optional SilverBullet runtime boundary
+
+- [ ] Do not present Vulcan's QuickJS runtime as a SilverBullet runtime. Inventory which pinned features are Space Lua, which TypeScript plug sources compile to browser JavaScript, and which depend on PlugOS syscalls, Web Workers, IndexedDB, DOM/browser state, or the upstream headless-Chrome server runtime.
+- [ ] Implement syntax preservation and pure static semantics in Rust. Reuse an upstream TypeScript module in-process only if it is separately licensed, version-pinned, deterministic, browser-independent, resource-bounded, and demonstrably smaller to maintain than a native adapter; do not emulate the full SilverBullet browser/PlugOS environment in QuickJS.
+- [ ] If a concrete use case requires authoritative Space Lua, SLIQ, or generated-content evaluation, add an explicit optional adapter to a pinned official SilverBullet runtime or `sb` process. Treat it as a supervised external tool with an executable allowlist, isolated working directory, read-only input by default, memory/CPU/output/time limits, cancellation, environment allowlist, network denial unless separately granted, and sanitized structured results.
+- [ ] Require an explicit command/export policy and permission profile before runtime execution. Never execute during scan, watch, sync, doctor, preview, or default rendering; never let runtime output mutate canonical Markdown without a normal dry-run/apply workflow and stale-input checks.
+- [ ] Test malicious and nonterminating scripts, memory/output exhaustion, filesystem and network denial, unavailable/wrong runtime versions, malformed output, cancellation, secret redaction, deterministic pure evaluations where promised, and zero execution in all passive workflows.
+
+### 9.34.7 First-party SilverBullet plug
+
+- [ ] After the Phase 10 API is stable, create a versioned first-party plug that talks only to Vulcan's authenticated daemon API. The plug must not open `.vulcan/cache.db`, assume shell access, invoke the CLI from the browser, or become the owner of vault synchronization.
+- [ ] Start read-only with connection/scan/sync status, doctor diagnostics, full-text and semantic search, backlinks, graph relations, related notes, and compatibility reports. Degrade gracefully when Vulcan is offline so ordinary SilverBullet editing and its native sync continue working.
+- [ ] Add mutating commands only through reusable Vulcan proposal/apply contracts: task actions, note/refactor operations, folder-note/Waypoint reconciliation, asset maintenance, export, and publication. Always show a deterministic preview, enforce daemon permissions and stale-content preconditions, and return structured partial-failure/conflict reports.
+- [ ] Use SilverBullet save/sync events only as hints for status refresh or incremental scanning; rely on the daemon watcher for correctness, debounce duplicate notifications, attach operation identities, and prevent plug-daemon feedback loops.
+- [ ] Keep API endpoint discovery and non-secret preferences separate from device credentials. Prefer same-origin reverse proxying or OAuth/pairing with PKCE; store tokens in device-local browser storage rather than synced CONFIG/Markdown, request the minimum vault-scoped capabilities, support revocation/expiry, and enforce CORS/CSRF/origin policy.
+- [ ] Provide an explicit `vulcan integration silverbullet plug plan|install|update` workflow that pins compatible plug/API versions, verifies bundle hashes, previews the destination, preserves unrelated Space files, and never embeds credentials. Manual installation remains supported.
+- [ ] Test the plug against a mock daemon and pinned SilverBullet host for first connection, offline behavior, read-only features, permission denial, token expiry/revocation, API/version mismatch, multiple vaults, save-event storms, proposal/apply conflicts, interrupted mutations, installation collisions, updates, and absence of secrets in synchronized files and logs.
+
+### 9.34.8 Cross-layer safety and completion gates
+
+- [ ] Define ownership and event ordering across SilverBullet writes: authenticate and validate path, acquire the vault lock, optionally checkpoint, atomically materialize bytes, refresh derived state, publish daemon events, then allow plug status refresh. Sync transport must never invoke publication transforms or runtime evaluation implicitly.
+- [ ] Add combined fixtures for SilverBullet links/anchors plus Obsidian links, folder notes and Waypoints, executable blocks, attachments, direct filesystem edits during browser sync, protocol conflict copies, and first-party plug operations. Reindex twice and rebuild from scratch to assert equivalent derived state.
+- [ ] Verify CLI/daemon JSON contracts, permission denial, feature-disabled builds, dry-run immutability, secret sanitization, deterministic planning, crash recovery, cache deletion/rebuild, and operation with no `.obsidian/` directory.
+- [ ] Publish setup, threat model, compatibility matrix, upgrade/downgrade procedure, state recovery, conflict handling, backup guidance, and limitations. Clearly distinguish shared-directory operation, Vulcan server-peer mode, remote mirror mode, static compatibility/export, and plug-only integration.
+- [ ] Do not claim SilverBullet protocol compatibility until the pinned upstream conformance suite passes for the advertised role. Do not claim runtime compatibility based only on parsing executable syntax, and do not call the integration complete until unmanaged ordinary files remain untouched and a vault can be recovered from canonical files plus durable sync state without `cache.db`.
+
+### Deferred SilverBullet work
+
+- **General runtime emulation:** a full PlugOS, browser, IndexedDB, Web Worker, DOM, or headless-Chrome reimplementation inside Vulcan is out of scope. Revisit only if upstream publishes a stable embeddable runtime and concrete use cases cannot use the supervised official process.
+- **Collaborative semantic merge:** the pinned SilverBullet conflict-copy behavior is the compatibility baseline. CRDT/Automerge merging, shared cursors, and live multi-user editing belong to Phase 14/16 and must not be smuggled into file sync.
+- **Virtual remote-only Spaces:** the first implementation requires a coherent materialized working tree. Revisit `VaultStorage` only through Phase 12.6's decision gate for a measured embedded use case.
+- **SilverBullet object-index or query-store replication:** never synchronize or import SilverBullet's derived client index as Vulcan authority. Rebuild Vulcan's cache from the materialized Markdown and assets; invoke an optional pinned runtime only for explicit compatibility evaluation.
+
+---
+
 ## New crates (Phases 10+)
 
 | Crate | Type | Purpose |
