@@ -1272,7 +1272,7 @@ metadata:
     commands:
       - id: run
         script: scripts/run.js
-        sandbox: strict
+        sandbox: none
         permission_profile: exec_only
         packs: [custom]
         expose: true
