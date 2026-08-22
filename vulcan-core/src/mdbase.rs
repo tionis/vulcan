@@ -6,6 +6,7 @@
 
 use crate::paths::{normalize_relative_input_path, RelativePathOptions};
 use chrono_tz::Tz;
+use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,6 +15,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 pub const MDBASE_CONFIG_FILE_NAME: &str = "mdbase.yaml";
+pub const MDBASE_LOCK_FILE_NAME: &str = "mdbase.lock.yaml";
 pub const SUPPORTED_MDBASE_SPEC_MINOR: &str = "0.3";
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +83,53 @@ pub struct MdbaseCollection {
     pub config_path: PathBuf,
     pub config: MdbaseConfig,
     pub diagnostics: Vec<MdbaseConfigDiagnostic>,
+}
+
+/// Files that participate in mdbase semantics for one collection root.
+///
+/// Paths are collection-relative, use `/` separators, and are sorted. This
+/// view is deliberately narrower than Vulcan's ordinary vault scan.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+pub struct MdbaseDiscovery {
+    pub records: Vec<String>,
+    pub type_files: Vec<String>,
+    pub contract_files: Vec<String>,
+    pub nested_collections: Vec<String>,
+}
+
+#[derive(Debug)]
+pub enum MdbaseDiscoveryError {
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    NonUtf8Path {
+        path: PathBuf,
+    },
+}
+
+impl Display for MdbaseDiscoveryError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io { path, source } => {
+                write!(formatter, "failed to discover {}: {source}", path.display())
+            }
+            Self::NonUtf8Path { path } => write!(
+                formatter,
+                "mdbase collection contains a path that is not valid UTF-8: {}",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MdbaseDiscoveryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::NonUtf8Path { .. } => None,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -209,6 +258,211 @@ pub fn load_mdbase_collection(
     }))
 }
 
+/// Discover the collection's mdbase records and control files.
+///
+/// This does not affect the normal Vulcan scanner: type and contract Markdown
+/// remains visible to ordinary vault browsing and is excluded only from this
+/// collection-scoped record set.
+pub fn discover_mdbase_files(
+    collection: &MdbaseCollection,
+) -> Result<MdbaseDiscovery, MdbaseDiscoveryError> {
+    let excludes = compile_excludes(&collection.config.settings.exclude)
+        .expect("exclusion globs are validated while loading mdbase.yaml");
+    let mut discovery = MdbaseDiscovery::default();
+
+    discover_control_files(
+        &collection.root,
+        &collection.config.settings.types_folder,
+        &mut discovery.type_files,
+    )?;
+    discover_control_files(
+        &collection.root,
+        &collection.config.settings.contracts_folder,
+        &mut discovery.contract_files,
+    )?;
+    discover_records(collection, &collection.root, "", &excludes, &mut discovery)?;
+
+    discovery.records.sort();
+    discovery.type_files.sort();
+    discovery.contract_files.sort();
+    discovery.nested_collections.sort();
+    Ok(discovery)
+}
+
+fn discover_control_files(
+    root: &Path,
+    folder: &str,
+    output: &mut Vec<String>,
+) -> Result<(), MdbaseDiscoveryError> {
+    let directory = root.join(folder);
+    if !directory.exists() {
+        return Ok(());
+    }
+    discover_markdown_files(root, &directory, output)
+}
+
+fn discover_markdown_files(
+    root: &Path,
+    directory: &Path,
+    output: &mut Vec<String>,
+) -> Result<(), MdbaseDiscoveryError> {
+    for entry in sorted_directory_entries(directory)? {
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|source| MdbaseDiscoveryError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        if file_type.is_dir() {
+            discover_markdown_files(root, &path, output)?;
+        } else if file_type.is_file() && has_extension(&path, "md") {
+            output.push(relative_utf8_path(root, &path)?);
+        }
+    }
+    Ok(())
+}
+
+fn discover_records(
+    collection: &MdbaseCollection,
+    directory: &Path,
+    relative_directory: &str,
+    excludes: &GlobSet,
+    discovery: &mut MdbaseDiscovery,
+) -> Result<(), MdbaseDiscoveryError> {
+    for entry in sorted_directory_entries(directory)? {
+        let path = entry.path();
+        let file_type = entry
+            .file_type()
+            .map_err(|source| MdbaseDiscoveryError::Io {
+                path: path.clone(),
+                source,
+            })?;
+        if file_type.is_symlink() {
+            continue;
+        }
+
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| MdbaseDiscoveryError::NonUtf8Path { path: path.clone() })?;
+        let relative = if relative_directory.is_empty() {
+            name
+        } else {
+            format!("{relative_directory}/{name}")
+        };
+
+        if file_type.is_dir() {
+            if is_control_directory(collection, &relative)
+                || is_derived_directory(&relative)
+                || is_excluded(excludes, &relative, true)
+            {
+                continue;
+            }
+            if path.join(MDBASE_CONFIG_FILE_NAME).is_file() {
+                discovery.nested_collections.push(relative);
+                continue;
+            }
+            if collection.config.settings.include_subfolders {
+                discover_records(collection, &path, &relative, excludes, discovery)?;
+            }
+        } else if file_type.is_file()
+            && !(relative_directory.is_empty()
+                && matches!(
+                    relative.as_str(),
+                    MDBASE_CONFIG_FILE_NAME | MDBASE_LOCK_FILE_NAME
+                ))
+            && !is_excluded(excludes, &relative, false)
+            && collection
+                .config
+                .settings
+                .record_extensions
+                .iter()
+                .any(|extension| has_extension(&path, extension))
+        {
+            discovery.records.push(relative);
+        }
+    }
+    Ok(())
+}
+
+fn sorted_directory_entries(directory: &Path) -> Result<Vec<fs::DirEntry>, MdbaseDiscoveryError> {
+    let entries = fs::read_dir(directory).map_err(|source| MdbaseDiscoveryError::Io {
+        path: directory.to_path_buf(),
+        source,
+    })?;
+    let mut entries = entries
+        .map(|entry| {
+            entry.map_err(|source| MdbaseDiscoveryError::Io {
+                path: directory.to_path_buf(),
+                source,
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(fs::DirEntry::file_name);
+    Ok(entries)
+}
+
+fn is_control_directory(collection: &MdbaseCollection, relative: &str) -> bool {
+    [
+        collection.config.settings.types_folder.as_str(),
+        collection.config.settings.contracts_folder.as_str(),
+    ]
+    .into_iter()
+    .any(|folder| relative == folder)
+}
+
+fn is_derived_directory(relative: &str) -> bool {
+    relative
+        .split('/')
+        .any(|component| matches!(component, ".git" | ".mdbase" | ".vulcan" | "node_modules"))
+}
+
+fn is_excluded(excludes: &GlobSet, relative: &str, directory: bool) -> bool {
+    excludes.is_match(relative)
+        || (directory && excludes.is_match(format!("{relative}/.mdbase-discovery-probe")))
+}
+
+fn has_extension(path: &Path, expected: &str) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
+}
+
+fn relative_utf8_path(root: &Path, path: &Path) -> Result<String, MdbaseDiscoveryError> {
+    let relative = path
+        .strip_prefix(root)
+        .expect("discovered path should remain below collection root");
+    let mut components = Vec::new();
+    for component in relative.components() {
+        let component =
+            component
+                .as_os_str()
+                .to_str()
+                .ok_or_else(|| MdbaseDiscoveryError::NonUtf8Path {
+                    path: path.to_path_buf(),
+                })?;
+        components.push(component);
+    }
+    Ok(components.join("/"))
+}
+
+fn compile_excludes(patterns: &[String]) -> Result<GlobSet, globset::Error> {
+    let mut builder = GlobSetBuilder::new();
+    for pattern in patterns {
+        builder.add(
+            GlobBuilder::new(pattern)
+                .literal_separator(true)
+                .backslash_escape(false)
+                .build()?,
+        );
+    }
+    builder.build()
+}
+
 fn validate_spec_version(path: &Path, version: &str) -> Result<(), MdbaseConfigError> {
     let components = version.split('.').collect::<Vec<_>>();
     let supported = components.len() == 3
@@ -275,6 +529,14 @@ fn normalize_settings(
     validate_field_names(path, "settings.explicit_type_keys", &explicit_type_keys)?;
     let id_field = raw.id_field.unwrap_or(defaults.id_field);
     validate_field_names(path, "settings.id_field", std::slice::from_ref(&id_field))?;
+    let exclude = raw.exclude.unwrap_or(defaults.exclude);
+    if let Err(error) = compile_excludes(&exclude) {
+        return invalid_config(
+            path,
+            "settings.exclude",
+            format!("contains an invalid collection-relative glob: {error}"),
+        );
+    }
 
     Ok((
         MdbaseSettings {
@@ -288,7 +550,7 @@ fn normalize_settings(
             include_subfolders: raw
                 .include_subfolders
                 .unwrap_or(defaults.include_subfolders),
-            exclude: raw.exclude.unwrap_or(defaults.exclude),
+            exclude,
         },
         raw.unknown,
     ))
@@ -405,6 +667,13 @@ mod tests {
 
     fn write_config(root: &Path, content: &str) {
         fs::write(root.join(MDBASE_CONFIG_FILE_NAME), content).expect("config should be written");
+    }
+
+    fn write_file(root: &Path, relative: &str) {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().expect("file should have a parent"))
+            .expect("parent should be created");
+        fs::write(path, "---\ntitle: Fixture\n---\n").expect("file should be written");
     }
 
     #[test]
@@ -567,5 +836,87 @@ settings:
                     if field == "settings.record_extensions"
             ));
         }
+    }
+
+    #[test]
+    fn invalid_exclusion_glob_is_rejected_during_config_load() {
+        let directory = tempdir().expect("temporary directory should exist");
+        write_config(
+            directory.path(),
+            "spec_version: \"0.3.0\"\nsettings:\n  exclude: ['[invalid']\n",
+        );
+        assert!(matches!(
+            load_mdbase_collection(directory.path()),
+            Err(MdbaseConfigError::InvalidConfig { ref field, .. })
+                if field == "settings.exclude"
+        ));
+    }
+
+    #[test]
+    fn discovery_separates_records_controls_exclusions_and_nested_collections() {
+        let directory = tempdir().expect("temporary directory should exist");
+        write_config(
+            directory.path(),
+            r#"spec_version: "0.3.0"
+settings:
+  types_folder: Schema/Types
+  contracts_folder: Schema/Contracts
+  record_extensions: [md, markdown]
+  exclude: [Archive/**, "**/*.draft.md"]
+"#,
+        );
+        for relative in [
+            "Root.md",
+            "Notes/Record.markdown",
+            "Notes/Ignored.draft.md",
+            "Schema/Types/Person.md",
+            "Schema/Types/README.txt",
+            "Schema/Contracts/People.md",
+            "Schema/Other.md",
+            "Archive/Old.md",
+            ".mdbase/state.md",
+            ".vulcan/internal.md",
+            ".git/internal.md",
+            "node_modules/package.md",
+            MDBASE_LOCK_FILE_NAME,
+            "Nested/mdbase.yaml",
+            "Nested/Child.md",
+        ] {
+            write_file(directory.path(), relative);
+        }
+
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+        let discovered = discover_mdbase_files(&collection).expect("discovery should succeed");
+
+        assert_eq!(
+            discovered.records,
+            ["Notes/Record.markdown", "Root.md", "Schema/Other.md"]
+        );
+        assert_eq!(discovered.type_files, ["Schema/Types/Person.md"]);
+        assert_eq!(discovered.contract_files, ["Schema/Contracts/People.md"]);
+        assert_eq!(discovered.nested_collections, ["Nested"]);
+    }
+
+    #[test]
+    fn disabling_subfolders_only_limits_record_discovery() {
+        let directory = tempdir().expect("temporary directory should exist");
+        write_config(
+            directory.path(),
+            "spec_version: \"0.3.0\"\nsettings:\n  include_subfolders: false\n",
+        );
+        for relative in ["Root.md", "Notes/Child.md", "_types/Nested/Person.md"] {
+            write_file(directory.path(), relative);
+        }
+
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+        let discovered = discover_mdbase_files(&collection).expect("discovery should succeed");
+
+        assert_eq!(discovered.records, ["Root.md"]);
+        assert_eq!(discovered.type_files, ["_types/Nested/Person.md"]);
+        assert!(discovered.nested_collections.is_empty());
     }
 }

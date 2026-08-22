@@ -20,6 +20,7 @@ blake3.workspace = true
 chrono-tz.workspace = true
 csv.workspace = true
 fs2.workspace = true
+globset.workspace = true
 ignore.workspace = true
 jsonwebtoken = { workspace = true, optional = true }
 libc.workspace = true
