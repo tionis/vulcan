@@ -1076,7 +1076,11 @@ tool name and aliases, and `vulcan tool run <alias> --<TAB>` completes the
 declared custom flags. Flags with `choices` or `completion` metadata also complete
 values after the flag.
 
-## Later roadmap items
+## Platform status and later roadmap items
+
+The Phase 9 command, automation, publication, MCP, and external-agent foundations below are implemented. The next platform gate is the multi-vault daemon in Phase 10. Phase 12 then adds device/file-tree synchronization, while Phase 15 separately adds explicit routes between the canonical local vault and external knowledge systems.
+
+The planned knowledge-hub model is not a generic two-way sync command. A route selects local notes, declares pull or push direction and authority, and uses durable connector state outside the rebuildable cache. See [Local information hub and external knowledge routes](./guide/information-hub.md) for the current/planned boundary.
 
 ### Phase A: CLI for LLMs (Roadmap Wave 5)
 

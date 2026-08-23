@@ -1,6 +1,6 @@
 # Vulcan Implementation Roadmap
 
-Tracking document for the phased implementation of Vulcan, a headless CLI for Obsidian vaults and plain Markdown directories.
+Tracking document for the phased implementation of Vulcan, a local-first Markdown information hub for Obsidian vaults and plain Markdown directories.
 Derived from `docs/design_document.md`. Update task status as work progresses.
 
 **Status legend:** `[ ]` not started | `[~]` in progress | `[x]` complete | `[-]` cut/deferred
@@ -11,7 +11,8 @@ The numbered phases describe dependency order, not a requirement to implement ev
 
 - **Committed delivery path:** Phase 9's pre-daemon gate ends at 9.29 and is complete. Phase 10 is therefore the next architectural milestone; unfinished candidate integrations do not block it.
 - **Completed optional additions:** 9.30 (Outline publishing) and 9.31 (folder-note normalization) landed as independently useful work after the Phase 9 gate. Their numbering records implementation history rather than extending the daemon prerequisite chain.
-- **Candidate capability tracks:** mdbase expansion, additional plugin workflows, and SilverBullet interoperability are maintained below as detailed design backlogs. They retain no implied promise of implementation order or completion before Phase 10.
+- **Committed hub direction:** Phase 12 owns device/file-tree synchronization and Phase 15 owns external document bindings, content routes, and knowledge-system connectors. SilverBullet, Outline, HedgeDoc, and Git wiki work should extend those shared layers rather than become parallel product architectures.
+- **Candidate capability tracks:** mdbase expansion and additional plugin workflows are maintained below as detailed design backlogs. They retain no implied promise of implementation order or completion before Phase 10.
 - **Promotion gate:** move a candidate into the committed path only when there is a concrete use case, an identified dependency/ownership boundary, a sustainable upstream compatibility and testing strategy, and enough maintenance budget to support the advertised surface. Promote only the smallest independently useful slice.
 - **Placement rule:** durable Markdown semantics, parsing, diagnostics, and mutation-free exports may live in core/app tracks; daemon transports belong to Phase 10+, sync protocols to Phase 12, editor behavior to Phase 14, and supervised runtimes or first-party external integrations to Phase 15.
 
@@ -5061,7 +5062,7 @@ Feature matrix note: `vulcan-core` and `vulcan-app` now build with `--no-default
 
 **Goal:** A long-running process that serves multiple vaults over a proper REST API. The CLI can connect to it instead of opening the cache directly, eliminating per-command startup cost and enabling multi-vault workflows.
 
-**Depends on:** Phase 7 complete. Phases 9.8–9.17 (Dataview, Templater, Tasks, Kanban, AI, QuickAdd, TaskNotes, Periodic Notes) are CLI-phase foundation work that should be complete or well-advanced before daemon work begins. **Phase 9.20 is intentionally scheduled before this phase in roadmap priority order to solidify shared rendering/export contracts, but Phase 10 does not technically require it. Phase 9.29 is the hard pre-daemon cleanup gate and is complete. The MDB, OBS, and SB candidate tracks explicitly do not block daemon implementation.**
+**Depends on:** Phase 7 complete. Phases 9.8–9.17 (Dataview, Templater, Tasks, Kanban, external-agent integration, QuickAdd, TaskNotes, Periodic Notes) provide the CLI-phase foundation. **Phase 9.20 was scheduled before this phase in roadmap priority order to solidify shared rendering/export contracts, but Phase 10 does not technically require it. Phase 9.29 is the hard pre-daemon cleanup gate and is complete. The MDB and OBS candidate tracks, plus the later Phase 12 device-sync and Phase 15 knowledge-hub work, explicitly do not block daemon implementation.**
 **Design refs:** Existing `serve.rs` (single-vault HTTP server, hand-rolled), `watch.rs` (file watcher).
 
 Search API note: search request semantics are already defined earlier by the shared `SearchQuery` contract from Phase 9.6. Phase 10 daemon work reuses that surface; it does not introduce a second search-parameter design step.
@@ -5209,11 +5210,13 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 
 ---
 
-## Phase 12: Sync Integration
+## Phase 12: Device and file-tree synchronization
 
-**Goal:** Pluggable sync backends so vaults stay current across devices. The daemon orchestrates sync alongside watching and versioning.
+**Goal:** Keep one canonical materialized vault current across devices and storage providers. This phase replicates the working tree; it is deliberately separate from Phase 15 content routes, which exchange selected logical documents with external knowledge systems.
 
 **Depends on:** Phase 10 (daemon), Phase 11 (git versioning for conflict-aware sync).
+
+**Boundary:** A sync backend answers "how does this vault directory reach another device or storage service?" It may replicate Markdown, attachments, and intentional shared configuration, but it does not translate documents, select a publication subset, bind one note to an external object, or run cross-wiki workflows. Those are connector/route responsibilities in Phase 15. Every backend must materialize a coherent local working tree before Vulcan scans it, and `.vulcan/cache.db` remains disposable local state.
 
 ### 12.1 Sync backend trait
 
@@ -5282,9 +5285,9 @@ trait SyncBackend: Send + Sync {
 - [ ] `POST /{id}/sync/trigger` — force a sync cycle
 - [ ] `GET /{id}/sync/conflicts` — list files with unresolved conflicts (if applicable)
 
-### 12.8 Candidate: SilverBullet protocol roles
+### 12.8 Optional full-Space SilverBullet synchronization
 
-Promote this subphase only for a concrete deployment that cannot use a shared materialized directory or a supported external SilverBullet process. The detailed compatibility and safety contract lives in candidate track SB; completing Phase 12 does not require this optional backend.
+Use this subphase only when an entire SilverBullet Space should behave as a file-tree peer. Selective page import/publication and chaining SilverBullet content to Outline, HedgeDoc, or Git wikis use Phase 15 routes instead. The detailed protocol contract lives in connector appendix SB; completing Phase 12 does not require this optional backend.
 
 - [ ] Complete SB.1's exact upstream pin and conformance harness before advertising protocol compatibility.
 - [ ] Implement SB.4 when Vulcan must act as the file-protocol server behind an upstream SilverBullet client.
@@ -5392,84 +5395,100 @@ Promote this subphase only for a concrete deployment that cannot use a shared ma
 
 ---
 
-## Phase 15: Extensibility and Integrations
+## Phase 15: External knowledge hub and integrations
 
-**Goal:** Let vaults define custom behaviors and expose integration points for external tools.
+**Goal:** Make the local Markdown vault the inspectable hub of a wider information system. Vulcan can import selected documents from external wikis, bind local notes to remote objects, publish selected local content outward, and compose those operations into explicit routes such as SilverBullet -> local vault -> Outline or one local file -> HedgeDoc.
 
-**Depends on:** Phase 10 (daemon API).
+**Depends on:** Phase 10 (daemon API, authentication, scheduling boundary), Phase 11 (optional checkpoints), Phase 12 for full-vault/device replication, and the existing query/publication/folder-note/permission services. Every route must also work as a direct CLI operation without the daemon; the daemon adds scheduling and long-lived orchestration rather than becoming a correctness dependency.
 
-### 15.1 Webhook system
+**Hub boundary:** External systems never synchronize through Vulcan's SQLite cache and never relay directly to one another. Pulls first materialize reviewable Markdown or explicit proxy metadata in the canonical vault; later pushes select from that local state. Device/file-tree sync in Phase 12 moves the vault itself, while Phase 15 connectors translate and reconcile logical documents. Transformations, remote indexes, and connector responses are derived; secrets stay device-local; durable mappings and operation journals live outside `cache.db`.
 
-- [ ] Vault config defines triggers and HTTP callbacks:
-  ```toml
-  [[webhooks]]
-  event = "note.changed"      # note.changed, note.created, note.deleted, tag.added, scan.complete
-  url = "https://example.com/hook"
-  secret = "..."              # HMAC signing secret
-  filter = "path:Projects/*"  # optional: only fire for matching notes
-  ```
-- [ ] Daemon fires webhooks asynchronously after events
-- [ ] Retry with exponential backoff on failure
-- [ ] Webhook delivery log accessible via API
+**Current baseline:** Query-driven exports, publication transforms, deterministic attachment handling, folder-note hierarchy planning, static sites, Outline ZIP export, and the one-way Outline API publisher already provide much of the push-side machinery. Phase 15 generalizes those proven pieces without changing their current commands or one-way safety defaults.
 
-### 15.2 Telegram bot integration
+### 15.1 Shared vocabulary, capability model, and ownership
 
-**Note:** Phase 9.12 no longer assumes a built-in conversational Telegram assistant. Phase 15.2 covers a daemon-hosted webhook/integration variant for simpler notification and command use cases; richer chat transport work should be planned as a new daemon-era item if external runtimes prove insufficient.
+- [ ] Define four separate contracts and use the names consistently in code/docs: **sync backend** (replicates a working tree), **external document binding** (relates one local note to one remote object), **content route** (selects and moves logical content through the vault), and **connector** (implements one external system's capabilities).
+- [ ] Define a transport-neutral connector capability descriptor for enumerate/get/create/update/move/archive/delete, hierarchy, attachments, stable remote IDs, revisions/ETags, incremental cursors, link translation, content formats, and server-side search. Unsupported capabilities must fail explicitly rather than be approximated.
+- [ ] Define normalized `ExternalObject`, `ExternalRevision`, `ExternalAttachment`, `ConnectorError`, plan/action/report, and remote-link types in shared core/app contracts without importing async runtimes into `vulcan-core`.
+- [ ] Keep reusable synchronous planning, transformation, mapping, and direct-mode orchestration in `vulcan-app`; keep CLI parsing/rendering in `vulcan-cli`; keep async scheduling, webhook delivery, long-lived clients, and cancellation in `vulcan-daemon`.
+- [ ] Add a connector compatibility matrix that distinguishes read, write, hierarchy, attachments, archive/delete, revision fidelity, full-tree sync, selective routes, native frontmatter bindings, and runtime/plug support for every advertised system/version.
 
-- [ ] Per-vault Telegram bot configuration (daemon mode):
-  ```toml
-  [vault.telegram]
-  bot_token_env = "TELEGRAM_BOT_TOKEN"
-  chat_id = "123456"
-  commands = ["search", "inbox", "daily"]
-  ```
-- [ ] `/search <query>` — search the vault, return top results
-- [ ] `/inbox <text>` — append to inbox note
-- [ ] `/daily` — create or open today's daily note
-- [ ] Implemented as a daemon plugin module
-- [ ] Webhook-driven notifications: vault events (note changed, scan complete) pushed to Telegram chat
-- [ ] Coexistence: daemon webhook bot and any future richer chat runtime can use the same or different bot tokens
+### 15.2 External document bindings and typed graph relationships
 
-### 15.3 Custom API endpoints
+- [ ] Specify a portable, versioned frontmatter representation such as `vulcan.bindings[]` for user-authored binding intent. Each entry records at least a route or connector/profile, immutable remote object ID, remote object kind, and relation (`reference`, `publication`, `import`, `mirror`, or `proxy`); URLs remain derived display/open data rather than identity.
+- [ ] Allow multiple bindings on one note while diagnosing empty/unsafe IDs, duplicate entries, incompatible relations, unknown routes/connectors, and one remote object unexpectedly claimed by multiple local notes. Connector-specific comparison rules handle case and Unicode without normalizing opaque IDs destructively.
+- [ ] Keep direction, authority, deletion, scheduling, credentials, and transformation policy in the referenced route/profile rather than copying operational policy into every note. Never infer a binding or synchronization operation from an ordinary URL-valued property.
+- [ ] Support connector-native compatibility fields through explicit adapters. The first target is HedgeSync's configurable `hedgedoc` property forms (full URL, note ID plus default server, and object form); preserve them by default and offer a dry-run migration to the generic binding representation instead of silently rewriting frontmatter.
+- [ ] Do not force frontmatter markers onto query-managed publications. Existing Outline mappings and future bulk routes may remain entirely in durable route state; creating or adopting a frontmatter binding requires explicit user/import policy.
+- [ ] Project bindings and remote objects as rebuildable typed graph relationships so query/doctor surfaces can find published, imported, mirrored, referenced, stale, unbound, multiply-bound, or conflicting objects. Preserve exact authored frontmatter plus parsed/resolved forms.
+- [ ] Add `integration binding list|show|validate|add|remove|migrate` through reusable app workflows, with `--dry-run`, structured JSON, stale-source checks, atomic YAML-preserving edits, permission enforcement, scan refresh, and optional git commit.
 
-- [ ] Vault config can define additional routes:
-  ```toml
-  [[endpoints]]
-  path = "/inbox"
-  method = "POST"
-  action = "inbox"  # maps to built-in action
+### 15.3 Content route configuration and deterministic planning
 
-  [[endpoints]]
-  path = "/daily"
-  method = "POST"
-  action = "template"
-  template = "daily"
-  ```
-- [ ] Actions are a fixed set of built-in operations (inbox, template, update, etc.)
-- [ ] This is intentionally not a plugin/scripting system — keeps the security surface small
+- [ ] Add named `[integrations.profiles.<name>]` connector profiles and `[[integrations.routes]]` in shared config for non-secret topology/policy. Device-local endpoint overrides, credential environment-variable names, and machine paths belong in ignored local/daemon config; credential values belong only in environment or secret storage.
+- [ ] Model route direction (`pull`, `push`, or explicitly reviewed `mirror`), authority (`local`, `remote`, or `review`), source selector, destination namespace/container, binding policy, hierarchy/path mapping, attachment policy, link policy, transform rules, deletion/archive policy, schedule hints, and bounded work/retry limits.
+- [ ] Reuse the canonical query AST for outgoing local selection and define connector-owned, capability-checked remote selectors for inbound enumeration. Omitted local queries follow the established full-vault export default only when the route type makes that safe; inbound routes always require an explicit remote scope and local destination.
+- [ ] Plan every route deterministically before mutation. Detect unsafe paths, local and remote identity collisions, case/Unicode conflicts, duplicate ownership, excluded/unresolved links, missing assets, unsupported capabilities, unrepresentable hierarchy, excessive deletion, and lossy transformations.
+- [ ] Reuse ordered publication transforms for outbound projections and introduce explicit inbound normalization rules. A route transform changes the transferred representation, never the source note implicitly; pull-generated Markdown becomes canonical only after the planned write succeeds.
+- [ ] Add `integration route list|show|validate|plan|run|status` and `integration run [<route>...]|--all`, with stable human/JSON reports and mutation-free dry runs. Keep existing `publish outline` and export commands as compatible focused surfaces over shared internals rather than forcing immediate CLI migration.
 
-### 15.4 Plugin trait (future)
+### 15.4 Durable identity, reconciliation, and conflict policy
 
-- [ ] Rust trait for daemon plugins: `on_event`, `register_routes`, `on_startup`, `on_shutdown`
-- [ ] Plugins compiled into the binary (feature flags) or loaded as dynamic libraries
-- [ ] This is a future direction — start with the webhook and built-in endpoint system first
+- [ ] Store per-route state under a locked, ignored `.vulcan/integrations/` state area outside `cache.db`, using validated schemas, versioning, verified temporary files, `fsync`, and atomic replacement. A malformed or unsupported state file stops the route without local or remote mutation.
+- [ ] Record route/profile identity, connector/server identity, local source identity/path, remote object ID/type/parent, last pulled remote revision/hash, last pushed local/projection hash, last agreed base hash, attachment mappings, tombstones, cursor, and incomplete operation journal entries.
+- [ ] Do not depend on cache ULIDs as durable cross-system identity. Use explicit frontmatter binding identity when present, then durable route mappings and conservative path/hash recovery; ambiguous adoption is a conflict, not an automatic claim.
+- [ ] Define conflict behavior by authority: `local` rejects unexpected remote drift, `remote` rejects unexpected local drift, and `review` preserves both versions and emits an actionable reconciliation artifact. A future true bidirectional mode requires a durable three-way base and never means last-writer-wins.
+- [ ] Make retries interruption-safe by persisting progress after each idempotent remote/local action, adopting already-created desired objects where provable, and assigning stable operation IDs. Do not pretend a multi-system route is transactional; expose partial success and resume points honestly.
+- [ ] Leave unmanaged remote objects untouched. Archive rather than permanently delete by default; quarantine or move inbound removals to a recoverable local area before considering deletion. Require explicit opt-in and mass-deletion confirmation thresholds for destructive policies.
 
-### 15.5 Supervised external tools and contact providers
+### 15.5 Pull and import into the canonical vault
 
-- [ ] Define a capability-declared external-tool adapter that uses explicit executable paths/argument templates, bounded execution, sanitized output, environment allowlists, permission profiles, cancellation, and structured status. Do not expose a generic unaudited shell hook through daemon configuration.
-- [ ] Add an optional HedgeSync adapter that delegates note push/pull/create/open operations to the maintained `hedgesync` CLI, validates the configured frontmatter mapping, rescans changed local files, and reports conflicts without making HedgeDoc an implicit source for search, publication, or unrelated daemon jobs.
-- [ ] Keep HedgeSync live operational-transform sessions outside Vulcan unless the external tool exposes a stable supervised protocol. Vulcan should not implement a second HedgeDoc merge engine.
-- [ ] Add a CardDAV provider boundary for VCF Contacts only after promoted OBS.5 work establishes loss-aware local Markdown/vCard round trips. Keep remote address-book identifiers and durable source mappings outside the rebuildable cache, credentials in environment/device-local secret storage, and conflicts user-visible rather than last-writer-wins.
-- [ ] Test executable replacement/path attacks, secret redaction, timeouts, cancellation, partial local mutations, rescan failures, CardDAV pagination/authentication/ETags, remote deletion policy, retry safety, malformed durable mappings, and unmanaged remote contacts with mock tools/providers.
+- [ ] Enumerate remote objects with bounded pagination/cursors, fetch revisions and content, translate supported bodies to Markdown, materialize attachments at deterministic contained paths, and map remote hierarchy into an explicit local namespace without exposing partial batches to the indexer.
+- [ ] Preserve provenance, source representation, remote links, and unsupported constructs sufficiently for audit and retry. Lossy conversion must be reported before apply; opaque or non-Markdown documents may use proxy notes containing user-authored metadata/commentary plus an external binding rather than fabricated body text.
+- [ ] Reconcile remote creates, updates, moves, and removals against durable state and current local hashes. Refuse to overwrite local edits by default, write through the vault lock and atomic app workflows, then incrementally rescan before marking the pull complete.
+- [ ] Support an explicit adoption workflow for existing local notes and remote objects, including one-to-one validation and dry-run previews. Bulk imports may create bindings according to route policy but never inject hidden markers or rewrite unrelated frontmatter.
+- [ ] Ensure chained routes consume only the successfully materialized canonical state. A SilverBullet pull followed by an Outline push is two separately journaled operations with a visible intermediate vault revision, not a direct remote-to-remote copy.
 
-### 15.6 Candidate: SilverBullet runtime adapter and first-party plug
+### 15.6 Push, publication, and selective reconciliation
 
-Promote these independently after the daemon API, authentication, and supervised-tool boundaries are stable. The detailed contracts live in SB.6–SB.8; Phase 15 does not require SilverBullet integration to be considered complete.
+- [ ] Generalize the existing publication planner so connectors can consume selected transformed documents, hierarchy, resolved internal links, external bindings, and deterministic attachments while retaining connector-specific rendering and capability checks.
+- [ ] Create/update/move/archive only route-managed or explicitly bound remote objects. Detect remote edits before mutation, skip unchanged projections, preserve unmanaged documents, and make repeated publication idempotent after interruption.
+- [ ] Translate links among documents included in the same route, preserve/report links to excluded local notes according to policy, and resolve links to separately bound external objects when the target connector/profile can represent them. Never leak denied content through titles, backlinks, attachments, or generated metadata.
+- [ ] Support single-note routes for document-focused systems such as HedgeDoc as well as query/hierarchy routes for Outline, SilverBullet, and Git wikis. One local note may publish to several systems through separate bindings/routes without sharing credentials or reconciliation state.
+- [ ] Keep archives and exports as first-class push targets: filesystem directory/ZIP, static site, Git worktree, and remote API connectors should reuse selection and transformation semantics even when their delivery mechanics differ.
 
-- [ ] Implement SB.7 as a versioned first-party plug over authenticated daemon APIs, starting read-only and keeping credentials device-local. The plug remains semantic UI integration and never owns file sync or opens Vulcan's cache.
-- [ ] Promote SB.6 only for a concrete Space Lua/SLIQ/generated-content workload that cannot be handled statically. Prefer a pinned official SilverBullet or `sb` process; do not emulate PlugOS, browser APIs, or the full SilverBullet runtime in QuickJS.
-- [ ] Reuse proposal/apply mutation contracts, permission profiles, OAuth/pairing, origin protections, offline degradation, supervised-process limits, and secret sanitization.
-- [ ] Keep plug and runtime compatibility versions independent from the optional Phase 12 protocol roles, and require SB.8's cross-layer tests for every advertised combination.
+### 15.7 Direct CLI, daemon scheduling, and loop prevention
+
+- [ ] Make plan/run/reconcile operations usable without the daemon through direct vault access. The daemon exposes the same request/report contracts, adds schedules, cancellation, status/history endpoints, and event-triggered runs, and serializes filesystem mutation through the same cross-process lock.
+- [ ] Add per-route concurrency limits, timeouts, bounded jittered retries, rate-limit handling, total-work budgets, cancellation, and sanitized errors. Route history records hashes/status/counts but never credentials or sensitive remote bodies.
+- [ ] Prevent feedback loops with route IDs, operation IDs, origin/provenance, desired projection hashes, debounce windows, and post-write watcher coalescing. Never trigger a route solely because it wrote the exact state it just planned.
+- [ ] Support explicit route dependencies such as `pull-silverbullet` before `publish-outline`, with cycle detection, failure policy, and checkpoint boundaries. A failed predecessor blocks dependents by default; partial batches remain inspectable and retryable.
+- [ ] Add authenticated daemon endpoints for route list/plan/run/status/history/conflicts and optional signed webhooks that trigger named routes. Apply permission profiles to local reads/writes, remote network domains, secrets, execution, and exact-content reporting.
+
+### 15.8 First connector wave
+
+- [ ] **Outline:** retain the implemented ZIP exporter and one-way API publisher as the push baseline; refactor shared mapping/planning behind connector contracts without changing current behavior. Add scoped Outline pull/import only through the new route model, with collection pagination, hierarchy/attachment materialization, explicit remote authority, and no dependence on the separate Outline-to-Git audit trail.
+- [ ] **HedgeDoc/HedgeSync:** support the plugin's frontmatter mapping convention and single-document push/pull/create/open routes. Prefer supervising the maintained `hedgesync` CLI for behavior it already owns; keep live operational-transform sessions outside Vulcan unless a stable protocol and concrete need justify more. Preserve local frontmatter on body pulls and never store session cookies in the vault.
+- [ ] **Simple Git-backed wikis:** use a materialized worktree connector with configurable content root/extension/frontmatter/path conventions, query-based export or scoped import, explicit commit/pull/push policy, fast-forward defaults, conflict reporting, and no libgit2 dependency. Distinguish this from Phase 12 Git sync: a wiki route maps a selected content tree, while device sync replicates the canonical vault.
+- [ ] **SilverBullet:** implement selective page pull/push routes and external bindings through the shared connector model, reusing SB.1–SB.3 syntax/export research. Reserve SB.4–SB.5 for optional full-Space protocol synchronization in Phase 12 and SB.6–SB.7 for optional runtime/plug support after the basic connector works.
+- [ ] Add connector-specific mock servers/processes plus pinned upstream conformance where APIs are private or version-sensitive. Publish an explicit version/capability matrix and fail closed on unsupported server or plug versions.
+
+### 15.9 Supporting extensibility boundaries
+
+- [ ] Define a capability-declared supervised external-tool adapter with explicit executable paths/argument templates, bounded execution, sanitized output, environment allowlists, permission profiles, cancellation, and structured status. Do not expose a generic unaudited shell hook through route configuration.
+- [ ] Add a signed webhook delivery/trigger system with bounded retries and a delivery log. Webhooks may invoke named routes or report route completion, but cannot bypass route planning, authorization, or secret policy.
+- [ ] Keep custom daemon endpoints mapped to a fixed registry of built-in or projected skill-command actions. Revisit a compiled Rust daemon-plugin trait only after connector and webhook contracts prove what extension points are actually needed.
+- [ ] Adapt later providers such as CardDAV/VCF Contacts to the same binding/route/state model after their local loss-aware interchange exists. Keep provider-specific identities and ETags durable, credentials device-local, and conflicts visible.
+- [ ] Keep Telegram and richer chat platform adapters as separate candidate interfaces over authenticated daemon tools/events. They are not part of the knowledge-connector completion gate and must not introduce connector-specific content stores.
+
+### 15.10 Integration tests, rollout, and completion gate
+
+- [ ] Add combined fixture scenarios for SilverBullet -> local namespace -> Outline, one local Markdown file -> HedgeDoc, a scoped local subtree <-> Git wiki worktree, one note bound to multiple external systems, attachments/hierarchy/link translation, and proxy notes for non-Markdown objects.
+- [ ] Test initial import/publication, idempotent repeats, content changes, moves, archives/quarantine, local and remote drift, adoption, malformed bindings/state, duplicate ownership, pagination/cursors, retries, interruption/restart, auth failure, rate limits, unmanaged objects, route dependency failures, loop prevention, and mutation-free dry runs.
+- [ ] Rebuild or delete `cache.db` between route operations and prove canonical files plus durable integration state recover the same mappings and conflict decisions. Reindex twice and assert identical derived graph/binding state.
+- [ ] Verify CLI and daemon JSON parity, non-interactive operation, permission denial/filtering, feature-disabled behavior, auto-commit opt-in, secret/error sanitization, and deterministic plans across platforms and filesystem case/Unicode behavior.
+- [ ] Document current versus planned connector capabilities, setup, frontmatter bindings, route configuration, authority/deletion choices, conflict recovery, scheduling, security, and backup guidance. Do not claim generic bidirectional sync merely because a connector implements both pull and push.
+- [ ] Consider the shared hub foundation complete when at least one inbound route and one outbound route can be chained through an inspectable local vault revision, the HedgeDoc single-document binding use case works, and connector-specific state can be recovered without SQLite. Individual optional connectors remain independently claimable capabilities.
 
 ---
 
@@ -6375,7 +6394,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add create/update/move/archive reconciliation, remote-drift conflicts, attachment uploads, idempotency, and mutation-free publish dry runs.
 - [x] Complete CLI/reference documentation and full workspace verification.
 
-**Deferred possibility, not currently planned:** A separate one-way Outline-to-vault importer could reconstruct collection hierarchy, links, and attachments as local Markdown. Revisit only when there is a concrete use case and an acceptable scaling, conflict, and source-of-truth model. Do not evolve the current publisher into implicit bidirectional synchronization.
+**Current boundary and future placement:** The implemented `publish outline` command remains strictly one-way. Phase 15 now plans a separate, explicitly scoped Outline pull route with its own local destination, authority, pagination, attachment, deletion, and conflict policies. Do not evolve this publisher into implicit bidirectional synchronization or use the separate Outline-to-Git backup/audit trail as publisher input.
 
 ---
 
@@ -6393,9 +6412,9 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 ---
 
-## Candidate capability tracks
+## Capability tracks and connector appendices
 
-The following tracks preserve implementation research and acceptance criteria without extending the Phase 9 completion gate. They are not a serial queue: promote and schedule a bounded slice only under the roadmap promotion gate above, then place daemon, sync, UI, and runtime work in the numbered phase that owns that infrastructure.
+The MDB and OBS tracks preserve candidate implementation research and acceptance criteria without extending the Phase 9 completion gate. The SB appendix is a promoted connector-specific plan referenced by Phases 12 and 15. None forms a serial queue: schedule bounded slices through the numbered phase that owns their daemon, sync, UI, or runtime infrastructure.
 
 ### MDB: mdbase typed Markdown collection interoperability (formerly 9.32)
 
@@ -6601,7 +6620,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 
 ---
 
-### SB: SilverBullet interoperability, sync, and first-party plug (formerly 9.34)
+### SB: Promoted SilverBullet connector appendix (formerly 9.34)
 
 **Goal:** Let a Markdown vault participate safely in SilverBullet workflows at three independent layers: native understanding of SilverBullet-authored Markdown, an optional SilverBullet-compatible file-sync peer, and a first-party SilverBullet plug backed by Vulcan's daemon API. Keep ordinary files canonical, keep every index rebuildable, and avoid making SilverBullet's browser runtime or object index a second source of truth.
 
@@ -6611,7 +6630,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 
 **Initial upstream reference:** start from an exact reviewed SilverBullet 2.x release and commit. The current upstream client implements filesystem operations through `client/spaces/http_space_primitives.ts`, the two-sided snapshot algorithm through `client/spaces/sync.ts`, and browser scheduling/state through `client/service_worker/sync_engine.ts`; its current transport uses `/.fs` file operations and `/.ping` version discovery. These are implementation references, not a promise of a stable public protocol. Record licenses and provenance, and require an explicit compatibility review before changing the pinned release.
 
-**Delivery placement:** SB.1–SB.3 are optional local compatibility/export slices. SB.4–SB.5 are Phase 12 protocol work. SB.6–SB.7 are Phase 15 runtime/integration work after the daemon API is stable. SB.8 applies whenever any slice is promoted. None of this track blocks Phase 10.
+**Delivery placement:** SB.1–SB.3 support the Phase 15 selective content connector. SB.4–SB.5 are optional Phase 12 full-Space protocol work. SB.6–SB.7 are optional Phase 15 runtime/plug work after the basic connector and daemon API are stable. SB.8 applies to every advertised SilverBullet capability. The appendix is promoted design, but none of it blocks Phase 10.
 
 #### SB.1 Upstream inventory, version pinning, and conformance harness
 

@@ -1,6 +1,6 @@
 # Vulcan
 
-Headless CLI and multi-vault platform for Obsidian vaults and plain Markdown directories. Indexes notes into a SQLite cache for graph queries, full-text search, and vector search. Expanding into a daemon with REST API, sync, web wiki, and broad Obsidian plugin compatibility.
+Local-first Markdown information hub for Obsidian vaults and plain Markdown directories. Vulcan keeps the vault canonical, indexes it into a rebuildable SQLite cache, and provides graph queries, search, publication, automation, and plugin-compatible workflows. The roadmap expands this into a multi-vault daemon, device/file-tree synchronization, a web wiki, and explicit routes to external wiki and knowledge systems.
 
 ## Key documents
 
@@ -47,11 +47,14 @@ Contributor boundary rule: new reusable business logic must not land in `vulcan-
 - `vulcan-core` stays synchronous. Async boundaries live in the daemon layer (`spawn_blocking`).
 - Shell out to `git` CLI for git operations — avoid libgit2.
 - Every CLI command must work without the daemon running (direct SQLite access).
+- Device/file-tree synchronization and logical document exchange are separate abstractions. Sync backends replicate vault files; external connectors pull or publish selected documents through explicit routes.
+- External knowledge exchange is hub-and-spoke: external systems import into the local vault and publish from the local vault. Do not relay one remote system directly into another or silently introduce bidirectional last-writer-wins behavior.
+- Durable remote identity and reconciliation state belongs outside the rebuildable SQLite cache. Never add synchronization markers to note content or frontmatter solely as an implementation shortcut.
 - **JS sandbox tiers** (from most to least restrictive): `strict` (pure computation only, no I/O), `fs` (adds read-only vault file access), `net` (adds `web.search()` and `web.fetch()`), `none` (unrestricted). Default is `strict`. Scripts and DataviewJS blocks inherit the configured tier; web tools require `net` or higher.
 
 ## Tech stack
 
-- Rust edition 2021, MSRV 1.77, ULIDs for all internal identifiers
+- Rust edition 2021, MSRV 1.86, ULIDs for all internal identifiers
 - `pulldown-cmark` 0.13+ with ENABLE_WIKILINKS, ENABLE_GFM, ENABLE_MATH, ENABLE_FOOTNOTES, ENABLE_YAML_STYLE_METADATA_BLOCKS
 - `rusqlite` with `bundled` feature, WAL mode, `user_version` pragma for migrations
 - `sqlite-vec` 0.1.x for vector search (statically compiled from bundled C source)
@@ -63,7 +66,7 @@ Contributor boundary rule: new reusable business logic must not land in `vulcan-
 
 ## Current implementation status
 
-Phases 1–8, 9.1–9.11, 9.13, 9.15–9.18 are complete. Phase 9.12 (AI assistant) and 9.19 (CLI polish) are not yet started. The codebase has:
+Phases 1–8 and the Phase 9 pre-daemon gate through 9.29 are complete, including the re-scoped external-agent integration and CLI polish. Optional follow-ons 9.30 (Outline publication) and 9.31 (folder notes) are complete. The mdbase candidate track has implemented discovery, bundled schemas, and schema validation; broader typed-collection interoperability remains candidate work. The codebase has:
 - Full vault indexing with incremental scan, link resolution, graph queries, FTS5 search, vector search
 - Bases evaluator with full expression language, formulas, and interactive TUI
 - Canonical query AST shared across CLI, Bases, and API surfaces
@@ -77,18 +80,23 @@ Phases 1–8, 9.1–9.11, 9.13, 9.15–9.18 are complete. Phase 9.12 (AI assista
 - TaskNotes: task-as-note files, NLP creation, time tracking, pomodoro, reminders, Bases integration
 - Periodic notes: daily/weekly/monthly with create/open/append/list, structured events, ICS export
 - Unified settings import: `vulcan config import --all` with conflict detection, batch import
-- CLI redesign (9.18): note CRUD (`note get/set/create/append/patch`), refactor commands, JS runtime with REPL, web tools (`web search`/`web fetch`), git ops, `describe --format mcp|openai-tools`, integrated `help` system
+- CLI redesign and polish: note CRUD (`note get/set/create/append/patch`), refactor commands, JS runtime with REPL, web tools (`web search`/`web fetch`), git ops, structured `describe`/`help`, permission profiles, and MCP/external-agent surfaces
 - QuickAdd: capture format compatibility and settings import
+- Repo-level folder-note conventions, collision-safe conversions, and consistent publication hierarchy planning
+- Outline-compatible ZIP export plus one-way, conflict-aware Outline publication with durable mappings outside the cache
+- Initial mdbase discovery, pinned local schema bundles, and bounded JSON Schema validation
 
 ## Next implementation phases
 
 See `docs/ROADMAP.md` for the full dependency graph and detailed task lists.
 
-**9.12 Embedded AI assistant:** Full vault-native agent — OpenAI-compatible inference, tiered tool exposure (core tools always in prompt, rest via gradual discovery through `describe`/`help`), vault-aware system prompt, conversation persistence as vault notes (gemini-scribe callout format), context budgeting, prompts and skills as executable knowledge (markdown files that teach the LLM how to use Vulcan). Advanced skills can include executable JS scripts with `#!/usr/bin/env -S vulcan run --script` shebangs.
+**Phase 10 — multi-vault daemon:** Add the long-running axum service, vault registry, REST API, authentication, watching, jobs, and CLI client mode while preserving direct local CLI operation.
 
-**9.12.8 Chat platform adapters:** Telegram first (internal, behind cargo feature flag), then Discord/Signal/Matrix. Chat platforms become mobile interfaces to the vault with per-user/per-platform sandboxed tool permissions.
+**Phase 12 — device and file-tree synchronization:** Add pluggable backends for replicating canonical vault files across devices and storage providers. This phase does not define logical wiki import/publication semantics.
 
-**9.19 CLI polish:** Bug fixes, `vulcan run` improvements, shell completions, help polish, DQL completeness, missing commands, command reorg, scriptability, web search backend expansion (Exa/Tavily/Brave), settings TUI, event-driven plugin system, permission layer.
+**Phase 15 — external knowledge hub:** Add typed external-document bindings, explicit pull/push routes, durable reconciliation state, scheduling, and first-party connectors for Outline, HedgeDoc/HedgeSync, simple Git-backed wikis, and SilverBullet. All remote-to-remote flow passes through the canonical local vault.
+
+**Candidate capability tracks:** Continue bounded mdbase and remaining Obsidian-plugin compatibility slices without making them serial blockers for the daemon.
 
 ## Key modules for new work
 
@@ -104,6 +112,10 @@ See `docs/ROADMAP.md` for the full dependency graph and detailed task lists.
 - `vulcan-core/src/tasknotes.rs` — TaskNotes file format, NLP creation, time tracking.
 - `vulcan-core/src/periodic.rs` — Periodic note discovery, resolution, and structured events.
 - `vulcan-core/src/refactor.rs` — Vault-wide refactoring passes and suggestions.
+- `vulcan-core/src/folder_notes.rs` — Configured folder-note conventions and hierarchy semantics.
+- `vulcan-core/src/mdbase.rs` — mdbase discovery and typed schema validation foundations.
+- `vulcan-app/src/export/` — Reusable publication and export planning, including Outline ZIP layout.
+- `vulcan-app/src/publish/outline/` — Outline API client, planning, durable mappings, and one-way reconciliation.
 - `vulcan-cli/src/commands/` — Command handler modules (one per command group).
 - `vulcan-cli/src/bases_tui.rs` — Bases TUI with editor handoff.
 - `vulcan-cli/src/browse_tui.rs` — File browser TUI.

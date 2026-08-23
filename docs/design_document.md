@@ -1,8 +1,9 @@
 # Design Document
-## Headless Obsidian Vault CLI with SQLite Graph Cache and Native Vector Search
+## Local-first Markdown information hub with a rebuildable graph cache
 
 **Implementation brief for the engineering agent**  
-Date: 19 March 2026
+Created: 19 March 2026<br>
+Last architecture/status reconciliation: 23 August 2026
 
 User-facing CLI usage, filter syntax, and examples are documented separately in `docs/cli.md`. This document focuses on architecture and design decisions.
 
@@ -14,22 +15,25 @@ User-facing CLI usage, filter syntax, and examples are documented separately in 
 - **Primary language:** Rust (edition 2021, MSRV 1.86) — Best fit for a fast, portable, single-binary CLI with strong text processing and SQLite integration.
 - **Workspace layout:** Cargo workspace with `vulcan-core` (parser, indexer, data model, cache, query/search/graph/task semantics), `vulcan-app` (reusable synchronous workflow orchestration over core), `vulcan-embed` (embedding provider trait and vector store implementations), and `vulcan-cli` (CLI binary, command handlers, TUI/editor integration, and current MCP transports). Keep reusable business logic in `vulcan-core` or `vulcan-app`; keep terminal/runtime shells outside those crates.
 - **Internal identifiers:** ULIDs — sortable by creation time, compact, no hyphens. Use the `ulid` crate.
-- **Local data directory:** `.vulcan/` in the vault root, containing `cache.db` (SQLite cache), `config.toml` (shared vault configuration), and optional `config.local.toml` (device-local overrides). All commands are vault-scoped; there is no cross-vault global configuration.
+- **Local data directory:** `.vulcan/` in the vault root, containing `cache.db` (SQLite cache), `config.toml` (shared vault configuration), optional `config.local.toml` (device-local overrides), and non-cache durable workflow state where required. Direct commands are vault-scoped; the planned daemon adds a separate user-level multi-vault registry without making it canonical content storage.
 - **Core storage:** SQLite — Excellent embedded relational store for cache tables, FTS, metadata, and query planning.
 - **Full-text search:** SQLite FTS5 — Good hybrid-search partner; external-content mode avoids duplicating large text bodies.
 - **Vector search:** `sqlite-vec` behind an abstraction — Keeps the solution embedded and local while preserving the option to swap backends later.
 - **Property model:** Hybrid JSON + relational projections — Preserves loose Obsidian semantics without making query performance or typing unmanageable.
 - **Correctness model:** Watcher + periodic reconciliation — File watchers improve freshness but should not be treated as a sufficient source of truth.
+- **Information-hub model:** The materialized Markdown vault is the canonical interchange point. Device sync replicates that working tree; external document bindings and content routes import or publish logical documents through connector adapters. External systems never synchronize through SQLite or relay directly through Vulcan without an inspectable local state.
 - **Chunk sizing:** Use character count as a proxy for token count (default ~4000 characters ≈ 1024 tokens). A lightweight tokenizer may be added later for model-specific accuracy.
 - **CI:** GitHub Actions (`cargo test` + `clippy` + `fmt --check`), structured for future migration to Forgejo CI.
 
 ## 1. Project context and problem statement
 
-The goal is to build a headless CLI for Obsidian vaults that does not depend on a live desktop Obsidian instance. The tool should support graph-aware operations such as backlinks, link fixing during moves, graph walking, property and Bases-style querying, full-text search, and semantic retrieval over note content.
+The goal is to build a local-first information hub for Obsidian vaults and plain Markdown directories that does not depend on a live desktop Obsidian instance. The tool should support graph-aware operations such as backlinks, link fixing during moves, graph walking, property and Bases-style querying, full-text search, and semantic retrieval over note content. It should also let the canonical local vault exchange selected documents with external knowledge systems without turning their databases or Vulcan's cache into competing authorities.
 
 The official Obsidian CLI controls the desktop app and requires the Obsidian app to be running; Obsidian also documents a separate Headless client for independent operation.[1][2]
 
 The architecture should therefore assume that all semantics must be derived from vault contents on disk rather than delegated to a running Obsidian process. This makes parsing fidelity, cache invalidation, and repairability core design concerns rather than implementation details.
+
+The same rule applies to integration: remote content is pulled into an explicit local namespace or proxy note before it becomes input to another route, while outbound publication is derived from selected canonical notes. Device synchronization and external knowledge-system reconciliation are related operationally but remain different architectural layers.
 
 ## 2. Primary use cases
 
@@ -43,6 +47,9 @@ The first release should optimize for practical vault engineering tasks instead 
 - Support Dataview-style inline fields (`key:: value`) and Dataview Query Language (DQL) as a query surface, since many vaults depend on these conventions for metadata and dynamic views.[17]
 - Let users treat a vault as a dynamic, queryable document database with saved views, ad hoc queries, and safe edit workflows.
 - Offer an implementation-friendly automation surface for scripts, agents, and shell workflows.
+- Keep the materialized vault synchronized across devices through replaceable file-tree backends without making remote storage visible as partial cache state.
+- Bind Markdown notes to external documents through portable frontmatter or durable route mappings, including reference, publication, import, mirror, and proxy relationships.
+- Import selected content from systems such as SilverBullet or Git-backed wikis, inspect and edit it locally, then publish selected local content to systems such as Outline or HedgeDoc through explicit conflict-aware routes.
 
 ## 3. Non-goals for the initial implementation
 
@@ -53,6 +60,8 @@ Do not aim for full visual or behavioral parity with the Obsidian desktop app in
 - Supporting arbitrary plugin-defined syntax extensions during initial indexing.
 - Using the cache as the authoritative source for note contents.
 - Building a distributed service before the local architecture is stable.
+- Treating a connector that supports both pull and push as implicit conflict-free bidirectional synchronization.
+- Relaying content directly from one external system to another without a materialized, inspectable local vault state and separately journaled route operations.
 
 Version 1 should be a local, rebuildable, correctness-oriented indexing and query tool.
 
@@ -64,7 +73,7 @@ Use a three-layer architecture.
 The filesystem is canonical. Markdown notes, attachments, and `.base` files remain authoritative. If an `.obsidian` directory is present, its configuration is read to improve link resolution and property typing fidelity; if absent, the tool operates with sensible defaults. This means Vulcan works on any directory of Markdown files, not only Obsidian vaults.
 
 ### Layer 2: SQLite cache
-SQLite stores the derived graph, parsed metadata, chunks, search indexes, property projections, diagnostics, and operational state. This database must be fully rebuildable from disk.
+SQLite stores the derived graph, parsed metadata, chunks, search indexes, property projections, diagnostics, and rebuildable execution projections. This database must be fully rebuildable from canonical files plus any explicitly durable non-cache identity/reconciliation state. Remote mappings, conflict bases, operation journals, credentials, and other facts that cannot be reconstructed safely never live only in `cache.db`.
 
 ### Layer 3: Search/index extensions
 FTS and vector search sit on top of the cache as additional derived indexes, not as replacements for the relational model.
@@ -181,6 +190,47 @@ Export, static site generation, and the future web wiki should share one publica
 
 Static publication surfaces should also share one page/render contract. The site builder establishes reusable structs such as `RenderContext`, `RenderedNote`, `RenderedEmbed`, and `SiteRoute`; later WebUI note pages and wiki mode should extend or consume those contracts rather than inventing a second note-page schema. Route planning, canonical URLs, hover-preview payloads, search documents, and graph assets should stay aligned across static and dynamic surfaces unless a documented runtime requirement forces divergence.
 
+### 4.2 Local information hub and external knowledge routes
+
+Vulcan's integration architecture has four deliberately separate concepts:
+
+1. A **sync backend** replicates the canonical materialized working tree between devices or storage services. It does not translate or select logical documents.
+2. An **external document binding** relates one local Markdown note to one remote object. User-authored binding intent may live in versioned frontmatter; query-managed bulk publications may keep mappings solely in durable integration state.
+3. A **content route** selects inbound or outbound objects, defines authority and transformation policy, and journals a pull, push, or explicitly reviewed mirror operation through the local vault.
+4. A **connector** implements one external system's capabilities: listing, reading, creating, updating, hierarchy, attachments, revisions, archival, link translation, and any version-specific behavior.
+
+The required flow is hub-and-spoke:
+
+```text
+external system -> materialized Markdown/proxy in the vault -> external system
+```
+
+Even when a daemon chains two routes, the inbound operation must finish its atomic local writes and incremental scan before the outbound route plans against that state. There is no direct remote-to-remote relay and no cross-system transaction claim.
+
+External bindings should use immutable remote IDs rather than URLs as identity. A generic frontmatter shape may look like:
+
+```yaml
+vulcan:
+  bindings:
+    - route: team-planning-pad
+      remote_id: Fk8S3m2
+      remote_type: document
+      relation: publication
+```
+
+The final schema must be versioned and round-trip safely. Connector-native fields such as HedgeSync's configurable `hedgedoc` property remain readable and preservable through compatibility adapters; migration to the generic shape is explicit. Direction, authority, deletion policy, credentials, scheduling, and transforms belong to route/profile configuration rather than being repeated in every note.
+
+Bindings are canonical only as authored relationship intent. Operational facts such as last pulled revision, last published projection hash, three-way base hash, attachment IDs, cursors, tombstones, and interruption journals live in locked, atomically written `.vulcan/integrations/` state outside `cache.db`. The cache may project bindings and remote objects into typed graph edges for query and diagnostics, but those rows remain rebuildable from files plus durable integration state.
+
+Authority is explicit per route:
+
+- `local` treats unexpected remote edits as conflicts.
+- `remote` treats unexpected local edits as conflicts.
+- `review` preserves both and produces a reconciliation artifact.
+- A future true bidirectional mode requires a durable three-way base; it is never shorthand for last-writer-wins.
+
+Pulls materialize content or proxy notes through normal atomic vault workflows and quarantine removals by default. Pushes update only managed or explicitly bound objects and archive rather than permanently delete by default. Every route supports deterministic planning, structured reports, bounded retries, interruption-safe progress, secret sanitization, and direct CLI execution; the daemon adds schedules, dependencies, cancellation, and event triggers over the same service contracts.
+
 ## 5. Data model overview
 
 The implementation should use stable internal identifiers rather than paths as primary keys. Paths move; identities should survive moves.
@@ -202,6 +252,7 @@ Recommended logical entities:
 - `task_properties`: inline fields extracted from within task text (e.g., `[due:: 2026-04-01]`), plus Tasks plugin emoji shorthand fields. See §12b and Roadmap Phase 9.8.
 - `kanban_boards`: Kanban board metadata extracted from board files (detected via `kanban-plugin` frontmatter). Stores board → column → card hierarchy, card metadata (dates, tags, links), and board configuration. See Roadmap Phase 9.11.
 - `tasknotes_tasks`: TaskNotes task file metadata — indexed columns for status, priority, due, scheduled, project, context, and custom user fields. Task files are standard `documents` rows; this table adds structured query access to their rich frontmatter. See Roadmap Phase 9.15.
+- `external_bindings` and `external_objects`: rebuildable projections of authored frontmatter bindings and durable route mappings, including connector/profile, remote object kind/identity, relationship, local source, and diagnostic state. Operational revisions, secrets, tombstones, and journals do not belong in these cache tables.
 
 Every entity should carry enough provenance to support incremental repair: source document id, content hash, parser version, and extraction version where relevant.
 
@@ -949,10 +1000,11 @@ This is Vulcan's primary configuration file, stored in the `.vulcan/` directory 
 - Folder-note placement and filename template (`[folder_notes]`), interpreted exactly rather than auto-detected during normal operation
 - Automatic cache refresh policy for cache-backed commands (`[scan]`)
 - Template default date/time formats for `{{date}}` / `{{time}}` (`[templates]`)
+- Non-secret connector profiles and content-route topology/policy (`[integrations.profiles]` and `[[integrations.routes]]` once Phase 15 lands)
 
 ### `.vulcan/config.local.toml` (optional device-local override)
 
-This file is loaded after `.vulcan/config.toml` and may override device-local Vulcan settings. It is intended for concerns such as endpoint URLs, API key environment variable names, auto-refresh preferences, or editor-adjacent workflow tuning that should not be synced back into the shared vault config. Repository identity and structure settings such as `[folder_notes]` remain shared-only and local attempts to override them are diagnosed and ignored.
+This file is loaded after `.vulcan/config.toml` and may override device-local Vulcan settings. It is intended for concerns such as endpoint URLs, API key environment variable names, connector executable paths, auto-refresh preferences, or editor-adjacent workflow tuning that should not be synced back into the shared vault config. Repository identity and structure settings such as `[folder_notes]` remain shared-only and local attempts to override them are diagnosed and ignored. Credential values never belong in either shared or local TOML when an environment variable or device secret store can supply them.
 
 The default `.vulcan/.gitignore` should ignore `config.local.toml` while still tracking `config.toml`.
 
@@ -1326,18 +1378,18 @@ Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 
 - **Phase 7:** Post-v1 workflow features (move/rename variants, suggest, saved reports, link-mentions, automation)
 - **Phase 8:** Performance optimizations
-- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), external agent integration with `pi` first plus vault-native prompts/skills and deferred native chat-runtime notes (9.12), QuickAdd automation (9.13), plugin compatibility notes (9.14), TaskNotes full integration with Bases views (9.15), periodic notes with daily events (9.16), unified plugin settings import (9.17), **CLI redesign — two-level command hierarchy, note CRUD, query enhancements, JS runtime/REPL, web tools, git ops, integrated docs, task mutations (9.18)**, MCP/tooling hardening (9.19, 9.23), vault-native programmable skill command tools (9.24), and the completed pre-daemon boundary gate (9.29). Outline publishing (9.30) and folder-note normalization (9.31) are completed optional additions, not extensions of the Phase 10 prerequisite chain.
-- **Phase 10:** Multi-vault daemon with REST API (depends on Phase 9 foundation work being well-advanced)
+- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), external-agent integration through JSON/MCP plus vault-native guidance and skills (9.12), QuickAdd automation (9.13), plugin compatibility notes (9.14), TaskNotes full integration with Bases views (9.15), periodic notes with daily events (9.16), unified plugin settings import (9.17), **CLI redesign — two-level command hierarchy, note CRUD, query enhancements, JS runtime/REPL, web tools, git ops, integrated docs, task mutations (9.18)**, MCP/tooling hardening (9.19, 9.23), vault-native programmable skill command tools (9.24), and the completed pre-daemon boundary gate (9.29). Outline publishing (9.30) and folder-note normalization (9.31) are completed optional additions, not extensions of the Phase 10 prerequisite chain.
+- **Phase 10:** Multi-vault daemon with REST API; the Phase 9.29 prerequisite gate is complete, so this is the next architectural milestone
 - **Phase 11:** Git auto-versioning at the daemon level
-- **Phase 12:** Sync integration, with SilverBullet server/client protocol roles as an optional promoted backend rather than a completion requirement
+- **Phase 12:** Device and file-tree synchronization through pluggable backends; optional full-Space SilverBullet protocol support belongs here, while selective wiki exchange does not
 - **Phase 13:** WebUI — admin panel and vault browser
 - **Phase 14:** WebUI — note editor with Automerge CRDT sessions, advanced table editing (Advanced Tables-style)
-- **Phase 15:** Extensibility and integrations (webhooks, custom endpoints, optional notification/chat bridges, supervised runtimes, and promoted first-party external plugs after the daemon exists)
+- **Phase 15:** External knowledge hub and integrations — portable external-document bindings, deterministic pull/push routes, durable reconciliation state, connector capabilities, scheduling, and the first Outline/HedgeDoc/Git-wiki/SilverBullet connector wave
 - **Phase 16:** Wiki mode with live collaborative editing
 - **Phase 17:** User management, group-based ACLs, document-level secrets, share links
 - **Phase 18:** Canvas support (parsing, indexing, CLI, WebUI rendering, interactive editor) and Excalidraw support (18.8)
 
-Detailed mdbase, additional Obsidian-plugin workflow, and SilverBullet plans are maintained as **candidate capability tracks**, not numbered delivery gates. Their durable Markdown/core slices may be promoted independently; daemon, sync, editor, and runtime slices belong to Phases 10, 12, 14, and 15 respectively. A candidate does not block the next numbered phase unless the roadmap explicitly promotes it and records the concrete use case and maintenance commitment.
+Detailed mdbase and additional Obsidian-plugin workflow plans remain **candidate capability tracks**, not numbered delivery gates. The SilverBullet appendix is promoted connector design referenced by Phases 12 and 15. Candidate durable Markdown/core slices may still be promoted independently; daemon, sync, editor, and runtime slices belong to Phases 10, 12, 14, and 15 respectively.
 
 The design decisions in this document (three-layer architecture, cache as derived index, vault as source of truth, provider abstraction, parser pipeline) are load-bearing for all later phases. See the roadmap for dependency edges and implementation details.
 

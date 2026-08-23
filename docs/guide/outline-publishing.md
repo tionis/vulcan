@@ -91,6 +91,8 @@ Before any mutation, Vulcan fetches every managed remote document. A changed rem
 - Replacing a changed attachment uploads a new Outline attachment and rewrites managed document links. Old, now-unreferenced attachment objects are left for Outline's own cleanup because the public API has no archive operation for attachments.
 - Compatibility targets Outline 1.9.x and the current official API. Validate against a staging collection before upgrading across a major Outline release.
 
-### Possible future import direction
+### Planned inbound route
 
-A separate one-way `Outline -> Vulcan -> local Markdown` importer may be useful in the future, but it is not currently planned. It would need a concrete use case plus explicit decisions for large-collection pagination, attachment volume, rate limits, local/remote conflict handling, deletions, and source-of-truth ownership. If pursued, it should remain separate from this publisher rather than turning publication into implicit bidirectional synchronization.
+A separate scoped `Outline -> Vulcan -> local Markdown` route is now planned as part of Phase 15's external knowledge-hub architecture. The concrete use case is a canonical local wiki that can ingest selected external knowledge and then publish independently selected local content to Outline or other systems.
+
+This does not change the command described above: `vulcan publish outline` remains one-way and the current publisher never consumes Outline as source data. The future inbound route will have its own remote scope, local destination namespace, authority and deletion policy, durable revision state, hierarchy/attachment materialization, pagination and rate limits, and local/remote drift handling. Pull and push remain separately planned and journaled operations rather than implicit bidirectional synchronization. See [Local information hub and external wikis](information-hub.md).
