@@ -3102,8 +3102,9 @@ timeout_seconds = 30
 max_retries = 3
 page_size = 100
 remove_toc = true
-block_reference_policy = "annotated-text"
-excluded_target_policy = "annotated-text"
+block_reference_policy = "custom"
+excluded_target_policy = "custom"
+link_transform = ".vulcan/transforms/outline-links.js"
 "#,
     )
     .expect("shared config should be written");
@@ -3137,11 +3138,15 @@ timeout_seconds = 5
     assert_eq!(profile.remove_toc, Some(true));
     assert_eq!(
         profile.block_reference_policy,
-        Some(OutlineBlockReferencePolicyConfig::AnnotatedText)
+        Some(OutlineBlockReferencePolicyConfig::Custom)
     );
     assert_eq!(
         profile.excluded_target_policy,
-        Some(OutlineExcludedTargetPolicyConfig::AnnotatedText)
+        Some(OutlineExcludedTargetPolicyConfig::Custom)
+    );
+    assert_eq!(
+        profile.link_transform.as_deref(),
+        Some(std::path::Path::new(".vulcan/transforms/outline-links.js"))
     );
 }
 
@@ -3153,6 +3158,7 @@ fn default_outline_publish_config_is_empty_and_template_never_contains_a_token()
     assert!(template.contains("token_env = \"OUTLINE_API_TOKEN\""));
     assert!(template.contains("block_reference_policy = \"error\""));
     assert!(template.contains("excluded_target_policy = \"error\""));
+    assert!(template.contains("link_transform = \".vulcan/transforms/outline-links.js\""));
     assert!(!template.contains("api_token ="));
 }
 

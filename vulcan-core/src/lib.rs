@@ -66,6 +66,7 @@ pub mod graph;
 pub mod history;
 pub mod html;
 pub mod init;
+pub mod js_transform;
 pub mod json_schema;
 pub mod kanban;
 pub mod maintenance;
@@ -193,6 +194,7 @@ pub use html::{
     VaultHtmlRenderer,
 };
 pub use init::{initialize_vault, InitError, InitSummary};
+pub use js_transform::{PureJsTransform, PureJsTransformError, PureJsTransformOptions};
 pub use json_schema::{validate_json_value_against_schema, JsonSchemaValidationError};
 pub use kanban::{
     add_kanban_card, archive_kanban_card, list_kanban_boards, load_kanban_board, move_kanban_card,

@@ -5,7 +5,7 @@ use super::{
 };
 use crate::export::outline::{
     planned_document_references_attachment, render_remote_document_content_with_links,
-    OutlineDiagnostic, OutlinePublicationPlan,
+    OutlineDiagnostic, OutlineLinkTransform, OutlinePublicationPlan,
 };
 use crate::AppError;
 use serde::Serialize;
@@ -20,6 +20,8 @@ pub struct OutlinePublishReport {
     pub applied: bool,
     pub conflicts: usize,
     pub diagnostics: Vec<OutlineDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_transform: Option<OutlineLinkTransform>,
     #[serde(flatten)]
     pub plan: OutlinePublishPlan,
 }
@@ -36,7 +38,13 @@ pub fn publish_outline(
     if dry_run {
         let state = load_outline_state(paths, profile, collection_id)?;
         let plan = plan_outline_reconciliation(api, profile, collection_id, publication, &state)?;
-        return Ok(report(plan, publication.diagnostics.clone(), true, false));
+        return Ok(report(
+            plan,
+            publication.diagnostics.clone(),
+            publication.link_transform.clone(),
+            true,
+            false,
+        ));
     }
 
     let lock = lock_outline_state(paths, profile)?;
@@ -44,7 +52,13 @@ pub fn publish_outline(
     let mut plan = plan_outline_reconciliation(api, profile, collection_id, publication, &state)?;
     plan.dry_run = false;
     if plan.has_conflicts() {
-        return Ok(report(plan, publication.diagnostics.clone(), false, false));
+        return Ok(report(
+            plan,
+            publication.diagnostics.clone(),
+            publication.link_transform.clone(),
+            false,
+            false,
+        ));
     }
 
     for document in &publication.documents {
@@ -277,12 +291,19 @@ pub fn publish_outline(
         lock.save(&state)?;
     }
 
-    Ok(report(plan, publication.diagnostics.clone(), false, true))
+    Ok(report(
+        plan,
+        publication.diagnostics.clone(),
+        publication.link_transform.clone(),
+        false,
+        true,
+    ))
 }
 
 fn report(
     plan: OutlinePublishPlan,
     diagnostics: Vec<OutlineDiagnostic>,
+    link_transform: Option<OutlineLinkTransform>,
     dry_run: bool,
     applied: bool,
 ) -> OutlinePublishReport {
@@ -296,6 +317,7 @@ fn report(
         applied,
         conflicts,
         diagnostics,
+        link_transform,
         plan,
     }
 }
@@ -477,6 +499,7 @@ mod tests {
             documents,
             attachments: Vec::new(),
             diagnostics: Vec::new(),
+            link_transform: None,
         }
     }
 

@@ -992,6 +992,7 @@ fn parses_outline_zip_export_command() {
                 remove_toc: true,
                 block_reference_policy: OutlineBlockReferencePolicyArg::Error,
                 excluded_target_policy: OutlineExcludedTargetPolicyArg::Error,
+                link_transform: None,
                 path: PathBuf::from("wiki.zip"),
                 dry_run: true,
             },

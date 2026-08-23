@@ -43,8 +43,9 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # max_retries = 3
 # page_size = 100
 # remove_toc = false # strip Obsidian heading-link TOC lists before publication
-# block_reference_policy = "error" # error | plain-text | annotated-text
-# excluded_target_policy = "error" # error | plain-text | annotated-text
+# block_reference_policy = "error" # error | plain-text | annotated-text | custom
+# excluded_target_policy = "error" # error | plain-text | annotated-text | custom
+# link_transform = ".vulcan/transforms/outline-links.js" # required by either custom policy
 # content_transforms can use the same ordered rules as export profiles.
 
 # [extraction]

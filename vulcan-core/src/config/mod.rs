@@ -2103,6 +2103,7 @@ pub struct OutlinePublishProfileConfig {
     pub remove_toc: Option<bool>,
     pub block_reference_policy: Option<OutlineBlockReferencePolicyConfig>,
     pub excluded_target_policy: Option<OutlineExcludedTargetPolicyConfig>,
+    pub link_transform: Option<PathBuf>,
     #[serde(
         default,
         rename = "content_transforms",
@@ -2118,6 +2119,7 @@ pub enum OutlineBlockReferencePolicyConfig {
     Error,
     PlainText,
     AnnotatedText,
+    Custom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -2127,6 +2129,7 @@ pub enum OutlineExcludedTargetPolicyConfig {
     Error,
     PlainText,
     AnnotatedText,
+    Custom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -3736,6 +3739,9 @@ fn merge_outline_publish_profile_config(
     }
     if let Some(excluded_target_policy) = profile.excluded_target_policy {
         target.excluded_target_policy = Some(excluded_target_policy);
+    }
+    if let Some(link_transform) = profile.link_transform {
+        target.link_transform = Some(link_transform);
     }
     if let Some(content_transform_rules) = profile.content_transform_rules {
         target.content_transform_rules = Some(content_transform_rules);

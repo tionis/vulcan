@@ -15138,6 +15138,154 @@ fn export_outline_zip_excluded_target_policy_enables_partial_exports() {
 }
 
 #[test]
+fn export_outline_zip_custom_link_transform_is_trusted_typed_and_reproducible() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let config_home = temp_dir.path().join("config-home");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Projects")).expect("projects folder");
+    fs::create_dir_all(vault_root.join(".vulcan/transforms")).expect("transform folder");
+    let source = b"# Readme\n\n[[Secret|hidden]] and [block](#^here).\n\n^here\n";
+    fs::write(vault_root.join("Projects/Readme.md"), source).expect("readme note");
+    fs::write(vault_root.join("Projects/Projects.md"), "# Projects\n").expect("folder note");
+    fs::write(vault_root.join("Secret.md"), "# Secret\n").expect("excluded note");
+    let transform_source = r#"
+function transform_link(link) {
+  return {
+    replacement: "[" + link.reason + ":" + link.label + ":" + link.authored_target + "]"
+  };
+}
+"#;
+    fs::write(
+        vault_root.join(".vulcan/transforms/outline-links.js"),
+        transform_source,
+    )
+    .expect("transform script");
+    run_scan(&vault_root);
+    let query = r#"from notes where file.path matches "^Projects/""#;
+    let untrusted_path = temp_dir.path().join("untrusted.zip");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "export",
+            "outline-zip",
+            query,
+            "--collection-title",
+            "Wiki",
+            "--block-reference-policy",
+            "custom",
+            "--excluded-target-policy",
+            "custom",
+            "--link-transform",
+            ".vulcan/transforms/outline-links.js",
+            "--path",
+            untrusted_path.to_str().expect("ZIP path should be utf-8"),
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("require a trusted vault"));
+    assert!(!untrusted_path.exists());
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "trust",
+            "add",
+        ])
+        .assert()
+        .success();
+
+    let dry_run_path = temp_dir.path().join("dry-run.zip");
+    let dry_run = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "--output",
+            "json",
+            "export",
+            "outline-zip",
+            query,
+            "--collection-title",
+            "Wiki",
+            "--block-reference-policy",
+            "custom",
+            "--excluded-target-policy",
+            "custom",
+            "--link-transform",
+            ".vulcan/transforms/outline-links.js",
+            "--path",
+            dry_run_path.to_str().expect("ZIP path should be utf-8"),
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let report = parse_stdout_json(&dry_run);
+    assert_eq!(
+        report["link_transform"]["path"],
+        ".vulcan/transforms/outline-links.js"
+    );
+    assert!(report["link_transform"]["content_hash"]
+        .as_str()
+        .is_some_and(|hash| hash.len() == 64));
+    assert!(report["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .filter(|diagnostic| {
+            diagnostic["kind"] == "unsupported_link" || diagnostic["kind"] == "excluded_target"
+        })
+        .all(|diagnostic| diagnostic["action"] == "rendered_custom_transform"));
+    assert!(!dry_run_path.exists());
+
+    let export_path = temp_dir.path().join("custom.zip");
+    let custom_export = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "export",
+            "outline-zip",
+            query,
+            "--collection-title",
+            "Wiki",
+            "--block-reference-policy",
+            "custom",
+            "--excluded-target-policy",
+            "custom",
+            "--link-transform",
+            ".vulcan/transforms/outline-links.js",
+            "--path",
+            export_path.to_str().expect("ZIP path should be utf-8"),
+        ])
+        .assert()
+        .success();
+    assert!(String::from_utf8_lossy(&custom_export.get_output().stderr)
+        .contains("rendered as custom text for Outline"));
+    let file = fs::File::open(&export_path).expect("custom ZIP should exist");
+    let mut archive = ZipArchive::new(file).expect("custom ZIP should open");
+    let mut exported = String::new();
+    archive
+        .by_name("Wiki/Projects/Readme.md")
+        .expect("readme should be exported")
+        .read_to_string(&mut exported)
+        .expect("readme should be readable");
+    assert!(exported.contains("[excluded_target:hidden:Secret]"));
+    assert!(exported.contains("[block_reference:block:#^here]"));
+    assert_eq!(
+        fs::read(vault_root.join("Projects/Readme.md")).unwrap(),
+        source
+    );
+}
+
+#[test]
 fn publish_outline_dry_run_reports_creates_without_remote_or_state_mutation() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

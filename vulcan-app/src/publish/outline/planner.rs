@@ -462,6 +462,7 @@ mod tests {
                 .collect(),
             attachments: Vec::new(),
             diagnostics: Vec::new(),
+            link_transform: None,
         }
     }
 

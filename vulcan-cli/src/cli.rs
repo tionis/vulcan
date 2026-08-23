@@ -1310,6 +1310,8 @@ pub enum OutlineBlockReferencePolicyArg {
     PlainText,
     /// Preserve the visible label and authored destination as annotated text
     AnnotatedText,
+    /// Render each unsupported link with the configured JavaScript transform
+    Custom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
@@ -1321,6 +1323,8 @@ pub enum OutlineExcludedTargetPolicyArg {
     PlainText,
     /// Preserve the visible label and authored destination as annotated text
     AnnotatedText,
+    /// Render each excluded link with the configured JavaScript transform
+    Custom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -2293,16 +2297,22 @@ pub enum ExportCommand {
             long,
             value_enum,
             default_value = "error",
-            help = "How to publish Obsidian block-reference links: error, plain-text, or annotated-text"
+            help = "How to publish Obsidian block-reference links: error, plain-text, annotated-text, or custom"
         )]
         block_reference_policy: OutlineBlockReferencePolicyArg,
         #[arg(
             long,
             value_enum,
             default_value = "error",
-            help = "How to publish links to notes outside the query: error, plain-text, or annotated-text"
+            help = "How to publish links to notes outside the query: error, plain-text, annotated-text, or custom"
         )]
         excluded_target_policy: OutlineExcludedTargetPolicyArg,
+        #[arg(
+            long,
+            value_name = "VAULT_RELATIVE_JS_PATH",
+            help = "Trusted pure-JavaScript transform used by custom link policies"
+        )]
+        link_transform: Option<PathBuf>,
         #[arg(
             short = 'o',
             long = "path",

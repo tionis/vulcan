@@ -5376,13 +5376,14 @@
                 ]
               },
               {
-                "help": "How to publish Obsidian block-reference links: error, plain-text, or annotated-text",
+                "help": "How to publish Obsidian block-reference links: error, plain-text, annotated-text, or custom",
                 "id": "block_reference_policy",
                 "long": "block-reference-policy",
                 "possible_values": [
                   "error",
                   "plain-text",
-                  "annotated-text"
+                  "annotated-text",
+                  "custom"
                 ],
                 "required": false,
                 "short": null,
@@ -5391,18 +5392,30 @@
                 ]
               },
               {
-                "help": "How to publish links to notes outside the query: error, plain-text, or annotated-text",
+                "help": "How to publish links to notes outside the query: error, plain-text, annotated-text, or custom",
                 "id": "excluded_target_policy",
                 "long": "excluded-target-policy",
                 "possible_values": [
                   "error",
                   "plain-text",
-                  "annotated-text"
+                  "annotated-text",
+                  "custom"
                 ],
                 "required": false,
                 "short": null,
                 "value_names": [
                   "EXCLUDED_TARGET_POLICY"
+                ]
+              },
+              {
+                "help": "Trusted pure-JavaScript transform used by custom link policies",
+                "id": "link_transform",
+                "long": "link-transform",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "VAULT_RELATIVE_JS_PATH"
                 ]
               },
               {

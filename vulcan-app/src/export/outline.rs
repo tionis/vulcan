@@ -1,7 +1,8 @@
 use super::{ExportLinkRecord, ExportedNoteDocument};
 use crate::outline_markdown::{outline_document_url, rewrite_markdown_link_destinations};
+use crate::trust;
 use crate::AppError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt::Write as _;
 use std::fs;
@@ -11,7 +12,8 @@ use vulcan_core::config::load_vault_config;
 use vulcan_core::config::OutlineBlockReferencePolicyConfig;
 use vulcan_core::config::OutlineExcludedTargetPolicyConfig;
 use vulcan_core::folder_notes::FolderNotesConfig;
-use vulcan_core::VaultPaths;
+use vulcan_core::paths::secure_read_to_string;
+use vulcan_core::{PureJsTransform, PureJsTransformOptions, VaultPaths};
 use zip::write::FileOptions;
 
 pub const SUPPORTED_OUTLINE_VERSION: &str = "1.9.x";
@@ -27,6 +29,7 @@ pub enum OutlineDiagnosticKind {
     UnresolvedLink,
     ExcludedTarget,
     UnsupportedLink,
+    TransformFailure,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -54,6 +57,7 @@ pub struct OutlineDiagnostic {
 pub enum OutlineDiagnosticAction {
     RenderedPlainText,
     RenderedAnnotatedText,
+    RenderedCustomTransform,
     RerunWithPlainText,
 }
 
@@ -63,13 +67,50 @@ impl OutlineDiagnostic {
         self.kind == OutlineDiagnosticKind::MissingFolderNote
             || self.action == Some(OutlineDiagnosticAction::RenderedPlainText)
             || self.action == Some(OutlineDiagnosticAction::RenderedAnnotatedText)
+            || self.action == Some(OutlineDiagnosticAction::RenderedCustomTransform)
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct OutlinePublicationOptions {
     pub block_reference_policy: OutlineBlockReferencePolicyConfig,
     pub excluded_target_policy: OutlineExcludedTargetPolicyConfig,
+    pub link_transform: Option<OutlineLinkTransform>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OutlineLinkTransform {
+    pub path: String,
+    pub content_hash: String,
+    #[serde(skip)]
+    source: String,
+}
+
+pub fn load_outline_link_transform(
+    paths: &VaultPaths,
+    relative_path: &Path,
+) -> Result<OutlineLinkTransform, AppError> {
+    if !trust::is_trusted(paths.vault_root()) {
+        return Err(AppError::operation(
+            "custom Outline link transforms require a trusted vault; run `vulcan trust add` first",
+        ));
+    }
+    if relative_path.extension().and_then(|value| value.to_str()) != Some("js") {
+        return Err(AppError::operation(
+            "custom Outline link transform paths must end in `.js`",
+        ));
+    }
+    let source = secure_read_to_string(paths.vault_root(), relative_path).map_err(|error| {
+        AppError::operation(format!(
+            "failed to read custom Outline link transform `{}`: {error}",
+            relative_path.display()
+        ))
+    })?;
+    Ok(OutlineLinkTransform {
+        path: relative_path.to_string_lossy().replace('\\', "/"),
+        content_hash: blake3::hash(source.as_bytes()).to_hex().to_string(),
+        source,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -100,6 +141,8 @@ pub struct OutlinePublicationPlan {
     pub documents: Vec<OutlinePlannedDocument>,
     pub attachments: Vec<OutlinePlannedAttachment>,
     pub diagnostics: Vec<OutlineDiagnostic>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_transform: Option<OutlineLinkTransform>,
 }
 
 impl OutlinePublicationPlan {
@@ -208,6 +251,7 @@ pub fn plan_outline_publication_with_options(
     links: &[ExportLinkRecord],
     options: OutlinePublicationOptions,
 ) -> Result<OutlinePublicationPlan, AppError> {
+    let link_transform_runtime = initialize_link_transform_runtime(paths, &options)?;
     let collection_directory = serialize_outline_filename(collection_title.trim());
     let mut diagnostics = collection_path_diagnostics(collection_title, &collection_directory);
 
@@ -235,13 +279,17 @@ pub fn plan_outline_publication_with_options(
         .iter()
         .map(|document| (document.source_path.as_str(), document.content.as_str()))
         .collect::<HashMap<_, _>>();
-    let attachment_sources = validate_links_and_collect_attachments(
+    let policies = LinkValidationPolicies {
+        block_reference: options.block_reference_policy,
+        excluded_target: options.excluded_target_policy,
+        transform: link_transform_runtime.as_ref(),
+    };
+    let (attachment_sources, custom_replacements) = validate_links_and_collect_attachments(
         paths,
         links,
         &selected_paths,
         &document_contents,
-        options.block_reference_policy,
-        options.excluded_target_policy,
+        policies,
         &mut diagnostics,
     );
     let attachments = plan_attachments(
@@ -252,46 +300,14 @@ pub fn plan_outline_publication_with_options(
     );
     validate_archive_collisions(&document_paths, &attachments, &mut diagnostics);
 
-    let document_target_paths = document_paths
-        .iter()
-        .map(|document| (document.source_path.clone(), document.archive_path.clone()))
-        .collect::<HashMap<_, _>>();
-    let attachment_target_paths = attachments
-        .iter()
-        .map(|attachment| {
-            (
-                attachment.source_path.clone(),
-                attachment.archive_path.clone(),
-            )
-        })
-        .collect::<HashMap<_, _>>();
-    let links_by_source = group_links_by_source(links);
-
-    let documents = document_paths
-        .into_iter()
-        .map(|document| {
-            let rewritten = rewrite_document_links(
-                &document,
-                links_by_source
-                    .get(&document.source_path)
-                    .map(Vec::as_slice)
-                    .unwrap_or_default(),
-                &document_target_paths,
-                &attachment_target_paths,
-                options.block_reference_policy,
-                options.excluded_target_policy,
-            );
-            OutlinePlannedDocument {
-                source_path: document.source_path,
-                source_document_id: document.source_document_id,
-                title: document.title,
-                archive_path: document.archive_path,
-                parent_source_path: document.parent_source_path,
-                content_hash: blake3::hash(rewritten.as_bytes()).to_hex().to_string(),
-                content: rewritten,
-            }
-        })
-        .collect();
+    let documents = rewrite_planned_documents(
+        document_paths,
+        links,
+        &attachments,
+        options.block_reference_policy,
+        options.excluded_target_policy,
+        &custom_replacements,
+    );
 
     diagnostics.sort_by(|left, right| {
         left.source_path
@@ -307,7 +323,97 @@ pub fn plan_outline_publication_with_options(
         documents,
         attachments,
         diagnostics,
+        link_transform: options.link_transform,
     })
+}
+
+fn initialize_link_transform_runtime(
+    paths: &VaultPaths,
+    options: &OutlinePublicationOptions,
+) -> Result<Option<PureJsTransform>, AppError> {
+    let uses_custom_transform = options.block_reference_policy
+        == OutlineBlockReferencePolicyConfig::Custom
+        || options.excluded_target_policy == OutlineExcludedTargetPolicyConfig::Custom;
+    if uses_custom_transform != options.link_transform.is_some() {
+        return Err(AppError::operation(if uses_custom_transform {
+            "custom Outline link policies require a `link_transform` JavaScript file"
+        } else {
+            "an Outline `link_transform` requires at least one custom link policy"
+        }));
+    }
+    let runtime_config = load_vault_config(paths).config.js_runtime;
+    options
+        .link_transform
+        .as_ref()
+        .map(|transform| {
+            PureJsTransform::new(
+                &transform.source,
+                "transform_link",
+                PureJsTransformOptions {
+                    memory_limit_bytes: runtime_config.memory_limit_mb.saturating_mul(1024 * 1024),
+                    stack_limit_bytes: runtime_config.stack_limit_kb.saturating_mul(1024),
+                    timeout: std::time::Duration::from_millis(100),
+                },
+            )
+            .map_err(|error| {
+                AppError::operation(format!(
+                    "failed to initialize custom Outline link transform `{}`: {error}",
+                    transform.path
+                ))
+            })
+        })
+        .transpose()
+}
+
+fn rewrite_planned_documents(
+    document_paths: Vec<DocumentPathPlan>,
+    links: &[ExportLinkRecord],
+    attachments: &[OutlinePlannedAttachment],
+    block_reference_policy: OutlineBlockReferencePolicyConfig,
+    excluded_target_policy: OutlineExcludedTargetPolicyConfig,
+    custom_replacements: &HashMap<(String, i64), String>,
+) -> Vec<OutlinePlannedDocument> {
+    let document_target_paths = document_paths
+        .iter()
+        .map(|document| (document.source_path.clone(), document.archive_path.clone()))
+        .collect::<HashMap<_, _>>();
+    let attachment_target_paths = attachments
+        .iter()
+        .map(|attachment| {
+            (
+                attachment.source_path.clone(),
+                attachment.archive_path.clone(),
+            )
+        })
+        .collect::<HashMap<_, _>>();
+    let links_by_source = group_links_by_source(links);
+
+    document_paths
+        .into_iter()
+        .map(|document| {
+            let rewritten = rewrite_document_links(
+                &document,
+                links_by_source
+                    .get(&document.source_path)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default(),
+                &document_target_paths,
+                &attachment_target_paths,
+                block_reference_policy,
+                excluded_target_policy,
+                custom_replacements,
+            );
+            OutlinePlannedDocument {
+                source_path: document.source_path,
+                source_document_id: document.source_document_id,
+                title: document.title,
+                archive_path: document.archive_path,
+                parent_source_path: document.parent_source_path,
+                content_hash: blake3::hash(rewritten.as_bytes()).to_hex().to_string(),
+                content: rewritten,
+            }
+        })
+        .collect()
 }
 
 fn collection_path_diagnostics(
@@ -585,60 +691,36 @@ fn plan_document_paths(
     planned
 }
 
+#[derive(Clone, Copy)]
+struct LinkValidationPolicies<'a> {
+    block_reference: OutlineBlockReferencePolicyConfig,
+    excluded_target: OutlineExcludedTargetPolicyConfig,
+    transform: Option<&'a PureJsTransform>,
+}
+
 fn validate_links_and_collect_attachments(
     paths: &VaultPaths,
     links: &[ExportLinkRecord],
     selected_paths: &BTreeSet<String>,
     document_contents: &HashMap<&str, &str>,
-    block_reference_policy: OutlineBlockReferencePolicyConfig,
-    excluded_target_policy: OutlineExcludedTargetPolicyConfig,
+    policies: LinkValidationPolicies<'_>,
     diagnostics: &mut Vec<OutlineDiagnostic>,
-) -> BTreeSet<String> {
+) -> (BTreeSet<String>, HashMap<(String, i64), String>) {
     let mut attachments = BTreeSet::new();
+    let mut custom_replacements = HashMap::new();
     for link in links {
         if link.link_kind.eq_ignore_ascii_case("external") {
             continue;
         }
-        if let Some(block) = link.target_block.as_deref() {
-            let target = link
-                .target_path_candidate
-                .as_deref()
-                .map_or_else(|| format!("#^{block}"), |path| format!("{path}#^{block}"));
-            let offset = usize::try_from(link.byte_offset).ok();
-            let (line, column) = offset
-                .and_then(|offset| {
-                    document_contents
-                        .get(link.source_document_path.as_str())
-                        .map(|content| line_column_for_offset(content, offset))
-                })
-                .map_or((None, None), |(line, column)| (Some(line), Some(column)));
-            let (action, message) = match block_reference_policy {
-                OutlineBlockReferencePolicyConfig::Error => (
-                    OutlineDiagnosticAction::RerunWithPlainText,
-                    "Outline cannot represent Obsidian block-reference targets".to_string(),
-                ),
-                OutlineBlockReferencePolicyConfig::PlainText => (
-                    OutlineDiagnosticAction::RenderedPlainText,
-                    "rendered Obsidian block-reference link as plain text for Outline".to_string(),
-                ),
-                OutlineBlockReferencePolicyConfig::AnnotatedText => (
-                    OutlineDiagnosticAction::RenderedAnnotatedText,
-                    "rendered Obsidian block-reference link as annotated text for Outline"
-                        .to_string(),
-                ),
-            };
-            diagnostics.push(OutlineDiagnostic {
-                kind: OutlineDiagnosticKind::UnsupportedLink,
-                source_path: Some(link.source_document_path.clone()),
-                target: Some(target),
-                line,
-                column,
-                byte_offset: offset,
-                policy: Some(block_reference_policy),
-                excluded_target_policy: None,
-                action: Some(action),
-                message,
-            });
+        if link.target_block.is_some() {
+            push_block_reference_diagnostic(
+                link,
+                document_contents,
+                policies.block_reference,
+                policies.transform,
+                &mut custom_replacements,
+                diagnostics,
+            );
             continue;
         }
         match (
@@ -651,7 +733,9 @@ fn validate_links_and_collect_attachments(
                         link,
                         target,
                         document_contents,
-                        excluded_target_policy,
+                        policies.excluded_target,
+                        policies.transform,
+                        &mut custom_replacements,
                         diagnostics,
                     );
                 }
@@ -688,7 +772,73 @@ fn validate_links_and_collect_attachments(
             }),
         }
     }
-    attachments
+    (attachments, custom_replacements)
+}
+
+fn push_block_reference_diagnostic(
+    link: &ExportLinkRecord,
+    document_contents: &HashMap<&str, &str>,
+    policy: OutlineBlockReferencePolicyConfig,
+    transform: Option<&PureJsTransform>,
+    custom_replacements: &mut HashMap<(String, i64), String>,
+    diagnostics: &mut Vec<OutlineDiagnostic>,
+) {
+    let target = authored_link_target(link);
+    let offset = usize::try_from(link.byte_offset).ok();
+    let (source_line, source_column) = link_source_location(link, document_contents, offset);
+    let (kind, action, message) = match policy {
+        OutlineBlockReferencePolicyConfig::Error => (
+            OutlineDiagnosticKind::UnsupportedLink,
+            Some(OutlineDiagnosticAction::RerunWithPlainText),
+            "Outline cannot represent Obsidian block-reference targets".to_string(),
+        ),
+        OutlineBlockReferencePolicyConfig::PlainText => (
+            OutlineDiagnosticKind::UnsupportedLink,
+            Some(OutlineDiagnosticAction::RenderedPlainText),
+            "rendered Obsidian block-reference link as plain text for Outline".to_string(),
+        ),
+        OutlineBlockReferencePolicyConfig::AnnotatedText => (
+            OutlineDiagnosticKind::UnsupportedLink,
+            Some(OutlineDiagnosticAction::RenderedAnnotatedText),
+            "rendered Obsidian block-reference link as annotated text for Outline".to_string(),
+        ),
+        OutlineBlockReferencePolicyConfig::Custom => match apply_custom_link_transform(
+            transform.expect("custom transform validated before link planning"),
+            "block_reference",
+            link,
+            source_line,
+            source_column,
+        ) {
+            Ok(replacement) => {
+                custom_replacements.insert(
+                    (link.source_document_path.clone(), link.byte_offset),
+                    replacement,
+                );
+                (
+                    OutlineDiagnosticKind::UnsupportedLink,
+                    Some(OutlineDiagnosticAction::RenderedCustomTransform),
+                    "rendered Obsidian block-reference link with custom transform".to_string(),
+                )
+            }
+            Err(error) => (
+                OutlineDiagnosticKind::TransformFailure,
+                None,
+                format!("custom link transform failed for block reference: {error}"),
+            ),
+        },
+    };
+    diagnostics.push(OutlineDiagnostic {
+        kind,
+        source_path: Some(link.source_document_path.clone()),
+        target: Some(target),
+        line: source_line,
+        column: source_column,
+        byte_offset: offset,
+        policy: Some(policy),
+        excluded_target_policy: None,
+        action,
+        message,
+    });
 }
 
 fn push_excluded_target_diagnostic(
@@ -696,32 +846,55 @@ fn push_excluded_target_diagnostic(
     target: &str,
     document_contents: &HashMap<&str, &str>,
     policy: OutlineExcludedTargetPolicyConfig,
+    link_transform: Option<&PureJsTransform>,
+    custom_replacements: &mut HashMap<(String, i64), String>,
     diagnostics: &mut Vec<OutlineDiagnostic>,
 ) {
     let offset = usize::try_from(link.byte_offset).ok();
-    let (source_line, source_column) = offset
-        .and_then(|offset| {
-            document_contents
-                .get(link.source_document_path.as_str())
-                .map(|content| line_column_for_offset(content, offset))
-        })
-        .map_or((None, None), |(line, column)| (Some(line), Some(column)));
-    let (action, message) = match policy {
+    let (source_line, source_column) = link_source_location(link, document_contents, offset);
+    let (kind, action, message) = match policy {
         OutlineExcludedTargetPolicyConfig::Error => (
-            OutlineDiagnosticAction::RerunWithPlainText,
+            OutlineDiagnosticKind::ExcludedTarget,
+            Some(OutlineDiagnosticAction::RerunWithPlainText),
             "link resolves to a note excluded from the publication query".to_string(),
         ),
         OutlineExcludedTargetPolicyConfig::PlainText => (
-            OutlineDiagnosticAction::RenderedPlainText,
+            OutlineDiagnosticKind::ExcludedTarget,
+            Some(OutlineDiagnosticAction::RenderedPlainText),
             "rendered link to an excluded note as plain text for Outline".to_string(),
         ),
         OutlineExcludedTargetPolicyConfig::AnnotatedText => (
-            OutlineDiagnosticAction::RenderedAnnotatedText,
+            OutlineDiagnosticKind::ExcludedTarget,
+            Some(OutlineDiagnosticAction::RenderedAnnotatedText),
             "rendered link to an excluded note as annotated text for Outline".to_string(),
         ),
+        OutlineExcludedTargetPolicyConfig::Custom => match apply_custom_link_transform(
+            link_transform.expect("custom transform validated before link planning"),
+            "excluded_target",
+            link,
+            source_line,
+            source_column,
+        ) {
+            Ok(replacement) => {
+                custom_replacements.insert(
+                    (link.source_document_path.clone(), link.byte_offset),
+                    replacement,
+                );
+                (
+                    OutlineDiagnosticKind::ExcludedTarget,
+                    Some(OutlineDiagnosticAction::RenderedCustomTransform),
+                    "rendered link to an excluded note with custom transform".to_string(),
+                )
+            }
+            Err(error) => (
+                OutlineDiagnosticKind::TransformFailure,
+                None,
+                format!("custom link transform failed for excluded target: {error}"),
+            ),
+        },
     };
     diagnostics.push(OutlineDiagnostic {
-        kind: OutlineDiagnosticKind::ExcludedTarget,
+        kind,
         source_path: Some(link.source_document_path.clone()),
         target: Some(target.to_string()),
         line: source_line,
@@ -729,9 +902,23 @@ fn push_excluded_target_diagnostic(
         byte_offset: offset,
         policy: None,
         excluded_target_policy: Some(policy),
-        action: Some(action),
+        action,
         message,
     });
+}
+
+fn link_source_location(
+    link: &ExportLinkRecord,
+    document_contents: &HashMap<&str, &str>,
+    offset: Option<usize>,
+) -> (Option<usize>, Option<usize>) {
+    offset
+        .and_then(|offset| {
+            document_contents
+                .get(link.source_document_path.as_str())
+                .map(|content| line_column_for_offset(content, offset))
+        })
+        .map_or((None, None), |(line, column)| (Some(line), Some(column)))
 }
 
 fn plan_attachments(
@@ -835,6 +1022,7 @@ fn rewrite_document_links(
     attachment_targets: &HashMap<String, String>,
     block_reference_policy: OutlineBlockReferencePolicyConfig,
     excluded_target_policy: OutlineExcludedTargetPolicyConfig,
+    custom_replacements: &HashMap<(String, i64), String>,
 ) -> String {
     let mut replacements = links
         .iter()
@@ -850,6 +1038,9 @@ fn rewrite_document_links(
                 let replacement = match block_reference_policy {
                     OutlineBlockReferencePolicyConfig::PlainText => link_plain_text(link),
                     OutlineBlockReferencePolicyConfig::AnnotatedText => link_annotated_text(link),
+                    OutlineBlockReferencePolicyConfig::Custom => custom_replacements
+                        .get(&(link.source_document_path.clone(), link.byte_offset))?
+                        .clone(),
                     OutlineBlockReferencePolicyConfig::Error => return None,
                 };
                 return Some((start, end, replacement));
@@ -873,6 +1064,9 @@ fn rewrite_document_links(
                 let replacement = match excluded_target_policy {
                     OutlineExcludedTargetPolicyConfig::PlainText => link_plain_text(link),
                     OutlineExcludedTargetPolicyConfig::AnnotatedText => link_annotated_text(link),
+                    OutlineExcludedTargetPolicyConfig::Custom => custom_replacements
+                        .get(&(link.source_document_path.clone(), link.byte_offset))?
+                        .clone(),
                     OutlineExcludedTargetPolicyConfig::Error => return None,
                 };
                 return Some((start, end, replacement));
@@ -907,8 +1101,72 @@ fn rewrite_document_links(
     content
 }
 
+#[derive(Serialize)]
+struct OutlineLinkTransformInput<'a> {
+    reason: &'a str,
+    source_path: &'a str,
+    raw_text: &'a str,
+    link_kind: &'a str,
+    is_embed: bool,
+    display_text: Option<&'a str>,
+    label: &'a str,
+    authored_target: String,
+    resolved_target: Option<&'a str>,
+    target_heading: Option<&'a str>,
+    target_block: Option<&'a str>,
+    line: Option<usize>,
+    column: Option<usize>,
+    byte_offset: i64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutlineLinkTransformOutput {
+    replacement: String,
+}
+
+fn apply_custom_link_transform(
+    transform: &PureJsTransform,
+    reason: &str,
+    link: &ExportLinkRecord,
+    source_line: Option<usize>,
+    source_column: Option<usize>,
+) -> Result<String, String> {
+    let input = OutlineLinkTransformInput {
+        reason,
+        source_path: &link.source_document_path,
+        raw_text: &link.raw_text,
+        link_kind: &link.link_kind,
+        is_embed: link.link_kind.eq_ignore_ascii_case("embed"),
+        display_text: link.display_text.as_deref(),
+        label: link_label(link),
+        authored_target: authored_link_target(link),
+        resolved_target: link.resolved_target_path.as_deref(),
+        target_heading: link.target_heading.as_deref(),
+        target_block: link.target_block.as_deref(),
+        line: source_line,
+        column: source_column,
+        byte_offset: link.byte_offset,
+    };
+    let input = serde_json::to_value(input).map_err(|error| error.to_string())?;
+    let output = transform.call(&input).map_err(|error| error.to_string())?;
+    let output: OutlineLinkTransformOutput =
+        serde_json::from_value(output).map_err(|error| error.to_string())?;
+    if output.replacement.len() > 64 * 1024 {
+        return Err("replacement exceeds the 64 KiB per-link limit".to_string());
+    }
+    if output.replacement.contains('\0') {
+        return Err("replacement contains a NUL byte".to_string());
+    }
+    Ok(output.replacement)
+}
+
 fn link_plain_text(link: &ExportLinkRecord) -> String {
-    let label = if link.link_kind.eq_ignore_ascii_case("markdown") {
+    escape_markdown_plain_text(link_label(link))
+}
+
+fn link_label(link: &ExportLinkRecord) -> &str {
+    if link.link_kind.eq_ignore_ascii_case("markdown") {
         link.display_text.as_deref().unwrap_or_default()
     } else {
         link.display_text
@@ -916,8 +1174,7 @@ fn link_plain_text(link: &ExportLinkRecord) -> String {
             .or(link.target_path_candidate.as_deref())
             .or(link.target_block.as_deref())
             .unwrap_or_default()
-    };
-    escape_markdown_plain_text(label)
+    }
 }
 
 fn link_annotated_text(link: &ExportLinkRecord) -> String {
@@ -1159,6 +1416,7 @@ mod tests {
             OutlinePublicationOptions {
                 block_reference_policy,
                 excluded_target_policy: OutlineExcludedTargetPolicyConfig::Error,
+                link_transform: None,
             },
         )
         .expect("plan Outline publication")
@@ -1170,6 +1428,14 @@ mod tests {
             format!("[folder_notes]\nplacement = \"{placement}\"\nname = \"{name}\"\n"),
         )
         .expect("folder-note config");
+    }
+
+    fn test_link_transform(source: &str) -> OutlineLinkTransform {
+        OutlineLinkTransform {
+            path: ".vulcan/transforms/test.js".to_string(),
+            content_hash: blake3::hash(source.as_bytes()).to_hex().to_string(),
+            source: source.to_string(),
+        }
     }
 
     #[test]
@@ -1596,6 +1862,7 @@ mod tests {
             OutlinePublicationOptions {
                 block_reference_policy: OutlineBlockReferencePolicyConfig::Error,
                 excluded_target_policy: OutlineExcludedTargetPolicyConfig::PlainText,
+                link_transform: None,
             },
         )
         .expect("plan projects with excluded links downgraded");
@@ -1616,6 +1883,7 @@ mod tests {
             OutlinePublicationOptions {
                 block_reference_policy: OutlineBlockReferencePolicyConfig::Error,
                 excluded_target_policy: OutlineExcludedTargetPolicyConfig::AnnotatedText,
+                link_transform: None,
             },
         )
         .expect("plan projects with excluded links annotated");
@@ -1644,6 +1912,210 @@ mod tests {
     fn markdown_code_spans_preserve_backticks_in_authored_targets() {
         assert_eq!(markdown_code_span("Notes/Target"), "`Notes/Target`");
         assert_eq!(markdown_code_span("Notes/`Target`"), "`` Notes/`Target` ``");
+    }
+
+    #[test]
+    fn custom_link_transform_handles_block_excluded_and_embed_contexts() {
+        let source = b"# Home\n\n[local](#^local-block), [[Secret#Details|outside]], and ![[Secret#^remote-block]].\n\n^local-block\n";
+        let (_temp, paths) = outline_vault(&[
+            ("Home.md", source),
+            (
+                "Secret.md",
+                b"# Secret\n\n## Details\n\nRemote.\n\n^remote-block\n",
+            ),
+        ]);
+        let report = execute_export_query(
+            &paths,
+            Some(r#"from notes where file.path = "Home.md""#),
+            None,
+            None,
+        )
+        .expect("query home");
+        let prepared = prepare_outline_export_data(
+            &paths,
+            &report,
+            None,
+            None,
+            OutlineMarkdownOptions::default(),
+        )
+        .expect("prepare home");
+        let script = r#"
+function transform_link(link) {
+  const marker = link.is_embed ? "!" : "";
+  return {
+    replacement: `${link.reason}:${link.label}<${marker}${link.authored_target}>`
+  };
+}
+"#;
+        let plan = plan_outline_publication_with_options(
+            &paths,
+            "Wiki",
+            &prepared.notes,
+            &prepared.links,
+            OutlinePublicationOptions {
+                block_reference_policy: OutlineBlockReferencePolicyConfig::Custom,
+                excluded_target_policy: OutlineExcludedTargetPolicyConfig::Custom,
+                link_transform: Some(test_link_transform(script)),
+            },
+        )
+        .expect("custom plan");
+
+        assert!(plan.is_valid(), "{:?}", plan.diagnostics);
+        assert_eq!(
+            plan.link_transform
+                .as_ref()
+                .map(|value| value.path.as_str()),
+            Some(".vulcan/transforms/test.js")
+        );
+        assert_eq!(
+            plan.link_transform
+                .as_ref()
+                .map(|value| value.content_hash.clone()),
+            Some(blake3::hash(script.as_bytes()).to_hex().to_string())
+        );
+        assert!(plan.diagnostics.iter().all(|diagnostic| {
+            diagnostic.action == Some(OutlineDiagnosticAction::RenderedCustomTransform)
+                && diagnostic.line.is_some()
+                && diagnostic.column.is_some()
+        }));
+        let home = plan
+            .documents
+            .iter()
+            .find(|document| document.source_path == "Home.md")
+            .expect("home document");
+        assert!(home
+            .content
+            .contains("block_reference:local<#^local-block>"));
+        assert!(home
+            .content
+            .contains("excluded_target:outside<Secret#Details>"));
+        assert!(home
+            .content
+            .contains("block_reference:Secret<!Secret#^remote-block>"));
+        assert_eq!(
+            fs::read(paths.vault_root().join("Home.md")).unwrap(),
+            source
+        );
+    }
+
+    #[test]
+    fn custom_link_transform_failures_are_located_and_invalidate_the_plan() {
+        let (_temp, paths) =
+            outline_vault(&[("Home.md", b"# Home\n\n[label](#^block)\n\n^block\n")]);
+        let report = execute_export_query(&paths, Some("from notes"), None, None).expect("query");
+        let prepared = prepare_outline_export_data(
+            &paths,
+            &report,
+            None,
+            None,
+            OutlineMarkdownOptions::default(),
+        )
+        .expect("prepare");
+        let plan = plan_outline_publication_with_options(
+            &paths,
+            "Wiki",
+            &prepared.notes,
+            &prepared.links,
+            OutlinePublicationOptions {
+                block_reference_policy: OutlineBlockReferencePolicyConfig::Custom,
+                excluded_target_policy: OutlineExcludedTargetPolicyConfig::Error,
+                link_transform: Some(test_link_transform(
+                    "function transform_link() { return { wrong: true }; }",
+                )),
+            },
+        )
+        .expect("failed callbacks produce plan diagnostics");
+
+        assert!(!plan.is_valid());
+        let diagnostic = plan
+            .diagnostics
+            .iter()
+            .find(|diagnostic| diagnostic.kind == OutlineDiagnosticKind::TransformFailure)
+            .expect("transform failure diagnostic");
+        assert_eq!(diagnostic.source_path.as_deref(), Some("Home.md"));
+        assert!(diagnostic.line.is_some());
+        assert!(diagnostic.column.is_some());
+        assert!(
+            diagnostic.message.contains("unknown field `wrong`"),
+            "{}",
+            diagnostic.message
+        );
+    }
+
+    #[test]
+    fn custom_link_policy_and_transform_must_be_configured_together() {
+        let (_temp, paths) = outline_vault(&[("Home.md", b"# Home\n")]);
+        let report = execute_export_query(&paths, Some("from notes"), None, None).expect("query");
+        let prepared = prepare_outline_export_data(
+            &paths,
+            &report,
+            None,
+            None,
+            OutlineMarkdownOptions::default(),
+        )
+        .expect("prepare");
+        let missing = plan_outline_publication_with_options(
+            &paths,
+            "Wiki",
+            &prepared.notes,
+            &prepared.links,
+            OutlinePublicationOptions {
+                block_reference_policy: OutlineBlockReferencePolicyConfig::Custom,
+                ..OutlinePublicationOptions::default()
+            },
+        )
+        .expect_err("custom policy should require a transform");
+        assert!(missing.to_string().contains("require a `link_transform`"));
+
+        let unused = plan_outline_publication_with_options(
+            &paths,
+            "Wiki",
+            &prepared.notes,
+            &prepared.links,
+            OutlinePublicationOptions {
+                link_transform: Some(test_link_transform(
+                    "function transform_link(link) { return { replacement: link.label }; }",
+                )),
+                ..OutlinePublicationOptions::default()
+            },
+        )
+        .expect_err("unused transform should be rejected");
+        assert!(unused
+            .to_string()
+            .contains("requires at least one custom link policy"));
+    }
+
+    #[test]
+    fn custom_link_transform_loader_requires_vault_trust() {
+        let _lock = crate::trust::test_env_lock()
+            .lock()
+            .expect("trust environment lock");
+        let config_home = tempdir().expect("config home");
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", config_home.path());
+        let (_temp, paths) = outline_vault(&[("Home.md", b"# Home\n")]);
+        let transform_path = Path::new(".vulcan/transforms/outline-links.js");
+        fs::create_dir_all(paths.vault_root().join(".vulcan/transforms"))
+            .expect("transform folder");
+        fs::write(
+            paths.vault_root().join(transform_path),
+            "function transform_link(link) { return { replacement: link.label }; }",
+        )
+        .expect("transform script");
+
+        let error = load_outline_link_transform(&paths, transform_path)
+            .expect_err("untrusted vault should reject executable transform");
+        assert!(error.to_string().contains("require a trusted vault"));
+        crate::trust::add_trust(paths.vault_root()).expect("trust vault");
+        let loaded = load_outline_link_transform(&paths, transform_path).expect("load transform");
+        assert_eq!(loaded.path, ".vulcan/transforms/outline-links.js");
+        assert!(!loaded.content_hash.is_empty());
+
+        if let Some(previous) = previous {
+            std::env::set_var("XDG_CONFIG_HOME", previous);
+        } else {
+            std::env::remove_var("XDG_CONFIG_HOME");
+        }
     }
 
     #[test]

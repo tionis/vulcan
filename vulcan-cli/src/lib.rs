@@ -467,7 +467,8 @@ use vulcan_app::browse::{
     DataviewBlockResult as AppDataviewBlockResult, DataviewEvalReport as AppDataviewEvalReport,
 };
 use vulcan_app::export::outline::{
-    plan_outline_publication_with_options, write_outline_zip, OutlinePublicationOptions,
+    load_outline_link_transform, plan_outline_publication_with_options, write_outline_zip,
+    OutlinePublicationOptions,
 };
 use vulcan_app::export::{
     apply_export_profile_create, apply_export_profile_delete, apply_export_profile_rule_add,
@@ -1193,12 +1194,7 @@ fn print_outline_diagnostics(diagnostics: &[vulcan_app::export::outline::Outline
                 .push(diagnostic);
             continue;
         }
-        let level = if diagnostic.is_warning() {
-            "warning"
-        } else {
-            "error"
-        };
-        eprintln!("{level}: {}", diagnostic.message);
+        print_outline_ungrouped_diagnostic(diagnostic);
     }
     for ((source_path, warning), grouped) in block_references {
         let level = if warning { "warning" } else { "error" };
@@ -1214,7 +1210,7 @@ fn print_outline_diagnostics(diagnostics: &[vulcan_app::export::outline::Outline
                 "{level}: {count} Obsidian block-reference {noun} in {source_path} cannot be represented by Outline"
             );
             eprintln!(
-                "hint: rerun with --block-reference-policy annotated-text to preserve labels and destinations, or plain-text for labels only"
+                "hint: rerun with --block-reference-policy annotated-text to preserve labels and destinations, plain-text for labels only, or custom with --link-transform"
             );
         }
         for diagnostic in grouped.iter().take(3) {
@@ -1244,7 +1240,7 @@ fn print_outline_diagnostics(diagnostics: &[vulcan_app::export::outline::Outline
                 "{level}: {count} {noun} in {source_path} resolve to notes outside the publication query"
             );
             eprintln!(
-                "hint: rerun with --excluded-target-policy annotated-text to preserve labels and destinations, or plain-text for labels only"
+                "hint: rerun with --excluded-target-policy annotated-text to preserve labels and destinations, plain-text for labels only, or custom with --link-transform"
             );
         }
         for diagnostic in grouped.iter().take(3) {
@@ -1262,12 +1258,40 @@ fn print_outline_diagnostics(diagnostics: &[vulcan_app::export::outline::Outline
     }
 }
 
+fn print_outline_ungrouped_diagnostic(diagnostic: &vulcan_app::export::outline::OutlineDiagnostic) {
+    use vulcan_app::export::outline::OutlineDiagnosticKind;
+
+    let level = if diagnostic.is_warning() {
+        "warning"
+    } else {
+        "error"
+    };
+    if diagnostic.kind == OutlineDiagnosticKind::TransformFailure {
+        if let (Some(source_path), Some(line), Some(column)) = (
+            diagnostic.source_path.as_deref(),
+            diagnostic.line,
+            diagnostic.column,
+        ) {
+            eprintln!(
+                "{level}: {source_path}:{line}:{column}: {}",
+                diagnostic.message
+            );
+            return;
+        }
+    }
+    eprintln!("{level}: {}", diagnostic.message);
+}
+
 fn outline_fallback_rendering(
     diagnostics: &[&vulcan_app::export::outline::OutlineDiagnostic],
 ) -> &'static str {
     use vulcan_app::export::outline::OutlineDiagnosticAction;
 
-    if diagnostics
+    if diagnostics.iter().any(|diagnostic| {
+        diagnostic.action == Some(OutlineDiagnosticAction::RenderedCustomTransform)
+    }) {
+        "custom text"
+    } else if diagnostics
         .iter()
         .any(|diagnostic| diagnostic.action == Some(OutlineDiagnosticAction::RenderedAnnotatedText))
     {
@@ -1342,7 +1366,7 @@ fn run_publish_command(
         collection_title,
         &prepared.notes,
         &prepared.links,
-        outline_publication_options(profile_config),
+        outline_publication_options(paths, profile_config)?,
     )
     .map_err(CliError::operation)?;
     let client = HttpOutlineClient::new(
@@ -1388,12 +1412,19 @@ fn run_publish_command(
 
 #[cfg(feature = "web")]
 fn outline_publication_options(
+    paths: &VaultPaths,
     profile: &vulcan_core::config::OutlinePublishProfileConfig,
-) -> OutlinePublicationOptions {
-    OutlinePublicationOptions {
+) -> Result<OutlinePublicationOptions, CliError> {
+    Ok(OutlinePublicationOptions {
         block_reference_policy: profile.block_reference_policy.unwrap_or_default(),
         excluded_target_policy: profile.excluded_target_policy.unwrap_or_default(),
-    }
+        link_transform: profile
+            .link_transform
+            .as_deref()
+            .map(|path| load_outline_link_transform(paths, path))
+            .transpose()
+            .map_err(CliError::operation)?,
+    })
 }
 
 #[cfg(not(feature = "web"))]
@@ -4103,6 +4134,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     remove_toc,
                     block_reference_policy,
                     excluded_target_policy,
+                    link_transform,
                     path,
                     dry_run,
                 } => {
@@ -4147,6 +4179,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                                 OutlineBlockReferencePolicyArg::AnnotatedText => {
                                     OutlineBlockReferencePolicyConfig::AnnotatedText
                                 }
+                                OutlineBlockReferencePolicyArg::Custom => {
+                                    OutlineBlockReferencePolicyConfig::Custom
+                                }
                             },
                             excluded_target_policy: match excluded_target_policy {
                                 OutlineExcludedTargetPolicyArg::Error => {
@@ -4158,7 +4193,15 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                                 OutlineExcludedTargetPolicyArg::AnnotatedText => {
                                     OutlineExcludedTargetPolicyConfig::AnnotatedText
                                 }
+                                OutlineExcludedTargetPolicyArg::Custom => {
+                                    OutlineExcludedTargetPolicyConfig::Custom
+                                }
                             },
+                            link_transform: link_transform
+                                .as_deref()
+                                .map(|path| load_outline_link_transform(&paths, path))
+                                .transpose()
+                                .map_err(CliError::operation)?,
                         },
                     )
                     .map_err(CliError::operation)?;
