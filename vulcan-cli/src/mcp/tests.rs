@@ -61,6 +61,7 @@ fn http_parser_rejects_oversized_content_length_before_body_read() {
     assert!(error.message.contains("exceeds maximum size"));
 }
 
+#[cfg(feature = "oauth")]
 fn oauth_options() -> McpHttpOptions {
     McpHttpOptions {
         bind: "127.0.0.1:8765".to_string(),
@@ -104,12 +105,12 @@ fn static_local_oauth_requires_registered_safe_redirects() {
     options.oauth_local_client_secret = Some("client-secret".to_string());
     options.oauth_local_approval_token = Some("approval".to_string());
 
-    let error = build_mcp_oauth_validator(&paths, &options)
+    let error = build_mcp_oauth_validator(&paths, None, &options)
         .expect_err("missing redirect registration must fail");
     assert!(error.to_string().contains("--oauth-local-redirect-uri"));
 
     options.oauth_local_redirect_uri = vec!["https://client.example/callback".to_string()];
-    assert!(build_mcp_oauth_validator(&paths, &options).is_ok());
+    assert!(build_mcp_oauth_validator(&paths, None, &options).is_ok());
     assert!(valid_oauth_redirect_uri("https://client.example/callback"));
     assert!(!valid_oauth_redirect_uri(
         "https://client.example/callback\r\nX-Injected: yes"
@@ -117,6 +118,7 @@ fn static_local_oauth_requires_registered_safe_redirects() {
     assert!(!valid_oauth_redirect_uri("http://client.example/callback"));
 }
 
+#[cfg(feature = "oauth")]
 #[test]
 fn protected_resource_metadata_path_accepts_root_and_endpoint_forms() {
     assert!(is_protected_resource_metadata_path(
@@ -133,6 +135,7 @@ fn protected_resource_metadata_path_accepts_root_and_endpoint_forms() {
     ));
 }
 
+#[cfg(feature = "oauth")]
 #[test]
 fn authorization_server_metadata_path_accepts_root_endpoint_and_oidc_forms() {
     assert!(is_authorization_server_metadata_path(
@@ -153,6 +156,7 @@ fn authorization_server_metadata_path_accepts_root_endpoint_and_oidc_forms() {
     ));
 }
 
+#[cfg(feature = "oauth")]
 #[test]
 fn local_oauth_user_bindings_parse_profile_and_email() {
     let users = parse_local_oauth_users(&[
@@ -171,30 +175,32 @@ fn local_oauth_user_bindings_parse_profile_and_email() {
     assert!(parse_local_oauth_users(&["missing-profile".to_string()]).is_err());
 }
 
+#[cfg(feature = "oauth")]
 #[test]
 fn oauth_options_reject_shared_token_and_plain_http_public_url() {
     let paths = VaultPaths::new(".");
     let mut with_shared_token = oauth_options();
     with_shared_token.auth_token = Some("secret".to_string());
-    assert!(build_mcp_oauth_validator(&paths, &with_shared_token)
+    assert!(build_mcp_oauth_validator(&paths, None, &with_shared_token)
         .unwrap_err()
         .to_string()
         .contains("mutually exclusive"));
 
     let mut plain_http = oauth_options();
     plain_http.public_url = Some("http://wiki.example.test/mcp".to_string());
-    assert!(build_mcp_oauth_validator(&paths, &plain_http)
+    assert!(build_mcp_oauth_validator(&paths, None, &plain_http)
         .unwrap_err()
         .to_string()
         .contains("HTTPS"));
 }
 
+#[cfg(feature = "oauth")]
 #[test]
 fn oauth_options_require_audience_and_allowed_principal() {
     let paths = VaultPaths::new(".");
     let mut missing_audience = oauth_options();
     missing_audience.oauth_audience.clear();
-    assert!(build_mcp_oauth_validator(&paths, &missing_audience)
+    assert!(build_mcp_oauth_validator(&paths, None, &missing_audience)
         .unwrap_err()
         .to_string()
         .contains("--oauth-audience"));
@@ -202,12 +208,13 @@ fn oauth_options_require_audience_and_allowed_principal() {
     let mut missing_principal = oauth_options();
     missing_principal.oauth_allowed_sub.clear();
     missing_principal.oauth_allowed_email.clear();
-    assert!(build_mcp_oauth_validator(&paths, &missing_principal)
+    assert!(build_mcp_oauth_validator(&paths, None, &missing_principal)
         .unwrap_err()
         .to_string()
         .contains("--oauth-allowed-sub"));
 }
 
+#[cfg(feature = "oauth")]
 #[test]
 fn local_oauth_dcr_generates_and_reuses_issuer_secret() {
     let tmp = tempfile::tempdir().expect("tempdir should be created");
@@ -220,9 +227,11 @@ fn local_oauth_dcr_generates_and_reuses_issuer_secret() {
     options.oauth_dcr = true;
     options.oauth_indieauth_me = Some("https://example.test/".to_string());
 
-    assert!(build_mcp_oauth_validator(&paths, &options)
-        .expect("DCR local issuer should initialize")
-        .is_some());
+    assert!(
+        build_mcp_oauth_validator(&paths, Some("readonly"), &options)
+            .expect("DCR local issuer should initialize")
+            .is_some()
+    );
     let secret_path = oauth_issuer_secret_path(&paths);
     let first_secret = fs::read_to_string(&secret_path).expect("issuer secret should be persisted");
     let signing_key_path = oauth_signing_key_path(&paths);
@@ -248,9 +257,11 @@ fn local_oauth_dcr_generates_and_reuses_issuer_secret() {
         assert_eq!(signing_mode, 0o600);
     }
 
-    assert!(build_mcp_oauth_validator(&paths, &options)
-        .expect("DCR local issuer should reuse persisted secret")
-        .is_some());
+    assert!(
+        build_mcp_oauth_validator(&paths, Some("readonly"), &options)
+            .expect("DCR local issuer should reuse persisted secret")
+            .is_some()
+    );
     let second_secret = fs::read_to_string(&secret_path).expect("issuer secret should still exist");
     let second_signing_key =
         fs::read_to_string(&signing_key_path).expect("signing key should still exist");
@@ -258,6 +269,94 @@ fn local_oauth_dcr_generates_and_reuses_issuer_secret() {
     assert_eq!(first_signing_key, second_signing_key);
 }
 
+#[cfg(feature = "oauth")]
+#[test]
+fn single_user_indieauth_allows_me_with_process_permissions() {
+    let tmp = tempfile::tempdir().expect("tempdir should be created");
+    let paths = VaultPaths::new(tmp.path());
+    let mut options = oauth_options();
+    options.oauth_issuer = None;
+    options.oauth_audience.clear();
+    options.oauth_jwks_url = None;
+    options.oauth_allowed_sub.clear();
+    options.oauth_local_subject = None;
+    options.oauth_dcr = true;
+    options.oauth_indieauth_me = Some("https://example.test/".to_string());
+
+    let mode = build_mcp_oauth_validator(&paths, Some("readonly"), &options)
+        .expect("single-user IndieAuth should initialize")
+        .expect("local OAuth should be enabled");
+    let McpOAuthMode::Local(issuer) = mode else {
+        panic!("expected local OAuth issuer");
+    };
+
+    let user = issuer
+        .user_for_subject("https://example.test")
+        .expect("configured IndieAuth identity should be allowed");
+    assert_eq!(user.subject, "https://example.test/");
+    assert_eq!(user.permission_profile, None);
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn single_user_indieauth_requires_permissions_or_explicit_binding() {
+    let tmp = tempfile::tempdir().expect("tempdir should be created");
+    let paths = VaultPaths::new(tmp.path());
+    let mut options = oauth_options();
+    options.oauth_issuer = None;
+    options.oauth_audience.clear();
+    options.oauth_jwks_url = None;
+    options.oauth_allowed_sub.clear();
+    options.oauth_local_subject = None;
+    options.oauth_dcr = true;
+    options.oauth_indieauth_me = Some("https://example.test/".to_string());
+
+    let error = build_mcp_oauth_validator(&paths, None, &options)
+        .expect_err("implicit IndieAuth user without permissions must fail");
+    assert!(error.to_string().contains("--permissions <profile>"));
+    assert!(error.to_string().contains("--oauth-local-user"));
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn explicit_indieauth_users_disable_the_single_user_default() {
+    let tmp = tempfile::tempdir().expect("tempdir should be created");
+    let paths = VaultPaths::new(tmp.path());
+    let mut options = oauth_options();
+    options.oauth_issuer = None;
+    options.oauth_audience.clear();
+    options.oauth_jwks_url = None;
+    options.oauth_allowed_sub.clear();
+    options.oauth_local_subject = None;
+    options.oauth_dcr = true;
+    options.oauth_indieauth_me = Some("https://owner.example/".to_string());
+    options.oauth_local_user = vec!["https://guest.example/=readonly".to_string()];
+
+    let mode = build_mcp_oauth_validator(&paths, Some("daily-wiki-agent"), &options)
+        .expect("multi-user IndieAuth should initialize")
+        .expect("local OAuth should be enabled");
+    let McpOAuthMode::Local(issuer) = mode else {
+        panic!("expected local OAuth issuer");
+    };
+
+    assert!(issuer.user_for_subject("https://owner.example/").is_none());
+    assert!(issuer.user_for_subject("https://guest.example/").is_some());
+}
+
+#[cfg(feature = "oauth")]
+#[test]
+fn indieauth_subject_mismatch_error_is_actionable() {
+    let response = indieauth_subject_not_allowed_response("https://other.example/");
+    let body = String::from_utf8(response.body).expect("response should be UTF-8");
+
+    assert_eq!(response.status, 403);
+    assert!(body.contains("https://other.example/"));
+    assert!(body.contains("--oauth-indieauth-me"));
+    assert!(body.contains("--permissions <profile>"));
+    assert!(body.contains("--oauth-local-user"));
+}
+
+#[cfg(feature = "oauth")]
 #[test]
 fn indieauth_redirect_includes_pkce_challenge() {
     let indieauth = LocalOAuthIndieAuthConfig {

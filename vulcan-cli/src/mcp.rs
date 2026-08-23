@@ -425,7 +425,7 @@ fn run_mcp_http_server(
     options: &McpHttpOptions,
 ) -> Result<(), CliError> {
     #[cfg(feature = "oauth")]
-    let oauth = build_mcp_oauth_validator(paths, options)?;
+    let oauth = build_mcp_oauth_validator(paths, requested_profile, options)?;
     #[cfg(not(feature = "oauth"))]
     reject_mcp_oauth_options_when_disabled(options)?;
     #[cfg(feature = "oauth")]
@@ -3012,6 +3012,7 @@ fn parse_mcp_http_bind_addr(bind: &str, allow_remote: bool) -> Result<SocketAddr
 #[cfg(feature = "oauth")]
 fn build_mcp_oauth_validator(
     paths: &VaultPaths,
+    requested_profile: Option<&str>,
     options: &McpHttpOptions,
 ) -> Result<Option<McpOAuthMode>, CliError> {
     let local_requested = options.oauth_local_client_id.is_some()
@@ -3064,9 +3065,28 @@ fn build_mcp_oauth_validator(
                 "--oauth-local-approval-token is required unless IndieAuth is configured",
             ));
         }
+        let implicit_indieauth_subject = if options.oauth_local_user.is_empty()
+            && options.oauth_local_subject.is_none()
+            && requested_profile.is_some()
+        {
+            options.oauth_indieauth_me.as_deref()
+        } else {
+            None
+        };
+        if options.oauth_indieauth_me.is_some()
+            && options.oauth_local_user.is_empty()
+            && options.oauth_local_subject.is_none()
+            && requested_profile.is_none()
+        {
+            return Err(CliError::operation(
+                "single-user IndieAuth requires --permissions <profile>; alternatively add \
+                 --oauth-local-user <subject>=<profile> for per-user permissions",
+            ));
+        }
         let subject = options
             .oauth_local_subject
             .as_deref()
+            .or(implicit_indieauth_subject)
             .unwrap_or("local-user");
         return LocalOAuthIssuer::from_config(LocalOAuthIssuerConfig {
             public_url: public_url.to_string(),
@@ -3524,7 +3544,7 @@ fn handle_local_oauth_indieauth_callback(
         Err(error) => return oauth_plain_response(400, &error.to_string()),
     };
     let Some(user) = issuer.user_for_subject(&subject) else {
-        return oauth_plain_response(403, "IndieAuth subject is not allowed");
+        return indieauth_subject_not_allowed_response(&subject);
     };
     let code = Ulid::new().to_string();
     context
@@ -3552,6 +3572,19 @@ fn handle_local_oauth_indieauth_callback(
         body: Vec::new(),
         extra_headers: vec![("Location".to_string(), location)],
     }
+}
+
+#[cfg(feature = "oauth")]
+fn indieauth_subject_not_allowed_response(subject: &str) -> McpHttpResponse {
+    oauth_plain_response(
+        403,
+        &format!(
+            "IndieAuth returned subject {subject:?}, but it is not authorized. For a \
+             single-user server, use --oauth-indieauth-me {subject:?} with --permissions \
+             <profile>. For per-user access, add --oauth-local-user \
+             {subject:?}=<profile>."
+        ),
+    )
 }
 
 #[cfg(feature = "oauth")]

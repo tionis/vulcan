@@ -11,7 +11,7 @@ Preferred direct ChatGPT shape:
 1. Run Vulcan on a private bind:
 
    ```sh
-   vulcan mcp \
+   vulcan --permissions daily-wiki-agent mcp \
      --transport http \
      --bind 127.0.0.1:8765 \
      --endpoint /mcp \
@@ -19,8 +19,6 @@ Preferred direct ChatGPT shape:
      --public-url https://wiki.example.com/mcp \
      --oauth-dcr \
      --oauth-indieauth-me https://example.com/ \
-     --oauth-local-subject fallback \
-     --oauth-local-user https://example.com/=daily-wiki-agent,you@example.com \
      --tool-pack notes-read,notes-write,notes-manage,search,status,daily,tasks,custom,index
    ```
 
@@ -30,9 +28,9 @@ Preferred direct ChatGPT shape:
 
 `daily-wiki-agent` is the built-in pilot profile for this shape. It allows full vault note/task edits, config reads, and explicit index maintenance, with no shell, host execution, git mutation, refactor, or network access.
 
-The recommended ChatGPT path is Vulcan's built-in MCP OAuth issuer. Vulcan owns ChatGPT-facing authorization-code + PKCE, dynamic client registration, short-lived MCP access tokens, and bearer-token validation. Human login can be delegated to an upstream IndieAuth server by setting `--oauth-indieauth-me` to your identity URL; Vulcan discovers `indieauth-metadata` from that profile URL and falls back to legacy `authorization_endpoint` / `token_endpoint` links. The upstream IndieAuth hop also uses PKCE. Vulcan maps the returned IndieAuth subject to a permission profile with `--oauth-local-user <subject>=<profile>[,<email>]`; URL subjects are matched canonically, so `https://example.com` and `https://example.com/` are equivalent.
+The recommended ChatGPT path is Vulcan's built-in MCP OAuth issuer. Vulcan owns ChatGPT-facing authorization-code + PKCE, dynamic client registration, short-lived MCP access tokens, and bearer-token validation. Human login can be delegated to an upstream IndieAuth server by setting `--oauth-indieauth-me` to your identity URL; Vulcan discovers `indieauth-metadata` from that profile URL and falls back to legacy `authorization_endpoint` / `token_endpoint` links. The upstream IndieAuth hop also uses PKCE.
 
-For per-user permission binding, omit the process-level `--permissions` flag and bind each allowed IndieAuth subject with `--oauth-local-user`. If `--permissions` is provided, it remains the process-wide profile for all MCP sessions.
+For the common single-user setup, `--oauth-indieauth-me <identity>` together with `--permissions <profile>` is sufficient: Vulcan automatically allows that identity under the process-wide profile. For multi-user or per-user permissions, omit the process-level `--permissions` flag and bind each allowed subject with `--oauth-local-user <subject>=<profile>[,<email>]`. Explicit user bindings disable the single-user default. URL subjects are matched canonically, so `https://example.com` and `https://example.com/` are equivalent. If the IndieAuth provider returns an unexpected subject, the callback error reports that value and gives the exact configuration forms needed to authorize it.
 
 When `--oauth-dcr` is enabled, ChatGPT can register dynamically instead of being configured with static client credentials. Vulcan generates and stores the local issuer signing secret in `.vulcan/mcp-oauth-issuer-secret` unless `--oauth-local-client-secret` is provided as an explicit override. `--oauth-local-approval-token` remains available as a simple fallback when IndieAuth is not configured.
 

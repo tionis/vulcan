@@ -1249,7 +1249,7 @@ Examples:
   vulcan mcp --vault ~/notes --tool-pack-mode adaptive
   vulcan mcp --vault ~/notes --request-timeout 30s
   vulcan mcp --transport http --bind 127.0.0.1:8765
-  vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-dcr --oauth-indieauth-me https://example.com/ --oauth-local-user https://example.com/=daily-wiki-agent
+  vulcan --permissions daily-wiki-agent mcp --transport http --public-url https://wiki.example.com/mcp --oauth-dcr --oauth-indieauth-me https://example.com/
   vulcan mcp --transport http --public-url https://wiki.example.com/mcp --oauth-issuer https://auth.example.com/application/o/vulcan/ --oauth-audience vulcan-mcp --oauth-allowed-email you@example.com
   vulcan mcp | jq .";
 
@@ -5678,7 +5678,7 @@ Examples:
         oauth_indieauth_redirect_uri: Option<String>,
         #[arg(
             long,
-            help = "IndieAuth identity URL used to discover login endpoints and sent as the me parameter"
+            help = "IndieAuth identity URL used for discovery and login; with --permissions and no explicit user bindings, this identity is automatically allowed"
         )]
         oauth_indieauth_me: Option<String>,
         #[arg(

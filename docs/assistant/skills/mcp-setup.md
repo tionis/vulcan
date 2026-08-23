@@ -20,10 +20,11 @@ debugging, tool pack selection, and permission-profile questions.
 ## Recommended Flow
 
 1. Start local first: `vulcan mcp --transport stdio` or `--transport http`.
-2. For remote ChatGPT access, use HTTPS, `--public-url`, embedded OAuth/IndieAuth, DCR when useful, and a narrow permission profile.
-3. Choose tool packs explicitly with repeated `--tool-pack` or comma-separated pack names.
-4. Use `vulcan describe --format mcp --tool-pack ...` to inspect the exposed static registry.
-5. Use MCP resources to inspect prompts, skills, skill commands, and pack catalogs from the client.
+2. For single-user ChatGPT access, use HTTPS, `--public-url`, `--oauth-dcr`, `--oauth-indieauth-me <identity>`, and a narrow `--permissions <profile>`. The configured identity is allowed automatically.
+3. For multi-user access, omit process-level `--permissions` and bind each identity with `--oauth-local-user <subject>=<profile>`.
+4. Choose tool packs explicitly with repeated `--tool-pack` or comma-separated pack names.
+5. Use `vulcan describe --format mcp --tool-pack ...` to inspect the exposed static registry.
+6. Use MCP resources to inspect prompts, skills, skill commands, and pack catalogs from the client.
 
 ## Guardrails
 
@@ -31,6 +32,7 @@ debugging, tool pack selection, and permission-profile questions.
 - Keep Vulcan bound to loopback or a private interface behind the HTTPS front door unless you have a deliberate deployment reason.
 - Tool packs are not authorization. Permission profiles still decide what is visible and callable.
 - If ChatGPT cannot start auth, check issuer metadata, redirect URI, PKCE, allowed principals, and public URL consistency before changing tool permissions.
+- If IndieAuth returns an unauthorized subject, use the subject shown in Vulcan's callback error to correct `--oauth-indieauth-me` or an explicit `--oauth-local-user` binding.
 
 ## Example Moves
 
