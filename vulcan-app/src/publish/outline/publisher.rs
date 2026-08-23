@@ -5,7 +5,7 @@ use super::{
 };
 use crate::export::outline::{
     planned_document_references_attachment, render_remote_document_content_with_links,
-    OutlinePublicationPlan,
+    OutlineDiagnostic, OutlinePublicationPlan,
 };
 use crate::AppError;
 use serde::Serialize;
@@ -19,6 +19,7 @@ pub struct OutlinePublishReport {
     pub dry_run: bool,
     pub applied: bool,
     pub conflicts: usize,
+    pub diagnostics: Vec<OutlineDiagnostic>,
     #[serde(flatten)]
     pub plan: OutlinePublishPlan,
 }
@@ -35,7 +36,7 @@ pub fn publish_outline(
     if dry_run {
         let state = load_outline_state(paths, profile, collection_id)?;
         let plan = plan_outline_reconciliation(api, profile, collection_id, publication, &state)?;
-        return Ok(report(plan, true, false));
+        return Ok(report(plan, publication.diagnostics.clone(), true, false));
     }
 
     let lock = lock_outline_state(paths, profile)?;
@@ -43,7 +44,7 @@ pub fn publish_outline(
     let mut plan = plan_outline_reconciliation(api, profile, collection_id, publication, &state)?;
     plan.dry_run = false;
     if plan.has_conflicts() {
-        return Ok(report(plan, false, false));
+        return Ok(report(plan, publication.diagnostics.clone(), false, false));
     }
 
     for document in &publication.documents {
@@ -276,10 +277,15 @@ pub fn publish_outline(
         lock.save(&state)?;
     }
 
-    Ok(report(plan, false, true))
+    Ok(report(plan, publication.diagnostics.clone(), false, true))
 }
 
-fn report(plan: OutlinePublishPlan, dry_run: bool, applied: bool) -> OutlinePublishReport {
+fn report(
+    plan: OutlinePublishPlan,
+    diagnostics: Vec<OutlineDiagnostic>,
+    dry_run: bool,
+    applied: bool,
+) -> OutlinePublishReport {
     let conflicts = plan
         .actions
         .iter()
@@ -289,6 +295,7 @@ fn report(plan: OutlinePublishPlan, dry_run: bool, applied: bool) -> OutlinePubl
         dry_run,
         applied,
         conflicts,
+        diagnostics,
         plan,
     }
 }
@@ -331,7 +338,8 @@ fn attachment_content_type(path: &str) -> &'static str {
 mod tests {
     use super::*;
     use crate::export::outline::{
-        OutlinePlannedAttachment, OutlinePlannedDocument, SUPPORTED_OUTLINE_VERSION,
+        OutlineDiagnosticKind, OutlinePlannedAttachment, OutlinePlannedDocument,
+        SUPPORTED_OUTLINE_VERSION,
     };
     use crate::publish::outline::{OutlineRemoteAttachment, OutlineRemoteDocument};
     use std::cell::RefCell;
@@ -509,6 +517,31 @@ mod tests {
         assert!(mutations.iter().any(|entry| entry.starts_with("move:")));
         assert!(mutations.iter().any(|entry| entry == "update:Moved"));
         assert!(mutations.iter().any(|entry| entry.starts_with("archive:")));
+    }
+
+    #[test]
+    fn publish_report_carries_publication_diagnostics() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        let api = MockApi::default();
+        let mut publication = plan(vec![document(
+            "Pantheons/Pantheons.md",
+            "Pantheons",
+            "# Pantheons\n",
+            None,
+        )]);
+        publication.diagnostics.push(OutlineDiagnostic {
+            kind: OutlineDiagnosticKind::MissingFolderNote,
+            source_path: Some("Pantheons/Pantheons.md".to_string()),
+            target: Some("Pantheons".to_string()),
+            message: "generated an export-only placeholder".to_string(),
+        });
+
+        let report = publish_outline(&paths, &api, "wiki", "collection", &publication, true)
+            .expect("dry-run publication");
+
+        assert_eq!(report.diagnostics, publication.diagnostics);
+        assert!(report.diagnostics[0].is_warning());
     }
 
     #[test]

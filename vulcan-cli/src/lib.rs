@@ -1154,6 +1154,17 @@ fn slash_display_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
+fn print_outline_diagnostics(diagnostics: &[vulcan_app::export::outline::OutlineDiagnostic]) {
+    for diagnostic in diagnostics {
+        let level = if diagnostic.is_warning() {
+            "warning"
+        } else {
+            "error"
+        };
+        eprintln!("{level}: {}", diagnostic.message);
+    }
+}
+
 #[cfg(feature = "web")]
 fn run_publish_command(
     cli: &Cli,
@@ -1237,6 +1248,7 @@ fn run_publish_command(
     match cli.output {
         OutputFormat::Json => print_json(&report)?,
         OutputFormat::Human | OutputFormat::Markdown => {
+            print_outline_diagnostics(&report.diagnostics);
             for action in &report.plan.actions {
                 println!(
                     "{:?}\t{}\t{}",
@@ -4003,14 +4015,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     match cli.output {
                         OutputFormat::Json => print_json(&report)?,
                         OutputFormat::Human | OutputFormat::Markdown => {
-                            for diagnostic in &report.plan.diagnostics {
-                                let level = if diagnostic.is_warning() {
-                                    "warning"
-                                } else {
-                                    "error"
-                                };
-                                eprintln!("{level}: {}", diagnostic.message);
-                            }
+                            print_outline_diagnostics(&report.plan.diagnostics);
                             if valid {
                                 if report.wrote_archive {
                                     println!("{}", report.path);

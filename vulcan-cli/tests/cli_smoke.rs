@@ -14800,7 +14800,6 @@ fn publish_outline_dry_run_reports_creates_without_remote_or_state_mutation() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(vault_root.join("Projects")).expect("projects folder");
-    fs::write(vault_root.join("Projects/Projects.md"), "# Projects\n").expect("folder note");
     fs::write(vault_root.join("Projects/Child.md"), "# Child\n").expect("child note");
     run_scan(&vault_root);
 
@@ -14858,8 +14857,73 @@ max_retries = 0
     assert_eq!(report["dry_run"], true);
     assert_eq!(report["applied"], false);
     assert_eq!(report["conflicts"], 0);
+    assert_eq!(report["diagnostics"][0]["kind"], "missing_folder_note");
+    assert!(report["diagnostics"][0]["message"]
+        .as_str()
+        .expect("diagnostic message")
+        .contains("generated an export-only placeholder"));
     assert_eq!(report["actions"][0]["kind"], "create");
     assert!(!vault_root.join(".vulcan/publish").exists());
+}
+
+#[test]
+fn publish_outline_human_output_prints_folder_placeholder_warning() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Pantheons")).expect("pantheons folder");
+    fs::write(vault_root.join("Pantheons/Zeus.md"), "# Zeus\n").expect("child note");
+    run_scan(&vault_root);
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("mock Outline listener");
+    let address = listener.local_addr().expect("mock Outline address");
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("Outline list request");
+        let mut request = [0_u8; 8192];
+        let read = stream.read(&mut request).expect("read Outline request");
+        let request = String::from_utf8_lossy(&request[..read]);
+        assert!(request.contains("/api/documents.list"));
+        let body = r#"{"data":[],"pagination":{"total":0}}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .expect("write Outline response");
+    });
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        format!(
+            r#"
+[publish.outline.profiles.wiki]
+base_url = "http://{address}"
+collection_id = "collection"
+collection_title = "Wiki"
+query = "from notes"
+token_env = "VULCAN_TEST_OUTLINE_TOKEN"
+max_retries = 0
+"#
+        ),
+    )
+    .expect("Outline config");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("VULCAN_TEST_OUTLINE_TOKEN", "test-outline-token")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "publish",
+            "outline",
+            "wiki",
+            "--dry-run",
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "warning: folder `Pantheons` has no selected configured folder note; generated an export-only placeholder",
+        ));
+    handle.join().expect("mock Outline server should join");
 }
 
 #[test]
