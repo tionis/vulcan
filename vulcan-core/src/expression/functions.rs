@@ -216,7 +216,7 @@ fn func_length(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
 }
 
 fn func_object(args: &[Expr], ctx: &EvalContext) -> Result<Value, String> {
-    if args.len() % 2 != 0 {
+    if !args.len().is_multiple_of(2) {
         return Err("object() requires an even number of arguments".to_string());
     }
 
@@ -1596,7 +1596,7 @@ fn comma_separate(value: &str) -> String {
     let chars: Vec<char> = value.chars().collect();
     let mut result = String::new();
     for (index, ch) in chars.iter().enumerate() {
-        if index > 0 && (chars.len() - index) % 3 == 0 {
+        if index > 0 && (chars.len() - index).is_multiple_of(3) {
             result.push(',');
         }
         result.push(*ch);

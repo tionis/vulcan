@@ -925,7 +925,7 @@ fn vector_to_blob(vector: &[f32]) -> Vec<u8> {
 }
 
 fn blob_to_vector(bytes: &[u8]) -> Result<Vec<f32>, String> {
-    if bytes.len() % std::mem::size_of::<f32>() != 0 {
+    if !bytes.len().is_multiple_of(std::mem::size_of::<f32>()) {
         return Err(format!(
             "vector blob length {} is not divisible by {}",
             bytes.len(),

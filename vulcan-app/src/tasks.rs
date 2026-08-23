@@ -4325,7 +4325,7 @@ fn suggested_task_pomodoro_break(
     completed_work_sessions: usize,
 ) -> (String, usize) {
     let interval = config.tasknotes.pomodoro.long_break_interval.max(1);
-    if completed_work_sessions > 0 && completed_work_sessions % interval == 0 {
+    if completed_work_sessions > 0 && completed_work_sessions.is_multiple_of(interval) {
         (
             "long-break".to_string(),
             config.tasknotes.pomodoro.long_break.max(1),
