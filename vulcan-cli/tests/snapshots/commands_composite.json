@@ -5376,6 +5376,20 @@
                 ]
               },
               {
+                "help": "How to publish Obsidian block-reference links: error or plain-text",
+                "id": "block_reference_policy",
+                "long": "block-reference-policy",
+                "possible_values": [
+                  "error",
+                  "plain-text"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "BLOCK_REFERENCE_POLICY"
+                ]
+              },
+              {
                 "help": "Destination Outline ZIP archive",
                 "id": "path",
                 "long": "path",

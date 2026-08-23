@@ -2101,12 +2101,21 @@ pub struct OutlinePublishProfileConfig {
     pub max_retries: Option<u32>,
     pub page_size: Option<usize>,
     pub remove_toc: Option<bool>,
+    pub block_reference_policy: Option<OutlineBlockReferencePolicyConfig>,
     #[serde(
         default,
         rename = "content_transforms",
         skip_serializing_if = "Option::is_none"
     )]
     pub content_transform_rules: Option<Vec<ContentTransformRuleConfig>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutlineBlockReferencePolicyConfig {
+    #[default]
+    Error,
+    PlainText,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -3710,6 +3719,9 @@ fn merge_outline_publish_profile_config(
     }
     if let Some(remove_toc) = profile.remove_toc {
         target.remove_toc = Some(remove_toc);
+    }
+    if let Some(block_reference_policy) = profile.block_reference_policy {
+        target.block_reference_policy = Some(block_reference_policy);
     }
     if let Some(content_transform_rules) = profile.content_transform_rules {
         target.content_transform_rules = Some(content_transform_rules);

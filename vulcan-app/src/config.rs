@@ -1203,6 +1203,14 @@ fn dynamic_config_descriptors() -> Vec<ConfigDescriptor> {
         &[],
     );
     push(
+        "publish.outline.profiles.<name>.block_reference_policy",
+        ConfigValueKind::Enum,
+        ConfigTargetSupport::SharedAndLocal,
+        Some("vulcan config set"),
+        Some(TomlValue::String("error".to_string())),
+        &["error", "plain-text"],
+    );
+    push(
         "publish.outline.profiles.<name>.content_transforms",
         ConfigValueKind::Array,
         ConfigTargetSupport::SharedAndLocal,

@@ -3102,6 +3102,7 @@ timeout_seconds = 30
 max_retries = 3
 page_size = 100
 remove_toc = true
+block_reference_policy = "plain-text"
 "#,
     )
     .expect("shared config should be written");
@@ -3133,6 +3134,10 @@ timeout_seconds = 5
     assert_eq!(profile.max_retries, Some(3));
     assert_eq!(profile.page_size, Some(100));
     assert_eq!(profile.remove_toc, Some(true));
+    assert_eq!(
+        profile.block_reference_policy,
+        Some(OutlineBlockReferencePolicyConfig::PlainText)
+    );
 }
 
 #[test]
@@ -3141,6 +3146,7 @@ fn default_outline_publish_config_is_empty_and_template_never_contains_a_token()
     let template = default_config_template();
     assert!(template.contains("[publish.outline.profiles.wiki]"));
     assert!(template.contains("token_env = \"OUTLINE_API_TOKEN\""));
+    assert!(template.contains("block_reference_policy = \"error\""));
     assert!(!template.contains("api_token ="));
 }
 

@@ -534,6 +534,11 @@ mod tests {
             kind: OutlineDiagnosticKind::MissingFolderNote,
             source_path: Some("Pantheons/Pantheons.md".to_string()),
             target: Some("Pantheons".to_string()),
+            line: None,
+            column: None,
+            byte_offset: None,
+            policy: None,
+            action: None,
             message: "generated an export-only placeholder".to_string(),
         });
 

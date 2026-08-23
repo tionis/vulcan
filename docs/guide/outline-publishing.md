@@ -7,7 +7,8 @@ Vulcan can package a selected Markdown hierarchy for Outline and can publish the
 ```sh
 vulcan export outline-zip \
   --collection-title "Wiki" \
-  --path wiki.zip
+  --path wiki.zip \
+  --block-reference-policy plain-text
 
 vulcan --output json export outline-zip \
   --collection-title "Wiki" \
@@ -38,13 +39,13 @@ This represents `Projects/Projects.md`. Use `name = "index"`, `"README"`, or `"r
 
 The exporter uses the publication query and content-transform pipeline, then applies the shared Outline compatibility pass. YAML frontmatter is stripped from the published body, Obsidian callouts are converted to Outline `:::info`, `:::tip`, `:::success`, or `:::warning` fences, and resolved note and attachment references become Markdown links suitable for Outline import. Pass `--remove-toc` to also strip Obsidian-style lists made entirely of current-note heading links. The transformed content is reparsed before packaging, so removed metadata and sections cannot retain links or copy otherwise-unused assets. Referenced attachments are copied below a deterministic `uploads/<source-path-hash>/` path. The source vault is never modified.
 
-Planning fails on duplicate folder notes, unsafe or case-insensitive archive collisions, unresolved internal links, links to excluded notes, missing attachments, and Obsidian block-reference targets. Missing hierarchy parents are non-fatal warnings backed by generated placeholder documents. `--dry-run` writes no archive and includes the complete deterministic plan and diagnostics in JSON output. Existing output archives are never overwritten.
+Planning fails on duplicate folder notes, unsafe or case-insensitive archive collisions, unresolved internal links, links to excluded notes, and missing attachments. Obsidian block-reference targets use `--block-reference-policy error|plain-text`: the backward-compatible `error` default fails closed, while `plain-text` removes the unsupported target and preserves the visible label. The policy handles both Markdown links such as `[label](#^block-id)` and wikilinks such as `[[Note#^block-id|label]]`. Diagnostics include the original target and source byte/line/column. Missing hierarchy parents are non-fatal warnings backed by generated placeholder documents. `--dry-run` writes no archive and includes the complete deterministic plan and diagnostics in JSON output. Existing output archives are never overwritten.
 
 ### ZIP limitations
 
 - Compatibility is based on Outline 1.9.x's upstream `ExportDocumentTreeTask` and `ExportMarkdownZipTask` sibling-file layout and filename encoding.
 - Obsidian note embeds become normal Markdown links because Outline has no equivalent transclusion in imported Markdown.
-- Block-reference targets are rejected. Heading targets are retained as URL fragments.
+- Block-reference targets are rejected by default or downgraded to their visible label with `--block-reference-policy plain-text`. Heading targets are retained as URL fragments.
 - Generated folder placeholders contain only a heading and exist only in the ZIP or remote Outline collection. Add a real note matching `[folder_notes]` when the hierarchy needs authored landing-page content.
 
 ## API publishing
@@ -62,6 +63,7 @@ timeout_seconds = 30
 max_retries = 3
 page_size = 100
 remove_toc = false
+block_reference_policy = "error" # error | plain-text
 ```
 
 The token value is not a valid profile field. Put it in the named environment variable; device-specific non-secret overrides such as `base_url` or `token_env` may go in ignored `.vulcan/config.local.toml`. Then preview and apply:
@@ -71,7 +73,7 @@ OUTLINE_API_TOKEN=... vulcan --output json publish outline wiki --dry-run
 OUTLINE_API_TOKEN=... vulcan --output json publish outline wiki
 ```
 
-The profile must select exactly one of `query` or `query_json`. It may also contain the same ordered `[[publish.outline.profiles.wiki.content_transforms]]` rules used by export profiles. Set `remove_toc = true` to enable the optional heading-link TOC cleanup. Publishing uses the same folder-note, callout/frontmatter compatibility, resolved-link, attachment, collision, and excluded-target validation as ZIP export. Generated folder-placeholder warnings are printed in human output and included in the JSON publish report's `diagnostics` array. Unlike ZIP-relative links, direct API publication rewrites links between managed documents to `/doc/<remote-id>` targets after durable mappings are known.
+The profile must select exactly one of `query` or `query_json`. It may also contain the same ordered `[[publish.outline.profiles.wiki.content_transforms]]` rules used by export profiles. Set `remove_toc = true` to enable the optional heading-link TOC cleanup. Set `block_reference_policy = "plain-text"` to preserve block-link labels instead of rejecting the plan. Publishing uses the same folder-note, callout/frontmatter compatibility, resolved-link, attachment, collision, and excluded-target validation as ZIP export. Generated folder-placeholder warnings are printed in human output and included in the JSON publish report's `diagnostics` array. Unlike ZIP-relative links, direct API publication rewrites links between managed documents to `/doc/<remote-id>` targets after durable mappings are known.
 
 Vulcan uses Outline's documented `documents.list`, `documents.info`, `documents.create`, `documents.update`, `documents.move`, `documents.archive`, and `attachments.create` POST APIs. Collection listing is paginated. Requests have bounded timeouts and retries; credentials and response bodies that appear credential-bearing are not included in errors. Attachment uploads support Outline's returned POST-form and PUT upload modes. See Outline's [official API documentation](https://docs.getoutline.com/s/guide/doc/api-1rEIXDfLF6) and [OpenAPI specification](https://github.com/outline/openapi/blob/main/spec3.yml).
 

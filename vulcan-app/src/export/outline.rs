@@ -8,6 +8,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use vulcan_core::config::load_vault_config;
+use vulcan_core::config::OutlineBlockReferencePolicyConfig;
 use vulcan_core::folder_notes::FolderNotesConfig;
 use vulcan_core::VaultPaths;
 use zip::write::FileOptions;
@@ -32,14 +33,37 @@ pub struct OutlineDiagnostic {
     pub kind: OutlineDiagnosticKind,
     pub source_path: Option<String>,
     pub target: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub byte_offset: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub policy: Option<OutlineBlockReferencePolicyConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<OutlineDiagnosticAction>,
     pub message: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutlineDiagnosticAction {
+    RenderedPlainText,
+    RerunWithPlainText,
 }
 
 impl OutlineDiagnostic {
     #[must_use]
     pub fn is_warning(&self) -> bool {
         self.kind == OutlineDiagnosticKind::MissingFolderNote
+            || self.action == Some(OutlineDiagnosticAction::RenderedPlainText)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct OutlinePublicationOptions {
+    pub block_reference_policy: OutlineBlockReferencePolicyConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -162,17 +186,24 @@ pub fn plan_outline_publication(
     notes: &[ExportedNoteDocument],
     links: &[ExportLinkRecord],
 ) -> Result<OutlinePublicationPlan, AppError> {
+    plan_outline_publication_with_options(
+        paths,
+        collection_title,
+        notes,
+        links,
+        OutlinePublicationOptions::default(),
+    )
+}
+
+pub fn plan_outline_publication_with_options(
+    paths: &VaultPaths,
+    collection_title: &str,
+    notes: &[ExportedNoteDocument],
+    links: &[ExportLinkRecord],
+    options: OutlinePublicationOptions,
+) -> Result<OutlinePublicationPlan, AppError> {
     let collection_directory = serialize_outline_filename(collection_title.trim());
-    let mut diagnostics = Vec::new();
-    if collection_directory.is_empty() || !is_safe_relative_archive_path(&collection_directory) {
-        diagnostics.push(OutlineDiagnostic {
-            kind: OutlineDiagnosticKind::UnsafePath,
-            source_path: None,
-            target: Some(collection_title.to_string()),
-            message: "collection title does not produce a safe Outline archive directory"
-                .to_string(),
-        });
-    }
+    let mut diagnostics = collection_path_diagnostics(collection_title, &collection_directory);
 
     let folder_notes_config = load_vault_config(paths).config.folder_notes;
     let mut folder_notes = identify_folder_notes(notes, &folder_notes_config, &mut diagnostics);
@@ -194,8 +225,18 @@ pub fn plan_outline_publication(
         .iter()
         .map(|document| document.source_path.clone())
         .collect::<BTreeSet<_>>();
-    let attachment_sources =
-        validate_links_and_collect_attachments(paths, links, &selected_paths, &mut diagnostics);
+    let document_contents = document_paths
+        .iter()
+        .map(|document| (document.source_path.as_str(), document.content.as_str()))
+        .collect::<HashMap<_, _>>();
+    let attachment_sources = validate_links_and_collect_attachments(
+        paths,
+        links,
+        &selected_paths,
+        &document_contents,
+        options.block_reference_policy,
+        &mut diagnostics,
+    );
     let attachments = plan_attachments(
         paths,
         &collection_directory,
@@ -230,6 +271,7 @@ pub fn plan_outline_publication(
                     .unwrap_or_default(),
                 &document_target_paths,
                 &attachment_target_paths,
+                options.block_reference_policy,
             );
             OutlinePlannedDocument {
                 source_path: document.source_path,
@@ -258,6 +300,28 @@ pub fn plan_outline_publication(
         attachments,
         diagnostics,
     })
+}
+
+fn collection_path_diagnostics(
+    collection_title: &str,
+    collection_directory: &str,
+) -> Vec<OutlineDiagnostic> {
+    if collection_directory.is_empty() || !is_safe_relative_archive_path(collection_directory) {
+        vec![OutlineDiagnostic {
+            kind: OutlineDiagnosticKind::UnsafePath,
+            source_path: None,
+            target: Some(collection_title.to_string()),
+            line: None,
+            column: None,
+            byte_offset: None,
+            policy: None,
+            action: None,
+            message: "collection title does not produce a safe Outline archive directory"
+                .to_string(),
+        }]
+    } else {
+        Vec::new()
+    }
 }
 
 pub fn write_outline_zip(
@@ -359,6 +423,11 @@ fn identify_folder_notes(
                 kind: OutlineDiagnosticKind::DuplicateFolderNote,
                 source_path: Some(paths.join(", ")),
                 target: Some(folder.clone()),
+                line: None,
+                column: None,
+                byte_offset: None,
+                policy: None,
+                action: None,
                 message: format!(
                     "folder `{folder}` has multiple notes matching the configured folder-note convention"
                 ),
@@ -403,6 +472,11 @@ fn complete_folder_note_hierarchy(
             kind: OutlineDiagnosticKind::MissingFolderNote,
             source_path: Some(source_path),
             target: Some(folder.clone()),
+            line: None,
+            column: None,
+            byte_offset: None,
+            policy: None,
+            action: None,
             message: format!(
                 "folder `{folder}` has no selected configured folder note; generated an export-only placeholder"
             ),
@@ -443,6 +517,11 @@ fn plan_document_paths(
                 kind: OutlineDiagnosticKind::UnsafePath,
                 source_path: Some(note.note.document_path.clone()),
                 target: None,
+                line: None,
+                column: None,
+                byte_offset: None,
+                policy: None,
+                action: None,
                 message: "note path is not a safe relative archive path".to_string(),
             });
             continue;
@@ -498,6 +577,8 @@ fn validate_links_and_collect_attachments(
     paths: &VaultPaths,
     links: &[ExportLinkRecord],
     selected_paths: &BTreeSet<String>,
+    document_contents: &HashMap<&str, &str>,
+    block_reference_policy: OutlineBlockReferencePolicyConfig,
     diagnostics: &mut Vec<OutlineDiagnostic>,
 ) -> BTreeSet<String> {
     let mut attachments = BTreeSet::new();
@@ -505,14 +586,41 @@ fn validate_links_and_collect_attachments(
         if link.link_kind.eq_ignore_ascii_case("external") {
             continue;
         }
-        if link.target_block.is_some() {
+        if let Some(block) = link.target_block.as_deref() {
+            let target = link
+                .target_path_candidate
+                .as_deref()
+                .map_or_else(|| format!("#^{block}"), |path| format!("{path}#^{block}"));
+            let offset = usize::try_from(link.byte_offset).ok();
+            let (line, column) = offset
+                .and_then(|offset| {
+                    document_contents
+                        .get(link.source_document_path.as_str())
+                        .map(|content| line_column_for_offset(content, offset))
+                })
+                .map_or((None, None), |(line, column)| (Some(line), Some(column)));
+            let (action, message) = match block_reference_policy {
+                OutlineBlockReferencePolicyConfig::Error => (
+                    OutlineDiagnosticAction::RerunWithPlainText,
+                    "Outline cannot represent Obsidian block-reference targets".to_string(),
+                ),
+                OutlineBlockReferencePolicyConfig::PlainText => (
+                    OutlineDiagnosticAction::RenderedPlainText,
+                    "rendered Obsidian block-reference link as plain text for Outline".to_string(),
+                ),
+            };
             diagnostics.push(OutlineDiagnostic {
                 kind: OutlineDiagnosticKind::UnsupportedLink,
                 source_path: Some(link.source_document_path.clone()),
-                target: link.target_path_candidate.clone(),
-                message: "Outline publication does not support Obsidian block-reference targets"
-                    .to_string(),
+                target: Some(target),
+                line,
+                column,
+                byte_offset: offset,
+                policy: Some(block_reference_policy),
+                action: Some(action),
+                message,
             });
+            continue;
         }
         match (
             link.resolved_target_path.as_deref(),
@@ -524,6 +632,11 @@ fn validate_links_and_collect_attachments(
                         kind: OutlineDiagnosticKind::ExcludedTarget,
                         source_path: Some(link.source_document_path.clone()),
                         target: Some(target.to_string()),
+                        line: None,
+                        column: None,
+                        byte_offset: None,
+                        policy: None,
+                        action: None,
                         message: "link resolves to a note excluded from the publication query"
                             .to_string(),
                     });
@@ -537,6 +650,11 @@ fn validate_links_and_collect_attachments(
                         kind: OutlineDiagnosticKind::MissingAsset,
                         source_path: Some(link.source_document_path.clone()),
                         target: Some(target.to_string()),
+                        line: None,
+                        column: None,
+                        byte_offset: None,
+                        policy: None,
+                        action: None,
                         message: "resolved attachment is missing from the vault".to_string(),
                     });
                 }
@@ -545,6 +663,11 @@ fn validate_links_and_collect_attachments(
                 kind: OutlineDiagnosticKind::UnresolvedLink,
                 source_path: Some(link.source_document_path.clone()),
                 target: link.target_path_candidate.clone(),
+                line: None,
+                column: None,
+                byte_offset: None,
+                policy: None,
+                action: None,
                 message: "internal link could not be resolved".to_string(),
             }),
         }
@@ -569,6 +692,11 @@ fn plan_attachments(
                         kind: OutlineDiagnosticKind::MissingAsset,
                         source_path: None,
                         target: Some(source_path.clone()),
+                        line: None,
+                        column: None,
+                        byte_offset: None,
+                        policy: None,
+                        action: None,
                         message: format!("failed to read attachment: {error}"),
                     });
                     return None;
@@ -610,6 +738,11 @@ fn validate_archive_collisions(
                 kind: OutlineDiagnosticKind::Collision,
                 source_path: Some(source_path.clone()),
                 target: Some(archive_path.clone()),
+                line: None,
+                column: None,
+                byte_offset: None,
+                policy: None,
+                action: None,
                 message: format!(
                     "case-insensitive archive collision with {existing_kind} `{existing_path}`"
                 ),
@@ -639,10 +772,21 @@ fn rewrite_document_links(
     links: &[&ExportLinkRecord],
     document_targets: &HashMap<String, String>,
     attachment_targets: &HashMap<String, String>,
+    block_reference_policy: OutlineBlockReferencePolicyConfig,
 ) -> String {
     let mut replacements = links
         .iter()
         .filter_map(|link| {
+            if link.target_block.is_some()
+                && block_reference_policy == OutlineBlockReferencePolicyConfig::PlainText
+            {
+                let start = usize::try_from(link.byte_offset).ok()?;
+                let end = start.checked_add(link.raw_text.len())?;
+                if end > document.content.len() || !document.content.is_char_boundary(start) {
+                    return None;
+                }
+                return Some((start, end, block_link_plain_text(link)));
+            }
             let target = link.resolved_target_path.as_ref()?;
             let archive_target = document_targets
                 .get(target)
@@ -679,6 +823,42 @@ fn rewrite_document_links(
         content.replace_range(start..end, &replacement);
     }
     content
+}
+
+fn block_link_plain_text(link: &ExportLinkRecord) -> String {
+    let label = if link.link_kind.eq_ignore_ascii_case("markdown") {
+        link.display_text.as_deref().unwrap_or_default()
+    } else {
+        link.display_text
+            .as_deref()
+            .or(link.target_path_candidate.as_deref())
+            .or(link.target_block.as_deref())
+            .unwrap_or_default()
+    };
+    escape_markdown_plain_text(label)
+}
+
+fn escape_markdown_plain_text(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('*', "\\*")
+        .replace('_', "\\_")
+        .replace('[', "\\[")
+        .replace(']', "\\]")
+}
+
+fn line_column_for_offset(content: &str, byte_offset: usize) -> (usize, usize) {
+    let offset = byte_offset.min(content.len());
+    let line = content[..offset]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1;
+    let line_start = content[..offset]
+        .rfind('\n')
+        .map_or(0, |newline| newline + 1);
+    let column = content[line_start..offset].chars().count() + 1;
+    (line, column)
 }
 
 fn serialize_path(path: &str) -> String {
@@ -824,6 +1004,13 @@ mod tests {
     }
 
     fn plan_all(paths: &VaultPaths) -> OutlinePublicationPlan {
+        plan_all_with_policy(paths, OutlineBlockReferencePolicyConfig::Error)
+    }
+
+    fn plan_all_with_policy(
+        paths: &VaultPaths,
+        block_reference_policy: OutlineBlockReferencePolicyConfig,
+    ) -> OutlinePublicationPlan {
         let report =
             execute_export_query(paths, Some("from notes"), None, None).expect("query all notes");
         let prepared = prepare_outline_export_data(
@@ -834,8 +1021,16 @@ mod tests {
             OutlineMarkdownOptions::default(),
         )
         .expect("prepare publication");
-        plan_outline_publication(paths, "Wiki", &prepared.notes, &prepared.links)
-            .expect("plan Outline publication")
+        plan_outline_publication_with_options(
+            paths,
+            "Wiki",
+            &prepared.notes,
+            &prepared.links,
+            OutlinePublicationOptions {
+                block_reference_policy,
+            },
+        )
+        .expect("plan Outline publication")
     }
 
     fn configure_folder_notes(paths: &VaultPaths, placement: &str, name: &str) {
@@ -880,6 +1075,103 @@ mod tests {
         assert!(!content.contains("> [!WARNING]"));
         assert!(content.contains(":::warning\nCareful\nPublished body\n\n:::"));
         assert!(plan.attachments.is_empty());
+    }
+
+    #[test]
+    fn block_reference_policy_preserves_strict_mode_and_can_render_labels_as_plain_text() {
+        let source = b"# Home\n\n[label](#^block-9-0) and [again](#^block-9-0)\n\n^block-9-0\n\n## Section\n\n[heading](#Section) and [[Target|note]] and [[Target#^remote-block|remote label]]\n";
+        let (_temp, paths) = outline_vault(&[
+            ("Home.md", source),
+            (
+                "Target.md",
+                b"# Target\n\n## Heading\n\nRemote text.\n\n^remote-block\n",
+            ),
+        ]);
+
+        let strict = plan_all(&paths);
+        assert!(!strict.is_valid());
+        let strict_blocks = strict
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.kind == OutlineDiagnosticKind::UnsupportedLink)
+            .collect::<Vec<_>>();
+        assert_eq!(strict_blocks.len(), 3);
+        assert!(strict_blocks.iter().all(|diagnostic| {
+            diagnostic.policy == Some(OutlineBlockReferencePolicyConfig::Error)
+                && diagnostic.action == Some(OutlineDiagnosticAction::RerunWithPlainText)
+                && diagnostic
+                    .target
+                    .as_deref()
+                    .is_some_and(|target| !target.is_empty())
+                && diagnostic.line.is_some()
+                && diagnostic.column.is_some()
+                && diagnostic.byte_offset.is_some()
+        }));
+        assert_eq!(strict_blocks[0].target.as_deref(), Some("#^block-9-0"));
+        assert_eq!(
+            strict_blocks[2].target.as_deref(),
+            Some("Target#^remote-block")
+        );
+
+        let downgraded = plan_all_with_policy(&paths, OutlineBlockReferencePolicyConfig::PlainText);
+        assert!(downgraded.is_valid(), "{:?}", downgraded.diagnostics);
+        let home = downgraded
+            .documents
+            .iter()
+            .find(|document| document.source_path == "Home.md")
+            .expect("home document");
+        assert!(home.content.contains("label and again"));
+        assert!(home.content.contains("remote label"));
+        assert!(!home.content.contains("#^block-9-0"));
+        assert!(!home.content.contains("Target#^remote-block"));
+        assert!(home.content.contains("[heading](Home.md#Section)"));
+        assert!(home.content.contains("[note](Target.md)"));
+        assert_eq!(
+            fs::read(paths.vault_root().join("Home.md")).unwrap(),
+            source
+        );
+    }
+
+    #[test]
+    fn plain_text_block_reference_policy_supports_dry_run_and_zip_creation() {
+        let source =
+            b"| Topic |\n| --- |\n| [Welcome](#^block-9-0) |\n\n^block-9-0\n\nWelcome text.\n";
+        let (_temp, paths) = outline_vault(&[("Home.md", source)]);
+        let output = paths.vault_root().join("exports/wiki.zip");
+
+        let dry_run = write_outline_zip(
+            &paths,
+            &output,
+            plan_all_with_policy(&paths, OutlineBlockReferencePolicyConfig::PlainText),
+            true,
+        )
+        .expect("dry run");
+        assert!(dry_run.plan.is_valid());
+        assert!(!dry_run.wrote_archive);
+        assert!(!output.exists());
+
+        let written = write_outline_zip(
+            &paths,
+            &output,
+            plan_all_with_policy(&paths, OutlineBlockReferencePolicyConfig::PlainText),
+            false,
+        )
+        .expect("ZIP export");
+        assert!(written.wrote_archive);
+        let file = fs::File::open(&output).expect("ZIP exists");
+        let mut archive = ZipArchive::new(file).expect("ZIP opens");
+        let mut markdown = String::new();
+        archive
+            .by_name("Wiki/Home.md")
+            .expect("exported note")
+            .read_to_string(&mut markdown)
+            .expect("read exported note");
+        assert!(markdown.contains("| Welcome |"));
+        assert!(!markdown.contains("#^block-9-0"));
+        assert_eq!(
+            fs::read(paths.vault_root().join("Home.md")).unwrap(),
+            source
+        );
     }
 
     #[test]

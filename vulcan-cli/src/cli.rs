@@ -1301,6 +1301,15 @@ pub enum ExportFormat {
     Jsonl,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum OutlineBlockReferencePolicyArg {
+    /// Reject Obsidian block-reference links (backward-compatible default)
+    #[default]
+    Error,
+    /// Preserve each visible link label as plain text in the exported document
+    PlainText,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum RefreshMode {
     Off,
@@ -2267,6 +2276,13 @@ pub enum ExportCommand {
         collection_title: String,
         #[arg(long, help = "Strip Obsidian heading-link table-of-contents lists")]
         remove_toc: bool,
+        #[arg(
+            long,
+            value_enum,
+            default_value = "error",
+            help = "How to publish Obsidian block-reference links: error or plain-text"
+        )]
+        block_reference_policy: OutlineBlockReferencePolicyArg,
         #[arg(
             short = 'o',
             long = "path",

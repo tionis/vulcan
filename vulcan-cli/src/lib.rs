@@ -427,15 +427,15 @@ pub use cli::{
     ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs, FolderNotePlacementArg,
     GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs, KanbanCommand,
     McpToolPackArg, McpToolPackModeArg, McpTransportArg, NoteAppendPeriodicArg, NoteCheckboxState,
-    NoteCommand, NoteGetMode, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand,
-    PluginEventArg, PluginSandboxArg, PropertySortArg, PublishCommand, QueryEngineArg,
-    QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RenderMode, RepairCommand,
-    SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg, SiteCommand,
-    SkillCommand, SuggestCommand, SuggestLinkStatusArg, TagSortArg, TasksCommand,
-    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
-    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, ToolCommand,
-    ToolInitTemplateArg, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand,
-    WebFetchMode,
+    NoteCommand, NoteGetMode, OutlineBlockReferencePolicyArg, OutputFormat, PeriodicOpenArgs,
+    PeriodicSubcommand, PluginCommand, PluginEventArg, PluginSandboxArg, PropertySortArg,
+    PublishCommand, QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs,
+    RenderMode, RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode,
+    SearchSortArg, SiteCommand, SkillCommand, SuggestCommand, SuggestLinkStatusArg, TagSortArg,
+    TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
+    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
+    TemplateSubcommand, ToolCommand, ToolInitTemplateArg, TrustCommand, VectorQueueCommand,
+    VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -466,7 +466,9 @@ use toml::Value as TomlValue;
 use vulcan_app::browse::{
     DataviewBlockResult as AppDataviewBlockResult, DataviewEvalReport as AppDataviewEvalReport,
 };
-use vulcan_app::export::outline::{plan_outline_publication, write_outline_zip};
+use vulcan_app::export::outline::{
+    plan_outline_publication_with_options, write_outline_zip, OutlinePublicationOptions,
+};
 use vulcan_app::export::{
     apply_export_profile_create, apply_export_profile_delete, apply_export_profile_rule_add,
     apply_export_profile_rule_delete, apply_export_profile_rule_move,
@@ -507,6 +509,7 @@ use vulcan_app::templates::{
     render_loaded_template, render_note_from_parts, LoadedTemplateRenderRequest,
     TemplateEngineKind, TemplateInsertMode, TemplateRunMode, TemplateVariables,
 };
+use vulcan_core::config::OutlineBlockReferencePolicyConfig;
 #[cfg(test)]
 use vulcan_core::config::TemplatesConfig;
 use vulcan_core::config::{
@@ -1155,13 +1158,59 @@ fn slash_display_path(path: &Path) -> String {
 }
 
 fn print_outline_diagnostics(diagnostics: &[vulcan_app::export::outline::OutlineDiagnostic]) {
+    use vulcan_app::export::outline::OutlineDiagnosticKind;
+
+    let mut block_references = BTreeMap::<(String, bool), Vec<_>>::new();
     for diagnostic in diagnostics {
+        if diagnostic.kind == OutlineDiagnosticKind::UnsupportedLink && diagnostic.policy.is_some()
+        {
+            block_references
+                .entry((
+                    diagnostic
+                        .source_path
+                        .clone()
+                        .unwrap_or_else(|| "<unknown>".to_string()),
+                    diagnostic.is_warning(),
+                ))
+                .or_default()
+                .push(diagnostic);
+            continue;
+        }
         let level = if diagnostic.is_warning() {
             "warning"
         } else {
             "error"
         };
         eprintln!("{level}: {}", diagnostic.message);
+    }
+    for ((source_path, warning), grouped) in block_references {
+        let level = if warning { "warning" } else { "error" };
+        let count = grouped.len();
+        let noun = if count == 1 { "link" } else { "links" };
+        if warning {
+            eprintln!(
+                "{level}: {count} Obsidian block-reference {noun} in {source_path} rendered as plain text for Outline"
+            );
+        } else {
+            eprintln!(
+                "{level}: {count} Obsidian block-reference {noun} in {source_path} cannot be represented by Outline"
+            );
+            eprintln!(
+                "hint: rerun with --block-reference-policy plain-text to preserve labels as plain text"
+            );
+        }
+        for diagnostic in grouped.iter().take(3) {
+            if let (Some(line), Some(column), Some(target)) = (
+                diagnostic.line,
+                diagnostic.column,
+                diagnostic.target.as_deref(),
+            ) {
+                eprintln!("  {source_path}:{line}:{column}: {target}");
+            }
+        }
+        if count > 3 {
+            eprintln!("  ... and {} more", count - 3);
+        }
     }
 }
 
@@ -1225,9 +1274,14 @@ fn run_publish_command(
         },
     )
     .map_err(CliError::operation)?;
-    let publication =
-        plan_outline_publication(paths, collection_title, &prepared.notes, &prepared.links)
-            .map_err(CliError::operation)?;
+    let publication = plan_outline_publication_with_options(
+        paths,
+        collection_title,
+        &prepared.notes,
+        &prepared.links,
+        outline_publication_options(profile_config.block_reference_policy),
+    )
+    .map_err(CliError::operation)?;
     let client = HttpOutlineClient::new(
         &base_url,
         token,
@@ -1266,6 +1320,15 @@ fn run_publish_command(
             "Outline publication stopped with {} remote conflict(s)",
             report.conflicts
         )))
+    }
+}
+
+#[cfg(feature = "web")]
+fn outline_publication_options(
+    block_reference_policy: Option<OutlineBlockReferencePolicyConfig>,
+) -> OutlinePublicationOptions {
+    OutlinePublicationOptions {
+        block_reference_policy: block_reference_policy.unwrap_or_default(),
     }
 }
 
@@ -3974,6 +4037,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     transforms,
                     collection_title,
                     remove_toc,
+                    block_reference_policy,
                     path,
                     dry_run,
                 } => {
@@ -4002,11 +4066,21 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         },
                     )
                     .map_err(CliError::operation)?;
-                    let plan = plan_outline_publication(
+                    let plan = plan_outline_publication_with_options(
                         &paths,
                         collection_title,
                         &prepared.notes,
                         &prepared.links,
+                        OutlinePublicationOptions {
+                            block_reference_policy: match block_reference_policy {
+                                OutlineBlockReferencePolicyArg::Error => {
+                                    OutlineBlockReferencePolicyConfig::Error
+                                }
+                                OutlineBlockReferencePolicyArg::PlainText => {
+                                    OutlineBlockReferencePolicyConfig::PlainText
+                                }
+                            },
+                        },
                     )
                     .map_err(CliError::operation)?;
                     let report = write_outline_zip(&paths, path, plan, *dry_run)

@@ -14796,6 +14796,145 @@ fn export_outline_zip_warns_and_writes_missing_folder_placeholder() {
 }
 
 #[test]
+fn export_outline_zip_block_reference_policy_is_located_aggregated_and_mutation_free() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault folder");
+    let source = b"# Home\n\n| Topic |\n| --- |\n| [Welcome](#^block-9-0) |\n\n[Again](#^block-9-0) and [Third](#^block-9-0)\n\n^block-9-0\n\n[Section](#Heading) [[Target|ordinary]] [[Target#^target-block|Remote label]]\n";
+    fs::write(vault_root.join("Home.md"), source).expect("home note");
+    fs::write(
+        vault_root.join("Target.md"),
+        "# Target\n\n## Heading\n\nTarget text.\n\n^target-block\n",
+    )
+    .expect("target note");
+    run_scan(&vault_root);
+
+    let strict_path = temp_dir.path().join("strict.zip");
+    let strict = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "export",
+            "outline-zip",
+            "--collection-title",
+            "Chronicles",
+            "--path",
+            strict_path.to_str().expect("ZIP path should be utf-8"),
+        ])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&strict.get_output().stderr);
+    assert_eq!(
+        stderr
+            .matches("Obsidian block-reference links in Home.md cannot be represented by Outline")
+            .count(),
+        1,
+        "diagnostics should be aggregated: {stderr}"
+    );
+    assert!(stderr.contains("error: 4 Obsidian block-reference links"));
+    assert!(stderr.contains("hint: rerun with --block-reference-policy plain-text"));
+    assert!(stderr.contains("Home.md:5:3: #^block-9-0"));
+    assert!(!strict_path.exists());
+
+    let json_path = temp_dir.path().join("strict-json.zip");
+    let strict_json = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "--output",
+            "json",
+            "export",
+            "outline-zip",
+            "--collection-title",
+            "Chronicles",
+            "--path",
+            json_path.to_str().expect("ZIP path should be utf-8"),
+            "--dry-run",
+        ])
+        .assert()
+        .failure();
+    let stdout = String::from_utf8_lossy(&strict_json.get_output().stdout);
+    let report: Value =
+        serde_json::from_str(stdout.lines().next().expect("strict report JSON line"))
+            .expect("strict report should be JSON");
+    let block_diagnostics = report["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .filter(|diagnostic| diagnostic["kind"] == "unsupported_link")
+        .collect::<Vec<_>>();
+    assert_eq!(block_diagnostics.len(), 4);
+    assert!(block_diagnostics.iter().all(|diagnostic| {
+        diagnostic["source_path"] == "Home.md"
+            && diagnostic["target"]
+                .as_str()
+                .is_some_and(|target| !target.is_empty())
+            && diagnostic["line"].as_u64().is_some()
+            && diagnostic["column"].as_u64().is_some()
+            && diagnostic["byte_offset"].as_u64().is_some()
+            && diagnostic["policy"] == "error"
+            && diagnostic["action"] == "rerun_with_plain_text"
+    }));
+
+    let dry_run_path = temp_dir.path().join("dry-run.zip");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "export",
+            "outline-zip",
+            "--collection-title",
+            "Chronicles",
+            "--block-reference-policy",
+            "plain-text",
+            "--path",
+            dry_run_path.to_str().expect("ZIP path should be utf-8"),
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    assert!(!dry_run_path.exists());
+
+    let export_path = temp_dir.path().join("chronicles.zip");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "export",
+            "outline-zip",
+            "--collection-title",
+            "Chronicles",
+            "--block-reference-policy",
+            "plain-text",
+            "--path",
+            export_path.to_str().expect("ZIP path should be utf-8"),
+        ])
+        .assert()
+        .success();
+
+    let file = fs::File::open(&export_path).expect("ZIP export should exist");
+    let mut archive = ZipArchive::new(file).expect("ZIP export should open");
+    let mut exported = String::new();
+    archive
+        .by_name("Chronicles/Home.md")
+        .expect("home note should be exported")
+        .read_to_string(&mut exported)
+        .expect("exported note should be readable");
+    assert!(exported.contains("| Welcome |"));
+    assert!(exported.contains("Again and Third"));
+    assert!(exported.contains("Remote label"));
+    assert!(!exported.contains("#^block-9-0"));
+    assert!(!exported.contains("Target#^target-block"));
+    assert!(exported.contains("[Section](Home.md#Heading)"));
+    assert!(exported.contains("[ordinary](Target.md)"));
+    assert_eq!(fs::read(vault_root.join("Home.md")).unwrap(), source);
+}
+
+#[test]
 fn publish_outline_dry_run_reports_creates_without_remote_or_state_mutation() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

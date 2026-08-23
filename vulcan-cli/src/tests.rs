@@ -990,6 +990,7 @@ fn parses_outline_zip_export_command() {
                 transforms: ExportTransformArgs::default(),
                 collection_title: "Wiki".to_string(),
                 remove_toc: true,
+                block_reference_policy: OutlineBlockReferencePolicyArg::Error,
                 path: PathBuf::from("wiki.zip"),
                 dry_run: true,
             },
