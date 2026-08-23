@@ -2059,6 +2059,8 @@ pub struct ExportProfileConfig {
     pub format: Option<ExportProfileFormat>,
     pub query: Option<String>,
     pub query_json: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<crate::selection::SelectionPlan>,
     pub path: Option<PathBuf>,
     pub site_profile: Option<String>,
     pub title: Option<String>,
@@ -2096,6 +2098,8 @@ pub struct OutlinePublishProfileConfig {
     pub collection_title: Option<String>,
     pub query: Option<String>,
     pub query_json: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<crate::selection::SelectionPlan>,
     pub token_env: Option<String>,
     pub timeout_seconds: Option<u64>,
     pub max_retries: Option<u32>,
@@ -2272,6 +2276,8 @@ pub struct SiteProfileConfig {
     pub extra_js: Vec<PathBuf>,
     pub include_query: Option<String>,
     pub include_query_json: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<crate::selection::SelectionPlan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub include_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -3668,6 +3674,9 @@ fn merge_export_profile_config(target: &mut ExportProfileConfig, profile: Export
     if let Some(query_json) = profile.query_json {
         target.query_json = Some(query_json);
     }
+    if let Some(selection) = profile.selection {
+        target.selection = Some(selection);
+    }
     if let Some(path) = profile.path {
         target.path = Some(path);
     }
@@ -3718,6 +3727,9 @@ fn merge_outline_publish_profile_config(
     }
     if let Some(query_json) = profile.query_json {
         target.query_json = Some(query_json);
+    }
+    if let Some(selection) = profile.selection {
+        target.selection = Some(selection);
     }
     if let Some(token_env) = profile.token_env {
         target.token_env = Some(token_env);
@@ -3874,6 +3886,9 @@ fn merge_site_profile_config(target: &mut SiteProfileConfig, profile: SiteProfil
     }
     if let Some(include_query_json) = profile.include_query_json {
         target.include_query_json = Some(include_query_json);
+    }
+    if let Some(selection) = profile.selection {
+        target.selection = Some(selection);
     }
     if !profile.include_paths.is_empty() {
         target.include_paths = profile.include_paths;

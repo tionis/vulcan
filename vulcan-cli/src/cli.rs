@@ -1794,15 +1794,21 @@ pub enum ExportProfileCommand {
         format: ExportProfileFormatArg,
         #[arg(
             help = "Native note query DSL string; omit with --query-json",
-            conflicts_with = "query_json"
+            conflicts_with_all = ["query_json", "selection_json"]
         )]
         query: Option<String>,
         #[arg(
             long = "query-json",
             help = "JSON note query payload; mutually exclusive with the positional query",
-            conflicts_with = "query"
+            conflicts_with_all = ["query", "selection_json"]
         )]
         query_json: Option<String>,
+        #[arg(
+            long = "selection-json",
+            help = "Additive selection plan JSON; mutually exclusive with query/query-json",
+            conflicts_with_all = ["query", "query_json"]
+        )]
+        selection_json: Option<String>,
         #[arg(
             short = 'o',
             long = "path",
@@ -1846,17 +1852,25 @@ pub enum ExportProfileCommand {
         format: Option<ExportProfileFormatArg>,
         #[arg(
             help = "Native note query DSL string; omit with --query-json",
-            conflicts_with_all = ["query_json", "clear_query"]
+            conflicts_with_all = ["query_json", "selection_json", "clear_query"]
         )]
         query: Option<String>,
         #[arg(
             long = "query-json",
             help = "JSON note query payload; mutually exclusive with the positional query",
-            conflicts_with_all = ["query", "clear_query"]
+            conflicts_with_all = ["query", "selection_json", "clear_query"]
         )]
         query_json: Option<String>,
+        #[arg(
+            long = "selection-json",
+            help = "Store an additive selection plan from JSON",
+            conflicts_with_all = ["query", "query_json", "clear_selection"]
+        )]
+        selection_json: Option<String>,
         #[arg(long, help = "Clear any stored query or query_json")]
         clear_query: bool,
+        #[arg(long, help = "Clear any stored additive selection plan")]
+        clear_selection: bool,
         #[arg(
             short = 'o',
             long = "path",
@@ -2220,6 +2234,8 @@ pub enum ExportCommand {
     },
     #[command(about = "Export the resolved link graph for external tools")]
     Graph {
+        #[command(flatten)]
+        query: ExportQueryArgs,
         #[arg(
             long,
             value_enum,
@@ -2366,13 +2382,23 @@ pub enum PublishCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct ExportQueryArgs {
-    #[arg(help = "Native note query DSL string; omit to export the full vault")]
+    #[arg(
+        help = "Native note query DSL string; omit to export the full vault",
+        conflicts_with_all = ["query_json", "selection_json"]
+    )]
     pub query: Option<String>,
     #[arg(
         long = "query-json",
-        help = "JSON note query payload; mutually exclusive with the positional query; omit both to export the full vault"
+        help = "JSON note query payload; mutually exclusive with query/selection-json; omit all to export the full vault",
+        conflicts_with_all = ["query", "selection_json"]
     )]
     pub query_json: Option<String>,
+    #[arg(
+        long = "selection-json",
+        help = "Additive graph/query selection plan JSON; mutually exclusive with query/query-json",
+        conflicts_with_all = ["query", "query_json"]
+    )]
+    pub selection_json: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Args)]

@@ -16154,11 +16154,13 @@ fn export_profile_create_rejects_format_specific_invalid_flags() {
             "from notes",
             "-o",
             "exports/graph.json",
+            "--author",
+            "Invalid for graph",
         ])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "does not use `query` or `query_json` for graph exports",
+            "only supports `author` for epub exports",
         ));
 }
 

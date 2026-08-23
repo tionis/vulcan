@@ -475,12 +475,12 @@ use vulcan_app::export::{
     apply_export_profile_rule_delete, apply_export_profile_rule_move,
     apply_export_profile_rule_update, apply_export_profile_set, build_content_transform_rules,
     build_export_profile_list, build_export_profile_rule_list, build_export_profile_show_report,
-    execute_export_query, export_profile_format_label, export_profile_query_args,
-    load_export_links, load_exported_notes, prepare_export_data, prepare_outline_export_data,
-    render_csv_export_payload, render_json_export_payload, render_markdown_export_payload,
-    require_export_profile_format, require_export_profile_path, validate_export_profile_config,
-    write_epub_export as app_write_epub_export, write_sqlite_export, write_zip_export,
-    BoolConfigUpdate, ConfigValueUpdate, CsvExportSummary,
+    execute_export_selection, execute_graph_export_selection, export_profile_format_label,
+    export_profile_query_args, load_export_links, load_exported_notes, prepare_export_data,
+    prepare_outline_export_data, render_csv_export_payload, render_json_export_payload,
+    render_markdown_export_payload, require_export_profile_format, require_export_profile_path,
+    validate_export_profile_config, write_epub_export as app_write_epub_export,
+    write_sqlite_export, write_zip_export, BoolConfigUpdate, ConfigValueUpdate, CsvExportSummary,
     EpubExportOptions as AppEpubExportOptions, EpubRenderCallbacks as AppEpubRenderCallbacks,
     ExportProfileCreateRequest, ExportProfileDeleteReport, ExportProfileListEntry,
     ExportProfileRuleListEntry, ExportProfileRuleMoveRequest, ExportProfileRuleRequest,
@@ -539,7 +539,7 @@ use vulcan_core::{
     RefactorReport, RepairFtsQuery, RepairFtsReport, ResolvedPermissionProfile, SavedExport,
     SavedExportFormat, SavedReportDefinition, SavedReportKind, SavedReportQuery,
     SavedReportSummary, ScanMode, ScanPhase, ScanProgress, ScanSummary, SearchHit, SearchQuery,
-    SearchReport, SearchSort, VaultPaths, WatchOptions, WatchReport,
+    SearchReport, SearchSort, SelectionPlan, VaultPaths, WatchOptions, WatchReport,
 };
 #[derive(Debug)]
 pub struct CliError {
@@ -1302,6 +1302,30 @@ fn outline_fallback_rendering(
 }
 
 #[cfg(feature = "web")]
+fn outline_export_request<'a>(
+    profile_name: &str,
+    profile: &'a vulcan_core::config::OutlinePublishProfileConfig,
+    read_filter: Option<&'a PermissionFilter>,
+) -> Result<ExportContentRequest<'a>, CliError> {
+    let request = ExportContentRequest {
+        query: profile.query.as_deref(),
+        query_json: profile.query_json.as_deref(),
+        selection: profile.selection.as_ref(),
+        read_filter,
+        transforms: profile.content_transform_rules.as_deref(),
+    };
+    let source_count = usize::from(request.query.is_some())
+        + usize::from(request.query_json.is_some())
+        + usize::from(request.selection.is_some());
+    if source_count != 1 {
+        return Err(CliError::operation(format!(
+            "Outline publish profile `{profile_name}` must set exactly one of `query`, `query_json`, or `selection`"
+        )));
+    }
+    Ok(request)
+}
+
+#[cfg(feature = "web")]
 fn run_publish_command(
     cli: &Cli,
     paths: &VaultPaths,
@@ -1338,24 +1362,24 @@ fn run_publish_command(
             "Outline token environment variable `{token_env}` is not set"
         ))
     })?;
-    let query = profile_config.query.as_deref();
-    let query_json = profile_config.query_json.as_deref();
-    if query.is_some() == query_json.is_some() {
-        return Err(CliError::operation(format!(
-            "Outline publish profile `{profile}` must set exactly one of `query` or `query_json`"
-        )));
-    }
+    let request = outline_export_request(profile, profile_config, read_filter)?;
     let collection_title = profile_config
         .collection_title
         .as_deref()
         .unwrap_or(profile);
-    let query_report =
-        execute_export_query(paths, query, query_json, read_filter).map_err(CliError::operation)?;
+    let query_report = execute_export_selection(
+        paths,
+        request.query,
+        request.query_json,
+        request.selection,
+        request.read_filter,
+    )
+    .map_err(CliError::operation)?;
     let prepared = prepare_outline_export_data(
         paths,
         &query_report,
-        read_filter,
-        profile_config.content_transform_rules.as_deref(),
+        request.read_filter,
+        request.transforms,
         OutlineMarkdownOptions {
             remove_toc: profile_config.remove_toc.unwrap_or(false),
         },
@@ -3594,6 +3618,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         format,
                         query,
                         query_json,
+                        selection_json,
                         path,
                         site_profile,
                         title,
@@ -3611,6 +3636,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                             format: export_profile_format_from_arg(*format),
                             query: query.clone(),
                             query_json: query_json.clone(),
+                            selection: parse_selection_json(selection_json.as_deref())?,
                             path: path.clone(),
                             site_profile: site_profile.clone(),
                             title: title.clone(),
@@ -3647,7 +3673,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         format,
                         query,
                         query_json,
+                        selection_json,
                         clear_query,
+                        clear_selection,
                         path,
                         clear_path,
                         site_profile,
@@ -3674,6 +3702,16 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                             query: query.clone(),
                             query_json: query_json.clone(),
                             clear_query: *clear_query,
+                            selection: if *clear_selection {
+                                ConfigValueUpdate::Clear
+                            } else if let Some(selection_json) = selection_json {
+                                ConfigValueUpdate::Set(
+                                    parse_selection_json(Some(selection_json))?
+                                        .expect("selection JSON should parse to a value"),
+                                )
+                            } else {
+                                ConfigValueUpdate::Keep
+                            },
                             path: if *clear_path {
                                 ConfigValueUpdate::Clear
                             } else if let Some(path) = path {
@@ -3936,13 +3974,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     path,
                     title,
                 } => {
-                    let report = execute_export_query(
-                        &paths,
-                        query.query.as_deref(),
-                        query.query_json.as_deref(),
-                        read_filter.as_ref(),
-                    )
-                    .map_err(CliError::operation)?;
+                    let report = execute_export_query_args(&paths, query, read_filter.as_ref())?;
                     let transform_rules = build_content_transform_rules(
                         &transforms.exclude_callouts,
                         &transforms.exclude_headings,
@@ -3973,13 +4005,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     path,
                     pretty,
                 } => {
-                    let report = execute_export_query(
-                        &paths,
-                        query.query.as_deref(),
-                        query.query_json.as_deref(),
-                        read_filter.as_ref(),
-                    )
-                    .map_err(CliError::operation)?;
+                    let report = execute_export_query_args(&paths, query, read_filter.as_ref())?;
                     let transform_rules = build_content_transform_rules(
                         &transforms.exclude_callouts,
                         &transforms.exclude_headings,
@@ -4006,13 +4032,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     write_text_export(cli.output, path.as_ref(), &payload, &summary)
                 }
                 ExportCommand::Csv { query, path } => {
-                    let report = execute_export_query(
-                        &paths,
-                        query.query.as_deref(),
-                        query.query_json.as_deref(),
-                        read_filter.as_ref(),
-                    )
-                    .map_err(CliError::operation)?;
+                    let report = execute_export_query_args(&paths, query, read_filter.as_ref())?;
                     let payload =
                         render_csv_export_payload(&report).map_err(CliError::operation)?;
                     let summary = CsvExportSummary {
@@ -4023,10 +4043,20 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     };
                     write_text_export(cli.output, path.as_ref(), &payload, &summary)
                 }
-                ExportCommand::Graph { format, path } => {
-                    let report =
-                        vulcan_core::export_graph_with_filter(&paths, read_filter.as_ref())
-                            .map_err(CliError::operation)?;
+                ExportCommand::Graph {
+                    query,
+                    format,
+                    path,
+                } => {
+                    let selection = parse_selection_json(query.selection_json.as_deref())?;
+                    let report = execute_graph_export_selection(
+                        &paths,
+                        query.query.as_deref(),
+                        query.query_json.as_deref(),
+                        selection.as_ref(),
+                        read_filter.as_ref(),
+                    )
+                    .map_err(CliError::operation)?;
                     write_graph_export(cli.output, &report, *format, path.as_ref())
                 }
                 ExportCommand::Epub {
@@ -4039,13 +4069,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     backlinks,
                     frontmatter,
                 } => {
-                    let report = execute_export_query(
-                        &paths,
-                        query.query.as_deref(),
-                        query.query_json.as_deref(),
-                        read_filter.as_ref(),
-                    )
-                    .map_err(CliError::operation)?;
+                    let report = execute_export_query_args(&paths, query, read_filter.as_ref())?;
                     let transform_rules = build_content_transform_rules(
                         &transforms.exclude_callouts,
                         &transforms.exclude_headings,
@@ -4094,13 +4118,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     transforms,
                     path,
                 } => {
-                    let report = execute_export_query(
-                        &paths,
-                        query.query.as_deref(),
-                        query.query_json.as_deref(),
-                        read_filter.as_ref(),
-                    )
-                    .map_err(CliError::operation)?;
+                    let report = execute_export_query_args(&paths, query, read_filter.as_ref())?;
                     let transform_rules = build_content_transform_rules(
                         &transforms.exclude_callouts,
                         &transforms.exclude_headings,
@@ -4138,13 +4156,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     path,
                     dry_run,
                 } => {
-                    let report = execute_export_query(
-                        &paths,
-                        query.query.as_deref(),
-                        query.query_json.as_deref(),
-                        read_filter.as_ref(),
-                    )
-                    .map_err(CliError::operation)?;
+                    let report = execute_export_query_args(&paths, query, read_filter.as_ref())?;
                     let transform_rules = build_content_transform_rules(
                         &transforms.exclude_callouts,
                         &transforms.exclude_headings,
@@ -4235,13 +4247,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     }
                 }
                 ExportCommand::Sqlite { query, path } => {
-                    let report = execute_export_query(
-                        &paths,
-                        query.query.as_deref(),
-                        query.query_json.as_deref(),
-                        read_filter.as_ref(),
-                    )
-                    .map_err(CliError::operation)?;
+                    let report = execute_export_query_args(&paths, query, read_filter.as_ref())?;
                     let notes =
                         load_exported_notes(&paths, &report).map_err(CliError::operation)?;
                     let links = load_export_links(&paths, &notes).map_err(CliError::operation)?;
@@ -6802,8 +6808,31 @@ struct ConfigMutationOptions {
 struct ExportContentRequest<'a> {
     query: Option<&'a str>,
     query_json: Option<&'a str>,
+    selection: Option<&'a SelectionPlan>,
     read_filter: Option<&'a PermissionFilter>,
     transforms: Option<&'a [ContentTransformRuleConfig]>,
+}
+
+fn parse_selection_json(value: Option<&str>) -> Result<Option<SelectionPlan>, CliError> {
+    value
+        .map(|value| serde_json::from_str(value).map_err(CliError::operation))
+        .transpose()
+}
+
+fn execute_export_query_args(
+    paths: &VaultPaths,
+    args: &ExportQueryArgs,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<QueryReport, CliError> {
+    let selection = parse_selection_json(args.selection_json.as_deref())?;
+    execute_export_selection(
+        paths,
+        args.query.as_deref(),
+        args.query_json.as_deref(),
+        selection.as_ref(),
+        read_filter,
+    )
+    .map_err(CliError::operation)
 }
 
 fn write_text_export(
@@ -7095,10 +7124,11 @@ fn run_markdown_export_profile(
     title: Option<&str>,
     request: ExportContentRequest<'_>,
 ) -> Result<Value, CliError> {
-    let report = execute_export_query(
+    let report = execute_export_selection(
         paths,
         request.query,
         request.query_json,
+        request.selection,
         request.read_filter,
     )
     .map_err(CliError::operation)?;
@@ -7119,10 +7149,11 @@ fn run_json_export_profile(
     pretty: bool,
     request: ExportContentRequest<'_>,
 ) -> Result<Value, CliError> {
-    let report = execute_export_query(
+    let report = execute_export_selection(
         paths,
         request.query,
         request.query_json,
+        request.selection,
         request.read_filter,
     )
     .map_err(CliError::operation)?;
@@ -7141,12 +7172,16 @@ fn run_csv_export_profile(
     output: OutputFormat,
     paths: &VaultPaths,
     output_path: &Path,
-    query: Option<&str>,
-    query_json: Option<&str>,
-    read_filter: Option<&PermissionFilter>,
+    request: ExportContentRequest<'_>,
 ) -> Result<Value, CliError> {
-    let report =
-        execute_export_query(paths, query, query_json, read_filter).map_err(CliError::operation)?;
+    let report = execute_export_selection(
+        paths,
+        request.query,
+        request.query_json,
+        request.selection,
+        request.read_filter,
+    )
+    .map_err(CliError::operation)?;
     let payload = render_csv_export_payload(&report).map_err(CliError::operation)?;
     let summary = CsvExportSummary {
         path: output_path.display().to_string(),
@@ -7159,11 +7194,17 @@ fn run_graph_export_profile(
     output: OutputFormat,
     paths: &VaultPaths,
     output_path: &Path,
-    read_filter: Option<&PermissionFilter>,
     graph_format: Option<ExportGraphFormatConfig>,
+    request: ExportContentRequest<'_>,
 ) -> Result<Value, CliError> {
-    let report =
-        vulcan_core::export_graph_with_filter(paths, read_filter).map_err(CliError::operation)?;
+    let report = execute_graph_export_selection(
+        paths,
+        request.query,
+        request.query_json,
+        request.selection,
+        request.read_filter,
+    )
+    .map_err(CliError::operation)?;
     let graph_format = graph_export_format_from_config(graph_format);
     let payload = render_graph_export_payload(&report, graph_format)?;
     let summary = GraphExportSummary {
@@ -7184,20 +7225,19 @@ fn run_epub_export_profile(
     output: OutputFormat,
     paths: &VaultPaths,
     output_path: &Path,
-    query: Option<&str>,
-    query_json: Option<&str>,
-    read_filter: Option<&PermissionFilter>,
+    request: ExportContentRequest<'_>,
     profile: &ExportProfileConfig,
 ) -> Result<Value, CliError> {
-    let report =
-        execute_export_query(paths, query, query_json, read_filter).map_err(CliError::operation)?;
-    let prepared = prepare_export_data(
+    let report = execute_export_selection(
         paths,
-        &report,
-        read_filter,
-        profile.content_transform_rules.as_deref(),
+        request.query,
+        request.query_json,
+        request.selection,
+        request.read_filter,
     )
     .map_err(CliError::operation)?;
+    let prepared = prepare_export_data(paths, &report, request.read_filter, request.transforms)
+        .map_err(CliError::operation)?;
     let summary = app_write_epub_export(
         paths,
         output_path,
@@ -7226,10 +7266,11 @@ fn run_zip_export_profile(
     output_path: &Path,
     request: ExportContentRequest<'_>,
 ) -> Result<Value, CliError> {
-    let report = execute_export_query(
+    let report = execute_export_selection(
         paths,
         request.query,
         request.query_json,
+        request.selection,
         request.read_filter,
     )
     .map_err(CliError::operation)?;
@@ -7250,12 +7291,16 @@ fn run_sqlite_export_profile(
     output: OutputFormat,
     paths: &VaultPaths,
     output_path: &Path,
-    query: Option<&str>,
-    query_json: Option<&str>,
-    read_filter: Option<&PermissionFilter>,
+    request: ExportContentRequest<'_>,
 ) -> Result<Value, CliError> {
-    let report =
-        execute_export_query(paths, query, query_json, read_filter).map_err(CliError::operation)?;
+    let report = execute_export_selection(
+        paths,
+        request.query,
+        request.query_json,
+        request.selection,
+        request.read_filter,
+    )
+    .map_err(CliError::operation)?;
     let notes = load_exported_notes(paths, &report).map_err(CliError::operation)?;
     let links = load_export_links(paths, &notes).map_err(CliError::operation)?;
     let summary =
@@ -7393,8 +7438,15 @@ fn run_export_profile(
     let format = require_export_profile_format(name, &profile).map_err(CliError::operation)?;
     let output_path =
         require_export_profile_path(paths, name, &profile).map_err(CliError::operation)?;
-    let (query, query_json) =
+    let (query, query_json, selection) =
         export_profile_query_args(name, format, &profile).map_err(CliError::operation)?;
+    let request = ExportContentRequest {
+        query,
+        query_json,
+        selection,
+        read_filter,
+        transforms: profile.content_transform_rules.as_deref(),
+    };
 
     let summary = match format {
         ExportProfileFormat::Markdown => run_markdown_export_profile(
@@ -7402,68 +7454,34 @@ fn run_export_profile(
             paths,
             &output_path,
             profile.title.as_deref(),
-            ExportContentRequest {
-                query,
-                query_json,
-                read_filter,
-                transforms: profile.content_transform_rules.as_deref(),
-            },
+            request,
         )?,
         ExportProfileFormat::Json => run_json_export_profile(
             cli.output,
             paths,
             &output_path,
             profile.pretty.unwrap_or(false),
-            ExportContentRequest {
-                query,
-                query_json,
-                read_filter,
-                transforms: profile.content_transform_rules.as_deref(),
-            },
+            request,
         )?,
-        ExportProfileFormat::Csv => run_csv_export_profile(
-            cli.output,
-            paths,
-            &output_path,
-            query,
-            query_json,
-            read_filter,
-        )?,
+        ExportProfileFormat::Csv => {
+            run_csv_export_profile(cli.output, paths, &output_path, request)?
+        }
         ExportProfileFormat::Graph => run_graph_export_profile(
             cli.output,
             paths,
             &output_path,
-            read_filter,
             profile.graph_format,
+            request,
         )?,
-        ExportProfileFormat::Epub => run_epub_export_profile(
-            cli.output,
-            paths,
-            &output_path,
-            query,
-            query_json,
-            read_filter,
-            &profile,
-        )?,
-        ExportProfileFormat::Zip => run_zip_export_profile(
-            cli.output,
-            paths,
-            &output_path,
-            ExportContentRequest {
-                query,
-                query_json,
-                read_filter,
-                transforms: profile.content_transform_rules.as_deref(),
-            },
-        )?,
-        ExportProfileFormat::Sqlite => run_sqlite_export_profile(
-            cli.output,
-            paths,
-            &output_path,
-            query,
-            query_json,
-            read_filter,
-        )?,
+        ExportProfileFormat::Epub => {
+            run_epub_export_profile(cli.output, paths, &output_path, request, &profile)?
+        }
+        ExportProfileFormat::Zip => {
+            run_zip_export_profile(cli.output, paths, &output_path, request)?
+        }
+        ExportProfileFormat::Sqlite => {
+            run_sqlite_export_profile(cli.output, paths, &output_path, request)?
+        }
         ExportProfileFormat::SearchIndex => run_search_index_export_profile(
             cli.output,
             paths,

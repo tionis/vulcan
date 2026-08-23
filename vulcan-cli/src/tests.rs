@@ -986,6 +986,7 @@ fn parses_outline_zip_export_command() {
                 query: ExportQueryArgs {
                     query: None,
                     query_json: None,
+                    selection_json: None,
                 },
                 transforms: ExportTransformArgs::default(),
                 collection_title: "Wiki".to_string(),
@@ -998,6 +999,31 @@ fn parses_outline_zip_export_command() {
             },
         }
     );
+}
+
+#[test]
+fn parses_additive_export_selection_json() {
+    let selection =
+        r#"{"clauses":[{"type":"graph","seeds":["Home","Index"],"direction":"both","depth":2}]}"#;
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "export",
+        "zip",
+        "--selection-json",
+        selection,
+        "--path",
+        "graph.zip",
+    ])
+    .expect("graph selection export should parse");
+
+    let Command::Export {
+        command: ExportCommand::Zip { query, path, .. },
+    } = cli.command
+    else {
+        panic!("expected ZIP export command");
+    };
+    assert_eq!(query.selection_json.as_deref(), Some(selection));
+    assert_eq!(path, PathBuf::from("graph.zip"));
 }
 
 #[test]
@@ -3192,6 +3218,7 @@ fn parses_links_and_backlinks_commands() {
                     format: ExportProfileFormatArg::Epub,
                     query: Some("from notes".to_string()),
                     query_json: None,
+                    selection_json: None,
                     path: PathBuf::from("exports/team.epub"),
                     site_profile: None,
                     title: Some("Team Notes".to_string()),
@@ -3217,7 +3244,9 @@ fn parses_links_and_backlinks_commands() {
                     format: None,
                     query: None,
                     query_json: None,
+                    selection_json: None,
                     clear_query: false,
+                    clear_selection: false,
                     path: None,
                     clear_path: false,
                     site_profile: None,
@@ -3305,6 +3334,7 @@ fn parses_links_and_backlinks_commands() {
                 query: ExportQueryArgs {
                     query: Some("from notes".to_string()),
                     query_json: None,
+                    selection_json: None,
                 },
                 path: PathBuf::from("exports/book.epub"),
                 title: Some("Team Notes".to_string()),

@@ -72,6 +72,7 @@ struct ResolvedSiteProfile {
     extra_js: Vec<PathBuf>,
     include_query: Option<String>,
     include_query_json: Option<String>,
+    selection: Option<vulcan_core::SelectionPlan>,
     include_paths: Vec<String>,
     include_folders: Vec<String>,
     exclude_paths: Vec<String>,
@@ -1332,6 +1333,7 @@ fn resolve_site_profile(
         extra_js,
         include_query: raw.include_query.clone(),
         include_query_json: raw.include_query_json.clone(),
+        selection: raw.selection.clone(),
         include_paths: raw.include_paths.clone(),
         include_folders: raw.include_folders.clone(),
         exclude_paths: raw.exclude_paths.clone(),
@@ -1364,6 +1366,8 @@ fn plan_site(
         let report = QueryReport {
             query,
             notes: selected.selected.clone(),
+            selection: None,
+            selection_provenance: Vec::new(),
         };
         let prepared = prepare_export_data(
             paths,
@@ -1452,6 +1456,7 @@ fn select_site_notes(
     let mut selected = BTreeSet::<String>::new();
     let has_includes = profile.include_query.is_some()
         || profile.include_query_json.is_some()
+        || profile.selection.is_some()
         || !profile.include_paths.is_empty()
         || !profile.include_folders.is_empty();
     if !has_includes {
@@ -1476,6 +1481,11 @@ fn select_site_notes(
             QueryAst::from_json(query_json).map_err(AppError::operation)?,
         )
         .map_err(AppError::operation)?;
+        selected.extend(report.notes.into_iter().map(|note| note.document_path));
+    }
+    if let Some(selection) = profile.selection.as_ref() {
+        let report = vulcan_core::execute_selection_plan(paths, selection, read_filter)
+            .map_err(AppError::operation)?;
         selected.extend(report.notes.into_iter().map(|note| note.document_path));
     }
     for path in &profile.include_paths {

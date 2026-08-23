@@ -578,6 +578,13 @@ pub struct QueryReport {
     pub query: QueryAst,
     /// Matched notes.
     pub notes: Vec<crate::properties::NoteRecord>,
+    /// Additive selection plan used to produce the notes, when this report came from a
+    /// publication selection rather than one canonical query.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<crate::selection::SelectionPlan>,
+    /// Per-clause/seed reasons that selected each note.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub selection_provenance: Vec<crate::selection::SelectionProvenance>,
 }
 
 /// Execute a `QueryAst` and return a `QueryReport` (AST + results).
@@ -594,6 +601,8 @@ pub fn execute_query_report_with_filter(
     Ok(QueryReport {
         query: ast,
         notes: report.notes,
+        selection: None,
+        selection_provenance: Vec::new(),
     })
 }
 

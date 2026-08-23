@@ -3151,6 +3151,71 @@ timeout_seconds = 5
 }
 
 #[test]
+fn config_loads_shared_selection_plans_for_export_site_and_outline_profiles() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[export.profiles.book]
+format = "epub"
+path = "book.epub"
+
+[export.profiles.book.selection]
+max_nodes = 500
+
+[[export.profiles.book.selection.clauses]]
+type = "graph"
+seeds = ["Home", "Index"]
+direction = "outgoing"
+depth = 2
+
+[site.profiles.public]
+output_dir = ".vulcan/site/public"
+
+[[site.profiles.public.selection.clauses]]
+type = "query"
+query = "from notes where publish = true"
+
+[publish.outline.profiles.wiki]
+base_url = "https://outline.example.test"
+collection_id = "collection-id"
+token_env = "OUTLINE_TOKEN"
+
+[[publish.outline.profiles.wiki.selection.clauses]]
+type = "graph"
+seeds = ["Wiki"]
+direction = "both"
+
+[publish.outline.profiles.wiki.selection.exclusions]
+paths = ["Private"]
+"#,
+    )
+    .expect("config should be written");
+
+    let loaded = load_vault_config(&VaultPaths::new(vault_root));
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    let export = loaded.config.export.profiles["book"]
+        .selection
+        .as_ref()
+        .expect("export selection");
+    assert_eq!(export.clauses.len(), 1);
+    assert_eq!(export.max_nodes, Some(500));
+    let site = loaded.config.site.profiles["public"]
+        .selection
+        .as_ref()
+        .expect("site selection");
+    assert_eq!(site.clauses.len(), 1);
+    let outline = loaded.config.publish.outline.profiles["wiki"]
+        .selection
+        .as_ref()
+        .expect("Outline selection");
+    assert_eq!(outline.clauses.len(), 1);
+    assert_eq!(outline.exclusions.paths, ["Private"]);
+}
+
+#[test]
 fn default_outline_publish_config_is_empty_and_template_never_contains_a_token() {
     assert!(VaultConfig::default().publish.outline.profiles.is_empty());
     let template = default_config_template();

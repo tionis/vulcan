@@ -88,6 +88,7 @@ mod resource_limits;
 pub mod saved_queries;
 pub mod scan;
 pub mod search;
+pub mod selection;
 pub mod suggestions;
 pub mod tasknotes;
 pub mod tasks;
@@ -284,6 +285,11 @@ pub use search::{
     search_vault_with_filter, SearchError, SearchFuzzyExpansion, SearchHit, SearchHitExplain,
     SearchPlan, SearchQuery, SearchReport, SearchSort, StaticSearchIndexEntry,
     StaticSearchIndexReport,
+};
+pub use selection::{
+    execute_selection_plan, selection_report_as_query_report, validate_selection_plan,
+    GraphSelectionDirection, SelectionClause, SelectionError, SelectionExclusions, SelectionPlan,
+    SelectionProvenance, SelectionReport, DEFAULT_SELECTION_MAX_NODES,
 };
 pub use suggestions::{
     accept_link_suggestion, bulk_replace, bulk_replace_on_paths, link_mentions,

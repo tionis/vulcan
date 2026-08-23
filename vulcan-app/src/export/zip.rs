@@ -50,6 +50,8 @@ pub fn write_zip_export(
 
     let manifest = ZipExportManifest {
         query: report.query.clone(),
+        selection: report.selection.clone(),
+        selection_provenance: report.selection_provenance.clone(),
         result_count: notes.len(),
         notes: notes
             .iter()

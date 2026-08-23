@@ -472,6 +472,7 @@ The built-in Bases evaluator queries vault files as its data source. Phases 9.15
 ### 7.4 Saved queries and exports
 - [x] Persist saved query and report definitions in `.vulcan/`
 - [x] Export `search`, `notes`, and `bases eval` results as CSV and JSONL
+- [x] Add shared additive publication selection plans with multiple query/graph clauses, per-clause seeds/direction/depth/result/traversal filters, authoritative exclusions, cycle/node bounds, and selection provenance
 - [x] Non-interactive batch mode for scheduled reports and automation
 - [x] Snapshot tests for saved-query and export output formats
 - [x] Read-only `bases tui <file.base>` workflow for interactive inspection without sacrificing CLI parity

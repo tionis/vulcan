@@ -85,17 +85,25 @@ fn insert_sqlite_export_meta(
     result_count: usize,
 ) -> Result<(), AppError> {
     let query_json = serde_json::to_string(&report.query).map_err(AppError::operation)?;
+    let selection_json = serde_json::to_string(&report.selection).map_err(AppError::operation)?;
+    let provenance_json =
+        serde_json::to_string(&report.selection_provenance).map_err(AppError::operation)?;
     let timestamp = TemplateTimestamp::current().default_strings().datetime;
     connection
         .execute(
-            "INSERT INTO meta (key, value) VALUES (?1, ?2), (?3, ?4), (?5, ?6)",
+            "INSERT INTO meta (key, value) VALUES
+                (?1, ?2), (?3, ?4), (?5, ?6), (?7, ?8), (?9, ?10)",
             rusqlite::params![
                 "query_json",
                 query_json,
                 "result_count",
                 result_count.to_string(),
                 "generated_at",
-                timestamp
+                timestamp,
+                "selection_json",
+                selection_json,
+                "selection_provenance_json",
+                provenance_json
             ],
         )
         .map_err(AppError::operation)?;

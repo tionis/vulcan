@@ -34,9 +34,10 @@ use vulcan_core::properties::load_note_index;
 use vulcan_core::properties::{evaluate_note_inline_expressions, extract_indexed_properties};
 use vulcan_core::resolver::{ResolverDocument, ResolverIndex, ResolverLink};
 use vulcan_core::{
-    ensure_vulcan_dir, execute_query_report_with_filter, load_vault_config, parse_document,
-    validate_vulcan_overrides_toml, ConfigDiagnostic, NoteRecord, ParsedDocument, QueryAst,
-    QueryReport, VaultPaths,
+    ensure_vulcan_dir, execute_query_report_with_filter, execute_selection_plan, load_vault_config,
+    parse_document, selection_report_as_query_report, validate_selection_plan,
+    validate_vulcan_overrides_toml, ConfigDiagnostic, GraphExportReport, NoteRecord,
+    ParsedDocument, QueryAst, QueryReport, SelectionPlan, VaultPaths,
 };
 use zip::write::FileOptions;
 
@@ -81,6 +82,7 @@ pub struct ExportProfileCreateRequest {
     pub format: ExportProfileFormat,
     pub query: Option<String>,
     pub query_json: Option<String>,
+    pub selection: Option<SelectionPlan>,
     pub path: PathBuf,
     pub site_profile: Option<String>,
     pub title: Option<String>,
@@ -126,6 +128,7 @@ pub struct ExportProfileSetRequest {
     pub query: Option<String>,
     pub query_json: Option<String>,
     pub clear_query: bool,
+    pub selection: ConfigValueUpdate<SelectionPlan>,
     pub path: ConfigValueUpdate<PathBuf>,
     pub site_profile: ConfigValueUpdate<String>,
     pub title: ConfigValueUpdate<String>,
@@ -136,6 +139,8 @@ pub struct ExportProfileSetRequest {
     pub pretty: BoolConfigUpdate,
     pub graph_format: ConfigValueUpdate<ExportGraphFormatConfig>,
 }
+
+pub type ExportProfileQueryArgs<'a> = (Option<&'a str>, Option<&'a str>, Option<&'a SelectionPlan>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExportProfileRuleRequest {
@@ -284,6 +289,10 @@ pub struct EpubRenderCallbacks<'a> {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct ZipExportManifest {
     pub query: QueryAst,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<SelectionPlan>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub selection_provenance: Vec<vulcan_core::SelectionProvenance>,
     pub result_count: usize,
     pub notes: Vec<String>,
     pub attachments: Vec<String>,
@@ -311,6 +320,50 @@ pub fn execute_export_query(
 ) -> Result<QueryReport, AppError> {
     let ast = resolve_export_query_ast(query, query_json)?;
     execute_query_report_with_filter(paths, ast, filter).map_err(AppError::operation)
+}
+
+pub fn execute_export_selection(
+    paths: &VaultPaths,
+    query: Option<&str>,
+    query_json: Option<&str>,
+    selection: Option<&SelectionPlan>,
+    filter: Option<&PermissionFilter>,
+) -> Result<QueryReport, AppError> {
+    if selection.is_some() && (query.is_some() || query_json.is_some()) {
+        return Err(AppError::operation(
+            "provide either query/query_json or a selection plan, not both",
+        ));
+    }
+    if let Some(selection) = selection {
+        return execute_selection_plan(paths, selection, filter)
+            .and_then(selection_report_as_query_report)
+            .map_err(AppError::operation);
+    }
+    execute_export_query(paths, query, query_json, filter)
+}
+
+pub fn execute_graph_export_selection(
+    paths: &VaultPaths,
+    query: Option<&str>,
+    query_json: Option<&str>,
+    selection: Option<&SelectionPlan>,
+    filter: Option<&PermissionFilter>,
+) -> Result<GraphExportReport, AppError> {
+    let selected = execute_export_selection(paths, query, query_json, selection, filter)?;
+    let selected_paths = selected
+        .notes
+        .into_iter()
+        .map(|note| note.document_path)
+        .collect::<HashSet<_>>();
+    let mut graph =
+        vulcan_core::export_graph_with_filter(paths, filter).map_err(AppError::operation)?;
+    graph
+        .nodes
+        .retain(|node| selected_paths.contains(&node.path));
+    graph.edges.retain(|edge| {
+        selected_paths.contains(&edge.source) && selected_paths.contains(&edge.target)
+    });
+    Ok(graph)
 }
 
 pub fn load_exported_notes(
@@ -3039,18 +3092,19 @@ pub fn export_profile_query_args<'a>(
     name: &str,
     format: ExportProfileFormat,
     profile: &'a ExportProfileConfig,
-) -> Result<(Option<&'a str>, Option<&'a str>), AppError> {
+) -> Result<ExportProfileQueryArgs<'a>, AppError> {
     let query = profile.query.as_deref();
     let query_json = profile.query_json.as_deref();
-    let has_query = query.is_some() || query_json.is_some();
-    if !export_profile_supports_query(format) && has_query {
+    let selection = profile.selection.as_ref();
+    let has_selection = query.is_some() || query_json.is_some() || selection.is_some();
+    if !export_profile_supports_query(format) && has_selection {
         return Err(AppError::operation(format!(
-            "export profile `{name}` does not use `query` or `query_json` for {} exports",
+            "export profile `{name}` does not use note selection for {} exports",
             export_profile_format_label(format)
         )));
     }
 
-    Ok((query, query_json))
+    Ok((query, query_json, selection))
 }
 
 #[allow(clippy::too_many_lines)]
@@ -3062,10 +3116,19 @@ pub fn validate_export_profile_config(
         AppError::operation(format!("export profile `{name}` is missing `format`"))
     })?;
     let has_query = profile.query.is_some() || profile.query_json.is_some();
-
-    if !export_profile_supports_query(format) && has_query {
+    if has_query && profile.selection.is_some() {
         return Err(AppError::operation(format!(
-            "export profile `{name}` does not use `query` or `query_json` for {} exports",
+            "export profile `{name}` must use either query/query_json or selection, not both"
+        )));
+    }
+    if let Some(selection) = &profile.selection {
+        validate_selection_plan(selection).map_err(AppError::operation)?;
+    }
+    let has_selection = has_query || profile.selection.is_some();
+
+    if !export_profile_supports_query(format) && has_selection {
+        return Err(AppError::operation(format!(
+            "export profile `{name}` does not use note selection for {} exports",
             export_profile_format_label(format)
         )));
     }
@@ -3307,6 +3370,7 @@ fn build_export_profile_config(request: &ExportProfileCreateRequest) -> ExportPr
         format: Some(request.format),
         query: request.query.clone(),
         query_json: request.query_json.clone(),
+        selection: request.selection.clone(),
         path: Some(request.path.clone()),
         site_profile: request.site_profile.clone(),
         title: request.title.clone(),
@@ -3379,6 +3443,23 @@ fn apply_updated_path(current: &mut Option<PathBuf>, update: &ConfigValueUpdate<
     }
 }
 
+fn apply_updated_selection(
+    current: &mut Option<SelectionPlan>,
+    update: &ConfigValueUpdate<SelectionPlan>,
+) -> bool {
+    let next = match update {
+        ConfigValueUpdate::Keep => return false,
+        ConfigValueUpdate::Set(value) => Some(value.clone()),
+        ConfigValueUpdate::Clear => None,
+    };
+    if *current == next {
+        false
+    } else {
+        *current = next;
+        true
+    }
+}
+
 fn apply_updated_flag(current: &mut Option<bool>, update: BoolConfigUpdate) -> bool {
     let next = match update {
         BoolConfigUpdate::Keep => return false,
@@ -3418,6 +3499,9 @@ fn apply_export_profile_settings(
         if profile.query_json.take().is_some() {
             changed = true;
         }
+        if profile.selection.take().is_some() {
+            changed = true;
+        }
     } else if let Some(query_json) = request.query_json.as_deref() {
         if profile.query_json != Some(query_json.to_string()) {
             profile.query_json = Some(query_json.to_string());
@@ -3426,7 +3510,17 @@ fn apply_export_profile_settings(
         if profile.query.take().is_some() {
             changed = true;
         }
+        if profile.selection.take().is_some() {
+            changed = true;
+        }
     }
+
+    if matches!(request.selection, ConfigValueUpdate::Set(_))
+        && (profile.query.take().is_some() || profile.query_json.take().is_some())
+    {
+        changed = true;
+    }
+    changed |= apply_updated_selection(&mut profile.selection, &request.selection);
 
     changed |= apply_updated_path(&mut profile.path, &request.path);
     changed |= apply_updated_string(&mut profile.site_profile, &request.site_profile);
@@ -3446,6 +3540,7 @@ fn export_profile_set_request_has_changes(request: &ExportProfileSetRequest) -> 
         || request.query.is_some()
         || request.query_json.is_some()
         || request.clear_query
+        || request.selection.has_change()
         || request.path.has_change()
         || request.site_profile.has_change()
         || request.title.has_change()
@@ -3463,6 +3558,7 @@ fn export_profile_supports_query(format: ExportProfileFormat) -> bool {
         ExportProfileFormat::Markdown
             | ExportProfileFormat::Json
             | ExportProfileFormat::Csv
+            | ExportProfileFormat::Graph
             | ExportProfileFormat::Epub
             | ExportProfileFormat::Zip
             | ExportProfileFormat::Sqlite

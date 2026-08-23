@@ -163,7 +163,7 @@ Behavior:
 - `vulcan cache vacuum [--dry-run]`: run SQLite `VACUUM` on the cache.
 - `vulcan checkpoint create <name>`: capture the current cache state under a checkpoint name.
 - `vulcan checkpoint list`: list saved scan and manual checkpoints.
-- `vulcan export markdown|json|csv|epub|zip|outline-zip|sqlite [<query>] ...`: materialize notes as combined documents, datasets, books, or archives. Omitting both `<query>` and `--query-json` exports the full vault (`from notes`). `outline-zip` plans Outline's sibling file/directory hierarchy; see [Outline publishing](guide/outline-publishing.md).
+- `vulcan export markdown|json|csv|epub|zip|outline-zip|sqlite [<query>] ...`: materialize notes as combined documents, datasets, books, or archives. Omitting `<query>`, `--query-json`, and `--selection-json` exports the full vault (`from notes`). `--selection-json` accepts the shared additive query/graph selection plan. `outline-zip` plans Outline's sibling file/directory hierarchy; see [Outline publishing](guide/outline-publishing.md).
 - Query-capable `[export.profiles.<name>]` entries use the same full-vault default when neither `query` nor `query_json` is configured.
 - `vulcan export search-index [--path <FILE>] [--pretty]`: write the cached search corpus as a static JSON index.
 - `vulcan publish outline <profile> [--dry-run]`: reconcile a configured one-way publication into an existing Outline collection; see [Outline publishing](guide/outline-publishing.md).
@@ -927,6 +927,7 @@ Automation notes:
 - `export profile rule list|add|update|delete|move` edits the ordered `content_transforms` rules stored in shared config.
 - `export profile show` prints the effective merged profile after shared/local config merge.
 - `export profile run <name>` runs a config-driven export and resolves relative profile paths from the vault root.
+- Direct exports and named profiles may use an additive `selection` plan instead of one `query`/`query_json`. The same plan is accepted by static-site and Outline publish profiles.
 - `export epub` preserves the selected note tree in the table of contents by default and can be flattened with `--toc flat`.
 - `export epub --frontmatter` includes each note's YAML metadata in a styled collapsible panel before the rendered note body.
 - `markdown`, `json`, `epub`, and `zip` support publication transforms that rewrite exported notes without mutating source files.
@@ -948,11 +949,14 @@ Supported transform families today:
 
 Selection and rule semantics:
 
-- The export query still defines which notes are exported.
+- A legacy export query defines the selected notes, or a structured selection plan unions any number of independent query and graph clauses.
+- Graph clauses accept multiple seeds with shared settings. Separate clauses let different seeds use different direction, depth, result filters, or traversal filters.
+- `result_query` filters which reached notes enter the result while traversal continues through nonmatching notes. `traverse_query` stops expansion through nonmatching notes. Global exclusions and permission boundaries always stop both inclusion and traversal.
+- Graph traversal is cycle-safe. `depth = 0` selects only included seeds, an omitted depth is recursive, and `max_nodes` defaults to 10,000 per seed as a safety bound.
 - Transform rules never add notes. A rule query only narrows within the already-selected export set.
 - Direct CLI flags such as `--exclude-callout` or `--replace-rule` are sugar for one implicit rule that applies to all exported notes.
 - Profiles store the persisted form as ordered `[[export.profiles.<name>.content_transforms]]` tables.
-- `export profile create` and `export profile set` only manage profile-wide fields such as format, query, path, and EPUB/JSON options.
+- `export profile create` and `export profile set` manage profile-wide fields such as format, query or `--selection-json`, path, and EPUB/JSON options.
 - `export profile rule ...` manages ordered persisted transform rules explicitly instead of flattening transform flags into profile creation.
 - If multiple rules match one note, Vulcan merges them before reparsing the note. Exclusions union together, and replacement rules keep declaration order.
 
@@ -1027,13 +1031,50 @@ pattern = "[[People/Bob]]"
 replacement = "[[People/Alice]]"
 ```
 
-Reading the config example:
+Reading the content-transform example:
 
 - The first rule applies to every exported note selected by the profile query.
 - The second rule applies only to the exported notes under `People/`.
 - The nested `replace` tables belong to the most recent `content_transforms` rule table.
 - `regex = true` switches one replacement entry from literal matching to Rust regex matching.
 - The profile CLI edits this persisted rule list directly instead of inventing a second "simple profile transform" schema.
+
+Additive graph-selection profile example:
+
+```toml
+[export.profiles.graph_book]
+format = "epub"
+path = "exports/graph-book.epub"
+title = "Graph Book"
+
+[export.profiles.graph_book.selection]
+max_nodes = 5000
+
+[[export.profiles.graph_book.selection.clauses]]
+type = "graph"
+seeds = ["Home", "Projects/Index"]
+direction = "outgoing"
+depth = 3
+include_seeds = true
+result_query = 'from notes where publish = true'
+
+[[export.profiles.graph_book.selection.clauses]]
+type = "graph"
+seeds = ["Reference/Index"]
+direction = "both"
+include_seeds = true
+traverse_query = 'from notes where visibility = "team"'
+
+[[export.profiles.graph_book.selection.clauses]]
+type = "query"
+query = 'from notes where file.path starts_with "Appendices/"'
+
+[export.profiles.graph_book.selection.exclusions]
+query = 'from notes where visibility = "private"'
+paths = ["Scratch"]
+```
+
+Selection clauses are additive and declaration order does not change membership. Notes are deduplicated, output ordering remains deterministic by path, and selection-aware JSON/ZIP/SQLite artifacts retain the plan and per-clause seed/depth provenance.
 
 ### Query output modes
 

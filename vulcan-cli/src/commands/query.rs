@@ -177,6 +177,8 @@ pub(crate) fn handle_query_command(
             QueryReport {
                 query: ast,
                 notes: notes_report.notes,
+                selection: None,
+                selection_provenance: Vec::new(),
             }
         }
     };
@@ -244,6 +246,8 @@ pub(crate) fn handle_ls_command(
         &QueryReport {
             query: ast,
             notes: notes_report.notes,
+            selection: None,
+            selection_provenance: Vec::new(),
         },
         list_controls,
         crate::QueryReportRenderOptions {

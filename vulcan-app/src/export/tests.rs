@@ -4,12 +4,13 @@ use super::{
     apply_export_profile_rule_update, apply_export_profile_set, build_content_transform_rules,
     build_epub_nav_nodes, build_epub_tag_targets, build_export_profile_list,
     build_export_profile_rule_list, build_export_profile_show_report,
-    collect_export_attachment_paths, execute_export_query, inject_epub_heading_ids,
-    load_export_links, load_exported_notes, prepare_export_data, render_csv_export_payload,
-    render_epub_nav_document, render_json_export_payload, render_markdown_export_payload,
-    require_export_profile_path, resolve_export_query_ast, rewrite_epub_link_destination,
-    write_epub_export, write_sqlite_export, write_zip_export, BoolConfigUpdate, ConfigValueUpdate,
-    EpubChapter, EpubExportOptions, EpubHeading, EpubRenderCallbacks, ExportLinkRecord,
+    collect_export_attachment_paths, execute_export_query, execute_export_selection,
+    execute_graph_export_selection, inject_epub_heading_ids, load_export_links,
+    load_exported_notes, prepare_export_data, render_csv_export_payload, render_epub_nav_document,
+    render_json_export_payload, render_markdown_export_payload, require_export_profile_path,
+    resolve_export_query_ast, rewrite_epub_link_destination, write_epub_export,
+    write_sqlite_export, write_zip_export, BoolConfigUpdate, ConfigValueUpdate, EpubChapter,
+    EpubExportOptions, EpubHeading, EpubRenderCallbacks, ExportLinkRecord,
     ExportProfileCreateRequest, ExportProfileFormat, ExportProfileRuleMoveRequest,
     ExportProfileRuleRequest, ExportProfileRuleWriteAction, ExportProfileSetRequest,
     ExportProfileWriteAction, ExportedNoteDocument,
@@ -24,8 +25,9 @@ use vulcan_core::config::{ExportEpubTocStyleConfig, ExportProfileConfig};
 use vulcan_core::permissions::{PathPermission, PermissionFilter, ResourceSpecifier};
 use vulcan_core::properties::NoteTaskRecord;
 use vulcan_core::{
-    scan_vault, EvaluatedInlineExpression, NoteRecord, QueryAst, QueryProjection, QueryReport,
-    QuerySource, ScanMode, VaultPaths,
+    load_vault_config, scan_vault, EvaluatedInlineExpression, GraphSelectionDirection, NoteRecord,
+    QueryAst, QueryProjection, QueryReport, QuerySource, ScanMode, SelectionClause,
+    SelectionExclusions, SelectionPlan, VaultPaths,
 };
 use zip::ZipArchive;
 
@@ -43,6 +45,7 @@ fn create_json_profile_request() -> ExportProfileCreateRequest {
         format: ExportProfileFormat::Json,
         query: Some("from notes".to_string()),
         query_json: None,
+        selection: None,
         path: PathBuf::from("exports/public.json"),
         site_profile: None,
         title: None,
@@ -74,6 +77,37 @@ fn query_based_export_profile_can_omit_query() {
 
     assert!(report.profile["query"].is_null());
     assert!(report.profile["query_json"].is_null());
+}
+
+#[test]
+fn export_profile_persists_additive_selection_plan() {
+    let (_temp_dir, paths) = export_paths();
+    let selection = SelectionPlan {
+        clauses: vec![SelectionClause::Graph {
+            seeds: vec!["Home".to_string(), "Index".to_string()],
+            direction: GraphSelectionDirection::Both,
+            depth: Some(2),
+            include_seeds: true,
+            result_query: None,
+            result_query_json: None,
+            traverse_query: None,
+            traverse_query_json: None,
+        }],
+        exclusions: SelectionExclusions::default(),
+        max_nodes: Some(500),
+    };
+    let mut request = create_json_profile_request();
+    request.query = None;
+    request.selection = Some(selection.clone());
+
+    let report = apply_export_profile_create(&paths, "graph-book", &request, false, false)
+        .expect("create graph selection profile");
+    assert_eq!(report.profile["selection"]["max_nodes"], 500);
+    let loaded = load_vault_config(&paths);
+    assert_eq!(
+        loaded.config.export.profiles["graph-book"].selection,
+        Some(selection)
+    );
 }
 
 fn config_contents(path: &Path) -> String {
@@ -181,6 +215,7 @@ fn export_profile_set_rewrites_profile_fields_in_shared_config() {
             format: ExportProfileFormat::Markdown,
             query: Some("from notes".to_string()),
             query_json: None,
+            selection: None,
             path: PathBuf::from("exports/docs.md"),
             site_profile: None,
             title: Some("Docs".to_string()),
@@ -204,6 +239,7 @@ fn export_profile_set_rewrites_profile_fields_in_shared_config() {
             query: None,
             query_json: Some("{\"source\":\"notes\"}".to_string()),
             clear_query: false,
+            selection: ConfigValueUpdate::Keep,
             path: ConfigValueUpdate::Set(PathBuf::from("exports/docs.json")),
             site_profile: ConfigValueUpdate::Keep,
             title: ConfigValueUpdate::Clear,
@@ -244,6 +280,7 @@ fn export_profile_create_and_set_support_frontend_bundle_site_profiles() {
             format: ExportProfileFormat::FrontendBundle,
             query: None,
             query_json: None,
+            selection: None,
             path: PathBuf::from("exports/public-bundle"),
             site_profile: Some("public".to_string()),
             title: None,
@@ -269,6 +306,7 @@ fn export_profile_create_and_set_support_frontend_bundle_site_profiles() {
             query: None,
             query_json: None,
             clear_query: false,
+            selection: ConfigValueUpdate::Keep,
             path: ConfigValueUpdate::Keep,
             site_profile: ConfigValueUpdate::Set("docs".to_string()),
             title: ConfigValueUpdate::Keep,
@@ -504,6 +542,60 @@ fn shared_export_renderers_emit_expected_json_markdown_and_csv() {
         ));
     assert!(csv.contains("Home.md"));
     assert!(csv.contains("People/Bob.md"));
+}
+
+#[test]
+fn selection_aware_json_export_retains_plan_and_provenance() {
+    let (_temp_dir, paths) = build_export_transform_vault();
+    let selection = SelectionPlan {
+        clauses: vec![SelectionClause::Graph {
+            seeds: vec!["Home".to_string()],
+            direction: GraphSelectionDirection::Outgoing,
+            depth: Some(1),
+            include_seeds: true,
+            result_query: None,
+            result_query_json: None,
+            traverse_query: None,
+            traverse_query_json: None,
+        }],
+        exclusions: SelectionExclusions::default(),
+        max_nodes: None,
+    };
+    let report = execute_export_selection(&paths, None, None, Some(&selection), None)
+        .expect("selection report");
+    let notes = load_exported_notes(&paths, &report).expect("selected notes");
+    let json = render_json_export_payload(&report, &notes, false).expect("selection JSON");
+    let parsed: Value = serde_json::from_str(&json).expect("parse selection JSON");
+
+    assert_eq!(parsed["selection"]["clauses"][0]["seeds"][0], "Home");
+    assert!(parsed["selection_provenance"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["path"] == "Home.md")));
+}
+
+#[test]
+fn graph_export_is_induced_by_the_shared_selection() {
+    let (_temp_dir, paths) = build_export_transform_vault();
+    let graph = execute_graph_export_selection(
+        &paths,
+        Some(r#"from notes where file.path matches "^(Home|People/Bob)\.md$""#),
+        None,
+        None,
+        None,
+    )
+    .expect("selected graph");
+    assert_eq!(
+        graph
+            .nodes
+            .iter()
+            .map(|node| node.path.as_str())
+            .collect::<Vec<_>>(),
+        ["Home.md", "People/Bob.md"]
+    );
+    assert!(graph.edges.iter().all(|edge| {
+        matches!(edge.source.as_str(), "Home.md" | "People/Bob.md")
+            && matches!(edge.target.as_str(), "Home.md" | "People/Bob.md")
+    }));
 }
 
 #[test]
@@ -951,6 +1043,8 @@ fn write_sqlite_export_writes_expected_schema_and_rows() {
             offset: 0,
         },
         notes: vec![note.clone()],
+        selection: None,
+        selection_provenance: Vec::new(),
     };
     let notes = vec![ExportedNoteDocument {
         note,

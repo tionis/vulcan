@@ -2,7 +2,9 @@ use super::ExportedNoteDocument;
 use crate::AppError;
 use serde::Serialize;
 use serde_json::Value;
-use vulcan_core::{EvaluatedInlineExpression, QueryAst, QueryReport};
+use vulcan_core::{
+    EvaluatedInlineExpression, QueryAst, QueryReport, SelectionPlan, SelectionProvenance,
+};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct JsonNoteExportDocument {
@@ -24,6 +26,10 @@ pub struct JsonNoteExportDocument {
 #[derive(Debug, Clone, Serialize)]
 pub struct JsonNotesExportReport {
     pub query: QueryAst,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub selection: Option<SelectionPlan>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub selection_provenance: Vec<SelectionProvenance>,
     pub result_count: usize,
     pub notes: Vec<JsonNoteExportDocument>,
 }
@@ -52,6 +58,8 @@ fn json_note_export_report(
 ) -> JsonNotesExportReport {
     JsonNotesExportReport {
         query: report.query.clone(),
+        selection: report.selection.clone(),
+        selection_provenance: report.selection_provenance.clone(),
         result_count: notes.len(),
         notes: notes
             .iter()

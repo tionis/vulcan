@@ -3719,6 +3719,17 @@
                     ]
                   },
                   {
+                    "help": "Additive selection plan JSON; mutually exclusive with query/query-json",
+                    "id": "selection_json",
+                    "long": "selection-json",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "SELECTION_JSON"
+                    ]
+                  },
+                  {
                     "help": "Destination file path stored in the profile",
                     "id": "path",
                     "long": "path",
@@ -3937,6 +3948,17 @@
                     ]
                   },
                   {
+                    "help": "Store an additive selection plan from JSON",
+                    "id": "selection_json",
+                    "long": "selection-json",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "SELECTION_JSON"
+                    ]
+                  },
+                  {
                     "help": "Clear any stored query or query_json",
                     "id": "clear_query",
                     "long": "clear-query",
@@ -3948,6 +3970,20 @@
                     "short": null,
                     "value_names": [
                       "CLEAR_QUERY"
+                    ]
+                  },
+                  {
+                    "help": "Clear any stored additive selection plan",
+                    "id": "clear_selection",
+                    "long": "clear-selection",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CLEAR_SELECTION"
                     ]
                   },
                   {
@@ -4733,7 +4769,7 @@
                 ]
               },
               {
-                "help": "JSON note query payload; mutually exclusive with the positional query; omit both to export the full vault",
+                "help": "JSON note query payload; mutually exclusive with query/selection-json; omit all to export the full vault",
                 "id": "query_json",
                 "long": "query-json",
                 "possible_values": [],
@@ -4741,6 +4777,17 @@
                 "short": null,
                 "value_names": [
                   "QUERY_JSON"
+                ]
+              },
+              {
+                "help": "Additive graph/query selection plan JSON; mutually exclusive with query/query-json",
+                "id": "selection_json",
+                "long": "selection-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SELECTION_JSON"
                 ]
               },
               {
@@ -4841,7 +4888,7 @@
                 ]
               },
               {
-                "help": "JSON note query payload; mutually exclusive with the positional query; omit both to export the full vault",
+                "help": "JSON note query payload; mutually exclusive with query/selection-json; omit all to export the full vault",
                 "id": "query_json",
                 "long": "query-json",
                 "possible_values": [],
@@ -4849,6 +4896,17 @@
                 "short": null,
                 "value_names": [
                   "QUERY_JSON"
+                ]
+              },
+              {
+                "help": "Additive graph/query selection plan JSON; mutually exclusive with query/query-json",
+                "id": "selection_json",
+                "long": "selection-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SELECTION_JSON"
                 ]
               },
               {
@@ -4952,7 +5010,7 @@
                 ]
               },
               {
-                "help": "JSON note query payload; mutually exclusive with the positional query; omit both to export the full vault",
+                "help": "JSON note query payload; mutually exclusive with query/selection-json; omit all to export the full vault",
                 "id": "query_json",
                 "long": "query-json",
                 "possible_values": [],
@@ -4960,6 +5018,17 @@
                 "short": null,
                 "value_names": [
                   "QUERY_JSON"
+                ]
+              },
+              {
+                "help": "Additive graph/query selection plan JSON; mutually exclusive with query/query-json",
+                "id": "selection_json",
+                "long": "selection-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SELECTION_JSON"
                 ]
               },
               {
@@ -4980,6 +5049,39 @@
             "about": "Export the resolved link graph for external tools",
             "name": "graph",
             "options": [
+              {
+                "help": "Native note query DSL string; omit to export the full vault",
+                "id": "query",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY"
+                ]
+              },
+              {
+                "help": "JSON note query payload; mutually exclusive with query/selection-json; omit all to export the full vault",
+                "id": "query_json",
+                "long": "query-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "QUERY_JSON"
+                ]
+              },
+              {
+                "help": "Additive graph/query selection plan JSON; mutually exclusive with query/query-json",
+                "id": "selection_json",
+                "long": "selection-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SELECTION_JSON"
+                ]
+              },
               {
                 "help": "Output format: json ({nodes,edges}), dot (Graphviz), or graphml (XML)",
                 "id": "format",
@@ -5025,7 +5127,7 @@
                 ]
               },
               {
-                "help": "JSON note query payload; mutually exclusive with the positional query; omit both to export the full vault",
+                "help": "JSON note query payload; mutually exclusive with query/selection-json; omit all to export the full vault",
                 "id": "query_json",
                 "long": "query-json",
                 "possible_values": [],
@@ -5033,6 +5135,17 @@
                 "short": null,
                 "value_names": [
                   "QUERY_JSON"
+                ]
+              },
+              {
+                "help": "Additive graph/query selection plan JSON; mutually exclusive with query/query-json",
+                "id": "selection_json",
+                "long": "selection-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SELECTION_JSON"
                 ]
               },
               {
@@ -5186,7 +5299,7 @@
                 ]
               },
               {
-                "help": "JSON note query payload; mutually exclusive with the positional query; omit both to export the full vault",
+                "help": "JSON note query payload; mutually exclusive with query/selection-json; omit all to export the full vault",
                 "id": "query_json",
                 "long": "query-json",
                 "possible_values": [],
@@ -5194,6 +5307,17 @@
                 "short": null,
                 "value_names": [
                   "QUERY_JSON"
+                ]
+              },
+              {
+                "help": "Additive graph/query selection plan JSON; mutually exclusive with query/query-json",
+                "id": "selection_json",
+                "long": "selection-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SELECTION_JSON"
                 ]
               },
               {
@@ -5283,7 +5407,7 @@
                 ]
               },
               {
-                "help": "JSON note query payload; mutually exclusive with the positional query; omit both to export the full vault",
+                "help": "JSON note query payload; mutually exclusive with query/selection-json; omit all to export the full vault",
                 "id": "query_json",
                 "long": "query-json",
                 "possible_values": [],
@@ -5291,6 +5415,17 @@
                 "short": null,
                 "value_names": [
                   "QUERY_JSON"
+                ]
+              },
+              {
+                "help": "Additive graph/query selection plan JSON; mutually exclusive with query/query-json",
+                "id": "selection_json",
+                "long": "selection-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SELECTION_JSON"
                 ]
               },
               {
@@ -5462,7 +5597,7 @@
                 ]
               },
               {
-                "help": "JSON note query payload; mutually exclusive with the positional query; omit both to export the full vault",
+                "help": "JSON note query payload; mutually exclusive with query/selection-json; omit all to export the full vault",
                 "id": "query_json",
                 "long": "query-json",
                 "possible_values": [],
@@ -5470,6 +5605,17 @@
                 "short": null,
                 "value_names": [
                   "QUERY_JSON"
+                ]
+              },
+              {
+                "help": "Additive graph/query selection plan JSON; mutually exclusive with query/query-json",
+                "id": "selection_json",
+                "long": "selection-json",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SELECTION_JSON"
                 ]
               },
               {

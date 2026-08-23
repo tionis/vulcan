@@ -1998,6 +1998,8 @@ impl McpServerCore {
                         QueryReport {
                             query: ast,
                             notes: notes_report.notes,
+                            selection: None,
+                            selection_provenance: Vec::new(),
                         }
                     }
                     (Some(_), Some(_)) => unreachable!("checked above"),
