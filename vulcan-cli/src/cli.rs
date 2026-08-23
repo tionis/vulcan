@@ -1308,6 +1308,8 @@ pub enum OutlineBlockReferencePolicyArg {
     Error,
     /// Preserve each visible link label as plain text in the exported document
     PlainText,
+    /// Preserve the visible label and authored destination as annotated text
+    AnnotatedText,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
@@ -1317,6 +1319,8 @@ pub enum OutlineExcludedTargetPolicyArg {
     Error,
     /// Preserve each visible link label as plain text in the exported document
     PlainText,
+    /// Preserve the visible label and authored destination as annotated text
+    AnnotatedText,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -2289,14 +2293,14 @@ pub enum ExportCommand {
             long,
             value_enum,
             default_value = "error",
-            help = "How to publish Obsidian block-reference links: error or plain-text"
+            help = "How to publish Obsidian block-reference links: error, plain-text, or annotated-text"
         )]
         block_reference_policy: OutlineBlockReferencePolicyArg,
         #[arg(
             long,
             value_enum,
             default_value = "error",
-            help = "How to publish links to notes outside the query: error or plain-text"
+            help = "How to publish links to notes outside the query: error, plain-text, or annotated-text"
         )]
         excluded_target_policy: OutlineExcludedTargetPolicyArg,
         #[arg(

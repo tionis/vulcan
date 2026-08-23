@@ -2117,6 +2117,7 @@ pub enum OutlineBlockReferencePolicyConfig {
     #[default]
     Error,
     PlainText,
+    AnnotatedText,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -2125,6 +2126,7 @@ pub enum OutlineExcludedTargetPolicyConfig {
     #[default]
     Error,
     PlainText,
+    AnnotatedText,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]

@@ -5376,12 +5376,13 @@
                 ]
               },
               {
-                "help": "How to publish Obsidian block-reference links: error or plain-text",
+                "help": "How to publish Obsidian block-reference links: error, plain-text, or annotated-text",
                 "id": "block_reference_policy",
                 "long": "block-reference-policy",
                 "possible_values": [
                   "error",
-                  "plain-text"
+                  "plain-text",
+                  "annotated-text"
                 ],
                 "required": false,
                 "short": null,
@@ -5390,12 +5391,13 @@
                 ]
               },
               {
-                "help": "How to publish links to notes outside the query: error or plain-text",
+                "help": "How to publish links to notes outside the query: error, plain-text, or annotated-text",
                 "id": "excluded_target_policy",
                 "long": "excluded-target-policy",
                 "possible_values": [
                   "error",
-                  "plain-text"
+                  "plain-text",
+                  "annotated-text"
                 ],
                 "required": false,
                 "short": null,

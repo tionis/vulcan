@@ -14833,7 +14833,7 @@ fn export_outline_zip_block_reference_policy_is_located_aggregated_and_mutation_
         "diagnostics should be aggregated: {stderr}"
     );
     assert!(stderr.contains("error: 4 Obsidian block-reference links"));
-    assert!(stderr.contains("hint: rerun with --block-reference-policy plain-text"));
+    assert!(stderr.contains("hint: rerun with --block-reference-policy annotated-text"));
     assert!(stderr.contains("Home.md:5:3: #^block-9-0"));
     assert!(!strict_path.exists());
 
@@ -14931,6 +14931,36 @@ fn export_outline_zip_block_reference_policy_is_located_aggregated_and_mutation_
     assert!(!exported.contains("Target#^target-block"));
     assert!(exported.contains("[Section](Home.md#Heading)"));
     assert!(exported.contains("[ordinary](Target.md)"));
+
+    let annotated_path = temp_dir.path().join("chronicles-annotated.zip");
+    let annotated = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "export",
+            "outline-zip",
+            "--collection-title",
+            "Chronicles",
+            "--block-reference-policy",
+            "annotated-text",
+            "--path",
+            annotated_path.to_str().expect("ZIP path should be utf-8"),
+        ])
+        .assert()
+        .success();
+    let annotated_stderr = String::from_utf8_lossy(&annotated.get_output().stderr);
+    assert!(annotated_stderr.contains("rendered as annotated text for Outline"));
+    let file = fs::File::open(&annotated_path).expect("annotated ZIP export should exist");
+    let mut archive = ZipArchive::new(file).expect("annotated ZIP export should open");
+    let mut annotated_export = String::new();
+    archive
+        .by_name("Chronicles/Home.md")
+        .expect("annotated home note should be exported")
+        .read_to_string(&mut annotated_export)
+        .expect("annotated note should be readable");
+    assert!(annotated_export.contains("Welcome (`#^block-9-0`)"));
+    assert!(annotated_export.contains("Remote label (`Target#^target-block`)"));
     assert_eq!(fs::read(vault_root.join("Home.md")).unwrap(), source);
 }
 
@@ -14976,7 +15006,7 @@ fn export_outline_zip_excluded_target_policy_enables_partial_exports() {
         "diagnostics should be aggregated: {stderr}"
     );
     assert!(stderr.contains("error: 2 links"));
-    assert!(stderr.contains("hint: rerun with --excluded-target-policy plain-text"));
+    assert!(stderr.contains("hint: rerun with --excluded-target-policy annotated-text"));
     assert!(stderr.contains("Projects/Readme.md:3:"));
     assert!(!strict_path.exists());
 
@@ -15069,6 +15099,38 @@ fn export_outline_zip_excluded_target_policy_enables_partial_exports() {
         .expect("exported note should be readable");
     assert!(exported.contains("hidden label, details, and [local](Local.md)."));
     assert!(!exported.contains("Secret"));
+
+    let annotated_path = temp_dir.path().join("partial-annotated.zip");
+    let annotated = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "export",
+            "outline-zip",
+            query,
+            "--collection-title",
+            "Wiki",
+            "--excluded-target-policy",
+            "annotated-text",
+            "--path",
+            annotated_path.to_str().expect("ZIP path should be utf-8"),
+        ])
+        .assert()
+        .success();
+    let annotated_stderr = String::from_utf8_lossy(&annotated.get_output().stderr);
+    assert!(annotated_stderr.contains("rendered as annotated text for Outline"));
+    let file = fs::File::open(&annotated_path).expect("annotated ZIP should exist");
+    let mut archive = ZipArchive::new(file).expect("annotated ZIP should open");
+    let mut annotated_export = String::new();
+    archive
+        .by_name("Wiki/Projects/Readme.md")
+        .expect("annotated readme should be exported")
+        .read_to_string(&mut annotated_export)
+        .expect("annotated readme should be readable");
+    assert!(annotated_export.contains(
+        "hidden label (`Secret`), details (`../Secret.md#Details`), and [local](Local.md)."
+    ));
     assert_eq!(
         fs::read(vault_root.join("Projects/Readme.md")).unwrap(),
         source

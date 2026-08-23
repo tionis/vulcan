@@ -6398,6 +6398,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Propagate generated folder-placeholder diagnostics through Outline API publish reports and human output.
 - [x] Add an explicit strict/plain-text policy for unsupported Obsidian block-reference targets, with export-only rewrites, located structured diagnostics, and aggregated human output.
 - [x] Add an explicit strict/plain-text policy for links outside query-selected partial Outline exports, with export-only rewrites, located structured diagnostics, and aggregated human output.
+- [x] Add an `annotated-text` fallback for unsupported block references and excluded targets that preserves the visible label, authored destination, and embed intent without publishing broken links.
 
 **Current boundary and future placement:** The implemented `publish outline` command remains strictly one-way. Phase 15 now plans a separate, explicitly scoped Outline pull route with its own local destination, authority, pagination, attachment, deletion, and conflict policies. Do not evolve this publisher into implicit bidirectional synchronization or use the separate Outline-to-Git backup/audit trail as publisher input.
 

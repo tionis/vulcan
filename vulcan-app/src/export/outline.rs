@@ -53,6 +53,7 @@ pub struct OutlineDiagnostic {
 #[serde(rename_all = "snake_case")]
 pub enum OutlineDiagnosticAction {
     RenderedPlainText,
+    RenderedAnnotatedText,
     RerunWithPlainText,
 }
 
@@ -61,6 +62,7 @@ impl OutlineDiagnostic {
     pub fn is_warning(&self) -> bool {
         self.kind == OutlineDiagnosticKind::MissingFolderNote
             || self.action == Some(OutlineDiagnosticAction::RenderedPlainText)
+            || self.action == Some(OutlineDiagnosticAction::RenderedAnnotatedText)
     }
 }
 
@@ -619,6 +621,11 @@ fn validate_links_and_collect_attachments(
                     OutlineDiagnosticAction::RenderedPlainText,
                     "rendered Obsidian block-reference link as plain text for Outline".to_string(),
                 ),
+                OutlineBlockReferencePolicyConfig::AnnotatedText => (
+                    OutlineDiagnosticAction::RenderedAnnotatedText,
+                    "rendered Obsidian block-reference link as annotated text for Outline"
+                        .to_string(),
+                ),
             };
             diagnostics.push(OutlineDiagnostic {
                 kind: OutlineDiagnosticKind::UnsupportedLink,
@@ -707,6 +714,10 @@ fn push_excluded_target_diagnostic(
         OutlineExcludedTargetPolicyConfig::PlainText => (
             OutlineDiagnosticAction::RenderedPlainText,
             "rendered link to an excluded note as plain text for Outline".to_string(),
+        ),
+        OutlineExcludedTargetPolicyConfig::AnnotatedText => (
+            OutlineDiagnosticAction::RenderedAnnotatedText,
+            "rendered link to an excluded note as annotated text for Outline".to_string(),
         ),
     };
     diagnostics.push(OutlineDiagnostic {
@@ -829,14 +840,19 @@ fn rewrite_document_links(
         .iter()
         .filter_map(|link| {
             if link.target_block.is_some()
-                && block_reference_policy == OutlineBlockReferencePolicyConfig::PlainText
+                && block_reference_policy != OutlineBlockReferencePolicyConfig::Error
             {
                 let start = usize::try_from(link.byte_offset).ok()?;
                 let end = start.checked_add(link.raw_text.len())?;
                 if end > document.content.len() || !document.content.is_char_boundary(start) {
                     return None;
                 }
-                return Some((start, end, link_plain_text(link)));
+                let replacement = match block_reference_policy {
+                    OutlineBlockReferencePolicyConfig::PlainText => link_plain_text(link),
+                    OutlineBlockReferencePolicyConfig::AnnotatedText => link_annotated_text(link),
+                    OutlineBlockReferencePolicyConfig::Error => return None,
+                };
+                return Some((start, end, replacement));
             }
             let target = link.resolved_target_path.as_ref()?;
             let archive_target = document_targets
@@ -852,9 +868,14 @@ fn rewrite_document_links(
                     .resolved_target_extension
                     .as_deref()
                     .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
-                && excluded_target_policy == OutlineExcludedTargetPolicyConfig::PlainText
+                && excluded_target_policy != OutlineExcludedTargetPolicyConfig::Error
             {
-                return Some((start, end, link_plain_text(link)));
+                let replacement = match excluded_target_policy {
+                    OutlineExcludedTargetPolicyConfig::PlainText => link_plain_text(link),
+                    OutlineExcludedTargetPolicyConfig::AnnotatedText => link_annotated_text(link),
+                    OutlineExcludedTargetPolicyConfig::Error => return None,
+                };
+                return Some((start, end, replacement));
             }
             let archive_target = archive_target?;
             let relative = relative_archive_path(&document.archive_path, archive_target);
@@ -897,6 +918,54 @@ fn link_plain_text(link: &ExportLinkRecord) -> String {
             .unwrap_or_default()
     };
     escape_markdown_plain_text(label)
+}
+
+fn link_annotated_text(link: &ExportLinkRecord) -> String {
+    let label = link_plain_text(link);
+    let mut target = authored_link_target(link);
+    if link.link_kind.eq_ignore_ascii_case("embed") {
+        target.insert(0, '!');
+    }
+    if target.is_empty() {
+        return label;
+    }
+    let annotation = markdown_code_span(&target);
+    if label.is_empty() {
+        annotation
+    } else {
+        format!("{label} ({annotation})")
+    }
+}
+
+fn authored_link_target(link: &ExportLinkRecord) -> String {
+    let mut target = link.target_path_candidate.clone().unwrap_or_default();
+    if let Some(block) = link.target_block.as_deref() {
+        target.push_str("#^");
+        target.push_str(block);
+    } else if let Some(heading) = link.target_heading.as_deref() {
+        target.push('#');
+        target.push_str(heading);
+    }
+    target
+}
+
+fn markdown_code_span(value: &str) -> String {
+    let mut longest_run = 0;
+    let mut current_run = 0;
+    for character in value.chars() {
+        if character == '`' {
+            current_run += 1;
+            longest_run = longest_run.max(current_run);
+        } else {
+            current_run = 0;
+        }
+    }
+    let delimiter = "`".repeat(longest_run + 1);
+    if value.starts_with('`') || value.ends_with('`') {
+        format!("{delimiter} {value} {delimiter}")
+    } else {
+        format!("{delimiter}{value}{delimiter}")
+    }
 }
 
 fn escape_markdown_plain_text(value: &str) -> String {
@@ -1140,8 +1209,8 @@ mod tests {
     }
 
     #[test]
-    fn block_reference_policy_preserves_strict_mode_and_can_render_labels_as_plain_text() {
-        let source = b"# Home\n\n[label](#^block-9-0) and [again](#^block-9-0)\n\n^block-9-0\n\n## Section\n\n[heading](#Section) and [[Target|note]] and [[Target#^remote-block|remote label]]\n";
+    fn block_reference_policy_preserves_strict_mode_and_can_render_fallback_text() {
+        let source = b"# Home\n\n[label](#^block-9-0) and [again](#^block-9-0)\n\n^block-9-0\n\n## Section\n\n[heading](#Section) and [[Target|note]] and [[Target#^remote-block|remote label]] and ![[Target#^remote-block]]\n";
         let (_temp, paths) = outline_vault(&[
             ("Home.md", source),
             (
@@ -1157,7 +1226,7 @@ mod tests {
             .iter()
             .filter(|diagnostic| diagnostic.kind == OutlineDiagnosticKind::UnsupportedLink)
             .collect::<Vec<_>>();
-        assert_eq!(strict_blocks.len(), 3);
+        assert_eq!(strict_blocks.len(), 4);
         assert!(strict_blocks.iter().all(|diagnostic| {
             diagnostic.policy == Some(OutlineBlockReferencePolicyConfig::Error)
                 && diagnostic.action == Some(OutlineDiagnosticAction::RerunWithPlainText)
@@ -1188,6 +1257,29 @@ mod tests {
         assert!(!home.content.contains("Target#^remote-block"));
         assert!(home.content.contains("[heading](Home.md#Section)"));
         assert!(home.content.contains("[note](Target.md)"));
+
+        let annotated =
+            plan_all_with_policy(&paths, OutlineBlockReferencePolicyConfig::AnnotatedText);
+        assert!(annotated.is_valid(), "{:?}", annotated.diagnostics);
+        assert!(annotated.diagnostics.iter().all(|diagnostic| {
+            diagnostic.kind != OutlineDiagnosticKind::UnsupportedLink
+                || (diagnostic.policy == Some(OutlineBlockReferencePolicyConfig::AnnotatedText)
+                    && diagnostic.action == Some(OutlineDiagnosticAction::RenderedAnnotatedText))
+        }));
+        let annotated_home = annotated
+            .documents
+            .iter()
+            .find(|document| document.source_path == "Home.md")
+            .expect("annotated home document");
+        assert!(annotated_home
+            .content
+            .contains("label (`#^block-9-0`) and again (`#^block-9-0`)"));
+        assert!(annotated_home
+            .content
+            .contains("remote label (`Target#^remote-block`)"));
+        assert!(annotated_home
+            .content
+            .contains("Target (`!Target#^remote-block`)"));
         assert_eq!(
             fs::read(paths.vault_root().join("Home.md")).unwrap(),
             source
@@ -1452,7 +1544,7 @@ mod tests {
     }
 
     #[test]
-    fn excluded_target_policy_preserves_strict_mode_and_can_render_labels_as_plain_text() {
+    fn excluded_target_policy_preserves_strict_mode_and_can_render_fallback_text() {
         let (_temp, paths) = outline_vault(&[
             ("Projects/index.md", b"# Index\n"),
             ("Projects/Projects.md", b"# Projects\n"),
@@ -1515,10 +1607,43 @@ mod tests {
             .expect("readme document");
         assert!(readme.content.contains("Before hidden label and details."));
         assert!(!readme.content.contains("Secret"));
+
+        let annotated = plan_outline_publication_with_options(
+            &paths,
+            "Wiki",
+            &prepared.notes,
+            &prepared.links,
+            OutlinePublicationOptions {
+                block_reference_policy: OutlineBlockReferencePolicyConfig::Error,
+                excluded_target_policy: OutlineExcludedTargetPolicyConfig::AnnotatedText,
+            },
+        )
+        .expect("plan projects with excluded links annotated");
+        assert!(annotated.is_valid(), "{:?}", annotated.diagnostics);
+        assert!(annotated.diagnostics.iter().all(|diagnostic| {
+            diagnostic.kind != OutlineDiagnosticKind::ExcludedTarget
+                || (diagnostic.excluded_target_policy
+                    == Some(OutlineExcludedTargetPolicyConfig::AnnotatedText)
+                    && diagnostic.action == Some(OutlineDiagnosticAction::RenderedAnnotatedText))
+        }));
+        let annotated_readme = annotated
+            .documents
+            .iter()
+            .find(|document| document.source_path == "Projects/Readme.md")
+            .expect("annotated readme document");
+        assert!(annotated_readme
+            .content
+            .contains("Before hidden label (`Secret`) and details (`../Secret.md#Details`)."));
         assert_eq!(
             fs::read(paths.vault_root().join("Projects/Readme.md")).unwrap(),
             source
         );
+    }
+
+    #[test]
+    fn markdown_code_spans_preserve_backticks_in_authored_targets() {
+        assert_eq!(markdown_code_span("Notes/Target"), "`Notes/Target`");
+        assert_eq!(markdown_code_span("Notes/`Target`"), "`` Notes/`Target` ``");
     }
 
     #[test]

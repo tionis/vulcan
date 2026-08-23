@@ -1208,7 +1208,7 @@ fn dynamic_config_descriptors() -> Vec<ConfigDescriptor> {
         ConfigTargetSupport::SharedAndLocal,
         Some("vulcan config set"),
         Some(TomlValue::String("error".to_string())),
-        &["error", "plain-text"],
+        &["error", "plain-text", "annotated-text"],
     );
     push(
         "publish.outline.profiles.<name>.excluded_target_policy",
@@ -1216,7 +1216,7 @@ fn dynamic_config_descriptors() -> Vec<ConfigDescriptor> {
         ConfigTargetSupport::SharedAndLocal,
         Some("vulcan config set"),
         Some(TomlValue::String("error".to_string())),
-        &["error", "plain-text"],
+        &["error", "plain-text", "annotated-text"],
     );
     push(
         "publish.outline.profiles.<name>.content_transforms",

@@ -1205,15 +1205,16 @@ fn print_outline_diagnostics(diagnostics: &[vulcan_app::export::outline::Outline
         let count = grouped.len();
         let noun = if count == 1 { "link" } else { "links" };
         if warning {
+            let rendering = outline_fallback_rendering(&grouped);
             eprintln!(
-                "{level}: {count} Obsidian block-reference {noun} in {source_path} rendered as plain text for Outline"
+                "{level}: {count} Obsidian block-reference {noun} in {source_path} rendered as {rendering} for Outline"
             );
         } else {
             eprintln!(
                 "{level}: {count} Obsidian block-reference {noun} in {source_path} cannot be represented by Outline"
             );
             eprintln!(
-                "hint: rerun with --block-reference-policy plain-text to preserve labels as plain text"
+                "hint: rerun with --block-reference-policy annotated-text to preserve labels and destinations, or plain-text for labels only"
             );
         }
         for diagnostic in grouped.iter().take(3) {
@@ -1234,15 +1235,16 @@ fn print_outline_diagnostics(diagnostics: &[vulcan_app::export::outline::Outline
         let count = grouped.len();
         let noun = if count == 1 { "link" } else { "links" };
         if warning {
+            let rendering = outline_fallback_rendering(&grouped);
             eprintln!(
-                "{level}: {count} {noun} in {source_path} to notes outside the publication query rendered as plain text for Outline"
+                "{level}: {count} {noun} in {source_path} to notes outside the publication query rendered as {rendering} for Outline"
             );
         } else {
             eprintln!(
                 "{level}: {count} {noun} in {source_path} resolve to notes outside the publication query"
             );
             eprintln!(
-                "hint: rerun with --excluded-target-policy plain-text to preserve labels as plain text"
+                "hint: rerun with --excluded-target-policy annotated-text to preserve labels and destinations, or plain-text for labels only"
             );
         }
         for diagnostic in grouped.iter().take(3) {
@@ -1257,6 +1259,21 @@ fn print_outline_diagnostics(diagnostics: &[vulcan_app::export::outline::Outline
         if count > 3 {
             eprintln!("  ... and {} more", count - 3);
         }
+    }
+}
+
+fn outline_fallback_rendering(
+    diagnostics: &[&vulcan_app::export::outline::OutlineDiagnostic],
+) -> &'static str {
+    use vulcan_app::export::outline::OutlineDiagnosticAction;
+
+    if diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.action == Some(OutlineDiagnosticAction::RenderedAnnotatedText))
+    {
+        "annotated text"
+    } else {
+        "plain text"
     }
 }
 
@@ -4127,6 +4144,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                                 OutlineBlockReferencePolicyArg::PlainText => {
                                     OutlineBlockReferencePolicyConfig::PlainText
                                 }
+                                OutlineBlockReferencePolicyArg::AnnotatedText => {
+                                    OutlineBlockReferencePolicyConfig::AnnotatedText
+                                }
                             },
                             excluded_target_policy: match excluded_target_policy {
                                 OutlineExcludedTargetPolicyArg::Error => {
@@ -4134,6 +4154,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                                 }
                                 OutlineExcludedTargetPolicyArg::PlainText => {
                                     OutlineExcludedTargetPolicyConfig::PlainText
+                                }
+                                OutlineExcludedTargetPolicyArg::AnnotatedText => {
+                                    OutlineExcludedTargetPolicyConfig::AnnotatedText
                                 }
                             },
                         },

@@ -3102,8 +3102,8 @@ timeout_seconds = 30
 max_retries = 3
 page_size = 100
 remove_toc = true
-block_reference_policy = "plain-text"
-excluded_target_policy = "plain-text"
+block_reference_policy = "annotated-text"
+excluded_target_policy = "annotated-text"
 "#,
     )
     .expect("shared config should be written");
@@ -3137,11 +3137,11 @@ timeout_seconds = 5
     assert_eq!(profile.remove_toc, Some(true));
     assert_eq!(
         profile.block_reference_policy,
-        Some(OutlineBlockReferencePolicyConfig::PlainText)
+        Some(OutlineBlockReferencePolicyConfig::AnnotatedText)
     );
     assert_eq!(
         profile.excluded_target_policy,
-        Some(OutlineExcludedTargetPolicyConfig::PlainText)
+        Some(OutlineExcludedTargetPolicyConfig::AnnotatedText)
     );
 }
 

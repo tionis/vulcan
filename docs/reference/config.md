@@ -1037,7 +1037,7 @@ One-way remote publication profiles and reconciliation settings.
   One-way Outline target, query, credential environment binding, and request limits.
   Preferred command: `vulcan config set`
   Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
-- `publish.outline.profiles.<name>.block_reference_policy` — type: `enum`; target: `shared|local`; default: `error`; values: `error`, `plain-text`
+- `publish.outline.profiles.<name>.block_reference_policy` — type: `enum`; target: `shared|local`; default: `error`; values: `error`, `plain-text`, `annotated-text`
   One-way Outline target, query, credential environment binding, and request limits.
   Preferred command: `vulcan config set`
   Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
@@ -1053,7 +1053,7 @@ One-way remote publication profiles and reconciliation settings.
   One-way Outline target, query, credential environment binding, and request limits.
   Preferred command: `vulcan config set`
   Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
-- `publish.outline.profiles.<name>.excluded_target_policy` — type: `enum`; target: `shared|local`; default: `error`; values: `error`, `plain-text`
+- `publish.outline.profiles.<name>.excluded_target_policy` — type: `enum`; target: `shared|local`; default: `error`; values: `error`, `plain-text`, `annotated-text`
   One-way Outline target, query, credential environment binding, and request limits.
   Preferred command: `vulcan config set`
   Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
