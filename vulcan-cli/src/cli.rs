@@ -1310,6 +1310,15 @@ pub enum OutlineBlockReferencePolicyArg {
     PlainText,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum OutlineExcludedTargetPolicyArg {
+    /// Reject links to notes outside the publication query (backward-compatible default)
+    #[default]
+    Error,
+    /// Preserve each visible link label as plain text in the exported document
+    PlainText,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum RefreshMode {
     Off,
@@ -2283,6 +2292,13 @@ pub enum ExportCommand {
             help = "How to publish Obsidian block-reference links: error or plain-text"
         )]
         block_reference_policy: OutlineBlockReferencePolicyArg,
+        #[arg(
+            long,
+            value_enum,
+            default_value = "error",
+            help = "How to publish links to notes outside the query: error or plain-text"
+        )]
+        excluded_target_policy: OutlineExcludedTargetPolicyArg,
         #[arg(
             short = 'o',
             long = "path",

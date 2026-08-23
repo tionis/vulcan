@@ -538,6 +538,7 @@ mod tests {
             column: None,
             byte_offset: None,
             policy: None,
+            excluded_target_policy: None,
             action: None,
             message: "generated an export-only placeholder".to_string(),
         });

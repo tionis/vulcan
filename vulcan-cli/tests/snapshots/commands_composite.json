@@ -5390,6 +5390,20 @@
                 ]
               },
               {
+                "help": "How to publish links to notes outside the query: error or plain-text",
+                "id": "excluded_target_policy",
+                "long": "excluded-target-policy",
+                "possible_values": [
+                  "error",
+                  "plain-text"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXCLUDED_TARGET_POLICY"
+                ]
+              },
+              {
                 "help": "Destination Outline ZIP archive",
                 "id": "path",
                 "long": "path",

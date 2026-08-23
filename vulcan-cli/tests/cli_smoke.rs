@@ -14935,6 +14935,147 @@ fn export_outline_zip_block_reference_policy_is_located_aggregated_and_mutation_
 }
 
 #[test]
+fn export_outline_zip_excluded_target_policy_enables_partial_exports() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Projects")).expect("projects folder");
+    let source = b"# Readme\n\n[[Secret|hidden label]], [details](../Secret.md#Details), and [[Local|local]].\n";
+    fs::write(vault_root.join("Projects/Projects.md"), "# Projects\n").expect("folder note");
+    fs::write(vault_root.join("Projects/Readme.md"), source).expect("readme note");
+    fs::write(vault_root.join("Projects/Local.md"), "# Local\n").expect("local note");
+    fs::write(
+        vault_root.join("Secret.md"),
+        "# Secret\n\n## Details\n\nNot selected.\n",
+    )
+    .expect("excluded note");
+    run_scan(&vault_root);
+    let query = r#"from notes where file.path matches "^Projects/""#;
+
+    let strict_path = temp_dir.path().join("strict.zip");
+    let strict = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "export",
+            "outline-zip",
+            query,
+            "--collection-title",
+            "Wiki",
+            "--path",
+            strict_path.to_str().expect("ZIP path should be utf-8"),
+        ])
+        .assert()
+        .failure();
+    let stderr = String::from_utf8_lossy(&strict.get_output().stderr);
+    assert_eq!(
+        stderr
+            .matches("links in Projects/Readme.md resolve to notes outside the publication query")
+            .count(),
+        1,
+        "diagnostics should be aggregated: {stderr}"
+    );
+    assert!(stderr.contains("error: 2 links"));
+    assert!(stderr.contains("hint: rerun with --excluded-target-policy plain-text"));
+    assert!(stderr.contains("Projects/Readme.md:3:"));
+    assert!(!strict_path.exists());
+
+    let json_path = temp_dir.path().join("strict-json.zip");
+    let strict_json = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "--output",
+            "json",
+            "export",
+            "outline-zip",
+            query,
+            "--collection-title",
+            "Wiki",
+            "--path",
+            json_path.to_str().expect("ZIP path should be utf-8"),
+            "--dry-run",
+        ])
+        .assert()
+        .failure();
+    let stdout = String::from_utf8_lossy(&strict_json.get_output().stdout);
+    let report: Value = serde_json::from_str(stdout.lines().next().expect("report JSON line"))
+        .expect("report should be JSON");
+    let excluded = report["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .filter(|diagnostic| diagnostic["kind"] == "excluded_target")
+        .collect::<Vec<_>>();
+    assert_eq!(excluded.len(), 2);
+    assert!(excluded.iter().all(|diagnostic| {
+        diagnostic["source_path"] == "Projects/Readme.md"
+            && diagnostic["target"] == "Secret.md"
+            && diagnostic["line"].as_u64().is_some()
+            && diagnostic["column"].as_u64().is_some()
+            && diagnostic["byte_offset"].as_u64().is_some()
+            && diagnostic["excluded_target_policy"] == "error"
+            && diagnostic["action"] == "rerun_with_plain_text"
+    }));
+
+    let dry_run_path = temp_dir.path().join("dry-run.zip");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "export",
+            "outline-zip",
+            query,
+            "--collection-title",
+            "Wiki",
+            "--excluded-target-policy",
+            "plain-text",
+            "--path",
+            dry_run_path.to_str().expect("ZIP path should be utf-8"),
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    assert!(!dry_run_path.exists());
+
+    let export_path = temp_dir.path().join("partial.zip");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "export",
+            "outline-zip",
+            query,
+            "--collection-title",
+            "Wiki",
+            "--excluded-target-policy",
+            "plain-text",
+            "--path",
+            export_path.to_str().expect("ZIP path should be utf-8"),
+        ])
+        .assert()
+        .success();
+
+    let file = fs::File::open(&export_path).expect("ZIP export should exist");
+    let mut archive = ZipArchive::new(file).expect("ZIP export should open");
+    let mut exported = String::new();
+    archive
+        .by_name("Wiki/Projects/Readme.md")
+        .expect("readme should be exported")
+        .read_to_string(&mut exported)
+        .expect("exported note should be readable");
+    assert!(exported.contains("hidden label, details, and [local](Local.md)."));
+    assert!(!exported.contains("Secret"));
+    assert_eq!(
+        fs::read(vault_root.join("Projects/Readme.md")).unwrap(),
+        source
+    );
+}
+
+#[test]
 fn publish_outline_dry_run_reports_creates_without_remote_or_state_mutation() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

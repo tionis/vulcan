@@ -2102,6 +2102,7 @@ pub struct OutlinePublishProfileConfig {
     pub page_size: Option<usize>,
     pub remove_toc: Option<bool>,
     pub block_reference_policy: Option<OutlineBlockReferencePolicyConfig>,
+    pub excluded_target_policy: Option<OutlineExcludedTargetPolicyConfig>,
     #[serde(
         default,
         rename = "content_transforms",
@@ -2113,6 +2114,14 @@ pub struct OutlinePublishProfileConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum OutlineBlockReferencePolicyConfig {
+    #[default]
+    Error,
+    PlainText,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum OutlineExcludedTargetPolicyConfig {
     #[default]
     Error,
     PlainText,
@@ -3722,6 +3731,9 @@ fn merge_outline_publish_profile_config(
     }
     if let Some(block_reference_policy) = profile.block_reference_policy {
         target.block_reference_policy = Some(block_reference_policy);
+    }
+    if let Some(excluded_target_policy) = profile.excluded_target_policy {
+        target.excluded_target_policy = Some(excluded_target_policy);
     }
     if let Some(content_transform_rules) = profile.content_transform_rules {
         target.content_transform_rules = Some(content_transform_rules);

@@ -427,15 +427,15 @@ pub use cli::{
     ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs, FolderNotePlacementArg,
     GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs, KanbanCommand,
     McpToolPackArg, McpToolPackModeArg, McpTransportArg, NoteAppendPeriodicArg, NoteCheckboxState,
-    NoteCommand, NoteGetMode, OutlineBlockReferencePolicyArg, OutputFormat, PeriodicOpenArgs,
-    PeriodicSubcommand, PluginCommand, PluginEventArg, PluginSandboxArg, PropertySortArg,
-    PublishCommand, QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs,
-    RenderMode, RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode,
-    SearchSortArg, SiteCommand, SkillCommand, SuggestCommand, SuggestLinkStatusArg, TagSortArg,
-    TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
-    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
-    TemplateSubcommand, ToolCommand, ToolInitTemplateArg, TrustCommand, VectorQueueCommand,
-    VectorsCommand, WebCommand, WebFetchMode,
+    NoteCommand, NoteGetMode, OutlineBlockReferencePolicyArg, OutlineExcludedTargetPolicyArg,
+    OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg,
+    PluginSandboxArg, PropertySortArg, PublishCommand, QueryEngineArg, QueryFormatArg,
+    RefactorCommand, RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand,
+    SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg, SiteCommand, SkillCommand,
+    SuggestCommand, SuggestLinkStatusArg, TagSortArg, TasksCommand, TasksListSourceArg,
+    TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
+    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, ToolCommand, ToolInitTemplateArg,
+    TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -510,6 +510,7 @@ use vulcan_app::templates::{
     TemplateEngineKind, TemplateInsertMode, TemplateRunMode, TemplateVariables,
 };
 use vulcan_core::config::OutlineBlockReferencePolicyConfig;
+use vulcan_core::config::OutlineExcludedTargetPolicyConfig;
 #[cfg(test)]
 use vulcan_core::config::TemplatesConfig;
 use vulcan_core::config::{
@@ -1161,10 +1162,26 @@ fn print_outline_diagnostics(diagnostics: &[vulcan_app::export::outline::Outline
     use vulcan_app::export::outline::OutlineDiagnosticKind;
 
     let mut block_references = BTreeMap::<(String, bool), Vec<_>>::new();
+    let mut excluded_targets = BTreeMap::<(String, bool), Vec<_>>::new();
     for diagnostic in diagnostics {
         if diagnostic.kind == OutlineDiagnosticKind::UnsupportedLink && diagnostic.policy.is_some()
         {
             block_references
+                .entry((
+                    diagnostic
+                        .source_path
+                        .clone()
+                        .unwrap_or_else(|| "<unknown>".to_string()),
+                    diagnostic.is_warning(),
+                ))
+                .or_default()
+                .push(diagnostic);
+            continue;
+        }
+        if diagnostic.kind == OutlineDiagnosticKind::ExcludedTarget
+            && diagnostic.excluded_target_policy.is_some()
+        {
+            excluded_targets
                 .entry((
                     diagnostic
                         .source_path
@@ -1197,6 +1214,35 @@ fn print_outline_diagnostics(diagnostics: &[vulcan_app::export::outline::Outline
             );
             eprintln!(
                 "hint: rerun with --block-reference-policy plain-text to preserve labels as plain text"
+            );
+        }
+        for diagnostic in grouped.iter().take(3) {
+            if let (Some(line), Some(column), Some(target)) = (
+                diagnostic.line,
+                diagnostic.column,
+                diagnostic.target.as_deref(),
+            ) {
+                eprintln!("  {source_path}:{line}:{column}: {target}");
+            }
+        }
+        if count > 3 {
+            eprintln!("  ... and {} more", count - 3);
+        }
+    }
+    for ((source_path, warning), grouped) in excluded_targets {
+        let level = if warning { "warning" } else { "error" };
+        let count = grouped.len();
+        let noun = if count == 1 { "link" } else { "links" };
+        if warning {
+            eprintln!(
+                "{level}: {count} {noun} in {source_path} to notes outside the publication query rendered as plain text for Outline"
+            );
+        } else {
+            eprintln!(
+                "{level}: {count} {noun} in {source_path} resolve to notes outside the publication query"
+            );
+            eprintln!(
+                "hint: rerun with --excluded-target-policy plain-text to preserve labels as plain text"
             );
         }
         for diagnostic in grouped.iter().take(3) {
@@ -1279,7 +1325,7 @@ fn run_publish_command(
         collection_title,
         &prepared.notes,
         &prepared.links,
-        outline_publication_options(profile_config.block_reference_policy),
+        outline_publication_options(profile_config),
     )
     .map_err(CliError::operation)?;
     let client = HttpOutlineClient::new(
@@ -1325,10 +1371,11 @@ fn run_publish_command(
 
 #[cfg(feature = "web")]
 fn outline_publication_options(
-    block_reference_policy: Option<OutlineBlockReferencePolicyConfig>,
+    profile: &vulcan_core::config::OutlinePublishProfileConfig,
 ) -> OutlinePublicationOptions {
     OutlinePublicationOptions {
-        block_reference_policy: block_reference_policy.unwrap_or_default(),
+        block_reference_policy: profile.block_reference_policy.unwrap_or_default(),
+        excluded_target_policy: profile.excluded_target_policy.unwrap_or_default(),
     }
 }
 
@@ -4038,6 +4085,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     collection_title,
                     remove_toc,
                     block_reference_policy,
+                    excluded_target_policy,
                     path,
                     dry_run,
                 } => {
@@ -4078,6 +4126,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                                 }
                                 OutlineBlockReferencePolicyArg::PlainText => {
                                     OutlineBlockReferencePolicyConfig::PlainText
+                                }
+                            },
+                            excluded_target_policy: match excluded_target_policy {
+                                OutlineExcludedTargetPolicyArg::Error => {
+                                    OutlineExcludedTargetPolicyConfig::Error
+                                }
+                                OutlineExcludedTargetPolicyArg::PlainText => {
+                                    OutlineExcludedTargetPolicyConfig::PlainText
                                 }
                             },
                         },

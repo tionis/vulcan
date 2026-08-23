@@ -9,6 +9,7 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use vulcan_core::config::load_vault_config;
 use vulcan_core::config::OutlineBlockReferencePolicyConfig;
+use vulcan_core::config::OutlineExcludedTargetPolicyConfig;
 use vulcan_core::folder_notes::FolderNotesConfig;
 use vulcan_core::VaultPaths;
 use zip::write::FileOptions;
@@ -42,6 +43,8 @@ pub struct OutlineDiagnostic {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub policy: Option<OutlineBlockReferencePolicyConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub excluded_target_policy: Option<OutlineExcludedTargetPolicyConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub action: Option<OutlineDiagnosticAction>,
     pub message: String,
 }
@@ -64,6 +67,7 @@ impl OutlineDiagnostic {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct OutlinePublicationOptions {
     pub block_reference_policy: OutlineBlockReferencePolicyConfig,
+    pub excluded_target_policy: OutlineExcludedTargetPolicyConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -235,6 +239,7 @@ pub fn plan_outline_publication_with_options(
         &selected_paths,
         &document_contents,
         options.block_reference_policy,
+        options.excluded_target_policy,
         &mut diagnostics,
     );
     let attachments = plan_attachments(
@@ -272,6 +277,7 @@ pub fn plan_outline_publication_with_options(
                 &document_target_paths,
                 &attachment_target_paths,
                 options.block_reference_policy,
+                options.excluded_target_policy,
             );
             OutlinePlannedDocument {
                 source_path: document.source_path,
@@ -315,6 +321,7 @@ fn collection_path_diagnostics(
             column: None,
             byte_offset: None,
             policy: None,
+            excluded_target_policy: None,
             action: None,
             message: "collection title does not produce a safe Outline archive directory"
                 .to_string(),
@@ -427,6 +434,7 @@ fn identify_folder_notes(
                 column: None,
                 byte_offset: None,
                 policy: None,
+                excluded_target_policy: None,
                 action: None,
                 message: format!(
                     "folder `{folder}` has multiple notes matching the configured folder-note convention"
@@ -476,6 +484,7 @@ fn complete_folder_note_hierarchy(
             column: None,
             byte_offset: None,
             policy: None,
+            excluded_target_policy: None,
             action: None,
             message: format!(
                 "folder `{folder}` has no selected configured folder note; generated an export-only placeholder"
@@ -521,6 +530,7 @@ fn plan_document_paths(
                 column: None,
                 byte_offset: None,
                 policy: None,
+                excluded_target_policy: None,
                 action: None,
                 message: "note path is not a safe relative archive path".to_string(),
             });
@@ -579,6 +589,7 @@ fn validate_links_and_collect_attachments(
     selected_paths: &BTreeSet<String>,
     document_contents: &HashMap<&str, &str>,
     block_reference_policy: OutlineBlockReferencePolicyConfig,
+    excluded_target_policy: OutlineExcludedTargetPolicyConfig,
     diagnostics: &mut Vec<OutlineDiagnostic>,
 ) -> BTreeSet<String> {
     let mut attachments = BTreeSet::new();
@@ -617,6 +628,7 @@ fn validate_links_and_collect_attachments(
                 column,
                 byte_offset: offset,
                 policy: Some(block_reference_policy),
+                excluded_target_policy: None,
                 action: Some(action),
                 message,
             });
@@ -628,18 +640,13 @@ fn validate_links_and_collect_attachments(
         ) {
             (Some(target), Some(extension)) if extension.eq_ignore_ascii_case("md") => {
                 if !selected_paths.contains(target) {
-                    diagnostics.push(OutlineDiagnostic {
-                        kind: OutlineDiagnosticKind::ExcludedTarget,
-                        source_path: Some(link.source_document_path.clone()),
-                        target: Some(target.to_string()),
-                        line: None,
-                        column: None,
-                        byte_offset: None,
-                        policy: None,
-                        action: None,
-                        message: "link resolves to a note excluded from the publication query"
-                            .to_string(),
-                    });
+                    push_excluded_target_diagnostic(
+                        link,
+                        target,
+                        document_contents,
+                        excluded_target_policy,
+                        diagnostics,
+                    );
                 }
             }
             (Some(target), Some(_)) => {
@@ -654,6 +661,7 @@ fn validate_links_and_collect_attachments(
                         column: None,
                         byte_offset: None,
                         policy: None,
+                        excluded_target_policy: None,
                         action: None,
                         message: "resolved attachment is missing from the vault".to_string(),
                     });
@@ -667,12 +675,52 @@ fn validate_links_and_collect_attachments(
                 column: None,
                 byte_offset: None,
                 policy: None,
+                excluded_target_policy: None,
                 action: None,
                 message: "internal link could not be resolved".to_string(),
             }),
         }
     }
     attachments
+}
+
+fn push_excluded_target_diagnostic(
+    link: &ExportLinkRecord,
+    target: &str,
+    document_contents: &HashMap<&str, &str>,
+    policy: OutlineExcludedTargetPolicyConfig,
+    diagnostics: &mut Vec<OutlineDiagnostic>,
+) {
+    let offset = usize::try_from(link.byte_offset).ok();
+    let (source_line, source_column) = offset
+        .and_then(|offset| {
+            document_contents
+                .get(link.source_document_path.as_str())
+                .map(|content| line_column_for_offset(content, offset))
+        })
+        .map_or((None, None), |(line, column)| (Some(line), Some(column)));
+    let (action, message) = match policy {
+        OutlineExcludedTargetPolicyConfig::Error => (
+            OutlineDiagnosticAction::RerunWithPlainText,
+            "link resolves to a note excluded from the publication query".to_string(),
+        ),
+        OutlineExcludedTargetPolicyConfig::PlainText => (
+            OutlineDiagnosticAction::RenderedPlainText,
+            "rendered link to an excluded note as plain text for Outline".to_string(),
+        ),
+    };
+    diagnostics.push(OutlineDiagnostic {
+        kind: OutlineDiagnosticKind::ExcludedTarget,
+        source_path: Some(link.source_document_path.clone()),
+        target: Some(target.to_string()),
+        line: source_line,
+        column: source_column,
+        byte_offset: offset,
+        policy: None,
+        excluded_target_policy: Some(policy),
+        action: Some(action),
+        message,
+    });
 }
 
 fn plan_attachments(
@@ -696,6 +744,7 @@ fn plan_attachments(
                         column: None,
                         byte_offset: None,
                         policy: None,
+                        excluded_target_policy: None,
                         action: None,
                         message: format!("failed to read attachment: {error}"),
                     });
@@ -742,6 +791,7 @@ fn validate_archive_collisions(
                 column: None,
                 byte_offset: None,
                 policy: None,
+                excluded_target_policy: None,
                 action: None,
                 message: format!(
                     "case-insensitive archive collision with {existing_kind} `{existing_path}`"
@@ -773,6 +823,7 @@ fn rewrite_document_links(
     document_targets: &HashMap<String, String>,
     attachment_targets: &HashMap<String, String>,
     block_reference_policy: OutlineBlockReferencePolicyConfig,
+    excluded_target_policy: OutlineExcludedTargetPolicyConfig,
 ) -> String {
     let mut replacements = links
         .iter()
@@ -785,17 +836,27 @@ fn rewrite_document_links(
                 if end > document.content.len() || !document.content.is_char_boundary(start) {
                     return None;
                 }
-                return Some((start, end, block_link_plain_text(link)));
+                return Some((start, end, link_plain_text(link)));
             }
             let target = link.resolved_target_path.as_ref()?;
             let archive_target = document_targets
                 .get(target)
-                .or_else(|| attachment_targets.get(target))?;
+                .or_else(|| attachment_targets.get(target));
             let start = usize::try_from(link.byte_offset).ok()?;
             let end = start.checked_add(link.raw_text.len())?;
             if end > document.content.len() || !document.content.is_char_boundary(start) {
                 return None;
             }
+            if archive_target.is_none()
+                && link
+                    .resolved_target_extension
+                    .as_deref()
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+                && excluded_target_policy == OutlineExcludedTargetPolicyConfig::PlainText
+            {
+                return Some((start, end, link_plain_text(link)));
+            }
+            let archive_target = archive_target?;
             let relative = relative_archive_path(&document.archive_path, archive_target);
             let mut href = encode_uri_path(&relative);
             if let Some(heading) = link.target_heading.as_deref() {
@@ -825,7 +886,7 @@ fn rewrite_document_links(
     content
 }
 
-fn block_link_plain_text(link: &ExportLinkRecord) -> String {
+fn link_plain_text(link: &ExportLinkRecord) -> String {
     let label = if link.link_kind.eq_ignore_ascii_case("markdown") {
         link.display_text.as_deref().unwrap_or_default()
     } else {
@@ -1028,6 +1089,7 @@ mod tests {
             &prepared.links,
             OutlinePublicationOptions {
                 block_reference_policy,
+                excluded_target_policy: OutlineExcludedTargetPolicyConfig::Error,
             },
         )
         .expect("plan Outline publication")
@@ -1390,13 +1452,17 @@ mod tests {
     }
 
     #[test]
-    fn reports_excluded_targets() {
+    fn excluded_target_policy_preserves_strict_mode_and_can_render_labels_as_plain_text() {
         let (_temp, paths) = outline_vault(&[
             ("Projects/index.md", b"# Index\n"),
             ("Projects/Projects.md", b"# Projects\n"),
-            ("Projects/Readme.md", b"[[Secret]]\n"),
-            ("Secret.md", b"# Secret\n"),
+            (
+                "Projects/Readme.md",
+                b"Before [[Secret|hidden label]] and [details](../Secret.md#Details).\n",
+            ),
+            ("Secret.md", b"# Secret\n\n## Details\n"),
         ]);
+        let source = fs::read(paths.vault_root().join("Projects/Readme.md")).expect("source");
         let report = execute_export_query(
             &paths,
             Some(r#"from notes where file.path matches "^Projects/""#),
@@ -1412,14 +1478,47 @@ mod tests {
             OutlineMarkdownOptions::default(),
         )
         .expect("prepare projects");
-        let plan = plan_outline_publication(&paths, "Wiki", &prepared.notes, &prepared.links)
-            .expect("plan projects");
-        let kinds = plan
+        let strict = plan_outline_publication(&paths, "Wiki", &prepared.notes, &prepared.links)
+            .expect("plan projects strictly");
+        assert!(!strict.is_valid());
+        let excluded = strict
             .diagnostics
             .iter()
-            .map(|diagnostic| diagnostic.kind.clone())
+            .filter(|diagnostic| diagnostic.kind == OutlineDiagnosticKind::ExcludedTarget)
             .collect::<Vec<_>>();
-        assert!(kinds.contains(&OutlineDiagnosticKind::ExcludedTarget));
+        assert_eq!(excluded.len(), 2);
+        assert!(excluded.iter().all(|diagnostic| {
+            diagnostic.excluded_target_policy == Some(OutlineExcludedTargetPolicyConfig::Error)
+                && diagnostic.action == Some(OutlineDiagnosticAction::RerunWithPlainText)
+                && diagnostic.target.as_deref() == Some("Secret.md")
+                && diagnostic.line.is_some()
+                && diagnostic.column.is_some()
+                && diagnostic.byte_offset.is_some()
+        }));
+
+        let downgraded = plan_outline_publication_with_options(
+            &paths,
+            "Wiki",
+            &prepared.notes,
+            &prepared.links,
+            OutlinePublicationOptions {
+                block_reference_policy: OutlineBlockReferencePolicyConfig::Error,
+                excluded_target_policy: OutlineExcludedTargetPolicyConfig::PlainText,
+            },
+        )
+        .expect("plan projects with excluded links downgraded");
+        assert!(downgraded.is_valid(), "{:?}", downgraded.diagnostics);
+        let readme = downgraded
+            .documents
+            .iter()
+            .find(|document| document.source_path == "Projects/Readme.md")
+            .expect("readme document");
+        assert!(readme.content.contains("Before hidden label and details."));
+        assert!(!readme.content.contains("Secret"));
+        assert_eq!(
+            fs::read(paths.vault_root().join("Projects/Readme.md")).unwrap(),
+            source
+        );
     }
 
     #[test]
