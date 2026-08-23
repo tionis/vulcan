@@ -974,6 +974,7 @@ fn parses_outline_zip_export_command() {
         "Wiki",
         "--path",
         "wiki.zip",
+        "--remove-toc",
         "--dry-run",
     ])
     .expect("Outline ZIP command should parse");
@@ -988,6 +989,7 @@ fn parses_outline_zip_export_command() {
                 },
                 transforms: ExportTransformArgs::default(),
                 collection_title: "Wiki".to_string(),
+                remove_toc: true,
                 path: PathBuf::from("wiki.zip"),
                 dry_run: true,
             },

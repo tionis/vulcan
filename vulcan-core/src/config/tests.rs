@@ -3101,6 +3101,7 @@ token_env = "OUTLINE_TOKEN"
 timeout_seconds = 30
 max_retries = 3
 page_size = 100
+remove_toc = true
 "#,
     )
     .expect("shared config should be written");
@@ -3131,6 +3132,7 @@ timeout_seconds = 5
     assert_eq!(profile.timeout_seconds, Some(5));
     assert_eq!(profile.max_retries, Some(3));
     assert_eq!(profile.page_size, Some(100));
+    assert_eq!(profile.remove_toc, Some(true));
 }
 
 #[test]

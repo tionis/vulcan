@@ -1,6 +1,7 @@
-use super::{OutlineApi, OutlineDocumentMapping, OutlinePublishState};
+use super::{deterministic_remote_uuid, OutlineApi, OutlineDocumentMapping, OutlinePublishState};
 use crate::export::outline::{
-    planned_document_references_attachment, render_remote_document_content, OutlinePublicationPlan,
+    planned_document_references_attachment, render_remote_document_content_with_links,
+    OutlinePublicationPlan,
 };
 use crate::AppError;
 use serde::Serialize;
@@ -85,6 +86,20 @@ pub fn plan_outline_reconciliation(
         .flat_map(|mapping| &mapping.attachments)
         .map(|(path, attachment)| (path.clone(), attachment.remote_url.clone()))
         .collect::<BTreeMap<_, _>>();
+    let remote_document_ids = publication
+        .documents
+        .iter()
+        .map(|document| {
+            let remote_id = document_matches
+                .get(&document.source_path)
+                .and_then(|identity| state.documents.get(*identity))
+                .map_or_else(
+                    || deterministic_remote_uuid(&document.source_document_id),
+                    |mapping| mapping.remote_document_id.clone(),
+                );
+            (document.source_path.clone(), remote_id)
+        })
+        .collect::<BTreeMap<_, _>>();
     let mut matched_identities = BTreeSet::new();
     let mut actions = Vec::new();
     for document in &publication.documents {
@@ -92,15 +107,14 @@ pub fn plan_outline_reconciliation(
         let desired_parent_remote_id = document
             .parent_source_path
             .as_deref()
-            .and_then(|parent| document_matches.get(parent))
-            .and_then(|identity| state.documents.get(*identity))
-            .map(|mapping| mapping.remote_document_id.clone());
+            .and_then(|parent| remote_document_ids.get(parent))
+            .cloned();
         let Some(source_identity) = mapped_identity else {
             actions.push(OutlinePublishAction {
                 kind: OutlinePublishActionKind::Create,
                 source_identity: None,
                 source_path: Some(document.source_path.clone()),
-                remote_document_id: None,
+                remote_document_id: remote_document_ids.get(&document.source_path).cloned(),
                 parent_source_path: document.parent_source_path.clone(),
                 desired_parent_remote_id,
                 reason: "local document has no durable Outline mapping".to_string(),
@@ -130,8 +144,13 @@ pub fn plan_outline_reconciliation(
             continue;
         }
         let remote = api.document_info(&mapping.remote_document_id)?;
-        let desired_content =
-            render_remote_document_content(document, &publication.attachments, &remote_urls);
+        let desired_content = render_remote_document_content_with_links(
+            document,
+            &publication.documents,
+            &remote_document_ids,
+            &publication.attachments,
+            &remote_urls,
+        );
         let desired_hash = content_hash(&desired_content);
         let remote_hash = content_hash(&remote.text);
         let remote_drift = remote_hash != mapping.last_published_content_hash

@@ -2265,6 +2265,8 @@ pub enum ExportCommand {
         transforms: ExportTransformArgs,
         #[arg(long, help = "Top-level Outline collection directory and import title")]
         collection_title: String,
+        #[arg(long, help = "Strip Obsidian heading-link table-of-contents lists")]
+        remove_toc: bool,
         #[arg(
             short = 'o',
             long = "path",

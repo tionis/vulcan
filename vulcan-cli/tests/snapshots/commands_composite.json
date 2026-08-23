@@ -5362,6 +5362,20 @@
                 ]
               },
               {
+                "help": "Strip Obsidian heading-link table-of-contents lists",
+                "id": "remove_toc",
+                "long": "remove-toc",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOVE_TOC"
+                ]
+              },
+              {
                 "help": "Destination Outline ZIP archive",
                 "id": "path",
                 "long": "path",

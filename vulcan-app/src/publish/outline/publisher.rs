@@ -1,9 +1,11 @@
 use super::{
-    load_outline_state, lock_outline_state, plan_outline_reconciliation, OutlineApi,
-    OutlineAttachmentMapping, OutlineDocumentMapping, OutlinePublishActionKind, OutlinePublishPlan,
+    deterministic_remote_uuid, load_outline_state, lock_outline_state, plan_outline_reconciliation,
+    OutlineApi, OutlineAttachmentMapping, OutlineDocumentMapping, OutlinePublishActionKind,
+    OutlinePublishPlan,
 };
 use crate::export::outline::{
-    planned_document_references_attachment, render_remote_document_content, OutlinePublicationPlan,
+    planned_document_references_attachment, render_remote_document_content_with_links,
+    OutlinePublicationPlan,
 };
 use crate::AppError;
 use serde::Serialize;
@@ -196,6 +198,16 @@ pub fn publish_outline(
         .flat_map(|mapping| &mapping.attachments)
         .map(|(path, attachment)| (path.clone(), attachment.remote_url.clone()))
         .collect::<BTreeMap<_, _>>();
+    let remote_document_ids = state
+        .documents
+        .values()
+        .map(|mapping| {
+            (
+                mapping.source_path.clone(),
+                mapping.remote_document_id.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
 
     for document in &publication.documents {
         let (source_identity, mapping) =
@@ -203,8 +215,13 @@ pub fn publish_outline(
                 .ok_or_else(|| AppError::operation("local document has no remote mapping"))?;
         let source_identity = source_identity.to_string();
         let remote_id = mapping.remote_document_id.clone();
-        let desired =
-            render_remote_document_content(document, &publication.attachments, &remote_urls);
+        let desired = render_remote_document_content_with_links(
+            document,
+            &publication.documents,
+            &remote_document_ids,
+            &publication.attachments,
+            &remote_urls,
+        );
         let remote = api.document_info(&remote_id)?;
         if remote.text != desired || remote.title != document.title {
             api.update_document(&remote_id, &document.title, &desired)?;
@@ -288,17 +305,6 @@ fn mapping_by_path<'a>(
 
 fn content_hash(content: &str) -> String {
     blake3::hash(content.as_bytes()).to_hex().to_string()
-}
-
-fn deterministic_remote_uuid(source_identity: &str) -> String {
-    let mut bytes = *blake3::hash(source_identity.as_bytes()).as_bytes();
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    format!(
-        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
-        bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
-        bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]
-    )
 }
 
 fn attachment_content_type(path: &str) -> &'static str {
@@ -503,6 +509,31 @@ mod tests {
         assert!(mutations.iter().any(|entry| entry.starts_with("move:")));
         assert!(mutations.iter().any(|entry| entry == "update:Moved"));
         assert!(mutations.iter().any(|entry| entry.starts_with("archive:")));
+    }
+
+    #[test]
+    fn direct_publication_rewrites_document_links_to_remote_ids() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        let api = MockApi::default();
+        let publication = plan(vec![
+            document("Home.md", "Home", "See [Child](Child.md#details)", None),
+            document("Child.md", "Child", "# Details", None),
+        ]);
+
+        publish_outline(&paths, &api, "wiki", "collection", &publication, false)
+            .expect("linked publication");
+
+        let documents = api.documents.borrow();
+        let home = documents
+            .values()
+            .find(|document| document.title == "Home")
+            .expect("remote home");
+        let child = documents
+            .values()
+            .find(|document| document.title == "Child")
+            .expect("remote child");
+        assert_eq!(home.text, format!("See [Child](/doc/{}#details)", child.id));
     }
 
     #[test]

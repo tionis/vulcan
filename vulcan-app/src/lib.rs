@@ -35,6 +35,7 @@ pub mod config;
 pub mod export;
 pub mod folder_notes;
 pub mod notes;
+pub mod outline_markdown;
 pub mod plugins;
 pub mod publish;
 pub mod scan;

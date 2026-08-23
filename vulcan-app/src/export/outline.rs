@@ -1,4 +1,5 @@
 use super::{ExportLinkRecord, ExportedNoteDocument};
+use crate::outline_markdown::{outline_document_url, rewrite_markdown_link_destinations};
 use crate::AppError;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -87,6 +88,35 @@ pub fn render_remote_document_content(
         content = content.replace(&format!("]({href})"), &format!("]({remote_url})"));
     }
     content
+}
+
+#[must_use]
+pub fn render_remote_document_content_with_links(
+    document: &OutlinePlannedDocument,
+    documents: &[OutlinePlannedDocument],
+    remote_document_ids: &BTreeMap<String, String>,
+    attachments: &[OutlinePlannedAttachment],
+    remote_attachment_urls: &BTreeMap<String, String>,
+) -> String {
+    let content = render_remote_document_content(document, attachments, remote_attachment_urls);
+    let destinations = documents
+        .iter()
+        .filter_map(|target| {
+            let remote_id = remote_document_ids.get(&target.source_path)?;
+            let relative = relative_archive_path(&document.archive_path, &target.archive_path);
+            Some((encode_uri_path(&relative), outline_document_url(remote_id)))
+        })
+        .collect::<BTreeMap<_, _>>();
+
+    rewrite_markdown_link_destinations(&content, |destination| {
+        let (path, fragment) = destination
+            .split_once('#')
+            .map_or((destination, None), |(path, fragment)| {
+                (path, Some(fragment))
+            });
+        let remote = destinations.get(path)?;
+        Some(fragment.map_or_else(|| remote.clone(), |fragment| format!("{remote}#{fragment}")))
+    })
 }
 
 #[must_use]
@@ -712,7 +742,8 @@ fn temporary_archive_path(output_path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::export::{execute_export_query, prepare_export_data};
+    use crate::export::{execute_export_query, prepare_outline_export_data};
+    use crate::outline_markdown::OutlineMarkdownOptions;
     use std::io::Read;
     use tempfile::{tempdir, TempDir};
     use vulcan_core::{scan_vault, ScanMode};
@@ -737,8 +768,14 @@ mod tests {
     fn plan_all(paths: &VaultPaths) -> OutlinePublicationPlan {
         let report =
             execute_export_query(paths, Some("from notes"), None, None).expect("query all notes");
-        let prepared =
-            prepare_export_data(paths, &report, None, None).expect("prepare publication");
+        let prepared = prepare_outline_export_data(
+            paths,
+            &report,
+            None,
+            None,
+            OutlineMarkdownOptions::default(),
+        )
+        .expect("prepare publication");
         plan_outline_publication(paths, "Wiki", &prepared.notes, &prepared.links)
             .expect("plan Outline publication")
     }
@@ -767,6 +804,24 @@ mod tests {
             relative_archive_path("Wiki/Projects.md", "Wiki/Projects/Child.md"),
             "Projects/Child.md"
         );
+    }
+
+    #[test]
+    fn outline_preparation_strips_frontmatter_and_converts_callouts() {
+        let (_temp, paths) = outline_vault(&[
+            (
+                "Home.md",
+                b"---\ntags: [internal]\ncover: '[[secret.png]]'\n---\n# Home\n\n> [!WARNING] Careful\n> Published body\n",
+            ),
+            ("secret.png", b"not published"),
+        ]);
+
+        let plan = plan_all(&paths);
+        let content = &plan.documents[0].content;
+        assert!(!content.contains("tags:"));
+        assert!(!content.contains("> [!WARNING]"));
+        assert!(content.contains(":::warning\nCareful\nPublished body\n\n:::"));
+        assert!(plan.attachments.is_empty());
     }
 
     #[test]
@@ -947,7 +1002,14 @@ mod tests {
             None,
         )
         .expect("query projects");
-        let prepared = prepare_export_data(&paths, &report, None, None).expect("prepare projects");
+        let prepared = prepare_outline_export_data(
+            &paths,
+            &report,
+            None,
+            None,
+            OutlineMarkdownOptions::default(),
+        )
+        .expect("prepare projects");
         let plan = plan_outline_publication(&paths, "Wiki", &prepared.notes, &prepared.links)
             .expect("plan projects");
         let kinds = plan

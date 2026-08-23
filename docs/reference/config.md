@@ -1065,6 +1065,10 @@ One-way remote publication profiles and reconciliation settings.
   One-way Outline target, query, credential environment binding, and request limits.
   Preferred command: `vulcan config set`
   Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
+- `publish.outline.profiles.<name>.remove_toc` — type: `boolean`; target: `shared|local`; default: `false`
+  One-way Outline target, query, credential environment binding, and request limits.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'`
 - `publish.outline.profiles.<name>.timeout_seconds` — type: `integer`; target: `shared|local`
   One-way Outline target, query, credential environment binding, and request limits.
   Preferred command: `vulcan config set`

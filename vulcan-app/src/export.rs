@@ -1,4 +1,5 @@
 use crate::config as app_config;
+use crate::outline_markdown::{obsidian_to_outline_markdown, OutlineMarkdownOptions};
 use crate::templates::{
     find_frontmatter_block, format_frontmatter_block, parse_frontmatter_document,
     TemplateTimestamp, YamlMapping,
@@ -616,6 +617,37 @@ pub fn prepare_export_data(
     prepare_transformed_export_data(paths, notes, read_filter, &effective_transforms)
 }
 
+/// Prepare query-selected notes for an Outline boundary.
+///
+/// Profile transforms run first. The Outline compatibility pass then strips
+/// frontmatter, optionally removes generated TOCs, converts callouts, and
+/// reparses the result so links and copied assets reflect only published
+/// content.
+pub fn prepare_outline_export_data(
+    paths: &VaultPaths,
+    report: &QueryReport,
+    read_filter: Option<&PermissionFilter>,
+    transform_rules: Option<&[ContentTransformRuleConfig]>,
+    options: OutlineMarkdownOptions,
+) -> Result<PreparedExportData, AppError> {
+    let notes = load_exported_notes(paths, report)?;
+    let effective_transforms = transform_rules
+        .filter(|rules| content_transform_rules_have_effective_transforms(rules))
+        .map(|rules| build_effective_content_transforms(paths, report, read_filter, rules))
+        .transpose()?
+        .unwrap_or_default();
+
+    prepare_rewritten_export_data(paths, notes, read_filter, |entry| {
+        let transformed = effective_transforms
+            .get(&entry.note.document_path)
+            .map_or_else(
+                || entry.content.clone(),
+                |transforms| apply_content_transforms(&entry.content, transforms),
+            );
+        obsidian_to_outline_markdown(&transformed, options)
+    })
+}
+
 pub(crate) fn filter_export_links(
     mut links: Vec<ExportLinkRecord>,
     read_filter: Option<&PermissionFilter>,
@@ -636,15 +668,28 @@ fn prepare_transformed_export_data(
     read_filter: Option<&PermissionFilter>,
     effective_transforms: &HashMap<String, ContentTransformConfig>,
 ) -> Result<PreparedExportData, AppError> {
+    prepare_rewritten_export_data(paths, notes, read_filter, |entry| {
+        effective_transforms
+            .get(&entry.note.document_path)
+            .map_or_else(
+                || entry.content.clone(),
+                |transforms| apply_content_transforms(&entry.content, transforms),
+            )
+    })
+}
+
+fn prepare_rewritten_export_data(
+    paths: &VaultPaths,
+    notes: Vec<ExportedNoteDocument>,
+    read_filter: Option<&PermissionFilter>,
+    mut rewrite: impl FnMut(&ExportedNoteDocument) -> String,
+) -> Result<PreparedExportData, AppError> {
     let original_links = filter_export_links(load_export_links(paths, &notes)?, read_filter);
     let config = load_vault_config(paths).config;
     let parsed_notes = notes
         .into_iter()
         .map(|entry| {
-            let content = match effective_transforms.get(&entry.note.document_path) {
-                Some(transforms) => apply_content_transforms(&entry.content, transforms),
-                None => entry.content,
-            };
+            let content = rewrite(&entry);
             let parsed = parse_document(&content, &config);
             ParsedExportedNoteDocument {
                 note: entry.note,

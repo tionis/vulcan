@@ -42,6 +42,7 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # timeout_seconds = 30
 # max_retries = 3
 # page_size = 100
+# remove_toc = false # strip Obsidian heading-link TOC lists before publication
 # content_transforms can use the same ordered rules as export profiles.
 
 # [extraction]

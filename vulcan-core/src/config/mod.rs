@@ -2100,6 +2100,7 @@ pub struct OutlinePublishProfileConfig {
     pub timeout_seconds: Option<u64>,
     pub max_retries: Option<u32>,
     pub page_size: Option<usize>,
+    pub remove_toc: Option<bool>,
     #[serde(
         default,
         rename = "content_transforms",
@@ -3706,6 +3707,9 @@ fn merge_outline_publish_profile_config(
     }
     if let Some(page_size) = profile.page_size {
         target.page_size = Some(page_size);
+    }
+    if let Some(remove_toc) = profile.remove_toc {
+        target.remove_toc = Some(remove_toc);
     }
     if let Some(content_transform_rules) = profile.content_transform_rules {
         target.content_transform_rules = Some(content_transform_rules);

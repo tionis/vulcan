@@ -473,9 +473,9 @@ use vulcan_app::export::{
     apply_export_profile_rule_update, apply_export_profile_set, build_content_transform_rules,
     build_export_profile_list, build_export_profile_rule_list, build_export_profile_show_report,
     execute_export_query, export_profile_format_label, export_profile_query_args,
-    load_export_links, load_exported_notes, prepare_export_data, render_csv_export_payload,
-    render_json_export_payload, render_markdown_export_payload, require_export_profile_format,
-    require_export_profile_path, validate_export_profile_config,
+    load_export_links, load_exported_notes, prepare_export_data, prepare_outline_export_data,
+    render_csv_export_payload, render_json_export_payload, render_markdown_export_payload,
+    require_export_profile_format, require_export_profile_path, validate_export_profile_config,
     write_epub_export as app_write_epub_export, write_sqlite_export, write_zip_export,
     BoolConfigUpdate, ConfigValueUpdate, CsvExportSummary,
     EpubExportOptions as AppEpubExportOptions, EpubRenderCallbacks as AppEpubRenderCallbacks,
@@ -486,6 +486,7 @@ use vulcan_app::export::{
     MarkdownExportSummary,
 };
 use vulcan_app::notes::json_properties_to_frontmatter;
+use vulcan_app::outline_markdown::OutlineMarkdownOptions;
 #[cfg(feature = "web")]
 use vulcan_app::publish::outline::{publish_outline, HttpOutlineClient};
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
@@ -1203,11 +1204,14 @@ fn run_publish_command(
         .unwrap_or(profile);
     let query_report =
         execute_export_query(paths, query, query_json, read_filter).map_err(CliError::operation)?;
-    let prepared = prepare_export_data(
+    let prepared = prepare_outline_export_data(
         paths,
         &query_report,
         read_filter,
         profile_config.content_transform_rules.as_deref(),
+        OutlineMarkdownOptions {
+            remove_toc: profile_config.remove_toc.unwrap_or(false),
+        },
     )
     .map_err(CliError::operation)?;
     let publication =
@@ -3957,6 +3961,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     query,
                     transforms,
                     collection_title,
+                    remove_toc,
                     path,
                     dry_run,
                 } => {
@@ -3975,11 +3980,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                         &transforms.replace_rules,
                     )
                     .map_err(CliError::operation)?;
-                    let prepared = prepare_export_data(
+                    let prepared = prepare_outline_export_data(
                         &paths,
                         &report,
                         read_filter.as_ref(),
                         transform_rules.as_deref(),
+                        OutlineMarkdownOptions {
+                            remove_toc: *remove_toc,
+                        },
                     )
                     .map_err(CliError::operation)?;
                     let plan = plan_outline_publication(

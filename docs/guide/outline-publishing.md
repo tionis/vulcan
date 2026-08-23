@@ -36,7 +36,7 @@ name = "{{folder_name}}"   # exact stem/template: index, README, readme, ...
 
 This represents `Projects/Projects.md`. Use `name = "index"`, `"README"`, or `"readme"` for those inside-folder forms. Use `placement = "outside"` with `name = "{{folder_name}}"` for `Projects.md` beside `Projects/`. Matching is exact and case-sensitive. Nested folders must have an included folder note at every hierarchy level; Vulcan does not invent synthetic remote documents for missing folder notes. `vulcan config import folder-notes` can import the Obsidian Folder Notes plugin setting during setup.
 
-The exporter uses the publication query and content-transform pipeline, then reparses transformed Markdown and uses resolved link data to rewrite note links and attachment references. Referenced attachments are copied below a deterministic `uploads/<source-path-hash>/` path. The source vault is never modified.
+The exporter uses the publication query and content-transform pipeline, then applies the shared Outline compatibility pass. YAML frontmatter is stripped from the published body, Obsidian callouts are converted to Outline `:::info`, `:::tip`, `:::success`, or `:::warning` fences, and resolved note and attachment references become Markdown links suitable for Outline import. Pass `--remove-toc` to also strip Obsidian-style lists made entirely of current-note heading links. The transformed content is reparsed before packaging, so removed metadata and sections cannot retain links or copy otherwise-unused assets. Referenced attachments are copied below a deterministic `uploads/<source-path-hash>/` path. The source vault is never modified.
 
 Planning fails on duplicate folder notes, unsafe or case-insensitive archive collisions, unresolved internal links, links to excluded notes, missing hierarchy parents, missing attachments, and Obsidian block-reference targets. `--dry-run` writes no archive and includes the complete deterministic plan and diagnostics in JSON output. Existing output archives are never overwritten.
 
@@ -61,6 +61,7 @@ token_env = "OUTLINE_API_TOKEN"
 timeout_seconds = 30
 max_retries = 3
 page_size = 100
+remove_toc = false
 ```
 
 The token value is not a valid profile field. Put it in the named environment variable; device-specific non-secret overrides such as `base_url` or `token_env` may go in ignored `.vulcan/config.local.toml`. Then preview and apply:
@@ -70,7 +71,7 @@ OUTLINE_API_TOKEN=... vulcan --output json publish outline wiki --dry-run
 OUTLINE_API_TOKEN=... vulcan --output json publish outline wiki
 ```
 
-The profile must select exactly one of `query` or `query_json`. It may also contain the same ordered `[[publish.outline.profiles.wiki.content_transforms]]` rules used by export profiles. Publishing uses the same folder-note, resolved-link, attachment, collision, and excluded-target validation as ZIP export.
+The profile must select exactly one of `query` or `query_json`. It may also contain the same ordered `[[publish.outline.profiles.wiki.content_transforms]]` rules used by export profiles. Set `remove_toc = true` to enable the optional heading-link TOC cleanup. Publishing uses the same folder-note, callout/frontmatter compatibility, resolved-link, attachment, collision, and excluded-target validation as ZIP export. Unlike ZIP-relative links, direct API publication rewrites links between managed documents to `/doc/<remote-id>` targets after durable mappings are known.
 
 Vulcan uses Outline's documented `documents.list`, `documents.info`, `documents.create`, `documents.update`, `documents.move`, `documents.archive`, and `attachments.create` POST APIs. Collection listing is paginated. Requests have bounded timeouts and retries; credentials and response bodies that appear credential-bearing are not included in errors. Attachment uploads support Outline's returned POST-form and PUT upload modes. See Outline's [official API documentation](https://docs.getoutline.com/s/guide/doc/api-1rEIXDfLF6) and [OpenAPI specification](https://github.com/outline/openapi/blob/main/spec3.yml).
 
@@ -93,6 +94,6 @@ Before any mutation, Vulcan fetches every managed remote document. A changed rem
 
 ### Planned inbound route
 
-A separate scoped `Outline -> Vulcan -> local Markdown` route is now planned as part of Phase 15's external knowledge-hub architecture. The concrete use case is a canonical local wiki that can ingest selected external knowledge and then publish independently selected local content to Outline or other systems.
+A separate scoped `Outline -> Vulcan -> local Markdown` route is now planned as part of Phase 15's external knowledge-hub architecture. The pure inbound Markdown compatibility primitives already convert supported Outline callout fences into Obsidian callouts and mapped `/doc/<remote-id>` links into wikilinks. The route still needs to supply durable ID-to-path bindings and perform hierarchy and attachment materialization. The concrete use case is a canonical local wiki that can ingest selected external knowledge and then publish independently selected local content to Outline or other systems.
 
 This does not change the command described above: `vulcan publish outline` remains one-way and the current publisher never consumes Outline as source data. The future inbound route will have its own remote scope, local destination namespace, authority and deletion policy, durable revision state, hierarchy/attachment materialization, pagination and rate limits, and local/remote drift handling. Pull and push remain separately planned and journaled operations rather than implicit bidirectional synchronization. See [Local information hub and external wikis](information-hub.md).

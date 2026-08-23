@@ -1195,6 +1195,14 @@ fn dynamic_config_descriptors() -> Vec<ConfigDescriptor> {
         );
     }
     push(
+        "publish.outline.profiles.<name>.remove_toc",
+        ConfigValueKind::Boolean,
+        ConfigTargetSupport::SharedAndLocal,
+        Some("vulcan config set"),
+        Some(TomlValue::Boolean(false)),
+        &[],
+    );
+    push(
         "publish.outline.profiles.<name>.content_transforms",
         ConfigValueKind::Array,
         ConfigTargetSupport::SharedAndLocal,
