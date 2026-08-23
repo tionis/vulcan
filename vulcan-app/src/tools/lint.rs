@@ -5,7 +5,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::Component;
 use std::path::{Path, PathBuf};
-use vulcan_core::paths::{secure_read_to_string, secure_set_permissions, secure_write};
+#[cfg(unix)]
+use vulcan_core::paths::secure_set_permissions;
+use vulcan_core::paths::{secure_read_to_string, secure_write};
 use vulcan_core::{
     load_vault_config, resolve_permission_profile, AssistantToolSummary, JsRuntimeSandbox,
     VaultPaths,

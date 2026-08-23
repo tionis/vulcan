@@ -128,7 +128,9 @@ impl OutlineStateLock {
         temp.as_file().sync_all().map_err(AppError::operation)?;
         temp.persist(&self.state_path)
             .map_err(|error| AppError::operation(error.error))?;
-        sync_parent_directory(parent)
+        #[cfg(unix)]
+        sync_parent_directory(parent)?;
+        Ok(())
     }
 }
 
@@ -137,11 +139,6 @@ fn sync_parent_directory(parent: &Path) -> Result<(), AppError> {
     File::open(parent)
         .and_then(|directory| directory.sync_all())
         .map_err(AppError::operation)
-}
-
-#[cfg(not(unix))]
-fn sync_parent_directory(_parent: &Path) -> Result<(), AppError> {
-    Ok(())
 }
 
 impl Drop for OutlineStateLock {

@@ -1454,9 +1454,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
-    use vulcan_core::{
-        initialize_vulcan_dir, scan_vault_with_progress, ScanMode, VaultConfig, VaultPaths,
-    };
+    use vulcan_core::{initialize_vulcan_dir, scan_vault_with_progress, ScanMode, VaultPaths};
 
     #[test]
     fn parse_note_frontmatter_bindings_parses_yaml_scalars_and_lists() {
@@ -1698,7 +1696,7 @@ mod tests {
                     display_path: "linked.md".to_string(),
                     absolute_path: vault.path().join("linked.md"),
                     vault_relative_path: Some("linked.md".to_string()),
-                    config: VaultConfig::default(),
+                    config: vulcan_core::VaultConfig::default(),
                 },
                 section_id: None,
                 heading: None,
