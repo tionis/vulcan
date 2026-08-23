@@ -186,12 +186,6 @@ fn reject_destination_collision(
     destination_path: &str,
 ) -> Result<(), AppError> {
     let destination = paths.vault_root().join(destination_path);
-    if destination.exists() {
-        return Err(AppError::operation(format!(
-            "folder-note conversion would overwrite existing `{destination_path}`"
-        )));
-    }
-
     let parent = destination.parent().unwrap_or_else(|| paths.vault_root());
     let Some(destination_name) = destination.file_name() else {
         return Err(AppError::operation(format!(
@@ -211,11 +205,21 @@ fn reject_destination_collision(
                 .to_string_lossy()
                 .replace('\\', "/");
             if relative != source_path {
+                if entry.file_name() == destination_name {
+                    return Err(AppError::operation(format!(
+                        "folder-note conversion would overwrite existing `{destination_path}`"
+                    )));
+                }
                 return Err(AppError::operation(format!(
                     "folder-note conversion has a case-insensitive conflict: `{destination_path}` conflicts with `{relative}`"
                 )));
             }
         }
+    }
+    if destination.exists() {
+        return Err(AppError::operation(format!(
+            "folder-note conversion would overwrite existing `{destination_path}`"
+        )));
     }
     Ok(())
 }
@@ -317,6 +321,20 @@ mod tests {
 
         assert!(error.to_string().contains("case-insensitive conflict"));
         assert!(temp.path().join("Projects/Projects.md").is_file());
+    }
+
+    #[test]
+    fn reports_exact_destination_as_an_overwrite() {
+        let (temp, paths) = initialized_vault();
+        fs::create_dir_all(temp.path().join("Projects")).expect("folder");
+        fs::write(temp.path().join("Projects/Projects.md"), "# Projects\n").expect("source");
+        fs::write(temp.path().join("Projects/index.md"), "# Existing\n").expect("destination");
+
+        let error =
+            reject_destination_collision(&paths, "Projects/Projects.md", "Projects/index.md")
+                .expect_err("exact destination must fail");
+
+        assert!(error.to_string().contains("would overwrite existing"));
     }
 
     #[test]

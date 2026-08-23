@@ -2836,8 +2836,7 @@ impl McpServerCore {
                     return true;
                 }
                 resolve_existing_note_path(&self.paths, candidate)
-                    .ok()
-                    .is_some_and(|path| self.guard.check_read_path(&path).is_ok())
+                    .is_ok_and(|path| self.guard.check_read_path(&path).is_ok())
             })
             .filter(|candidate| seen.insert(candidate.clone()))
             .collect()

@@ -905,12 +905,39 @@ mod tests {
     }
 
     #[test]
-    fn reports_case_collisions_and_excluded_targets() {
+    fn reports_case_insensitive_archive_collisions() {
+        let documents = vec![
+            DocumentPathPlan {
+                source_path: "Projects/Readme.md".to_string(),
+                source_document_id: "one".to_string(),
+                title: "Readme".to_string(),
+                archive_path: "Wiki/Projects/Readme.md".to_string(),
+                parent_source_path: None,
+                content: String::new(),
+            },
+            DocumentPathPlan {
+                source_path: "Projects/README.md".to_string(),
+                source_document_id: "two".to_string(),
+                title: "README".to_string(),
+                archive_path: "Wiki/Projects/README.md".to_string(),
+                parent_source_path: None,
+                content: String::new(),
+            },
+        ];
+        let mut diagnostics = Vec::new();
+
+        validate_archive_collisions(&documents, &[], &mut diagnostics);
+
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0].kind, OutlineDiagnosticKind::Collision);
+    }
+
+    #[test]
+    fn reports_excluded_targets() {
         let (_temp, paths) = outline_vault(&[
             ("Projects/index.md", b"# Index\n"),
             ("Projects/Projects.md", b"# Projects\n"),
             ("Projects/Readme.md", b"[[Secret]]\n"),
-            ("Projects/README.md", b"# duplicate\n"),
             ("Secret.md", b"# Secret\n"),
         ]);
         let report = execute_export_query(
@@ -928,7 +955,6 @@ mod tests {
             .iter()
             .map(|diagnostic| diagnostic.kind.clone())
             .collect::<Vec<_>>();
-        assert!(kinds.contains(&OutlineDiagnosticKind::Collision));
         assert!(kinds.contains(&OutlineDiagnosticKind::ExcludedTarget));
     }
 

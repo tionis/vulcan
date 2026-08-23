@@ -5,7 +5,6 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use ulid::Ulid;
 use vulcan_core::VaultPaths;
 
 const STATE_VERSION: u32 = 1;
@@ -122,25 +121,27 @@ impl OutlineStateLock {
             .parent()
             .ok_or_else(|| AppError::operation("Outline state path has no parent"))?;
         fs::create_dir_all(parent).map_err(AppError::operation)?;
-        let temp_path = parent.join(format!(".state-{}.tmp", Ulid::new()));
-        let mut temp = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&temp_path)
-            .map_err(AppError::operation)?;
+        let mut temp = tempfile::NamedTempFile::new_in(parent).map_err(AppError::operation)?;
         let bytes = serde_json::to_vec_pretty(state).map_err(AppError::operation)?;
         temp.write_all(&bytes).map_err(AppError::operation)?;
         temp.write_all(b"\n").map_err(AppError::operation)?;
-        temp.sync_all().map_err(AppError::operation)?;
-        drop(temp);
-        if let Err(error) = fs::rename(&temp_path, &self.state_path) {
-            let _ = fs::remove_file(&temp_path);
-            return Err(AppError::operation(error));
-        }
-        File::open(parent)
-            .and_then(|directory| directory.sync_all())
-            .map_err(AppError::operation)
+        temp.as_file().sync_all().map_err(AppError::operation)?;
+        temp.persist(&self.state_path)
+            .map_err(|error| AppError::operation(error.error))?;
+        sync_parent_directory(parent)
     }
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> Result<(), AppError> {
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(AppError::operation)
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_parent: &Path) -> Result<(), AppError> {
+    Ok(())
 }
 
 impl Drop for OutlineStateLock {
@@ -237,6 +238,12 @@ mod tests {
             .documents
             .insert("source-id".to_string(), mapping("remote"));
         lock.save(&state).expect("save state");
+        state
+            .documents
+            .get_mut("source-id")
+            .expect("mapping")
+            .last_published_title = "Updated Projects".to_string();
+        lock.save(&state).expect("replace existing state");
         assert!(lock.state_path().starts_with(paths.vulcan_dir()));
         assert_ne!(lock.state_path(), paths.cache_db());
         drop(lock);

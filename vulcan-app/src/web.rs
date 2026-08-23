@@ -287,8 +287,10 @@ base_url = "http://127.0.0.1:4455/search"
 
         assert_eq!(report.status, 200);
         assert_eq!(report.mode, "raw");
-        let saved = destination.display().to_string();
-        assert_eq!(report.saved.as_deref(), Some(saved.as_str()));
+        assert_eq!(
+            report.saved.as_deref().map(std::path::Path::new),
+            Some(destination.as_path())
+        );
         assert_eq!(fs::read(&destination).expect("saved bytes"), b"raw-body");
     }
 }
