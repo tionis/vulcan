@@ -12,7 +12,7 @@ User-facing CLI usage, filter syntax, and examples are documented separately in 
 ## Decision summary
 
 - **Binary name:** `vulcan`
-- **Primary language:** Rust (edition 2021, MSRV 1.86) — Best fit for a fast, portable, single-binary CLI with strong text processing and SQLite integration.
+- **Primary language:** Rust (edition 2021, MSRV 1.88, pinned by `rust-toolchain.toml`) — Best fit for a fast, portable, single-binary CLI with strong text processing and SQLite integration. CI compiles the full workspace on the MSRV so transitive dependency updates cannot raise it silently.
 - **Workspace layout:** Cargo workspace with `vulcan-core` (parser, indexer, data model, cache, query/search/graph/task semantics), `vulcan-app` (reusable synchronous workflow orchestration over core), `vulcan-embed` (embedding provider trait and vector store implementations), and `vulcan-cli` (CLI binary, command handlers, TUI/editor integration, and current MCP transports). Keep reusable business logic in `vulcan-core` or `vulcan-app`; keep terminal/runtime shells outside those crates.
 - **Internal identifiers:** ULIDs — sortable by creation time, compact, no hyphens. Use the `ulid` crate.
 - **Local data directory:** `.vulcan/` in the vault root, containing `cache.db` (SQLite cache), `config.toml` (shared vault configuration), optional `config.local.toml` (device-local overrides), and non-cache durable workflow state where required. Direct commands are vault-scoped; the planned daemon adds a separate user-level multi-vault registry without making it canonical content storage.

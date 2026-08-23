@@ -108,7 +108,7 @@ pub(crate) fn handle_query_command(
     };
 
     if use_dql {
-        let dql = dsl.ok_or_else(|| {
+        let dql_source = dsl.ok_or_else(|| {
             CliError::operation("DQL engine requires a positional query string, not --json")
         })?;
         if !filters.is_empty() || sort.is_some() || desc {
@@ -123,7 +123,7 @@ pub(crate) fn handle_query_command(
             eprintln!("(detected as Dataview query)");
         }
         let read_filter = selected_read_permission_filter(cli, paths)?;
-        let result = evaluate_dql_with_filter(paths, dql, None, read_filter.as_ref())
+        let result = evaluate_dql_with_filter(paths, dql_source, None, read_filter.as_ref())
             .map_err(CliError::operation)?;
         let display_result_count = load_vault_config(paths)
             .config

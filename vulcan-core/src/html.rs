@@ -679,7 +679,7 @@ fn render_inline_field_html(
     source_path: Option<&str>,
     env: &HtmlRenderEnvironment<'_>,
     state: &mut HtmlRenderState,
-    diagnostics: &mut Vec<HtmlRenderDiagnostic>,
+    diagnostics: &mut [HtmlRenderDiagnostic],
 ) -> String {
     let value_html = render_json_value_html(
         paths,
@@ -702,7 +702,7 @@ fn render_json_value_html(
     source_path: Option<&str>,
     env: &HtmlRenderEnvironment<'_>,
     state: &mut HtmlRenderState,
-    _diagnostics: &mut Vec<HtmlRenderDiagnostic>,
+    _diagnostics: &mut [HtmlRenderDiagnostic],
 ) -> String {
     match value {
         Value::String(text) => strip_paragraph_wrapper(
@@ -723,7 +723,7 @@ fn render_dql_query_html(
     source_path: Option<&str>,
     env: &HtmlRenderEnvironment<'_>,
     state: &mut HtmlRenderState,
-    diagnostics: &mut Vec<HtmlRenderDiagnostic>,
+    diagnostics: &mut [HtmlRenderDiagnostic],
 ) -> String {
     let mut sections = Vec::new();
     let body = match result.query_type {
@@ -756,7 +756,7 @@ fn render_dataview_js_result_html(
     source_path: Option<&str>,
     env: &HtmlRenderEnvironment<'_>,
     state: &mut HtmlRenderState,
-    diagnostics: &mut Vec<HtmlRenderDiagnostic>,
+    diagnostics: &mut [HtmlRenderDiagnostic],
 ) -> String {
     if result.outputs.is_empty() {
         return result.value.as_ref().map_or_else(String::new, |value| {
@@ -985,7 +985,7 @@ fn render_dql_table_html(
     source_path: Option<&str>,
     env: &HtmlRenderEnvironment<'_>,
     state: &mut HtmlRenderState,
-    diagnostics: &mut Vec<HtmlRenderDiagnostic>,
+    diagnostics: &mut [HtmlRenderDiagnostic],
 ) -> String {
     let headers = result.columns.clone();
     let rows = result
@@ -1016,7 +1016,7 @@ fn render_dql_list_html(
     source_path: Option<&str>,
     env: &HtmlRenderEnvironment<'_>,
     state: &mut HtmlRenderState,
-    diagnostics: &mut Vec<HtmlRenderDiagnostic>,
+    diagnostics: &mut [HtmlRenderDiagnostic],
 ) -> String {
     if result.rows.is_empty() {
         return String::new();
@@ -1046,7 +1046,7 @@ fn render_dql_task_html(
     source_path: Option<&str>,
     env: &HtmlRenderEnvironment<'_>,
     state: &mut HtmlRenderState,
-    diagnostics: &mut Vec<HtmlRenderDiagnostic>,
+    diagnostics: &mut [HtmlRenderDiagnostic],
 ) -> String {
     if result.rows.is_empty() {
         return String::new();
@@ -1090,7 +1090,7 @@ fn render_dql_calendar_html(
     source_path: Option<&str>,
     env: &HtmlRenderEnvironment<'_>,
     state: &mut HtmlRenderState,
-    diagnostics: &mut Vec<HtmlRenderDiagnostic>,
+    diagnostics: &mut [HtmlRenderDiagnostic],
 ) -> String {
     if result.rows.is_empty() {
         return "<p>No calendar entries.</p>".to_string();
@@ -1148,7 +1148,7 @@ fn render_value_table_html(
     source_path: Option<&str>,
     env: &HtmlRenderEnvironment<'_>,
     state: &mut HtmlRenderState,
-    diagnostics: &mut Vec<HtmlRenderDiagnostic>,
+    diagnostics: &mut [HtmlRenderDiagnostic],
 ) -> String {
     let cells = rows
         .iter()
@@ -1169,7 +1169,7 @@ fn render_value_list_html(
     source_path: Option<&str>,
     env: &HtmlRenderEnvironment<'_>,
     state: &mut HtmlRenderState,
-    diagnostics: &mut Vec<HtmlRenderDiagnostic>,
+    diagnostics: &mut [HtmlRenderDiagnostic],
 ) -> String {
     let mut rendered = String::from("<ul class=\"dataview-list\">");
     for value in values {
@@ -1191,7 +1191,7 @@ fn render_task_values_html(
     source_path: Option<&str>,
     env: &HtmlRenderEnvironment<'_>,
     state: &mut HtmlRenderState,
-    diagnostics: &mut Vec<HtmlRenderDiagnostic>,
+    diagnostics: &mut [HtmlRenderDiagnostic],
 ) -> String {
     if tasks.is_empty() {
         return String::new();

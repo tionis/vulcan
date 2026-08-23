@@ -54,7 +54,7 @@ Contributor boundary rule: new reusable business logic must not land in `vulcan-
 
 ## Tech stack
 
-- Rust edition 2021, MSRV 1.86, ULIDs for all internal identifiers
+- Rust edition 2021, MSRV 1.88, pinned by `rust-toolchain.toml`, ULIDs for all internal identifiers
 - `pulldown-cmark` 0.13+ with ENABLE_WIKILINKS, ENABLE_GFM, ENABLE_MATH, ENABLE_FOOTNOTES, ENABLE_YAML_STYLE_METADATA_BLOCKS
 - `rusqlite` with `bundled` feature, WAL mode, `user_version` pragma for migrations
 - `sqlite-vec` 0.1.x for vector search (statically compiled from bundled C source)

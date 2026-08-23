@@ -1412,8 +1412,9 @@ fn render_epub_note_markdown(
         let Some(file_href) = render_context.tag_targets.get(&tag.tag_text) else {
             continue;
         };
+        let range_end = tag.byte_offset + tag.tag_text.len() + 1;
         replacements.push(EpubMarkdownReplacement {
-            range: tag.byte_offset..tag.byte_offset + tag.tag_text.len() + 1,
+            range: tag.byte_offset..range_end,
             replacement: render_epub_tag_link_html(&tag.tag_text, &format!("../tags/{file_href}")),
         });
     }

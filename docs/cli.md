@@ -4,7 +4,7 @@ This guide documents the current user-facing Vulcan CLI. It matches the implemen
 
 ## Build and first scan
 
-Build the release binary from the repo root:
+Vulcan's minimum supported Rust version is 1.88. The repository pins Rust 1.88 through `rust-toolchain.toml`, so a `rustup`-managed toolchain is selected automatically. Build the release binary from the repo root:
 
 ```bash
 cargo build --release -p vulcan-cli --bin vulcan

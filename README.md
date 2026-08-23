@@ -18,7 +18,7 @@ The current implementation is a strong single-vault CLI and MCP server; the next
 
 ## Quick Start
 
-Build the CLI:
+Vulcan requires Rust 1.88 or newer. With `rustup`, the checked-in `rust-toolchain.toml` installs and selects the supported toolchain automatically. Build the CLI:
 
 ```sh
 cargo build --release -p vulcan-cli --bin vulcan
