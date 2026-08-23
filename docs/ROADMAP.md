@@ -6394,6 +6394,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add create/update/move/archive reconciliation, remote-drift conflicts, attachment uploads, idempotency, and mutation-free publish dry runs.
 - [x] Add a shared bidirectional Obsidian/Outline Markdown compatibility layer: outbound frontmatter stripping, callout fence conversion, opt-in TOC removal, API document-link translation to durable remote IDs, and reusable inbound callout/link reversal for Phase 15 pull routes.
 - [x] Complete CLI/reference documentation and full workspace verification.
+- [x] Degrade missing selected folder notes to deduplicated warnings and generate deterministic export-only Outline hierarchy placeholders.
 
 **Current boundary and future placement:** The implemented `publish outline` command remains strictly one-way. Phase 15 now plans a separate, explicitly scoped Outline pull route with its own local destination, authority, pagination, attachment, deletion, and conflict policies. Do not evolve this publisher into implicit bidirectional synchronization or use the separate Outline-to-Git backup/audit trail as publisher input.
 

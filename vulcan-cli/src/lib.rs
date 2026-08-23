@@ -4003,6 +4003,14 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     match cli.output {
                         OutputFormat::Json => print_json(&report)?,
                         OutputFormat::Human | OutputFormat::Markdown => {
+                            for diagnostic in &report.plan.diagnostics {
+                                let level = if diagnostic.is_warning() {
+                                    "warning"
+                                } else {
+                                    "error"
+                                };
+                                eprintln!("{level}: {}", diagnostic.message);
+                            }
                             if valid {
                                 if report.wrote_archive {
                                     println!("{}", report.path);
@@ -4013,10 +4021,6 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                                     for attachment in &report.plan.attachments {
                                         println!("{}", attachment.archive_path);
                                     }
-                                }
-                            } else {
-                                for diagnostic in &report.plan.diagnostics {
-                                    eprintln!("{}", diagnostic.message);
                                 }
                             }
                         }

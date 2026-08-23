@@ -34,18 +34,18 @@ placement = "inside"       # inside | outside
 name = "{{folder_name}}"   # exact stem/template: index, README, readme, ...
 ```
 
-This represents `Projects/Projects.md`. Use `name = "index"`, `"README"`, or `"readme"` for those inside-folder forms. Use `placement = "outside"` with `name = "{{folder_name}}"` for `Projects.md` beside `Projects/`. Matching is exact and case-sensitive. Nested folders must have an included folder note at every hierarchy level; Vulcan does not invent synthetic remote documents for missing folder notes. `vulcan config import folder-notes` can import the Obsidian Folder Notes plugin setting during setup.
+This represents `Projects/Projects.md`. Use `name = "index"`, `"README"`, or `"readme"` for those inside-folder forms. Use `placement = "outside"` with `name = "{{folder_name}}"` for `Projects.md` beside `Projects/`. Matching is exact and case-sensitive. When an included hierarchy level has no selected configured folder note, Vulcan emits one warning for that folder and adds a minimal export-only placeholder (`# Folder name`) so Outline can preserve the hierarchy. The source vault is not changed. `vulcan config import folder-notes` can import the Obsidian Folder Notes plugin setting during setup.
 
 The exporter uses the publication query and content-transform pipeline, then applies the shared Outline compatibility pass. YAML frontmatter is stripped from the published body, Obsidian callouts are converted to Outline `:::info`, `:::tip`, `:::success`, or `:::warning` fences, and resolved note and attachment references become Markdown links suitable for Outline import. Pass `--remove-toc` to also strip Obsidian-style lists made entirely of current-note heading links. The transformed content is reparsed before packaging, so removed metadata and sections cannot retain links or copy otherwise-unused assets. Referenced attachments are copied below a deterministic `uploads/<source-path-hash>/` path. The source vault is never modified.
 
-Planning fails on duplicate folder notes, unsafe or case-insensitive archive collisions, unresolved internal links, links to excluded notes, missing hierarchy parents, missing attachments, and Obsidian block-reference targets. `--dry-run` writes no archive and includes the complete deterministic plan and diagnostics in JSON output. Existing output archives are never overwritten.
+Planning fails on duplicate folder notes, unsafe or case-insensitive archive collisions, unresolved internal links, links to excluded notes, missing attachments, and Obsidian block-reference targets. Missing hierarchy parents are non-fatal warnings backed by generated placeholder documents. `--dry-run` writes no archive and includes the complete deterministic plan and diagnostics in JSON output. Existing output archives are never overwritten.
 
 ### ZIP limitations
 
 - Compatibility is based on Outline 1.9.x's upstream `ExportDocumentTreeTask` and `ExportMarkdownZipTask` sibling-file layout and filename encoding.
 - Obsidian note embeds become normal Markdown links because Outline has no equivalent transclusion in imported Markdown.
 - Block-reference targets are rejected. Heading targets are retained as URL fragments.
-- A directory without an included note matching `[folder_notes]` cannot be represented as a document parent and is rejected.
+- Generated folder placeholders contain only a heading and exist only in the ZIP or remote Outline collection. Add a real note matching `[folder_notes]` when the hierarchy needs authored landing-page content.
 
 ## API publishing
 

@@ -14754,6 +14754,48 @@ fn export_outline_zip_reports_structured_mutation_free_dry_run() {
 }
 
 #[test]
+fn export_outline_zip_warns_and_writes_missing_folder_placeholder() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Pantheons")).expect("pantheons folder");
+    fs::write(vault_root.join("Pantheons/Zeus.md"), "# Zeus\n").expect("child note");
+    run_scan(&vault_root);
+    let export_path = temp_dir.path().join("wiki.zip");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "export",
+            "outline-zip",
+            "--collection-title",
+            "Wiki",
+            "--path",
+            export_path
+                .to_str()
+                .expect("export path should be valid utf-8"),
+        ])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "warning: folder `Pantheons` has no selected configured folder note; generated an export-only placeholder",
+        ));
+
+    let file = fs::File::open(&export_path).expect("zip export should exist");
+    let mut archive = ZipArchive::new(file).expect("zip export should open");
+    let mut placeholder = String::new();
+    archive
+        .by_name("Wiki/Pantheons.md")
+        .expect("placeholder should exist")
+        .read_to_string(&mut placeholder)
+        .expect("placeholder should be readable");
+    assert_eq!(placeholder, "# Pantheons\n");
+}
+
+#[test]
 fn publish_outline_dry_run_reports_creates_without_remote_or_state_mutation() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");

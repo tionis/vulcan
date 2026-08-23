@@ -35,6 +35,13 @@ pub struct OutlineDiagnostic {
     pub message: String,
 }
 
+impl OutlineDiagnostic {
+    #[must_use]
+    pub fn is_warning(&self) -> bool {
+        self.kind == OutlineDiagnosticKind::MissingFolderNote
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OutlinePlannedDocument {
     pub source_path: String,
@@ -68,7 +75,7 @@ pub struct OutlinePublicationPlan {
 impl OutlinePublicationPlan {
     #[must_use]
     pub fn is_valid(&self) -> bool {
-        self.diagnostics.is_empty()
+        self.diagnostics.iter().all(OutlineDiagnostic::is_warning)
     }
 }
 
@@ -168,11 +175,18 @@ pub fn plan_outline_publication(
     }
 
     let folder_notes_config = load_vault_config(paths).config.folder_notes;
-    let folder_notes = identify_folder_notes(notes, &folder_notes_config, &mut diagnostics);
+    let mut folder_notes = identify_folder_notes(notes, &folder_notes_config, &mut diagnostics);
+    let generated_folder_notes = complete_folder_note_hierarchy(
+        notes,
+        &mut folder_notes,
+        &folder_notes_config,
+        &mut diagnostics,
+    );
     let document_paths = plan_document_paths(
         &collection_directory,
         notes,
         &folder_notes,
+        &generated_folder_notes,
         &folder_notes_config,
         &mut diagnostics,
     );
@@ -356,14 +370,70 @@ fn identify_folder_notes(
     folder_notes
 }
 
+fn complete_folder_note_hierarchy(
+    notes: &[ExportedNoteDocument],
+    folder_notes: &mut BTreeMap<String, String>,
+    config: &FolderNotesConfig,
+    diagnostics: &mut Vec<OutlineDiagnostic>,
+) -> BTreeMap<String, String> {
+    let mut required_folders = BTreeSet::new();
+    for note in notes {
+        let normalized = normalize_path(&note.note.document_path);
+        let logical_parent = config
+            .folder_for_note_path(&normalized)
+            .map_or_else(|| parent_path(&normalized), |folder| parent_path(&folder));
+        let mut folder = logical_parent;
+        while !folder.is_empty() {
+            required_folders.insert(folder.clone());
+            folder = parent_path(&folder);
+        }
+    }
+
+    let mut generated = BTreeMap::new();
+    for folder in required_folders {
+        if folder_notes.contains_key(&folder) {
+            continue;
+        }
+        let Some(source_path) = config.note_path_for_folder(&folder) else {
+            continue;
+        };
+        folder_notes.insert(folder.clone(), source_path.clone());
+        generated.insert(folder.clone(), source_path.clone());
+        diagnostics.push(OutlineDiagnostic {
+            kind: OutlineDiagnosticKind::MissingFolderNote,
+            source_path: Some(source_path),
+            target: Some(folder.clone()),
+            message: format!(
+                "folder `{folder}` has no selected configured folder note; generated an export-only placeholder"
+            ),
+        });
+    }
+    generated
+}
+
 fn plan_document_paths(
     collection_directory: &str,
     notes: &[ExportedNoteDocument],
     folder_notes: &BTreeMap<String, String>,
+    generated_folder_notes: &BTreeMap<String, String>,
     folder_notes_config: &FolderNotesConfig,
     diagnostics: &mut Vec<OutlineDiagnostic>,
 ) -> Vec<DocumentPathPlan> {
     let mut planned = Vec::new();
+    for (folder, source_path) in generated_folder_notes {
+        let title = file_name(folder).to_string();
+        let parent_folder = parent_path(folder);
+        planned.push(DocumentPathPlan {
+            source_path: source_path.clone(),
+            source_document_id: format!("generated-outline-folder-note:{source_path}"),
+            title: title.clone(),
+            archive_path: format!("{collection_directory}/{}.md", serialize_path(folder)),
+            parent_source_path: (!parent_folder.is_empty())
+                .then(|| folder_notes.get(&parent_folder).cloned())
+                .flatten(),
+            content: format!("# {title}\n"),
+        });
+    }
     let mut sorted = notes.iter().collect::<Vec<_>>();
     sorted.sort_by(|left, right| left.note.document_path.cmp(&right.note.document_path));
     for note in sorted {
@@ -401,21 +471,9 @@ fn plan_document_paths(
             (logical_path, stem.to_string(), folder.clone())
         };
 
-        let parent_source_path = if parent_folder.is_empty() {
-            None
-        } else if let Some(parent) = folder_notes.get(&parent_folder) {
-            Some(parent.clone())
-        } else {
-            diagnostics.push(OutlineDiagnostic {
-                kind: OutlineDiagnosticKind::MissingFolderNote,
-                source_path: Some(note.note.document_path.clone()),
-                target: Some(parent_folder.clone()),
-                message: format!(
-                    "folder `{parent_folder}` needs its configured folder note included to preserve Outline hierarchy"
-                ),
-            });
-            None
-        };
+        let parent_source_path = (!parent_folder.is_empty())
+            .then(|| folder_notes.get(&parent_folder).cloned())
+            .flatten();
         let archive_path = format!("{collection_directory}/{logical_path}");
         planned.push(DocumentPathPlan {
             source_path: note.note.document_path.clone(),
@@ -866,10 +924,16 @@ mod tests {
             ("Guides/Start.md", b"# Start\n"),
         ]);
         let unconfigured = plan_all(&paths);
+        assert!(unconfigured.is_valid());
+        assert_eq!(unconfigured.diagnostics.len(), 1);
+        assert_eq!(
+            unconfigured.diagnostics[0].kind,
+            OutlineDiagnosticKind::MissingFolderNote
+        );
         assert!(unconfigured
-            .diagnostics
+            .documents
             .iter()
-            .any(|diagnostic| diagnostic.kind == OutlineDiagnosticKind::MissingFolderNote));
+            .any(|document| document.source_path == "Guides/Guides.md"));
 
         configure_folder_notes(&paths, "inside", "index");
         let configured = plan_all(&paths);
@@ -880,6 +944,52 @@ mod tests {
         );
         assert_eq!(configured.documents[0].archive_path, "Wiki/Guides.md");
         assert_eq!(configured.documents[1].archive_path, "Wiki/Guides/Start.md");
+    }
+
+    #[test]
+    fn generates_one_placeholder_and_warning_per_missing_folder() {
+        let (_temp, paths) = outline_vault(&[
+            ("Pantheons/Greek/Zeus.md", b"# Zeus\n"),
+            ("Pantheons/Greek/Hera.md", b"# Hera\n"),
+        ]);
+
+        let plan = plan_all(&paths);
+
+        assert!(plan.is_valid(), "{:?}", plan.diagnostics);
+        assert_eq!(plan.diagnostics.len(), 2);
+        assert!(plan.diagnostics.iter().all(|diagnostic| {
+            diagnostic.kind == OutlineDiagnosticKind::MissingFolderNote
+                && diagnostic.message.contains("export-only placeholder")
+        }));
+        let pantheons = plan
+            .documents
+            .iter()
+            .find(|document| document.source_path == "Pantheons/Pantheons.md")
+            .expect("generated top-level folder note");
+        assert_eq!(pantheons.archive_path, "Wiki/Pantheons.md");
+        assert_eq!(pantheons.parent_source_path, None);
+        assert_eq!(pantheons.content, "# Pantheons\n");
+        let greek = plan
+            .documents
+            .iter()
+            .find(|document| document.source_path == "Pantheons/Greek/Greek.md")
+            .expect("generated nested folder note");
+        assert_eq!(greek.archive_path, "Wiki/Pantheons/Greek.md");
+        assert_eq!(
+            greek.parent_source_path.as_deref(),
+            Some("Pantheons/Pantheons.md")
+        );
+        for child in ["Pantheons/Greek/Hera.md", "Pantheons/Greek/Zeus.md"] {
+            let document = plan
+                .documents
+                .iter()
+                .find(|document| document.source_path == child)
+                .expect("selected child");
+            assert_eq!(
+                document.parent_source_path.as_deref(),
+                Some("Pantheons/Greek/Greek.md")
+            );
+        }
     }
 
     #[test]
@@ -1073,5 +1183,26 @@ mod tests {
             .read_to_string(&mut child)
             .expect("read child");
         assert_eq!(child, "# Child\n");
+    }
+
+    #[test]
+    fn zip_export_writes_generated_folder_note() {
+        let (_temp, paths) = outline_vault(&[("Pantheons/Zeus.md", b"# Zeus\n")]);
+        let output = paths.vault_root().join("wiki.zip");
+
+        let report = write_outline_zip(&paths, &output, plan_all(&paths), false)
+            .expect("write export with placeholder");
+
+        assert!(report.wrote_archive);
+        assert_eq!(report.plan.diagnostics.len(), 1);
+        let file = fs::File::open(&output).expect("open archive");
+        let mut archive = ZipArchive::new(file).expect("read archive");
+        let mut placeholder = String::new();
+        archive
+            .by_name("Wiki/Pantheons.md")
+            .expect("placeholder entry")
+            .read_to_string(&mut placeholder)
+            .expect("read placeholder");
+        assert_eq!(placeholder, "# Pantheons\n");
     }
 }
