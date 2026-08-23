@@ -5,7 +5,7 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::io::Read;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -168,11 +168,11 @@ fn run_extractor_with_timeout(
     let started = Instant::now();
     let (status, forced_error) = loop {
         if let Ok(error) = limit_rx.try_recv() {
-            let _ = child.kill();
+            terminate_extractor_process_tree(&mut child);
             break (child.wait()?, Some(error));
         }
         if started.elapsed() >= timeout {
-            let _ = child.kill();
+            terminate_extractor_process_tree(&mut child);
             break (
                 child.wait()?,
                 Some(AttachmentExtractionError::TimedOut {
@@ -217,6 +217,19 @@ fn run_extractor_with_timeout(
     }
 
     String::from_utf8(stdout.bytes).map_err(AttachmentExtractionError::from)
+}
+
+fn terminate_extractor_process_tree(child: &mut Child) {
+    #[cfg(windows)]
+    {
+        let pid = child.id().to_string();
+        let _ = Command::new("taskkill")
+            .args(["/PID", pid.as_str(), "/T", "/F"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+    }
+    let _ = child.kill();
 }
 
 struct BoundedRead {
