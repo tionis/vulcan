@@ -369,7 +369,7 @@ Suggested Rust sketch:
 struct IdentityBinding {
     external_user_id: String,    // ExternalUserPrincipal::canonical_id
     vault_identity: String,      // assistant-side stable ID, e.g. "alice"
-    auth_principal: Option<String>, // later Phase 17 principal, e.g. "user:alice"
+    auth_subject: Option<String>, // later Phase 17 subject, e.g. "user:alice"
     note_path: Option<String>,   // optional in-vault profile note
     status: BindingStatus,
     metadata_json: serde_json::Value,
@@ -386,7 +386,7 @@ enum BindingStatus {
 This gives three useful layers:
 
 - `vault_identity`: stable assistant identity used for memory/session routing
-- `auth_principal`: optional bridge to the Phase 17 user/ACL model
+- `auth_subject`: optional bridge to the Phase 17 identity and delegable-capability model
 - `note_path`: optional in-vault note for user-facing profile data
 
 Once two external principals bind to the same `vault_identity`, the assistant can treat them as the same human for memory and policy purposes.
@@ -462,20 +462,20 @@ Unbound users can still use platform-scoped fallback memory until linked.
 
 ### Permissions and safety
 
-Per-platform and per-chat-type permissions are still the right idea, but the resolution model should be "restrictive intersection" rather than a naive override chain.
+Per-platform and per-chat-type restrictions remain useful, but they are transport caveats over Phase 17 authority rather than independent grants. Resolve the bound subject's rooted capabilities first, then intersect the transport, space, and session constraints. No adapter policy can widen the subject's authority.
 
 Suggested inputs:
 
-- platform default profile
-- chat-space policy, inherited from parent spaces
-- external-user override
-- bound `vault_identity` policy
-- later Phase 17 `auth_principal` policy if available
+- Phase 17 grants or a deliberately limited agent credential for the bound `auth_subject`
+- platform default profile as an attenuation ceiling
+- chat-space constraints inherited from parent spaces
+- external-user and bound-identity constraints
+- per-session expiry, rate, network, and runtime limits
 
-The effective profile should be the most restrictive combination of those layers. That gives the expected behavior:
+The effective `PermissionGrant` is the restrictive intersection of those layers. That gives the expected behavior:
 
 - a trusted user can still be read-only inside a shared group
-- a DM can allow more than the same user gets in a crowded room
+- a DM can apply fewer transport restrictions than a crowded room while never exceeding the user's rooted grants
 - guild-wide defaults can be narrowed by channel or thread
 
 Sensitive operations should still support confirmation, audit logging, rate limits, and optional admin approval flows where the platform makes that practical.

@@ -23,6 +23,7 @@ User-facing CLI usage, filter syntax, and examples are documented separately in 
 - **Correctness model:** Watcher + periodic reconciliation — File watchers improve freshness but should not be treated as a sufficient source of truth.
 - **Information-hub model:** The materialized Markdown vault is the canonical interchange point. Device sync replicates that working tree; external document bindings and content routes import or publish logical documents through connector adapters. External systems never synchronize through SQLite or relay directly through Vulcan without an inspectable local state.
 - **Capability and compatibility model:** Design stable CLI, config, API, and domain boundaries around native Vulcan capabilities. Obsidian plugins and other tools contribute optional persisted-format adapters, settings importers, migration aliases, providers, and conformance profiles; they do not define Vulcan's product taxonomy or cap what a native workflow may do.
+- **Authorization model:** Resolve all human, group, agent, automation, share, and service authority from explicit delegable capability grants rooted in daemon trust configuration. Delegation may only attenuate authority. Roles and ACL-like administration views are convenience projections over the grant graph; runtime enforcement continues through the shared `PermissionGrant`, `PermissionGuard`, and `PermissionFilter` abstractions.
 - **Chunk sizing:** Use character count as a proxy for token count (default ~4000 characters ≈ 1024 tokens). A lightweight tokenizer may be added later for model-specific accuracy.
 - **CI:** GitHub Actions (`cargo test` + `clippy` + `fmt --check`), structured for future migration to Forgejo CI.
 
@@ -114,6 +115,7 @@ The workspace boundary contract for the current and upcoming phases is:
 - `vulcan-app` owns reusable synchronous workflow orchestration that composes `vulcan-core` with filesystem mutation, plugin dispatch, scan refresh, config-file mutation, packaging, and other non-UI application services.
 - `vulcan-cli` owns `clap` parsing, terminal I/O, TUI state, editor/browser launching, shell completions, and human/JSON rendering. It should call shared services rather than becoming the primary home of business logic.
 - `vulcan-daemon` owns long-lived transports, async boundaries, background scheduling, HTTP/WebSocket endpoints, and adapter/runtime state that should not live in the CLI or rebuildable cache.
+- The planned Phase 17 `vulcan-auth` library owns authoritative identity/group records, rooted capability grants, attenuation and lineage validation, revocation, limited credentials, sessions, and audit attribution. It resolves a transport-authenticated subject into `vulcan-core`'s identity-neutral `PermissionGrant`; cache/query code must not depend on token formats or authoritative auth storage.
 
 Current migration inventory for the Phase 9.22 cleanup:
 
@@ -129,7 +131,7 @@ Phase 9.29 adds a pre-daemon boundary hardening pass. The daemon must be able to
 - `vulcan-core` remains synchronous and owns reusable vault semantics. Parser, cache, config, query/DQL/expression, graph/search/task semantics, permission models, HTML rendering primitives, and rebuildable maintenance operations stay here. Optional vector, web, OAuth, and JavaScript-backed functionality must be behind explicit features or isolated modules so parser/index/query consumers can build without those dependencies.
 - `vulcan-app` remains synchronous and owns reusable workflows. It may coordinate file mutation, scan refresh, plugin dispatch, exports, template execution, site generation, task workflows, note workflows, config mutation, custom skill command execution, and trust checks. It must not own terminal state, TUI state, `clap` definitions, editor/browser launching, or stdout/stderr rendering.
 - `vulcan-cli` owns the executable command surface: `clap` parsing, shell completions, terminal/TUI/editor integration, human and JSON rendering, top-level dispatch, and CLI-only helpers. It should delegate reusable work to `vulcan-app`/`vulcan-core`.
-- MCP support stays inside `vulcan-cli` at the end of Phase 9.29, with transport-neutral catalog, permission filtering, and protocol helpers split internally from the stdio/Streamable HTTP adapters. A dedicated `vulcan-mcp` crate is intentionally deferred until Phase 10's daemon integration proves the exact reuse boundary. Permission profiles remain the common authorization model for CLI, MCP, daemon, and assistant-facing entrypoints.
+- MCP support stays inside `vulcan-cli` at the end of Phase 9.29, with transport-neutral catalog, permission filtering, and protocol helpers split internally from the stdio/Streamable HTTP adapters. A dedicated `vulcan-mcp` crate is intentionally deferred until Phase 10's daemon integration proves the exact reuse boundary. Resolved `PermissionGrant` enforcement remains common to CLI, MCP, daemon, and assistant-facing entrypoints; static permission profiles are the current single-subject source and become compatibility/root-issued grants once Phase 17 lands.
 - `vulcan-daemon` owns async runtime integration, HTTP/WebSocket routing, multi-vault registry state, background scheduling, and long-lived session state. Core remains synchronous; daemon code wraps blocking shared services at the async boundary.
 
 Public library promise before Phase 10:
@@ -267,6 +269,44 @@ Authority is explicit per route:
 - A future true bidirectional mode requires a durable three-way base; it is never shorthand for last-writer-wins.
 
 Pulls materialize content or proxy notes through normal atomic vault workflows and quarantine removals by default. Pushes update only managed or explicitly bound objects and archive rather than permanently delete by default. Every route supports deterministic planning, structured reports, bounded retries, interruption-safe progress, secret sanitization, and direct CLI execution; the daemon adds schedules, dependencies, cancellation, and event triggers over the same service contracts.
+
+### 4.3 Delegable capability authorization
+
+Vulcan's multi-user authorization model is capability-first. Root configuration establishes explicit trust anchors and non-delegable policy ceilings for a vault. Those roots issue durable grants to users or groups; holders may issue child grants only when they possess delegation authority, and every child must be a provable attenuation of one parent. A credential that needs authority from several independent parents carries several independently derived grants rather than merging their provenance.
+
+The monotonic attenuation model is inspired by [macaroon caveats and user-derived least-privilege tokens](https://fly.io/blog/macaroons-escalated-quickly/), while deliberately separating authorization semantics from token encoding and retaining authoritative revocation state.
+
+```text
+daemon root authority
+          |
+          v
+durable user/group capability grants
+          |
+          v  attenuate only
+agent, automation, session, service, and share credentials
+          |
+          v  resolve for one request
+PermissionGrant -> PermissionGuard -> PermissionFilter
+```
+
+The resolved `PermissionGrant` remains transport- and identity-neutral. It describes resource-scoped read, write, delete, and refactor authority; capability flags such as Git, index, configuration, execution, shell, and delegation; network-domain restrictions; and runtime resource limits. Existing static permission profiles act as immediately resolved grants for direct CLI, MCP, plugin, and JavaScript contexts. Phase 17 adds identity-aware grant resolution without replacing command checks or query filtering.
+
+Capability attenuation is monotonic:
+
+- action sets may only shrink;
+- resource selectors may only stay equal or narrow through intersection;
+- expiry may only move earlier and delegation depth may only decrease;
+- network domains, runtime limits, audiences, and other constraints may only become more restrictive;
+- a holder without explicit delegation authority cannot issue a child grant;
+- revoking a grant invalidates every descendant grant and credential derived from it.
+
+Normal access is expressed through positive authority and default denial, not arbitrarily composable negative ACLs. Root policy may still impose fail-closed, non-delegable ceilings such as disabled identities, forbidden control paths, prohibited network domains, or a read-only vault. Role names such as `owner`, `editor`, and `viewer` are ergonomic templates that issue capability bundles; they are not privileged bypasses. Groups are capability subjects whose current membership is resolved by the daemon.
+
+Durable grants, parent/child lineage, revocation state, sessions, API credentials, share credentials, and audit events are authoritative daemon state outside the rebuildable vault cache. Root grants and policy ceilings live in daemon configuration. Vault configuration may define portable role/grant templates but cannot grant authority by itself. Bearer credentials are shown once and stored hashed or otherwise verifier-safe; a later token envelope may use macaroon-style chained attenuation, but the durable grant graph and enforcement semantics do not depend on one token encoding.
+
+User/group delegation creates a durable child grant through an authenticated daemon operation. It never requires recipients to share an issuer's bearer token. Possession-based credentials are reserved for bounded agent, automation, service, session, and share use, with optional subject/device binding when bearer possession is not an adequate authenticator.
+
+Folder and tag selectors require transition-aware mutation checks. Moving a document, changing a security-relevant tag, or rewriting a selector-bearing object must be authorized against both the old and resulting states so a writer cannot expand their own authority by reclassification. Query, graph, vector, rendering, embed, export, publication, and collaborative-editing paths filter before producing derived output. This protects daemon/API/WebUI access; raw Markdown remains plaintext to principals with filesystem access.
 
 ## 5. Data model overview
 
@@ -1037,6 +1077,7 @@ This is Vulcan's primary configuration file, stored in the `.vulcan/` directory 
 - Folder-note placement and filename template (`[folder_notes]`), interpreted exactly rather than auto-detected during normal operation
 - Automatic cache refresh policy for cache-backed commands (`[scan]`)
 - Template default date/time formats for `{{date}}` / `{{time}}` (`[templates]`)
+- Current static permission profiles and, after Phase 17, portable capability/role templates. These can describe reusable authority shapes but cannot create root grants; authoritative roots, issued grants, and revocations remain daemon state outside the vault.
 - Non-secret connector profiles and content-route topology/policy (`[integrations.profiles]` and `[[integrations.routes]]` once Phase 15 lands)
 
 Configuration sections and keys are named after native Vulcan capabilities, not the plugin that originally inspired them. For example, generated navigation, typed relationships, asset localization, and language checking receive capability-oriented sections even when a Waypoint, Wikilink Types, Local Images Plus, or LanguageTool importer seeds them. Importers translate reviewed source settings explicitly, report ignored or lossy mappings, and never make the source plugin configuration a second runtime authority.
@@ -1355,7 +1396,7 @@ The first native-chat deliverable should be a cross-platform transport contract,
 
 - external user principals such as `telegram:123456` and `matrix:@alice:example.com`
 - external chat spaces such as DMs, rooms, groups, guilds, channels, and threads
-- bindings from external principals to stable assistant-side identities and optional later Phase 17 auth principals
+- bindings from external principals to stable assistant-side identities and optional later Phase 17 authorization subjects
 - capability-based transport features such as messages, reactions, replies, attachments, message edits, and button-style interactions
 - hierarchical chat spaces so Discord-style guild/channel/thread trees inherit policy cleanly
 
@@ -1437,7 +1478,7 @@ Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 - **Phase 14:** WebUI — note editor with Automerge CRDT sessions, advanced table editing (Advanced Tables-style)
 - **Phase 15:** External knowledge hub and integrations — portable external-document bindings, deterministic pull/push routes, durable reconciliation state, connector capabilities, scheduling, and the first Outline/HedgeDoc/Git-wiki/SilverBullet connector wave
 - **Phase 16:** Wiki mode with live collaborative editing
-- **Phase 17:** User management, group-based ACLs, document-level secrets, share links
+- **Phase 17:** Identity and delegable capability authorization — rooted grants, monotonic attenuation, limited agent/automation/service/share credentials, permission-filtered queries, document-level secrets, and optional later OIDC binding
 - **Phase 18:** Canvas support (parsing, indexing, CLI, WebUI rendering, interactive editor) and Excalidraw support (18.8)
 
 Detailed mdbase and native vault-capability plans with Obsidian compatibility adapters remain **candidate capability tracks**, not numbered delivery gates. The SilverBullet appendix is promoted connector design referenced by Phases 12 and 15. Candidate durable Markdown/core slices may still be promoted independently; daemon, sync, editor, and runtime slices belong to Phases 10, 12, 14, and 15 respectively.

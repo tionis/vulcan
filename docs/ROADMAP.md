@@ -3477,26 +3477,26 @@ Make the search backend an explicit enum (`SearchBackend`) and add support for a
 
 #### 9.19.13 Permission layer
 
-**Goal:** Add a unified permission model in `vulcan-core` that applies across the entire application — CLI commands, HTTP serve API, MCP server, JS runtime, and plugins. The CLI defaults to full permissions (optimized for human use); restrictions are for specific contexts: semi-trusted script input, sandboxed agents, serve API consumers, and plugins. This is also the **foundational layer** that Phase 17 (User Management & Access Control) builds on — the multi-user web wiki's ACL system, vault roles, and `PermissionFilter` must extend this model, not build a parallel one.
+**Goal:** Add a unified permission model in `vulcan-core` that applies across the entire application — CLI commands, HTTP serve API, MCP server, JS runtime, and plugins. The CLI defaults to full permissions (optimized for human use); restrictions are for specific contexts: semi-trusted script input, sandboxed agents, serve API consumers, and plugins. This is also the **foundational layer** that Phase 17's delegable capability system builds on: identity-aware grant resolution must produce the same `PermissionGrant` and use the same `PermissionFilter`, not build a parallel enforcement path.
 
 **Depends on:** 9.19.6 (missing commands — the full command surface should exist before gating it), 9.19.12 (plugin system — key consumer)
 
 **Motivation:** Currently, the only permission controls are: (1) the JS runtime sandbox levels (`strict`/`fs`/`net`/`none`), which only gate JS API calls; (2) the `--auth-token` flag on `index serve`, which is all-or-nothing. There is no way to grant an MCP client read-only access, restrict a plugin to a specific folder, cap JS resource usage per profile, or prevent a serve API consumer from running refactors. The JS sandbox should be subsumed by this model rather than remaining a parallel system.
 
-**Relationship to Phase 17 (multi-user ACLs):**
+**Relationship to Phase 17 (multi-user delegable capabilities):**
 
-Phase 17 introduces users, groups, vault roles (`owner`/`editor`/`viewer`/`none`), fine-grained ACL rules (per-folder, per-tag, per-note), document-level secrets, share links, and a `PermissionFilter` that restricts query results per user. The design here must ensure Phase 17 is a natural extension, not a rewrite:
+Phase 17 introduces users, groups, explicit root grants, attenuable child grants, limited credentials for agents and automation, document-level secrets, share links, and identity-aware query filtering. Roles such as `owner`, `editor`, and `viewer` remain ergonomic grant templates rather than a separate RBAC enforcement system. The design here must ensure Phase 17 is a natural extension, not a rewrite:
 
-- Phase 9.19.13 defines the **`PermissionGrant` type** in `vulcan-core` — the atomic unit of "what is allowed". Phase 17 defines **how grants are resolved** from users/groups/roles/ACLs, but the grant type itself is shared.
-- Phase 9.19.13 defines the **`PermissionGuard` trait** — the interface every command handler calls to check permissions. Phase 17 implements this trait with user-aware resolution (user → roles → ACL rules → effective grants), while 9.19.13's implementation resolves from a static profile.
-- Phase 17's `PermissionFilter` (which generates SQL CTEs for permission-filtered queries) takes a resolved `PermissionGuard` as input — not a user identity. This means the same filter works for profile-based restrictions (9.19.13) and user-based restrictions (17.3).
-- **Resource specifiers** (`folder:<path>`, `tag:<tag>`, `note:<path>`) are defined here and reused verbatim in Phase 17.2 ACL rules. Phase 17 adds `principal` matching on top; 9.19.13 doesn't need principals (the profile *is* the resolved permission set).
+- Phase 9.19.13 defines the **`PermissionGrant` type** in `vulcan-core` — the resolved unit of "what is allowed". Phase 17 defines how one or more rooted, attenuated grants resolve for a user, group, agent, automation process, service, or share credential; the resolved type itself is shared.
+- Phase 9.19.13 defines the **`PermissionGuard` trait** — the interface every command handler calls to check permissions. Phase 17 implements it with a capability-aware resolver (authenticated subject → applicable rooted grants and constraints → effective grant), while 9.19.13's implementation resolves from a static profile.
+- Phase 17's `PermissionFilter` (which generates SQL CTEs for permission-filtered queries) takes a resolved `PermissionGuard` as input — not a user identity or grant graph. This means the same filter works for static-profile restrictions (9.19.13) and capability-derived restrictions (17.3).
+- **Resource specifiers** (`folder:<path>`, `tag:<tag>`, `note:<path>`) are defined here and reused verbatim in Phase 17 capability grants. Phase 17 adds subjects, issuers, parent lineage, delegation constraints, expiry, and revocation; 9.19.13 does not need identity or provenance because a profile is already resolved.
 
 ```
   9.19.13                          Phase 17
   ┌─────────────────┐             ┌──────────────────────────────┐
-  │ PermissionGrant  │◄────────────│ User + Group + Vault Role    │
-  │ (path rules,     │             │ + ACL Rules                  │
+  │ PermissionGrant  │◄────────────│ Root + delegated grants      │
+  │ (path rules,     │             │ for user/group/credential    │
   │  capability flags,│             │ → resolves to PermissionGrant│
   │  resource limits) │             └──────────────────────────────┘
   └────────┬─────────┘
@@ -3539,7 +3539,7 @@ Phase 17 introduces users, groups, vault roles (`owner`/`editor`/`viewer`/`none`
 - `note:<path>` — applies to a single note.
 - `*` (wildcard) — matches all resources (equivalent to `all`).
 
-The same specifier syntax is used in Phase 17.2 ACL rules, ensuring consistency. Read/write/refactor dimensions accept `allow` and `deny` lists of resource specifiers — deny takes precedence over allow when both match.
+The same specifier syntax is used in Phase 17 grants, ensuring consistency. Existing static profiles continue to accept `allow` and `deny` lists, with deny taking precedence. Phase 17 expresses ordinary user authority as positive, default-deny capabilities; non-delegable root policy ceilings may still narrow the resolved grant.
 
 ```toml
 [permissions.profiles.agent]
@@ -3573,8 +3573,8 @@ cpu_limit_ms = 2000
 memory_limit_mb = 32
 
 [permissions.profiles.player]
-# Preview of what Phase 17 resolves to from vault roles + ACL rules.
-# 9.19.13 can express this statically; 17 generates it dynamically per user.
+# Preview of what Phase 17 can resolve from rooted, attenuated grants.
+# 9.19.13 can express this statically; 17 generates it dynamically per subject.
 read = { allow = ["*"], deny = ["folder:GM-Only/**", "tag:secret"] }
 write = { allow = ["folder:Characters/Bob/**"], deny = ["*"] }
 refactor = "none"
@@ -3600,19 +3600,19 @@ If both `--sandbox` and `--permissions` are specified, the more restrictive of t
 - [x] **JS runtime:** permission guard is threaded into the runtime context. All vault API calls (`vault.note()`, `vault.set()`, `web.fetch()`, etc.) check the active guard before executing. Resource limits (CPU, memory, stack) are applied via rquickjs `Runtime::set_memory_limit()`, `set_max_stack_size()`, and `set_interrupt_handler()`.
 - [x] **Plugin system (9.19.12):** each plugin declares required permissions in its manifest. Execution is denied if requirements exceed the active profile. Plugins can request a *subset* of the active profile's permissions.
 - [-] **AI integrations (9.12):** moved to 9.12.1 and 9.12.2 now that the assistant path is an external-runtime/tool-contract layer rather than an in-process permission consumer.
-- [x] **Phase 17 integration point:** Phase 17 implements `PermissionGuard` with a `UserPermissionGuard` that resolves user → vault role → ACL rules → `PermissionGrant`. The guard trait, resource specifiers, grant type, and `PermissionFilter` from 9.19.13 are reused without modification.
+- [x] **Phase 17 integration point:** Phase 17 implements `PermissionGuard` with a capability-aware guard that resolves authenticated subject → applicable rooted and attenuated grants → `PermissionGrant`. The guard/filter boundary and resource specifiers from 9.19.13 are reused; Phase 17 may add finer create/delete and authority-administration dimensions while preserving existing profile semantics.
 
 **Implementation:**
 
 Core types in `vulcan-core`:
 
-- [x] **`ResourceSpecifier`** enum: `Folder(GlobPattern)`, `Tag(String)`, `Note(String)`, `All`. Shared by 9.19.13 profiles and Phase 17 ACL rules.
+- [x] **`ResourceSpecifier`** enum: `Folder(GlobPattern)`, `Tag(String)`, `Note(String)`, `All`. Shared by 9.19.13 profiles and Phase 17 capability grants.
 - [x] **`PathPermission`** struct: `allow: Vec<ResourceSpecifier>`, `deny: Vec<ResourceSpecifier>`. Deny-wins-on-conflict semantics.
 - [x] **`PermissionGrant`** struct: all dimensions (read, write, refactor as `PathPermission`; git, network, index, config, execute, shell as capability flags; network domain allowlist; CPU/memory/stack limits). This is the **resolved** permission set — it has no concept of users or roles.
 - [x] **`PermissionGuard`** trait: `check_read(path) -> Result<()>`, `check_write(path) -> Result<()>`, `check_refactor(path) -> Result<()>`, `check_network(domain) -> Result<()>`, `check_git() -> Result<()>`, `check_shell() -> Result<()>`, `resource_limits() -> ResourceLimits`. Two implementations:
   - `ProfilePermissionGuard` (9.19.13): resolves from a static `PermissionGrant` loaded from config
-  - `UserPermissionGuard` (Phase 17): resolves from user identity + vault role + ACL rules → `PermissionGrant`
-- [x] **`PermissionFilter`** struct: takes a `&dyn PermissionGuard`, generates a set of allowed/denied paths. Provides `fn sql_cte() -> String` for filtered queries and `fn is_allowed(path) -> bool` for single-path checks. Phase 17.3 uses this exact type — it doesn't need to know whether the guard is profile-based or user-based.
+  - `CapabilityPermissionGuard` (Phase 17): resolves applicable rooted grants, delegation constraints, and root policy ceilings for an authenticated subject → `PermissionGrant`
+- [x] **`PermissionFilter`** struct: takes a `&dyn PermissionGuard`, generates a set of allowed/denied paths. Provides `fn sql_cte() -> String` for filtered queries and `fn is_allowed(path) -> bool` for single-path checks. Phase 17.3 reuses this identity-neutral filter; it does not need to know whether the guard is profile- or capability-derived.
 
 Integration:
 
@@ -4666,15 +4666,11 @@ Do not make Telegram the architecture. If native chat is revived, start by defin
 - [x] Capability negotiation: adapters advertise whether they support reactions, message edits, replies, buttons, attachments, threads, or ephemeral messages; the assistant core degrades gracefully when a feature is absent
 - [x] Identity binding layer maps an external user principal to:
   - a stable assistant-side `vault_identity`
-  - an optional Phase 17 auth principal such as `user:alice`
+  - an optional Phase 17 auth subject such as `user:alice`
   - an optional canonical note path such as `People/Alice.md`
 - [x] Session and memory routing should key off the internal `vault_identity` and internal space ID once a binding exists, so one human can share memory across Telegram and Matrix after verification
 - [x] Unbound users fall back to platform-scoped memory/session routing until linked
-- [x] Permission resolution should use the restrictive intersection of:
-  - platform default
-  - space hierarchy policy
-  - external-user override
-  - bound identity / Phase 17 principal policy
+- [x] Permission resolution should start from Phase 17 rooted grants or a limited agent credential for the bound subject, then apply the restrictive intersection of platform defaults, inherited space constraints, external-user constraints, and per-session limits; transport policy cannot widen authority
 - [x] Keep non-rebuildable platform runtime state out of the vault and out of `.vulcan/cache.db`; define a daemon-managed state directory for adapter-specific databases, sync tokens, media caches, and crypto material
 - [x] Add assistant chat config sketch to `.vulcan/config.toml` docs:
   ```toml
@@ -4684,7 +4680,7 @@ Do not make Telegram the architecture. If native chat is revived, start by defin
   memory_root = "AI/Memory"
 
   [assistant.chat.identities.alice]
-  principal = "user:alice"
+  subject = "user:alice"
   note = "People/Alice.md"
 
   [[assistant.chat.bindings]]
@@ -5104,9 +5100,9 @@ permissions_profile = "readonly"  # clamp all API requests for this vault to a n
 - [ ] `vulcan daemon config remove <id>` — unregister a vault
 - [ ] `vulcan daemon config list` — show registered vaults (paths, IDs, status)
 - [ ] Auth tokens stored outside vault content — avoids coupling auth to the data it protects
-- [ ] Token-authenticated daemon requests resolve to a vault plus a named permission profile; all endpoint authorization and result filtering reuse the existing `PermissionGuard` / `PermissionFilter` layer instead of adding daemon-specific ACL logic
+- [ ] Token-authenticated daemon requests resolve to a vault plus a named permission profile; all endpoint authorization and result filtering reuse the existing `PermissionGuard` / `PermissionFilter` layer instead of adding daemon-specific policy logic
 - [ ] Vault auto-discovery: optionally scan a directory for vaults (e.g., `scan_dir = "/home/user/vaults"`)
-- **Forward reference:** Phase 17 replaces the per-vault token model with multi-user accounts, groups, and per-vault roles. The token infrastructure here (argon2 hashing, Bearer auth middleware) and Phase 9.19.13 permission-profile plumbing are reused — Phase 17 extends them, not replaces them.
+- **Forward reference:** Phase 17 replaces the per-vault token as the sole authority source with identities, groups, rooted delegable capability grants, and limited credentials for users, agents, automation, services, and shares. Phase 10's token infrastructure (argon2 hashing, Bearer auth middleware) and Phase 9.19.13 permission plumbing are reused. The initial per-vault profile becomes an explicit root-issued compatibility grant rather than a parallel authorization model.
 
 ### 10.3 REST API
 
@@ -5312,7 +5308,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [ ] Static SPA assets embedded in the binary at compile time (e.g., `rust-embed` or `include_dir`)
 - [ ] Alternatively: separate frontend repo that builds to static files, daemon serves them
 - [ ] Framework choice: lightweight (Svelte, Solid, or vanilla + htmx) — TBD at implementation time
-- [ ] Auth: multi-user login page (username/password or API key), browser sessions via cookie or localStorage token. Uses the user management and ACL system from Phase 17. All API calls and rendered views respect the authenticated user's permissions.
+- [ ] Auth: multi-user login page (username/password or limited API credential), browser sessions via secure cookie or bearer token. Uses Phase 17 identity and capability resolution. All API calls and rendered views respect the caller's resolved grants and root policy ceilings.
 
 ### 13.2 Admin panel
 
@@ -5536,14 +5532,14 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ### 16.4 Access control
 
-Uses the full ACL system from Phase 17. Wiki mode adds vault-level access presets that configure the underlying ACL rules:
+Uses Phase 17's capability system. Wiki mode adds vault-level access presets that issue or select underlying grants without creating a second authorization model:
 
-- [ ] **Public read / authenticated write** (default): unauthenticated users get `viewer` access, authenticated users use their vault role
-- [ ] **Fully public**: unauthenticated users get `viewer` access, no login required for any read operation
+- [ ] **Public read / authenticated write** (default): unauthenticated requests use an explicit public-read grant; authenticated callers use their resolved capabilities
+- [ ] **Fully public**: an explicit public-read grant permits unauthenticated reads without granting ambient write authority
 - [ ] **Fully private**: no unauthenticated access, all users must log in
-- [ ] **Per-folder and per-tag visibility**: configured via ACL rules from Phase 17.2 — e.g., hide `GM-Only/` from the `players` group
+- [ ] **Per-folder, per-tag, and per-note visibility**: configured through rooted and delegated resource-scoped grants from Phase 17.2
 - [ ] **Document-level secrets**: `[!secret]` callouts and restricted embeds from Phase 17.4 are enforced in wiki rendering
-- [ ] **Share links**: external share tokens from Phase 17.5 provide read access to specific notes/folders without requiring an account
+- [ ] **Share links**: share-audience limited credentials from Phase 17.5 provide read access to specific notes/folders/tags without requiring an account
 
 ### 16.5 Live collaborative editing
 
@@ -5571,24 +5567,31 @@ Automerge compiles to `wasm32`, enabling browser-side editing without a live ser
 
 ---
 
-## Phase 17: User Management & Access Control
+## Phase 17: Identity & Delegable Capability Authorization
 
-**Goal:** Multi-user identity, group-based permissions, fine-grained ACLs, document-level secrets, and external share links. Provides the authorization layer that all web-facing features depend on.
+**Goal:** Add multi-user identity and a capability-first authorization system for humans, groups, agents, automation, services, and external shares. Root configuration grants initial authority; holders may delegate strict subsets of delegable authority. Document-level secrets and limited bearer credentials build on the same model so every web-facing and automated workflow shares one authorization boundary.
 
 **Depends on:** Phase 10 (daemon). Sub-phases 17.1–17.3 must be complete before Phase 13 ships. Sub-phases 17.4–17.5 are needed by Phase 16.
 
-**Design principle: ACLs are not a cache.** User accounts, group memberships, ACL rules, sessions, and share tokens are authoritative state — they must never be stored in a vault's cache DB (which can be deleted and regenerated at any time). User/group configuration lives in human-editable TOML files in the daemon config directory. High-churn transactional data (sessions, API keys, share tokens) lives in a small authoritative SQLite database alongside the config.
+**Design principles:**
 
-### 17.1 User & group storage
+- **Authority is not a cache.** Identities, memberships, rooted grants, delegation lineage, revocations, sessions, credentials, and audit events are authoritative state and never live in rebuildable vault cache tables.
+- **Delegation only attenuates.** A child grant can never add an action, broaden a resource, extend an expiry, increase delegation depth, add a network domain, loosen a resource limit, or escape an audience constraint.
+- **Default deny, positive grants.** Ordinary access comes from explicit capabilities. Negative rules are reserved for non-delegable root policy ceilings such as disabled identities, forbidden control paths, or a read-only vault.
+- **Roles are templates, not bypasses.** `owner`, `editor`, and `viewer` remain useful UI/configuration presets that issue capability bundles. No role silently bypasses normal authorization.
+- **Enforcement stays shared.** Capability resolution produces the existing `PermissionGrant`; commands, queries, rendering, MCP, plugins, and JavaScript continue using `PermissionGuard` and `PermissionFilter`.
+- **Filesystem access remains outside this boundary.** The daemon/API/WebUI capability layer does not encrypt Markdown or hide it from a user who can directly read the vault working tree.
+
+### 17.1 Identity and authoritative authorization storage
 
 ```
 ~/.config/vulcan/
-├── daemon.toml          # daemon config (from Phase 10)
+├── daemon.toml          # vault registry, root grants, policy ceilings
 ├── users.toml           # user accounts and group definitions
-└── auth.db              # sessions, API keys, share tokens (SQLite)
+└── auth.db              # grants, lineage, revocations, credentials, sessions, audit log
 ```
 
-**Users and groups** are defined in `users.toml` — low churn, human-editable, can be version-controlled:
+**Users and groups** remain low-churn, human-editable definitions in `users.toml`:
 
 ```toml
 [users.alice]
@@ -5597,176 +5600,148 @@ email = "alice@example.com"
 password_hash = "$argon2id$v=19$..."
 disabled = false
 
-[users.bob]
-display_name = "Bob"
-password_hash = "$argon2id$v=19$..."
-
 [groups.gm]
 display_name = "Game Masters"
 members = ["alice"]
-
-[groups.players]
-display_name = "Players"
-members = ["bob", "charlie"]
 ```
 
-**Transactional auth data** lives in `auth.db` (not a cache — back up with daemon config):
-
-```sql
-sessions:    id, user_id, token_hash, created_at, expires_at
-api_keys:    id, user_id, key_hash, label, scopes (JSON), created_at, expires_at
-share_tokens: id, vault_id, resource, permission, token_hash, created_by,
-              password_hash (nullable), created_at, expires_at
-```
-
-**CLI management commands:**
-
-- [ ] `vulcan auth user add <username>` — create user, prompt for password
-- [ ] `vulcan auth user remove <username>` — remove user (with confirmation)
-- [ ] `vulcan auth user list` — list users with status
-- [ ] `vulcan auth user disable/enable <username>` — toggle without deleting
-- [ ] `vulcan auth group add <group> [--members alice,bob]` — create group
-- [ ] `vulcan auth group remove <group>` — remove group
-- [ ] `vulcan auth group members <group> add/remove <username>` — manage membership
-- [ ] `vulcan auth apikey create <username> [--scope vault:personal:editor] [--expires 90d]` — generate API key
-- [ ] `vulcan auth apikey revoke <key-id>` — revoke key
-- [ ] `vulcan auth apikey list [--user username]` — list active keys
-
-**API endpoints for user management** (owner/admin only):
-
-- [ ] `GET /auth/users` — list users
-- [ ] `POST /auth/users` — create user
-- [ ] `PATCH /auth/users/{username}` — update user
-- [ ] `DELETE /auth/users/{username}` — remove user
-- [ ] `GET /auth/groups` — list groups
-- [ ] `POST /auth/groups` — create group
-- [ ] `PATCH /auth/groups/{group}` — update membership
-- [ ] `POST /auth/session` — login (returns session token)
-- [ ] `DELETE /auth/session` — logout
-
-### 17.2 Vault roles & ACL rules
-
-**Vault roles** assign coarse permissions per user or group per vault. Configured in `daemon.toml` alongside vault registration:
+**Root authority** is explicit in `daemon.toml`. It is a trust anchor, not an exportable unconstrained bearer token:
 
 ```toml
 [[vault]]
 id = "campaign"
 path = "/home/user/vaults/campaign"
 
-# Default role for authenticated users not otherwise listed
-default_role = "viewer"
+[[vault.root_grants]]
+subject = "user:alice"
+template = "owner"
+delegation_depth = 8
 
-[[vault.roles]]
-principal = "user:alice"
-role = "owner"
+[[vault.root_grants]]
+subject = "group:gm"
+actions = ["read", "write", "delete", "refactor", "delegate"]
+resources = ["folder:**"]
+delegation_depth = 4
 
-[[vault.roles]]
-principal = "group:gm"
-role = "owner"
-
-[[vault.roles]]
-principal = "group:players"
-role = "editor"
+[vault.policy]
+forbid_resources = ["folder:.vulcan/**"]
+shell = "deny"
 ```
 
-**Role hierarchy:**
+`auth.db` is a small authoritative database backed up with daemon configuration. It stores durable grants and parent lineage, revocation state, sessions, API/agent/automation/share credentials, credential hashes or verifier material, and append-oriented audit events. Vault `.vulcan/config.toml` may define portable role or grant templates, but editing vault content cannot itself create root authority.
 
-| Role | Read | Write | Manage ACLs | Vault config |
-|------|------|-------|-------------|--------------|
-| `owner` | yes | yes | yes | yes |
-| `editor` | yes | yes | no | no |
-| `viewer` | yes | no | no | no |
-| `none` | no | no | no | no |
+Indicative authoritative tables (final migrations remain implementation work):
 
-**Fine-grained ACL rules** override the vault role for specific resources. Stored in vault config (`.vulcan/config.toml`) so they travel with the vault:
-
-```toml
-# .vulcan/config.toml — ACL rules section
-
-[[acl]]
-principal = "group:players"
-resource = "folder:GM-Only/"
-permission = "none"          # players cannot see anything in GM-Only/
-
-[[acl]]
-principal = "user:bob"
-resource = "folder:Characters/Bob/"
-permission = "editor"        # bob can edit his own character folder
-
-[[acl]]
-principal = "*"
-resource = "tag:secret"
-permission = "none"          # notes tagged #secret are hidden from everyone except owners
-
-[[acl]]
-principal = "group:gm"
-resource = "tag:secret"
-permission = "owner"         # GMs can see and edit #secret notes
+```text
+grants:       id, vault_id, parent_id/root_ref, issuer_subject, subject,
+              actions_json, resources_json, constraints_json,
+              delegation_depth, created_at, expires_at, revoked_at
+credentials:  id, subject, audience, token_hash/verifier, grant_ids_json,
+              created_by, created_at, expires_at, revoked_at, last_used_at
+sessions:     id, subject, token_hash, created_at, expires_at, revoked_at
+audit_events: id, actor_subject, credential_id, grant_id, action, resource,
+              decision, reason, created_at, metadata_json
 ```
 
-**Resource specifiers:**
+Root records are addressed by stable configuration-derived IDs/hashes so lineage survives daemon restarts and fails closed when a root grant is removed or materially changed.
 
-- `folder:<path>` — applies to all notes under the folder (recursive)
-- `tag:<tag>` — applies to notes carrying the tag
-- `note:<path>` — applies to a single note
+**CLI and API management:**
 
-**Evaluation order:** explicit deny (`none`) > most-specific grant > less-specific grant > vault role > default_role > no access. `owner` vault role bypasses all ACL rules (always has full access).
+- [ ] `vulcan auth user add|remove|list|disable|enable <username>`
+- [ ] `vulcan auth group add|remove|list` and `vulcan auth group members <group> add|remove <username>`
+- [ ] User/group/session endpoints under `/auth/...`, gated by `manage_identities` / `manage_groups` rather than a hard-coded owner bypass
+- [ ] Atomic configuration and database updates with recovery tests; removal or disablement invalidates sessions and effective grants immediately
+- [ ] Backup/restore and doctor coverage that distinguishes authoritative `auth.db` from rebuildable `.vulcan/cache.db`
 
-**CLI commands:**
+### 17.2 Rooted capability grants and delegation
 
-- [ ] `vulcan auth acl add <vault> --principal <p> --resource <r> --permission <perm>` — add ACL rule
-- [ ] `vulcan auth acl remove <vault> <rule-id>` — remove rule
-- [ ] `vulcan auth acl list <vault>` — show effective rules
-- [ ] `vulcan auth acl check <vault> <username> <path>` — test effective permission for a user on a note (useful for debugging)
+Each durable grant has a stable ID, vault, issuer, subject, exactly one parent grant or root source, action set, resource scope, constraints, delegation allowance/depth, timestamps, and revocation state. A subject may hold several grants; their positive authority is combined only after every grant is independently validated against its lineage and root ceilings. When an issued credential needs authority from several parents, it contains or references several independently attenuated grants rather than erasing provenance in one synthetic parent.
 
-### 17.3 Permission-filtered queries
+Delegation to another registered user or group is an authenticated daemon transaction that creates a durable child grant for that subject. It is not accomplished by copying the issuer's bearer credential. Limited bearer credentials are for possession-based clients such as agents, scripts, services, and external shares; they may additionally bind to an authenticated subject, device, or audience when possession alone is insufficient.
 
-**Core abstraction:** This phase builds on the `PermissionGuard` trait and `PermissionFilter` type defined in Phase 9.19.13. The single-user permission layer already provides: the `ResourceSpecifier` type (folder/tag/note matchers), `PermissionGrant` (resolved permissions), `PermissionGuard` trait (check_read/check_write/etc.), and `PermissionFilter` (SQL CTE generation for filtered queries). Phase 17.3 adds the **`UserPermissionGuard`** implementation that resolves a user's identity through vault roles and ACL rules into a `PermissionGrant`, then passes it to the existing `PermissionFilter`.
+**Initial action vocabulary:**
 
-**What Phase 9.19.13 already provides (reused here):**
-- `ResourceSpecifier` — `Folder(glob)`, `Tag(tag)`, `Note(path)`, `All`
-- `PathPermission` — allow/deny lists of resource specifiers
-- `PermissionGrant` — the resolved permission set (all dimensions)
-- `PermissionGuard` trait — the interface every command handler calls
-- `PermissionFilter` — generates SQL CTEs from a guard for filtered queries
-- Integration into all query functions (search, graph, vectors, notes, bases)
+- Resource actions: `read`, `write`, `create`, `delete`, `refactor`
+- Operational actions: `git`, `index`, `config:read`, `config:write`, `execute`, `shell`, `network`
+- Authority actions: `delegate`, `manage_identities`, `manage_groups`, `manage_root_grants`, `revoke_descendants`, `view_audit`
+- Existing CPU, memory, stack, and network-domain limits remain grant constraints
 
-**What Phase 17.3 adds:**
-- `UserPermissionGuard` — resolves user → vault role → ACL rules → `PermissionGrant`
-- Daemon middleware that extracts the authenticated user and builds a `UserPermissionGuard`
-- Per-request caching of the resolved permission set
+Existing Phase 9 profiles treat `write` as create/update/delete. Phase 17 adds finer action checks for delegable credentials while preserving that shorthand: an old profile with `write = "all"` resolves to all three resource actions, and one with `write = "none"` resolves to none. This is a compatible extension of `PermissionGrant` / `PermissionGuard`, not a second enforcement path.
+
+**Resource vocabulary:** reuse `folder:<glob>`, `tag:<tag>`, `note:<path>`, and `*` from Phase 9.19.13. Add explicit vault identity to the normalized grant so cross-vault authority is never inferred from an unqualified path.
+
+**Attenuation rules:**
+
+- actions form a subset of the parent;
+- resources are equal to or narrower than the parent scope;
+- expiration can only move earlier;
+- delegation depth decreases and a grant without `delegate` cannot produce children;
+- audience, source/device binding, allowed network domains, rate limits, and runtime limits only narrow;
+- root policy ceilings intersect every resolved grant and cannot be delegated around;
+- revoking a grant invalidates its complete descendant tree and associated credentials;
+- cycles and ambiguous/missing parent lineage fail closed.
+
+**Roles and groups:** bundled `owner`, `editor`, and `viewer` definitions are authoring templates over actions and resources. A root grant may target a user or group. Group membership is resolved dynamically, so removing a member withdraws group-derived authority without rewriting issued grants. Administration screens may offer an ACL-like matrix, but writes from that view create, attenuate, or revoke capability grants.
+
+**Mutation safety:** folder moves, tag changes, note renames, and other classification-changing operations are checked against both the original and resulting resource states. Possessing write access to content is not enough to move it into a broader scope or attach a tag that expands the caller's effective authority.
+
+**CLI and tests:**
+
+- [ ] `vulcan auth grant create --subject <p> --from <grant-id> --action ... --resource ... [constraints] --dry-run`
+- [ ] `vulcan auth grant inspect <grant-id>` — show lineage, effective authority, constraints, descendants, and revocation state
+- [ ] `vulcan auth grant list [--subject <p>] [--vault <id>]`
+- [ ] `vulcan auth grant revoke <grant-id> [--reason ...]` — revoke the grant and descendants
+- [ ] `vulcan auth grant check --subject <p> --action <a> --resource <r>` — explain contributing grants and root ceilings
+- [ ] Property tests prove that arbitrary attenuation sequences never widen authority
+- [ ] Regression tests cover groups, expiry, depth, revocation cascades, multiple independent parents, root ceilings, and old/new-state mutation checks
+
+### 17.3 Capability resolution and permission-filtered queries
+
+Phase 17 adds `CapabilityPermissionGuard`, which resolves the authenticated subject and any presented limited credential through applicable rooted grants into the existing `PermissionGrant`. `PermissionFilter` remains identity-neutral and continues generating SQL predicates from the resolved guard.
+
+**Resolution flow:**
+
+```text
+authenticated identity or limited credential
+  -> validate subject, grant lineage, expiry, audience, and revocation
+  -> include current group-derived grants
+  -> intersect root policy ceilings and request/transport constraints
+  -> resolve PermissionGrant once per request
+  -> enforce through PermissionGuard and PermissionFilter
+```
 
 **Enforcement strategy — filter at the query layer, not post-hoc:**
 
 | Feature | Enforcement |
 |---|---|
-| **Search (FTS + hybrid)** | Allowed-document CTE joined into FTS query; denied docs never appear in results or hit counts |
-| **Graph (stats, paths, hubs, components)** | Nodes filtered to allowed set; edges to/from denied notes appear as dangling links (no target name or content) |
+| **Search (FTS + hybrid)** | Allowed-document CTE joined into FTS query; unavailable documents never appear in results or hit counts |
+| **Graph (stats, paths, hubs, components)** | Nodes filtered to the allowed set; edges to unavailable notes expose no target name or content |
 | **Backlinks** | Only backlinks from readable notes are returned |
-| **Vectors / similarity** | Candidate set filtered before ranking; denied notes excluded from neighbor results |
-| **Properties / Bases queries** | `WHERE` clause includes permission predicate |
-| **Note content (`GET /{id}/notes/{path}`)** | 403 if no read permission |
-| **Transclusions / embeds** | Embed of a denied note renders as `[restricted content]` |
-| **Activity feed / changes** | Events filtered to permitted documents only |
-| **Git history / diffs** | File-level diffs filtered to readable paths |
-| **Automerge collab (Phase 16)** | WebSocket handshake checks permission: `editor`+ can edit, `viewer` can observe (read-only cursor), `none` rejected |
+| **Vectors / similarity** | Candidate set filtered before ranking |
+| **Properties / Bases queries** | `WHERE` clause includes the permission predicate |
+| **Note content (`GET /{id}/notes/{path}`)** | 403 without read capability |
+| **Transclusions / embeds** | Unreadable targets render as `[restricted content]` |
+| **Activity and audit views** | Events filtered to permitted resources and audit capability |
+| **Git history / diffs** | File-level output filtered to readable paths |
+| **Automerge collaboration** | Handshake requires read; mutations require write for the resulting document state |
 
 **Implementation:**
 
-- [ ] `UserPermissionGuard` in `vulcan-core`: takes user identity + vault role config + ACL rules, resolves effective `PermissionGrant` per the evaluation order (explicit deny > most-specific grant > less-specific grant > vault role > default_role > no access)
-- [ ] Reuse `PermissionFilter::sql_cte()` from 9.19.13 — the filter doesn't know or care whether the guard is profile-based or user-based
-- [ ] Daemon middleware: extract authenticated user from request, build `UserPermissionGuard`, pass to handlers as `&dyn PermissionGuard`
-- [ ] CLI local mode: unrestricted guard (local user has full access to their own vault), same as 9.19.13 default
-- [ ] Integration tests: verify that denied documents are invisible across search, graph, backlinks, and vector queries using the user-based guard
-- [ ] Performance: cache the resolved `PermissionGrant` per request (resolve once from user/role/ACL, reuse across queries in the same request)
+- [ ] Add durable capability/grant types and attenuation validation in the planned `vulcan-auth` crate; compatibly extend reusable resolved permission semantics in `vulcan-core` with create/delete and authority-administration checks
+- [ ] Implement `CapabilityPermissionGuard` over an already validated request authority context rather than coupling core query code to sessions or token parsing
+- [ ] Reuse `PermissionFilter::sql_cte()` and existing point checks from 9.19.13
+- [ ] Daemon middleware authenticates the caller, validates grants/credentials, resolves once per request, and passes `&dyn PermissionGuard` to handlers
+- [ ] Direct local CLI mode remains unrestricted for the filesystem owner unless an explicit profile or limited credential is selected
+- [ ] Cache resolved authority per request only; grant/revocation generation invalidates longer-lived session caches
+- [ ] Integration tests verify that unavailable content cannot leak through search, graph, backlinks, vectors, snippets, completion, exports, rendering, logs, or aggregate counts
 
 ### 17.4 Document-level secrets
 
-Two complementary mechanisms for embedding restricted content within otherwise-accessible notes.
+Two complementary mechanisms embed restricted content within otherwise accessible notes.
 
-**Mechanism A: Folder/tag ACLs + embeds (comes free from 17.2)**
+**Mechanism A: scoped capabilities + embeds**
 
-Use the existing ACL system to restrict folders or tags, then embed restricted content into shared notes:
+Grant access to a restricted folder, tag, or note, then embed it into a more widely readable note:
 
 ```markdown
 # Lord Blackwood
@@ -5777,9 +5752,9 @@ The townsfolk speak highly of Lord Blackwood's patronage of the arts.
 ![[GM-Only/NPCs/Blackwood Secrets]]
 ```
 
-The embedded note `GM-Only/NPCs/Blackwood Secrets.md` is in a restricted folder. When rendered for a player, the embed shows `[restricted content]`. When rendered for a GM, the full content is inlined.
+The embedded note `GM-Only/NPCs/Blackwood Secrets.md` requires a matching read capability. Without it, the embed shows `[restricted content]`; with it, the full content is inlined.
 
-- [ ] Embed rendering respects ACLs: check reader's permission on the embedded target
+- [ ] Embed rendering checks the resolved read capability on the embedded target
 - [ ] Restricted embeds render as a styled `[restricted content]` placeholder (not silently omitted — the reader knows something exists)
 - [ ] Search does not leak restricted embed content in snippets
 
@@ -5799,47 +5774,82 @@ Noble of the Eastern Provinces.
 The townsfolk speak highly of Lord Blackwood...
 ```
 
-The `[!secret <role-or-group>]` callout type is stripped from rendered output for users who do not match the specified principal. The principal can be a role name (`owner`, `editor`), a group name, or a username.
+The `[!secret <label>]` callout type maps the region to a `secret:<label>` resource selector. Rendering strips it unless the resolved grant includes read authority for that selector. Root configuration can grant `secret:gm` to `group:gm`, and a holder may explicitly delegate that narrower authority to an agent or service; group membership or a role name is not an implicit rendering bypass.
 
-- [ ] Parser recognizes `[!secret <principal>]` callout variant; extracts principal and content range
-- [ ] `ParsedDocument` stores secret regions with their required principal
+- [ ] Parser recognizes `[!secret <label>]`, validates the label, and extracts its content range
+- [ ] `ParsedDocument` stores secret regions with their required `secret:<label>` selector
 - [ ] Rendering pipeline strips secret callout body for unauthorized users
-- [ ] Search: secret callout text is indexed but filtered from results/snippets for unauthorized users (uses the same `PermissionFilter` mechanism — secret regions map to a permission check on the principal)
+- [ ] Search: secret callout text is indexed but filtered from results/snippets without the matching secret-read capability
 - [ ] Editor UI: secret callouts visually distinguished (e.g., lock icon, colored border) so authors can see what's hidden
-- [ ] Nesting: secret callouts inside regular callouts work; nested secret callouts use the most restrictive principal
+- [ ] Nesting: secret callouts inside regular callouts work; nested secret regions require every enclosing `secret:<label>` capability
 
-**Design note:** Both mechanisms protect content at the web/API layer only. The raw `.md` files on disk contain all content in plaintext. Users with filesystem access (CLI, Obsidian, git) see everything. This is intentional — the ACL layer protects the web-facing collaborative interface, not the underlying files.
+**Design note:** Both mechanisms protect content at the web/API layer only. Raw `.md` files contain all content in plaintext. Users with filesystem access see everything; document encryption is a separate future feature.
 
-### 17.5 External share links
+### 17.5 Limited credentials for agents, automation, services, and shares
 
-Share links allow unauthenticated access to specific content — useful for sharing with people who don't have accounts (e.g., guest players in a pen-and-paper session).
+Any subject with delegable authority may mint a credential containing strict child grants for an LLM agent, automation script, CI job, connector worker, MCP/API client, or external reader. Share links are the unauthenticated read-oriented presentation of the same credential model, not a separate authorization system.
+
+Example agent issuance:
+
+```sh
+vulcan auth token create \
+  --name research-agent \
+  --read 'folder:Research/**' \
+  --write 'folder:Research/Inbox/**' \
+  --network '*.wikipedia.org' \
+  --expires 24h \
+  --no-delegate \
+  --dry-run
+```
+
+The dry run explains which parent grants cover each requested capability and rejects any widening. Applied credentials are displayed once, stored hashed or with verifier-safe material, and attributable to both the credential identity and complete human/service delegation lineage.
+
+**Credential requirements:**
+
+- [ ] Credential types share one validation path but carry explicit audiences (`browser-session`, `api`, `mcp`, `agent`, `automation`, `service`, `share`)
+- [ ] Default to no delegation; encourage short expiry for agent and automation credentials
+- [ ] Support action/resource attenuation, expiry, use limits, rate limits, network domains, and optional source/device binding
+- [ ] Immediate credential revocation plus descendant-grant revocation; audit issuance, use, attenuation, denial, and revocation without logging bearer secrets
+- [ ] Evaluate an opaque reference token first and a typed macaroon-style chained envelope for offline attenuation; token encoding must not change the durable grant semantics
+- [ ] Never issue or honor an unconstrained blank/god token; every external credential has an audience, expiry policy, and explicit grant set
+
+**CLI:**
+
+- [ ] `vulcan auth token create [--from <grant-id>] --name <name> [actions/resources/constraints] --dry-run`
+- [ ] `vulcan auth token list [--subject <p>] [--audience <a>]`
+- [ ] `vulcan auth token inspect <token-id>` — metadata, effective authority, lineage, last use, and expiry without revealing token material
+- [ ] `vulcan auth token revoke <token-id>`
+- [ ] `vulcan auth token attenuate <credential> [narrowing constraints]` where the selected encoding safely supports holder-side attenuation
+
+**External share presentation:**
 
 ```
 https://host/s/{share_token}
 ```
 
 - [ ] `POST /{id}/shares` — create share: `{ "resource": "note:Handouts/Map.md", "permission": "view", "expires": "2026-04-30", "password": null }`
-- [ ] `GET /{id}/shares` — list active shares (owner only)
+- [ ] `GET /{id}/shares` — list active shares (requires grant/audit administration capability)
 - [ ] `DELETE /{id}/shares/{share_id}` — revoke share
 - [ ] `GET /s/{token}` — resolve share, render content (no auth required)
-- [ ] Share tokens stored in `auth.db`, hashed with argon2
+- [ ] Share credentials use the same durable grant lineage and verifier-safe token storage as other limited credentials
 - [ ] Resource types: `note:<path>` (single note), `folder:<path>` (folder and children), `tag:<tag>` (all notes with tag)
 - [ ] Permission: `view` (read-only rendered content) or `view-raw` (download markdown source)
 - [ ] Optional password protection: share link prompts for password before rendering
 - [ ] Expiry: shares can have an expiration date or be permanent until revoked
-- [ ] Share respects document-level secrets: a shared note still strips `[!secret]` callouts the share's effective role cannot see (shares have an effective role of `viewer` unless configured otherwise)
+- [ ] Share rendering respects document-level secrets using only the share credential's resolved capabilities; shares have no ambient viewer role
 - [ ] Rate limiting on share endpoints to prevent enumeration
-- [ ] CLI: `vulcan auth share create <vault> <resource> [--expires 30d] [--password]`
+- [ ] CLI convenience facade: `vulcan auth share create <vault> <resource> [--expires 30d] [--password]` issues a read-only, share-audience child credential
+- [ ] Integration tests cover least-privilege agent tokens, script/network restrictions, multi-parent credentials, expiration, audience confusion, token theft/replay limits, revocation cascades, shares, and secret stripping
 
 ### 17.6 Future: OIDC / SSO integration
 
-Planned but not in initial scope. Deferred until the local user/group system is stable.
+Planned but not in initial scope. Deferred until local identity and capability delegation are stable. OIDC authenticates and binds a subject; it does not become a parallel policy engine.
 
 - [ ] OIDC provider configuration in `daemon.toml`: issuer URL, client ID/secret, scopes
 - [ ] Login flow: browser redirects to IdP, daemon handles callback, creates/updates local user from claims
-- [ ] Group mapping: map OIDC claims/groups to local groups (e.g., IdP group `campaign-gm` → local group `gm`)
+- [ ] Group mapping: map reviewed OIDC claims/groups to local groups; group subjects receive authority only through normal rooted grants
 - [ ] Hybrid mode: local accounts and OIDC accounts coexist, OIDC users auto-provisioned on first login
-- [ ] Token refresh and session management integrated with `auth.db`
+- [ ] Token refresh and session management integrated with `auth.db`; external IdP tokens never bypass local capability resolution, root ceilings, or revocation
 
 ---
 
@@ -5847,7 +5857,7 @@ Planned but not in initial scope. Deferred until the local user/group system is 
 
 **Goal:** First-class support for Obsidian's JSON Canvas format (`.canvas` files). Index canvas content for search, surface canvas data in the graph, provide CLI commands for inspection and manipulation, and eventually render an interactive canvas editor in the WebUI.
 
-**Depends on:** Phase 7 (core indexing and parsing infrastructure). WebUI canvas editor (18.5) depends on Phase 14 (WebUI write). Canvas ACLs follow from Phase 17.
+**Depends on:** Phase 7 (core indexing and parsing infrastructure). WebUI canvas editor (18.5) depends on Phase 14 (WebUI write). Canvas capability enforcement follows from Phase 17.
 
 **Reference:** `references/obsidian-skills/skills/json-canvas/SKILL.md` (JSON Canvas spec and examples), [jsoncanvas.org/spec/1.0](https://jsoncanvas.org/spec/1.0/).
 
@@ -5963,7 +5973,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] Undo/redo stack for canvas operations
 - [ ] Keyboard shortcuts: delete selected node/edge, copy/paste nodes, zoom controls
 - [ ] Automerge integration (if Phase 16 is complete): collaborative canvas editing via the same CRDT sync layer used for notes
-- [ ] ACL enforcement: canvas files respect the same folder/tag ACLs as notes (Phase 17)
+- [ ] Capability enforcement: canvas files use the same folder/tag/note resource-scoped grants as Markdown notes (Phase 17)
 
 ### 18.7 Cross-cutting integration
 
@@ -5971,7 +5981,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] **Doctor:** Canvas file references are validated alongside wikilinks. Broken canvas references reported in `vulcan doctor` output.
 - [ ] **Move/rename:** When a note referenced by a canvas file node is moved/renamed, the canvas `file` field is updated by the rewrite engine (same mechanism as wikilink rewriting).
 - [ ] **HTTP API:** All canvas data accessible via the daemon API. `GET /{id}/canvas/` lists canvases, `GET /{id}/canvas/{path}` returns parsed data. Search results include canvas hits with `document_type: "canvas"`.
-- [ ] **Permission filtering (Phase 17):** Canvas files subject to the same ACL rules as notes. File nodes referencing restricted notes render as `[restricted]` for unauthorized users.
+- [ ] **Permission filtering (Phase 17):** Canvas files and referenced notes use the same resolved capability filter. File nodes referencing unreadable notes render as `[restricted]`.
 - [ ] **Export:** Canvas data included in vault export/backup operations.
 
 ### 18.8 Excalidraw support
@@ -6009,7 +6019,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] Embed the full Excalidraw editor component in the WebUI (Excalidraw is open-source, MIT licensed)
 - [ ] Save: serialize Excalidraw state back to `.excalidraw.md` or `.excalidraw` format, write via API, rescan, auto-commit
 - [ ] Vault file embedding: picker to insert vault note/image references into the drawing
-- [ ] ACL enforcement: Excalidraw files respect folder/tag ACLs (Phase 17)
+- [ ] Capability enforcement: Excalidraw files respect Phase 17 resource-scoped grants and root policy ceilings
 
 ---
 
@@ -6027,7 +6037,7 @@ Phase 1 (Core indexing)
                                     ↓                    ↓                         ↓
                           Phase 8 (Performance)  Phase 9 (CLI refinements)  Phase 10 (Multi-vault daemon)
                                                    ↓            ↘             ↑             ↓
-                                                  9.3      Phase 9.20 ─→ Phase 9.29   Phase 17 (User mgmt & ACL)
+                                                  9.3      Phase 9.20 ─→ Phase 9.29   Phase 17 (Identity & capabilities)
                                                    │      (Static site) (cleanup gate)       ↓
                                                    └──────→ Phase 11 (Git versioning)   Phase 13 (WebUI browse)
                                                                   ↓                  ↖        ↓
@@ -6047,12 +6057,12 @@ Phase 9.20 (Static site builder) is intentionally scheduled after Phase 9 and be
 Phase 9.29 (Pre-daemon maintainability and feature-boundary cleanup) is the hard cleanup gate before Phase 10. Phase 10 should not start until 9.29's feature matrix, crate boundaries, MCP split, and verification matrix are complete.
 Phases 9 and 10 can proceed in parallel after Phase 7 only for design exploration. Implementation work for the daemon should wait for 9.29; 9.20 remains the recommended rendering/publication bridge before WebUI/wiki work.
 Phase 11 requires 9.3 (git module) and 10 (daemon). Phase 12 requires 10 and 11.
-Phase 17 requires 10 (daemon). Sub-phases 17.1–17.3 (users, groups, ACLs, permission-filtered queries) must complete before Phase 13.
+Phase 17 requires 10 (daemon). Sub-phases 17.1–17.3 (identities, rooted/delegable grants, capability resolution, and permission-filtered queries) must complete before Phase 13.
 Phase 13 requires 10, 9.20, and 17.1–17.3. Phase 14 requires 13 and 10's write endpoints. Phase 14 introduces Automerge as the document model.
 Phase 15 requires 10. Phase 16 requires 13, 14, 9.20, and 17.4–17.5 (document secrets, share links). Phase 16 also uses the Automerge foundation from Phase 14.
-Phase 17.6 (OIDC/SSO) is a future direction — deferred until the local auth system is stable.
+Phase 17.6 (OIDC/SSO) is a future direction — deferred until local identity, rooted grants, delegation, and revocation are stable.
 Phase 16.6 (local-first/WASM) is a future direction beyond the current roadmap scope.
-Phase 18 (Canvas) core parsing/indexing/CLI (18.1–18.4) depends on Phase 7. WebUI read-only rendering (18.5) depends on Phase 13. Interactive canvas editor (18.6) depends on Phase 14. Canvas ACLs follow from Phase 17.
+Phase 18 (Canvas) core parsing/indexing/CLI (18.1–18.4) depends on Phase 7. WebUI read-only rendering (18.5) depends on Phase 13. Interactive canvas editor (18.6) depends on Phase 14. Canvas capability enforcement follows from Phase 17.
 Phase 9.8 (Dataview) builds on Phase 4 (properties and Bases expression language) and Phase 9.6 (search operators, task search). Sub-phase 9.8.1 (inline fields + type inference) and 9.8.2 (list items and tasks) extend the parser pipeline. Sub-phase 9.8.3 (file.* metadata) synthesizes implicit fields from existing cache tables. Sub-phase 9.8.4 (type system and expression evaluator) extends the value representation with Date, Duration, Link types, ~60 built-in functions with auto-vectorization, lambda expressions, link indexing, swizzling, and null ordering. Sub-phases 9.8.5–9.8.7 (DQL parser, evaluation, inline expressions) build the query surface on top. Sub-phase 9.8.8 (DataviewJS) adds sandboxed JS evaluation with full dv API and DataArray behind a `js_runtime` compile-time feature flag. Sub-phase 9.8.9 imports Dataview plugin settings from `.obsidian/plugins/dataview/data.json`. Dataview metadata and queries are available to all later phases (daemon, web, wiki) as foundation infrastructure.
 Phase 9.9 (Templater) builds on Phase 9.7 (enhanced templates) and Phase 9.8.8 (DataviewJS sandbox for JS execution commands). Native tp.date/tp.file/tp.frontmatter modules need no JS; tp.web, user scripts, and execution commands reuse the DataviewJS sandbox.
 Phase 9.10 (Tasks plugin) builds on Phase 9.8.2 (task extraction) and provides the parsing and query layer for inline checkbox tasks: Tasks DSL parser, recurring task expansion (RRULE), dependency graph, and custom status types. This shared infrastructure is reused by 9.15 (TaskNotes). The CLI surface is unified under `vulcan tasks` (defined in 9.15.9).
@@ -6124,7 +6134,7 @@ See "Phase 9 implementation order" section (after 9.17) for the consolidated cri
 - [x] Ensure pack selection composes cleanly with permission profiles rather than introducing a second authorization model
 - [x] Continue to hide unauthorized tools, prompts, completions, and resources even if a client enables a broader pack set
 - [x] Add explicit tests for "pack enabled but still denied by permissions" cases so adaptive exposure cannot accidentally bypass the profile guardrails
-- [x] Keep the pack system implementation transport-agnostic so later daemon/user-level ACL work can layer on the same filtering logic
+- [x] Keep the pack system implementation transport-agnostic so later daemon identity and delegable-capability work can layer on the same filtering logic
 
 ### 9.23.7 Testing and rollout
 
@@ -6685,7 +6695,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 
 - [ ] After Phase 10, implement the pinned server-side file protocol in an async daemon adapter, not in `vulcan-core`. Serve only explicitly configured vaults and routes; keep protocol request/response types separate from transport-neutral vault mutation services.
 - [ ] Implement the reviewed file-list, metadata, read, write, delete, ping/version, authentication, path-encoding, sync-mode, and error contracts. Preserve file bytes and required safe metadata while refusing platform-unsafe permissions or unsupported metadata with explicit diagnostics.
-- [ ] Normalize percent-decoded paths once; reject traversal, absolute paths, reserved/control paths, NULs, invalid Unicode policy, symlink escapes, special files, case/normalization aliases, oversized lists/bodies, and writes outside the selected vault. Apply daemon authentication, vault ACLs, rate/body limits, timeouts, cancellation, and sanitized logs.
+- [ ] Normalize percent-decoded paths once; reject traversal, absolute paths, reserved/control paths, NULs, invalid Unicode policy, symlink escapes, special files, case/normalization aliases, oversized lists/bodies, and writes outside the selected vault. Apply daemon authentication, resolved capabilities, root policy ceilings, rate/body limits, timeouts, cancellation, and sanitized logs.
 - [ ] Route accepted writes and deletes through Vulcan's cross-process vault lock, verified temporary file plus atomic replacement, mass-deletion guard, watcher coalescing, incremental scan, optional git checkpoint, and event reporting. A successful protocol response must never expose a partial file or claim an unindexed permanent mutation.
 - [ ] Let the upstream SilverBullet client retain its own sync snapshot and conflict algorithm when Vulcan is only the server peer. Surface conflict copies as ordinary canonical files plus diagnostics; do not silently merge, discard, or reinterpret them.
 - [ ] Provide explicit deployment support for serving or reverse-proxying the pinned SilverBullet client separately from Vulcan's API. Do not fork or silently patch upstream browser assets as part of the protocol adapter.
@@ -6742,7 +6752,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 | Crate | Type | Purpose |
 |-------|------|---------|
 | `vulcan-daemon` | lib | axum router, middleware, vault registry, daemon lifecycle |
-| `vulcan-auth` | lib | User/group management, ACL evaluation, permission filtering, session/token handling |
+| `vulcan-auth` | lib | Identity/group management, rooted capability grants, attenuation and revocation, credential/session handling, audit lineage, and request-authority resolution |
 | `vulcan-sync` | lib | Sync backend trait and implementations (obsidian-headless, git remote, passive) |
 
 The `vulcan-cli` binary gains the `daemon` subcommand group by depending on `vulcan-daemon`.
