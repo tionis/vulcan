@@ -549,13 +549,51 @@ fn write_bundled_text_contents(
             }
             true
         }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => false,
-        Err(error) => return Err(CliError::operation(error)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let target = fs::read_link(path).map_err(|read_link_error| {
+                        CliError::operation(format!(
+                            "failed to inspect bundled agent support file `{}` after its target could not be found: {read_link_error}",
+                            path.display()
+                        ))
+                    })?;
+                return Err(CliError::operation(format!(
+                        "cannot install bundled agent support file `{}`: destination is a dangling symlink to `{}`; restore the symlink target or remove the symlink",
+                        path.display(),
+                        target.display()
+                    )));
+            }
+            Ok(_) => false,
+            Err(metadata_error) if metadata_error.kind() == io::ErrorKind::NotFound => false,
+            Err(metadata_error) => {
+                return Err(CliError::operation(format!(
+                    "failed to inspect bundled agent support file `{}`: {metadata_error}",
+                    path.display()
+                )));
+            }
+        },
+        Err(error) => {
+            return Err(CliError::operation(format!(
+                "failed to read bundled agent support file `{}`: {error}",
+                path.display()
+            )));
+        }
     };
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(CliError::operation)?;
+        fs::create_dir_all(parent).map_err(|error| {
+            CliError::operation(format!(
+                "failed to create parent directory `{}` for bundled agent support file `{}`: {error}",
+                parent.display(),
+                path.display()
+            ))
+        })?;
     }
-    fs::write(path, &rendered).map_err(CliError::operation)?;
+    fs::write(path, &rendered).map_err(|error| {
+        CliError::operation(format!(
+            "failed to write bundled agent support file `{}`: {error}",
+            path.display()
+        ))
+    })?;
     Ok(if existed_before {
         SupportFileStatus::Updated
     } else {
@@ -567,10 +605,20 @@ fn write_bundled_text_contents(
 fn set_executable_permissions(path: &Path) -> Result<(), CliError> {
     use std::os::unix::fs::PermissionsExt;
 
-    let metadata = fs::metadata(path).map_err(CliError::operation)?;
+    let metadata = fs::metadata(path).map_err(|error| {
+        CliError::operation(format!(
+            "failed to read permissions for bundled agent support file `{}`: {error}",
+            path.display()
+        ))
+    })?;
     let mut permissions = metadata.permissions();
     permissions.set_mode(permissions.mode() | 0o111);
-    fs::set_permissions(path, permissions).map_err(CliError::operation)
+    fs::set_permissions(path, permissions).map_err(|error| {
+        CliError::operation(format!(
+            "failed to make bundled agent support file `{}` executable: {error}",
+            path.display()
+        ))
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

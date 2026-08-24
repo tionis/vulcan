@@ -10229,6 +10229,69 @@ fn init_agent_files_optionally_scaffolds_example_tool() {
             .any(|item| item["path"] == ".agents/skills/summarize-note/scripts/summarize.js")));
 }
 
+#[cfg(unix)]
+#[test]
+fn agent_install_reports_dangling_agents_symlink() {
+    use std::os::unix::fs::symlink;
+
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+    let missing_target = temp_dir.path().join("missing/AGENTS.md");
+    symlink(&missing_target, vault_root.join("AGENTS.md"))
+        .expect("dangling AGENTS.md symlink should be created");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "agent",
+            "install",
+        ])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("cannot install bundled agent support file")
+                .and(predicate::str::contains("AGENTS.md"))
+                .and(predicate::str::contains(
+                    "destination is a dangling symlink",
+                ))
+                .and(predicate::str::contains(
+                    "restore the symlink target or remove the symlink",
+                )),
+        );
+}
+
+#[test]
+fn agent_install_reports_obstructed_support_file_parent() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+    fs::write(vault_root.join(".agents"), "not a directory\n")
+        .expect("obstructing file should be created");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "agent",
+            "install",
+        ])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("failed to read bundled agent support file")
+                .and(predicate::str::contains(".agents/skills/note-operations"))
+                .and(predicate::str::contains("Not a directory")),
+        );
+}
+
 #[test]
 fn skill_list_and_get_surface_bundled_skills() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
