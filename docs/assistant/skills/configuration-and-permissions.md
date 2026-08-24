@@ -26,6 +26,7 @@ permission profiles, or diagnoses permission and trust failures.
 3. Use `--target local` for machine-specific secrets, paths, or credentials.
 4. Use permission profiles to narrow assistant/MCP authority instead of relying on prompt text.
 5. Check trust separately from permissions when JS, plugins, or skill command tools fail to run.
+6. Use `vulcan config import folder-notes --preview` to inspect an Obsidian Folder Notes convention before applying it. Folder-note structure is shared repository state, so the importer rejects a local target.
 
 ## Guardrails
 
@@ -33,9 +34,11 @@ permission profiles, or diagnoses permission and trust failures.
 - Keep assistant-facing profiles narrow. Add only the read/write/network/execute capabilities required by the workflow.
 - A skill command can narrow authority with `permission_profile`; it cannot widen the caller's profile.
 - Trust is an execution gate, not a permission profile. A trusted vault can still be denied by a profile.
+- Importing folder-note settings configures the convention; it does not auto-detect or move existing folder notes. Use `vulcan refactor folder-notes --dry-run` for a layout conversion.
 
 ## Example Moves
 
 - Explain why an MCP tool is hidden under `--permissions readonly`.
 - Add a local web search backend key without changing shared vault config.
+- Preview and import a shared folder-note convention, then separately plan any required layout conversion.
 - Create a profile for a daily wiki agent with notes/tasks/search access but no shell or git mutation.

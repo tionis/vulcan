@@ -146,6 +146,25 @@ Every new feature, bug fix, or behavioral change must include tests. Do not defe
 - **Config changes:** test both default values and explicit overrides.
 - If a change cannot be meaningfully tested (e.g. pure formatting), note why in the commit message.
 
+### Keep bundled agent skills current
+
+Every user-facing feature or behavioral change must include a skill-impact review during the same
+item of work:
+
+- Inspect `docs/assistant/skills/` for an existing skill whose discovery description, tools,
+  workflow, examples, or guardrails are affected. Update it in the same commit when the change
+  would alter how an external agent should choose or safely use Vulcan commands.
+- Prefer extending an existing skill when the capability belongs to its established workflow.
+  Add a new skill only for a distinct, reusable workflow with a discriminating trigger; do not
+  create skills for internal implementation details or roadmap-only capabilities.
+- New bundled skills must be registered in `BUNDLED_SKILL_FILES` in
+  `vulcan-cli/src/commands/agent.rs` so `vulcan init --agent-files` and
+  `vulcan agent install` actually ship them. Update installed-payload and discovery tests.
+- Validate changed skills in their installed `.agents/skills/<name>/SKILL.md` form. Tests should
+  cover meaningful command/workflow availability rather than incidental prose formatting.
+- If agent-facing invariants or the general harness contract change, also review
+  `docs/assistant/AGENTS.template.md` and the relevant assistant integration documentation.
+
 ### Commit after each completed item
 
 Commit each discrete feature, fix, or roadmap item as its own commit once it passes all checks. Do not batch unrelated changes into a single commit. Each commit should be a self-contained, working state.

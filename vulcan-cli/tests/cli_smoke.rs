@@ -10405,6 +10405,22 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(get_mcp_json["body"].as_str().is_some_and(|body| {
         body.contains("OAuth/IndieAuth") && body.contains("ChatGPT remote connector")
     }));
+
+    let installed_skills = vault_root.join(".agents/skills");
+    let publishing = fs::read_to_string(installed_skills.join("publishing-and-export/SKILL.md"))
+        .expect("publishing skill should be installed");
+    assert!(publishing.contains("vulcan publish outline <profile> --dry-run"));
+    assert!(publishing.contains("--selection-json"));
+    assert!(publishing.contains(".vulcan/publish/outline/"));
+
+    let refactoring = fs::read_to_string(installed_skills.join("refactoring/SKILL.md"))
+        .expect("refactoring skill should be installed");
+    assert!(refactoring.contains("vulcan refactor folder-notes --dry-run"));
+
+    let configuration =
+        fs::read_to_string(installed_skills.join("configuration-and-permissions/SKILL.md"))
+            .expect("configuration skill should be installed");
+    assert!(configuration.contains("vulcan config import folder-notes --preview"));
 }
 
 #[test]
