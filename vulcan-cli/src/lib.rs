@@ -1831,6 +1831,7 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
                 | OutlinePullActionKind::Update
                 | OutlinePullActionKind::Move
                 | OutlinePullActionKind::WriteConflictMarkers
+                | OutlinePullActionKind::AutoMerge
                 | OutlinePullActionKind::ArchiveMissing
                 | OutlinePullActionKind::DeleteMissing
         ) {
@@ -1884,6 +1885,7 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
                         | OutlinePullActionKind::Update
                         | OutlinePullActionKind::Move
                         | OutlinePullActionKind::WriteConflictMarkers
+                        | OutlinePullActionKind::AutoMerge
                         | OutlinePullActionKind::ArchiveMissing
                         | OutlinePullActionKind::DeleteMissing
                 )
@@ -2133,11 +2135,12 @@ fn print_outline_pull_report(
                 );
             }
             println!(
-                "created={}; updated={}; moved={}; unchanged={}; markers={}; conflicts={}; remote_missing={}; archived_missing={}; deleted_missing={}; out_of_scope={}; attachments_downloaded={}",
+                "created={}; updated={}; moved={}; unchanged={}; auto_merged={}; markers={}; conflicts={}; remote_missing={}; archived_missing={}; deleted_missing={}; out_of_scope={}; attachments_downloaded={}",
                 report.created,
                 report.updated,
                 report.moved,
                 report.unchanged,
+                report.auto_merged,
                 report.conflict_markers_written,
                 report.conflicts,
                 report.remote_missing,

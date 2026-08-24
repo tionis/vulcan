@@ -11,6 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 use std::sync::LazyLock;
 use vulcan_core::paths::{secure_read, secure_read_to_string, secure_write};
 use vulcan_core::VaultPaths;
@@ -160,6 +161,7 @@ pub enum OutlinePullActionKind {
     Unchanged,
     Conflict,
     WriteConflictMarkers,
+    AutoMerge,
     RemoteMissing,
     ArchiveMissing,
     DeleteMissing,
@@ -182,6 +184,8 @@ pub struct OutlinePullAction {
     #[serde(skip)]
     desired_content: Option<String>,
     #[serde(skip)]
+    merged_content: Option<String>,
+    #[serde(skip)]
     local_content: Option<String>,
     #[serde(skip)]
     attachments: Vec<OutlinePullAttachmentPlan>,
@@ -200,6 +204,7 @@ pub struct OutlinePullReport {
     pub moved: usize,
     pub unchanged: usize,
     pub conflict_markers_written: usize,
+    pub auto_merged: usize,
     pub remote_missing: usize,
     pub archived_missing: usize,
     pub deleted_missing: usize,
@@ -441,6 +446,7 @@ pub fn pull_outline_with_options_and_write_authorizer(
                 | OutlinePullActionKind::Update
                 | OutlinePullActionKind::Move
                 | OutlinePullActionKind::WriteConflictMarkers
+                | OutlinePullActionKind::AutoMerge
                 | OutlinePullActionKind::ArchiveMissing
                 | OutlinePullActionKind::DeleteMissing
         ) {
@@ -492,6 +498,7 @@ pub fn pull_outline_with_options_and_write_authorizer(
                 | OutlinePullActionKind::Update
                 | OutlinePullActionKind::Move
                 | OutlinePullActionKind::WriteConflictMarkers
+                | OutlinePullActionKind::AutoMerge
         ) {
             continue;
         }
@@ -555,16 +562,13 @@ pub fn pull_outline_with_options_and_write_authorizer(
                 .collect::<BTreeSet<_>>();
             attachment_mappings.retain(|url, _| selected_urls.contains(url.as_str()));
         }
-        let written = if action.kind == OutlinePullActionKind::WriteConflictMarkers {
-            conflict_markers(
-                original_local_content(action.local_content.as_deref().unwrap_or_default()),
-                state
-                    .documents
-                    .get(&action.remote_document_id)
-                    .map_or("", |mapping| mapping.base_content.as_str()),
-                desired,
-                &action.remote_document_id,
-            )
+        let written = if matches!(
+            action.kind,
+            OutlinePullActionKind::WriteConflictMarkers | OutlinePullActionKind::AutoMerge
+        ) {
+            action.merged_content.clone().ok_or_else(|| {
+                AppError::operation("Outline merge action omitted its merged content")
+            })?
         } else {
             desired.to_string()
         };
@@ -596,7 +600,7 @@ pub fn pull_outline_with_options_and_write_authorizer(
                             )
                         })?
                     } else {
-                        content_hash(desired)
+                        content_hash(&written)
                     },
                     base_content: desired.to_string(),
                     attachments: attachment_mappings,
@@ -742,6 +746,20 @@ fn plan_pull(
         let conflicted = collision
             || (attachment_local_changed && remote_content_changed)
             || (note_local_changed && remote_content_changed && !desired_matches_local);
+        let reviewed_merge = (conflicted
+            && conflict_policy.resolution(&local_path)
+                == Some(OutlinePullConflictResolution::ConflictMarkers)
+            && !attachment_local_changed
+            && move_source.is_none())
+        .then(|| {
+            three_way_merge(
+                &extract_local_from_diff3(local_content.as_deref().unwrap_or_default()),
+                mapping.map_or("", |mapping| mapping.base_content.as_str()),
+                &desired,
+                &document.id,
+            )
+        })
+        .transpose()?;
         let (kind, reason) = if conflicted {
             match conflict_policy.resolution(&local_path) {
                 Some(OutlinePullConflictResolution::OverwriteLocal) => (
@@ -757,10 +775,20 @@ fn plan_pull(
                 Some(OutlinePullConflictResolution::ConflictMarkers)
                     if !attachment_local_changed && move_source.is_none() =>
                 {
-                    (
-                        OutlinePullActionKind::WriteConflictMarkers,
-                        "write a reviewed diff3-style local/base/Outline conflict",
-                    )
+                    if reviewed_merge
+                        .as_ref()
+                        .is_some_and(|merge| merge.has_conflicts)
+                    {
+                        (
+                            OutlinePullActionKind::WriteConflictMarkers,
+                            "write localized diff3 markers for overlapping edits",
+                        )
+                    } else {
+                        (
+                            OutlinePullActionKind::AutoMerge,
+                            "automatically merge non-overlapping local and Outline edits",
+                        )
+                    }
                 }
                 _ => (
                     OutlinePullActionKind::Conflict,
@@ -841,6 +869,7 @@ fn plan_pull(
             downloaded_attachment_paths: Vec::new(),
             preserves_local_changes,
             desired_content: Some(desired),
+            merged_content: reviewed_merge.map(|merge| merge.content),
             local_content,
             attachments,
         });
@@ -912,6 +941,7 @@ fn plan_pull(
                 downloaded_attachment_paths: Vec::new(),
                 preserves_local_changes: false,
                 desired_content: None,
+                merged_content: None,
                 local_content: None,
                 attachments: Vec::new(),
             });
@@ -930,6 +960,7 @@ fn plan_pull(
                 downloaded_attachment_paths: Vec::new(),
                 preserves_local_changes: true,
                 desired_content: None,
+                merged_content: None,
                 local_content: None,
                 attachments: Vec::new(),
             });
@@ -1238,20 +1269,97 @@ fn remove_managed_file(paths: &VaultPaths, local_path: &str) -> Result<(), AppEr
     }
 }
 
-fn conflict_markers(local: &str, base: &str, remote: &str, remote_id: &str) -> String {
-    format!(
-        "<<<<<<< LOCAL\n{}\n||||||| BASE\n{}\n=======\n{}\n>>>>>>> OUTLINE {remote_id}\n",
-        local.trim_end(),
-        base.trim_end(),
-        remote.trim_end()
-    )
+struct ThreeWayMerge {
+    content: String,
+    has_conflicts: bool,
 }
 
-fn original_local_content(content: &str) -> &str {
-    content
-        .strip_prefix("<<<<<<< LOCAL\n")
-        .and_then(|content| content.split_once("\n||||||| BASE\n"))
-        .map_or(content, |(local, _)| local)
+fn three_way_merge(
+    local: &str,
+    base: &str,
+    remote: &str,
+    remote_id: &str,
+) -> Result<ThreeWayMerge, AppError> {
+    let mut local_file = tempfile::NamedTempFile::new().map_err(AppError::operation)?;
+    let mut base_file = tempfile::NamedTempFile::new().map_err(AppError::operation)?;
+    let mut remote_file = tempfile::NamedTempFile::new().map_err(AppError::operation)?;
+    local_file
+        .write_all(local.as_bytes())
+        .map_err(AppError::operation)?;
+    base_file
+        .write_all(base.as_bytes())
+        .map_err(AppError::operation)?;
+    remote_file
+        .write_all(remote.as_bytes())
+        .map_err(AppError::operation)?;
+    let output = Command::new("git")
+        .arg("merge-file")
+        .arg("--stdout")
+        .arg("--diff3")
+        .arg("-L")
+        .arg("LOCAL")
+        .arg("-L")
+        .arg("BASE")
+        .arg("-L")
+        .arg(format!("OUTLINE {remote_id}"))
+        .arg(local_file.path())
+        .arg(base_file.path())
+        .arg(remote_file.path())
+        .output()
+        .map_err(|error| {
+            AppError::operation(format!(
+                "failed to run `git merge-file` for Outline conflict resolution: {error}"
+            ))
+        })?;
+    let has_conflicts = match output.status.code() {
+        Some(0) => false,
+        Some(1..=127) => true,
+        _ => {
+            let detail = String::from_utf8_lossy(&output.stderr);
+            return Err(AppError::operation(format!(
+                "`git merge-file` failed during Outline conflict resolution: {}",
+                detail.trim()
+            )));
+        }
+    };
+    let content = String::from_utf8(output.stdout)
+        .map_err(|_| AppError::operation("`git merge-file` returned non-UTF-8 Markdown"))?;
+    Ok(ThreeWayMerge {
+        content,
+        has_conflicts,
+    })
+}
+
+fn extract_local_from_diff3(content: &str) -> String {
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum Section {
+        Normal,
+        Local,
+        Base,
+        Remote,
+    }
+    let mut section = Section::Normal;
+    let mut extracted = String::with_capacity(content.len());
+    let mut complete_markers = 0usize;
+    for line in content.split_inclusive('\n') {
+        let marker = line.trim_end_matches(['\r', '\n']);
+        match section {
+            Section::Normal if marker == "<<<<<<< LOCAL" => section = Section::Local,
+            Section::Local if marker == "||||||| BASE" => section = Section::Base,
+            Section::Base if marker == "=======" => section = Section::Remote,
+            Section::Remote if marker.starts_with(">>>>>>> OUTLINE ") => {
+                section = Section::Normal;
+                complete_markers += 1;
+            }
+            Section::Normal | Section::Local => extracted.push_str(line),
+            Section::Base | Section::Remote => {}
+        }
+    }
+    if section == Section::Normal && complete_markers > 0 {
+        extracted
+    } else {
+        content.to_string()
+    }
 }
 
 fn report(
@@ -1280,6 +1388,7 @@ fn report(
         moved: count(OutlinePullActionKind::Move),
         unchanged: count(OutlinePullActionKind::Unchanged),
         conflict_markers_written: count(OutlinePullActionKind::WriteConflictMarkers),
+        auto_merged: count(OutlinePullActionKind::AutoMerge),
         remote_missing: count(OutlinePullActionKind::RemoteMissing),
         archived_missing: count(OutlinePullActionKind::ArchiveMissing),
         deleted_missing: count(OutlinePullActionKind::DeleteMissing),
@@ -1929,6 +2038,69 @@ mod tests {
             fs::read_to_string(temp.path().join("Imported/Home.md")).unwrap(),
             "remote edit\n"
         );
+    }
+
+    #[test]
+    fn conflict_marker_policy_auto_merges_non_overlapping_line_edits() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        pull_outline(
+            &paths,
+            &api(vec![document(
+                "home",
+                "Home",
+                "local line\nshared line\nremote line\n",
+                None,
+            )]),
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("initial pull");
+        fs::write(
+            temp.path().join("Imported/Home.md"),
+            "local edit\nshared line\nremote line\n",
+        )
+        .expect("local edit");
+        let remote = api(vec![document(
+            "home",
+            "Home",
+            "local line\nshared line\nremote edit\n",
+            None,
+        )]);
+
+        let merged = pull_outline(
+            &paths,
+            &remote,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::markers_all(),
+        )
+        .expect("automatic three-way merge");
+        assert!(merged.applied);
+        assert_eq!(merged.auto_merged, 1);
+        assert_eq!(merged.conflict_markers_written, 0);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("Imported/Home.md")).unwrap(),
+            "local edit\nshared line\nremote edit\n"
+        );
+
+        let rerun = pull_outline(
+            &paths,
+            &remote,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("merged local result remains stable");
+        assert_eq!(rerun.unchanged, 1);
     }
 
     #[test]
