@@ -302,9 +302,10 @@ pub fn plan_outline_reconciliation_with_policy(
         }
         let remote = listed_by_id[mapping.remote_document_id.as_str()];
         let remote_hash = content_hash(&remote.text);
-        let remote_drift = remote_hash != mapping.last_published_content_hash
-            || remote.title != mapping.last_published_title
-            || remote.parent_document_id != mapping.remote_parent_id;
+        let remote_baseline = remote_baseline(mapping);
+        let remote_drift = remote_hash != remote_baseline.content_hash
+            || remote.title != remote_baseline.title
+            || remote.parent_document_id.as_deref() != remote_baseline.parent_document_id;
         let desired_matches_remote = remote_hash == desired_hash
             && remote.title == document.title
             && remote.parent_document_id == desired_parent_remote_id;
@@ -355,15 +356,16 @@ pub fn plan_outline_reconciliation_with_policy(
                         ]),
                         remote: changed_conflict_side([
                             (
-                                remote_hash != mapping.last_published_content_hash,
+                                remote_hash != remote_baseline.content_hash,
                                 OutlineConflictField::Content,
                             ),
                             (
-                                remote.title != mapping.last_published_title,
+                                remote.title != remote_baseline.title,
                                 OutlineConflictField::Title,
                             ),
                             (
-                                remote.parent_document_id != mapping.remote_parent_id,
+                                remote.parent_document_id.as_deref()
+                                    != remote_baseline.parent_document_id,
                                 OutlineConflictField::Parent,
                             ),
                         ]),
@@ -514,6 +516,7 @@ pub fn plan_outline_reconciliation_with_policy(
             continue;
         }
         let remote = listed_by_id[mapping.remote_document_id.as_str()];
+        let remote_baseline = remote_baseline(mapping);
         if remote.archived_at.is_some() {
             actions.push(OutlinePublishAction {
                 kind: OutlinePublishActionKind::AdoptRemoteResult,
@@ -525,9 +528,9 @@ pub fn plan_outline_reconciliation_with_policy(
                 reason: "remote document was already archived".to_string(),
                 conflict: None,
             });
-        } else if content_hash(&remote.text) != mapping.last_published_content_hash
-            || remote.title != mapping.last_published_title
-            || remote.parent_document_id != mapping.remote_parent_id
+        } else if content_hash(&remote.text) != remote_baseline.content_hash
+            || remote.title != remote_baseline.title
+            || remote.parent_document_id.as_deref() != remote_baseline.parent_document_id
         {
             if conflict_policy.overwrites(&mapping.source_path) {
                 overwritten_conflicts += 1;
@@ -557,15 +560,16 @@ pub fn plan_outline_reconciliation_with_policy(
                         local: conflict_side(OutlineConflictSideState::Removed),
                         remote: changed_conflict_side([
                             (
-                                remote_hash != mapping.last_published_content_hash,
+                                remote_hash != remote_baseline.content_hash,
                                 OutlineConflictField::Content,
                             ),
                             (
-                                remote.title != mapping.last_published_title,
+                                remote.title != remote_baseline.title,
                                 OutlineConflictField::Title,
                             ),
                             (
-                                remote.parent_document_id != mapping.remote_parent_id,
+                                remote.parent_document_id.as_deref()
+                                    != remote_baseline.parent_document_id,
                                 OutlineConflictField::Parent,
                             ),
                         ]),
@@ -669,6 +673,27 @@ fn conflict_action(
         reason: reason.to_string(),
         conflict: Some(conflict),
     }
+}
+
+struct RemoteBaseline<'a> {
+    content_hash: &'a str,
+    title: &'a str,
+    parent_document_id: Option<&'a str>,
+}
+
+fn remote_baseline(mapping: &OutlineDocumentMapping) -> RemoteBaseline<'_> {
+    mapping.last_observed_remote.as_ref().map_or_else(
+        || RemoteBaseline {
+            content_hash: &mapping.last_published_content_hash,
+            title: &mapping.last_published_title,
+            parent_document_id: mapping.remote_parent_id.as_deref(),
+        },
+        |snapshot| RemoteBaseline {
+            content_hash: &snapshot.content_hash,
+            title: &snapshot.title,
+            parent_document_id: snapshot.parent_document_id.as_deref(),
+        },
+    )
 }
 
 fn conflict_side(state: OutlineConflictSideState) -> OutlineConflictSide {
@@ -812,6 +837,11 @@ mod tests {
             last_published_content_hash: content_hash(&remote.text),
             last_published_title: remote.title.clone(),
             remote_parent_id: remote.parent_document_id.clone(),
+            last_observed_remote: Some(super::super::OutlineRemoteSnapshot {
+                content_hash: content_hash(&remote.text),
+                title: remote.title.clone(),
+                parent_document_id: remote.parent_document_id.clone(),
+            }),
             pending_create: false,
             pending_archive: false,
             attachments: BTreeMap::new(),

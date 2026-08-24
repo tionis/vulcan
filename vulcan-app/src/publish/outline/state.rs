@@ -62,6 +62,15 @@ impl OutlinePublishState {
                     "Outline mapping state assigns one remote document to multiple sources",
                 ));
             }
+            if mapping
+                .last_observed_remote
+                .as_ref()
+                .is_some_and(|snapshot| snapshot.content_hash.is_empty())
+            {
+                return Err(AppError::operation(
+                    "Outline mapping state contains an incomplete remote snapshot",
+                ));
+            }
             if mapping.attachments.values().any(|attachment| {
                 attachment.remote_attachment_id.is_empty()
                     || attachment.remote_url.is_empty()
@@ -86,12 +95,22 @@ pub struct OutlineDocumentMapping {
     pub last_published_content_hash: String,
     pub last_published_title: String,
     pub remote_parent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_observed_remote: Option<OutlineRemoteSnapshot>,
     #[serde(default)]
     pub pending_create: bool,
     #[serde(default)]
     pub pending_archive: bool,
     #[serde(default)]
     pub attachments: BTreeMap<String, OutlineAttachmentMapping>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutlineRemoteSnapshot {
+    pub content_hash: String,
+    pub title: String,
+    pub parent_document_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -219,6 +238,7 @@ mod tests {
             last_published_content_hash: "hash".to_string(),
             last_published_title: "Projects".to_string(),
             remote_parent_id: None,
+            last_observed_remote: None,
             pending_create: false,
             pending_archive: false,
             attachments: BTreeMap::new(),
@@ -258,6 +278,26 @@ mod tests {
         let state = load_outline_state(&paths, "wiki", "collection").expect("empty state");
         assert!(state.documents.is_empty());
         assert!(!paths.vulcan_dir().join("publish").exists());
+    }
+
+    #[test]
+    fn state_without_remote_snapshot_remains_compatible() {
+        let mapping: OutlineDocumentMapping = serde_json::from_str(
+            r#"{
+                "source_path":"Projects.md",
+                "source_document_id":"cache-id",
+                "remote_document_id":"remote",
+                "last_published_content_hash":"hash",
+                "last_published_title":"Projects",
+                "remote_parent_id":null,
+                "pending_create":false,
+                "pending_archive":false,
+                "attachments":{}
+            }"#,
+        )
+        .expect("legacy mapping");
+
+        assert_eq!(mapping, self::mapping("remote"));
     }
 
     #[test]

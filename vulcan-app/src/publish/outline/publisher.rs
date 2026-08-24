@@ -2,6 +2,7 @@ use super::{
     deterministic_remote_uuid, load_outline_state, lock_outline_state,
     plan_outline_reconciliation_with_policy, OutlineApi, OutlineAttachmentMapping,
     OutlineConflictPolicy, OutlineDocumentMapping, OutlinePublishActionKind, OutlinePublishPlan,
+    OutlineRemoteDocument, OutlineRemoteSnapshot,
 };
 use crate::export::outline::{
     planned_document_references_attachment, render_remote_document_content_with_links,
@@ -201,6 +202,7 @@ where
                     last_published_content_hash: content_hash(&document.content),
                     last_published_title: document.title.clone(),
                     remote_parent_id: desired_parent.clone(),
+                    last_observed_remote: None,
                     pending_create: true,
                     pending_archive: false,
                     attachments: BTreeMap::new(),
@@ -223,7 +225,8 @@ where
                 .documents
                 .get_mut(&source_identity)
                 .expect("provisional mapping should exist");
-            mapping.remote_document_id = remote.id;
+            mapping.remote_document_id.clone_from(&remote.id);
+            mapping.last_observed_remote = Some(remote_snapshot(&remote));
             mapping.pending_create = false;
             lock.save(&state)?;
             source_identity
@@ -240,11 +243,12 @@ where
             action.kind,
             OutlinePublishActionKind::Move | OutlinePublishActionKind::UpdateAndMove
         ) {
-            api.move_document(
+            let remote = api.move_document(
                 &mapping.remote_document_id,
                 collection_id,
                 desired_parent.as_deref(),
             )?;
+            mapping.last_observed_remote = Some(remote_snapshot(&remote));
         }
         mapping.source_path.clone_from(&document.source_path);
         mapping
@@ -412,15 +416,18 @@ where
         ) || (action_kind != OutlinePublishActionKind::AdoptRemoteResult
             && (desired_hash != mapping.last_published_content_hash
                 || document.title != mapping.last_published_title));
-        if needs_update {
-            api.update_document(&remote_id, &document.title, &desired)?;
-        }
+        let updated_remote = needs_update
+            .then(|| api.update_document(&remote_id, &document.title, &desired))
+            .transpose()?;
         let mapping = state
             .documents
             .get_mut(&source_identity)
             .expect("document mapping should exist");
         mapping.last_published_content_hash = desired_hash;
         mapping.last_published_title.clone_from(&document.title);
+        if let Some(remote) = updated_remote {
+            mapping.last_observed_remote = Some(remote_snapshot(&remote));
+        }
         mapping.pending_create = false;
         mapping.pending_archive = false;
         lock.save(&state)?;
@@ -585,6 +592,14 @@ fn content_hash(content: &str) -> String {
     blake3::hash(content.as_bytes()).to_hex().to_string()
 }
 
+fn remote_snapshot(document: &OutlineRemoteDocument) -> OutlineRemoteSnapshot {
+    OutlineRemoteSnapshot {
+        content_hash: content_hash(&document.text),
+        title: document.title.clone(),
+        parent_document_id: document.parent_document_id.clone(),
+    }
+}
+
 fn attachment_content_type(path: &str) -> &'static str {
     match path
         .rsplit('.')
@@ -622,6 +637,17 @@ mod tests {
         mutations: RefCell<Vec<String>>,
         info_calls: RefCell<Vec<String>>,
         fail_next_create: RefCell<bool>,
+        normalize_markdown: bool,
+    }
+
+    impl MockApi {
+        fn stored_text(&self, text: &str) -> String {
+            if self.normalize_markdown {
+                format!("{}\n", text.trim_end())
+            } else {
+                text.to_string()
+            }
+        }
     }
 
     impl OutlineApi for MockApi {
@@ -656,7 +682,7 @@ mod tests {
             let document = OutlineRemoteDocument {
                 id: id.to_string(),
                 title: title.to_string(),
-                text: text.to_string(),
+                text: self.stored_text(text),
                 collection_id: collection_id.to_string(),
                 parent_document_id: parent_document_id.map(str::to_string),
                 archived_at: None,
@@ -679,7 +705,7 @@ mod tests {
                 .get_mut(id)
                 .ok_or_else(|| AppError::operation("missing mock document"))?;
             document.title = title.to_string();
-            document.text = text.to_string();
+            document.text = self.stored_text(text);
             Ok(document.clone())
         }
 
@@ -792,6 +818,110 @@ mod tests {
         assert!(mutations.iter().any(|entry| entry.starts_with("move:")));
         assert!(mutations.iter().any(|entry| entry == "update:Moved"));
         assert!(mutations.iter().any(|entry| entry.starts_with("archive:")));
+    }
+
+    #[test]
+    fn outline_markdown_normalization_does_not_cause_conflicts_or_repeated_updates() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        let api = MockApi {
+            normalize_markdown: true,
+            ..MockApi::default()
+        };
+        let publication = plan(vec![document("Home.md", "Home", "home", None)]);
+
+        publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            false,
+            false,
+        )
+        .expect("initial normalized publication");
+        let state = load_outline_state(&paths, "wiki", "collection").expect("publish state");
+        let mapping = state.documents.values().next().expect("mapping");
+        let observed = mapping
+            .last_observed_remote
+            .as_ref()
+            .expect("observed remote snapshot");
+        assert_ne!(
+            mapping.last_published_content_hash, observed.content_hash,
+            "the regression requires Outline to normalize the submitted Markdown"
+        );
+
+        api.mutations.borrow_mut().clear();
+        let second = publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            false,
+            false,
+        )
+        .expect("idempotent normalized publication");
+
+        assert!(second.applied);
+        assert_eq!(second.conflicts, 0);
+        assert_eq!(
+            second.plan.actions[0].kind,
+            OutlinePublishActionKind::Unchanged
+        );
+        assert!(api.mutations.borrow().is_empty());
+
+        let changed_publication = plan(vec![document("Home.md", "Home", "changed", None)]);
+        publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &changed_publication,
+            false,
+            false,
+        )
+        .expect("normalized update");
+        api.mutations.borrow_mut().clear();
+        let after_update = publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &changed_publication,
+            false,
+            false,
+        )
+        .expect("idempotent publication after normalized update");
+        assert_eq!(after_update.conflicts, 0);
+        assert_eq!(
+            after_update.plan.actions[0].kind,
+            OutlinePublishActionKind::Unchanged
+        );
+        assert!(api.mutations.borrow().is_empty());
+
+        api.documents
+            .borrow_mut()
+            .values_mut()
+            .next()
+            .expect("remote document")
+            .text = "genuine remote edit\n".to_string();
+        let drift = publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &changed_publication,
+            false,
+            false,
+        )
+        .expect("remote drift plan");
+        assert!(!drift.applied);
+        assert_eq!(drift.conflicts, 1);
+        assert_eq!(
+            drift.plan.actions[0].kind,
+            OutlinePublishActionKind::Conflict
+        );
     }
 
     #[test]

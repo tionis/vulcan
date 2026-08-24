@@ -19,7 +19,7 @@ pub use publisher::{
 };
 pub use state::{
     load_outline_state, lock_outline_state, OutlineAttachmentMapping, OutlineDocumentMapping,
-    OutlinePublishState, OutlineStateLock,
+    OutlinePublishState, OutlineRemoteSnapshot, OutlineStateLock,
 };
 
 use crate::AppError;
