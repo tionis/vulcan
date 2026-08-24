@@ -10436,6 +10436,8 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(publishing.contains("adopted_pull_bindings"));
     assert!(publishing.contains("auto_merged"));
     assert!(publishing.contains("localized markers"));
+    assert!(publishing.contains("operation_id"));
+    assert!(publishing.contains("resumed_operation"));
     assert!(publishing.contains("monitoring stderr progress"));
     assert!(publishing.contains("--selection-json"));
     assert!(publishing.contains(".vulcan/publish/outline/"));

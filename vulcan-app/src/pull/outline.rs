@@ -198,6 +198,9 @@ pub struct OutlinePullReport {
     pub destination: String,
     pub dry_run: bool,
     pub applied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+    pub resumed_operation: bool,
     pub conflicts: usize,
     pub created: usize,
     pub updated: usize,
@@ -214,6 +217,28 @@ pub struct OutlinePullReport {
     pub actions: Vec<OutlinePullAction>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutlinePullPhase {
+    ListingRemote,
+    Planning,
+    Applying,
+    DownloadingAttachments,
+    Scanning,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OutlinePullProgress {
+    pub phase: OutlinePullPhase,
+    pub processed: usize,
+    pub total: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation_id: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OutlinePullState {
@@ -223,6 +248,18 @@ struct OutlinePullState {
     destination: String,
     #[serde(default)]
     documents: BTreeMap<String, OutlinePullMapping>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    incomplete_operation: Option<OutlinePullOperationJournal>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_completed_operation_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutlinePullOperationJournal {
+    operation_id: String,
+    pending_actions: BTreeSet<String>,
+    completed_actions: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -282,6 +319,8 @@ impl OutlinePullState {
             collection_id: collection_id.to_string(),
             destination: destination.to_string(),
             documents: BTreeMap::new(),
+            incomplete_operation: None,
+            last_completed_operation_id: None,
         }
     }
 
@@ -331,6 +370,14 @@ impl OutlinePullState {
                     ));
                 }
             }
+        }
+        if self.incomplete_operation.as_ref().is_some_and(|operation| {
+            operation.operation_id.is_empty()
+                || operation.pending_actions.iter().any(String::is_empty)
+        }) {
+            return Err(AppError::operation(
+                "Outline pull state contains an invalid operation journal",
+            ));
         }
         Ok(())
     }
@@ -398,35 +445,114 @@ pub fn pull_outline_with_options_and_write_authorizer(
     options: &OutlinePullOptions,
     authorize_write: &dyn Fn(&str) -> Result<(), AppError>,
 ) -> Result<OutlinePullReport, AppError> {
+    pull_outline_with_options_progress_and_write_authorizer(
+        paths,
+        api,
+        profile,
+        collection_id,
+        destination,
+        dry_run,
+        conflict_policy,
+        options,
+        authorize_write,
+        &mut |_| {},
+        &|| false,
+    )
+}
+
+/// Pulls an Outline collection with progress events and cooperative cancellation.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub fn pull_outline_with_options_progress_and_write_authorizer(
+    paths: &VaultPaths,
+    api: &dyn OutlineApi,
+    profile: &str,
+    collection_id: &str,
+    destination: &str,
+    dry_run: bool,
+    conflict_policy: &OutlinePullConflictPolicy,
+    options: &OutlinePullOptions,
+    authorize_write: &dyn Fn(&str) -> Result<(), AppError>,
+    on_progress: &mut dyn FnMut(&OutlinePullProgress),
+    is_cancelled: &dyn Fn() -> bool,
+) -> Result<OutlinePullReport, AppError> {
     let destination = validate_destination(destination)?;
+    emit_pull_progress(
+        on_progress,
+        OutlinePullPhase::ListingRemote,
+        0,
+        0,
+        None,
+        None,
+    );
     if dry_run {
         let state = load_state(paths, profile, collection_id, &destination)?;
         let remote = api.list_collection_documents(collection_id)?;
-        let actions = plan_pull(paths, &remote, &state, conflict_policy, options)?;
-        return Ok(report(
+        ensure_pull_not_cancelled(is_cancelled, None)?;
+        emit_pull_progress(
+            on_progress,
+            OutlinePullPhase::Planning,
+            0,
+            remote.len(),
+            None,
+            None,
+        );
+        let actions = plan_pull(paths, &remote, &state, conflict_policy, options, false)?;
+        let operation_id = state
+            .incomplete_operation
+            .as_ref()
+            .map(|operation| operation.operation_id.clone());
+        let report = report(
             profile,
             collection_id,
             &destination,
             true,
             false,
+            operation_id,
+            state.incomplete_operation.is_some(),
             actions,
-        ));
+        );
+        emit_pull_progress(
+            on_progress,
+            OutlinePullPhase::Completed,
+            report.actions.len(),
+            report.actions.len(),
+            None,
+            report.operation_id.as_deref(),
+        );
+        return Ok(report);
     }
 
+    let _write_lock =
+        vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
     let lock = StateLock::acquire(paths, profile)?;
     let mut state = load_state(paths, profile, collection_id, &destination)?;
     let remote = api.list_collection_documents(collection_id)?;
-    let mut actions = plan_pull(paths, &remote, &state, conflict_policy, options)?;
+    ensure_pull_not_cancelled(is_cancelled, None)?;
+    emit_pull_progress(
+        on_progress,
+        OutlinePullPhase::Planning,
+        0,
+        remote.len(),
+        None,
+        None,
+    );
+    let mut actions = plan_pull(paths, &remote, &state, conflict_policy, options, true)?;
     if actions
         .iter()
         .any(|action| action.kind == OutlinePullActionKind::Conflict)
     {
+        let operation_id = state
+            .incomplete_operation
+            .as_ref()
+            .map(|operation| operation.operation_id.clone());
         return Ok(report(
             profile,
             collection_id,
             &destination,
             false,
             false,
+            operation_id,
+            state.incomplete_operation.is_some(),
             actions,
         ));
     }
@@ -462,20 +588,82 @@ pub fn pull_outline_with_options_and_write_authorizer(
             }
         }
     }
+    let resumed_operation = state.incomplete_operation.is_some();
+    let operation_id = state.incomplete_operation.as_ref().map_or_else(
+        || ulid::Ulid::new().to_string(),
+        |journal| journal.operation_id.clone(),
+    );
+    let completed_actions = state
+        .incomplete_operation
+        .as_ref()
+        .map_or(0, |journal| journal.completed_actions);
+    state.incomplete_operation = Some(OutlinePullOperationJournal {
+        operation_id: operation_id.clone(),
+        pending_actions: actions
+            .iter()
+            .filter(|action| pull_action_mutates(action.kind))
+            .map(pull_action_journal_key)
+            .collect(),
+        completed_actions,
+    });
+    lock.save(&state)?;
+    let mutation_total = actions
+        .iter()
+        .filter(|action| pull_action_mutates(action.kind))
+        .count();
+    let attachment_total = actions
+        .iter()
+        .map(|action| {
+            action
+                .attachments
+                .iter()
+                .filter(|attachment| {
+                    attachment.needs_download
+                        || (attachment.local_changed && !action.preserves_local_changes)
+                        || attachment.unmanaged_collision
+                })
+                .count()
+        })
+        .sum();
+    let mut mutations_processed = 0usize;
+    let mut attachments_processed = 0usize;
+    emit_pull_progress(
+        on_progress,
+        OutlinePullPhase::Applying,
+        0,
+        mutation_total,
+        None,
+        Some(&operation_id),
+    );
     let remote_by_id = remote
         .iter()
         .map(|document| (document.id.as_str(), document))
         .collect::<BTreeMap<_, _>>();
     for action in &mut actions {
+        if pull_action_mutates(action.kind) {
+            ensure_pull_not_cancelled(is_cancelled, Some(&operation_id))?;
+            emit_pull_progress(
+                on_progress,
+                OutlinePullPhase::Applying,
+                mutations_processed,
+                mutation_total,
+                Some(&action.local_path),
+                Some(&operation_id),
+            );
+        }
         if matches!(
             action.kind,
             OutlinePullActionKind::ArchiveMissing | OutlinePullActionKind::DeleteMissing
         ) {
             if action.kind == OutlinePullActionKind::ArchiveMissing {
                 if let Some(source_path) = action.source_local_path.as_deref() {
-                    let moved =
-                        vulcan_core::move_note(paths, source_path, &action.local_path, false)
-                            .map_err(AppError::operation)?;
+                    let moved = vulcan_core::move_rewrite::move_note_unlocked(
+                        paths,
+                        source_path,
+                        &action.local_path,
+                        false,
+                    )
+                    .map_err(AppError::operation)?;
                     action.rewritten_local_paths = moved
                         .rewritten_files
                         .into_iter()
@@ -489,7 +677,17 @@ pub fn pull_outline_with_options_and_write_authorizer(
                 }
             }
             state.documents.remove(&action.remote_document_id);
+            complete_journal_action(&mut state, action);
             lock.save(&state)?;
+            mutations_processed += 1;
+            emit_pull_progress(
+                on_progress,
+                OutlinePullPhase::Applying,
+                mutations_processed,
+                mutation_total,
+                None,
+                Some(&operation_id),
+            );
             continue;
         }
         if !matches!(
@@ -510,8 +708,13 @@ pub fn pull_outline_with_options_and_write_authorizer(
                 .source_local_path
                 .as_deref()
                 .ok_or_else(|| AppError::operation("Outline pull move omitted its source path"))?;
-            let moved = vulcan_core::move_note(paths, source_path, &action.local_path, false)
-                .map_err(AppError::operation)?;
+            let moved = vulcan_core::move_rewrite::move_note_unlocked(
+                paths,
+                source_path,
+                &action.local_path,
+                false,
+            )
+            .map_err(AppError::operation)?;
             action.rewritten_local_paths = moved
                 .rewritten_files
                 .into_iter()
@@ -526,12 +729,24 @@ pub fn pull_outline_with_options_and_write_authorizer(
             .documents
             .get(&action.remote_document_id)
             .map_or_else(BTreeMap::new, |mapping| mapping.attachments.clone());
-        if action.kind != OutlinePullActionKind::WriteConflictMarkers {
+        if action.kind == OutlinePullActionKind::WriteConflictMarkers {
+            complete_journal_action(&mut state, action);
+            lock.save(&state)?;
+        } else {
             for attachment in &action.attachments {
                 if attachment.needs_download
                     || (attachment.local_changed && !action.preserves_local_changes)
                     || attachment.unmanaged_collision
                 {
+                    ensure_pull_not_cancelled(is_cancelled, Some(&operation_id))?;
+                    emit_pull_progress(
+                        on_progress,
+                        OutlinePullPhase::DownloadingAttachments,
+                        attachments_processed,
+                        attachment_total,
+                        Some(&attachment.local_path),
+                        Some(&operation_id),
+                    );
                     let downloaded = api.download_attachment(
                         &attachment.remote_url,
                         DEFAULT_ATTACHMENT_MAX_BYTES,
@@ -553,6 +768,15 @@ pub fn pull_outline_with_options_and_write_authorizer(
                     action
                         .downloaded_attachment_paths
                         .push(attachment.local_path.clone());
+                    attachments_processed += 1;
+                    emit_pull_progress(
+                        on_progress,
+                        OutlinePullPhase::DownloadingAttachments,
+                        attachments_processed,
+                        attachment_total,
+                        None,
+                        Some(&operation_id),
+                    );
                 }
             }
             let selected_urls = action
@@ -606,18 +830,60 @@ pub fn pull_outline_with_options_and_write_authorizer(
                     attachments: attachment_mappings,
                 },
             );
+            complete_journal_action(&mut state, action);
             lock.save(&state)?;
         }
+        mutations_processed += 1;
+        emit_pull_progress(
+            on_progress,
+            OutlinePullPhase::Applying,
+            mutations_processed,
+            mutation_total,
+            None,
+            Some(&operation_id),
+        );
     }
-    crate::scan::refresh_cache_incrementally(paths)?;
-    Ok(report(
+    ensure_pull_not_cancelled(is_cancelled, Some(&operation_id))?;
+    emit_pull_progress(
+        on_progress,
+        OutlinePullPhase::Scanning,
+        0,
+        1,
+        None,
+        Some(&operation_id),
+    );
+    vulcan_core::scan::scan_vault_unlocked(paths, vulcan_core::ScanMode::Incremental)
+        .map_err(AppError::operation)?;
+    state.last_completed_operation_id = Some(operation_id.clone());
+    state.incomplete_operation = None;
+    lock.save(&state)?;
+    emit_pull_progress(
+        on_progress,
+        OutlinePullPhase::Scanning,
+        1,
+        1,
+        None,
+        Some(&operation_id),
+    );
+    let report = report(
         profile,
         collection_id,
         &destination,
         false,
         true,
+        Some(operation_id),
+        resumed_operation,
         actions,
-    ))
+    );
+    emit_pull_progress(
+        on_progress,
+        OutlinePullPhase::Completed,
+        report.actions.len(),
+        report.actions.len(),
+        None,
+        report.operation_id.as_deref(),
+    );
+    Ok(report)
 }
 
 #[allow(clippy::too_many_lines)]
@@ -627,6 +893,7 @@ fn plan_pull(
     state: &OutlinePullState,
     conflict_policy: &OutlinePullConflictPolicy,
     options: &OutlinePullOptions,
+    write_lock_held: bool,
 ) -> Result<Vec<OutlinePullAction>, AppError> {
     let mut remote_ids = BTreeSet::new();
     for document in remote {
@@ -841,8 +1108,7 @@ fn plan_pull(
         };
         let rewritten_local_paths = if kind == OutlinePullActionKind::Move {
             let source_path = move_source.expect("move action has source");
-            vulcan_core::move_note(paths, source_path, &local_path, true)
-                .map_err(AppError::operation)?
+            plan_pull_move(paths, source_path, &local_path, write_lock_held)?
                 .rewritten_files
                 .into_iter()
                 .map(|file| file.path)
@@ -884,46 +1150,47 @@ fn plan_pull(
                 };
             let local_changed = local_content.as_deref().map(content_hash).as_deref()
                 != Some(mapping.last_materialized_local_hash.as_str());
-            let (kind, local_path, source_local_path, rewritten_local_paths, reason) =
-                match options.missing_policy.resolution(remote_id) {
-                    OutlinePullMissingResolution::Retain => (
-                        OutlinePullActionKind::RemoteMissing,
-                        mapping.local_path.clone(),
-                        None,
-                        Vec::new(),
-                        "managed Outline document is no longer in scope; local file retained",
-                    ),
-                    OutlinePullMissingResolution::Archive { directory } => {
-                        let directory = validate_destination(directory)?;
-                        let archive_path =
-                            missing_archive_path(&directory, remote_id, &mapping.local_path);
-                        validate_managed_path(&directory, &archive_path)?;
-                        let rewritten = if local_content.is_some() {
-                            vulcan_core::move_note(paths, &mapping.local_path, &archive_path, true)
-                                .map_err(AppError::operation)?
-                                .rewritten_files
-                                .into_iter()
-                                .map(|file| file.path)
-                                .collect()
-                        } else {
-                            Vec::new()
-                        };
-                        (
-                            OutlinePullActionKind::ArchiveMissing,
-                            archive_path,
-                            local_content.as_ref().map(|_| mapping.local_path.clone()),
-                            rewritten,
-                            "archive the missing remote document at a recoverable local path",
-                        )
-                    }
-                    OutlinePullMissingResolution::Delete => (
-                        OutlinePullActionKind::DeleteMissing,
-                        mapping.local_path.clone(),
+            let (kind, local_path, source_local_path, rewritten_local_paths, reason) = match options
+                .missing_policy
+                .resolution(remote_id)
+            {
+                OutlinePullMissingResolution::Retain => (
+                    OutlinePullActionKind::RemoteMissing,
+                    mapping.local_path.clone(),
+                    None,
+                    Vec::new(),
+                    "managed Outline document is no longer in scope; local file retained",
+                ),
+                OutlinePullMissingResolution::Archive { directory } => {
+                    let directory = validate_destination(directory)?;
+                    let archive_path =
+                        missing_archive_path(&directory, remote_id, &mapping.local_path);
+                    validate_managed_path(&directory, &archive_path)?;
+                    let rewritten = if local_content.is_some() {
+                        plan_pull_move(paths, &mapping.local_path, &archive_path, write_lock_held)?
+                            .rewritten_files
+                            .into_iter()
+                            .map(|file| file.path)
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    (
+                        OutlinePullActionKind::ArchiveMissing,
+                        archive_path,
                         local_content.as_ref().map(|_| mapping.local_path.clone()),
-                        Vec::new(),
-                        "permanently delete the explicitly confirmed missing remote document",
-                    ),
-                };
+                        rewritten,
+                        "archive the missing remote document at a recoverable local path",
+                    )
+                }
+                OutlinePullMissingResolution::Delete => (
+                    OutlinePullActionKind::DeleteMissing,
+                    mapping.local_path.clone(),
+                    local_content.as_ref().map(|_| mapping.local_path.clone()),
+                    Vec::new(),
+                    "permanently delete the explicitly confirmed missing remote document",
+                ),
+            };
             actions.push(OutlinePullAction {
                 kind,
                 remote_document_id: remote_id.clone(),
@@ -1018,6 +1285,20 @@ fn generate_paths(
         }
     }
     Ok(paths)
+}
+
+fn plan_pull_move(
+    paths: &VaultPaths,
+    source: &str,
+    destination: &str,
+    write_lock_held: bool,
+) -> Result<vulcan_core::MoveSummary, AppError> {
+    if write_lock_held {
+        vulcan_core::move_rewrite::move_note_unlocked(paths, source, destination, true)
+            .map_err(AppError::operation)
+    } else {
+        vulcan_core::move_note(paths, source, destination, true).map_err(AppError::operation)
+    }
 }
 
 fn select_remote_documents(
@@ -1269,6 +1550,72 @@ fn remove_managed_file(paths: &VaultPaths, local_path: &str) -> Result<(), AppEr
     }
 }
 
+fn pull_action_mutates(kind: OutlinePullActionKind) -> bool {
+    matches!(
+        kind,
+        OutlinePullActionKind::Create
+            | OutlinePullActionKind::Update
+            | OutlinePullActionKind::Move
+            | OutlinePullActionKind::WriteConflictMarkers
+            | OutlinePullActionKind::AutoMerge
+            | OutlinePullActionKind::ArchiveMissing
+            | OutlinePullActionKind::DeleteMissing
+    )
+}
+
+fn pull_action_journal_key(action: &OutlinePullAction) -> String {
+    format!(
+        "{:?}:{}:{}",
+        action.kind, action.remote_document_id, action.local_path
+    )
+}
+
+fn complete_journal_action(state: &mut OutlinePullState, action: &OutlinePullAction) {
+    if let Some(journal) = state.incomplete_operation.as_mut() {
+        if journal
+            .pending_actions
+            .remove(&pull_action_journal_key(action))
+        {
+            journal.completed_actions += 1;
+        }
+    }
+}
+
+fn ensure_pull_not_cancelled(
+    is_cancelled: &dyn Fn() -> bool,
+    operation_id: Option<&str>,
+) -> Result<(), AppError> {
+    if is_cancelled() {
+        Err(AppError::operation(operation_id.map_or_else(
+            || "Outline pull cancelled before mutation".to_string(),
+            |operation_id| {
+                format!(
+                    "Outline pull operation `{operation_id}` cancelled; its durable journal will be resumed by the next live pull"
+                )
+            },
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+fn emit_pull_progress(
+    on_progress: &mut dyn FnMut(&OutlinePullProgress),
+    phase: OutlinePullPhase,
+    processed: usize,
+    total: usize,
+    current_path: Option<&str>,
+    operation_id: Option<&str>,
+) {
+    on_progress(&OutlinePullProgress {
+        phase,
+        processed,
+        total,
+        current_path: current_path.map(str::to_string),
+        operation_id: operation_id.map(str::to_string),
+    });
+}
+
 struct ThreeWayMerge {
     content: String,
     has_conflicts: bool,
@@ -1362,12 +1709,15 @@ fn extract_local_from_diff3(content: &str) -> String {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn report(
     profile: &str,
     collection_id: &str,
     destination: &str,
     dry_run: bool,
     applied: bool,
+    operation_id: Option<String>,
+    resumed_operation: bool,
     actions: Vec<OutlinePullAction>,
 ) -> OutlinePullReport {
     let count = |kind| actions.iter().filter(|action| action.kind == kind).count();
@@ -1382,6 +1732,8 @@ fn report(
         destination: destination.to_string(),
         dry_run,
         applied,
+        operation_id,
+        resumed_operation,
         conflicts: count(OutlinePullActionKind::Conflict),
         created: count(OutlinePullActionKind::Create),
         updated: count(OutlinePullActionKind::Update),
@@ -2165,6 +2517,76 @@ mod tests {
 
         assert_eq!(error.message(), "denied Imported/Home.md");
         assert!(!temp.path().join("Imported/Home.md").exists());
+    }
+
+    #[test]
+    fn cancelled_pull_keeps_a_resumable_operation_journal_and_reports_progress() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        let api = api(vec![
+            document("alpha", "Alpha", "alpha\n", None),
+            document("beta", "Beta", "beta\n", None),
+        ]);
+        let cancellation_checks = Cell::new(0usize);
+        let progress = std::cell::RefCell::new(Vec::new());
+        let cancelled = pull_outline_with_options_progress_and_write_authorizer(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+            &OutlinePullOptions::default(),
+            &|_| Ok(()),
+            &mut |event| progress.borrow_mut().push(event.clone()),
+            &|| {
+                let check = cancellation_checks.get();
+                cancellation_checks.set(check + 1);
+                check >= 2
+            },
+        )
+        .expect_err("second document should observe cancellation");
+        assert!(cancelled.message().contains("durable journal"));
+        let interrupted =
+            load_state(&paths, "wiki", "collection", "Imported").expect("interrupted state");
+        let operation_id = interrupted
+            .incomplete_operation
+            .as_ref()
+            .expect("operation journal")
+            .operation_id
+            .clone();
+        assert_eq!(interrupted.documents.len(), 1);
+        assert!(progress
+            .borrow()
+            .iter()
+            .any(|event| event.phase == OutlinePullPhase::Applying));
+
+        let resumed = pull_outline_with_options_and_write_authorizer(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+            &OutlinePullOptions::default(),
+            &|_| Ok(()),
+        )
+        .expect("resume pull");
+        assert!(resumed.applied);
+        assert!(resumed.resumed_operation);
+        assert_eq!(resumed.operation_id.as_deref(), Some(operation_id.as_str()));
+        assert!(temp.path().join("Imported/Alpha.md").is_file());
+        assert!(temp.path().join("Imported/Beta.md").is_file());
+        let completed =
+            load_state(&paths, "wiki", "collection", "Imported").expect("completed state");
+        assert!(completed.incomplete_operation.is_none());
+        assert_eq!(
+            completed.last_completed_operation_id.as_deref(),
+            Some(operation_id.as_str())
+        );
     }
 
     #[test]

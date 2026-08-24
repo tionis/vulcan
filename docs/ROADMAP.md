@@ -5435,6 +5435,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 - [x] Initial Outline pull slice: persist locked, versioned remote-ID/local-path mappings and local/remote/base content hashes under `.vulcan/integrations/outline-pull/`, with atomic state replacement and fail-closed validation.
 - [x] Add explicit fail-closed adoption from durable Outline pull bindings into publication state, preserving remote document and attachment identity while rejecting drift, duplicate ownership, and unselected mappings.
+- [x] Serialize live Outline pull mutation under the shared vault write lock and persist an operation ID plus pending/completed action journal before and after each mutation; interrupted or cooperatively cancelled runs retain and reuse the journal until the final incremental scan succeeds.
 - [ ] Store per-route state under a locked, ignored `.vulcan/integrations/` state area outside `cache.db`, using validated schemas, versioning, verified temporary files, `fsync`, and atomic replacement. A malformed or unsupported state file stops the route without local or remote mutation.
 - [ ] Record route/profile identity, connector/server identity, local source identity/path, remote object ID/type/parent, last pulled remote revision/hash, last pushed local/projection hash, last agreed base hash, attachment mappings, tombstones, cursor, and incomplete operation journal entries.
 - [ ] Do not depend on cache ULIDs as durable cross-system identity. Use explicit frontmatter binding identity when present, then durable route mappings and conservative path/hash recovery; ambiguous adoption is a conflict, not an automatic claim.
@@ -5467,6 +5468,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 ### 15.7 Direct CLI, daemon scheduling, and loop prevention
 
 - [ ] Make plan/run/reconcile operations usable without the daemon through direct vault access. The daemon exposes the same request/report contracts, adds schedules, cancellation, status/history endpoints, and event-triggered runs, and serializes filesystem mutation through the same cross-process lock.
+- [x] Add reusable phase/item Outline pull progress events and a cooperative cancellation callback to the app workflow; human CLI runs report listing, planning, applying, attachment download, scan, and completion phases, while structured output remains clean.
 - [ ] Add per-route concurrency limits, timeouts, bounded jittered retries, rate-limit handling, total-work budgets, cancellation, and sanitized errors. Route history records hashes/status/counts but never credentials or sensitive remote bodies.
 - [ ] Prevent feedback loops with route IDs, operation IDs, origin/provenance, desired projection hashes, debounce windows, and post-write watcher coalescing. Never trigger a route solely because it wrote the exact state it just planned.
 - [ ] Support explicit route dependencies such as `pull-silverbullet` before `publish-outline`, with cycle detection, failure policy, and checkpoint boundaries. A failed predecessor blocks dependents by default; partial batches remain inspectable and retryable.

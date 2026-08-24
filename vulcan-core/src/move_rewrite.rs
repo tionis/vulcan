@@ -146,6 +146,18 @@ pub fn move_note(
     dry_run: bool,
 ) -> Result<MoveSummary, MoveError> {
     let _lock = acquire_write_lock(paths)?;
+    move_note_unlocked(paths, source_identifier, destination, dry_run)
+}
+
+/// Moves a note without acquiring the vault write lock.
+///
+/// Callers must already hold [`crate::write_lock::WriteLockGuard`] for the full mutation.
+pub fn move_note_unlocked(
+    paths: &VaultPaths,
+    source_identifier: &str,
+    destination: &str,
+    dry_run: bool,
+) -> Result<MoveSummary, MoveError> {
     let connection = open_existing_cache(paths)?;
     let source = resolve_move_source(paths, &connection, source_identifier)?;
     let destination_path = normalize_destination_path(destination, &source.extension)?;

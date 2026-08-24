@@ -257,16 +257,19 @@ where
     scan_vault_unlocked_with_progress(paths, mode, &mut on_progress)
 }
 
-pub(crate) fn scan_vault_unlocked(
-    paths: &VaultPaths,
-    mode: ScanMode,
-) -> Result<ScanSummary, ScanError> {
+/// Scans without acquiring the vault write lock.
+///
+/// Callers must already hold [`crate::write_lock::WriteLockGuard`].
+pub fn scan_vault_unlocked(paths: &VaultPaths, mode: ScanMode) -> Result<ScanSummary, ScanError> {
     let mut noop = |_| {};
     scan_vault_unlocked_with_progress(paths, mode, &mut noop)
 }
 
 #[allow(clippy::too_many_lines)]
-pub(crate) fn scan_vault_unlocked_with_progress<F>(
+/// Scans with progress without acquiring the vault write lock.
+///
+/// Callers must already hold [`crate::write_lock::WriteLockGuard`].
+pub fn scan_vault_unlocked_with_progress<F>(
     paths: &VaultPaths,
     mode: ScanMode,
     on_progress: &mut F,

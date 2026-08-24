@@ -499,9 +499,10 @@ use vulcan_app::publish::outline::{
 #[cfg(feature = "web")]
 use vulcan_app::pull::outline::{
     load_outline_pulled_bindings, pull_outline_with_options_and_write_authorizer,
-    OutlinePullAction, OutlinePullActionKind, OutlinePullConflictPolicy,
-    OutlinePullConflictResolution, OutlinePullMissingPolicy, OutlinePullMissingResolution,
-    OutlinePullOptions, OutlinePullReport, OutlinePullScope,
+    pull_outline_with_options_progress_and_write_authorizer, OutlinePullAction,
+    OutlinePullActionKind, OutlinePullConflictPolicy, OutlinePullConflictResolution,
+    OutlinePullMissingPolicy, OutlinePullMissingResolution, OutlinePullOptions, OutlinePullPhase,
+    OutlinePullProgress, OutlinePullReport, OutlinePullScope,
 };
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::site::{
@@ -816,6 +817,49 @@ struct SiteBuildProgressReporter {
 struct OutlinePublishProgressReporter {
     palette: AnsiPalette,
     last_phase: Option<OutlinePublishPhase>,
+}
+
+#[cfg(feature = "web")]
+struct OutlinePullProgressReporter {
+    palette: AnsiPalette,
+    last_phase: Option<OutlinePullPhase>,
+}
+
+#[cfg(feature = "web")]
+impl OutlinePullProgressReporter {
+    fn new(use_color: bool) -> Self {
+        Self {
+            palette: AnsiPalette::new(use_color),
+            last_phase: None,
+        }
+    }
+
+    fn record(&mut self, progress: &OutlinePullProgress) {
+        if self.last_phase != Some(progress.phase) {
+            let message = match progress.phase {
+                OutlinePullPhase::ListingRemote => "Listing Outline documents...",
+                OutlinePullPhase::Planning => "Planning Outline pull reconciliation...",
+                OutlinePullPhase::Applying => "Applying pulled documents...",
+                OutlinePullPhase::DownloadingAttachments => "Downloading Outline attachments...",
+                OutlinePullPhase::Scanning => "Refreshing the vault index...",
+                OutlinePullPhase::Completed => "Outline pull complete.",
+            };
+            eprintln!("{}", self.palette.cyan(message));
+            self.last_phase = Some(progress.phase);
+        }
+        if let Some(path) = progress.current_path.as_deref() {
+            let ordinal = progress.processed.saturating_add(1).min(progress.total);
+            if progress.total <= 10 || ordinal == progress.total || ordinal.is_multiple_of(25) {
+                eprintln!(
+                    "{} {}/{} | {}",
+                    self.palette.cyan("Processing"),
+                    self.palette.bold(&ordinal.to_string()),
+                    progress.total,
+                    self.palette.dim(path),
+                );
+            }
+        }
+    }
 }
 
 #[cfg(feature = "web")]
@@ -1554,6 +1598,7 @@ fn run_pull_command(
     _cli: &Cli,
     _paths: &VaultPaths,
     _command: &PullCommand,
+    _use_stderr_color: bool,
 ) -> Result<(), CliError> {
     Err(CliError::operation(
         "Outline pulling requires the `web` feature",
@@ -1684,7 +1729,12 @@ fn print_outline_publish_report(
 
 #[cfg(feature = "web")]
 #[allow(clippy::too_many_lines)]
-fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Result<(), CliError> {
+fn run_pull_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &PullCommand,
+    use_stderr_color: bool,
+) -> Result<(), CliError> {
     let PullCommand::Outline {
         profile,
         into,
@@ -1767,17 +1817,39 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
             max_depth: *max_depth,
         },
     };
-    let plan = pull_outline_with_options_and_write_authorizer(
-        paths,
-        &client,
-        profile,
-        &collection_id,
-        into,
-        true,
-        &policy,
-        &options,
-        &|_| Ok(()),
-    )
+    let mut progress = (cli.output == OutputFormat::Human && !cli.quiet)
+        .then(|| OutlinePullProgressReporter::new(use_stderr_color));
+    let plan = if *dry_run {
+        pull_outline_with_options_progress_and_write_authorizer(
+            paths,
+            &client,
+            profile,
+            &collection_id,
+            into,
+            true,
+            &policy,
+            &options,
+            &|_| Ok(()),
+            &mut |event| {
+                if let Some(progress) = progress.as_mut() {
+                    progress.record(event);
+                }
+            },
+            &|| false,
+        )
+    } else {
+        pull_outline_with_options_and_write_authorizer(
+            paths,
+            &client,
+            profile,
+            &collection_id,
+            into,
+            true,
+            &policy,
+            &options,
+            &|_| Ok(()),
+        )
+    }
     .map_err(CliError::operation)?;
     if *dry_run {
         return print_outline_pull_report(cli.output, &plan);
@@ -1862,7 +1934,7 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
             .check_write_path(path)
             .map_err(vulcan_app::AppError::operation)
     };
-    let report = pull_outline_with_options_and_write_authorizer(
+    let report = pull_outline_with_options_progress_and_write_authorizer(
         paths,
         &client,
         profile,
@@ -1872,6 +1944,12 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
         &policy,
         &options,
         &authorize_write,
+        &mut |event| {
+            if let Some(progress) = progress.as_mut() {
+                progress.record(event);
+            }
+        },
+        &|| false,
     )
     .map_err(CliError::operation)?;
     if report.applied {
@@ -2149,6 +2227,12 @@ fn print_outline_pull_report(
                 report.out_of_scope,
                 report.attachments_downloaded
             );
+            if let Some(operation_id) = report.operation_id.as_deref() {
+                println!(
+                    "operation_id={operation_id}; resumed_operation={}",
+                    report.resumed_operation
+                );
+            }
         }
     }
     if report.conflicts == 0 {
@@ -4342,7 +4426,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let read_filter = selected_read_permission_filter(cli, &paths)?;
             run_publish_command(cli, &paths, command, read_filter.as_ref(), use_stderr_color)
         }
-        Command::Pull { ref command } => run_pull_command(cli, &paths, command),
+        Command::Pull { ref command } => run_pull_command(cli, &paths, command, use_stderr_color),
         Command::Export { ref command } => {
             let read_filter = selected_read_permission_filter(cli, &paths)?;
             match command {
