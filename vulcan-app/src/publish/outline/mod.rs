@@ -55,6 +55,12 @@ pub struct OutlineRemoteAttachment {
     pub url: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlineDownloadedAttachment {
+    pub bytes: Vec<u8>,
+    pub content_type: Option<String>,
+}
+
 pub trait OutlineApi {
     fn list_collection_documents(
         &self,
@@ -89,4 +95,14 @@ pub trait OutlineApi {
         content_type: &str,
         bytes: &[u8],
     ) -> Result<OutlineRemoteAttachment, AppError>;
+
+    fn download_attachment(
+        &self,
+        _url: &str,
+        _max_bytes: usize,
+    ) -> Result<OutlineDownloadedAttachment, AppError> {
+        Err(AppError::operation(
+            "this Outline connector does not support attachment downloads",
+        ))
+    }
 }

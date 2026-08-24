@@ -1,7 +1,9 @@
-use super::{OutlineApi, OutlineRemoteAttachment, OutlineRemoteDocument};
+use super::{
+    OutlineApi, OutlineDownloadedAttachment, OutlineRemoteAttachment, OutlineRemoteDocument,
+};
 use crate::AppError;
 use reqwest::blocking::{Client, RequestBuilder};
-use reqwest::header::RETRY_AFTER;
+use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, RETRY_AFTER};
 use reqwest::{StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -273,9 +275,95 @@ impl OutlineApi for HttpOutlineClient {
             url: upload.attachment.url,
         })
     }
+
+    fn download_attachment(
+        &self,
+        url: &str,
+        max_bytes: usize,
+    ) -> Result<OutlineDownloadedAttachment, AppError> {
+        let url = self.attachment_download_url(url)?;
+        for attempt in 0..=self.max_retries {
+            let response = self.client.get(url.clone()).bearer_auth(&self.token).send();
+            match response {
+                Ok(response) if response.status().is_success() => {
+                    if response
+                        .headers()
+                        .get(CONTENT_LENGTH)
+                        .and_then(|value| value.to_str().ok())
+                        .and_then(|value| value.parse::<usize>().ok())
+                        .is_some_and(|length| length > max_bytes)
+                    {
+                        return Err(AppError::operation(format!(
+                            "Outline attachment exceeds the {max_bytes}-byte download limit"
+                        )));
+                    }
+                    let content_type = response
+                        .headers()
+                        .get(CONTENT_TYPE)
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_string);
+                    let bytes = response.bytes().map_err(|_| {
+                        AppError::operation("failed to read Outline attachment response")
+                    })?;
+                    if bytes.len() > max_bytes {
+                        return Err(AppError::operation(format!(
+                            "Outline attachment exceeds the {max_bytes}-byte download limit"
+                        )));
+                    }
+                    return Ok(OutlineDownloadedAttachment {
+                        bytes: bytes.to_vec(),
+                        content_type,
+                    });
+                }
+                Ok(response)
+                    if attempt < self.max_retries
+                        && (response.status() == StatusCode::TOO_MANY_REQUESTS
+                            || response.status().is_server_error()) =>
+                {
+                    thread::sleep(
+                        retry_after_delay(response.headers())
+                            .unwrap_or_else(|| exponential_backoff(attempt)),
+                    );
+                }
+                Ok(response) => {
+                    return Err(AppError::operation(format!(
+                        "Outline attachment download returned {}",
+                        response.status()
+                    )))
+                }
+                Err(error)
+                    if attempt < self.max_retries && (error.is_timeout() || error.is_connect()) =>
+                {
+                    thread::sleep(exponential_backoff(attempt));
+                }
+                Err(_) => return Err(AppError::operation("Outline attachment download failed")),
+            }
+        }
+        Err(AppError::operation(
+            "Outline attachment download exhausted retries",
+        ))
+    }
 }
 
 impl HttpOutlineClient {
+    fn attachment_download_url(&self, url: &str) -> Result<Url, AppError> {
+        let url = Url::parse(url)
+            .or_else(|_| self.base_url.join(url))
+            .map_err(|_| AppError::operation("Outline attachment URL is invalid"))?;
+        if url.scheme() != self.base_url.scheme()
+            || url.host_str() != self.base_url.host_str()
+            || url.port_or_known_default() != self.base_url.port_or_known_default()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || !url.path().starts_with("/api/attachments.redirect")
+        {
+            return Err(AppError::operation(
+                "Outline attachment URL must use the configured origin and redirect endpoint",
+            ));
+        }
+        Ok(url)
+    }
+
     fn send_attachment_with_retries(
         &self,
         request: impl Fn() -> Result<RequestBuilder, AppError>,
@@ -582,5 +670,55 @@ mod tests {
         assert_eq!(attachment.id, "asset");
         assert_eq!(attachment.url, "https://outline.test/asset");
         handle.join().expect("mock server");
+    }
+
+    #[test]
+    fn attachment_download_is_authenticated_origin_bounded_and_size_limited() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("mock listener");
+        let address = listener.local_addr().expect("listener address");
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("attachment request");
+            let mut request = vec![0_u8; 16 * 1024];
+            let read = stream.read(&mut request).expect("read attachment request");
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.contains("/api/attachments.redirect?id=asset"));
+            assert!(request.contains("Bearer secret"));
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 3\r\nConnection: close\r\n\r\npng",
+                )
+                .expect("attachment response");
+        });
+        let base_url = format!("http://{address}");
+        let client = HttpOutlineClient::new(
+            &base_url,
+            "secret".to_string(),
+            Duration::from_secs(2),
+            0,
+            100,
+        )
+        .expect("client");
+        let attachment = client
+            .download_attachment("/api/attachments.redirect?id=asset", 3)
+            .expect("attachment download");
+        assert_eq!(attachment.bytes, b"png");
+        assert_eq!(attachment.content_type.as_deref(), Some("image/png"));
+        assert!(client
+            .download_attachment("https://example.test/api/attachments.redirect?id=asset", 3)
+            .is_err());
+        handle.join().expect("mock server");
+
+        let (base_url, _) = mock_server(vec![(200, "oversized")]);
+        let client = HttpOutlineClient::new(
+            &base_url,
+            "secret".to_string(),
+            Duration::from_secs(2),
+            0,
+            100,
+        )
+        .expect("client");
+        assert!(client
+            .download_attachment("/api/attachments.redirect?id=asset", 3)
+            .is_err());
     }
 }

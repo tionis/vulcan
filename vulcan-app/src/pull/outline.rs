@@ -1,16 +1,31 @@
-use crate::outline_markdown::{outline_document_links_to_obsidian, outline_to_obsidian_markdown};
+use crate::outline_markdown::{
+    outline_document_links_to_obsidian, outline_to_obsidian_markdown,
+    rewrite_markdown_link_destinations,
+};
 use crate::publish::outline::{OutlineApi, OutlineRemoteDocument};
 use crate::AppError;
 use fs2::FileExt;
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
-use vulcan_core::paths::{secure_read_to_string, secure_write};
+use std::sync::LazyLock;
+use vulcan_core::paths::{secure_read, secure_read_to_string, secure_write};
 use vulcan_core::VaultPaths;
 
 const STATE_VERSION: u32 = 1;
+pub const DEFAULT_ATTACHMENT_MAX_BYTES: usize = 25 * 1024 * 1024;
+
+static MARKDOWN_LINK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"!?\[(?P<label>[^\]]*)\]\((?P<destination>[^\s)]+)\)")
+        .expect("Markdown link regex should compile")
+});
+static OUTLINE_ATTACHMENT_DESTINATION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?:https?://[^/]+)?/api/attachments\.redirect(?:[/?#].*)?$")
+        .expect("Outline attachment destination regex should compile")
+});
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -81,10 +96,14 @@ pub struct OutlinePullAction {
     pub reason: String,
     pub local_changed: bool,
     pub remote_changed: bool,
+    pub attachment_paths: Vec<String>,
+    pub downloaded_attachment_paths: Vec<String>,
     #[serde(skip)]
     desired_content: Option<String>,
     #[serde(skip)]
     local_content: Option<String>,
+    #[serde(skip)]
+    attachments: Vec<OutlinePullAttachmentPlan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -100,6 +119,8 @@ pub struct OutlinePullReport {
     pub unchanged: usize,
     pub conflict_markers_written: usize,
     pub remote_missing: usize,
+    pub attachments_planned: usize,
+    pub attachments_downloaded: usize,
     pub actions: Vec<OutlinePullAction>,
 }
 
@@ -123,6 +144,25 @@ struct OutlinePullMapping {
     last_remote_parent_id: Option<String>,
     last_materialized_local_hash: String,
     base_content: String,
+    #[serde(default)]
+    attachments: BTreeMap<String, OutlinePullAttachmentMapping>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutlinePullAttachmentMapping {
+    local_path: String,
+    content_hash: String,
+    content_type: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OutlinePullAttachmentPlan {
+    remote_url: String,
+    local_path: String,
+    needs_download: bool,
+    local_changed: bool,
+    unmanaged_collision: bool,
 }
 
 impl OutlinePullState {
@@ -168,6 +208,19 @@ impl OutlinePullState {
                 return Err(AppError::operation(
                     "Outline pull state maps multiple documents to the same local path",
                 ));
+            }
+            for (remote_url, attachment) in &mapping.attachments {
+                if remote_url.is_empty() || attachment.content_hash.is_empty() {
+                    return Err(AppError::operation(
+                        "Outline pull state contains an incomplete attachment mapping",
+                    ));
+                }
+                validate_managed_asset_path(destination, &attachment.local_path)?;
+                if !local_paths.insert(attachment.local_path.to_lowercase()) {
+                    return Err(AppError::operation(
+                        "Outline pull state maps multiple objects to the same local path",
+                    ));
+                }
             }
         }
         Ok(())
@@ -249,6 +302,9 @@ pub fn pull_outline_with_write_authorizer(
                 | OutlinePullActionKind::WriteConflictMarkers
         ) {
             authorize_write(&action.local_path)?;
+            for attachment_path in &action.attachment_paths {
+                authorize_write(attachment_path)?;
+            }
         }
     }
     let remote_by_id = remote
@@ -271,6 +327,46 @@ pub fn pull_outline_with_write_authorizer(
             .desired_content
             .as_deref()
             .ok_or_else(|| AppError::operation("Outline pull action omitted desired content"))?;
+        let mut attachment_mappings = state
+            .documents
+            .get(&action.remote_document_id)
+            .map_or_else(BTreeMap::new, |mapping| mapping.attachments.clone());
+        if action.kind != OutlinePullActionKind::WriteConflictMarkers {
+            for attachment in &action.attachments {
+                if attachment.needs_download
+                    || attachment.local_changed
+                    || attachment.unmanaged_collision
+                {
+                    let downloaded = api.download_attachment(
+                        &attachment.remote_url,
+                        DEFAULT_ATTACHMENT_MAX_BYTES,
+                    )?;
+                    secure_write(
+                        paths.vault_root(),
+                        Path::new(&attachment.local_path),
+                        &downloaded.bytes,
+                    )
+                    .map_err(AppError::operation)?;
+                    attachment_mappings.insert(
+                        attachment.remote_url.clone(),
+                        OutlinePullAttachmentMapping {
+                            local_path: attachment.local_path.clone(),
+                            content_hash: bytes_hash(&downloaded.bytes),
+                            content_type: downloaded.content_type,
+                        },
+                    );
+                    action
+                        .downloaded_attachment_paths
+                        .push(attachment.local_path.clone());
+                }
+            }
+            let selected_urls = action
+                .attachments
+                .iter()
+                .map(|attachment| attachment.remote_url.as_str())
+                .collect::<BTreeSet<_>>();
+            attachment_mappings.retain(|url, _| selected_urls.contains(url.as_str()));
+        }
         let written = if action.kind == OutlinePullActionKind::WriteConflictMarkers {
             conflict_markers(
                 original_local_content(action.local_content.as_deref().unwrap_or_default()),
@@ -300,6 +396,7 @@ pub fn pull_outline_with_write_authorizer(
                     last_remote_parent_id: remote.parent_document_id.clone(),
                     last_materialized_local_hash: content_hash(desired),
                     base_content: desired.to_string(),
+                    attachments: attachment_mappings,
                 },
             );
             lock.save(&state)?;
@@ -366,32 +463,52 @@ fn plan_pull(
     let mut actions = Vec::with_capacity(active.len() + state.documents.len());
     for document in &active {
         let local_path = local_paths[&document.id].clone();
-        let desired = outline_document_links_to_obsidian(
+        let translated = outline_document_links_to_obsidian(
             &outline_to_obsidian_markdown(&document.text),
             |remote_id| local_paths.get(remote_id).cloned(),
         );
+        let mapping = state.documents.get(&document.id);
+        let (desired, attachments) = plan_document_attachments(
+            paths,
+            &state.destination,
+            document,
+            &local_path,
+            &translated,
+            mapping,
+        )?;
         let local_content = match secure_read_to_string(paths.vault_root(), Path::new(&local_path))
         {
             Ok(content) => Some(content),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(AppError::operation(error)),
         };
-        let mapping = state.documents.get(&document.id);
         let desired_hash = content_hash(&desired);
         let local_hash = local_content.as_deref().map(content_hash);
-        let local_changed = match (mapping, local_hash.as_deref()) {
+        let note_local_changed = match (mapping, local_hash.as_deref()) {
             (Some(mapping), Some(hash)) => hash != mapping.last_materialized_local_hash,
             (Some(_), None) | (None, Some(_)) => true,
             (None, None) => false,
         };
+        let attachment_local_changed = attachments
+            .iter()
+            .any(|attachment| attachment.local_changed || attachment.unmanaged_collision);
+        let local_changed = note_local_changed || attachment_local_changed;
+        let attachment_needs_download = attachments
+            .iter()
+            .any(|attachment| attachment.needs_download);
         let remote_changed = mapping.is_none_or(|mapping| {
             desired_hash != mapping.last_remote_content_hash
                 || document.title != mapping.last_remote_title
                 || document.parent_document_id != mapping.last_remote_parent_id
         });
         let desired_matches_local = local_hash.as_deref() == Some(desired_hash.as_str());
-        let collision = mapping.is_none() && local_content.is_some() && !desired_matches_local;
-        let conflicted = collision || (local_changed && remote_changed && !desired_matches_local);
+        let collision = (mapping.is_none() && local_content.is_some() && !desired_matches_local)
+            || attachments
+                .iter()
+                .any(|attachment| attachment.unmanaged_collision);
+        let conflicted = collision
+            || (attachment_local_changed && remote_changed)
+            || (note_local_changed && remote_changed && !desired_matches_local);
         let (kind, reason) = if conflicted {
             match conflict_policy.resolution(&local_path) {
                 Some(OutlinePullConflictResolution::OverwriteLocal) => (
@@ -402,14 +519,20 @@ fn plan_pull(
                     },
                     "overwrite the reviewed local conflict with Outline",
                 ),
-                Some(OutlinePullConflictResolution::ConflictMarkers) => (
-                    OutlinePullActionKind::WriteConflictMarkers,
-                    "write a reviewed diff3-style local/base/Outline conflict",
-                ),
+                Some(OutlinePullConflictResolution::ConflictMarkers)
+                    if !attachment_local_changed =>
+                {
+                    (
+                        OutlinePullActionKind::WriteConflictMarkers,
+                        "write a reviewed diff3-style local/base/Outline conflict",
+                    )
+                }
                 _ => (
                     OutlinePullActionKind::Conflict,
                     if collision {
-                        "an unmanaged local file already occupies the Outline destination"
+                        "an unmanaged local note or attachment occupies an Outline destination"
+                    } else if attachment_local_changed {
+                        "a local attachment changed while the Outline document also changed"
                     } else {
                         "local and Outline content changed since the last successful pull"
                     },
@@ -433,6 +556,11 @@ fn plan_pull(
                     "Outline document changed"
                 },
             )
+        } else if attachment_needs_download {
+            (
+                OutlinePullActionKind::Update,
+                "repair missing materialized Outline attachments",
+            )
         } else {
             (
                 OutlinePullActionKind::Unchanged,
@@ -450,8 +578,14 @@ fn plan_pull(
             reason: reason.to_string(),
             local_changed,
             remote_changed,
+            attachment_paths: attachments
+                .iter()
+                .map(|attachment| attachment.local_path.clone())
+                .collect(),
+            downloaded_attachment_paths: Vec::new(),
             desired_content: Some(desired),
             local_content,
+            attachments,
         });
     }
     for (remote_id, mapping) in &state.documents {
@@ -465,8 +599,15 @@ fn plan_pull(
                         .to_string(),
                 local_changed: false,
                 remote_changed: true,
+                attachment_paths: mapping
+                    .attachments
+                    .values()
+                    .map(|attachment| attachment.local_path.clone())
+                    .collect(),
+                downloaded_attachment_paths: Vec::new(),
                 desired_content: None,
                 local_content: None,
+                attachments: Vec::new(),
             });
         }
     }
@@ -521,6 +662,98 @@ fn generate_paths(
         }
     }
     Ok(paths)
+}
+
+fn plan_document_attachments(
+    paths: &VaultPaths,
+    destination: &str,
+    document: &OutlineRemoteDocument,
+    note_path: &str,
+    source: &str,
+    mapping: Option<&OutlinePullMapping>,
+) -> Result<(String, Vec<OutlinePullAttachmentPlan>), AppError> {
+    let mut labels = BTreeMap::new();
+    for captures in MARKDOWN_LINK.captures_iter(source) {
+        let destination = &captures["destination"];
+        if OUTLINE_ATTACHMENT_DESTINATION.is_match(destination) {
+            labels
+                .entry(destination.to_string())
+                .or_insert_with(|| captures["label"].to_string());
+        }
+    }
+    let mut attachments = Vec::with_capacity(labels.len());
+    let mut replacements = BTreeMap::new();
+    for (remote_url, label) in labels {
+        let existing = mapping.and_then(|mapping| mapping.attachments.get(&remote_url));
+        let local_path = existing.map_or_else(
+            || attachment_path(destination, &document.id, &remote_url, &label),
+            |attachment| attachment.local_path.clone(),
+        );
+        validate_managed_asset_path(destination, &local_path)?;
+        let (needs_download, local_changed, unmanaged_collision) =
+            match secure_read(paths.vault_root(), Path::new(&local_path)) {
+                Ok(bytes) => existing.map_or((true, false, true), |attachment| {
+                    (false, bytes_hash(&bytes) != attachment.content_hash, false)
+                }),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (true, false, false),
+                Err(error) => return Err(AppError::operation(error)),
+            };
+        replacements.insert(
+            remote_url.clone(),
+            relative_markdown_path(note_path, &local_path)?,
+        );
+        attachments.push(OutlinePullAttachmentPlan {
+            remote_url,
+            local_path,
+            needs_download,
+            local_changed,
+            unmanaged_collision,
+        });
+    }
+    let desired = rewrite_markdown_link_destinations(source, |destination| {
+        replacements.get(destination).cloned()
+    });
+    Ok((desired, attachments))
+}
+
+fn attachment_path(destination: &str, document_id: &str, remote_url: &str, label: &str) -> String {
+    let document_hash = bytes_hash(document_id.as_bytes());
+    let url_hash = bytes_hash(remote_url.as_bytes());
+    let label = Path::new(label)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map_or("attachment.bin", |name| name);
+    let mut filename = safe_title(label, &url_hash);
+    if !filename.contains('.') {
+        filename.push_str(".bin");
+    }
+    let filename = filename.chars().take(96).collect::<String>();
+    format!(
+        "{destination}/_attachments/{}/{}-{filename}",
+        &document_hash[..16],
+        &url_hash[..12]
+    )
+}
+
+fn relative_markdown_path(note_path: &str, target_path: &str) -> Result<String, AppError> {
+    let note_parent = Path::new(note_path)
+        .parent()
+        .ok_or_else(|| AppError::operation("Outline pull note path has no parent"))?;
+    let source = note_parent.components().collect::<Vec<_>>();
+    let target = Path::new(target_path).components().collect::<Vec<_>>();
+    let common = source
+        .iter()
+        .zip(&target)
+        .take_while(|(left, right)| left == right)
+        .count();
+    let mut relative = PathBuf::new();
+    for _ in common..source.len() {
+        relative.push("..");
+    }
+    for component in &target[common..] {
+        relative.push(component.as_os_str());
+    }
+    Ok(relative.to_string_lossy().replace('\\', "/"))
 }
 
 fn safe_title(title: &str, remote_id: &str) -> String {
@@ -583,6 +816,22 @@ fn validate_managed_path(destination: &str, local_path: &str) -> Result<(), AppE
     Ok(())
 }
 
+fn validate_managed_asset_path(destination: &str, local_path: &str) -> Result<(), AppError> {
+    let path = Path::new(local_path);
+    if local_path.contains('\\')
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        || !path.starts_with(Path::new(destination).join("_attachments"))
+    {
+        return Err(AppError::operation(
+            "Outline pull state contains an unsafe attachment path",
+        ));
+    }
+    Ok(())
+}
+
 fn conflict_markers(local: &str, base: &str, remote: &str, remote_id: &str) -> String {
     format!(
         "<<<<<<< LOCAL\n{}\n||||||| BASE\n{}\n=======\n{}\n>>>>>>> OUTLINE {remote_id}\n",
@@ -608,6 +857,11 @@ fn report(
     actions: Vec<OutlinePullAction>,
 ) -> OutlinePullReport {
     let count = |kind| actions.iter().filter(|action| action.kind == kind).count();
+    let attachments_planned = actions.iter().map(|action| action.attachments.len()).sum();
+    let attachments_downloaded = actions
+        .iter()
+        .map(|action| action.downloaded_attachment_paths.len())
+        .sum();
     OutlinePullReport {
         profile: profile.to_string(),
         collection_id: collection_id.to_string(),
@@ -620,12 +874,18 @@ fn report(
         unchanged: count(OutlinePullActionKind::Unchanged),
         conflict_markers_written: count(OutlinePullActionKind::WriteConflictMarkers),
         remote_missing: count(OutlinePullActionKind::RemoteMissing),
+        attachments_planned,
+        attachments_downloaded,
         actions,
     }
 }
 
 fn content_hash(content: &str) -> String {
-    blake3::hash(content.as_bytes()).to_hex().to_string()
+    bytes_hash(content.as_bytes())
+}
+
+fn bytes_hash(bytes: &[u8]) -> String {
+    blake3::hash(bytes).to_hex().to_string()
 }
 
 fn state_path(paths: &VaultPaths, profile: &str) -> Result<PathBuf, AppError> {
@@ -712,12 +972,14 @@ impl Drop for StateLock {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::publish::outline::OutlineRemoteAttachment;
+    use crate::publish::outline::{OutlineDownloadedAttachment, OutlineRemoteAttachment};
+    use std::cell::Cell;
     use tempfile::tempdir;
     use vulcan_core::initialize_vulcan_dir;
 
     struct MockApi {
         documents: Vec<OutlineRemoteDocument>,
+        download_count: Cell<usize>,
     }
 
     impl OutlineApi for MockApi {
@@ -774,6 +1036,27 @@ mod tests {
         ) -> Result<OutlineRemoteAttachment, AppError> {
             unreachable!()
         }
+
+        fn download_attachment(
+            &self,
+            _url: &str,
+            max_bytes: usize,
+        ) -> Result<OutlineDownloadedAttachment, AppError> {
+            let bytes = b"downloaded image".to_vec();
+            assert!(bytes.len() <= max_bytes);
+            self.download_count.set(self.download_count.get() + 1);
+            Ok(OutlineDownloadedAttachment {
+                bytes,
+                content_type: Some("image/png".to_string()),
+            })
+        }
+    }
+
+    fn api(documents: Vec<OutlineRemoteDocument>) -> MockApi {
+        MockApi {
+            documents,
+            download_count: Cell::new(0),
+        }
     }
 
     fn document(id: &str, title: &str, text: &str, parent: Option<&str>) -> OutlineRemoteDocument {
@@ -792,17 +1075,15 @@ mod tests {
         let temp = tempdir().expect("temp dir");
         let paths = VaultPaths::new(temp.path());
         initialize_vulcan_dir(&paths).expect("initialize vault");
-        let api = MockApi {
-            documents: vec![
-                document(
-                    "parent",
-                    "THE ÒRÌSHÀ",
-                    ":::warning\nCareful\n:::\n\n[Yemoja](/doc/child)",
-                    None,
-                ),
-                document("child", "Yemoja", "# Water\n", Some("parent")),
-            ],
-        };
+        let api = api(vec![
+            document(
+                "parent",
+                "THE ÒRÌSHÀ",
+                ":::warning\nCareful\n:::\n\n[Yemoja](/doc/child)",
+                None,
+            ),
+            document("child", "Yemoja", "# Water\n", Some("parent")),
+        ]);
 
         let first = pull_outline(
             &paths,
@@ -837,13 +1118,75 @@ mod tests {
     }
 
     #[test]
+    fn pull_materializes_referenced_attachments_and_repairs_missing_files() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        let api = api(vec![document(
+            "home",
+            "Home",
+            "![diagram.png](/api/attachments.redirect?id=asset)",
+            None,
+        )]);
+
+        let first = pull_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("attachment pull");
+        assert_eq!(first.attachments_planned, 1);
+        assert_eq!(first.attachments_downloaded, 1);
+        assert_eq!(api.download_count.get(), 1);
+        let attachment_path = &first.actions[0].attachment_paths[0];
+        assert_eq!(
+            fs::read(temp.path().join(attachment_path)).unwrap(),
+            b"downloaded image"
+        );
+        let note = fs::read_to_string(temp.path().join("Imported/Home.md")).unwrap();
+        assert!(!note.contains("/api/attachments.redirect"));
+        assert!(note.contains("![diagram.png](_attachments/"));
+
+        let second = pull_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("idempotent attachment pull");
+        assert_eq!(second.unchanged, 1);
+        assert_eq!(second.attachments_downloaded, 0);
+        assert_eq!(api.download_count.get(), 1);
+
+        fs::remove_file(temp.path().join(attachment_path)).expect("remove attachment");
+        let repaired = pull_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("repair attachment");
+        assert_eq!(repaired.updated, 1);
+        assert_eq!(repaired.attachments_downloaded, 1);
+        assert_eq!(api.download_count.get(), 2);
+    }
+
+    #[test]
     fn pull_conflicts_support_overwrite_and_diff3_markers() {
         let temp = tempdir().expect("temp dir");
         let paths = VaultPaths::new(temp.path());
         initialize_vulcan_dir(&paths).expect("initialize vault");
-        let initial = MockApi {
-            documents: vec![document("home", "Home", "base\n", None)],
-        };
+        let initial = api(vec![document("home", "Home", "base\n", None)]);
         pull_outline(
             &paths,
             &initial,
@@ -855,9 +1198,7 @@ mod tests {
         )
         .expect("initial pull");
         fs::write(temp.path().join("Imported/Home.md"), "local edit\n").expect("local edit");
-        let changed = MockApi {
-            documents: vec![document("home", "Home", "remote edit\n", None)],
-        };
+        let changed = api(vec![document("home", "Home", "remote edit\n", None)]);
 
         let conflict = pull_outline(
             &paths,
@@ -930,12 +1271,10 @@ mod tests {
         let temp = tempdir().expect("temp dir");
         let paths = VaultPaths::new(temp.path());
         initialize_vulcan_dir(&paths).expect("initialize vault");
-        let api = MockApi {
-            documents: vec![
-                document("one", "Home", "one", None),
-                document("two", "home", "two", None),
-            ],
-        };
+        let api = api(vec![
+            document("one", "Home", "one", None),
+            document("two", "home", "two", None),
+        ]);
         assert!(pull_outline(
             &paths,
             &api,
@@ -973,9 +1312,7 @@ mod tests {
         let temp = tempdir().expect("temp dir");
         let paths = VaultPaths::new(temp.path());
         initialize_vulcan_dir(&paths).expect("initialize vault");
-        let api = MockApi {
-            documents: vec![document("home", "Home", "remote\n", None)],
-        };
+        let api = api(vec![document("home", "Home", "remote\n", None)]);
 
         let error = pull_outline_with_write_authorizer(
             &paths,
@@ -1002,6 +1339,7 @@ mod tests {
             last_remote_parent_id: None,
             last_materialized_local_hash: "local".to_string(),
             base_content: "base".to_string(),
+            attachments: BTreeMap::new(),
         };
         let mut unsafe_state = OutlinePullState::empty("wiki", "collection", "Imported");
         unsafe_state

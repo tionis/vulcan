@@ -45,7 +45,7 @@ static output target or a configured one-way Outline publication.
 - Exports and sites should be reproducible from vault source plus config.
 - Outline publication is one-way: the local vault remains canonical. Do not treat remote edits as input. Remote drift fails closed unless the user explicitly authorizes the named source with `--overwrite-conflict` or authorizes all reported conflicts with `--overwrite-conflicts` after a dry run. Neither control affects unmanaged documents, and unresolved conflicts prevent all mutations.
 - Outline mappings under `.vulcan/publish/outline/` are durable state, not rebuildable cache. Do not delete or hand-edit them as a routine repair step.
-- Outline pull state under `.vulcan/integrations/outline-pull/` is also durable. Pull and publish state are deliberately separate and do not imply bidirectional synchronization. Missing remote documents remain local, and current pull support leaves remote attachment URLs external.
+- Outline pull state under `.vulcan/integrations/outline-pull/` is also durable. Pull and publish state are deliberately separate and do not imply bidirectional synchronization. Missing remote documents remain local. Referenced Outline attachments are downloaded to deterministic `_attachments/` paths; local attachment drift is preserved unless reviewed overwrite is authorized.
 - Custom link transforms require an explicitly configured `custom` policy and a trusted vault-local script. Keep the transform deterministic and free of I/O.
 - Generated folder placeholders exist only in the output or remote collection. Add a configured folder note when authored landing-page content is required.
 - Do not silently publish private or hidden sections; check include/exclude filters and content transforms.

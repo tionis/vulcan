@@ -1758,6 +1758,11 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
             guard
                 .check_write_path(&action.local_path)
                 .map_err(CliError::operation)?;
+            for attachment_path in &action.attachment_paths {
+                guard
+                    .check_write_path(attachment_path)
+                    .map_err(CliError::operation)?;
+            }
         }
     }
     let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
@@ -1791,6 +1796,12 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
                 )
             })
             .map(|action| action.local_path.clone())
+            .chain(
+                report
+                    .actions
+                    .iter()
+                    .flat_map(|action| action.downloaded_attachment_paths.iter().cloned()),
+            )
             .collect::<Vec<_>>();
         auto_commit
             .commit(
@@ -1918,13 +1929,14 @@ fn print_outline_pull_report(
                 );
             }
             println!(
-                "created={}; updated={}; unchanged={}; markers={}; conflicts={}; remote_missing={}",
+                "created={}; updated={}; unchanged={}; markers={}; conflicts={}; remote_missing={}; attachments_downloaded={}",
                 report.created,
                 report.updated,
                 report.unchanged,
                 report.conflict_markers_written,
                 report.conflicts,
-                report.remote_missing
+                report.remote_missing,
+                report.attachments_downloaded
             );
         }
     }
