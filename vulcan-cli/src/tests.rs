@@ -1174,6 +1174,49 @@ fn parses_interactive_outline_conflict_handling() {
     .is_err());
 }
 
+#[test]
+fn parses_scoped_outline_pull_selection() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "pull",
+        "outline",
+        "wiki",
+        "--into",
+        "Imported",
+        "--root-document",
+        "root-one",
+        "--root-document",
+        "root-two",
+        "--max-depth",
+        "2",
+        "--exclude-document",
+        "private",
+    ])
+    .expect("scoped Outline pull should parse");
+    assert!(matches!(
+        cli.command,
+        Command::Pull {
+            command: PullCommand::Outline {
+                root_document,
+                max_depth: Some(2),
+                exclude_document,
+                ..
+            }
+        } if root_document == ["root-one", "root-two"] && exclude_document == ["private"]
+    ));
+    assert!(Cli::try_parse_from([
+        "vulcan",
+        "pull",
+        "outline",
+        "wiki",
+        "--into",
+        "Imported",
+        "--max-depth",
+        "1",
+    ])
+    .is_err());
+}
+
 #[cfg(feature = "web")]
 #[test]
 fn interactive_outline_conflicts_require_every_item_to_be_approved() {
@@ -1230,6 +1273,9 @@ fn parses_outline_pull_conflict_modes() {
                 conflict_markers: false,
                 interactive: false,
                 apply_remote_moves: false,
+                root_document: Vec::new(),
+                max_depth: None,
+                exclude_document: Vec::new(),
                 archive_missing: None,
                 delete_missing: false,
                 confirm_delete_count: None,

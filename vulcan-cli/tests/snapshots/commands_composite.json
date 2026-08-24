@@ -5846,6 +5846,39 @@
                 ]
               },
               {
+                "help": "Pull only this remote document subtree; repeat for multiple roots",
+                "id": "root_document",
+                "long": "root-document",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOTE_ID"
+                ]
+              },
+              {
+                "help": "Limit selected descendants below each remote root (root depth is zero)",
+                "id": "max_depth",
+                "long": "max-depth",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DEPTH"
+                ]
+              },
+              {
+                "help": "Exclude this remote document and its descendants; repeat as needed",
+                "id": "exclude_document",
+                "long": "exclude-document",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOTE_ID"
+                ]
+              },
+              {
                 "help": "Move documents missing from Outline into this recoverable vault directory",
                 "id": "archive_missing",
                 "long": "archive-missing",

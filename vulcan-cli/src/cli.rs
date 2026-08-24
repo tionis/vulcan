@@ -2443,6 +2443,25 @@ pub enum PullCommand {
         apply_remote_moves: bool,
         #[arg(
             long,
+            value_name = "REMOTE_ID",
+            help = "Pull only this remote document subtree; repeat for multiple roots"
+        )]
+        root_document: Vec<String>,
+        #[arg(
+            long,
+            value_name = "DEPTH",
+            requires = "root_document",
+            help = "Limit selected descendants below each remote root (root depth is zero)"
+        )]
+        max_depth: Option<usize>,
+        #[arg(
+            long,
+            value_name = "REMOTE_ID",
+            help = "Exclude this remote document and its descendants; repeat as needed"
+        )]
+        exclude_document: Vec<String>,
+        #[arg(
+            long,
             value_name = "VAULT_DIRECTORY",
             conflicts_with_all = ["delete_missing", "interactive"],
             help = "Move documents missing from Outline into this recoverable vault directory"

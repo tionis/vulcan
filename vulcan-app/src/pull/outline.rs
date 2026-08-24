@@ -45,6 +45,14 @@ pub struct OutlinePullOptions {
     pub apply_remote_moves: bool,
     pub missing_policy: OutlinePullMissingPolicy,
     pub confirmed_delete_count: Option<usize>,
+    pub scope: OutlinePullScope,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutlinePullScope {
+    pub root_document_ids: BTreeSet<String>,
+    pub excluded_document_ids: BTreeSet<String>,
+    pub max_depth: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +163,7 @@ pub enum OutlinePullActionKind {
     RemoteMissing,
     ArchiveMissing,
     DeleteMissing,
+    OutOfScope,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -194,6 +203,7 @@ pub struct OutlinePullReport {
     pub remote_missing: usize,
     pub archived_missing: usize,
     pub deleted_missing: usize,
+    pub out_of_scope: usize,
     pub attachments_planned: usize,
     pub attachments_downloaded: usize,
     pub actions: Vec<OutlinePullAction>,
@@ -615,10 +625,22 @@ fn plan_pull(
         .filter(|document| document.archived_at.is_none())
         .cloned()
         .collect::<Vec<_>>();
-    let generated_paths = generate_paths(&active, &state.destination)?;
+    let selected_ids = select_remote_documents(&active, &options.scope)?;
+    let selected = active
+        .iter()
+        .filter(|document| selected_ids.contains(&document.id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let generated_paths = generate_paths(&active, &selected_ids, &state.destination)?;
     let local_paths = active
         .iter()
-        .map(|document| {
+        .filter_map(|document| {
+            if !selected_ids.contains(&document.id) {
+                return state
+                    .documents
+                    .get(&document.id)
+                    .map(|mapping| (document.id.clone(), mapping.local_path.clone()));
+            }
             let path = if options.apply_remote_moves {
                 generated_paths[&document.id].clone()
             } else {
@@ -627,7 +649,7 @@ fn plan_pull(
                     |mapping| mapping.local_path.clone(),
                 )
             };
-            (document.id.clone(), path)
+            Some((document.id.clone(), path))
         })
         .collect::<BTreeMap<_, _>>();
     let mut seen_local_paths = BTreeMap::<String, String>::new();
@@ -641,8 +663,8 @@ fn plan_pull(
             )));
         }
     }
-    let mut actions = Vec::with_capacity(active.len() + state.documents.len());
-    for document in &active {
+    let mut actions = Vec::with_capacity(selected.len() + state.documents.len());
+    for document in &selected {
         let local_path = local_paths[&document.id].clone();
         let mapped_path = state
             .documents
@@ -876,6 +898,24 @@ fn plan_pull(
                 local_content: None,
                 attachments: Vec::new(),
             });
+        } else if !selected_ids.contains(remote_id) {
+            actions.push(OutlinePullAction {
+                kind: OutlinePullActionKind::OutOfScope,
+                remote_document_id: remote_id.clone(),
+                local_path: mapping.local_path.clone(),
+                reason: "managed Outline document is outside this pull's selected scope"
+                    .to_string(),
+                local_changed: false,
+                remote_changed: false,
+                source_local_path: None,
+                rewritten_local_paths: Vec::new(),
+                attachment_paths: Vec::new(),
+                downloaded_attachment_paths: Vec::new(),
+                preserves_local_changes: true,
+                desired_content: None,
+                local_content: None,
+                attachments: Vec::new(),
+            });
         }
     }
     actions.sort_by(|left, right| left.local_path.cmp(&right.local_path));
@@ -884,6 +924,7 @@ fn plan_pull(
 
 fn generate_paths(
     remote: &[OutlineRemoteDocument],
+    selected_ids: &BTreeSet<String>,
     destination: &str,
 ) -> Result<BTreeMap<String, String>, AppError> {
     let by_id = remote
@@ -893,7 +934,7 @@ fn generate_paths(
     let mut paths = BTreeMap::new();
     for document in remote
         .iter()
-        .filter(|document| document.archived_at.is_none())
+        .filter(|document| selected_ids.contains(&document.id))
     {
         let mut titles = vec![safe_title(&document.title, &document.id)];
         let mut parent = document.parent_document_id.as_deref();
@@ -929,6 +970,70 @@ fn generate_paths(
         }
     }
     Ok(paths)
+}
+
+fn select_remote_documents(
+    active: &[OutlineRemoteDocument],
+    scope: &OutlinePullScope,
+) -> Result<BTreeSet<String>, AppError> {
+    let by_id = active
+        .iter()
+        .map(|document| (document.id.as_str(), document))
+        .collect::<BTreeMap<_, _>>();
+    for remote_id in scope
+        .root_document_ids
+        .iter()
+        .chain(&scope.excluded_document_ids)
+    {
+        if !by_id.contains_key(remote_id.as_str()) {
+            return Err(AppError::operation(format!(
+                "Outline pull scope references missing or archived document `{remote_id}`"
+            )));
+        }
+    }
+    if scope.max_depth.is_some() && scope.root_document_ids.is_empty() {
+        return Err(AppError::operation(
+            "Outline pull max depth requires at least one root document",
+        ));
+    }
+
+    let distance_to = |document: &OutlineRemoteDocument,
+                       targets: &BTreeSet<String>|
+     -> Result<Option<usize>, AppError> {
+        let mut current = Some(document.id.as_str());
+        let mut depth = 0usize;
+        let mut seen = BTreeSet::new();
+        while let Some(remote_id) = current {
+            if !seen.insert(remote_id) {
+                return Err(AppError::operation(
+                    "Outline hierarchy contains a parent cycle",
+                ));
+            }
+            if targets.contains(remote_id) {
+                return Ok(Some(depth));
+            }
+            current = by_id
+                .get(remote_id)
+                .and_then(|parent| parent.parent_document_id.as_deref());
+            depth += 1;
+        }
+        Ok(None)
+    };
+
+    let mut selected = BTreeSet::new();
+    for document in active {
+        let included = if scope.root_document_ids.is_empty() {
+            true
+        } else {
+            distance_to(document, &scope.root_document_ids)?
+                .is_some_and(|depth| scope.max_depth.is_none_or(|maximum| depth <= maximum))
+        };
+        let excluded = distance_to(document, &scope.excluded_document_ids)?.is_some();
+        if included && !excluded {
+            selected.insert(document.id.clone());
+        }
+    }
+    Ok(selected)
 }
 
 fn plan_document_attachments(
@@ -1161,6 +1266,7 @@ fn report(
         remote_missing: count(OutlinePullActionKind::RemoteMissing),
         archived_missing: count(OutlinePullActionKind::ArchiveMissing),
         deleted_missing: count(OutlinePullActionKind::DeleteMissing),
+        out_of_scope: count(OutlinePullActionKind::OutOfScope),
         attachments_planned,
         attachments_downloaded,
         actions,
@@ -1819,6 +1925,105 @@ mod tests {
 
         assert_eq!(error.message(), "denied Imported/Home.md");
         assert!(!temp.path().join("Imported/Home.md").exists());
+    }
+
+    #[test]
+    fn scoped_pull_selects_bounded_subtrees_without_treating_other_documents_as_missing() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        let api = api(vec![
+            document("root", "Root", "[Other](/doc/other)\n", None),
+            document("child", "Child", "child\n", Some("root")),
+            document("grandchild", "Grandchild", "grandchild\n", Some("child")),
+            document("other", "Other", "other\n", None),
+        ]);
+        pull_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("initial complete pull");
+
+        let bounded = OutlinePullOptions {
+            missing_policy: OutlinePullMissingPolicy::delete_all(),
+            confirmed_delete_count: Some(0),
+            scope: OutlinePullScope {
+                root_document_ids: BTreeSet::from(["root".to_string()]),
+                excluded_document_ids: BTreeSet::new(),
+                max_depth: Some(1),
+            },
+            ..OutlinePullOptions::default()
+        };
+        let report = pull_outline_with_options_and_write_authorizer(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            true,
+            &OutlinePullConflictPolicy::abort(),
+            &bounded,
+            &|_| Ok(()),
+        )
+        .expect("bounded pull");
+        assert_eq!(report.unchanged, 2);
+        assert_eq!(report.out_of_scope, 2);
+        assert_eq!(report.deleted_missing, 0);
+        assert!(report.actions.iter().any(|action| {
+            action.remote_document_id == "root"
+                && action
+                    .desired_content
+                    .as_deref()
+                    .is_some_and(|content| content.contains("[[Imported/Other]]"))
+        }));
+
+        let excluded = OutlinePullOptions {
+            scope: OutlinePullScope {
+                root_document_ids: BTreeSet::from(["root".to_string()]),
+                excluded_document_ids: BTreeSet::from(["child".to_string()]),
+                max_depth: None,
+            },
+            ..OutlinePullOptions::default()
+        };
+        let report = pull_outline_with_options_and_write_authorizer(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            true,
+            &OutlinePullConflictPolicy::abort(),
+            &excluded,
+            &|_| Ok(()),
+        )
+        .expect("excluded subtree pull");
+        assert_eq!(report.unchanged, 1);
+        assert_eq!(report.out_of_scope, 3);
+
+        let invalid = OutlinePullOptions {
+            scope: OutlinePullScope {
+                root_document_ids: BTreeSet::from(["missing".to_string()]),
+                ..OutlinePullScope::default()
+            },
+            ..OutlinePullOptions::default()
+        };
+        assert!(pull_outline_with_options_and_write_authorizer(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            true,
+            &OutlinePullConflictPolicy::abort(),
+            &invalid,
+            &|_| Ok(()),
+        )
+        .is_err());
     }
 
     #[test]

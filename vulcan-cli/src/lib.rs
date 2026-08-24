@@ -500,7 +500,7 @@ use vulcan_app::publish::outline::{
 use vulcan_app::pull::outline::{
     pull_outline_with_options_and_write_authorizer, OutlinePullAction, OutlinePullActionKind,
     OutlinePullConflictPolicy, OutlinePullConflictResolution, OutlinePullMissingPolicy,
-    OutlinePullMissingResolution, OutlinePullOptions, OutlinePullReport,
+    OutlinePullMissingResolution, OutlinePullOptions, OutlinePullReport, OutlinePullScope,
 };
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::site::{
@@ -1678,6 +1678,9 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
         conflict_markers,
         interactive,
         apply_remote_moves,
+        root_document,
+        max_depth,
+        exclude_document,
         archive_missing,
         delete_missing,
         confirm_delete_count,
@@ -1743,6 +1746,11 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
         apply_remote_moves: *apply_remote_moves,
         missing_policy,
         confirmed_delete_count: *confirm_delete_count,
+        scope: OutlinePullScope {
+            root_document_ids: root_document.iter().cloned().collect(),
+            excluded_document_ids: exclude_document.iter().cloned().collect(),
+            max_depth: *max_depth,
+        },
     };
     let plan = pull_outline_with_options_and_write_authorizer(
         paths,
@@ -2110,7 +2118,7 @@ fn print_outline_pull_report(
                 );
             }
             println!(
-                "created={}; updated={}; moved={}; unchanged={}; markers={}; conflicts={}; remote_missing={}; archived_missing={}; deleted_missing={}; attachments_downloaded={}",
+                "created={}; updated={}; moved={}; unchanged={}; markers={}; conflicts={}; remote_missing={}; archived_missing={}; deleted_missing={}; out_of_scope={}; attachments_downloaded={}",
                 report.created,
                 report.updated,
                 report.moved,
@@ -2120,6 +2128,7 @@ fn print_outline_pull_report(
                 report.remote_missing,
                 report.archived_missing,
                 report.deleted_missing,
+                report.out_of_scope,
                 report.attachments_downloaded
             );
         }

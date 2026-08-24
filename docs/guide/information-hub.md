@@ -183,7 +183,7 @@ Writes are locked and atomic. Malformed state stops reconciliation without mutat
 
 ### Outline
 
-The current ZIP exporter and one-way API publisher are the outbound baseline. Phase 15 will adapt their shared planner/state concepts to the generic connector model and add a separately configured, scoped inbound route. See [Outline publishing](outline-publishing.md) for commands that exist today.
+The current ZIP exporter and one-way API publisher are the outbound baseline. The separate Outline pull route already supports collection-wide or remote-ID-scoped inbound materialization; Phase 15 will adapt these planner/state concepts to the generic connector model. See [Outline publishing](outline-publishing.md) for commands that exist today.
 
 ### HedgeDoc
 
