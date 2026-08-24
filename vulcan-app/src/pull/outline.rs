@@ -279,7 +279,25 @@ pub struct OutlinePullReport {
     pub archived_stale_attachments: usize,
     pub deleted_stale_attachments: usize,
     pub diagnostics: Vec<OutlinePullDiagnostic>,
+    pub remote_capabilities: OutlinePullRemoteCapabilities,
     pub actions: Vec<OutlinePullAction>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutlinePullMetadataCoverage {
+    Complete,
+    Absent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OutlinePullRemoteCapabilities {
+    pub contract: String,
+    pub markdown_documents: bool,
+    pub complete_hierarchy: bool,
+    pub revision_metadata: OutlinePullMetadataCoverage,
+    pub updated_at_metadata: OutlinePullMetadataCoverage,
+    pub snapshot_relisted: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -762,6 +780,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
         )?;
         let remote = api.list_collection_documents(collection_id)?;
         validate_remote_work_limit(&remote, options)?;
+        let remote_capabilities = validate_remote_conformance(&remote, collection_id, false)?;
         ensure_pull_not_cancelled(is_cancelled, None)?;
         emit_pull_progress(
             on_progress,
@@ -785,6 +804,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
             false,
             operation_id,
             state.incomplete_operation.is_some(),
+            remote_capabilities,
             actions,
         );
         emit_pull_progress(
@@ -810,6 +830,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
     )?;
     let remote = api.list_collection_documents(collection_id)?;
     validate_remote_work_limit(&remote, options)?;
+    let mut remote_capabilities = validate_remote_conformance(&remote, collection_id, false)?;
     ensure_pull_not_cancelled(is_cancelled, None)?;
     emit_pull_progress(
         on_progress,
@@ -837,9 +858,18 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
             false,
             operation_id,
             state.incomplete_operation.is_some(),
+            remote_capabilities,
             actions,
         ));
     }
+    let verified_remote = api.list_collection_documents(collection_id)?;
+    validate_remote_work_limit(&verified_remote, options)?;
+    if !same_remote_snapshot(&remote, &verified_remote) {
+        return Err(AppError::operation(
+            "Outline collection changed between planning and the live pre-apply conformance check; retry the pull",
+        ));
+    }
+    remote_capabilities = validate_remote_conformance(&verified_remote, collection_id, true)?;
     let delete_count = actions
         .iter()
         .filter(|action| action.kind == OutlinePullActionKind::DeleteMissing)
@@ -1217,6 +1247,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
         true,
         Some(operation_id),
         resumed_operation,
+        remote_capabilities,
         actions,
     );
     emit_pull_progress(
@@ -2377,6 +2408,7 @@ fn report(
     applied: bool,
     operation_id: Option<String>,
     resumed_operation: bool,
+    remote_capabilities: OutlinePullRemoteCapabilities,
     actions: Vec<OutlinePullAction>,
 ) -> OutlinePullReport {
     let count = |kind| actions.iter().filter(|action| action.kind == kind).count();
@@ -2414,6 +2446,7 @@ fn report(
         archived_stale_attachments: count(OutlinePullActionKind::ArchiveStaleAttachment),
         deleted_stale_attachments: count(OutlinePullActionKind::DeleteStaleAttachment),
         diagnostics,
+        remote_capabilities,
         actions,
     }
 }
@@ -2448,6 +2481,100 @@ fn validate_remote_work_limit(
         )));
     }
     Ok(())
+}
+
+fn validate_remote_conformance(
+    remote: &[OutlineRemoteDocument],
+    collection_id: &str,
+    snapshot_relisted: bool,
+) -> Result<OutlinePullRemoteCapabilities, AppError> {
+    let mut documents = BTreeMap::new();
+    for document in remote {
+        if document.id.trim().is_empty() || document.title.trim().is_empty() {
+            return Err(AppError::operation(
+                "Outline returned a document without a stable ID or title",
+            ));
+        }
+        if document.collection_id != collection_id {
+            return Err(AppError::operation(format!(
+                "Outline returned document `{}` outside the requested collection",
+                document.id
+            )));
+        }
+        if document.parent_document_id.as_deref() == Some(document.id.as_str()) {
+            return Err(AppError::operation(format!(
+                "Outline document `{}` is its own parent",
+                document.id
+            )));
+        }
+        if documents.insert(document.id.as_str(), document).is_some() {
+            return Err(AppError::operation(format!(
+                "Outline returned duplicate document ID `{}`",
+                document.id
+            )));
+        }
+    }
+    for document in remote {
+        if let Some(parent_id) = document.parent_document_id.as_deref() {
+            if !documents.contains_key(parent_id) {
+                return Err(AppError::operation(format!(
+                    "Outline document `{}` references missing parent `{parent_id}`",
+                    document.id
+                )));
+            }
+            let mut visited = BTreeSet::new();
+            let mut current = Some(document.id.as_str());
+            while let Some(id) = current {
+                if !visited.insert(id) {
+                    return Err(AppError::operation(format!(
+                        "Outline hierarchy contains a cycle through document `{id}`"
+                    )));
+                }
+                current = documents
+                    .get(id)
+                    .and_then(|ancestor| ancestor.parent_document_id.as_deref());
+            }
+        }
+    }
+    let coverage = |present: usize, field: &str| {
+        if present == 0 {
+            Ok(OutlinePullMetadataCoverage::Absent)
+        } else if present == remote.len() {
+            Ok(OutlinePullMetadataCoverage::Complete)
+        } else {
+            Err(AppError::operation(format!(
+                "Outline returned inconsistent `{field}` metadata coverage across the collection"
+            )))
+        }
+    };
+    Ok(OutlinePullRemoteCapabilities {
+        contract: "outline-rpc-markdown-v1".to_string(),
+        markdown_documents: true,
+        complete_hierarchy: true,
+        revision_metadata: coverage(
+            remote
+                .iter()
+                .filter(|document| document.revision.is_some())
+                .count(),
+            "revision",
+        )?,
+        updated_at_metadata: coverage(
+            remote
+                .iter()
+                .filter(|document| document.updated_at.is_some())
+                .count(),
+            "updatedAt",
+        )?,
+        snapshot_relisted,
+    })
+}
+
+fn same_remote_snapshot(left: &[OutlineRemoteDocument], right: &[OutlineRemoteDocument]) -> bool {
+    let mut left = left.iter().collect::<Vec<_>>();
+    let mut right = right.iter().collect::<Vec<_>>();
+    left.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+    right.sort_unstable_by(|a, b| a.id.cmp(&b.id));
+    left == right
 }
 
 fn validate_attachment_work_limit(
@@ -2702,6 +2829,8 @@ mod tests {
 
     struct MockApi {
         documents: Vec<OutlineRemoteDocument>,
+        second_documents: Option<Vec<OutlineRemoteDocument>>,
+        list_count: Cell<usize>,
         download_count: Cell<usize>,
     }
 
@@ -2710,7 +2839,15 @@ mod tests {
             &self,
             _collection_id: &str,
         ) -> Result<Vec<OutlineRemoteDocument>, AppError> {
-            Ok(self.documents.clone())
+            let count = self.list_count.get();
+            self.list_count.set(count + 1);
+            Ok(if count > 0 {
+                self.second_documents
+                    .clone()
+                    .unwrap_or_else(|| self.documents.clone())
+            } else {
+                self.documents.clone()
+            })
         }
 
         fn document_info(&self, _id: &str) -> Result<OutlineRemoteDocument, AppError> {
@@ -2778,6 +2915,8 @@ mod tests {
     fn api(documents: Vec<OutlineRemoteDocument>) -> MockApi {
         MockApi {
             documents,
+            second_documents: None,
+            list_count: Cell::new(0),
             download_count: Cell::new(0),
         }
     }
@@ -2822,6 +2961,11 @@ mod tests {
         .expect("initial pull");
         assert!(first.applied);
         assert_eq!(first.created, 2);
+        assert!(first.remote_capabilities.snapshot_relisted);
+        assert_eq!(
+            first.remote_capabilities.revision_metadata,
+            OutlinePullMetadataCoverage::Absent
+        );
         let parent =
             fs::read_to_string(temp.path().join("Imported/THE ÒRÌSHÀ.md")).expect("parent note");
         assert!(parent.contains("> [!warning]"));
@@ -2847,6 +2991,54 @@ mod tests {
         .expect("idempotent pull");
         assert!(second.applied);
         assert_eq!(second.unchanged, 2);
+    }
+
+    #[test]
+    fn pull_rejects_nonconforming_and_pre_apply_drifting_remote_snapshots() {
+        let partial_metadata = vec![
+            OutlineRemoteDocument {
+                revision: Some(1),
+                ..document("one", "One", "one", None)
+            },
+            document("two", "Two", "two", None),
+        ];
+        assert!(
+            validate_remote_conformance(&partial_metadata, "collection", false)
+                .unwrap_err()
+                .to_string()
+                .contains("inconsistent `revision`")
+        );
+        let cycle = vec![
+            document("one", "One", "one", Some("two")),
+            document("two", "Two", "two", Some("one")),
+        ];
+        assert!(validate_remote_conformance(&cycle, "collection", false)
+            .unwrap_err()
+            .to_string()
+            .contains("cycle"));
+
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        let drifting = MockApi {
+            documents: vec![document("home", "Home", "first\n", None)],
+            second_documents: Some(vec![document("home", "Home", "second\n", None)]),
+            list_count: Cell::new(0),
+            download_count: Cell::new(0),
+        };
+        let error = pull_outline(
+            &paths,
+            &drifting,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect_err("drift between plan and apply must fail");
+        assert!(error.to_string().contains("pre-apply conformance check"));
+        assert!(!temp.path().join("Imported/Home.md").exists());
+        assert!(!state_path(&paths, "wiki").unwrap().exists());
     }
 
     #[test]
@@ -3626,7 +3818,7 @@ mod tests {
             &OutlinePullConflictPolicy::abort(),
         )
         .expect_err("orphaned hierarchy must fail closed");
-        assert!(error.to_string().contains("missing or archived parent"));
+        assert!(error.to_string().contains("references missing parent"));
     }
 
     #[test]

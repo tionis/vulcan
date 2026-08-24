@@ -10435,6 +10435,8 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(publishing.contains("stale_attachments"));
     assert!(publishing.contains("--max-documents"));
     assert!(publishing.contains("connector server"));
+    assert!(publishing.contains("remote_capabilities"));
+    assert!(publishing.contains("server-semver"));
     assert!(publishing.contains("Unicode-collision"));
     assert!(publishing.contains("Reference-style"));
     assert!(publishing.contains("conflict_markers_available"));
@@ -15701,6 +15703,11 @@ max_retries = 0
     let report = parse_stdout_json(&assert);
     assert_eq!(report["dry_run"], true);
     assert_eq!(report["created"], 1);
+    assert_eq!(
+        report["remote_capabilities"]["contract"],
+        "outline-rpc-markdown-v1"
+    );
+    assert_eq!(report["remote_capabilities"]["snapshot_relisted"], false);
     assert_eq!(report["actions"][0]["local_path"], "Imported/Home.md");
     assert!(!vault_root.join("Imported/Home.md").exists());
     assert!(!vault_root.join(".vulcan/integrations").exists());

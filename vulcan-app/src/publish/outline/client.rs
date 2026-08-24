@@ -86,8 +86,13 @@ impl HttpOutlineClient {
     }
 
     fn post<R: DeserializeOwned>(&self, method: &str, body: &Value) -> Result<R, AppError> {
-        self.post_envelope::<ApiEnvelope<R>>(method, body)
-            .map(|envelope| envelope.data)
+        let envelope = self.post_envelope::<ApiEnvelope<R>>(method, body)?;
+        if envelope.ok == Some(false) {
+            return Err(AppError::operation(
+                "Outline returned an unsuccessful response with a success status",
+            ));
+        }
+        Ok(envelope.data)
     }
 
     fn post_envelope<R: DeserializeOwned>(
@@ -191,6 +196,11 @@ impl OutlineApi for HttpOutlineClient {
                     "offset": offset,
                 }),
             )?;
+            if page.ok == Some(false) {
+                return Err(AppError::operation(
+                    "Outline returned an unsuccessful document listing with a success status",
+                ));
+            }
             if expected_total
                 .replace(page.pagination.total)
                 .is_some_and(|total| total != page.pagination.total)
@@ -464,6 +474,8 @@ impl HttpOutlineClient {
 #[derive(Debug, Deserialize)]
 struct ApiEnvelope<T> {
     data: T,
+    #[serde(default)]
+    ok: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -471,6 +483,8 @@ struct DocumentPage {
     #[serde(rename = "data")]
     documents: Vec<OutlineRemoteDocument>,
     pagination: Pagination,
+    #[serde(default)]
+    ok: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -627,6 +641,31 @@ mod tests {
             .list_collection_documents("c")
             .expect_err("changing pagination must fail closed");
         assert!(error.to_string().contains("changed while"));
+    }
+
+    #[test]
+    fn list_rejects_unsuccessful_or_incomplete_success_payloads() {
+        let unsuccessful = r#"{"ok":false,"data":[],"pagination":{"total":0}}"#;
+        let (url, _) = mock_server(vec![(200, unsuccessful)]);
+        let client =
+            HttpOutlineClient::new(&url, "secret".to_string(), Duration::from_secs(2), 0, 100)
+                .expect("client");
+        assert!(client
+            .list_collection_documents("c")
+            .expect_err("ok=false must fail")
+            .to_string()
+            .contains("unsuccessful"));
+
+        let missing_markdown = r#"{"data":[{"id":"one","title":"One","collectionId":"c","parentDocumentId":null}],"pagination":{"total":1}}"#;
+        let (url, _) = mock_server(vec![(200, missing_markdown)]);
+        let client =
+            HttpOutlineClient::new(&url, "secret".to_string(), Duration::from_secs(2), 0, 100)
+                .expect("client");
+        assert!(client
+            .list_collection_documents("c")
+            .expect_err("missing Markdown body must fail")
+            .to_string()
+            .contains("malformed JSON"));
     }
 
     #[test]

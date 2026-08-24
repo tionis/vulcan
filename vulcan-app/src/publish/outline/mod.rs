@@ -41,7 +41,6 @@ pub(crate) fn deterministic_remote_uuid(seed: &str) -> String {
 pub struct OutlineRemoteDocument {
     pub id: String,
     pub title: String,
-    #[serde(default)]
     pub text: String,
     pub collection_id: String,
     pub parent_document_id: Option<String>,
