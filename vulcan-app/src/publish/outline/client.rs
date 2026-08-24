@@ -9,6 +9,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::thread;
 use std::time::Duration;
 
@@ -68,6 +69,11 @@ impl HttpOutlineClient {
         self.base_url
             .join(&format!("api/{method}"))
             .map_err(|_| AppError::operation("failed to construct Outline API endpoint"))
+    }
+
+    #[must_use]
+    pub fn connector_identity(&self) -> String {
+        self.base_url.to_string()
     }
 
     fn post<R: DeserializeOwned>(&self, method: &str, body: &Value) -> Result<R, AppError> {
@@ -144,6 +150,8 @@ impl OutlineApi for HttpOutlineClient {
     ) -> Result<Vec<OutlineRemoteDocument>, AppError> {
         let mut documents = Vec::new();
         let mut offset = 0_usize;
+        let mut expected_total = None;
+        let mut document_ids = BTreeSet::new();
         loop {
             let page: DocumentPage = self.post_envelope(
                 "documents.list",
@@ -153,12 +161,34 @@ impl OutlineApi for HttpOutlineClient {
                     "offset": offset,
                 }),
             )?;
+            if expected_total
+                .replace(page.pagination.total)
+                .is_some_and(|total| total != page.pagination.total)
+            {
+                return Err(AppError::operation(
+                    "Outline collection changed while its paginated document snapshot was being listed; retry the pull",
+                ));
+            }
             let count = page.documents.len();
+            if page
+                .documents
+                .iter()
+                .any(|document| !document_ids.insert(document.id.clone()))
+            {
+                return Err(AppError::operation(
+                    "Outline returned a duplicate document while paginating a changing collection; retry the pull",
+                ));
+            }
             documents.extend(page.documents);
             if count == 0 || offset.saturating_add(count) >= page.pagination.total {
                 break;
             }
             offset = offset.saturating_add(count);
+        }
+        if documents.len() != expected_total.unwrap_or_default() {
+            return Err(AppError::operation(
+                "Outline returned an incomplete paginated document snapshot; retry the pull",
+            ));
         }
         Ok(documents)
     }
@@ -553,6 +583,32 @@ mod tests {
                 || request.contains("Authorization: Bearer secret")));
         assert!(requests[0].contains("\"offset\":0"));
         assert!(requests[1].contains("\"offset\":1"));
+    }
+
+    #[test]
+    fn list_rejects_a_collection_that_changes_between_pages() {
+        let page_one = r#"{"data":[{"id":"one","title":"One","text":"","collectionId":"c","parentDocumentId":null}],"pagination":{"total":2}}"#;
+        let page_two = r#"{"data":[{"id":"two","title":"Two","text":"","collectionId":"c","parentDocumentId":null}],"pagination":{"total":3}}"#;
+        let (url, _) = mock_server(vec![(200, page_one), (200, page_two)]);
+        let client =
+            HttpOutlineClient::new(&url, "secret".to_string(), Duration::from_secs(2), 0, 1)
+                .expect("client");
+        let error = client
+            .list_collection_documents("c")
+            .expect_err("changing pagination must fail closed");
+        assert!(error.to_string().contains("changed while"));
+    }
+
+    #[test]
+    fn document_info_preserves_remote_revision_metadata() {
+        let document = r#"{"data":{"id":"one","title":"One","text":"ok","collectionId":"c","parentDocumentId":null,"revision":9,"updatedAt":"2026-08-24T12:00:00Z"}}"#;
+        let (url, _) = mock_server(vec![(200, document)]);
+        let client =
+            HttpOutlineClient::new(&url, "secret".to_string(), Duration::from_secs(2), 0, 100)
+                .expect("client");
+        let document = client.document_info("one").expect("document info");
+        assert_eq!(document.revision, Some(9));
+        assert_eq!(document.updated_at.as_deref(), Some("2026-08-24T12:00:00Z"));
     }
 
     #[test]

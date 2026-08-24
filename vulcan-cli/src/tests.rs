@@ -1269,6 +1269,30 @@ fn parses_stale_outline_attachment_deletion_confirmation() {
     ));
 }
 
+#[test]
+fn parses_outline_pull_remote_work_limit() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "pull",
+        "outline",
+        "wiki",
+        "--into",
+        "Imported",
+        "--max-documents",
+        "2500",
+    ])
+    .expect("remote work limit should parse");
+    assert!(matches!(
+        cli.command,
+        Command::Pull {
+            command: PullCommand::Outline {
+                max_documents: 2500,
+                ..
+            }
+        }
+    ));
+}
+
 #[cfg(feature = "web")]
 #[test]
 fn interactive_outline_conflicts_require_every_item_to_be_approved() {
@@ -1328,6 +1352,7 @@ fn parses_outline_pull_conflict_modes() {
                 root_document: Vec::new(),
                 max_depth: None,
                 exclude_document: Vec::new(),
+                max_documents: 10_000,
                 archive_missing: None,
                 delete_missing: false,
                 confirm_delete_count: None,

@@ -833,6 +833,8 @@ mod tests {
             collection_id: "collection".to_string(),
             parent_document_id: parent.map(str::to_string),
             archived_at: None,
+            revision: None,
+            updated_at: None,
         }
     }
 

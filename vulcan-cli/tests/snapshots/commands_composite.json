@@ -5893,6 +5893,17 @@
                 ]
               },
               {
+                "help": "Abort before planning if the remote collection exceeds this document count",
+                "id": "max_documents",
+                "long": "max-documents",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "COUNT"
+                ]
+              },
+              {
                 "help": "Move documents missing from Outline into this recoverable vault directory",
                 "id": "archive_missing",
                 "long": "archive-missing",

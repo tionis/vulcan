@@ -2467,6 +2467,13 @@ pub enum PullCommand {
         exclude_document: Vec<String>,
         #[arg(
             long,
+            value_name = "COUNT",
+            default_value_t = 10_000,
+            help = "Abort before planning if the remote collection exceeds this document count"
+        )]
+        max_documents: usize,
+        #[arg(
+            long,
             value_name = "VAULT_DIRECTORY",
             conflicts_with_all = ["delete_missing", "interactive"],
             help = "Move documents missing from Outline into this recoverable vault directory"

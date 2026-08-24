@@ -1746,6 +1746,7 @@ fn run_pull_command(
         root_document,
         max_depth,
         exclude_document,
+        max_documents,
         archive_missing,
         delete_missing,
         confirm_delete_count,
@@ -1829,6 +1830,8 @@ fn run_pull_command(
             OutlinePullStaleAttachmentPolicy::Retain
         },
         confirmed_stale_attachment_delete_count: *confirm_stale_attachment_delete_count,
+        connector_identity: Some(client.connector_identity()),
+        max_remote_documents: *max_documents,
     };
     let mut progress = (cli.output == OutputFormat::Human && !cli.quiet)
         .then(|| OutlinePullProgressReporter::new(use_stderr_color));

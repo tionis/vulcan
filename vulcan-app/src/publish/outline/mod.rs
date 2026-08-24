@@ -47,6 +47,10 @@ pub struct OutlineRemoteDocument {
     pub parent_document_id: Option<String>,
     #[serde(default)]
     pub archived_at: Option<String>,
+    #[serde(default)]
+    pub revision: Option<u64>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

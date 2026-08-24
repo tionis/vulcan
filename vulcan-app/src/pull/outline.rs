@@ -41,7 +41,7 @@ pub struct OutlinePullConflictPolicy {
     default: Option<OutlinePullConflictResolution>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutlinePullOptions {
     pub apply_remote_moves: bool,
     pub missing_policy: OutlinePullMissingPolicy,
@@ -49,6 +49,23 @@ pub struct OutlinePullOptions {
     pub scope: OutlinePullScope,
     pub stale_attachment_policy: OutlinePullStaleAttachmentPolicy,
     pub confirmed_stale_attachment_delete_count: Option<usize>,
+    pub connector_identity: Option<String>,
+    pub max_remote_documents: usize,
+}
+
+impl Default for OutlinePullOptions {
+    fn default() -> Self {
+        Self {
+            apply_remote_moves: false,
+            missing_policy: OutlinePullMissingPolicy::default(),
+            confirmed_delete_count: None,
+            scope: OutlinePullScope::default(),
+            stale_attachment_policy: OutlinePullStaleAttachmentPolicy::default(),
+            confirmed_stale_attachment_delete_count: None,
+            connector_identity: None,
+            max_remote_documents: 10_000,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -266,6 +283,8 @@ struct OutlinePullState {
     profile: String,
     collection_id: String,
     destination: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    connector_identity: Option<String>,
     #[serde(default)]
     documents: BTreeMap<String, OutlinePullMapping>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -289,6 +308,12 @@ struct OutlinePullMapping {
     last_remote_content_hash: String,
     #[serde(default)]
     last_remote_source_hash: Option<String>,
+    #[serde(default)]
+    last_remote_source: Option<String>,
+    #[serde(default)]
+    last_remote_revision: Option<u64>,
+    #[serde(default)]
+    last_remote_updated_at: Option<String>,
     last_remote_title: String,
     last_remote_parent_id: Option<String>,
     last_materialized_local_hash: String,
@@ -332,12 +357,18 @@ struct OutlinePullAttachmentPlan {
 }
 
 impl OutlinePullState {
-    fn empty(profile: &str, collection_id: &str, destination: &str) -> Self {
+    fn empty(
+        profile: &str,
+        collection_id: &str,
+        destination: &str,
+        connector_identity: Option<&str>,
+    ) -> Self {
         Self {
             version: STATE_VERSION,
             profile: profile.to_string(),
             collection_id: collection_id.to_string(),
             destination: destination.to_string(),
+            connector_identity: connector_identity.map(str::to_string),
             documents: BTreeMap::new(),
             incomplete_operation: None,
             last_completed_operation_id: None,
@@ -349,6 +380,7 @@ impl OutlinePullState {
         profile: &str,
         collection_id: &str,
         destination: &str,
+        connector_identity: Option<&str>,
     ) -> Result<(), AppError> {
         if self.version != STATE_VERSION
             || self.profile != profile
@@ -357,6 +389,24 @@ impl OutlinePullState {
         {
             return Err(AppError::operation(
                 "Outline pull state belongs to a different route, collection, or destination",
+            ));
+        }
+        if let (Some(stored), Some(requested)) =
+            (self.connector_identity.as_deref(), connector_identity)
+        {
+            if stored != requested {
+                return Err(AppError::operation(
+                    "Outline pull state belongs to a different connector server",
+                ));
+            }
+        }
+        if self
+            .connector_identity
+            .as_deref()
+            .is_some_and(str::is_empty)
+        {
+            return Err(AppError::operation(
+                "Outline pull state contains an empty connector identity",
             ));
         }
         if self.documents.iter().any(|(remote_id, mapping)| {
@@ -371,6 +421,13 @@ impl OutlinePullState {
         }
         let mut local_paths = BTreeSet::new();
         for mapping in self.documents.values() {
+            if mapping.last_remote_source.as_deref().is_some_and(|source| {
+                mapping.last_remote_source_hash.as_deref() != Some(content_hash(source).as_str())
+            }) {
+                return Err(AppError::operation(
+                    "Outline pull state remote source does not match its recorded hash",
+                ));
+            }
             validate_managed_path(destination, &mapping.local_path)?;
             if !local_paths.insert(mapping.local_path.to_lowercase()) {
                 return Err(AppError::operation(
@@ -505,8 +562,15 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
         None,
     );
     if dry_run {
-        let state = load_state(paths, profile, collection_id, &destination)?;
+        let state = load_state(
+            paths,
+            profile,
+            collection_id,
+            &destination,
+            options.connector_identity.as_deref(),
+        )?;
         let remote = api.list_collection_documents(collection_id)?;
+        validate_remote_work_limit(&remote, options.max_remote_documents)?;
         ensure_pull_not_cancelled(is_cancelled, None)?;
         emit_pull_progress(
             on_progress,
@@ -545,8 +609,15 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
     let _write_lock =
         vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
     let lock = StateLock::acquire(paths, profile)?;
-    let mut state = load_state(paths, profile, collection_id, &destination)?;
+    let mut state = load_state(
+        paths,
+        profile,
+        collection_id,
+        &destination,
+        options.connector_identity.as_deref(),
+    )?;
     let remote = api.list_collection_documents(collection_id)?;
+    validate_remote_work_limit(&remote, options.max_remote_documents)?;
     ensure_pull_not_cancelled(is_cancelled, None)?;
     emit_pull_progress(
         on_progress,
@@ -639,6 +710,11 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
             .collect(),
         completed_actions,
     });
+    if state.connector_identity.is_none() {
+        state
+            .connector_identity
+            .clone_from(&options.connector_identity);
+    }
     lock.save(&state)?;
     let mutation_total = actions
         .iter()
@@ -877,6 +953,9 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
                     local_path: action.local_path.clone(),
                     last_remote_content_hash: content_hash(desired),
                     last_remote_source_hash: Some(content_hash(&remote.text)),
+                    last_remote_source: Some(remote.text.clone()),
+                    last_remote_revision: remote.revision,
+                    last_remote_updated_at: remote.updated_at.clone(),
                     last_remote_title: remote.title.clone(),
                     last_remote_parent_id: remote.parent_document_id.clone(),
                     last_materialized_local_hash: if action.preserves_local_changes {
@@ -1938,6 +2017,24 @@ fn content_hash(content: &str) -> String {
     bytes_hash(content.as_bytes())
 }
 
+fn validate_remote_work_limit(
+    remote: &[OutlineRemoteDocument],
+    max_remote_documents: usize,
+) -> Result<(), AppError> {
+    if max_remote_documents == 0 {
+        return Err(AppError::operation(
+            "Outline pull max_remote_documents must be greater than zero",
+        ));
+    }
+    if remote.len() > max_remote_documents {
+        return Err(AppError::operation(format!(
+            "Outline collection contains {} documents, exceeding the configured pull limit of {max_remote_documents}",
+            remote.len()
+        )));
+    }
+    Ok(())
+}
+
 fn bytes_hash(bytes: &[u8]) -> String {
     blake3::hash(bytes).to_hex().to_string()
 }
@@ -1964,15 +2061,21 @@ fn load_state(
     profile: &str,
     collection_id: &str,
     destination: &str,
+    connector_identity: Option<&str>,
 ) -> Result<OutlinePullState, AppError> {
     let path = state_path(paths, profile)?;
     if !path.exists() {
-        return Ok(OutlinePullState::empty(profile, collection_id, destination));
+        return Ok(OutlinePullState::empty(
+            profile,
+            collection_id,
+            destination,
+            connector_identity,
+        ));
     }
     let bytes = fs::read(path).map_err(AppError::operation)?;
     let state: OutlinePullState = serde_json::from_slice(&bytes)
         .map_err(|_| AppError::operation("Outline pull state contains malformed JSON"))?;
-    state.validate(profile, collection_id, destination)?;
+    state.validate(profile, collection_id, destination, connector_identity)?;
     Ok(state)
 }
 
@@ -1990,7 +2093,7 @@ pub fn load_outline_pulled_bindings(
     let state: OutlinePullState = serde_json::from_slice(&bytes)
         .map_err(|_| AppError::operation("Outline pull state contains malformed JSON"))?;
     let destination = state.destination.clone();
-    state.validate(profile, collection_id, &destination)?;
+    state.validate(profile, collection_id, &destination, None)?;
     state
         .documents
         .into_iter()
@@ -2165,6 +2268,8 @@ mod tests {
             collection_id: "collection".to_string(),
             parent_document_id: parent.map(str::to_string),
             archived_at: None,
+            revision: None,
+            updated_at: None,
         }
     }
 
@@ -2322,7 +2427,7 @@ mod tests {
         .expect("retain stale attachment");
         assert_eq!(retained.stale_attachments, 1);
         assert!(temp.path().join(&attachment_path).is_file());
-        let retained_state = load_state(&paths, "wiki", "collection", "Imported").unwrap();
+        let retained_state = load_state(&paths, "wiki", "collection", "Imported", None).unwrap();
         assert_eq!(retained_state.documents["home"].attachments.len(), 1);
 
         let archived = pull_outline_with_options_and_write_authorizer(
@@ -2353,7 +2458,7 @@ mod tests {
             fs::read(temp.path().join(&archive_action.local_path)).unwrap(),
             b"downloaded image"
         );
-        let archived_state = load_state(&paths, "wiki", "collection", "Imported").unwrap();
+        let archived_state = load_state(&paths, "wiki", "collection", "Imported", None).unwrap();
         assert!(archived_state.documents["home"].attachments.is_empty());
     }
 
@@ -2864,7 +2969,7 @@ mod tests {
         .expect_err("second document should observe cancellation");
         assert!(cancelled.message().contains("durable journal"));
         let interrupted =
-            load_state(&paths, "wiki", "collection", "Imported").expect("interrupted state");
+            load_state(&paths, "wiki", "collection", "Imported", None).expect("interrupted state");
         let operation_id = interrupted
             .incomplete_operation
             .as_ref()
@@ -2895,7 +3000,7 @@ mod tests {
         assert!(temp.path().join("Imported/Alpha.md").is_file());
         assert!(temp.path().join("Imported/Beta.md").is_file());
         let completed =
-            load_state(&paths, "wiki", "collection", "Imported").expect("completed state");
+            load_state(&paths, "wiki", "collection", "Imported", None).expect("completed state");
         assert!(completed.incomplete_operation.is_none());
         assert_eq!(
             completed.last_completed_operation_id.as_deref(),
@@ -3008,21 +3113,24 @@ mod tests {
             local_path: path.to_string(),
             last_remote_content_hash: "remote".to_string(),
             last_remote_source_hash: Some("source".to_string()),
+            last_remote_source: Some("source".to_string()),
+            last_remote_revision: None,
+            last_remote_updated_at: None,
             last_remote_title: "Home".to_string(),
             last_remote_parent_id: None,
             last_materialized_local_hash: "local".to_string(),
             base_content: "base".to_string(),
             attachments: BTreeMap::new(),
         };
-        let mut unsafe_state = OutlinePullState::empty("wiki", "collection", "Imported");
+        let mut unsafe_state = OutlinePullState::empty("wiki", "collection", "Imported", None);
         unsafe_state
             .documents
             .insert("one".to_string(), mapping(".vulcan/config.md"));
         assert!(unsafe_state
-            .validate("wiki", "collection", "Imported")
+            .validate("wiki", "collection", "Imported", None)
             .is_err());
 
-        let mut duplicate_state = OutlinePullState::empty("wiki", "collection", "Imported");
+        let mut duplicate_state = OutlinePullState::empty("wiki", "collection", "Imported", None);
         duplicate_state
             .documents
             .insert("one".to_string(), mapping("Imported/Home.md"));
@@ -3030,7 +3138,83 @@ mod tests {
             .documents
             .insert("two".to_string(), mapping("Imported/home.md"));
         assert!(duplicate_state
-            .validate("wiki", "collection", "Imported")
+            .validate("wiki", "collection", "Imported", None)
             .is_err());
+    }
+
+    #[test]
+    fn pull_bounds_remote_work_and_persists_connector_revision_provenance() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        let mut remote = document("home", "Home", "remote source\n", None);
+        remote.revision = Some(7);
+        remote.updated_at = Some("2026-08-24T12:00:00Z".to_string());
+        let api = api(vec![remote]);
+        let bounded = OutlinePullOptions {
+            connector_identity: Some("https://outline.example/".to_string()),
+            max_remote_documents: 1,
+            ..OutlinePullOptions::default()
+        };
+        pull_outline_with_options_and_write_authorizer(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+            &bounded,
+            &|_| Ok(()),
+        )
+        .expect("bounded pull");
+
+        let state = load_state(
+            &paths,
+            "wiki",
+            "collection",
+            "Imported",
+            Some("https://outline.example/"),
+        )
+        .expect("state");
+        assert_eq!(
+            state.connector_identity.as_deref(),
+            Some("https://outline.example/")
+        );
+        let mapping = &state.documents["home"];
+        assert_eq!(
+            mapping.last_remote_source.as_deref(),
+            Some("remote source\n")
+        );
+        assert_eq!(mapping.last_remote_revision, Some(7));
+        assert_eq!(
+            mapping.last_remote_updated_at.as_deref(),
+            Some("2026-08-24T12:00:00Z")
+        );
+        assert!(load_state(
+            &paths,
+            "wiki",
+            "collection",
+            "Imported",
+            Some("https://other.example/"),
+        )
+        .is_err());
+
+        let too_small = OutlinePullOptions {
+            max_remote_documents: 0,
+            ..bounded
+        };
+        assert!(pull_outline_with_options_and_write_authorizer(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            true,
+            &OutlinePullConflictPolicy::abort(),
+            &too_small,
+            &|_| Ok(()),
+        )
+        .is_err());
     }
 }

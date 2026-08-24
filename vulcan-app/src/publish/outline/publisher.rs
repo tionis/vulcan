@@ -853,6 +853,8 @@ mod tests {
                 collection_id: collection_id.to_string(),
                 parent_document_id: parent_document_id.map(str::to_string),
                 archived_at: None,
+                revision: None,
+                updated_at: None,
             };
             self.documents
                 .borrow_mut()
@@ -998,6 +1000,8 @@ mod tests {
             collection_id: "collection".to_string(),
             parent_document_id: None,
             archived_at: None,
+            revision: None,
+            updated_at: None,
         };
         let api = MockApi::default();
         api.documents
@@ -1074,6 +1078,8 @@ mod tests {
                 collection_id: "collection".to_string(),
                 parent_document_id: None,
                 archived_at: None,
+                revision: None,
+                updated_at: None,
             },
         );
         let options = OutlinePublishOptions {

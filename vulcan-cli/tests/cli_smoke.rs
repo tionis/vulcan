@@ -10433,6 +10433,8 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(publishing.contains("--archive-stale-attachments"));
     assert!(publishing.contains("--confirm-stale-attachment-delete-count"));
     assert!(publishing.contains("stale_attachments"));
+    assert!(publishing.contains("--max-documents"));
+    assert!(publishing.contains("connector server"));
     assert!(publishing.contains("--root-document"));
     assert!(publishing.contains("out_of_scope"));
     assert!(publishing.contains("--adopt-pulled"));
