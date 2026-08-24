@@ -10425,6 +10425,8 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(publishing.contains("overwritten_conflicts"));
     assert!(publishing.contains("structured remote-drift conflict"));
     assert!(publishing.contains("--interactive"));
+    assert!(publishing.contains("vulcan pull outline <profile>"));
+    assert!(publishing.contains("--conflict-markers"));
     assert!(publishing.contains("one-time reviewed overwrite"));
     assert!(publishing.contains("monitoring stderr progress"));
     assert!(publishing.contains("--selection-json"));
@@ -15613,6 +15615,71 @@ max_retries = 0
         .contains("generated an export-only placeholder"));
     assert_eq!(report["actions"][0]["kind"], "create");
     assert!(!vault_root.join(".vulcan/publish").exists());
+}
+
+#[test]
+fn pull_outline_dry_run_reports_reverse_transformed_hierarchy_without_mutation() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root");
+    run_scan(&vault_root);
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("mock Outline listener");
+    let address = listener.local_addr().expect("mock Outline address");
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("Outline list request");
+        let mut request = [0_u8; 8192];
+        let read = stream.read(&mut request).expect("read Outline request");
+        let request = String::from_utf8_lossy(&request[..read]);
+        assert!(request.contains("/api/documents.list"));
+        assert!(request.contains("Bearer test-outline-token"));
+        let body = r#"{"data":[{"id":"home","title":"Home","text":":::warning\nCareful\n:::\n","collectionId":"collection","parentDocumentId":null}],"pagination":{"total":1}}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .expect("write Outline response");
+    });
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        format!(
+            r#"
+[publish.outline.profiles.wiki]
+base_url = "http://{address}"
+collection_id = "collection"
+token_env = "VULCAN_TEST_OUTLINE_TOKEN"
+max_retries = 0
+"#
+        ),
+    )
+    .expect("Outline config");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("VULCAN_TEST_OUTLINE_TOKEN", "test-outline-token")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "--output",
+            "json",
+            "pull",
+            "outline",
+            "wiki",
+            "--into",
+            "Imported",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    handle.join().expect("mock Outline server should join");
+    let report = parse_stdout_json(&assert);
+    assert_eq!(report["dry_run"], true);
+    assert_eq!(report["created"], 1);
+    assert_eq!(report["actions"][0]["local_path"], "Imported/Home.md");
+    assert!(!vault_root.join("Imported/Home.md").exists());
+    assert!(!vault_root.join(".vulcan/integrations").exists());
 }
 
 #[test]

@@ -1167,6 +1167,80 @@ fn interactive_outline_conflicts_require_every_item_to_be_approved() {
 }
 
 #[test]
+fn parses_outline_pull_conflict_modes() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "pull",
+        "outline",
+        "wiki",
+        "--into",
+        "Imported/Outline",
+        "--dry-run",
+    ])
+    .expect("Outline pull should parse");
+    assert_eq!(
+        cli.command,
+        Command::Pull {
+            command: PullCommand::Outline {
+                profile: "wiki".to_string(),
+                into: "Imported/Outline".to_string(),
+                dry_run: true,
+                overwrite_conflicts: false,
+                conflict_markers: false,
+                interactive: false,
+                no_commit: false,
+            }
+        }
+    );
+    assert!(Cli::try_parse_from([
+        "vulcan",
+        "pull",
+        "outline",
+        "wiki",
+        "--into",
+        "Imported",
+        "--overwrite-conflicts",
+        "--conflict-markers",
+    ])
+    .is_err());
+}
+
+#[cfg(feature = "web")]
+#[test]
+fn interactive_outline_pull_supports_mixed_conflict_resolutions() {
+    let action = |path: &str| OutlinePullPromptItem {
+        local_path: path.to_string(),
+        reason: "both changed".to_string(),
+        local_changed: true,
+        remote_changed: true,
+    };
+    let actions = vec![action("One.md"), action("Two.md"), action("Three.md")];
+    let mut input = std::io::Cursor::new(b"o\nam\n");
+    let mut output = Vec::new();
+
+    let decisions = prompt_outline_pull_items(&actions, &mut input, &mut output)
+        .expect("interactive pull decisions")
+        .expect("approved pull");
+    assert_eq!(
+        decisions,
+        vec![
+            (
+                "One.md".to_string(),
+                OutlinePullConflictResolution::OverwriteLocal
+            ),
+            (
+                "Two.md".to_string(),
+                OutlinePullConflictResolution::ConflictMarkers
+            ),
+            (
+                "Three.md".to_string(),
+                OutlinePullConflictResolution::ConflictMarkers
+            ),
+        ]
+    );
+}
+
+#[test]
 fn parses_note_checkbox_command() {
     let cli = Cli::try_parse_from([
         "vulcan",

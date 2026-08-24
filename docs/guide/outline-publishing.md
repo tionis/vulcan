@@ -146,8 +146,20 @@ Human output reports selection, compatibility preparation, remote planning, docu
 - Replacing a changed attachment uploads a new Outline attachment and rewrites managed document links. Old, now-unreferenced attachment objects are left for Outline's own cleanup because the public API has no archive operation for attachments.
 - Compatibility targets Outline 1.9.x and the current official API. Validate against a staging collection before upgrading across a major Outline release.
 
-### Planned inbound route
+### Outline pull into the vault
 
-A separate scoped `Outline -> Vulcan -> local Markdown` route is now planned as part of Phase 15's external knowledge-hub architecture. The pure inbound Markdown compatibility primitives already convert supported Outline callout fences into Obsidian callouts and mapped `/doc/<remote-id>` links into wikilinks. The route still needs to supply durable ID-to-path bindings and perform hierarchy and attachment materialization. The concrete use case is a canonical local wiki that can ingest selected external knowledge and then publish independently selected local content to Outline or other systems.
+The focused inbound command reuses an Outline profile's endpoint, token environment variable, collection ID, timeout, retry, and pagination settings. The destination is always explicit and contained in the vault:
 
-This does not change the command described above: `vulcan publish outline` remains one-way and the current publisher never consumes Outline as source data. The future inbound route will have its own remote scope, local destination namespace, authority and deletion policy, durable revision state, hierarchy/attachment materialization, pagination and rate limits, and local/remote drift handling. Pull and push remain separately planned and journaled operations rather than implicit bidirectional synchronization. See [Local information hub and external wikis](information-hub.md).
+```sh
+OUTLINE_API_TOKEN=... vulcan pull outline wiki --into Imported/Outline --dry-run
+OUTLINE_API_TOKEN=... vulcan pull outline wiki --into Imported/Outline
+OUTLINE_API_TOKEN=... vulcan pull outline wiki --into Imported/Outline --interactive
+OUTLINE_API_TOKEN=... vulcan pull outline wiki --into Imported/Outline --conflict-markers
+OUTLINE_API_TOKEN=... vulcan pull outline wiki --into Imported/Outline --overwrite-conflicts
+```
+
+The initial pull maps the collection hierarchy to `Parent.md` plus `Parent/Child.md`, rejects unsafe or case-colliding paths, converts supported Outline callout fences to Obsidian callouts, and rewrites links to other pulled `/doc/<remote-id>` documents as wikilinks. Durable state lives under `.vulcan/integrations/outline-pull/<profile>.json`; it records immutable remote IDs, stable local paths, last remote metadata/content hashes, the last materialized local hash, and base Markdown for three-way review. State is locked and atomically replaced outside `cache.db`. Successful writes are followed by an incremental scan, and ordinary mutation-triggered auto-commit remains opt-in and suppressible with `--no-commit`.
+
+Local-only edits are preserved when Outline has not changed. If both sides changed, the default is a mutation-free conflict. `--overwrite-conflicts` chooses the current Outline projection for every conflict. `--conflict-markers` writes whole-document diff3-style `LOCAL`, `BASE`, and `OUTLINE` sections for manual resolution. `--interactive` chooses overwrite or markers per path and re-plans before applying; a resolved marker file that exactly matches the current Outline projection is adopted on the next default pull. Existing unmanaged local files are never claimed unless their content already matches the planned Outline document or the user explicitly resolves the collision.
+
+This is a bounded first inbound slice, not implicit bidirectional synchronization. It pulls the entire explicitly configured collection into one explicit namespace. Existing bindings keep stable local paths when remote titles or parents change. Missing remote documents are reported and retained locally rather than deleted. Remote attachment links remain external Outline URLs; deterministic attachment download/materialization, quarantine policy, generic route configuration, provenance artifacts, and narrower remote selectors remain Phase 15 work. `vulcan publish outline` remains independently one-way and never consumes pull state. See [Local information hub and external wikis](information-hub.md).

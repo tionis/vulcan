@@ -167,6 +167,7 @@ Behavior:
 - Query-capable `[export.profiles.<name>]` entries use the same full-vault default when neither `query` nor `query_json` is configured.
 - `vulcan export search-index [--path <FILE>] [--pretty]`: write the cached search corpus as a static JSON index.
 - `vulcan publish outline <profile> [--dry-run] [--interactive] [--overwrite-conflict <source-path>] [--overwrite-conflicts]`: reconcile a configured one-way publication into an existing Outline collection with human-readable phase/item progress. Remote drift stops publication unless terminal-guided, selective, or all-conflict overwrite authorization is supplied; see [Outline publishing](guide/outline-publishing.md).
+- `vulcan pull outline <profile> --into <vault-directory> [--dry-run] [--interactive|--overwrite-conflicts|--conflict-markers] [--no-commit]`: pull the profile's explicitly configured collection into a contained local namespace, reverse supported Outline Markdown, and reconcile through durable three-way state. Local/remote drift fails closed unless the user chooses remote overwrite or diff3-style conflict markers.
 - `vulcan changes [--checkpoint <name>]`: report note, link, property, and embedding changes since the last scan or a named checkpoint.
 - `vulcan note diff <note> [--since <checkpoint>]`: show one note's changes since git `HEAD`, the last scan, or a named checkpoint.
 

@@ -13,13 +13,14 @@ This document describes both the implemented baseline and the planned architectu
 | Repository-level folder-note convention and structural conversion | Implemented |
 | Outline-compatible ZIP export | Implemented |
 | One-way local-vault-to-Outline API publication with durable mappings and conflict detection | Implemented |
+| Scoped Outline collection pull into an explicit local namespace with durable three-way state | Initial implementation; attachment materialization and generic routes remain planned |
 | mdbase v0.3 discovery, configuration validation, bundled schemas, and secure schema-reference validation | Partially implemented; later conformance profiles remain a candidate track |
 | Multi-vault daemon and device/file-tree sync backends | Planned in Phases 10–12 |
 | Generic external-document bindings and content routes | Planned in Phase 15 |
-| Outline import, HedgeDoc routes, Git-wiki routes, and selective SilverBullet routes | Planned first connector wave |
+| Generic Outline routes, HedgeDoc routes, Git-wiki routes, and selective SilverBullet routes | Planned first connector wave |
 | Full-Space SilverBullet protocol peer, SilverBullet plug, and optional runtime adapter | Planned optional capabilities after their daemon/sync boundaries exist |
 
-The existing Outline publisher remains strictly one-way today. The planned hub does not retroactively make it bidirectional; inbound Outline content will be a separate explicit route with its own authority and conflict policy.
+The existing Outline publisher remains strictly one-way. The focused Outline pull command is a separate inbound operation with an explicit destination and its own durable state; running both commands does not create implicit bidirectional synchronization.
 
 ## Four different integration concepts
 

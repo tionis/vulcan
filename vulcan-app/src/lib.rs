@@ -38,6 +38,7 @@ pub mod notes;
 pub mod outline_markdown;
 pub mod plugins;
 pub mod publish;
+pub mod pull;
 pub mod scan;
 pub mod serve;
 pub mod site;

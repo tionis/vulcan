@@ -5437,6 +5437,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ### 15.4 Durable identity, reconciliation, and conflict policy
 
+- [x] Initial Outline pull slice: persist locked, versioned remote-ID/local-path mappings and local/remote/base content hashes under `.vulcan/integrations/outline-pull/`, with atomic state replacement and fail-closed validation.
 - [ ] Store per-route state under a locked, ignored `.vulcan/integrations/` state area outside `cache.db`, using validated schemas, versioning, verified temporary files, `fsync`, and atomic replacement. A malformed or unsupported state file stops the route without local or remote mutation.
 - [ ] Record route/profile identity, connector/server identity, local source identity/path, remote object ID/type/parent, last pulled remote revision/hash, last pushed local/projection hash, last agreed base hash, attachment mappings, tombstones, cursor, and incomplete operation journal entries.
 - [ ] Do not depend on cache ULIDs as durable cross-system identity. Use explicit frontmatter binding identity when present, then durable route mappings and conservative path/hash recovery; ambiguous adoption is a conflict, not an automatic claim.
@@ -5446,6 +5447,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ### 15.5 Pull and import into the canonical vault
 
+- [x] Initial Outline pull slice: add explicit collection-to-directory dry-run/apply, hierarchy materialization, reverse callout/document-link transforms, incremental rescan, local/remote drift detection, reviewed overwrite, interactive per-file resolution, and diff3-style conflict markers. Retain missing remote documents locally and leave attachment materialization for the broader route work.
 - [ ] Enumerate remote objects with bounded pagination/cursors, fetch revisions and content, translate supported bodies to Markdown, materialize attachments at deterministic contained paths, and map remote hierarchy into an explicit local namespace without exposing partial batches to the indexer.
 - [ ] Preserve provenance, source representation, remote links, and unsupported constructs sufficiently for audit and retry. Lossy conversion must be reported before apply; opaque or non-Markdown documents may use proxy notes containing user-authored metadata/commentary plus an external binding rather than fabricated body text.
 - [ ] Reconcile remote creates, updates, moves, and removals against durable state and current local hashes. Refuse to overwrite local edits by default, write through the vault lock and atomic app workflows, then incrementally rescan before marking the pull complete.

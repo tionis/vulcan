@@ -1,6 +1,6 @@
 ---
 name: publishing-and-export
-description: Build static sites, export or package vault content, and operate one-way Outline publications. Use when the user asks about site builds, export profiles, EPUB/ZIP/SQLite/JSON/CSV output, Outline ZIP or API publishing, graph-based publication scope, reconciliation conflicts, render diagnostics, publish filters, content transforms, or route/link policy.
+description: Build static sites, export or package vault content, operate one-way Outline publications, and pull an explicitly scoped Outline collection into the vault. Use when the user asks about site builds, export profiles, EPUB/ZIP/SQLite/JSON/CSV output, Outline ZIP, API publishing or pull, graph-based publication scope, reconciliation conflicts, render diagnostics, publish filters, content transforms, or route/link policy.
 version: 1
 tools:
   - site
@@ -35,6 +35,7 @@ static output target or a configured one-way Outline publication.
 - For API publication, inspect the configured profile and run `vulcan publish outline <profile> --dry-run` first. A dry run performs remote reads but does not mutate Outline or create mapping state.
 - Review each structured remote-drift conflict's kind, changed dimensions, and base/local/remote metadata before a live publication. Prefer repeating `--overwrite-conflict <source-path>` for only the reviewed managed documents. Use `--overwrite-conflicts` only when every reported conflict should be replaced; check `overwritten_conflicts` in JSON output.
 - When a person is present at a terminal, `--interactive` can review and approve each push conflict. Cancellation remains mutation-free, and Vulcan re-plans after approval before applying.
+- For inbound Outline content, always start with `vulcan pull outline <profile> --into <vault-directory> --dry-run`. Keep the destination stable across runs. Default conflicts preserve local files; choose `--interactive`, `--conflict-markers`, or `--overwrite-conflicts` only after reviewing the plan.
 - After upgrading an older mapping, normalization-only conflicts may require a one-time reviewed overwrite to seed Outline's observed representation. Do not delete or hand-edit state, and do not assume every content-only conflict is normalization rather than a real remote edit.
 - After a successful or interrupted live publication, rerun the same profile rather than editing reconciliation state. Durable mappings allow Vulcan to adopt completed work and continue safely.
 - Inspect link policy, route collisions, asset policy, publish filters, and hidden-content transforms before changing output.
@@ -44,6 +45,7 @@ static output target or a configured one-way Outline publication.
 - Exports and sites should be reproducible from vault source plus config.
 - Outline publication is one-way: the local vault remains canonical. Do not treat remote edits as input. Remote drift fails closed unless the user explicitly authorizes the named source with `--overwrite-conflict` or authorizes all reported conflicts with `--overwrite-conflicts` after a dry run. Neither control affects unmanaged documents, and unresolved conflicts prevent all mutations.
 - Outline mappings under `.vulcan/publish/outline/` are durable state, not rebuildable cache. Do not delete or hand-edit them as a routine repair step.
+- Outline pull state under `.vulcan/integrations/outline-pull/` is also durable. Pull and publish state are deliberately separate and do not imply bidirectional synchronization. Missing remote documents remain local, and current pull support leaves remote attachment URLs external.
 - Custom link transforms require an explicitly configured `custom` policy and a trusted vault-local script. Keep the transform deterministic and free of I/O.
 - Generated folder placeholders exist only in the output or remote collection. Add a configured folder note when authored landing-page content is required.
 - Do not silently publish private or hidden sections; check include/exclude filters and content transforms.
@@ -56,4 +58,5 @@ static output target or a configured one-way Outline publication.
 - Export a selected set of notes to EPUB while excluding private callouts.
 - Build a selection plan from several graph seeds, preview its provenance, and reuse it in an export or publication profile.
 - Dry-run an Outline publication, inspect structured drift evidence, selectively authorize reviewed source paths, then apply the same profile while monitoring stderr progress.
+- Dry-run an Outline pull into an explicit namespace, then preserve, overwrite, or materialize markers for reviewed local/remote conflicts.
 - Render one note to HTML to inspect markdown/parser behavior.

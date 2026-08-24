@@ -2403,6 +2403,44 @@ pub enum PublishCommand {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum PullCommand {
+    #[command(about = "Pull and reconcile one configured Outline collection into the vault")]
+    Outline {
+        #[arg(help = "Profile name under [publish.outline.profiles.<name>]")]
+        profile: String,
+        #[arg(
+            long,
+            value_name = "VAULT_DIRECTORY",
+            required = true,
+            help = "Explicit relative vault directory for the imported Outline hierarchy"
+        )]
+        into: String,
+        #[arg(long, help = "Plan local changes without writing notes or pull state")]
+        dry_run: bool,
+        #[arg(
+            long,
+            conflicts_with_all = ["conflict_markers", "interactive"],
+            help = "Replace every conflicting local note with the remote Outline result"
+        )]
+        overwrite_conflicts: bool,
+        #[arg(
+            long,
+            conflicts_with_all = ["overwrite_conflicts", "interactive"],
+            help = "Write diff3-style LOCAL/BASE/OUTLINE markers for every content conflict"
+        )]
+        conflict_markers: bool,
+        #[arg(
+            long,
+            conflicts_with_all = ["dry_run", "overwrite_conflicts", "conflict_markers"],
+            help = "Choose overwrite or conflict markers for each local/remote conflict"
+        )]
+        interactive: bool,
+        #[arg(long, help = "Suppress auto-commit for pulled local note changes")]
+        no_commit: bool,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Args)]
 pub struct ExportQueryArgs {
     #[arg(
@@ -4990,6 +5028,11 @@ pub enum Command {
     Publish {
         #[command(subcommand)]
         command: PublishCommand,
+    },
+    #[command(about = "Pull explicitly scoped content from configured external targets")]
+    Pull {
+        #[command(subcommand)]
+        command: PullCommand,
     },
     #[command(
         about = "Inspect and import effective Vulcan configuration",

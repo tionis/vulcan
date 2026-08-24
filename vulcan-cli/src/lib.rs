@@ -429,7 +429,7 @@ pub use cli::{
     McpToolPackArg, McpToolPackModeArg, McpTransportArg, NoteAppendPeriodicArg, NoteCheckboxState,
     NoteCommand, NoteGetMode, OutlineBlockReferencePolicyArg, OutlineExcludedTargetPolicyArg,
     OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg,
-    PluginSandboxArg, PropertySortArg, PublishCommand, QueryEngineArg, QueryFormatArg,
+    PluginSandboxArg, PropertySortArg, PublishCommand, PullCommand, QueryEngineArg, QueryFormatArg,
     RefactorCommand, RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand,
     SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg, SiteCommand, SkillCommand,
     SuggestCommand, SuggestLinkStatusArg, TagSortArg, TasksCommand, TasksListSourceArg,
@@ -495,6 +495,11 @@ use vulcan_app::publish::outline::{
     publish_outline_with_progress, HttpOutlineClient, OutlineConflictField, OutlineConflictPolicy,
     OutlineConflictSide, OutlineConflictSideState, OutlinePublishAction, OutlinePublishPhase,
     OutlinePublishProgress,
+};
+#[cfg(feature = "web")]
+use vulcan_app::pull::outline::{
+    pull_outline, pull_outline_with_write_authorizer, OutlinePullAction, OutlinePullActionKind,
+    OutlinePullConflictPolicy, OutlinePullConflictResolution, OutlinePullReport,
 };
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::site::{
@@ -805,11 +810,13 @@ struct SiteBuildProgressReporter {
     next_checkpoint: usize,
 }
 
+#[cfg(feature = "web")]
 struct OutlinePublishProgressReporter {
     palette: AnsiPalette,
     last_phase: Option<OutlinePublishPhase>,
 }
 
+#[cfg(feature = "web")]
 impl OutlinePublishProgressReporter {
     fn new(use_color: bool) -> Self {
         Self {
@@ -1529,6 +1536,17 @@ fn run_publish_command(
     print_outline_publish_report(cli.output, &report)
 }
 
+#[cfg(not(feature = "web"))]
+fn run_pull_command(
+    _cli: &Cli,
+    _paths: &VaultPaths,
+    _command: &PullCommand,
+) -> Result<(), CliError> {
+    Err(CliError::operation(
+        "Outline pulling requires the `web` feature",
+    ))
+}
+
 #[cfg(feature = "web")]
 fn prompt_outline_conflicts(
     actions: &[OutlinePublishAction],
@@ -1649,6 +1667,278 @@ fn print_outline_publish_report(
 }
 
 #[cfg(feature = "web")]
+#[allow(clippy::too_many_lines)]
+fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Result<(), CliError> {
+    let PullCommand::Outline {
+        profile,
+        into,
+        dry_run,
+        overwrite_conflicts,
+        conflict_markers,
+        interactive,
+        no_commit,
+    } = command;
+    if *interactive
+        && (cli.output != OutputFormat::Human
+            || !io::stdin().is_terminal()
+            || !io::stderr().is_terminal())
+    {
+        return Err(CliError::operation(
+            "interactive Outline pull conflict handling requires human output and terminal stdin/stderr",
+        ));
+    }
+    let loaded = load_vault_config(paths);
+    let profile_config = loaded
+        .config
+        .publish
+        .outline
+        .profiles
+        .get(profile)
+        .ok_or_else(|| CliError::operation(format!("Outline profile `{profile}` was not found")))?;
+    let required = |value: &Option<String>, name: &str| {
+        value
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                CliError::operation(format!("Outline profile `{profile}` requires `{name}`"))
+            })
+    };
+    let base_url = required(&profile_config.base_url, "base_url")?;
+    let collection_id = required(&profile_config.collection_id, "collection_id")?;
+    let token_env = required(&profile_config.token_env, "token_env")?;
+    let token = std::env::var(&token_env).map_err(|_| {
+        CliError::operation(format!(
+            "Outline token environment variable `{token_env}` is not set"
+        ))
+    })?;
+    let client = HttpOutlineClient::new(
+        &base_url,
+        token,
+        Duration::from_secs(profile_config.timeout_seconds.unwrap_or(30).clamp(1, 300)),
+        profile_config.max_retries.unwrap_or(3),
+        profile_config.page_size.unwrap_or(100),
+    )
+    .map_err(CliError::operation)?;
+    let mut policy = if *overwrite_conflicts {
+        OutlinePullConflictPolicy::overwrite_all()
+    } else if *conflict_markers {
+        OutlinePullConflictPolicy::markers_all()
+    } else {
+        OutlinePullConflictPolicy::abort()
+    };
+    let plan = pull_outline(paths, &client, profile, &collection_id, into, true, &policy)
+        .map_err(CliError::operation)?;
+    if *dry_run {
+        return print_outline_pull_report(cli.output, &plan);
+    }
+    if *interactive && plan.conflicts > 0 {
+        let decisions = {
+            let stdin = io::stdin();
+            let mut input = stdin.lock();
+            let stderr = io::stderr();
+            let mut output = stderr.lock();
+            prompt_outline_pull_conflicts(&plan.actions, &mut input, &mut output)?
+        };
+        let Some(decisions) = decisions else {
+            return print_outline_pull_report(cli.output, &plan);
+        };
+        policy = OutlinePullConflictPolicy::selected(decisions);
+    } else if plan.conflicts > 0 {
+        return print_outline_pull_report(cli.output, &plan);
+    }
+    let guard = selected_permission_guard(cli, paths)?;
+    for action in &plan.actions {
+        if matches!(
+            action.kind,
+            OutlinePullActionKind::Create
+                | OutlinePullActionKind::Update
+                | OutlinePullActionKind::WriteConflictMarkers
+        ) {
+            guard
+                .check_write_path(&action.local_path)
+                .map_err(CliError::operation)?;
+        }
+    }
+    let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
+    warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+    let authorize_write = |path: &str| {
+        guard
+            .check_write_path(path)
+            .map_err(vulcan_app::AppError::operation)
+    };
+    let report = pull_outline_with_write_authorizer(
+        paths,
+        &client,
+        profile,
+        &collection_id,
+        into,
+        false,
+        &policy,
+        &authorize_write,
+    )
+    .map_err(CliError::operation)?;
+    if report.applied {
+        let changed_paths = report
+            .actions
+            .iter()
+            .filter(|action| {
+                matches!(
+                    action.kind,
+                    OutlinePullActionKind::Create
+                        | OutlinePullActionKind::Update
+                        | OutlinePullActionKind::WriteConflictMarkers
+                )
+            })
+            .map(|action| action.local_path.clone())
+            .collect::<Vec<_>>();
+        auto_commit
+            .commit(
+                paths,
+                "pull-outline",
+                &changed_paths,
+                cli.permissions.as_deref(),
+                cli.quiet,
+            )
+            .map_err(CliError::operation)?;
+    }
+    print_outline_pull_report(cli.output, &report)
+}
+
+#[cfg(feature = "web")]
+fn prompt_outline_pull_conflicts(
+    actions: &[OutlinePullAction],
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+) -> Result<Option<Vec<(String, OutlinePullConflictResolution)>>, CliError> {
+    let conflicts = actions
+        .iter()
+        .filter(|action| action.kind == OutlinePullActionKind::Conflict)
+        .map(|action| OutlinePullPromptItem {
+            local_path: action.local_path.clone(),
+            reason: action.reason.clone(),
+            local_changed: action.local_changed,
+            remote_changed: action.remote_changed,
+        })
+        .collect::<Vec<_>>();
+    prompt_outline_pull_items(&conflicts, input, output)
+}
+
+#[cfg(feature = "web")]
+struct OutlinePullPromptItem {
+    local_path: String,
+    reason: String,
+    local_changed: bool,
+    remote_changed: bool,
+}
+
+#[cfg(feature = "web")]
+fn prompt_outline_pull_items(
+    conflicts: &[OutlinePullPromptItem],
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+) -> Result<Option<Vec<(String, OutlinePullConflictResolution)>>, CliError> {
+    let mut decisions = Vec::with_capacity(conflicts.len());
+    for (index, action) in conflicts.iter().enumerate() {
+        writeln!(
+            output,
+            "\nPull conflict {}/{}: {}\n  {}\n  local_changed={}; remote_changed={}",
+            index + 1,
+            conflicts.len(),
+            action.local_path,
+            action.reason,
+            action.local_changed,
+            action.remote_changed
+        )
+        .map_err(CliError::operation)?;
+        loop {
+            write!(
+                output,
+                "Choose [o]verwrite local/[m]arkers/[ao] overwrite all/[am] markers all/[q]uit: "
+            )
+            .map_err(CliError::operation)?;
+            output.flush().map_err(CliError::operation)?;
+            let mut answer = String::new();
+            if input.read_line(&mut answer).map_err(CliError::operation)? == 0 {
+                return Ok(None);
+            }
+            match answer.trim().to_ascii_lowercase().as_str() {
+                "o" | "overwrite" => {
+                    decisions.push((
+                        action.local_path.clone(),
+                        OutlinePullConflictResolution::OverwriteLocal,
+                    ));
+                    break;
+                }
+                "m" | "markers" => {
+                    decisions.push((
+                        action.local_path.clone(),
+                        OutlinePullConflictResolution::ConflictMarkers,
+                    ));
+                    break;
+                }
+                "ao" => {
+                    decisions.extend(conflicts[index..].iter().map(|remaining| {
+                        (
+                            remaining.local_path.clone(),
+                            OutlinePullConflictResolution::OverwriteLocal,
+                        )
+                    }));
+                    return Ok(Some(decisions));
+                }
+                "am" => {
+                    decisions.extend(conflicts[index..].iter().map(|remaining| {
+                        (
+                            remaining.local_path.clone(),
+                            OutlinePullConflictResolution::ConflictMarkers,
+                        )
+                    }));
+                    return Ok(Some(decisions));
+                }
+                "" | "q" | "quit" => return Ok(None),
+                _ => writeln!(output, "Enter o, m, ao, am, or q.").map_err(CliError::operation)?,
+            }
+        }
+    }
+    Ok(Some(decisions))
+}
+
+#[cfg(feature = "web")]
+fn print_outline_pull_report(
+    output: OutputFormat,
+    report: &OutlinePullReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report)?,
+        OutputFormat::Human | OutputFormat::Markdown => {
+            for action in &report.actions {
+                println!(
+                    "{:?}\t{}\t{}",
+                    action.kind, action.local_path, action.reason
+                );
+            }
+            println!(
+                "created={}; updated={}; unchanged={}; markers={}; conflicts={}; remote_missing={}",
+                report.created,
+                report.updated,
+                report.unchanged,
+                report.conflict_markers_written,
+                report.conflicts,
+                report.remote_missing
+            );
+        }
+    }
+    if report.conflicts == 0 {
+        Ok(())
+    } else {
+        Err(CliError::operation(format!(
+            "Outline pull stopped with {} local/remote conflict(s)",
+            report.conflicts
+        )))
+    }
+}
+
+#[cfg(feature = "web")]
 fn outline_conflict_side_summary(side: &OutlineConflictSide) -> String {
     match side.state {
         OutlineConflictSideState::Unchanged => "unchanged".to_string(),
@@ -1761,6 +2051,7 @@ fn command_uses_auto_refresh(command: &Command) -> bool {
         | Command::Checkpoint { .. }
         | Command::Export { .. }
         | Command::Publish { .. }
+        | Command::Pull { .. }
         | Command::Site { .. } => true,
         Command::Daily { command } => matches!(
             command,
@@ -3828,6 +4119,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             let read_filter = selected_read_permission_filter(cli, &paths)?;
             run_publish_command(cli, &paths, command, read_filter.as_ref(), use_stderr_color)
         }
+        Command::Pull { ref command } => run_pull_command(cli, &paths, command),
         Command::Export { ref command } => {
             let read_filter = selected_read_permission_filter(cli, &paths)?;
             match command {
