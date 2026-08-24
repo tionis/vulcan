@@ -88,8 +88,10 @@ This keeps context small while preserving full surface area.
 
 Run `vulcan agent install` once per vault to scaffold `AGENTS.md`, the bundled `.agents/skills/`
 directory, and the default prompt files. Add `--example-tool` to also write a starter exposed skill
-command under `.agents/skills/`. Re-run with `--overwrite` after upgrading Vulcan if the bundled files
-should be refreshed.
+command under `.agents/skills/`. Re-run `vulcan agent install` after upgrading: marked
+Vulcan-managed skills refresh automatically, while unmarked same-name skills, `AGENTS.md`, prompts,
+and the example tool are preserved. Use `--reset <skill>` only to replace and re-enroll one selected
+bundled skill.
 
 ### 3. Tool execution
 

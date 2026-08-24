@@ -9,15 +9,15 @@ use crate::{
     AgentInstallArgs, AgentRuntimeArg, Cli, CliError, InitArgs, OutputFormat,
 };
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;
 use std::path::{Component, Path, PathBuf};
 use vulcan_core::{
     all_importers, annotate_import_conflicts, assistant_config_summary, assistant_prompts_root,
     assistant_skills_root, initialize_vault, list_assistant_prompts, list_assistant_skills,
-    load_vault_config, read_vault_agents_file, ImportTarget, InitSummary, PermissionGuard,
-    VaultPaths,
+    load_vault_config, read_vault_agents_file, skill_source_is_vulcan_managed, ImportTarget,
+    InitSummary, PermissionGuard, VaultPaths,
 };
 
 struct BundledTextFile {
@@ -257,6 +257,7 @@ enum SupportFileStatus {
     Created,
     Updated,
     Kept,
+    Preserved,
 }
 
 impl SupportFileStatus {
@@ -265,6 +266,7 @@ impl SupportFileStatus {
             Self::Created => "created",
             Self::Updated => "updated",
             Self::Kept => "kept",
+            Self::Preserved => "preserved",
         }
     }
 }
@@ -300,7 +302,7 @@ pub(crate) fn run_init_command(
 ) -> Result<InitReport, CliError> {
     let summary = initialize_vault(paths).map_err(CliError::operation)?;
     let support_files = if args.agent_files {
-        write_bundled_support_files(paths, false, args.example_tool)?
+        write_bundled_support_files(paths, false, &[], args.example_tool)?
     } else {
         Vec::new()
     };
@@ -350,7 +352,12 @@ pub(crate) fn run_agent_install_command(
     args: &AgentInstallArgs,
 ) -> Result<AgentInstallReport, CliError> {
     Ok(AgentInstallReport {
-        support_files: write_bundled_support_files(paths, args.overwrite, args.example_tool)?,
+        support_files: write_bundled_support_files(
+            paths,
+            args.overwrite,
+            &args.reset,
+            args.example_tool,
+        )?,
     })
 }
 
@@ -457,26 +464,220 @@ fn print_support_file_reports(files: &[SupportFileReport]) {
 fn write_bundled_support_files(
     paths: &VaultPaths,
     overwrite: bool,
+    reset_skills: &[String],
     include_example_tool: bool,
 ) -> Result<Vec<SupportFileReport>, CliError> {
+    validate_reset_skills(BUNDLED_SKILL_FILES, reset_skills)?;
     let mut reports = Vec::new();
+    // AGENTS.md and prompt files are user-editable scaffolds, not managed packages.
     reports.push(write_bundled_text_file(
         paths,
         &BUNDLED_AGENT_TEMPLATE,
-        overwrite,
+        false,
     )?);
-    for file in BUNDLED_SKILL_FILES {
-        reports.push(write_bundled_text_file(paths, file, overwrite)?);
-    }
+    reports.extend(write_bundled_skill_packages(
+        paths,
+        BUNDLED_SKILL_FILES,
+        overwrite,
+        reset_skills,
+    )?);
     for file in BUNDLED_PROMPT_FILES {
-        reports.push(write_bundled_text_file(paths, file, overwrite)?);
+        reports.push(write_bundled_text_file(paths, file, false)?);
     }
     if include_example_tool {
-        for file in BUNDLED_TOOL_FILES {
-            reports.push(write_bundled_text_file(paths, file, overwrite)?);
+        reports.extend(write_create_only_skill_packages(paths, BUNDLED_TOOL_FILES)?);
+    }
+    Ok(reports)
+}
+
+fn write_bundled_skill_packages(
+    paths: &VaultPaths,
+    files: &[BundledTextFile],
+    overwrite: bool,
+    reset_skills: &[String],
+) -> Result<Vec<SupportFileReport>, CliError> {
+    let packages = bundled_skill_packages(files)?;
+    let resets = reset_skills.iter().cloned().collect::<BTreeSet<_>>();
+
+    let mut reports = Vec::new();
+    for (name, package_files) in packages {
+        let root = bundled_skills_root(paths)?.join(&name);
+        let package_exists = path_exists_without_following_symlinks(&root)?;
+        let managed = package_exists && skill_package_is_vulcan_managed(&root)?;
+        let force = overwrite || resets.contains(&name);
+        if package_exists && !managed && !force {
+            reports.extend(preserved_skill_package_reports(paths, &package_files));
+            continue;
+        }
+        ensure_skill_package_write_is_safe(paths, &root, &package_files)?;
+        for file in package_files {
+            reports.push(write_bundled_text_file(
+                paths,
+                file,
+                package_exists || force,
+            )?);
         }
     }
     Ok(reports)
+}
+
+fn validate_reset_skills(
+    files: &[BundledTextFile],
+    reset_skills: &[String],
+) -> Result<(), CliError> {
+    let available = bundled_skill_packages(files)?
+        .into_keys()
+        .collect::<BTreeSet<_>>();
+    if let Some(unknown) = reset_skills.iter().find(|name| !available.contains(*name)) {
+        return Err(CliError::operation(format!(
+            "unknown bundled skill `{unknown}`; available skills: {}",
+            available.into_iter().collect::<Vec<_>>().join(", ")
+        )));
+    }
+    Ok(())
+}
+
+fn write_create_only_skill_packages(
+    paths: &VaultPaths,
+    files: &[BundledTextFile],
+) -> Result<Vec<SupportFileReport>, CliError> {
+    let mut reports = Vec::new();
+    for (name, package_files) in bundled_skill_packages(files)? {
+        let package_root = bundled_skills_root(paths)?.join(name);
+        if path_exists_without_following_symlinks(&package_root)? {
+            reports.extend(preserved_skill_package_reports(paths, &package_files));
+            continue;
+        }
+        for file in package_files {
+            reports.push(write_bundled_text_file(paths, file, false)?);
+        }
+    }
+    Ok(reports)
+}
+
+fn bundled_skill_packages(
+    files: &[BundledTextFile],
+) -> Result<BTreeMap<String, Vec<&BundledTextFile>>, CliError> {
+    let mut packages = BTreeMap::<String, Vec<&BundledTextFile>>::new();
+    for file in files {
+        let Some(Component::Normal(name)) = Path::new(file.relative_path).components().next()
+        else {
+            return Err(CliError::operation(format!(
+                "invalid bundled skill path `{}`",
+                file.relative_path
+            )));
+        };
+        packages
+            .entry(name.to_string_lossy().into_owned())
+            .or_default()
+            .push(file);
+    }
+    Ok(packages)
+}
+
+fn bundled_skills_root(paths: &VaultPaths) -> Result<PathBuf, CliError> {
+    assistant_skills_root(paths).map_err(|error| {
+        CliError::operation(format!(
+            "failed to resolve bundled agent skills directory for `{}`: {error}",
+            paths.vault_root().display()
+        ))
+    })
+}
+
+fn preserved_skill_package_reports(
+    paths: &VaultPaths,
+    files: &[&BundledTextFile],
+) -> Vec<SupportFileReport> {
+    files
+        .iter()
+        .map(|file| SupportFileReport {
+            path: bundled_text_file_display_path(paths, file),
+            kind: file.kind.to_string(),
+            status: SupportFileStatus::Preserved,
+        })
+        .collect()
+}
+
+fn path_exists_without_following_symlinks(path: &Path) -> Result<bool, CliError> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(CliError::operation(format!(
+            "failed to inspect bundled skill package `{}`: {error}",
+            path.display()
+        ))),
+    }
+}
+
+fn skill_package_is_vulcan_managed(root: &Path) -> Result<bool, CliError> {
+    let metadata = fs::symlink_metadata(root).map_err(|error| {
+        CliError::operation(format!(
+            "failed to inspect bundled skill package `{}`: {error}",
+            root.display()
+        ))
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(false);
+    }
+    let skill_path = root.join("SKILL.md");
+    let metadata = match fs::symlink_metadata(&skill_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => {
+            return Err(CliError::operation(format!(
+                "failed to inspect skill ownership marker `{}`: {error}",
+                skill_path.display()
+            )));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Ok(false);
+    }
+    let source = fs::read_to_string(&skill_path).map_err(|error| {
+        CliError::operation(format!(
+            "failed to read skill ownership marker `{}`: {error}",
+            skill_path.display()
+        ))
+    })?;
+    Ok(skill_source_is_vulcan_managed(&source))
+}
+
+fn ensure_skill_package_write_is_safe(
+    paths: &VaultPaths,
+    root: &Path,
+    files: &[&BundledTextFile],
+) -> Result<(), CliError> {
+    for file in files {
+        let destination = bundled_text_file_destination(paths, file);
+        let mut current = Some(destination.as_path());
+        while let Some(path) = current {
+            if !path.starts_with(root) {
+                break;
+            }
+            match fs::symlink_metadata(path) {
+                Ok(metadata) if metadata.file_type().is_symlink() => {
+                    return Err(CliError::operation(format!(
+                        "refusing to refresh bundled skill package `{}` through symlink `{}`",
+                        root.display(),
+                        path.display()
+                    )));
+                }
+                Ok(_) => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(CliError::operation(format!(
+                        "failed to inspect bundled skill package path `{}`: {error}",
+                        path.display()
+                    )));
+                }
+            }
+            if path == root {
+                break;
+            }
+            current = path.parent();
+        }
+    }
+    Ok(())
 }
 
 fn write_bundled_text_file(

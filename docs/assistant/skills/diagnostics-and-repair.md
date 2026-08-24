@@ -9,6 +9,9 @@ tools:
   - search
   - graph
   - help
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: false
 ---
 

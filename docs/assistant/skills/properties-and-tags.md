@@ -8,6 +8,9 @@ tools:
   - refactor_rename_property
   - refactor_merge_tags
   - doctor
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: false
 ---
 

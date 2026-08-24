@@ -71,7 +71,10 @@ Use generic note edits only when the task/daily tools do not model the requested
 Run:
 
 ```sh
-vulcan agent install --overwrite
+vulcan agent install
 ```
+
+This refreshes skills that retain `metadata.vulcan.managed: true` and preserves unmarked
+same-name skills. Use `vulcan agent install --reset <skill>` for a deliberate targeted reset.
 
 Then edit the vault `AGENTS.md` with your routine conventions, inbox paths, daily-note headings, task conventions, and edit rules. Add a Daily Review or Routine skill under `.agents/skills/` when the routine has stable steps.

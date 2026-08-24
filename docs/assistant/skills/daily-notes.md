@@ -8,6 +8,9 @@ tools:
   - daily_list
   - daily_append
   - daily_export_ics
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: false
 ---
 

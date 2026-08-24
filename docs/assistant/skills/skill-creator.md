@@ -10,6 +10,9 @@ tools:
   - tool_list
   - tool_show
   - tool_run
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: false
 ---
 
@@ -48,6 +51,11 @@ require_confirmation: false
 
 Make `description` specific and trigger-oriented. Include both what the skill does and when to use
 it. Keep detailed workflow instructions in the body.
+
+`metadata.vulcan.managed: true` is reserved for skills distributed and refreshed by Vulcan. Omit
+it from user-created skills. To customize an installed bundled skill without future replacement,
+remove the marker before editing; use `vulcan agent install --reset <skill>` to restore and enroll
+one bundled skill again.
 
 ## Vulcan Skill Commands
 

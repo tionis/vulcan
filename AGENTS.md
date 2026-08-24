@@ -159,7 +159,9 @@ item of work:
   create skills for internal implementation details or roadmap-only capabilities.
 - New bundled skills must be registered in `BUNDLED_SKILL_FILES` in
   `vulcan-cli/src/commands/agent.rs` so `vulcan init --agent-files` and
-  `vulcan agent install` actually ship them. Update installed-payload and discovery tests.
+  `vulcan agent install` actually ship them. Their `SKILL.md` frontmatter must include
+  `metadata.vulcan.managed: true`; user-created and example skills must omit that reserved marker.
+  Update installed-payload, managed-refresh, user-collision, and discovery tests.
 - Validate changed skills in their installed `.agents/skills/<name>/SKILL.md` form. Tests should
   cover meaningful command/workflow availability rather than incidental prose formatting.
 - If agent-facing invariants or the general harness contract change, also review

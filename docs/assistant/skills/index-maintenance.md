@@ -10,6 +10,9 @@ tools:
   - repair
   - vectors
   - help
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: false
 ---
 

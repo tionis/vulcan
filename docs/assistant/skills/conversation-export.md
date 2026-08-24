@@ -9,6 +9,7 @@ allowed-tools:
   - note_create
 metadata:
   vulcan:
+    managed: true
     commands:
       - id: export
         script: scripts/export-conversation.js

@@ -26,7 +26,8 @@ Documentation workflow:
 - Use `vulcan help <topic>` for integrated documentation.
 - Use `vulcan help assistant-integration` for the external-runtime contract and `vulcan agent print-config --runtime <name>` for wrapper snippets.
 - Use `vulcan describe --format openai-tools` or `--format mcp` to export machine-readable tool schemas.
-- Run `vulcan agent install --overwrite` after upgrading Vulcan if the bundled harness files need a refresh.
+- Run `vulcan agent install` after upgrading Vulcan. Skills marked with `metadata.vulcan.managed: true` refresh automatically; same-name unmarked skills are preserved.
+- Remove `metadata.vulcan.managed` before customizing a bundled skill to opt out of refreshes. Use `vulcan agent install --reset <skill>` to restore and re-enroll one bundled skill deliberately.
 
 Common pitfalls:
 

@@ -6406,16 +6406,16 @@
       },
       {
         "about": "Install bundled files for external agent harnesses",
-        "after_help": "Notes:\n  `agent install` writes the bundled `AGENTS.md` template, default Vulcan skills, and prompt files.\n  `agent print-config` emits runtime-oriented wrapper snippets, command examples, and folder paths.\n  `agent import` previews or applies imports from common external harness layouts such as `CLAUDE.md`,\n  `.claude/commands/`, `.codex/prompts/`, and `.gemini/skills/`.\n  Skills are installed in the harness-friendly layout `.agents/skills/<name>/SKILL.md`.\n  Use `--example-tool` to also scaffold a starter Agent Skills-compatible skill command under `.agents/skills/<example>/scripts/`, with command metadata in `SKILL.md` under `metadata.vulcan.commands`.\n  Existing files are kept by default; use `--overwrite` to refresh them from the current Vulcan build.\n\nExamples:\n  vulcan agent install\n  vulcan agent install --overwrite\n  vulcan agent print-config --runtime pi\n  vulcan agent print-config --runtime codex\n  vulcan agent import\n  vulcan agent import --apply\n  vulcan agent import --apply --symlink\n  vulcan init --agent-files",
+        "after_help": "Notes:\n  `agent install` writes the bundled `AGENTS.md` template, default Vulcan skills, and prompt files.\n  `agent print-config` emits runtime-oriented wrapper snippets, command examples, and folder paths.\n  `agent import` previews or applies imports from common external harness layouts such as `CLAUDE.md`,\n  `.claude/commands/`, `.codex/prompts/`, and `.gemini/skills/`.\n  Skills are installed in the harness-friendly layout `.agents/skills/<name>/SKILL.md`.\n  Use `--example-tool` to also scaffold a starter Agent Skills-compatible skill command under `.agents/skills/<example>/scripts/`, with command metadata in `SKILL.md` under `metadata.vulcan.commands`.\n  Bundled skills marked with `metadata.vulcan.managed: true` are refreshed automatically.\n  Same-name skills without that marker are preserved as user-owned packages; use `--reset <skill>` to replace and enroll one explicitly.\n  Remove the marker before customizing a bundled skill to opt out of future refreshes.\n  AGENTS.md, prompt files, and the example tool are create-only scaffolds.\n  `--overwrite` force-refreshes all bundled skill names and should only be used after reviewing collisions.\n\nExamples:\n  vulcan agent install\n  vulcan agent install --reset publishing-and-export\n  vulcan agent print-config --runtime pi\n  vulcan agent print-config --runtime codex\n  vulcan agent import\n  vulcan agent import --apply\n  vulcan agent import --apply --symlink\n  vulcan init --agent-files",
         "name": "agent",
         "options": [],
         "subcommands": [
           {
-            "about": "Install bundled AGENTS.md and harness skill files into the vault",
+            "about": "Install or refresh bundled agent support files safely",
             "name": "install",
             "options": [
               {
-                "help": "Overwrite existing bundled AGENTS.md and skill files when contents differ",
+                "help": "Force-refresh every bundled skill, including unmarked same-name skills",
                 "id": "overwrite",
                 "long": "overwrite",
                 "possible_values": [
@@ -6426,6 +6426,17 @@
                 "short": null,
                 "value_names": [
                   "OVERWRITE"
+                ]
+              },
+              {
+                "help": "Replace and mark one same-name skill as Vulcan-managed; repeatable",
+                "id": "reset",
+                "long": "reset",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SKILL"
                 ]
               },
               {

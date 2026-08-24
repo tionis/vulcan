@@ -7,6 +7,9 @@ tools:
   - query
   - daily_list
   - help
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: false
 ---
 

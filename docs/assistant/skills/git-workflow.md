@@ -8,6 +8,9 @@ tools:
   - git_log
   - git_blame
   - git_commit
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: false
 ---
 

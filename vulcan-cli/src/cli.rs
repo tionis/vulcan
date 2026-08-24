@@ -52,11 +52,15 @@ Notes:
   `.claude/commands/`, `.codex/prompts/`, and `.gemini/skills/`.
   Skills are installed in the harness-friendly layout `.agents/skills/<name>/SKILL.md`.
   Use `--example-tool` to also scaffold a starter Agent Skills-compatible skill command under `.agents/skills/<example>/scripts/`, with command metadata in `SKILL.md` under `metadata.vulcan.commands`.
-  Existing files are kept by default; use `--overwrite` to refresh them from the current Vulcan build.
+  Bundled skills marked with `metadata.vulcan.managed: true` are refreshed automatically.
+  Same-name skills without that marker are preserved as user-owned packages; use `--reset <skill>` to replace and enroll one explicitly.
+  Remove the marker before customizing a bundled skill to opt out of future refreshes.
+  AGENTS.md, prompt files, and the example tool are create-only scaffolds.
+  `--overwrite` force-refreshes all bundled skill names and should only be used after reviewing collisions.
 
 Examples:
   vulcan agent install
-  vulcan agent install --overwrite
+  vulcan agent install --reset publishing-and-export
   vulcan agent print-config --runtime pi
   vulcan agent print-config --runtime codex
   vulcan agent import
@@ -3050,9 +3054,16 @@ pub enum PluginSandboxArg {
 pub struct AgentInstallArgs {
     #[arg(
         long,
-        help = "Overwrite existing bundled AGENTS.md and skill files when contents differ"
+        help = "Force-refresh every bundled skill, including unmarked same-name skills"
     )]
     pub overwrite: bool,
+    #[arg(
+        long,
+        value_name = "SKILL",
+        action = clap::ArgAction::Append,
+        help = "Replace and mark one same-name skill as Vulcan-managed; repeatable"
+    )]
+    pub reset: Vec<String>,
     #[arg(
         long,
         help = "Also scaffold an example Agent Skills-compatible skill command under .agents/skills/"
@@ -3111,7 +3122,7 @@ pub struct AgentImportArgs {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum AgentCommand {
-    #[command(about = "Install bundled AGENTS.md and harness skill files into the vault")]
+    #[command(about = "Install or refresh bundled agent support files safely")]
     Install(AgentInstallArgs),
     #[command(about = "Print runtime-integration snippets and command contracts for this vault")]
     PrintConfig(AgentPrintConfigArgs),

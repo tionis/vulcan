@@ -49,7 +49,7 @@ vulcan --vault ~/notes doctor
 For external agent runtimes and MCP clients:
 
 ```sh
-vulcan --vault ~/notes agent install --overwrite
+vulcan --vault ~/notes agent install
 vulcan --vault ~/notes describe --format mcp
 vulcan --vault ~/notes mcp --transport stdio --tool-pack notes-read,search,status
 ```

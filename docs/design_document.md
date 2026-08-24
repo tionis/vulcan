@@ -1204,6 +1204,12 @@ Skills serve double duty: they teach external runtimes how to use Vulcan effecti
 - **diagnostics-and-repair** — health checks, parser diagnostics, broken links, cache repair, and safe investigation flows
 - **conversation-export** — external assistant transcript conversion into stable vault Markdown
 
+Bundled skill packages carry `metadata.vulcan.managed: true`. Reinstalling agent assets refreshes
+only packages that retain this marker; an unmarked same-name directory is user-owned and preserved
+as a whole. Removing the marker is the explicit customization opt-out. A targeted reset may replace
+and re-enroll one bundled skill. Root `AGENTS.md`, prompts, and example skills remain create-only
+scaffolds rather than managed packages.
+
 Each skill includes: when to use it, core patterns with examples, common mistakes to avoid, and example interactions (input → tool calls → result). The "common mistakes" section encodes knowledge that otherwise takes multiple failed tool calls to learn.
 
 ### External harness support

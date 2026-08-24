@@ -6,6 +6,9 @@ tools:
   - help
   - describe
   - dataview_query
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: false
 ---
 

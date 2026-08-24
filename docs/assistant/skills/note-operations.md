@@ -9,6 +9,9 @@ tools:
   - note_set
   - note_append
   - note_patch
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: false
 ---
 

@@ -7,6 +7,9 @@ tools:
   - describe
   - help
   - config_show
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: false
 ---
 

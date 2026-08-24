@@ -1925,6 +1925,7 @@ fn parses_agent_install_overwrite_flag() {
         Command::Agent {
             command: AgentCommand::Install(AgentInstallArgs {
                 overwrite: true,
+                reset: Vec::new(),
                 example_tool: false,
             })
         }
@@ -1941,7 +1942,33 @@ fn parses_agent_install_example_tool_flag() {
         Command::Agent {
             command: AgentCommand::Install(AgentInstallArgs {
                 overwrite: false,
+                reset: Vec::new(),
                 example_tool: true,
+            })
+        }
+    );
+}
+
+#[test]
+fn parses_agent_install_reset_flags() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "agent",
+        "install",
+        "--reset",
+        "note-operations",
+        "--reset",
+        "vault-query",
+    ])
+    .expect("cli should parse");
+
+    assert_eq!(
+        cli.command,
+        Command::Agent {
+            command: AgentCommand::Install(AgentInstallArgs {
+                overwrite: false,
+                reset: vec!["note-operations".to_string(), "vault-query".to_string()],
+                example_tool: false,
             })
         }
     );

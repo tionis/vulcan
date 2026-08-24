@@ -7,6 +7,9 @@ tools:
   - web_fetch
   - note_create
   - note_append
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: false
 ---
 

@@ -362,6 +362,27 @@ pub fn load_assistant_skill(
         .ok_or_else(|| AssistantError::message(format!("unknown skill `{identifier}`")))
 }
 
+/// Returns whether a skill opts into replacement by Vulcan's bundled-skill installer.
+///
+/// Invalid or missing frontmatter is deliberately treated as unmanaged so an installer never
+/// overwrites a user-owned skill merely because its metadata cannot be parsed.
+#[must_use]
+pub fn skill_source_is_vulcan_managed(source: &str) -> bool {
+    let Ok((Some(frontmatter), _)) = split_markdown_frontmatter(source, Path::new("SKILL.md"))
+    else {
+        return false;
+    };
+    let Ok(frontmatter) = parse_yaml_frontmatter::<SkillFrontmatter>(frontmatter) else {
+        return false;
+    };
+    frontmatter
+        .metadata
+        .get("vulcan")
+        .and_then(|vulcan| vulcan.get("managed"))
+        .and_then(YamlValue::as_bool)
+        == Some(true)
+}
+
 #[must_use]
 pub fn default_assistant_tool_reserved_names() -> Vec<String> {
     vec![
@@ -937,7 +958,7 @@ mod tests {
     use super::{
         assistant_config_summary, list_assistant_prompts, list_assistant_skills,
         load_assistant_prompt, load_assistant_skill, read_vault_agents_file,
-        render_assistant_prompt,
+        render_assistant_prompt, skill_source_is_vulcan_managed,
     };
     use crate::paths::{initialize_vulcan_dir, VaultPaths};
     use std::collections::BTreeMap;
@@ -1029,6 +1050,23 @@ Use this skill for a daily summary.
 
         let skill = load_assistant_skill(&paths, "daily-review").expect("skill should load");
         assert!(skill.body.contains("daily summary"));
+    }
+
+    #[test]
+    fn managed_skill_marker_requires_explicit_boolean_true() {
+        assert!(skill_source_is_vulcan_managed(
+            "---\nname: bundled\nmetadata:\n  vulcan:\n    managed: true\n---\nBody\n"
+        ));
+        assert!(!skill_source_is_vulcan_managed(
+            "---\nname: custom\nmetadata:\n  vulcan:\n    managed: false\n---\nBody\n"
+        ));
+        assert!(!skill_source_is_vulcan_managed(
+            "---\nname: custom\nmetadata:\n  vulcan:\n    managed: \"true\"\n---\nBody\n"
+        ));
+        assert!(!skill_source_is_vulcan_managed("# No frontmatter\n"));
+        assert!(!skill_source_is_vulcan_managed(
+            "---\nmetadata: [invalid for vulcan lookup\n---\n"
+        ));
     }
 
     #[test]

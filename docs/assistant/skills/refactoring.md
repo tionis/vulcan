@@ -10,6 +10,9 @@ tools:
   - refactor_merge_tags
   - refactor_folder_notes
   - move
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: false
 ---
 

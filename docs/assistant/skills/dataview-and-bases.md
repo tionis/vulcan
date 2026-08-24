@@ -7,6 +7,9 @@ tools:
   - bases
   - query
   - help
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: false
 ---
 

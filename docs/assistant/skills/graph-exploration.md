@@ -10,6 +10,9 @@ tools:
   - graph_components
   - graph_communities
   - suggest_links
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: false
 ---
 

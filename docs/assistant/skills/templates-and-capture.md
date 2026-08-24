@@ -8,6 +8,9 @@ tools:
   - note_create
   - note_append
   - help
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: false
 ---
 

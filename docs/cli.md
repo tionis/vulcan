@@ -152,7 +152,7 @@ Behavior:
 ### Indexing, cache, and local service commands
 
 - `vulcan index init [--import|--no-import] [--agent-files] [--example-tool]`: create `.vulcan/`, `cache.db`, `config.toml`, and the local ignore rules; optionally import detected Obsidian settings and write bundled AGENTS/skills/prompt files. `--example-tool` scaffolds a starter Agent Skills-compatible skill command.
-- `vulcan agent install [--overwrite] [--example-tool]`: install or refresh the bundled `AGENTS.md` template, default `.agents/skills/<name>/SKILL.md` files, prompt files, and an optional starter skill command for external agent harnesses.
+- `vulcan agent install [--reset <skill>] [--overwrite] [--example-tool]`: install agent scaffolds and refresh bundled skills marked with `metadata.vulcan.managed: true`. Same-name unmarked skill packages are preserved wholesale. `--reset <skill>` deliberately replaces and enrolls one bundled skill; repeat it for several names. `--overwrite` is the broad compatibility escape hatch for all bundled skill names. `AGENTS.md`, prompts, and the optional example tool are create-only.
 - `vulcan index scan [--full] [--no-commit]`: perform an incremental or full scan and refresh the cache.
 - `vulcan index rebuild [--dry-run]`: rebuild the cache from disk.
 - `vulcan index repair fts [--dry-run]`: rebuild the full-text search index from cached chunks.
@@ -1133,6 +1133,7 @@ The embedded `vulcan assistant` host was removed. Use MCP or an external runtime
 
 ```
 vulcan agent install                         # write AGENTS.md, default skills, and prompts
+vulcan agent install --reset vault-query     # replace and re-enroll one bundled skill
 vulcan agent print-config --runtime generic  # wrapper contract for external runtimes
 vulcan skill list                            # discover installed skills
 vulcan skill run conversation-export export  # archive a chat transcript as Markdown

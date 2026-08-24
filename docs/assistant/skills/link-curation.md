@@ -8,6 +8,9 @@ tools:
   - graph_path
   - backlinks
   - links
+metadata:
+  vulcan:
+    managed: true
 require_confirmation: true
 ---
 
@@ -35,4 +38,3 @@ Use this skill when the task is to improve graph connectivity without blindly in
 
 - Discover ranked suggestions for an orphan note, accept one, then verify the inferred edge appears in `graph path`.
 - Find cross-community bridge candidates and reject low-quality pairs after inspecting backlinks.
-

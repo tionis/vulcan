@@ -10172,6 +10172,11 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(fs::read_to_string(vault_root.join("AGENTS.md"))
         .expect("agents template should be readable")
         .contains("Use Vulcan as the primary automation surface"));
+    assert!(
+        fs::read_to_string(vault_root.join(".agents/skills/note-operations/SKILL.md"))
+            .expect("bundled skill should be readable")
+            .contains("managed: true")
+    );
     assert!(json["support_files"].as_array().is_some_and(|items| items
         .iter()
         .any(|item| item["path"] == "AGENTS.md")
@@ -10218,6 +10223,9 @@ fn init_agent_files_optionally_scaffolds_example_tool() {
         .contains("metadata:\n  vulcan:\n    commands:"));
     let entrypoint =
         fs::read_to_string(&entrypoint_path).expect("example tool entrypoint should be readable");
+    assert!(!fs::read_to_string(&manifest_path)
+        .expect("example tool manifest should be readable")
+        .contains("managed: true"));
     assert!(entrypoint.starts_with("#!/usr/bin/env -S vulcan skill exec\n"));
     assert!(entrypoint.contains("function main"));
     assert_executable(&entrypoint_path);
@@ -10286,8 +10294,8 @@ fn agent_install_reports_obstructed_support_file_parent() {
         .assert()
         .failure()
         .stderr(
-            predicate::str::contains("failed to read bundled agent support file")
-                .and(predicate::str::contains(".agents/skills/note-operations"))
+            predicate::str::contains("failed to resolve bundled agent skills directory")
+                .and(predicate::str::contains(".agents/skills"))
                 .and(predicate::str::contains("Not a directory")),
         );
 }
@@ -11772,7 +11780,7 @@ fn help_assistant_integration_topic_is_available() {
 }
 
 #[test]
-fn agent_install_overwrite_refreshes_bundled_skill_contents() {
+fn agent_install_refreshes_managed_skills_and_preserves_unmanaged_scaffolds() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     fs::create_dir_all(&vault_root).expect("vault dir should be created");
@@ -11805,7 +11813,54 @@ fn agent_install_overwrite_refreshes_bundled_skill_contents() {
                 && item["status"] == "created")));
 
     let skill_path = vault_root.join(".agents/skills/note-operations/SKILL.md");
-    fs::write(&skill_path, "customized\n").expect("skill should be editable");
+    let bundled_script_path =
+        vault_root.join(".agents/skills/conversation-export/scripts/export-conversation.js");
+    let installed_skill = fs::read_to_string(&skill_path).expect("skill should be readable");
+    assert!(installed_skill.contains("managed: true"));
+    fs::write(
+        &skill_path,
+        installed_skill.replace("# Note Operations", "# Stale Note Operations"),
+    )
+    .expect("managed skill should be editable");
+    fs::write(&bundled_script_path, "stale script\n")
+        .expect("managed package script should be editable");
+
+    let refresh_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "agent",
+            "install",
+        ])
+        .assert()
+        .success();
+    let refresh_json = parse_stdout_json(&refresh_assert);
+    assert!(fs::read_to_string(&skill_path)
+        .expect("refreshed skill should be readable")
+        .contains("# Note Operations"));
+    assert!(refresh_json["support_files"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["path"]
+            == ".agents/skills/note-operations/SKILL.md"
+            && item["status"] == "updated")));
+    assert!(fs::read_to_string(&bundled_script_path)
+        .expect("refreshed package script should be readable")
+        .starts_with("#!/usr/bin/env -S vulcan skill exec"));
+
+    let opted_out_skill = fs::read_to_string(&skill_path)
+        .expect("skill should be readable")
+        .replace("metadata:\n  vulcan:\n    managed: true\n", "")
+        .replace("# Note Operations", "# Custom Note Operations");
+    fs::write(&skill_path, &opted_out_skill).expect("skill should be editable");
+    let agents_path = vault_root.join("AGENTS.md");
+    let prompt_path = vault_root.join("AI/Prompts/summarize-note.md");
+    fs::write(&agents_path, "custom agents\n").expect("AGENTS.md should be editable");
+    fs::write(&prompt_path, "custom prompt\n").expect("prompt should be editable");
 
     let kept_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -11824,15 +11879,18 @@ fn agent_install_overwrite_refreshes_bundled_skill_contents() {
     let kept_json = parse_stdout_json(&kept_assert);
     assert_eq!(
         fs::read_to_string(&skill_path).expect("skill should be readable"),
-        "customized\n"
+        opted_out_skill
     );
+    assert!(fs::read_to_string(&skill_path)
+        .expect("opted-out skill should be readable")
+        .contains("# Custom Note Operations"));
     assert!(kept_json["support_files"]
         .as_array()
         .is_some_and(|items| items.iter().any(|item| item["path"]
             == ".agents/skills/note-operations/SKILL.md"
-            && item["status"] == "kept")));
+            && item["status"] == "preserved")));
 
-    let overwrite_assert = Command::cargo_bin("vulcan")
+    let reset_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([
             "--vault",
@@ -11843,19 +11901,132 @@ fn agent_install_overwrite_refreshes_bundled_skill_contents() {
             "json",
             "agent",
             "install",
-            "--overwrite",
+            "--reset",
+            "note-operations",
         ])
         .assert()
         .success();
-    let overwrite_json = parse_stdout_json(&overwrite_assert);
+    let reset_json = parse_stdout_json(&reset_assert);
 
     let refreshed = fs::read_to_string(&skill_path).expect("skill should be readable");
     assert!(refreshed.contains("# Note Operations"));
-    assert!(overwrite_json["support_files"]
+    assert!(refreshed.contains("managed: true"));
+    assert_eq!(
+        fs::read_to_string(agents_path).expect("AGENTS.md should be readable"),
+        "custom agents\n"
+    );
+    assert_eq!(
+        fs::read_to_string(prompt_path).expect("prompt should be readable"),
+        "custom prompt\n"
+    );
+    assert!(reset_json["support_files"]
         .as_array()
         .is_some_and(|items| items.iter().any(|item| item["path"]
             == ".agents/skills/note-operations/SKILL.md"
             && item["status"] == "updated")));
+}
+
+#[test]
+fn agent_install_preserves_an_entire_unmanaged_same_name_skill_package() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    let custom_root = vault_root.join(".agents/skills/conversation-export");
+    fs::create_dir_all(&custom_root).expect("custom skill directory should be created");
+    fs::write(
+        custom_root.join("SKILL.md"),
+        "---\nname: conversation-export\ndescription: Custom exporter\n---\nCustom\n",
+    )
+    .expect("custom skill should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "--output",
+            "json",
+            "agent",
+            "install",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert!(!custom_root.join("scripts/export-conversation.js").exists());
+    assert!(fs::read_to_string(custom_root.join("SKILL.md"))
+        .expect("custom skill should remain readable")
+        .contains("Custom exporter"));
+    assert!(json["support_files"].as_array().is_some_and(|items| items
+        .iter()
+        .filter(|item| item["path"]
+            .as_str()
+            .is_some_and(|path| path.starts_with(".agents/skills/conversation-export/")))
+        .all(|item| item["status"] == "preserved")));
+}
+
+#[test]
+fn agent_install_rejects_unknown_reset_skill() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault dir should be created");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "agent",
+            "install",
+            "--reset",
+            "not-bundled",
+        ])
+        .assert()
+        .failure()
+        .stderr(
+            predicate::str::contains("unknown bundled skill `not-bundled`")
+                .and(predicate::str::contains("note-operations")),
+        );
+}
+
+#[cfg(unix)]
+#[test]
+fn agent_install_reset_refuses_a_symlinked_skill_package() {
+    use std::os::unix::fs::symlink;
+
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    let outside = temp_dir.path().join("outside");
+    fs::create_dir_all(vault_root.join(".agents/skills")).expect("skills root should be created");
+    fs::create_dir_all(&outside).expect("outside directory should be created");
+    fs::write(outside.join("SKILL.md"), "outside\n").expect("outside skill should be written");
+    symlink(&outside, vault_root.join(".agents/skills/note-operations"))
+        .expect("skill symlink should be created");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root
+                .to_str()
+                .expect("vault path should be valid utf-8"),
+            "agent",
+            "install",
+            "--reset",
+            "note-operations",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "refusing to refresh bundled skill package",
+        ));
+    assert_eq!(
+        fs::read_to_string(outside.join("SKILL.md")).expect("outside skill should remain"),
+        "outside\n"
+    );
 }
 
 #[test]

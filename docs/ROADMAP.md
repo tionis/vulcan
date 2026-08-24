@@ -2765,7 +2765,7 @@ For LLM harnesses (Claude Code, Codex, Gemini CLI, `pi`, etc.) that use Vulcan a
   - Pointers to the skills directory: "Read `.agents/skills/*/SKILL.md` for detailed usage patterns and examples"
   - Common pitfalls: `note patch` fails on multiple matches (safety), property types are lenient, etc.
 - [x] **Default skills as files** — bundled in the binary (via `include_str!`), written to vault via `vulcan init --agent-files` or `vulcan agent install`. See 9.12.6 for the full skill list. These serve external harnesses identically: Claude Code, Codex, Gemini CLI, or a reference `pi` adapter reads `.agents/skills/js-api-guide/SKILL.md` and learns the vault JS API.
-- [x] **Dedicated harness installer** — `vulcan agent install [--overwrite]` scaffolds root `AGENTS.md` plus `.agents/skills/<name>/SKILL.md`, and `init --agent-files` reuses the same bundled payload for first-run setup.
+- [x] **Dedicated harness installer** — `vulcan agent install [--reset <skill>] [--overwrite]` scaffolds root `AGENTS.md` plus `.agents/skills/<name>/SKILL.md`, and `init --agent-files` reuses the same bundled payload for first-run setup. Bundled skills opt into automatic refresh with `metadata.vulcan.managed: true`; unmarked same-name packages and create-only scaffolds are preserved, while targeted reset handles explicit migration or recovery.
 - [x] **Consistent JSON error output** — all commands in `--output json` mode return structured errors: `{"error": "<message>", "code": "<error_code>"}` rather than unstructured stderr text. Error codes are stable and documented.
 - [x] **Non-interactive guarantee** — all commands detect non-TTY mode and never prompt. Ambiguous note matches return an error with candidates rather than opening a picker.
 
