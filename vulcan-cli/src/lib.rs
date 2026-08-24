@@ -2250,6 +2250,12 @@ fn print_outline_pull_report(
                     action.kind, action.local_path, action.reason
                 );
             }
+            for diagnostic in &report.diagnostics {
+                println!(
+                    "Warning\t{}\t{:?}\t{}",
+                    diagnostic.remote_document_id, diagnostic.kind, diagnostic.message
+                );
+            }
             println!(
                 "created={}; updated={}; moved={}; unchanged={}; auto_merged={}; markers={}; conflicts={}; remote_missing={}; archived_missing={}; deleted_missing={}; out_of_scope={}; attachments_downloaded={}; stale_attachments={}; archived_stale_attachments={}; deleted_stale_attachments={}",
                 report.created,
@@ -2263,10 +2269,10 @@ fn print_outline_pull_report(
                 report.archived_missing,
                 report.deleted_missing,
                 report.out_of_scope,
-                report.attachments_downloaded
-                ,report.stale_attachments
-                ,report.archived_stale_attachments
-                ,report.deleted_stale_attachments
+                report.attachments_downloaded,
+                report.stale_attachments,
+                report.archived_stale_attachments,
+                report.deleted_stale_attachments
             );
             if let Some(operation_id) = report.operation_id.as_deref() {
                 println!(

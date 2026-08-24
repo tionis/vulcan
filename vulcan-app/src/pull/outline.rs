@@ -210,6 +210,21 @@ pub enum OutlinePullActionKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutlinePullDiagnosticKind {
+    PreservedHtml,
+    PreservedUnsupportedDirective,
+    UnrewrittenAttachmentDestination,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OutlinePullDiagnostic {
+    pub remote_document_id: String,
+    pub kind: OutlinePullDiagnosticKind,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct OutlinePullAction {
     pub kind: OutlinePullActionKind,
@@ -224,6 +239,7 @@ pub struct OutlinePullAction {
     pub downloaded_attachment_paths: Vec<String>,
     pub preserves_local_changes: bool,
     pub conflict_markers_available: bool,
+    pub diagnostics: Vec<OutlinePullDiagnostic>,
     #[serde(skip)]
     desired_content: Option<String>,
     #[serde(skip)]
@@ -262,6 +278,7 @@ pub struct OutlinePullReport {
     pub stale_attachments: usize,
     pub archived_stale_attachments: usize,
     pub deleted_stale_attachments: usize,
+    pub diagnostics: Vec<OutlinePullDiagnostic>,
     pub actions: Vec<OutlinePullAction>,
 }
 
@@ -1137,6 +1154,20 @@ fn plan_pull(
             &translated,
             mapping,
         )?;
+        let mut diagnostics = outline_conversion_diagnostics(document);
+        diagnostics.extend(
+            attachments
+                .iter()
+                .filter(|attachment| desired.contains(&attachment.remote_url))
+                .map(|attachment| OutlinePullDiagnostic {
+                    remote_document_id: document.id.clone(),
+                    kind: OutlinePullDiagnosticKind::UnrewrittenAttachmentDestination,
+                    message: format!(
+                        "preserved attachment destination `{}` because its source span could not be rewritten safely",
+                        attachment.remote_url
+                    ),
+                }),
+        );
         let content_path = move_source.unwrap_or(&local_path);
         let local_content = match secure_read_to_string(paths.vault_root(), Path::new(content_path))
         {
@@ -1309,6 +1340,7 @@ fn plan_pull(
             downloaded_attachment_paths: Vec::new(),
             preserves_local_changes,
             conflict_markers_available,
+            diagnostics,
             desired_content: Some(desired),
             merged_content: reviewed_merge.map(|merge| merge.content),
             local_content,
@@ -1385,6 +1417,7 @@ fn plan_pull(
                 downloaded_attachment_paths: Vec::new(),
                 preserves_local_changes: false,
                 conflict_markers_available: false,
+                diagnostics: Vec::new(),
                 desired_content: None,
                 merged_content: None,
                 local_content: None,
@@ -1406,6 +1439,7 @@ fn plan_pull(
                 downloaded_attachment_paths: Vec::new(),
                 preserves_local_changes: true,
                 conflict_markers_available: false,
+                diagnostics: Vec::new(),
                 desired_content: None,
                 merged_content: None,
                 local_content: None,
@@ -1427,12 +1461,13 @@ fn generate_paths(
         .iter()
         .map(|document| (document.id.as_str(), document))
         .collect::<BTreeMap<_, _>>();
+    let component_names = allocate_portable_component_names(remote);
     let mut paths = BTreeMap::new();
     for document in remote
         .iter()
         .filter(|document| selected_ids.contains(&document.id))
     {
-        let mut titles = vec![safe_title(&document.title, &document.id)];
+        let mut titles = vec![component_names[&document.id].clone()];
         let mut parent = document.parent_document_id.as_deref();
         let mut seen = BTreeSet::from([document.id.as_str()]);
         while let Some(parent_id) = parent {
@@ -1447,7 +1482,7 @@ fn generate_paths(
                     document.id
                 )));
             };
-            titles.push(safe_title(&parent_document.title, &parent_document.id));
+            titles.push(component_names[&parent_document.id].clone());
             parent = parent_document.parent_document_id.as_deref();
         }
         titles.reverse();
@@ -1470,6 +1505,39 @@ fn generate_paths(
         }
     }
     Ok(paths)
+}
+
+fn allocate_portable_component_names(remote: &[OutlineRemoteDocument]) -> BTreeMap<String, String> {
+    let mut groups = BTreeMap::<(Option<&str>, String), Vec<&OutlineRemoteDocument>>::new();
+    for document in remote {
+        let title = safe_title(&document.title, &document.id);
+        groups
+            .entry((
+                document.parent_document_id.as_deref(),
+                portable_path_key(&title),
+            ))
+            .or_default()
+            .push(document);
+    }
+    let mut allocated = BTreeMap::new();
+    for documents in groups.values() {
+        for document in documents {
+            let title = safe_title(&document.title, &document.id);
+            let name = if documents.len() == 1 {
+                title
+            } else {
+                let hash = bytes_hash(document.id.as_bytes());
+                let suffix = format!("-{}", &hash[..8]);
+                format!(
+                    "{}{}",
+                    truncate_utf8_bytes(&title, 120 - suffix.len()),
+                    suffix
+                )
+            };
+            allocated.insert(document.id.clone(), name);
+        }
+    }
+    allocated
 }
 
 fn plan_pull_move(
@@ -1620,6 +1688,36 @@ fn outline_attachment_links(source: &str) -> BTreeMap<String, String> {
     labels
 }
 
+fn outline_conversion_diagnostics(document: &OutlineRemoteDocument) -> Vec<OutlinePullDiagnostic> {
+    let mut diagnostics = Vec::new();
+    if Parser::new_ext(&document.text, MarkdownOptions::all())
+        .any(|event| matches!(event, Event::Html(_) | Event::InlineHtml(_)))
+    {
+        diagnostics.push(OutlinePullDiagnostic {
+            remote_document_id: document.id.clone(),
+            kind: OutlinePullDiagnosticKind::PreservedHtml,
+            message: "preserved raw HTML verbatim; Obsidian rendering and safety policy may differ"
+                .to_string(),
+        });
+    }
+    if document.text.lines().any(|line| {
+        let directive = line.trim();
+        directive.starts_with(":::")
+            && directive != ":::"
+            && !matches!(
+                directive,
+                ":::info" | ":::tip" | ":::success" | ":::warning"
+            )
+    }) {
+        diagnostics.push(OutlinePullDiagnostic {
+            remote_document_id: document.id.clone(),
+            kind: OutlinePullDiagnosticKind::PreservedUnsupportedDirective,
+            message: "preserved an unsupported Outline fenced directive verbatim".to_string(),
+        });
+    }
+    diagnostics
+}
+
 fn plan_stale_attachment_actions(
     paths: &VaultPaths,
     document: &OutlineRemoteDocument,
@@ -1695,6 +1793,7 @@ fn plan_stale_attachment_actions(
                 downloaded_attachment_paths: Vec::new(),
                 preserves_local_changes: kind == OutlinePullActionKind::StaleAttachment,
                 conflict_markers_available: false,
+                diagnostics: Vec::new(),
                 desired_content: None,
                 merged_content: None,
                 local_content: None,
@@ -2103,6 +2202,10 @@ fn report(
         .iter()
         .map(|action| action.downloaded_attachment_paths.len())
         .sum();
+    let diagnostics = actions
+        .iter()
+        .flat_map(|action| action.diagnostics.iter().cloned())
+        .collect();
     OutlinePullReport {
         profile: profile.to_string(),
         collection_id: collection_id.to_string(),
@@ -2127,6 +2230,7 @@ fn report(
         stale_attachments: count(OutlinePullActionKind::StaleAttachment),
         archived_stale_attachments: count(OutlinePullActionKind::ArchiveStaleAttachment),
         deleted_stale_attachments: count(OutlinePullActionKind::DeleteStaleAttachment),
+        diagnostics,
         actions,
     }
 }
@@ -3189,7 +3293,7 @@ mod tests {
     }
 
     #[test]
-    fn pull_rejects_case_collisions_and_internal_destinations() {
+    fn pull_disambiguates_case_collisions_and_rejects_internal_destinations() {
         let temp = tempdir().expect("temp dir");
         let paths = VaultPaths::new(temp.path());
         initialize_vulcan_dir(&paths).expect("initialize vault");
@@ -3197,7 +3301,7 @@ mod tests {
             document("one", "Home", "one", None),
             document("two", "home", "two", None),
         ]);
-        assert!(pull_outline(
+        let report = pull_outline(
             &paths,
             &api,
             "wiki",
@@ -3206,7 +3310,15 @@ mod tests {
             true,
             &OutlinePullConflictPolicy::abort(),
         )
-        .is_err());
+        .expect("case collision should be disambiguated");
+        assert_eq!(report.created, 2);
+        let allocated_paths = report
+            .actions
+            .iter()
+            .map(|action| action.local_path.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(allocated_paths.len(), 2);
+        assert!(allocated_paths.iter().all(|path| path.contains('-')));
         assert!(pull_outline(
             &paths,
             &api,
@@ -3230,7 +3342,7 @@ mod tests {
     }
 
     #[test]
-    fn pull_rejects_unicode_collisions_or_orphaned_hierarchy() {
+    fn pull_disambiguates_unicode_collisions_and_rejects_orphaned_hierarchy() {
         let temp = tempdir().expect("temp dir");
         let paths = VaultPaths::new(temp.path());
         initialize_vulcan_dir(&paths).expect("initialize vault");
@@ -3238,7 +3350,7 @@ mod tests {
             document("one", "Café", "one", None),
             document("two", "Cafe\u{301}", "two", None),
         ]);
-        let error = pull_outline(
+        let report = pull_outline(
             &paths,
             &collision,
             "wiki",
@@ -3247,8 +3359,9 @@ mod tests {
             true,
             &OutlinePullConflictPolicy::abort(),
         )
-        .expect_err("canonical Unicode collision must fail closed");
-        assert!(error.to_string().contains("portable local path"));
+        .expect("canonical Unicode collision should be disambiguated");
+        assert_eq!(report.created, 2);
+        assert_ne!(report.actions[0].local_path, report.actions[1].local_path);
 
         let orphan = api(vec![document("child", "Child", "body", Some("missing"))]);
         let error = pull_outline(
@@ -3279,6 +3392,36 @@ mod tests {
             Some("png")
         );
         assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
+    }
+
+    #[test]
+    fn pull_reports_preserved_unsupported_remote_constructs() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        let api = api(vec![document(
+            "home",
+            "Home",
+            "<custom-widget>value</custom-widget>\n\n:::experimental\nbody\n:::\n",
+            None,
+        )]);
+        let report = pull_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            true,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("diagnostic pull plan");
+        assert!(report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.kind == OutlinePullDiagnosticKind::PreservedHtml));
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.kind == OutlinePullDiagnosticKind::PreservedUnsupportedDirective
+        }));
     }
 
     #[test]
