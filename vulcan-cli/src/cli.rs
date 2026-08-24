@@ -2485,6 +2485,26 @@ pub enum PullCommand {
             help = "Confirm the exact live number of missing documents to delete"
         )]
         confirm_delete_count: Option<usize>,
+        #[arg(
+            long,
+            value_name = "VAULT_DIRECTORY",
+            conflicts_with = "delete_stale_attachments",
+            help = "Move no-longer-referenced managed attachments into this recoverable directory"
+        )]
+        archive_stale_attachments: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "archive_stale_attachments",
+            help = "Permanently delete managed attachments no longer referenced by Outline"
+        )]
+        delete_stale_attachments: bool,
+        #[arg(
+            long,
+            value_name = "COUNT",
+            requires = "delete_stale_attachments",
+            help = "Confirm the exact live number of stale managed attachments to delete"
+        )]
+        confirm_stale_attachment_delete_count: Option<usize>,
         #[arg(long, help = "Suppress auto-commit for pulled local note changes")]
         no_commit: bool,
     },

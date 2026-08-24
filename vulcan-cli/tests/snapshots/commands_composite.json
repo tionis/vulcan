@@ -5929,6 +5929,42 @@
                 ]
               },
               {
+                "help": "Move no-longer-referenced managed attachments into this recoverable directory",
+                "id": "archive_stale_attachments",
+                "long": "archive-stale-attachments",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "VAULT_DIRECTORY"
+                ]
+              },
+              {
+                "help": "Permanently delete managed attachments no longer referenced by Outline",
+                "id": "delete_stale_attachments",
+                "long": "delete-stale-attachments",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DELETE_STALE_ATTACHMENTS"
+                ]
+              },
+              {
+                "help": "Confirm the exact live number of stale managed attachments to delete",
+                "id": "confirm_stale_attachment_delete_count",
+                "long": "confirm-stale-attachment-delete-count",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "COUNT"
+                ]
+              },
+              {
                 "help": "Suppress auto-commit for pulled local note changes",
                 "id": "no_commit",
                 "long": "no-commit",

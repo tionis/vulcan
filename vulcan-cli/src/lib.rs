@@ -502,7 +502,7 @@ use vulcan_app::pull::outline::{
     pull_outline_with_options_progress_and_write_authorizer, OutlinePullAction,
     OutlinePullActionKind, OutlinePullConflictPolicy, OutlinePullConflictResolution,
     OutlinePullMissingPolicy, OutlinePullMissingResolution, OutlinePullOptions, OutlinePullPhase,
-    OutlinePullProgress, OutlinePullReport, OutlinePullScope,
+    OutlinePullProgress, OutlinePullReport, OutlinePullScope, OutlinePullStaleAttachmentPolicy,
 };
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::site::{
@@ -1749,6 +1749,9 @@ fn run_pull_command(
         archive_missing,
         delete_missing,
         confirm_delete_count,
+        archive_stale_attachments,
+        delete_stale_attachments,
+        confirm_stale_attachment_delete_count,
         no_commit,
     } = command;
     if *interactive
@@ -1816,6 +1819,16 @@ fn run_pull_command(
             excluded_document_ids: exclude_document.iter().cloned().collect(),
             max_depth: *max_depth,
         },
+        stale_attachment_policy: if let Some(directory) = archive_stale_attachments {
+            OutlinePullStaleAttachmentPolicy::Archive {
+                directory: directory.clone(),
+            }
+        } else if *delete_stale_attachments {
+            OutlinePullStaleAttachmentPolicy::Delete
+        } else {
+            OutlinePullStaleAttachmentPolicy::Retain
+        },
+        confirmed_stale_attachment_delete_count: *confirm_stale_attachment_delete_count,
     };
     let mut progress = (cli.output == OutputFormat::Human && !cli.quiet)
         .then(|| OutlinePullProgressReporter::new(use_stderr_color));
@@ -1906,6 +1919,8 @@ fn run_pull_command(
                 | OutlinePullActionKind::AutoMerge
                 | OutlinePullActionKind::ArchiveMissing
                 | OutlinePullActionKind::DeleteMissing
+                | OutlinePullActionKind::ArchiveStaleAttachment
+                | OutlinePullActionKind::DeleteStaleAttachment
         ) {
             if let Some(source_path) = action.source_local_path.as_deref() {
                 guard
@@ -1966,6 +1981,8 @@ fn run_pull_command(
                         | OutlinePullActionKind::AutoMerge
                         | OutlinePullActionKind::ArchiveMissing
                         | OutlinePullActionKind::DeleteMissing
+                        | OutlinePullActionKind::ArchiveStaleAttachment
+                        | OutlinePullActionKind::DeleteStaleAttachment
                 )
             })
             .map(|action| action.local_path.clone())
@@ -2213,7 +2230,7 @@ fn print_outline_pull_report(
                 );
             }
             println!(
-                "created={}; updated={}; moved={}; unchanged={}; auto_merged={}; markers={}; conflicts={}; remote_missing={}; archived_missing={}; deleted_missing={}; out_of_scope={}; attachments_downloaded={}",
+                "created={}; updated={}; moved={}; unchanged={}; auto_merged={}; markers={}; conflicts={}; remote_missing={}; archived_missing={}; deleted_missing={}; out_of_scope={}; attachments_downloaded={}; stale_attachments={}; archived_stale_attachments={}; deleted_stale_attachments={}",
                 report.created,
                 report.updated,
                 report.moved,
@@ -2226,6 +2243,9 @@ fn print_outline_pull_report(
                 report.deleted_missing,
                 report.out_of_scope,
                 report.attachments_downloaded
+                ,report.stale_attachments
+                ,report.archived_stale_attachments
+                ,report.deleted_stale_attachments
             );
             if let Some(operation_id) = report.operation_id.as_deref() {
                 println!(

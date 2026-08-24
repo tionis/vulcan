@@ -1243,6 +1243,32 @@ fn parses_scoped_outline_pull_selection() {
     .is_err());
 }
 
+#[test]
+fn parses_stale_outline_attachment_deletion_confirmation() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "pull",
+        "outline",
+        "wiki",
+        "--into",
+        "Imported",
+        "--delete-stale-attachments",
+        "--confirm-stale-attachment-delete-count",
+        "3",
+    ])
+    .expect("stale attachment deletion should parse");
+    assert!(matches!(
+        cli.command,
+        Command::Pull {
+            command: PullCommand::Outline {
+                delete_stale_attachments: true,
+                confirm_stale_attachment_delete_count: Some(3),
+                ..
+            }
+        }
+    ));
+}
+
 #[cfg(feature = "web")]
 #[test]
 fn interactive_outline_conflicts_require_every_item_to_be_approved() {
@@ -1305,6 +1331,9 @@ fn parses_outline_pull_conflict_modes() {
                 archive_missing: None,
                 delete_missing: false,
                 confirm_delete_count: None,
+                archive_stale_attachments: None,
+                delete_stale_attachments: false,
+                confirm_stale_attachment_delete_count: None,
                 no_commit: false,
             }
         }

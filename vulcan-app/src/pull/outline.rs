@@ -47,6 +47,18 @@ pub struct OutlinePullOptions {
     pub missing_policy: OutlinePullMissingPolicy,
     pub confirmed_delete_count: Option<usize>,
     pub scope: OutlinePullScope,
+    pub stale_attachment_policy: OutlinePullStaleAttachmentPolicy,
+    pub confirmed_stale_attachment_delete_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum OutlinePullStaleAttachmentPolicy {
+    #[default]
+    Retain,
+    Archive {
+        directory: String,
+    },
+    Delete,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -166,6 +178,9 @@ pub enum OutlinePullActionKind {
     ArchiveMissing,
     DeleteMissing,
     OutOfScope,
+    StaleAttachment,
+    ArchiveStaleAttachment,
+    DeleteStaleAttachment,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -189,6 +204,8 @@ pub struct OutlinePullAction {
     local_content: Option<String>,
     #[serde(skip)]
     attachments: Vec<OutlinePullAttachmentPlan>,
+    #[serde(skip)]
+    stale_attachment_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -214,6 +231,9 @@ pub struct OutlinePullReport {
     pub out_of_scope: usize,
     pub attachments_planned: usize,
     pub attachments_downloaded: usize,
+    pub stale_attachments: usize,
+    pub archived_stale_attachments: usize,
+    pub deleted_stale_attachments: usize,
     pub actions: Vec<OutlinePullAction>,
 }
 
@@ -565,6 +585,17 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
             "Outline pull planned {delete_count} permanent deletion(s); confirm that exact live count"
         )));
     }
+    let stale_attachment_delete_count = actions
+        .iter()
+        .filter(|action| action.kind == OutlinePullActionKind::DeleteStaleAttachment)
+        .count();
+    if stale_attachment_delete_count > 0
+        && options.confirmed_stale_attachment_delete_count != Some(stale_attachment_delete_count)
+    {
+        return Err(AppError::operation(format!(
+            "Outline pull planned {stale_attachment_delete_count} permanent stale attachment deletion(s); confirm that exact live count"
+        )));
+    }
     for action in &actions {
         if matches!(
             action.kind,
@@ -575,6 +606,8 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
                 | OutlinePullActionKind::AutoMerge
                 | OutlinePullActionKind::ArchiveMissing
                 | OutlinePullActionKind::DeleteMissing
+                | OutlinePullActionKind::ArchiveStaleAttachment
+                | OutlinePullActionKind::DeleteStaleAttachment
         ) {
             if let Some(source_path) = action.source_local_path.as_deref() {
                 authorize_write(source_path)?;
@@ -650,6 +683,41 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
                 Some(&action.local_path),
                 Some(&operation_id),
             );
+        }
+        if matches!(
+            action.kind,
+            OutlinePullActionKind::ArchiveStaleAttachment
+                | OutlinePullActionKind::DeleteStaleAttachment
+        ) {
+            if action.kind == OutlinePullActionKind::ArchiveStaleAttachment {
+                if let Some(source_path) = action.source_local_path.as_deref() {
+                    let bytes = secure_read(paths.vault_root(), Path::new(source_path))
+                        .map_err(AppError::operation)?;
+                    secure_write(paths.vault_root(), Path::new(&action.local_path), &bytes)
+                        .map_err(AppError::operation)?;
+                    remove_managed_file(paths, source_path)?;
+                }
+            } else {
+                remove_managed_file(paths, &action.local_path)?;
+            }
+            let remote_url = action.stale_attachment_url.as_deref().ok_or_else(|| {
+                AppError::operation("stale Outline attachment action omitted its remote URL")
+            })?;
+            if let Some(mapping) = state.documents.get_mut(&action.remote_document_id) {
+                mapping.attachments.remove(remote_url);
+            }
+            complete_journal_action(&mut state, action);
+            lock.save(&state)?;
+            mutations_processed += 1;
+            emit_pull_progress(
+                on_progress,
+                OutlinePullPhase::Applying,
+                mutations_processed,
+                mutation_total,
+                None,
+                Some(&operation_id),
+            );
+            continue;
         }
         if matches!(
             action.kind,
@@ -779,12 +847,6 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
                     );
                 }
             }
-            let selected_urls = action
-                .attachments
-                .iter()
-                .map(|attachment| attachment.remote_url.as_str())
-                .collect::<BTreeSet<_>>();
-            attachment_mappings.retain(|url, _| selected_urls.contains(url.as_str()));
         }
         let written = if matches!(
             action.kind,
@@ -1118,6 +1180,8 @@ fn plan_pull(
         };
         let preserves_local_changes =
             kind == OutlinePullActionKind::Move && local_changed && !remote_content_changed;
+        let stale_attachment_actions =
+            plan_stale_attachment_actions(paths, document, mapping, &attachments, options)?;
         actions.push(OutlinePullAction {
             kind,
             remote_document_id: document.id.clone(),
@@ -1138,7 +1202,9 @@ fn plan_pull(
             merged_content: reviewed_merge.map(|merge| merge.content),
             local_content,
             attachments,
+            stale_attachment_url: None,
         });
+        actions.extend(stale_attachment_actions);
     }
     for (remote_id, mapping) in &state.documents {
         if !active.iter().any(|document| document.id == *remote_id) {
@@ -1211,6 +1277,7 @@ fn plan_pull(
                 merged_content: None,
                 local_content: None,
                 attachments: Vec::new(),
+                stale_attachment_url: None,
             });
         } else if !selected_ids.contains(remote_id) {
             actions.push(OutlinePullAction {
@@ -1230,6 +1297,7 @@ fn plan_pull(
                 merged_content: None,
                 local_content: None,
                 attachments: Vec::new(),
+                stale_attachment_url: None,
             });
         }
     }
@@ -1417,6 +1485,90 @@ fn plan_document_attachments(
     Ok((desired, attachments))
 }
 
+fn plan_stale_attachment_actions(
+    paths: &VaultPaths,
+    document: &OutlineRemoteDocument,
+    mapping: Option<&OutlinePullMapping>,
+    selected: &[OutlinePullAttachmentPlan],
+    options: &OutlinePullOptions,
+) -> Result<Vec<OutlinePullAction>, AppError> {
+    let Some(mapping) = mapping else {
+        return Ok(Vec::new());
+    };
+    let selected_urls = selected
+        .iter()
+        .map(|attachment| attachment.remote_url.as_str())
+        .collect::<BTreeSet<_>>();
+    mapping
+        .attachments
+        .iter()
+        .filter(|(remote_url, _)| !selected_urls.contains(remote_url.as_str()))
+        .map(|(remote_url, attachment)| {
+            let bytes = match secure_read(paths.vault_root(), Path::new(&attachment.local_path)) {
+                Ok(bytes) => Some(bytes),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(AppError::operation(error)),
+            };
+            let local_changed = bytes
+                .as_deref()
+                .is_some_and(|bytes| bytes_hash(bytes) != attachment.content_hash);
+            let (kind, local_path, source_local_path, reason) =
+                match &options.stale_attachment_policy {
+                    OutlinePullStaleAttachmentPolicy::Retain => (
+                        OutlinePullActionKind::StaleAttachment,
+                        attachment.local_path.clone(),
+                        None,
+                        "remote document no longer references this managed attachment; local file retained",
+                    ),
+                    OutlinePullStaleAttachmentPolicy::Archive { directory } => {
+                        let directory = validate_destination(directory)?;
+                        let archive_path = stale_attachment_archive_path(
+                            &directory,
+                            &document.id,
+                            &attachment.local_path,
+                        );
+                        validate_contained_file_path(&directory, &archive_path)?;
+                        if bytes.is_some() && paths.vault_root().join(&archive_path).exists() {
+                            return Err(AppError::operation(format!(
+                                "stale Outline attachment archive destination `{archive_path}` already exists"
+                            )));
+                        }
+                        (
+                            OutlinePullActionKind::ArchiveStaleAttachment,
+                            archive_path,
+                            bytes.as_ref().map(|_| attachment.local_path.clone()),
+                            "archive the stale managed attachment at a recoverable local path",
+                        )
+                    }
+                    OutlinePullStaleAttachmentPolicy::Delete => (
+                        OutlinePullActionKind::DeleteStaleAttachment,
+                        attachment.local_path.clone(),
+                        bytes.as_ref().map(|_| attachment.local_path.clone()),
+                        "permanently delete the explicitly confirmed stale managed attachment",
+                    ),
+                };
+            Ok(OutlinePullAction {
+                kind,
+                remote_document_id: document.id.clone(),
+                local_path,
+                reason: reason.to_string(),
+                local_changed,
+                remote_changed: true,
+                source_local_path,
+                rewritten_local_paths: Vec::new(),
+                attachment_paths: Vec::new(),
+                downloaded_attachment_paths: Vec::new(),
+                preserves_local_changes: kind == OutlinePullActionKind::StaleAttachment,
+                desired_content: None,
+                merged_content: None,
+                local_content: None,
+                attachments: Vec::new(),
+                stale_attachment_url: Some(remote_url.clone()),
+            })
+        })
+        .collect()
+}
+
 fn attachment_path(destination: &str, document_id: &str, remote_url: &str, label: &str) -> String {
     let document_hash = bytes_hash(document_id.as_bytes());
     let url_hash = bytes_hash(remote_url.as_bytes());
@@ -1443,6 +1595,15 @@ fn missing_archive_path(directory: &str, remote_id: &str, source_path: &str) -> 
         .and_then(|filename| filename.to_str())
         .unwrap_or("missing.md");
     format!("{directory}/{}-{filename}", &remote_hash[..12])
+}
+
+fn stale_attachment_archive_path(directory: &str, remote_id: &str, source_path: &str) -> String {
+    let remote_hash = bytes_hash(remote_id.as_bytes());
+    let filename = Path::new(source_path)
+        .file_name()
+        .and_then(|filename| filename.to_str())
+        .unwrap_or("attachment.bin");
+    format!("{directory}/{}/{}", &remote_hash[..12], filename)
 }
 
 fn relative_markdown_path(note_path: &str, target_path: &str) -> Result<String, AppError> {
@@ -1542,6 +1703,23 @@ fn validate_managed_asset_path(destination: &str, local_path: &str) -> Result<()
     Ok(())
 }
 
+fn validate_contained_file_path(directory: &str, local_path: &str) -> Result<(), AppError> {
+    let path = Path::new(local_path);
+    if local_path.contains('\\')
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        || !path.starts_with(Path::new(directory))
+        || path == Path::new(directory)
+    {
+        return Err(AppError::operation(
+            "Outline pull planned an unsafe contained file path",
+        ));
+    }
+    Ok(())
+}
+
 fn remove_managed_file(paths: &VaultPaths, local_path: &str) -> Result<(), AppError> {
     match secure_read(paths.vault_root(), Path::new(local_path)) {
         Ok(_) => fs::remove_file(paths.vault_root().join(local_path)).map_err(AppError::operation),
@@ -1560,6 +1738,8 @@ fn pull_action_mutates(kind: OutlinePullActionKind) -> bool {
             | OutlinePullActionKind::AutoMerge
             | OutlinePullActionKind::ArchiveMissing
             | OutlinePullActionKind::DeleteMissing
+            | OutlinePullActionKind::ArchiveStaleAttachment
+            | OutlinePullActionKind::DeleteStaleAttachment
     )
 }
 
@@ -1747,6 +1927,9 @@ fn report(
         out_of_scope: count(OutlinePullActionKind::OutOfScope),
         attachments_planned,
         attachments_downloaded,
+        stale_attachments: count(OutlinePullActionKind::StaleAttachment),
+        archived_stale_attachments: count(OutlinePullActionKind::ArchiveStaleAttachment),
+        deleted_stale_attachments: count(OutlinePullActionKind::DeleteStaleAttachment),
         actions,
     }
 }
@@ -2101,6 +2284,137 @@ mod tests {
         assert_eq!(repaired.updated, 1);
         assert_eq!(repaired.attachments_downloaded, 1);
         assert_eq!(api.download_count.get(), 2);
+    }
+
+    #[test]
+    fn stale_managed_attachments_are_retained_or_recoverably_archived() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        let with_attachment = api(vec![document(
+            "home",
+            "Home",
+            "![diagram.png](/api/attachments.redirect?id=asset)",
+            None,
+        )]);
+        let initial = pull_outline(
+            &paths,
+            &with_attachment,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("initial attachment pull");
+        let attachment_path = initial.actions[0].attachment_paths[0].clone();
+        let without_attachment = api(vec![document("home", "Home", "attachment removed\n", None)]);
+
+        let retained = pull_outline(
+            &paths,
+            &without_attachment,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("retain stale attachment");
+        assert_eq!(retained.stale_attachments, 1);
+        assert!(temp.path().join(&attachment_path).is_file());
+        let retained_state = load_state(&paths, "wiki", "collection", "Imported").unwrap();
+        assert_eq!(retained_state.documents["home"].attachments.len(), 1);
+
+        let archived = pull_outline_with_options_and_write_authorizer(
+            &paths,
+            &without_attachment,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+            &OutlinePullOptions {
+                stale_attachment_policy: OutlinePullStaleAttachmentPolicy::Archive {
+                    directory: "Archive/Outline Assets".to_string(),
+                },
+                ..OutlinePullOptions::default()
+            },
+            &|_| Ok(()),
+        )
+        .expect("archive stale attachment");
+        assert_eq!(archived.archived_stale_attachments, 1);
+        let archive_action = archived
+            .actions
+            .iter()
+            .find(|action| action.kind == OutlinePullActionKind::ArchiveStaleAttachment)
+            .unwrap();
+        assert!(!temp.path().join(&attachment_path).exists());
+        assert_eq!(
+            fs::read(temp.path().join(&archive_action.local_path)).unwrap(),
+            b"downloaded image"
+        );
+        let archived_state = load_state(&paths, "wiki", "collection", "Imported").unwrap();
+        assert!(archived_state.documents["home"].attachments.is_empty());
+    }
+
+    #[test]
+    fn stale_attachment_deletion_requires_an_exact_live_count() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        let with_attachment = api(vec![document(
+            "home",
+            "Home",
+            "![diagram.png](/api/attachments.redirect?id=asset)",
+            None,
+        )]);
+        let initial = pull_outline(
+            &paths,
+            &with_attachment,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("initial attachment pull");
+        let attachment_path = initial.actions[0].attachment_paths[0].clone();
+        let without_attachment = api(vec![document("home", "Home", "removed\n", None)]);
+        let options = OutlinePullOptions {
+            stale_attachment_policy: OutlinePullStaleAttachmentPolicy::Delete,
+            ..OutlinePullOptions::default()
+        };
+        assert!(pull_outline_with_options_and_write_authorizer(
+            &paths,
+            &without_attachment,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+            &options,
+            &|_| Ok(()),
+        )
+        .is_err());
+        assert!(temp.path().join(&attachment_path).is_file());
+
+        let deleted = pull_outline_with_options_and_write_authorizer(
+            &paths,
+            &without_attachment,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+            &OutlinePullOptions {
+                confirmed_stale_attachment_delete_count: Some(1),
+                ..options
+            },
+            &|_| Ok(()),
+        )
+        .expect("confirmed stale attachment deletion");
+        assert_eq!(deleted.deleted_stale_attachments, 1);
+        assert!(!temp.path().join(&attachment_path).exists());
     }
 
     #[test]
