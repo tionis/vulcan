@@ -199,6 +199,7 @@ pub enum OutlinePullActionKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct OutlinePullAction {
     pub kind: OutlinePullActionKind,
     pub remote_document_id: String,
@@ -211,6 +212,7 @@ pub struct OutlinePullAction {
     pub attachment_paths: Vec<String>,
     pub downloaded_attachment_paths: Vec<String>,
     pub preserves_local_changes: bool,
+    pub conflict_markers_available: bool,
     #[serde(skip)]
     desired_content: Option<String>,
     #[serde(skip)]
@@ -1129,6 +1131,7 @@ fn plan_pull(
             .iter()
             .any(|attachment| attachment.local_changed || attachment.unmanaged_collision);
         let local_changed = note_local_changed || attachment_local_changed;
+        let local_note_missing = mapping.is_some() && local_content.is_none();
         let attachment_needs_download = attachments
             .iter()
             .any(|attachment| attachment.needs_download);
@@ -1150,22 +1153,26 @@ fn plan_pull(
                 .iter()
                 .any(|attachment| attachment.unmanaged_collision);
         let conflicted = collision
+            || local_note_missing
             || (attachment_local_changed && remote_content_changed)
             || (note_local_changed && remote_content_changed && !desired_matches_local);
+        let conflict_markers_available = !attachment_local_changed
+            && !local_note_missing
+            && move_source.is_none()
+            && local_content.is_some();
         let reviewed_merge = (conflicted
             && conflict_policy.resolution(&local_path)
                 == Some(OutlinePullConflictResolution::ConflictMarkers)
-            && !attachment_local_changed
-            && move_source.is_none())
-        .then(|| {
-            three_way_merge(
-                &extract_local_from_diff3(local_content.as_deref().unwrap_or_default()),
-                mapping.map_or("", |mapping| mapping.base_content.as_str()),
-                &desired,
-                &document.id,
-            )
-        })
-        .transpose()?;
+            && conflict_markers_available)
+            .then(|| {
+                three_way_merge(
+                    &extract_local_from_diff3(local_content.as_deref().unwrap_or_default()),
+                    mapping.map_or("", |mapping| mapping.base_content.as_str()),
+                    &desired,
+                    &document.id,
+                )
+            })
+            .transpose()?;
         let (kind, reason) = if conflicted {
             match conflict_policy.resolution(&local_path) {
                 Some(OutlinePullConflictResolution::OverwriteLocal) => (
@@ -1179,7 +1186,7 @@ fn plan_pull(
                     "overwrite the reviewed local conflict with Outline",
                 ),
                 Some(OutlinePullConflictResolution::ConflictMarkers)
-                    if !attachment_local_changed && move_source.is_none() =>
+                    if conflict_markers_available =>
                 {
                     if reviewed_merge
                         .as_ref()
@@ -1200,6 +1207,8 @@ fn plan_pull(
                     OutlinePullActionKind::Conflict,
                     if collision {
                         "an unmanaged local note or attachment occupies an Outline destination"
+                    } else if local_note_missing {
+                        "the managed local note is missing while its Outline document still exists"
                     } else if attachment_local_changed {
                         "a local attachment changed while the Outline document also changed"
                     } else {
@@ -1275,6 +1284,7 @@ fn plan_pull(
                 .collect(),
             downloaded_attachment_paths: Vec::new(),
             preserves_local_changes,
+            conflict_markers_available,
             desired_content: Some(desired),
             merged_content: reviewed_merge.map(|merge| merge.content),
             local_content,
@@ -1350,6 +1360,7 @@ fn plan_pull(
                     .collect(),
                 downloaded_attachment_paths: Vec::new(),
                 preserves_local_changes: false,
+                conflict_markers_available: false,
                 desired_content: None,
                 merged_content: None,
                 local_content: None,
@@ -1370,6 +1381,7 @@ fn plan_pull(
                 attachment_paths: Vec::new(),
                 downloaded_attachment_paths: Vec::new(),
                 preserves_local_changes: true,
+                conflict_markers_available: false,
                 desired_content: None,
                 merged_content: None,
                 local_content: None,
@@ -1658,6 +1670,7 @@ fn plan_stale_attachment_actions(
                 attachment_paths: Vec::new(),
                 downloaded_attachment_paths: Vec::new(),
                 preserves_local_changes: kind == OutlinePullActionKind::StaleAttachment,
+                conflict_markers_available: false,
                 desired_content: None,
                 merged_content: None,
                 local_content: None,
@@ -2919,6 +2932,55 @@ mod tests {
         assert_eq!(
             fs::read_to_string(temp.path().join("Imported/Home.md")).unwrap(),
             "remote edit\n"
+        );
+    }
+
+    #[test]
+    fn missing_managed_local_note_conflicts_and_can_be_restored() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        let remote = api(vec![document("home", "Home", "remote body\n", None)]);
+        pull_outline(
+            &paths,
+            &remote,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("initial pull");
+        fs::remove_file(temp.path().join("Imported/Home.md")).expect("remove managed note");
+
+        let conflict = pull_outline(
+            &paths,
+            &remote,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("missing note conflict");
+        assert_eq!(conflict.conflicts, 1);
+        assert!(!conflict.actions[0].conflict_markers_available);
+        assert!(conflict.actions[0].reason.contains("missing"));
+
+        let restored = pull_outline(
+            &paths,
+            &remote,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::overwrite_all(),
+        )
+        .expect("restore missing note");
+        assert!(restored.applied);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("Imported/Home.md")).unwrap(),
+            "remote body\n"
         );
     }
 

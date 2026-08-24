@@ -2042,6 +2042,7 @@ fn prompt_outline_pull_conflicts(
             reason: action.reason.clone(),
             local_changed: action.local_changed,
             remote_changed: action.remote_changed,
+            conflict_markers_available: action.conflict_markers_available,
         })
         .collect::<Vec<_>>();
     prompt_outline_pull_items(&conflicts, input, output)
@@ -2053,6 +2054,7 @@ struct OutlinePullPromptItem {
     reason: String,
     local_changed: bool,
     remote_changed: bool,
+    conflict_markers_available: bool,
 }
 
 #[cfg(feature = "web")]
@@ -2075,11 +2077,19 @@ fn prompt_outline_pull_items(
         )
         .map_err(CliError::operation)?;
         loop {
-            write!(
-                output,
-                "Choose [o]verwrite local/[m]arkers/[ao] overwrite all/[am] markers all/[q]uit: "
-            )
-            .map_err(CliError::operation)?;
+            let all_remaining_support_markers = conflicts[index..]
+                .iter()
+                .all(|item| item.conflict_markers_available);
+            let prompt = if action.conflict_markers_available {
+                if all_remaining_support_markers {
+                    "Choose [o]verwrite local/[m]arkers/[ao] overwrite all/[am] markers all/[q]uit: "
+                } else {
+                    "Choose [o]verwrite local/[m]arkers/[ao] overwrite all/[q]uit: "
+                }
+            } else {
+                "Choose [o]verwrite local/[ao] overwrite all/[q]uit: "
+            };
+            write!(output, "{prompt}").map_err(CliError::operation)?;
             output.flush().map_err(CliError::operation)?;
             let mut answer = String::new();
             if input.read_line(&mut answer).map_err(CliError::operation)? == 0 {
@@ -2093,7 +2103,7 @@ fn prompt_outline_pull_items(
                     ));
                     break;
                 }
-                "m" | "markers" => {
+                "m" | "markers" if action.conflict_markers_available => {
                     decisions.push((
                         action.local_path.clone(),
                         OutlinePullConflictResolution::ConflictMarkers,
@@ -2109,7 +2119,7 @@ fn prompt_outline_pull_items(
                     }));
                     return Ok(Some(decisions));
                 }
-                "am" => {
+                "am" if all_remaining_support_markers => {
                     decisions.extend(conflicts[index..].iter().map(|remaining| {
                         (
                             remaining.local_path.clone(),

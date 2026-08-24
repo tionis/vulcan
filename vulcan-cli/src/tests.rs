@@ -1384,6 +1384,7 @@ fn interactive_outline_pull_supports_mixed_conflict_resolutions() {
         reason: "both changed".to_string(),
         local_changed: true,
         remote_changed: true,
+        conflict_markers_available: true,
     };
     let actions = vec![action("One.md"), action("Two.md"), action("Three.md")];
     let mut input = std::io::Cursor::new(b"o\nam\n");
@@ -1409,6 +1410,32 @@ fn interactive_outline_pull_supports_mixed_conflict_resolutions() {
             ),
         ]
     );
+}
+
+#[cfg(feature = "web")]
+#[test]
+fn interactive_outline_pull_hides_markers_for_binary_or_missing_conflicts() {
+    let conflicts = vec![OutlinePullPromptItem {
+        local_path: "Missing.md".to_string(),
+        reason: "managed note is missing".to_string(),
+        local_changed: true,
+        remote_changed: false,
+        conflict_markers_available: false,
+    }];
+    let mut input = std::io::Cursor::new(b"m\no\n");
+    let mut output = Vec::new();
+    let decisions = prompt_outline_pull_items(&conflicts, &mut input, &mut output)
+        .expect("interactive pull decisions")
+        .expect("approved pull");
+    assert_eq!(
+        decisions,
+        vec![(
+            "Missing.md".to_string(),
+            OutlinePullConflictResolution::OverwriteLocal
+        )]
+    );
+    let prompt = String::from_utf8(output).expect("prompt output");
+    assert!(!prompt.contains("/[m]arkers"));
 }
 
 #[cfg(feature = "web")]
