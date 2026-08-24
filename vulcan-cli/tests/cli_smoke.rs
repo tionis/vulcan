@@ -4,6 +4,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use rusqlite::Connection;
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::ffi::OsString;
 use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -10419,6 +10420,8 @@ fn skill_list_and_get_surface_bundled_skills() {
     let installed_skills = vault_root.join(".agents/skills");
     let publishing = fs::read_to_string(installed_skills.join("publishing-and-export/SKILL.md"))
         .expect("publishing skill should be installed");
+    assert!(publishing.contains("outline-zip --profile <name>"));
+    assert!(publishing.contains("API report `projections`"));
     assert!(publishing.contains("vulcan publish outline <profile> --dry-run"));
     assert!(publishing.contains("--overwrite-conflict <source-path>"));
     assert!(publishing.contains("--overwrite-conflicts"));
@@ -15641,6 +15644,191 @@ max_retries = 0
         .contains("generated an export-only placeholder"));
     assert_eq!(report["actions"][0]["kind"], "create");
     assert!(!vault_root.join(".vulcan/publish").exists());
+}
+
+#[test]
+fn outline_zip_profile_matches_api_selection_and_rendered_content() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let config_home = temp_dir.path().join("config-home");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Projects")).expect("projects folder");
+    fs::create_dir_all(vault_root.join(".vulcan/transforms")).expect("transform folder");
+    fs::write(vault_root.join("Projects/Projects.md"), "# Projects\n").expect("folder note");
+    fs::write(
+        vault_root.join("Projects/Readme.md"),
+        concat!(
+            "# Readme\n\n",
+            "- [Private](#private)\n\n",
+            "[[Secret|hidden]] and [block](#^target).\n\n",
+            "## Private\n\nThis must be removed.\n\n",
+            "^target\n",
+        ),
+    )
+    .expect("readme note");
+    fs::write(vault_root.join("Secret.md"), "# Secret\n").expect("excluded note");
+    fs::write(
+        vault_root.join(".vulcan/transforms/outline-links.js"),
+        r#"
+function transform_link(link) {
+  return { replacement: "[profile:" + link.reason + ":" + link.label + "]" };
+}
+"#,
+    )
+    .expect("link transform");
+    run_scan(&vault_root);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "trust",
+            "add",
+        ])
+        .assert()
+        .success();
+
+    let listener = TcpListener::bind("127.0.0.1:0").expect("mock Outline listener");
+    let address = listener.local_addr().expect("mock Outline address");
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("Outline list request");
+        let mut request = [0_u8; 8192];
+        let read = stream.read(&mut request).expect("read Outline request");
+        assert!(String::from_utf8_lossy(&request[..read]).contains("/api/documents.list"));
+        let body = r#"{"data":[],"pagination":{"total":0}}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .expect("write Outline response");
+    });
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        format!(
+            r#"
+[publish.outline.profiles.offline]
+collection_title = "Wiki"
+query = 'from notes where file.path matches "^Projects/"'
+remove_toc = true
+block_reference_policy = "plain-text"
+excluded_target_policy = "plain-text"
+
+[publish.outline.profiles.wiki]
+base_url = "http://{address}"
+collection_id = "collection"
+collection_title = "Wiki"
+query = 'from notes where file.path matches "^Projects/"'
+token_env = "VULCAN_TEST_OUTLINE_TOKEN"
+max_retries = 0
+remove_toc = true
+block_reference_policy = "custom"
+excluded_target_policy = "custom"
+link_transform = ".vulcan/transforms/outline-links.js"
+
+[[publish.outline.profiles.wiki.content_transforms]]
+exclude_headings = ["Private"]
+"#
+        ),
+    )
+    .expect("Outline profiles");
+
+    let offline_path = temp_dir.path().join("offline.zip");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "export",
+            "outline-zip",
+            "--profile",
+            "offline",
+            "--path",
+            offline_path.to_str().expect("ZIP path should be utf-8"),
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+
+    let zip_path = temp_dir.path().join("wiki.zip");
+    let zip_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "--output",
+            "json",
+            "export",
+            "outline-zip",
+            "--profile",
+            "wiki",
+            "--path",
+            zip_path.to_str().expect("ZIP path should be utf-8"),
+        ])
+        .assert()
+        .success();
+    let zip_report = parse_stdout_json(&zip_assert);
+    let file = fs::File::open(&zip_path).expect("profile ZIP should exist");
+    let mut archive = ZipArchive::new(file).expect("profile ZIP should open");
+    let mut rendered = String::new();
+    archive
+        .by_name("Wiki/Projects/Readme.md")
+        .expect("readme should be selected")
+        .read_to_string(&mut rendered)
+        .expect("readme should be readable");
+    assert!(!rendered.contains("This must be removed"));
+    assert!(!rendered.contains("[Private](#private)"));
+    assert!(rendered.contains("[profile:excluded_target:hidden]"));
+    assert!(rendered.contains("[profile:block_reference:block]"));
+
+    let publish_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("VULCAN_TEST_OUTLINE_TOKEN", "test-outline-token")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "--output",
+            "json",
+            "publish",
+            "outline",
+            "wiki",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    handle.join().expect("mock Outline server should join");
+    let publish_report = parse_stdout_json(&publish_assert);
+    let zip_documents = zip_report["documents"].as_array().expect("ZIP documents");
+    let projections = publish_report["projections"]
+        .as_array()
+        .expect("API projections");
+    let zip_pairs = zip_documents
+        .iter()
+        .map(|document| {
+            (
+                document["source_path"].as_str().unwrap(),
+                document["content_hash"].as_str().unwrap(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let api_pairs = projections
+        .iter()
+        .map(|document| {
+            (
+                document["source_path"].as_str().unwrap(),
+                document["content_hash"].as_str().unwrap(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(zip_pairs, api_pairs);
+    assert!(api_pairs
+        .iter()
+        .any(|(path, hash)| *path == "Projects/Readme.md" && hash.len() == 64));
 }
 
 #[test]

@@ -34,11 +34,11 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # cache_key = "openai-compatible:text-embedding-3-small"  # optional; override to keep vectors when switching endpoints
 
 # [publish.outline.profiles.wiki]
-# base_url = "https://outline.example.com"
-# collection_id = "00000000-0000-0000-0000-000000000000"
+# base_url = "https://outline.example.com" # API publication/pull only; optional for outline-zip
+# collection_id = "00000000-0000-0000-0000-000000000000" # API publication/pull only
 # collection_title = "Wiki"
 # query = "from notes"
-# token_env = "OUTLINE_API_TOKEN" # the token value is never stored in shared config
+# token_env = "OUTLINE_API_TOKEN" # API only; the token value is never stored in shared config
 # timeout_seconds = 30
 # max_retries = 3
 # page_size = 100

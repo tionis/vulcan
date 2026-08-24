@@ -1414,7 +1414,6 @@ fn outline_fallback_rendering(
     }
 }
 
-#[cfg(feature = "web")]
 fn outline_export_request<'a>(
     profile_name: &str,
     profile: &'a vulcan_core::config::OutlinePublishProfileConfig,
@@ -1432,7 +1431,7 @@ fn outline_export_request<'a>(
         + usize::from(request.selection.is_some());
     if source_count != 1 {
         return Err(CliError::operation(format!(
-            "Outline publish profile `{profile_name}` must set exactly one of `query`, `query_json`, or `selection`"
+            "Outline profile `{profile_name}` must set exactly one of `query`, `query_json`, or `selection`"
         )));
     }
     Ok(request)
@@ -2397,7 +2396,6 @@ fn outline_conflict_side_summary(side: &OutlineConflictSide) -> String {
     }
 }
 
-#[cfg(feature = "web")]
 fn outline_publication_options(
     paths: &VaultPaths,
     profile: &vulcan_core::config::OutlinePublishProfileConfig,
@@ -2412,6 +2410,70 @@ fn outline_publication_options(
             .transpose()
             .map_err(CliError::operation)?,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_outline_zip_export(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    request: ExportContentRequest<'_>,
+    collection_title: &str,
+    remove_toc: bool,
+    publication_options: OutlinePublicationOptions,
+    path: &Path,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let query_report = execute_export_selection(
+        paths,
+        request.query,
+        request.query_json,
+        request.selection,
+        request.read_filter,
+    )
+    .map_err(CliError::operation)?;
+    let prepared = prepare_outline_export_data(
+        paths,
+        &query_report,
+        request.read_filter,
+        request.transforms,
+        OutlineMarkdownOptions { remove_toc },
+    )
+    .map_err(CliError::operation)?;
+    let plan = plan_outline_publication_with_options(
+        paths,
+        collection_title,
+        &prepared.notes,
+        &prepared.links,
+        publication_options,
+    )
+    .map_err(CliError::operation)?;
+    let report = write_outline_zip(paths, path, plan, dry_run).map_err(CliError::operation)?;
+    let valid = report.plan.is_valid();
+    match output {
+        OutputFormat::Json => print_json(&report)?,
+        OutputFormat::Human | OutputFormat::Markdown => {
+            print_outline_diagnostics(&report.plan.diagnostics);
+            if valid {
+                if report.wrote_archive {
+                    println!("{}", report.path);
+                } else {
+                    for document in &report.plan.documents {
+                        println!("{}", document.archive_path);
+                    }
+                    for attachment in &report.plan.attachments {
+                        println!("{}", attachment.archive_path);
+                    }
+                }
+            }
+        }
+    }
+    if valid {
+        Ok(())
+    } else {
+        Err(CliError::operation(
+            "Outline publication plan contains unsafe diagnostics",
+        ))
+    }
 }
 
 #[cfg(not(feature = "web"))]
@@ -5112,6 +5174,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     }
                 }
                 ExportCommand::OutlineZip {
+                    profile,
                     query,
                     transforms,
                     collection_title,
@@ -5122,94 +5185,107 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                     path,
                     dry_run,
                 } => {
-                    let report = execute_export_query_args(&paths, query, read_filter.as_ref())?;
-                    let transform_rules = build_content_transform_rules(
-                        &transforms.exclude_callouts,
-                        &transforms.exclude_headings,
-                        &transforms.exclude_frontmatter_keys,
-                        &transforms.exclude_inline_fields,
-                        &transforms.replace_rules,
-                    )
-                    .map_err(CliError::operation)?;
-                    let prepared = prepare_outline_export_data(
-                        &paths,
-                        &report,
-                        read_filter.as_ref(),
-                        transform_rules.as_deref(),
-                        OutlineMarkdownOptions {
-                            remove_toc: *remove_toc,
-                        },
-                    )
-                    .map_err(CliError::operation)?;
-                    let plan = plan_outline_publication_with_options(
-                        &paths,
-                        collection_title,
-                        &prepared.notes,
-                        &prepared.links,
-                        OutlinePublicationOptions {
-                            block_reference_policy: match block_reference_policy {
-                                OutlineBlockReferencePolicyArg::Error => {
-                                    OutlineBlockReferencePolicyConfig::Error
-                                }
-                                OutlineBlockReferencePolicyArg::PlainText => {
-                                    OutlineBlockReferencePolicyConfig::PlainText
-                                }
-                                OutlineBlockReferencePolicyArg::AnnotatedText => {
-                                    OutlineBlockReferencePolicyConfig::AnnotatedText
-                                }
-                                OutlineBlockReferencePolicyArg::Custom => {
-                                    OutlineBlockReferencePolicyConfig::Custom
-                                }
-                            },
-                            excluded_target_policy: match excluded_target_policy {
-                                OutlineExcludedTargetPolicyArg::Error => {
-                                    OutlineExcludedTargetPolicyConfig::Error
-                                }
-                                OutlineExcludedTargetPolicyArg::PlainText => {
-                                    OutlineExcludedTargetPolicyConfig::PlainText
-                                }
-                                OutlineExcludedTargetPolicyArg::AnnotatedText => {
-                                    OutlineExcludedTargetPolicyConfig::AnnotatedText
-                                }
-                                OutlineExcludedTargetPolicyArg::Custom => {
-                                    OutlineExcludedTargetPolicyConfig::Custom
-                                }
-                            },
-                            link_transform: link_transform
+                    if let Some(profile_name) = profile.as_deref() {
+                        let loaded = load_vault_config(&paths);
+                        let profile_config = loaded
+                            .config
+                            .publish
+                            .outline
+                            .profiles
+                            .get(profile_name)
+                            .ok_or_else(|| {
+                                CliError::operation(format!(
+                                    "Outline profile `{profile_name}` was not found"
+                                ))
+                            })?;
+                        let request = outline_export_request(
+                            profile_name,
+                            profile_config,
+                            read_filter.as_ref(),
+                        )?;
+                        run_outline_zip_export(
+                            cli.output,
+                            &paths,
+                            request,
+                            profile_config
+                                .collection_title
                                 .as_deref()
-                                .map(|path| load_outline_link_transform(&paths, path))
-                                .transpose()
-                                .map_err(CliError::operation)?,
-                        },
-                    )
-                    .map_err(CliError::operation)?;
-                    let report = write_outline_zip(&paths, path, plan, *dry_run)
-                        .map_err(CliError::operation)?;
-                    let valid = report.plan.is_valid();
-                    match cli.output {
-                        OutputFormat::Json => print_json(&report)?,
-                        OutputFormat::Human | OutputFormat::Markdown => {
-                            print_outline_diagnostics(&report.plan.diagnostics);
-                            if valid {
-                                if report.wrote_archive {
-                                    println!("{}", report.path);
-                                } else {
-                                    for document in &report.plan.documents {
-                                        println!("{}", document.archive_path);
-                                    }
-                                    for attachment in &report.plan.attachments {
-                                        println!("{}", attachment.archive_path);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    if valid {
-                        Ok(())
+                                .unwrap_or(profile_name),
+                            profile_config.remove_toc.unwrap_or(false),
+                            outline_publication_options(&paths, profile_config)?,
+                            path,
+                            *dry_run,
+                        )
                     } else {
-                        Err(CliError::operation(
-                            "Outline publication plan contains unsafe diagnostics",
-                        ))
+                        let collection_title = collection_title.as_deref().ok_or_else(|| {
+                            CliError::operation(
+                                "Outline ZIP export requires --collection-title unless --profile is used",
+                            )
+                        })?;
+                        let selection = parse_selection_json(query.selection_json.as_deref())?;
+                        let transform_rules = build_content_transform_rules(
+                            &transforms.exclude_callouts,
+                            &transforms.exclude_headings,
+                            &transforms.exclude_frontmatter_keys,
+                            &transforms.exclude_inline_fields,
+                            &transforms.replace_rules,
+                        )
+                        .map_err(CliError::operation)?;
+                        let request = ExportContentRequest {
+                            query: query.query.as_deref(),
+                            query_json: query.query_json.as_deref(),
+                            selection: selection.as_ref(),
+                            read_filter: read_filter.as_ref(),
+                            transforms: transform_rules.as_deref(),
+                        };
+                        run_outline_zip_export(
+                            cli.output,
+                            &paths,
+                            request,
+                            collection_title,
+                            *remove_toc,
+                            OutlinePublicationOptions {
+                                block_reference_policy: match block_reference_policy
+                                    .unwrap_or(OutlineBlockReferencePolicyArg::Error)
+                                {
+                                    OutlineBlockReferencePolicyArg::Error => {
+                                        OutlineBlockReferencePolicyConfig::Error
+                                    }
+                                    OutlineBlockReferencePolicyArg::PlainText => {
+                                        OutlineBlockReferencePolicyConfig::PlainText
+                                    }
+                                    OutlineBlockReferencePolicyArg::AnnotatedText => {
+                                        OutlineBlockReferencePolicyConfig::AnnotatedText
+                                    }
+                                    OutlineBlockReferencePolicyArg::Custom => {
+                                        OutlineBlockReferencePolicyConfig::Custom
+                                    }
+                                },
+                                excluded_target_policy: match excluded_target_policy
+                                    .unwrap_or(OutlineExcludedTargetPolicyArg::Error)
+                                {
+                                    OutlineExcludedTargetPolicyArg::Error => {
+                                        OutlineExcludedTargetPolicyConfig::Error
+                                    }
+                                    OutlineExcludedTargetPolicyArg::PlainText => {
+                                        OutlineExcludedTargetPolicyConfig::PlainText
+                                    }
+                                    OutlineExcludedTargetPolicyArg::AnnotatedText => {
+                                        OutlineExcludedTargetPolicyConfig::AnnotatedText
+                                    }
+                                    OutlineExcludedTargetPolicyArg::Custom => {
+                                        OutlineExcludedTargetPolicyConfig::Custom
+                                    }
+                                },
+                                link_transform: link_transform
+                                    .as_deref()
+                                    .map(|path| load_outline_link_transform(&paths, path))
+                                    .transpose()
+                                    .map_err(CliError::operation)?,
+                            },
+                            path,
+                            *dry_run,
+                        )
                     }
                 }
                 ExportCommand::Sqlite { query, path } => {

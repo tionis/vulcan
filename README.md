@@ -42,6 +42,7 @@ vulcan --vault ~/notes daily today
 vulcan --vault ~/notes tasks list --output json
 vulcan --vault ~/notes export markdown 'tag:publish' --path public.md
 vulcan --vault ~/notes export outline-zip --collection-title Wiki --path wiki.zip
+vulcan --vault ~/notes export outline-zip --profile wiki --path wiki.zip
 vulcan --vault ~/notes site build
 vulcan --vault ~/notes doctor
 ```

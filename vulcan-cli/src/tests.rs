@@ -983,22 +983,84 @@ fn parses_outline_zip_export_command() {
         cli.command,
         Command::Export {
             command: ExportCommand::OutlineZip {
+                profile: None,
                 query: ExportQueryArgs {
                     query: None,
                     query_json: None,
                     selection_json: None,
                 },
                 transforms: ExportTransformArgs::default(),
-                collection_title: "Wiki".to_string(),
+                collection_title: Some("Wiki".to_string()),
                 remove_toc: true,
-                block_reference_policy: OutlineBlockReferencePolicyArg::Error,
-                excluded_target_policy: OutlineExcludedTargetPolicyArg::Error,
+                block_reference_policy: None,
+                excluded_target_policy: None,
                 link_transform: None,
                 path: PathBuf::from("wiki.zip"),
                 dry_run: true,
             },
         }
     );
+}
+
+#[test]
+fn parses_profiled_outline_zip_and_rejects_direct_overrides() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "export",
+        "outline-zip",
+        "--profile",
+        "wiki",
+        "--path",
+        "wiki.zip",
+    ])
+    .expect("profiled Outline ZIP should parse without API or direct rendering fields");
+    assert!(matches!(
+        cli.command,
+        Command::Export {
+            command: ExportCommand::OutlineZip {
+                profile: Some(ref profile),
+                collection_title: None,
+                ..
+            }
+        } if profile == "wiki"
+    ));
+    for conflicting in [
+        ["--query", "from notes"],
+        ["--collection-title", "Other"],
+        ["--exclude-heading", "Private"],
+        ["--block-reference-policy", "plain-text"],
+    ] {
+        assert!(Cli::try_parse_from([
+            "vulcan",
+            "export",
+            "outline-zip",
+            "--profile",
+            "wiki",
+            "--path",
+            "wiki.zip",
+            conflicting[0],
+            conflicting[1],
+        ])
+        .is_err());
+    }
+}
+
+#[test]
+fn outline_profile_selection_requires_exactly_one_source() {
+    let missing = vulcan_core::config::OutlinePublishProfileConfig::default();
+    assert!(outline_export_request("missing", &missing, None)
+        .unwrap_err()
+        .to_string()
+        .contains("exactly one"));
+    let conflicting = vulcan_core::config::OutlinePublishProfileConfig {
+        query: Some("from notes".to_string()),
+        query_json: Some(r#"{"source":"notes"}"#.to_string()),
+        ..vulcan_core::config::OutlinePublishProfileConfig::default()
+    };
+    assert!(outline_export_request("conflicting", &conflicting, None)
+        .unwrap_err()
+        .to_string()
+        .contains("exactly one"));
 }
 
 #[test]

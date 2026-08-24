@@ -15,9 +15,14 @@ vulcan --output json export outline-zip \
   --collection-title "Wiki" \
   --path wiki.zip \
   --dry-run
+
+# Reuse the same selection and rendering contract as API publication:
+vulcan export outline-zip --profile wiki --path wiki.zip
 ```
 
 As with every query-based export command, omitting both the positional query and `--query-json` selects the full vault (`from notes`). Pass either form when you want a filtered export.
+
+`--profile <name>` instead resolves `[publish.outline.profiles.<name>]` and reuses exactly one configured `query`, `query_json`, or additive `selection`, plus `collection_title`, `content_transforms`, `link_transform`, `block_reference_policy`, `excluded_target_policy`, and `remove_toc`. The ZIP `--path` remains an invocation-local destination. ZIP export does not read or require `base_url`, `collection_id`, `token_env`, retry, timeout, or pagination fields, so an archive-only profile may omit all API settings. Profile mode conflicts with every direct selection, transform, title, TOC, and link-policy flag; define the complete rendering contract in one place rather than partially overriding it. API publication reports `projections` with source paths and rendered content hashes, allowing automation and tests to compare its selected projection directly with the ZIP plan.
 
 The archive layout follows Outline 1.9.x Markdown exports. An Outline document with children is represented by a Markdown file and a sibling directory with the same name:
 

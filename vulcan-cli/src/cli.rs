@@ -1055,7 +1055,7 @@ Notes:
   Profiles live under `[export.profiles.<name>]` in `.vulcan/config.toml`.
   `export profile run <name>` resolves relative profile paths from the vault root.
   `export profile create|set|delete` updates shared `.vulcan/config.toml`; `show` prints the effective merged profile.
-  `markdown`, `json`, `csv`, `epub`, `zip`, `outline-zip`, and `sqlite` accept the native note query DSL or `--query-json`; omitting both exports the full vault.
+  `markdown`, `json`, `csv`, `epub`, `zip`, `outline-zip`, and `sqlite` accept the native note query DSL or `--query-json`; omitting both exports the full vault. `outline-zip --profile <name>` reuses an Outline publication profile without requiring API fields.
   Query-capable export profiles use the same full-vault default when neither query field is configured.
   `markdown`, `json`, `epub`, and `zip` support publication-oriented content transforms such as `--exclude-callout`, `--exclude-heading`, `--exclude-frontmatter-key`, `--exclude-inline-field`, and ordered `--replace-rule` rewrites.
   Direct export flags build one implicit transform rule that applies to all exported notes.
@@ -2305,28 +2305,47 @@ pub enum ExportCommand {
     },
     #[command(about = "Export matched notes as an Outline-compatible hierarchy ZIP")]
     OutlineZip {
+        #[arg(
+            long,
+            value_name = "NAME",
+            conflicts_with_all = [
+                "query",
+                "query_json",
+                "selection_json",
+                "exclude_callouts",
+                "exclude_headings",
+                "exclude_frontmatter_keys",
+                "exclude_inline_fields",
+                "replace_rules",
+                "collection_title",
+                "remove_toc",
+                "block_reference_policy",
+                "excluded_target_policy",
+                "link_transform"
+            ],
+            help = "Reuse [publish.outline.profiles.<name>] selection and rendering settings"
+        )]
+        profile: Option<String>,
         #[command(flatten)]
         query: ExportQueryArgs,
         #[command(flatten)]
         transforms: ExportTransformArgs,
         #[arg(long, help = "Top-level Outline collection directory and import title")]
-        collection_title: String,
+        collection_title: Option<String>,
         #[arg(long, help = "Strip Obsidian heading-link table-of-contents lists")]
         remove_toc: bool,
         #[arg(
             long,
             value_enum,
-            default_value = "error",
             help = "How to publish Obsidian block-reference links: error, plain-text, annotated-text, or custom"
         )]
-        block_reference_policy: OutlineBlockReferencePolicyArg,
+        block_reference_policy: Option<OutlineBlockReferencePolicyArg>,
         #[arg(
             long,
             value_enum,
-            default_value = "error",
             help = "How to publish links to notes outside the query: error, plain-text, annotated-text, or custom"
         )]
-        excluded_target_policy: OutlineExcludedTargetPolicyArg,
+        excluded_target_policy: Option<OutlineExcludedTargetPolicyArg>,
         #[arg(
             long,
             value_name = "VAULT_RELATIVE_JS_PATH",

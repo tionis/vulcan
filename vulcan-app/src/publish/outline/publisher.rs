@@ -25,8 +25,15 @@ pub struct OutlinePublishReport {
     pub diagnostics: Vec<OutlineDiagnostic>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link_transform: Option<OutlineLinkTransform>,
+    pub projections: Vec<OutlinePublishProjection>,
     #[serde(flatten)]
     pub plan: OutlinePublishPlan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OutlinePublishProjection {
+    pub source_path: String,
+    pub content_hash: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -156,8 +163,7 @@ where
         );
         return Ok(report(
             plan,
-            publication.diagnostics.clone(),
-            publication.link_transform.clone(),
+            publication,
             true,
             false,
             adopted_pull_bindings,
@@ -192,8 +198,7 @@ where
         );
         return Ok(report(
             plan,
-            publication.diagnostics.clone(),
-            publication.link_transform.clone(),
+            publication,
             false,
             false,
             adopted_pull_bindings,
@@ -607,8 +612,7 @@ where
     );
     Ok(report(
         plan,
-        publication.diagnostics.clone(),
-        publication.link_transform.clone(),
+        publication,
         false,
         true,
         adopted_pull_bindings,
@@ -733,8 +737,7 @@ fn emit_progress(
 
 fn report(
     plan: OutlinePublishPlan,
-    diagnostics: Vec<OutlineDiagnostic>,
-    link_transform: Option<OutlineLinkTransform>,
+    publication: &OutlinePublicationPlan,
     dry_run: bool,
     applied: bool,
     adopted_pull_bindings: usize,
@@ -749,8 +752,16 @@ fn report(
         applied,
         conflicts,
         adopted_pull_bindings,
-        diagnostics,
-        link_transform,
+        diagnostics: publication.diagnostics.clone(),
+        link_transform: publication.link_transform.clone(),
+        projections: publication
+            .documents
+            .iter()
+            .map(|document| OutlinePublishProjection {
+                source_path: document.source_path.clone(),
+                content_hash: document.content_hash.clone(),
+            })
+            .collect(),
         plan,
     }
 }
@@ -1250,6 +1261,12 @@ mod tests {
 
         assert_eq!(report.diagnostics, publication.diagnostics);
         assert!(report.diagnostics[0].is_warning());
+        assert_eq!(report.projections.len(), 1);
+        assert_eq!(report.projections[0].source_path, "Pantheons/Pantheons.md");
+        assert_eq!(
+            report.projections[0].content_hash,
+            publication.documents[0].content_hash
+        );
     }
 
     #[test]
