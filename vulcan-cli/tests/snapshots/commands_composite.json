@@ -5832,6 +5832,20 @@
                 ]
               },
               {
+                "help": "Apply remote title and hierarchy changes as link-aware local note moves",
+                "id": "apply_remote_moves",
+                "long": "apply-remote-moves",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "APPLY_REMOTE_MOVES"
+                ]
+              },
+              {
                 "help": "Suppress auto-commit for pulled local note changes",
                 "id": "no_commit",
                 "long": "no-commit",

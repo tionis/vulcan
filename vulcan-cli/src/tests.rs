@@ -1107,6 +1107,25 @@ fn rejects_combining_selective_and_global_outline_conflict_overrides() {
         "--overwrite-conflicts",
     ])
     .is_err());
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "pull",
+        "outline",
+        "wiki",
+        "--into",
+        "Imported",
+        "--apply-remote-moves",
+    ])
+    .expect("remote move policy should parse");
+    assert!(matches!(
+        cli.command,
+        Command::Pull {
+            command: PullCommand::Outline {
+                apply_remote_moves: true,
+                ..
+            }
+        }
+    ));
 }
 
 #[test]
@@ -1188,6 +1207,7 @@ fn parses_outline_pull_conflict_modes() {
                 overwrite_conflicts: false,
                 conflict_markers: false,
                 interactive: false,
+                apply_remote_moves: false,
                 no_commit: false,
             }
         }

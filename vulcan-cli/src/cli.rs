@@ -2436,6 +2436,11 @@ pub enum PullCommand {
             help = "Choose overwrite or conflict markers for each local/remote conflict"
         )]
         interactive: bool,
+        #[arg(
+            long,
+            help = "Apply remote title and hierarchy changes as link-aware local note moves"
+        )]
+        apply_remote_moves: bool,
         #[arg(long, help = "Suppress auto-commit for pulled local note changes")]
         no_commit: bool,
     },

@@ -40,6 +40,11 @@ pub struct OutlinePullConflictPolicy {
     default: Option<OutlinePullConflictResolution>,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutlinePullOptions {
+    pub apply_remote_moves: bool,
+}
+
 impl OutlinePullConflictPolicy {
     #[must_use]
     pub fn abort() -> Self {
@@ -82,6 +87,7 @@ impl OutlinePullConflictPolicy {
 pub enum OutlinePullActionKind {
     Create,
     Update,
+    Move,
     Unchanged,
     Conflict,
     WriteConflictMarkers,
@@ -96,8 +102,11 @@ pub struct OutlinePullAction {
     pub reason: String,
     pub local_changed: bool,
     pub remote_changed: bool,
+    pub source_local_path: Option<String>,
+    pub rewritten_local_paths: Vec<String>,
     pub attachment_paths: Vec<String>,
     pub downloaded_attachment_paths: Vec<String>,
+    pub preserves_local_changes: bool,
     #[serde(skip)]
     desired_content: Option<String>,
     #[serde(skip)]
@@ -116,6 +125,7 @@ pub struct OutlinePullReport {
     pub conflicts: usize,
     pub created: usize,
     pub updated: usize,
+    pub moved: usize,
     pub unchanged: usize,
     pub conflict_markers_written: usize,
     pub remote_missing: usize,
@@ -140,6 +150,8 @@ struct OutlinePullState {
 struct OutlinePullMapping {
     local_path: String,
     last_remote_content_hash: String,
+    #[serde(default)]
+    last_remote_source_hash: Option<String>,
     last_remote_title: String,
     last_remote_parent_id: Option<String>,
     last_materialized_local_hash: String,
@@ -237,7 +249,7 @@ pub fn pull_outline(
     dry_run: bool,
     conflict_policy: &OutlinePullConflictPolicy,
 ) -> Result<OutlinePullReport, AppError> {
-    pull_outline_with_write_authorizer(
+    pull_outline_with_options_and_write_authorizer(
         paths,
         api,
         profile,
@@ -245,6 +257,7 @@ pub fn pull_outline(
         destination,
         dry_run,
         conflict_policy,
+        &OutlinePullOptions::default(),
         &|_| Ok(()),
     )
 }
@@ -262,11 +275,37 @@ pub fn pull_outline_with_write_authorizer(
     conflict_policy: &OutlinePullConflictPolicy,
     authorize_write: &dyn Fn(&str) -> Result<(), AppError>,
 ) -> Result<OutlinePullReport, AppError> {
+    pull_outline_with_options_and_write_authorizer(
+        paths,
+        api,
+        profile,
+        collection_id,
+        destination,
+        dry_run,
+        conflict_policy,
+        &OutlinePullOptions::default(),
+        authorize_write,
+    )
+}
+
+/// Pulls an Outline collection with explicit reconciliation options and live-plan authorization.
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub fn pull_outline_with_options_and_write_authorizer(
+    paths: &VaultPaths,
+    api: &dyn OutlineApi,
+    profile: &str,
+    collection_id: &str,
+    destination: &str,
+    dry_run: bool,
+    conflict_policy: &OutlinePullConflictPolicy,
+    options: &OutlinePullOptions,
+    authorize_write: &dyn Fn(&str) -> Result<(), AppError>,
+) -> Result<OutlinePullReport, AppError> {
     let destination = validate_destination(destination)?;
     if dry_run {
         let state = load_state(paths, profile, collection_id, &destination)?;
         let remote = api.list_collection_documents(collection_id)?;
-        let actions = plan_pull(paths, &remote, &state, conflict_policy)?;
+        let actions = plan_pull(paths, &remote, &state, conflict_policy, options)?;
         return Ok(report(
             profile,
             collection_id,
@@ -280,7 +319,7 @@ pub fn pull_outline_with_write_authorizer(
     let lock = StateLock::acquire(paths, profile)?;
     let mut state = load_state(paths, profile, collection_id, &destination)?;
     let remote = api.list_collection_documents(collection_id)?;
-    let mut actions = plan_pull(paths, &remote, &state, conflict_policy)?;
+    let mut actions = plan_pull(paths, &remote, &state, conflict_policy, options)?;
     if actions
         .iter()
         .any(|action| action.kind == OutlinePullActionKind::Conflict)
@@ -299,9 +338,16 @@ pub fn pull_outline_with_write_authorizer(
             action.kind,
             OutlinePullActionKind::Create
                 | OutlinePullActionKind::Update
+                | OutlinePullActionKind::Move
                 | OutlinePullActionKind::WriteConflictMarkers
         ) {
+            if let Some(source_path) = action.source_local_path.as_deref() {
+                authorize_write(source_path)?;
+            }
             authorize_write(&action.local_path)?;
+            for rewritten_path in &action.rewritten_local_paths {
+                authorize_write(rewritten_path)?;
+            }
             for attachment_path in &action.attachment_paths {
                 authorize_write(attachment_path)?;
             }
@@ -316,6 +362,7 @@ pub fn pull_outline_with_write_authorizer(
             action.kind,
             OutlinePullActionKind::Create
                 | OutlinePullActionKind::Update
+                | OutlinePullActionKind::Move
                 | OutlinePullActionKind::WriteConflictMarkers
         ) {
             continue;
@@ -323,6 +370,19 @@ pub fn pull_outline_with_write_authorizer(
         let remote = remote_by_id
             .get(action.remote_document_id.as_str())
             .ok_or_else(|| AppError::operation("planned Outline pull document disappeared"))?;
+        if action.kind == OutlinePullActionKind::Move {
+            let source_path = action
+                .source_local_path
+                .as_deref()
+                .ok_or_else(|| AppError::operation("Outline pull move omitted its source path"))?;
+            let moved = vulcan_core::move_note(paths, source_path, &action.local_path, false)
+                .map_err(AppError::operation)?;
+            action.rewritten_local_paths = moved
+                .rewritten_files
+                .into_iter()
+                .map(|file| file.path)
+                .collect();
+        }
         let desired = action
             .desired_content
             .as_deref()
@@ -334,7 +394,7 @@ pub fn pull_outline_with_write_authorizer(
         if action.kind != OutlinePullActionKind::WriteConflictMarkers {
             for attachment in &action.attachments {
                 if attachment.needs_download
-                    || attachment.local_changed
+                    || (attachment.local_changed && !action.preserves_local_changes)
                     || attachment.unmanaged_collision
                 {
                     let downloaded = api.download_attachment(
@@ -380,21 +440,36 @@ pub fn pull_outline_with_write_authorizer(
         } else {
             desired.to_string()
         };
-        secure_write(
-            paths.vault_root(),
-            Path::new(&action.local_path),
-            written.as_bytes(),
-        )
-        .map_err(AppError::operation)?;
+        if !action.preserves_local_changes {
+            secure_write(
+                paths.vault_root(),
+                Path::new(&action.local_path),
+                written.as_bytes(),
+            )
+            .map_err(AppError::operation)?;
+        }
         if action.kind != OutlinePullActionKind::WriteConflictMarkers {
+            let previous_materialized_hash = state
+                .documents
+                .get(&action.remote_document_id)
+                .map(|mapping| mapping.last_materialized_local_hash.clone());
             state.documents.insert(
                 action.remote_document_id.clone(),
                 OutlinePullMapping {
                     local_path: action.local_path.clone(),
                     last_remote_content_hash: content_hash(desired),
+                    last_remote_source_hash: Some(content_hash(&remote.text)),
                     last_remote_title: remote.title.clone(),
                     last_remote_parent_id: remote.parent_document_id.clone(),
-                    last_materialized_local_hash: content_hash(desired),
+                    last_materialized_local_hash: if action.preserves_local_changes {
+                        previous_materialized_hash.ok_or_else(|| {
+                            AppError::operation(
+                                "Outline pull move cannot preserve changes without a baseline",
+                            )
+                        })?
+                    } else {
+                        content_hash(desired)
+                    },
                     base_content: desired.to_string(),
                     attachments: attachment_mappings,
                 },
@@ -419,6 +494,7 @@ fn plan_pull(
     remote: &[OutlineRemoteDocument],
     state: &OutlinePullState,
     conflict_policy: &OutlinePullConflictPolicy,
+    options: &OutlinePullOptions,
 ) -> Result<Vec<OutlinePullAction>, AppError> {
     let mut remote_ids = BTreeSet::new();
     for document in remote {
@@ -442,10 +518,14 @@ fn plan_pull(
     let local_paths = active
         .iter()
         .map(|document| {
-            let path = state.documents.get(&document.id).map_or_else(
-                || generated_paths[&document.id].clone(),
-                |mapping| mapping.local_path.clone(),
-            );
+            let path = if options.apply_remote_moves {
+                generated_paths[&document.id].clone()
+            } else {
+                state.documents.get(&document.id).map_or_else(
+                    || generated_paths[&document.id].clone(),
+                    |mapping| mapping.local_path.clone(),
+                )
+            };
             (document.id.clone(), path)
         })
         .collect::<BTreeMap<_, _>>();
@@ -463,6 +543,11 @@ fn plan_pull(
     let mut actions = Vec::with_capacity(active.len() + state.documents.len());
     for document in &active {
         let local_path = local_paths[&document.id].clone();
+        let mapped_path = state
+            .documents
+            .get(&document.id)
+            .map(|mapping| mapping.local_path.as_str());
+        let move_source = mapped_path.filter(|path| *path != local_path);
         let translated = outline_document_links_to_obsidian(
             &outline_to_obsidian_markdown(&document.text),
             |remote_id| local_paths.get(remote_id).cloned(),
@@ -476,7 +561,8 @@ fn plan_pull(
             &translated,
             mapping,
         )?;
-        let local_content = match secure_read_to_string(paths.vault_root(), Path::new(&local_path))
+        let content_path = move_source.unwrap_or(&local_path);
+        let local_content = match secure_read_to_string(paths.vault_root(), Path::new(content_path))
         {
             Ok(content) => Some(content),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -496,23 +582,32 @@ fn plan_pull(
         let attachment_needs_download = attachments
             .iter()
             .any(|attachment| attachment.needs_download);
+        let remote_content_changed = mapping.is_none_or(|mapping| {
+            mapping.last_remote_source_hash.as_ref().map_or_else(
+                || desired_hash != mapping.last_remote_content_hash,
+                |hash| content_hash(&document.text) != *hash,
+            )
+        });
         let remote_changed = mapping.is_none_or(|mapping| {
-            desired_hash != mapping.last_remote_content_hash
+            remote_content_changed
                 || document.title != mapping.last_remote_title
                 || document.parent_document_id != mapping.last_remote_parent_id
         });
         let desired_matches_local = local_hash.as_deref() == Some(desired_hash.as_str());
         let collision = (mapping.is_none() && local_content.is_some() && !desired_matches_local)
+            || (move_source.is_some() && paths.vault_root().join(&local_path).exists())
             || attachments
                 .iter()
                 .any(|attachment| attachment.unmanaged_collision);
         let conflicted = collision
-            || (attachment_local_changed && remote_changed)
-            || (note_local_changed && remote_changed && !desired_matches_local);
+            || (attachment_local_changed && remote_content_changed)
+            || (note_local_changed && remote_content_changed && !desired_matches_local);
         let (kind, reason) = if conflicted {
             match conflict_policy.resolution(&local_path) {
                 Some(OutlinePullConflictResolution::OverwriteLocal) => (
-                    if mapping.is_some() {
+                    if move_source.is_some() && local_content.is_some() {
+                        OutlinePullActionKind::Move
+                    } else if mapping.is_some() {
                         OutlinePullActionKind::Update
                     } else {
                         OutlinePullActionKind::Create
@@ -520,7 +615,7 @@ fn plan_pull(
                     "overwrite the reviewed local conflict with Outline",
                 ),
                 Some(OutlinePullConflictResolution::ConflictMarkers)
-                    if !attachment_local_changed =>
+                    if !attachment_local_changed && move_source.is_none() =>
                 {
                     (
                         OutlinePullActionKind::WriteConflictMarkers,
@@ -547,6 +642,11 @@ fn plan_pull(
                     "materialize a new Outline document"
                 },
             )
+        } else if move_source.is_some() && local_content.is_some() {
+            (
+                OutlinePullActionKind::Move,
+                "apply the reviewed Outline title or hierarchy path",
+            )
         } else if remote_changed && (!local_changed || desired_matches_local) {
             (
                 OutlinePullActionKind::Update,
@@ -571,6 +671,19 @@ fn plan_pull(
                 },
             )
         };
+        let rewritten_local_paths = if kind == OutlinePullActionKind::Move {
+            let source_path = move_source.expect("move action has source");
+            vulcan_core::move_note(paths, source_path, &local_path, true)
+                .map_err(AppError::operation)?
+                .rewritten_files
+                .into_iter()
+                .map(|file| file.path)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let preserves_local_changes =
+            kind == OutlinePullActionKind::Move && local_changed && !remote_content_changed;
         actions.push(OutlinePullAction {
             kind,
             remote_document_id: document.id.clone(),
@@ -578,11 +691,15 @@ fn plan_pull(
             reason: reason.to_string(),
             local_changed,
             remote_changed,
+            source_local_path: (kind == OutlinePullActionKind::Move)
+                .then(|| move_source.expect("move action has source").to_string()),
+            rewritten_local_paths,
             attachment_paths: attachments
                 .iter()
                 .map(|attachment| attachment.local_path.clone())
                 .collect(),
             downloaded_attachment_paths: Vec::new(),
+            preserves_local_changes,
             desired_content: Some(desired),
             local_content,
             attachments,
@@ -599,12 +716,15 @@ fn plan_pull(
                         .to_string(),
                 local_changed: false,
                 remote_changed: true,
+                source_local_path: None,
+                rewritten_local_paths: Vec::new(),
                 attachment_paths: mapping
                     .attachments
                     .values()
                     .map(|attachment| attachment.local_path.clone())
                     .collect(),
                 downloaded_attachment_paths: Vec::new(),
+                preserves_local_changes: false,
                 desired_content: None,
                 local_content: None,
                 attachments: Vec::new(),
@@ -871,6 +991,7 @@ fn report(
         conflicts: count(OutlinePullActionKind::Conflict),
         created: count(OutlinePullActionKind::Create),
         updated: count(OutlinePullActionKind::Update),
+        moved: count(OutlinePullActionKind::Move),
         unchanged: count(OutlinePullActionKind::Unchanged),
         conflict_markers_written: count(OutlinePullActionKind::WriteConflictMarkers),
         remote_missing: count(OutlinePullActionKind::RemoteMissing),
@@ -1182,6 +1303,91 @@ mod tests {
     }
 
     #[test]
+    fn pull_can_apply_remote_hierarchy_changes_as_link_aware_moves() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        let initial = api(vec![
+            document("parent", "Parent", "parent\n", None),
+            document("child", "Child", "child\n", Some("parent")),
+        ]);
+        pull_outline(
+            &paths,
+            &initial,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("initial pull");
+        fs::write(
+            temp.path().join("References.md"),
+            "[[Imported/Parent/Child]]\n",
+        )
+        .expect("reference note");
+        fs::write(
+            temp.path().join("Imported/Parent.md"),
+            "local parent edit\n",
+        )
+        .expect("local parent edit");
+        crate::scan::refresh_cache_incrementally(&paths).expect("index reference note");
+
+        let renamed = api(vec![
+            document("parent", "Renamed", "parent\n", None),
+            document("child", "Child", "child\n", Some("parent")),
+        ]);
+        let options = OutlinePullOptions {
+            apply_remote_moves: true,
+        };
+        let plan = pull_outline_with_options_and_write_authorizer(
+            &paths,
+            &renamed,
+            "wiki",
+            "collection",
+            "Imported",
+            true,
+            &OutlinePullConflictPolicy::abort(),
+            &options,
+            &|_| Ok(()),
+        )
+        .expect("move plan");
+        assert_eq!(plan.moved, 2);
+        assert!(plan
+            .actions
+            .iter()
+            .any(|action| action.rewritten_local_paths == ["References.md"]));
+
+        let applied = pull_outline_with_options_and_write_authorizer(
+            &paths,
+            &renamed,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+            &options,
+            &|_| Ok(()),
+        )
+        .expect("apply remote moves");
+        assert_eq!(applied.moved, 2);
+        assert!(!temp.path().join("Imported/Parent.md").exists());
+        assert!(!temp.path().join("Imported/Parent/Child.md").exists());
+        assert!(temp.path().join("Imported/Renamed.md").is_file());
+        assert!(temp.path().join("Imported/Renamed/Child.md").is_file());
+        assert_eq!(
+            fs::read_to_string(temp.path().join("Imported/Renamed.md")).unwrap(),
+            "local parent edit\n"
+        );
+        let reference = fs::read_to_string(temp.path().join("References.md")).unwrap();
+        assert!(
+            reference.contains("Child"),
+            "rewritten reference: {reference}"
+        );
+        assert!(!reference.contains("Parent/Child"));
+    }
+
+    #[test]
     fn pull_conflicts_support_overwrite_and_diff3_markers() {
         let temp = tempdir().expect("temp dir");
         let paths = VaultPaths::new(temp.path());
@@ -1335,6 +1541,7 @@ mod tests {
         let mapping = |path: &str| OutlinePullMapping {
             local_path: path.to_string(),
             last_remote_content_hash: "remote".to_string(),
+            last_remote_source_hash: Some("source".to_string()),
             last_remote_title: "Home".to_string(),
             last_remote_parent_id: None,
             last_materialized_local_hash: "local".to_string(),

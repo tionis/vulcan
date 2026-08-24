@@ -498,8 +498,9 @@ use vulcan_app::publish::outline::{
 };
 #[cfg(feature = "web")]
 use vulcan_app::pull::outline::{
-    pull_outline, pull_outline_with_write_authorizer, OutlinePullAction, OutlinePullActionKind,
-    OutlinePullConflictPolicy, OutlinePullConflictResolution, OutlinePullReport,
+    pull_outline_with_options_and_write_authorizer, OutlinePullAction, OutlinePullActionKind,
+    OutlinePullConflictPolicy, OutlinePullConflictResolution, OutlinePullOptions,
+    OutlinePullReport,
 };
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::site::{
@@ -1676,6 +1677,7 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
         overwrite_conflicts,
         conflict_markers,
         interactive,
+        apply_remote_moves,
         no_commit,
     } = command;
     if *interactive
@@ -1727,8 +1729,21 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
     } else {
         OutlinePullConflictPolicy::abort()
     };
-    let plan = pull_outline(paths, &client, profile, &collection_id, into, true, &policy)
-        .map_err(CliError::operation)?;
+    let options = OutlinePullOptions {
+        apply_remote_moves: *apply_remote_moves,
+    };
+    let plan = pull_outline_with_options_and_write_authorizer(
+        paths,
+        &client,
+        profile,
+        &collection_id,
+        into,
+        true,
+        &policy,
+        &options,
+        &|_| Ok(()),
+    )
+    .map_err(CliError::operation)?;
     if *dry_run {
         return print_outline_pull_report(cli.output, &plan);
     }
@@ -1753,11 +1768,22 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
             action.kind,
             OutlinePullActionKind::Create
                 | OutlinePullActionKind::Update
+                | OutlinePullActionKind::Move
                 | OutlinePullActionKind::WriteConflictMarkers
         ) {
+            if let Some(source_path) = action.source_local_path.as_deref() {
+                guard
+                    .check_write_path(source_path)
+                    .map_err(CliError::operation)?;
+            }
             guard
                 .check_write_path(&action.local_path)
                 .map_err(CliError::operation)?;
+            for rewritten_path in &action.rewritten_local_paths {
+                guard
+                    .check_write_path(rewritten_path)
+                    .map_err(CliError::operation)?;
+            }
             for attachment_path in &action.attachment_paths {
                 guard
                     .check_write_path(attachment_path)
@@ -1772,7 +1798,7 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
             .check_write_path(path)
             .map_err(vulcan_app::AppError::operation)
     };
-    let report = pull_outline_with_write_authorizer(
+    let report = pull_outline_with_options_and_write_authorizer(
         paths,
         &client,
         profile,
@@ -1780,6 +1806,7 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
         into,
         false,
         &policy,
+        &options,
         &authorize_write,
     )
     .map_err(CliError::operation)?;
@@ -1792,10 +1819,23 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
                     action.kind,
                     OutlinePullActionKind::Create
                         | OutlinePullActionKind::Update
+                        | OutlinePullActionKind::Move
                         | OutlinePullActionKind::WriteConflictMarkers
                 )
             })
             .map(|action| action.local_path.clone())
+            .chain(
+                report
+                    .actions
+                    .iter()
+                    .filter_map(|action| action.source_local_path.clone()),
+            )
+            .chain(
+                report
+                    .actions
+                    .iter()
+                    .flat_map(|action| action.rewritten_local_paths.iter().cloned()),
+            )
             .chain(
                 report
                     .actions
@@ -1929,9 +1969,10 @@ fn print_outline_pull_report(
                 );
             }
             println!(
-                "created={}; updated={}; unchanged={}; markers={}; conflicts={}; remote_missing={}; attachments_downloaded={}",
+                "created={}; updated={}; moved={}; unchanged={}; markers={}; conflicts={}; remote_missing={}; attachments_downloaded={}",
                 report.created,
                 report.updated,
+                report.moved,
                 report.unchanged,
                 report.conflict_markers_written,
                 report.conflicts,
