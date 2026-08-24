@@ -10460,6 +10460,10 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(publishing.contains("monitoring stderr progress"));
     assert!(publishing.contains("--selection-json"));
     assert!(publishing.contains(".vulcan/publish/outline/"));
+    assert!(publishing.contains("vulcan integration validate <name>"));
+    assert!(publishing.contains("vulcan integration bind <route>"));
+    assert!(publishing.contains("integration run --scheduled"));
+    assert!(publishing.contains("overlapping local roots"));
 
     let refactoring = fs::read_to_string(installed_skills.join("refactoring/SKILL.md"))
         .expect("refactoring skill should be installed");
@@ -20498,6 +20502,74 @@ fn regenerate_help_config_snapshot() {
         .assert()
         .success();
     write_json_snapshot("help_config.json", &parse_stdout_json(&assert));
+}
+
+#[test]
+fn integration_routes_list_validate_and_report_status_without_network() {
+    let temp = TempDir::new().unwrap();
+    let vault_root = temp.path();
+    fs::create_dir_all(vault_root.join(".vulcan")).unwrap();
+    fs::create_dir_all(vault_root.join("Players/Campaign")).unwrap();
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[publish.outline.profiles.players]
+base_url = "https://outline.example"
+collection_id = "collection"
+token_env = "OUTLINE_TOKEN"
+query = 'from "Players/Campaign"'
+
+[integrations.routes.campaign]
+profile = "players"
+direction = "mirror"
+authority = "review"
+local_root = "Players/Campaign"
+remote_roots = ["root-id"]
+schedule = "every 15m"
+"#,
+    )
+    .unwrap();
+    let root = vault_root.to_str().unwrap();
+
+    let listed = Command::cargo_bin("vulcan")
+        .unwrap()
+        .args(["--vault", root, "--output", "json", "integration", "list"])
+        .assert()
+        .success();
+    let list = parse_stdout_json(&listed);
+    assert_eq!(list[0]["name"], "campaign");
+    assert_eq!(list[0]["local_root"], "Players/Campaign");
+
+    let validated = Command::cargo_bin("vulcan")
+        .unwrap()
+        .args([
+            "--vault",
+            root,
+            "--output",
+            "json",
+            "integration",
+            "validate",
+        ])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&validated)["valid"], true);
+
+    let status = Command::cargo_bin("vulcan")
+        .unwrap()
+        .args([
+            "--vault",
+            root,
+            "--output",
+            "json",
+            "integration",
+            "status",
+            "campaign",
+        ])
+        .assert()
+        .success();
+    let status = parse_stdout_json(&status);
+    assert_eq!(status["binding_count"], 0);
+    assert!(status["runtime"].is_null());
 }
 
 fn parse_stdout_json(assert: &assert_cmd::assert::Assert) -> Value {

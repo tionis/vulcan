@@ -5424,6 +5424,8 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ### 15.3 Content route configuration and deterministic planning
 
+- [x] Add first-class named Outline `[integrations.routes.<name>]` configuration that reuses an Outline publication profile while persisting direction, authority, local root, remote subtree selectors, exact ID/path overrides, move/archive policies, interval hints, and bounded work limits.
+- [x] Add deterministic Outline route list/show/validate/plan/run/status surfaces, including mutation-free planning and duplicate local-root, remote-scope, exact-path, and push-state ownership validation.
 - [ ] Add named `[integrations.profiles.<name>]` connector profiles and `[[integrations.routes]]` in shared config for non-secret topology/policy. Device-local endpoint overrides, credential environment-variable names, and machine paths belong in ignored local/daemon config; credential values belong only in environment or secret storage.
 - [ ] Model route direction (`pull`, `push`, or explicitly reviewed `mirror`), authority (`local`, `remote`, or `review`), source selector, destination namespace/container, binding policy, hierarchy/path mapping, attachment policy, link policy, transform rules, deletion/archive policy, schedule hints, and bounded work/retry limits.
 - [ ] Reuse the canonical query AST for outgoing local selection and define connector-owned, capability-checked remote selectors for inbound enumeration. Omitted local queries follow the established full-vault export default only when the route type makes that safe; inbound routes always require an explicit remote scope and local destination.
@@ -5433,6 +5435,8 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ### 15.4 Durable identity, reconciliation, and conflict policy
 
+- [x] Add explicit existing-note/existing-Outline-document adoption and unbinding without rewriting or deleting either representation; route planning honors configured immutable-ID/path overrides and publisher adoption reuses the resulting identities.
+- [x] Persist locked, versioned Outline route run checkpoints with stable operation IDs and running/completed/failed outcomes under `.vulcan/integrations/routes/`, outside the rebuildable cache.
 - [x] Initial Outline pull slice: persist locked, versioned remote-ID/local-path mappings and local/remote/base content hashes under `.vulcan/integrations/outline-pull/`, with atomic state replacement and fail-closed validation.
 - [x] Add explicit fail-closed adoption from durable Outline pull bindings into publication state, preserving remote document and attachment identity while rejecting drift, duplicate ownership, and unselected mappings.
 - [x] Serialize live Outline pull mutation under the shared vault write lock and persist an operation ID plus pending/completed action journal before and after each mutation; interrupted or cooperatively cancelled runs retain and reuse the journal until the final incremental scan succeeds.
@@ -5476,6 +5480,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 ### 15.7 Direct CLI, daemon scheduling, and loop prevention
 
+- [x] Compose Outline pull/push directly without a daemon through authority-aware named route runs, route-level concurrency locks, durable status, all-route execution, and an interval-due `integration run --scheduled` entrypoint suitable for cron/systemd timers.
 - [ ] Make plan/run/reconcile operations usable without the daemon through direct vault access. The daemon exposes the same request/report contracts, adds schedules, cancellation, status/history endpoints, and event-triggered runs, and serializes filesystem mutation through the same cross-process lock.
 - [x] Add reusable phase/item Outline pull progress events and a cooperative cancellation callback to the app workflow; human CLI runs report listing, planning, applying, attachment download, scan, and completion phases, while structured output remains clean.
 - [ ] Add per-route concurrency limits, timeouts, bounded jittered retries, rate-limit handling, total-work budgets, cancellation, and sanitized errors. Route history records hashes/status/counts but never credentials or sensitive remote bodies.

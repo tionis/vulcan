@@ -425,18 +425,18 @@ pub use cli::{
     ConfigTargetArg, DailyCommand, DataviewCommand, DescribeFormatArg, EpubTocStyle, ExportArgs,
     ExportCommand, ExportFormat, ExportProfileCommand, ExportProfileFormatArg,
     ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs, FolderNotePlacementArg,
-    GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs, KanbanCommand,
-    McpToolPackArg, McpToolPackModeArg, McpTransportArg, NoteAppendPeriodicArg, NoteCheckboxState,
-    NoteCommand, NoteGetMode, OutlineBlockReferencePolicyArg, OutlineExcludedTargetPolicyArg,
-    OutlinePullConflictOperationArg, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand,
-    PluginCommand, PluginEventArg, PluginSandboxArg, PropertySortArg, PublishCommand, PullCommand,
-    QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RenderMode,
-    RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg,
-    SiteCommand, SkillCommand, SuggestCommand, SuggestLinkStatusArg, TagSortArg, TasksCommand,
-    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
-    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, ToolCommand,
-    ToolInitTemplateArg, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand,
-    WebFetchMode,
+    GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs, IntegrationCommand,
+    KanbanCommand, McpToolPackArg, McpToolPackModeArg, McpTransportArg, NoteAppendPeriodicArg,
+    NoteCheckboxState, NoteCommand, NoteGetMode, OutlineBlockReferencePolicyArg,
+    OutlineExcludedTargetPolicyArg, OutlinePullConflictOperationArg, OutputFormat,
+    PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg, PluginSandboxArg,
+    PropertySortArg, PublishCommand, PullCommand, QueryEngineArg, QueryFormatArg, RefactorCommand,
+    RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand, SavedCreateCommand,
+    SearchBackendArg, SearchMode, SearchSortArg, SiteCommand, SkillCommand, SuggestCommand,
+    SuggestLinkStatusArg, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
+    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
+    TemplateRenderArgs, TemplateSubcommand, ToolCommand, ToolInitTemplateArg, TrustCommand,
+    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -462,7 +462,7 @@ use std::fs;
 use std::io;
 use std::io::{IsTerminal, Read};
 use std::path::{Path, PathBuf};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use toml::Value as TomlValue;
 use vulcan_app::browse::{
     DataviewBlockResult as AppDataviewBlockResult, DataviewEvalReport as AppDataviewEvalReport,
@@ -489,6 +489,12 @@ use vulcan_app::export::{
     ExportProfileShowReport, ExportProfileWriteAction, ExportProfileWriteReport, JsonExportSummary,
     MarkdownExportSummary,
 };
+#[cfg(feature = "web")]
+use vulcan_app::integrations::begin_route_run;
+use vulcan_app::integrations::{
+    list_routes as list_integration_routes, load_route_runtime_state, route as integration_route,
+    route_is_due, validate_routes as validate_integration_routes, RouteDiagnosticSeverity,
+};
 use vulcan_app::notes::json_properties_to_frontmatter;
 use vulcan_app::outline_markdown::OutlineMarkdownOptions;
 #[cfg(feature = "web")]
@@ -499,13 +505,16 @@ use vulcan_app::publish::outline::{
 };
 #[cfg(feature = "web")]
 use vulcan_app::pull::outline::{
-    abort_outline_pull_conflicts, load_outline_pulled_bindings, outline_pull_conflict_status,
+    abort_outline_pull_conflicts, adopt_outline_document_binding,
     pull_outline_with_options_and_write_authorizer,
     pull_outline_with_options_progress_and_write_authorizer, OutlinePullAction,
     OutlinePullActionKind, OutlinePullConflictPolicy, OutlinePullConflictResolution,
     OutlinePullConflictStatusReport, OutlinePullMissingPolicy, OutlinePullMissingResolution,
     OutlinePullOptions, OutlinePullPhase, OutlinePullProgress, OutlinePullReport, OutlinePullScope,
     OutlinePullStaleAttachmentPolicy,
+};
+use vulcan_app::pull::outline::{
+    load_outline_pulled_bindings, outline_pull_conflict_status, remove_outline_document_binding,
 };
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::site::{
@@ -1445,6 +1454,7 @@ fn run_publish_command(
     command: &PublishCommand,
     read_filter: Option<&PermissionFilter>,
     use_stderr_color: bool,
+    adoption_profile: Option<&str>,
 ) -> Result<(), CliError> {
     let PublishCommand::Outline {
         profile,
@@ -1542,7 +1552,7 @@ fn run_publish_command(
     let conflict_policy = outline_conflict_policy(*overwrite_conflicts, overwrite_conflict);
     let publish_options = OutlinePublishOptions {
         adopt_pull_bindings: if *adopt_pulled {
-            load_outline_pulled_bindings(paths, profile, &collection_id)
+            load_outline_pulled_bindings(paths, adoption_profile.unwrap_or(profile), &collection_id)
                 .map_err(CliError::operation)?
         } else {
             Vec::new()
@@ -1601,9 +1611,555 @@ fn run_pull_command(
     _paths: &VaultPaths,
     _command: &PullCommand,
     _use_stderr_color: bool,
+    _route: Option<&vulcan_core::config::IntegrationRouteConfig>,
+    _state_profile: Option<&str>,
 ) -> Result<(), CliError> {
     Err(CliError::operation(
         "Outline pulling requires the `web` feature",
+    ))
+}
+
+#[allow(clippy::too_many_lines)]
+fn run_integration_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &IntegrationCommand,
+) -> Result<(), CliError> {
+    let loaded = load_vault_config(paths);
+    if !loaded.diagnostics.is_empty() {
+        return Err(CliError::operation(
+            "cannot manage integration routes while configuration has diagnostics",
+        ));
+    }
+    match command {
+        IntegrationCommand::List => {
+            let routes = list_integration_routes(&loaded.config);
+            match cli.output {
+                OutputFormat::Json => print_json(&routes),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    if routes.is_empty() {
+                        println!("No integration routes configured.");
+                    } else {
+                        for route in routes {
+                            let root = route
+                                .config
+                                .local_root
+                                .as_deref()
+                                .map_or("-".to_string(), |path| path.display().to_string());
+                            println!(
+                                "{}\t{:?}\t{:?}\t{}\t{}",
+                                route.name,
+                                route.config.direction,
+                                route.config.authority,
+                                route.config.profile,
+                                root
+                            );
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        }
+        IntegrationCommand::Show { name } => {
+            let route = integration_route(&loaded.config, name).ok_or_else(|| {
+                CliError::operation(format!("integration route `{name}` does not exist"))
+            })?;
+            match cli.output {
+                OutputFormat::Json => print_json(&route),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    println!("Route: {}", route.name);
+                    println!("Connector: {:?}", route.config.connector);
+                    println!("Profile: {}", route.config.profile);
+                    println!("Direction: {:?}", route.config.direction);
+                    println!("Authority: {:?}", route.config.authority);
+                    println!(
+                        "Local root: {}",
+                        route
+                            .config
+                            .local_root
+                            .as_deref()
+                            .map_or("-".to_string(), |path| path.display().to_string())
+                    );
+                    println!("Enabled: {}", route.config.enabled);
+                    if let Some(schedule) = route.config.schedule {
+                        println!("Schedule: {schedule}");
+                    }
+                    Ok(())
+                }
+            }
+        }
+        IntegrationCommand::Validate { name } => {
+            if let Some(name) = name {
+                if integration_route(&loaded.config, name).is_none() {
+                    return Err(CliError::operation(format!(
+                        "integration route `{name}` does not exist"
+                    )));
+                }
+            }
+            let mut report = validate_integration_routes(&loaded.config);
+            if let Some(name) = name {
+                report
+                    .diagnostics
+                    .retain(|diagnostic| diagnostic.route == *name);
+                report.route_count = 1;
+                report.valid = report
+                    .diagnostics
+                    .iter()
+                    .all(|diagnostic| diagnostic.severity != RouteDiagnosticSeverity::Error);
+            }
+            match cli.output {
+                OutputFormat::Json => print_json(&report)?,
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    if report.diagnostics.is_empty() {
+                        println!("All {} integration route(s) are valid.", report.route_count);
+                    } else {
+                        for diagnostic in &report.diagnostics {
+                            println!(
+                                "{:?}\t{}\t{}\t{}",
+                                diagnostic.severity,
+                                diagnostic.route,
+                                diagnostic.field,
+                                diagnostic.message
+                            );
+                        }
+                    }
+                }
+            }
+            if report.valid {
+                Ok(())
+            } else {
+                Err(CliError::issues("integration route validation failed"))
+            }
+        }
+        IntegrationCommand::Plan { name } => {
+            run_configured_integration_route(cli, paths, &loaded.config, name, true, false, true)
+        }
+        IntegrationCommand::Run {
+            name,
+            all,
+            scheduled,
+            dry_run,
+            interactive,
+            no_commit,
+        } => {
+            let names = if *all {
+                loaded
+                    .config
+                    .integrations
+                    .routes
+                    .iter()
+                    .filter(|(_, route)| route.enabled)
+                    .map(|(name, _)| name.clone())
+                    .collect::<Vec<_>>()
+            } else if *scheduled {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(CliError::operation)?
+                    .as_secs();
+                let mut due = Vec::new();
+                for (name, route) in &loaded.config.integrations.routes {
+                    let Some(schedule) = route.schedule.as_deref().filter(|_| route.enabled) else {
+                        continue;
+                    };
+                    let runtime =
+                        load_route_runtime_state(paths, name).map_err(CliError::operation)?;
+                    if route_is_due(
+                        schedule,
+                        runtime.and_then(|state| state.last_successful_unix_seconds),
+                        now,
+                    ) {
+                        due.push(name.clone());
+                    }
+                }
+                due
+            } else {
+                vec![name
+                    .clone()
+                    .expect("clap requires a route name, --all, or --scheduled")]
+            };
+            if names.is_empty() {
+                if *scheduled {
+                    if cli.output == OutputFormat::Json {
+                        print_json(&json!({"scheduled": true, "due": []}))?;
+                    } else {
+                        println!("No scheduled integration routes are due.");
+                    }
+                    return Ok(());
+                }
+                return Err(CliError::operation("no enabled integration routes to run"));
+            }
+            for name in names {
+                run_configured_integration_route(
+                    cli,
+                    paths,
+                    &loaded.config,
+                    &name,
+                    *dry_run,
+                    *interactive,
+                    *no_commit,
+                )?;
+            }
+            Ok(())
+        }
+        IntegrationCommand::Status { name } => {
+            let (route, collection_id, destination) =
+                configured_outline_route(&loaded.config, name)?;
+            let runtime = load_route_runtime_state(paths, name).map_err(CliError::operation)?;
+            let bindings = load_outline_pulled_bindings(paths, name, collection_id)
+                .map_err(CliError::operation)?;
+            let conflicts = destination
+                .map(|destination| {
+                    outline_pull_conflict_status(paths, name, collection_id, destination)
+                })
+                .transpose()
+                .map_err(CliError::operation)?;
+            let report = json!({
+                "route": name,
+                "enabled": route.enabled,
+                "direction": route.direction,
+                "authority": route.authority,
+                "schedule": route.schedule.as_deref(),
+                "runtime": &runtime,
+                "binding_count": bindings.len(),
+                "conflicts": &conflicts,
+            });
+            match cli.output {
+                OutputFormat::Json => print_json(&report),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    println!("Route: {name}");
+                    println!("Enabled: {}", route.enabled);
+                    println!("Bindings: {}", bindings.len());
+                    if let Some(runtime) = runtime {
+                        if let Some(run) = runtime.last_run {
+                            println!("Last run: {} ({})", run.operation_id, run.outcome);
+                        }
+                    } else {
+                        println!("Last run: never");
+                    }
+                    if let Some(conflicts) = conflicts {
+                        println!("Conflict files: {}", conflicts.found_conflict_files);
+                        if let Some(operation) = conflicts.incomplete_operation_id {
+                            println!("Incomplete pull: {operation}");
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        }
+        IntegrationCommand::Bindings { name } => {
+            let (_route, collection_id, destination) =
+                configured_outline_route(&loaded.config, name)?;
+            let bindings = load_outline_pulled_bindings(paths, name, collection_id)
+                .map_err(CliError::operation)?;
+            match cli.output {
+                OutputFormat::Json => print_json(&bindings),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    if bindings.is_empty() {
+                        println!("No durable document bindings for route `{name}`.");
+                    } else {
+                        for binding in bindings {
+                            println!(
+                                "{}\t{}\t{}",
+                                binding.remote_document_id,
+                                binding.local_path,
+                                destination.unwrap_or("-")
+                            );
+                        }
+                    }
+                    Ok(())
+                }
+            }
+        }
+        IntegrationCommand::Bind {
+            name,
+            remote_document_id,
+            local_path,
+            dry_run,
+        } => run_configured_outline_bind(
+            cli,
+            paths,
+            &loaded.config,
+            name,
+            remote_document_id,
+            local_path,
+            *dry_run,
+        ),
+        IntegrationCommand::Unbind {
+            name,
+            remote_document_id,
+            dry_run,
+        } => {
+            let (_route, collection_id, destination) =
+                configured_outline_route(&loaded.config, name)?;
+            let destination = destination.ok_or_else(|| {
+                CliError::operation("document unbinding requires route `local_root`")
+            })?;
+            let report = remove_outline_document_binding(
+                paths,
+                name,
+                collection_id,
+                destination,
+                remote_document_id,
+                None,
+                *dry_run,
+            )
+            .map_err(CliError::operation)?;
+            match cli.output {
+                OutputFormat::Json => print_json(&report),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    println!(
+                        "{}\t{}\t{}",
+                        report.action, report.remote_document_id, report.local_path
+                    );
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+fn configured_outline_route<'a>(
+    config: &'a vulcan_core::VaultConfig,
+    name: &str,
+) -> Result<
+    (
+        &'a vulcan_core::config::IntegrationRouteConfig,
+        &'a str,
+        Option<&'a str>,
+    ),
+    CliError,
+> {
+    let route =
+        config.integrations.routes.get(name).ok_or_else(|| {
+            CliError::operation(format!("integration route `{name}` does not exist"))
+        })?;
+    let profile = config
+        .publish
+        .outline
+        .profiles
+        .get(&route.profile)
+        .ok_or_else(|| {
+            CliError::operation(format!("Outline profile `{}` was not found", route.profile))
+        })?;
+    let collection_id = profile
+        .collection_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| CliError::operation("Outline route profile requires `collection_id`"))?;
+    let destination = route.local_root.as_deref().and_then(Path::to_str);
+    Ok((route, collection_id, destination))
+}
+
+#[cfg(feature = "web")]
+fn run_configured_outline_bind(
+    cli: &Cli,
+    paths: &VaultPaths,
+    config: &vulcan_core::VaultConfig,
+    name: &str,
+    remote_document_id: &str,
+    local_path: &str,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let (route, collection_id, destination) = configured_outline_route(config, name)?;
+    let destination = destination
+        .ok_or_else(|| CliError::operation("document binding requires route `local_root`"))?;
+    let profile = &config.publish.outline.profiles[&route.profile];
+    let base_url = profile
+        .base_url
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| CliError::operation("Outline route profile requires `base_url`"))?;
+    let token_env = profile
+        .token_env
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| CliError::operation("Outline route profile requires `token_env`"))?;
+    let token = std::env::var(token_env).map_err(|_| {
+        CliError::operation(format!(
+            "Outline token environment variable `{token_env}` is not set"
+        ))
+    })?;
+    let client = HttpOutlineClient::new(
+        base_url,
+        token,
+        Duration::from_secs(profile.timeout_seconds.unwrap_or(30).clamp(1, 300)),
+        profile.max_retries.unwrap_or(3),
+        profile.page_size.unwrap_or(100),
+    )
+    .map_err(CliError::operation)?;
+    let report = adopt_outline_document_binding(
+        paths,
+        &client,
+        name,
+        collection_id,
+        destination,
+        remote_document_id,
+        local_path,
+        Some(&client.connector_identity()),
+        dry_run,
+    )
+    .map_err(CliError::operation)?;
+    match cli.output {
+        OutputFormat::Json => print_json(&report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!(
+                "{}\t{}\t{}",
+                report.action, report.remote_document_id, report.local_path
+            );
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(feature = "web"))]
+fn run_configured_outline_bind(
+    _cli: &Cli,
+    _paths: &VaultPaths,
+    _config: &vulcan_core::VaultConfig,
+    _name: &str,
+    _remote_document_id: &str,
+    _local_path: &str,
+    _dry_run: bool,
+) -> Result<(), CliError> {
+    Err(CliError::operation(
+        "Outline document binding requires the `web` feature",
+    ))
+}
+
+#[cfg(feature = "web")]
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+fn run_configured_integration_route(
+    cli: &Cli,
+    paths: &VaultPaths,
+    config: &vulcan_core::VaultConfig,
+    name: &str,
+    dry_run: bool,
+    interactive: bool,
+    no_commit: bool,
+) -> Result<(), CliError> {
+    use vulcan_core::config::{
+        IntegrationMissingPolicyConfig as MissingPolicy,
+        IntegrationRouteAuthorityConfig as Authority, IntegrationRouteDirectionConfig as Direction,
+    };
+
+    let validation = validate_integration_routes(config);
+    if !validation.valid {
+        return Err(CliError::issues(
+            "integration route configuration is invalid; run `vulcan integration validate`",
+        ));
+    }
+    let (route, _, destination) = configured_outline_route(config, name)?;
+    if !route.enabled {
+        return Err(CliError::operation(format!(
+            "integration route `{name}` is disabled"
+        )));
+    }
+    let run_lock = (!dry_run)
+        .then(|| begin_route_run(paths, name, false))
+        .transpose()
+        .map_err(CliError::operation)?;
+    let pull = PullCommand::Outline {
+        profile: route.profile.clone(),
+        into: destination.unwrap_or(".").to_string(),
+        dry_run,
+        conflict_operation: None,
+        overwrite_conflicts: route.authority == Authority::Remote,
+        conflict_markers: false,
+        interactive: interactive && route.authority == Authority::Review,
+        apply_remote_moves: route.apply_remote_moves,
+        root_document: route.remote_roots.clone(),
+        max_depth: route.max_depth,
+        exclude_document: route.excluded_documents.clone(),
+        max_documents: route.max_documents.unwrap_or(10_000),
+        max_content_bytes: route.max_content_bytes.unwrap_or(268_435_456),
+        max_attachments: route.max_attachments.unwrap_or(10_000),
+        max_attachment_bytes: route.max_attachment_bytes.unwrap_or(26_214_400),
+        max_total_attachment_bytes: route.max_total_attachment_bytes.unwrap_or(1_073_741_824),
+        archive_missing: (route.missing_policy == MissingPolicy::Archive).then(|| {
+            route
+                .missing_archive
+                .as_deref()
+                .expect("validated archive policy")
+                .to_string_lossy()
+                .replace('\\', "/")
+        }),
+        delete_missing: false,
+        confirm_delete_count: None,
+        archive_stale_attachments: (route.stale_attachment_policy == MissingPolicy::Archive).then(
+            || {
+                route
+                    .stale_attachment_archive
+                    .as_deref()
+                    .expect("validated archive policy")
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            },
+        ),
+        delete_stale_attachments: false,
+        confirm_stale_attachment_delete_count: None,
+        no_commit,
+    };
+    let publish = PublishCommand::Outline {
+        profile: route.profile.clone(),
+        dry_run,
+        overwrite_conflicts: route.authority == Authority::Local,
+        overwrite_conflict: Vec::new(),
+        adopt_pulled: true,
+        interactive: interactive && route.authority == Authority::Review,
+    };
+    let run_pull = || {
+        if cli.output == OutputFormat::Human && !cli.quiet {
+            eprintln!("route={name} phase=pull");
+        }
+        run_pull_command(cli, paths, &pull, false, Some(route), Some(name))
+    };
+    let run_push = || {
+        if cli.output == OutputFormat::Human && !cli.quiet {
+            eprintln!("route={name} phase=push");
+        }
+        let read_filter = selected_read_permission_filter(cli, paths)?;
+        run_publish_command(
+            cli,
+            paths,
+            &publish,
+            read_filter.as_ref(),
+            false,
+            Some(name),
+        )
+    };
+    let result = match (route.direction, route.authority) {
+        (Direction::Mirror, Authority::Local) => run_push().and_then(|()| run_pull()),
+        (Direction::Pull, _) => run_pull(),
+        (Direction::Push, _) => run_push(),
+        (Direction::Mirror, _) => run_pull().and_then(|()| run_push()),
+    };
+    if let Some(run_lock) = run_lock {
+        let outcome = if result.is_ok() {
+            "completed"
+        } else {
+            "failed"
+        };
+        let message = result.as_ref().err().map(|error| error.message.clone());
+        run_lock
+            .finish(outcome, message)
+            .map_err(CliError::operation)?;
+    }
+    result
+}
+
+#[cfg(not(feature = "web"))]
+#[allow(clippy::too_many_arguments)]
+fn run_configured_integration_route(
+    _cli: &Cli,
+    _paths: &VaultPaths,
+    _config: &vulcan_core::VaultConfig,
+    _name: &str,
+    _dry_run: bool,
+    _interactive: bool,
+    _no_commit: bool,
+) -> Result<(), CliError> {
+    Err(CliError::operation(
+        "Outline integration routes require the `web` feature",
     ))
 }
 
@@ -1736,6 +2292,8 @@ fn run_pull_command(
     paths: &VaultPaths,
     command: &PullCommand,
     use_stderr_color: bool,
+    route: Option<&vulcan_core::config::IntegrationRouteConfig>,
+    state_profile: Option<&str>,
 ) -> Result<(), CliError> {
     let PullCommand::Outline {
         profile,
@@ -1762,6 +2320,7 @@ fn run_pull_command(
         confirm_stale_attachment_delete_count,
         no_commit,
     } = command;
+    let state_profile = state_profile.unwrap_or(profile);
     if *interactive
         && (cli.output != OutputFormat::Human
             || !io::stdin().is_terminal()
@@ -1790,7 +2349,7 @@ fn run_pull_command(
     };
     let collection_id = required(&profile_config.collection_id, "collection_id")?;
     if let Some(operation) = conflict_operation {
-        let status = outline_pull_conflict_status(paths, profile, &collection_id, into)
+        let status = outline_pull_conflict_status(paths, state_profile, &collection_id, into)
             .map_err(CliError::operation)?;
         match operation {
             OutlinePullConflictOperationArg::Status => {
@@ -1813,7 +2372,7 @@ fn run_pull_command(
                 };
                 let report = abort_outline_pull_conflicts(
                     paths,
-                    profile,
+                    state_profile,
                     &collection_id,
                     into,
                     *dry_run,
@@ -1891,6 +2450,15 @@ fn run_pull_command(
         },
         confirmed_stale_attachment_delete_count: *confirm_stale_attachment_delete_count,
         connector_identity: Some(client.connector_identity()),
+        path_overrides: route.map_or_else(BTreeMap::new, |route| {
+            route
+                .document_bindings
+                .iter()
+                .map(|(remote_id, path)| {
+                    (remote_id.clone(), path.to_string_lossy().replace('\\', "/"))
+                })
+                .collect()
+        }),
         max_remote_documents: *max_documents,
         max_remote_content_bytes: *max_content_bytes,
         max_attachments: *max_attachments,
@@ -1903,7 +2471,7 @@ fn run_pull_command(
         pull_outline_with_options_progress_and_write_authorizer(
             paths,
             &client,
-            profile,
+            state_profile,
             &collection_id,
             into,
             true,
@@ -1921,7 +2489,7 @@ fn run_pull_command(
         pull_outline_with_options_and_write_authorizer(
             paths,
             &client,
-            profile,
+            state_profile,
             &collection_id,
             into,
             true,
@@ -2019,7 +2587,7 @@ fn run_pull_command(
     let report = pull_outline_with_options_progress_and_write_authorizer(
         paths,
         &client,
-        profile,
+        state_profile,
         &collection_id,
         into,
         false,
@@ -2483,6 +3051,7 @@ fn run_publish_command(
     _command: &PublishCommand,
     _read_filter: Option<&PermissionFilter>,
     _use_stderr_color: bool,
+    _adoption_profile: Option<&str>,
 ) -> Result<(), CliError> {
     Err(CliError::operation(
         "Outline publishing requires the `web` feature",
@@ -4619,9 +5188,19 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         },
         Command::Publish { ref command } => {
             let read_filter = selected_read_permission_filter(cli, &paths)?;
-            run_publish_command(cli, &paths, command, read_filter.as_ref(), use_stderr_color)
+            run_publish_command(
+                cli,
+                &paths,
+                command,
+                read_filter.as_ref(),
+                use_stderr_color,
+                None,
+            )
         }
-        Command::Pull { ref command } => run_pull_command(cli, &paths, command, use_stderr_color),
+        Command::Pull { ref command } => {
+            run_pull_command(cli, &paths, command, use_stderr_color, None, None)
+        }
+        Command::Integration { ref command } => run_integration_command(cli, &paths, command),
         Command::Export { ref command } => {
             let read_filter = selected_read_permission_filter(cli, &paths)?;
             match command {

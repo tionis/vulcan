@@ -3228,6 +3228,73 @@ fn default_outline_publish_config_is_empty_and_template_never_contains_a_token()
 }
 
 #[test]
+fn integration_routes_load_topology_and_policy() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should exist");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[integrations.routes.campaign]
+connector = "outline"
+profile = "players"
+direction = "mirror"
+authority = "review"
+local_root = "Players/Campaign"
+remote_roots = ["root-id"]
+max_depth = 3
+excluded_documents = ["secret-id"]
+document_bindings = { "remote-note" = "Players/Campaign/Session.md" }
+apply_remote_moves = true
+missing_policy = "archive"
+missing_archive = "Archive/Outline"
+stale_attachment_policy = "retain"
+max_documents = 500
+max_content_bytes = 1048576
+enabled = true
+schedule = "every 15m"
+"#,
+    )
+    .expect("config should be written");
+
+    let loaded = load_vault_config(&VaultPaths::new(vault_root));
+    assert!(loaded.diagnostics.is_empty(), "{:?}", loaded.diagnostics);
+    let route = &loaded.config.integrations.routes["campaign"];
+    assert_eq!(route.profile, "players");
+    assert_eq!(route.direction, IntegrationRouteDirectionConfig::Mirror);
+    assert_eq!(route.authority, IntegrationRouteAuthorityConfig::Review);
+    assert_eq!(
+        route.local_root.as_deref(),
+        Some(Path::new("Players/Campaign"))
+    );
+    assert_eq!(route.remote_roots, ["root-id"]);
+    assert_eq!(route.max_depth, Some(3));
+    assert_eq!(route.excluded_documents, ["secret-id"]);
+    assert_eq!(
+        route.document_bindings["remote-note"],
+        PathBuf::from("Players/Campaign/Session.md")
+    );
+    assert!(route.apply_remote_moves);
+    assert_eq!(
+        route.missing_policy,
+        IntegrationMissingPolicyConfig::Archive
+    );
+    assert_eq!(
+        route.missing_archive.as_deref(),
+        Some(Path::new("Archive/Outline"))
+    );
+    assert_eq!(route.max_documents, Some(500));
+    assert_eq!(route.max_content_bytes, Some(1_048_576));
+    assert!(route.enabled);
+    assert_eq!(route.schedule.as_deref(), Some("every 15m"));
+}
+
+#[test]
+fn integration_routes_default_to_empty() {
+    assert!(VaultConfig::default().integrations.routes.is_empty());
+}
+
+#[test]
 fn web_search_defaults_to_duckduckgo_without_api_key_env() {
     let config = WebSearchConfig::default();
 

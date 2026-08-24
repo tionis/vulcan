@@ -1235,6 +1235,113 @@ fn dynamic_config_descriptors() -> Vec<ConfigDescriptor> {
         &[],
     );
     push(
+        "integrations.routes.<name>",
+        ConfigValueKind::Object,
+        ConfigTargetSupport::SharedOnly,
+        Some("vulcan config set"),
+        None,
+        &[],
+    );
+    for (key, default) in [
+        ("integrations.routes.<name>.connector", Some("outline")),
+        ("integrations.routes.<name>.profile", None),
+        ("integrations.routes.<name>.local_root", None),
+        ("integrations.routes.<name>.missing_archive", None),
+        ("integrations.routes.<name>.stale_attachment_archive", None),
+        ("integrations.routes.<name>.schedule", None),
+    ] {
+        push(
+            key,
+            ConfigValueKind::String,
+            ConfigTargetSupport::SharedOnly,
+            Some("vulcan config set"),
+            default.map(|value| TomlValue::String(value.to_string())),
+            &[],
+        );
+    }
+    for (key, default, values) in [
+        (
+            "integrations.routes.<name>.direction",
+            "mirror",
+            &["pull", "push", "mirror"][..],
+        ),
+        (
+            "integrations.routes.<name>.authority",
+            "review",
+            &["local", "remote", "review"][..],
+        ),
+        (
+            "integrations.routes.<name>.missing_policy",
+            "retain",
+            &["retain", "archive"][..],
+        ),
+        (
+            "integrations.routes.<name>.stale_attachment_policy",
+            "retain",
+            &["retain", "archive"][..],
+        ),
+    ] {
+        push(
+            key,
+            ConfigValueKind::Enum,
+            ConfigTargetSupport::SharedOnly,
+            Some("vulcan config set"),
+            Some(TomlValue::String(default.to_string())),
+            values,
+        );
+    }
+    for key in [
+        "integrations.routes.<name>.remote_roots",
+        "integrations.routes.<name>.excluded_documents",
+    ] {
+        push(
+            key,
+            ConfigValueKind::Array,
+            ConfigTargetSupport::SharedOnly,
+            Some("vulcan config set"),
+            Some(TomlValue::Array(Vec::new())),
+            &[],
+        );
+    }
+    push(
+        "integrations.routes.<name>.document_bindings",
+        ConfigValueKind::Object,
+        ConfigTargetSupport::SharedOnly,
+        Some("vulcan config set"),
+        Some(TomlValue::Table(toml::map::Map::new())),
+        &[],
+    );
+    for (key, default) in [
+        ("integrations.routes.<name>.apply_remote_moves", false),
+        ("integrations.routes.<name>.enabled", true),
+    ] {
+        push(
+            key,
+            ConfigValueKind::Boolean,
+            ConfigTargetSupport::SharedOnly,
+            Some("vulcan config set"),
+            Some(TomlValue::Boolean(default)),
+            &[],
+        );
+    }
+    for key in [
+        "integrations.routes.<name>.max_depth",
+        "integrations.routes.<name>.max_documents",
+        "integrations.routes.<name>.max_content_bytes",
+        "integrations.routes.<name>.max_attachments",
+        "integrations.routes.<name>.max_attachment_bytes",
+        "integrations.routes.<name>.max_total_attachment_bytes",
+    ] {
+        push(
+            key,
+            ConfigValueKind::Integer,
+            ConfigTargetSupport::SharedOnly,
+            Some("vulcan config set"),
+            None,
+            &[],
+        );
+    }
+    push(
         "site.profiles.<name>",
         ConfigValueKind::Object,
         ConfigTargetSupport::SharedAndLocal,
@@ -1737,6 +1844,7 @@ fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
             title: "Publishing",
             description: "One-way remote publication profiles and reconciliation settings.",
         },
+        Some("integrations") => integration_routes_category_descriptor(),
         Some("site") => CategoryDescriptor {
             key: "site",
             title: "Static Site",
@@ -1747,6 +1855,15 @@ fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
             title: "General",
             description: "Top-level vault configuration not covered by a more specific section.",
         },
+    }
+}
+
+fn integration_routes_category_descriptor() -> CategoryDescriptor {
+    CategoryDescriptor {
+        key: "integrations",
+        title: "Integration Routes",
+        description:
+            "Named external-content topology, authority, conflict, limit, and scheduling policy.",
     }
 }
 
@@ -1804,6 +1921,10 @@ fn config_path_description(path: &str) -> String {
             "One-way Outline target, query, credential environment binding, and request limits."
                 .to_string()
         }
+        _ if path.starts_with("integrations.routes.") => {
+            "Named external-content route topology, authority, conflict policy, bounds, and schedule interval."
+                .to_string()
+        }
         _ if path == "site.profiles.<name>.page_title_template" => {
             "Template for the HTML `<title>` tag on built pages. Supported placeholders: `{page}`, `{site}`, and `{profile}`.".to_string()
         }
@@ -1823,6 +1944,7 @@ fn preferred_command_for_key(path: &str) -> Option<String> {
         _ if path.starts_with("plugins.") => Some("vulcan plugin set".to_string()),
         _ if path.starts_with("export.profiles.") => Some("vulcan export profile set".to_string()),
         _ if path.starts_with("publish.outline.profiles.") => Some("vulcan config set".to_string()),
+        _ if path.starts_with("integrations.routes.") => Some("vulcan config set".to_string()),
         _ if path.starts_with("site.profiles.") => Some("vulcan config set".to_string()),
         _ if path.starts_with("folder_notes.") => Some("vulcan refactor folder-notes".to_string()),
         _ => None,
@@ -1849,6 +1971,11 @@ fn config_path_examples(path: &str) -> Vec<String> {
         _ if path.starts_with("publish.outline.profiles.<name>.")
             || path == "publish.outline.profiles.<name>" => vec![
             r#"vulcan config set publish.outline.profiles.wiki.base_url '"https://outline.example.com"'"#.to_string(),
+        ],
+        _ if path.starts_with("integrations.routes.<name>.")
+            || path == "integrations.routes.<name>" => vec![
+            r#"vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'"#.to_string(),
+            "vulcan integration validate players".to_string(),
         ],
         _ if path == "site.profiles.<name>" => vec![
             "vulcan config set site.profiles.public '{}'".to_string(),
@@ -2679,6 +2806,9 @@ read = { allow = ["folder:Projects/**"] }
             "export.profiles.<name>.format",
             "publish.outline.profiles.<name>",
             "publish.outline.profiles.<name>.token_env",
+            "integrations.routes.<name>",
+            "integrations.routes.<name>.authority",
+            "integrations.routes.<name>.document_bindings",
             "site.profiles.<name>",
             "site.profiles.<name>.page_title_template",
             "site.profiles.<name>.link_policy",

@@ -1,6 +1,68 @@
 # Outline publishing
 
-Vulcan can package a selected Markdown hierarchy for Outline and can publish the same planned hierarchy into an existing Outline collection. Both paths are strictly one-way: the Markdown vault remains canonical and Outline is never used as publication input.
+Vulcan can package a selected Markdown hierarchy for Outline, publish it into an existing collection, pull an Outline collection or subtree into a contained vault namespace, and compose pull/push into a named conflict-aware route. The Markdown vault remains the inspectable hub; synchronization is never implicit last-writer-wins.
+
+## First-class Outline routes
+
+A route makes a collaboration wiki repeatable by persisting its local root, remote subtree, direction, authority, exact document bindings, removal policy, work limits, and interval. It reuses the named `[publish.outline.profiles.<name>]` profile for the endpoint, collection, credentials, outgoing selection, and rendering transforms:
+
+```toml
+[publish.outline.profiles.players]
+base_url = "https://outline.example.com"
+collection_id = "00000000-0000-0000-0000-000000000000"
+collection_title = "Players Wiki"
+query = 'from "Players/Campaign"'
+token_env = "OUTLINE_API_TOKEN"
+
+[integrations.routes.players]
+connector = "outline"
+profile = "players"
+direction = "mirror" # pull | push | mirror
+authority = "review" # local | remote | review
+local_root = "Players/Campaign"
+remote_roots = ["outline-root-document-id"] # omit for the complete collection
+max_depth = 4
+excluded_documents = ["private-outline-subtree-id"]
+document_bindings = { "existing-outline-id" = "Players/Campaign/Setting.md" }
+apply_remote_moves = true
+missing_policy = "archive" # retain | archive
+missing_archive = "Archive/Outline"
+stale_attachment_policy = "retain"
+max_documents = 5000
+schedule = "every 15m" # also @hourly, @daily, @weekly, every Nh, every Nd
+```
+
+Validate and operate it directly, without a daemon:
+
+```sh
+vulcan integration list
+vulcan integration show players
+vulcan integration validate players
+OUTLINE_API_TOKEN=... vulcan integration plan players
+OUTLINE_API_TOKEN=... vulcan integration run players --interactive
+vulcan integration status players
+vulcan integration bindings players
+
+# A cron/systemd timer can invoke this frequently; only due routes run.
+OUTLINE_API_TOKEN=... vulcan integration run --scheduled
+```
+
+`review` pulls first and stops on unresolved local/remote drift before pushing. `remote` pulls with reviewed remote-overwrite authority, then publishes the successfully materialized canonical vault state. `local` publishes first with managed-conflict overwrite authority, then pulls remote-only documents. A live route holds a route lock and writes running/completed/failed checkpoints under `.vulcan/integrations/routes/`; an interrupted run remains visible in `status`. `plan` and `run --dry-run` do not create route locks or state.
+
+Route validation rejects missing profile fields, unsafe/internal paths, invalid selectors and limits, duplicate exact paths, overlapping local pull ownership, overlapping remote scope, and shared push state. Retain is the default removal policy. Route configuration deliberately offers recoverable archive policy but not unattended permanent deletion.
+
+To associate an existing local note with an existing Outline document without rewriting either side:
+
+```sh
+OUTLINE_API_TOKEN=... vulcan integration bind players \
+  <outline-document-id> Players/Campaign/Setting.md --dry-run
+OUTLINE_API_TOKEN=... vulcan integration bind players \
+  <outline-document-id> Players/Campaign/Setting.md
+vulcan integration unbind players <outline-document-id> --dry-run
+vulcan integration unbind players <outline-document-id>
+```
+
+Binding uses the immutable Outline ID and records a three-way baseline in durable pull state. Unbinding deletes neither document. `document_bindings` supplies deterministic ID-to-path overrides for route planning; adopt an already divergent local file explicitly before the first local-authority push.
 
 ## Outline ZIP export
 
@@ -177,7 +239,7 @@ OUTLINE_API_TOKEN=... vulcan pull outline wiki --into Imported/Outline --archive
 OUTLINE_API_TOKEN=... vulcan pull outline wiki --into Imported/Outline --delete-stale-attachments --confirm-stale-attachment-delete-count 3
 ```
 
-The initial pull maps the collection hierarchy to `Parent.md` plus `Parent/Child.md`, rejects unsafe paths and orphaned parents, converts supported Outline callout fences to Obsidian callouts, and rewrites links to other pulled `/doc/<remote-id>` documents as wikilinks. Case-, Unicode-normalization-, and truncation-equivalent sibling names receive deterministic remote-ID-derived suffixes; generated components also avoid Windows reserved names and byte/path overflows. Inline, angle-bracket, balanced-parenthesis, and reference-style Markdown destinations are parsed through the Markdown event stream; code spans and fences are not mistaken for links. Referenced `/api/attachments.redirect` assets are authenticated against the configured Outline origin, downloaded with a 25 MiB per-file limit, written under deterministic `<destination>/_attachments/` paths, and rewritten to relative Markdown links. Dry-run and live reports include structured diagnostics when raw HTML or unsupported directives are preserved verbatim, or when an attachment destination cannot be safely rewritten. Durable state lives under `.vulcan/integrations/outline-pull/`: the compact `<profile>.json` manifest records connector identity, mappings, hashes, revision metadata, and journals, while verified content-addressed files under `sources/` retain exact remote and diff3-base bodies without rewriting every body at each checkpoint. State is locked and atomically replaced outside `cache.db`; changing the profile to another server fails closed instead of silently reusing identities.
+The initial pull maps the collection hierarchy to `Parent.md` plus `Parent/Child.md`, rejects unsafe paths and orphaned parents, converts supported Outline callout fences to Obsidian callouts, and rewrites links to other pulled `/doc/<remote-id>` documents as wikilinks. Case-, Unicode-normalization-, and truncation-equivalent sibling names receive deterministic remote-ID-derived suffixes; generated components also avoid Windows reserved names and byte/path overflows. Inline, angle-bracket, balanced-parenthesis, and reference-style Markdown destinations are parsed through the Markdown event stream; code spans and fences are not mistaken for links. Referenced `/api/attachments.redirect` assets are authenticated against the configured Outline origin, downloaded with a 25 MiB per-file limit, written under deterministic `<destination>/_attachments/` paths, and rewritten to relative Markdown links. Dry-run and live reports include structured diagnostics when raw HTML or unsupported directives are preserved verbatim, or when an attachment destination cannot be safely rewritten. Durable state lives under `.vulcan/integrations/outline-pull/`: focused commands use `<profile>.json`, while named routes use `<route>.json` so disjoint routes can safely reuse one API profile. The compact manifest records connector identity, mappings, hashes, revision metadata, and journals, while verified content-addressed files under `sources/` retain exact remote and diff3-base bodies without rewriting every body at each checkpoint. State is locked and atomically replaced outside `cache.db`; changing a binding to another server fails closed instead of silently reusing identities.
 
 Pulls default to a 10,000-document and 256 MiB cumulative-Markdown ceiling, configurable with `--max-documents` and `--max-content-bytes`. Attachment defaults are 10,000 references, 25 MiB per download, and 1 GiB downloaded per invocation; tune them with `--max-attachments`, `--max-attachment-bytes`, and `--max-total-attachment-bytes`. API JSON bodies are independently capped at 64 MiB before parsing. Limits fail before mutation whenever the required size is knowable; a cumulative download overflow leaves the interruption journal available for inspection/retry. Outline's offset pagination does not provide a true collection snapshot cursor, so Vulcan verifies that the advertised total remains stable, rejects duplicate documents, and requires the final item count to match. It also validates required Markdown document fields, collection membership, complete acyclic hierarchy, and consistent collection-wide `revision`/`updatedAt` metadata coverage. Live pulls list the collection a second time immediately before the first mutation and require an identical ID-sorted snapshot. JSON reports expose this as `remote_capabilities`, including whether the pre-apply re-list occurred; retry when either listing or conformance check reports collection drift.
 
@@ -201,4 +263,4 @@ For a partial collection pull, repeat `--root-document <remote-id>` to select th
 
 Pull and publication remain separate reviewed operations, but `publish outline --adopt-pulled` provides explicit identity continuity between them. It considers only pulled paths selected by the publication profile, verifies that each remote document still matches the content hash, title, parent, and collection recorded by the last successful pull, and rejects duplicate ownership. Successful adoption reuses remote document identities and attachment URLs instead of creating duplicates; local edits made after the pull are then planned as normal publication updates. Always review adoption with `--dry-run`; JSON reports expose `adopted_pull_bindings`.
 
-This remains a bounded Outline-specific route rather than implicit background synchronization. Generic route configuration, provenance artifacts, scheduling, and cross-connector orchestration remain Phase 15 work. See [Local information hub and external wikis](information-hub.md).
+The focused `pull outline` and `publish outline` commands remain compatible lower-level surfaces. Named routes compose those same planners and durable identities; future generic connectors and daemon-triggered execution will reuse this route contract. See [Local information hub and external wikis](information-hub.md).

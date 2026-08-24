@@ -2085,6 +2085,123 @@ pub struct PublishConfig {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct IntegrationsConfig {
+    #[serde(default)]
+    pub routes: BTreeMap<String, IntegrationRouteConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum IntegrationConnectorConfig {
+    #[default]
+    Outline,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum IntegrationRouteDirectionConfig {
+    Pull,
+    Push,
+    #[default]
+    Mirror,
+}
+
+impl IntegrationRouteDirectionConfig {
+    #[must_use]
+    pub const fn pulls(self) -> bool {
+        matches!(self, Self::Pull | Self::Mirror)
+    }
+
+    #[must_use]
+    pub const fn pushes(self) -> bool {
+        matches!(self, Self::Push | Self::Mirror)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum IntegrationRouteAuthorityConfig {
+    Local,
+    Remote,
+    #[default]
+    Review,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "kebab-case")]
+pub enum IntegrationMissingPolicyConfig {
+    #[default]
+    Retain,
+    Archive,
+}
+
+/// Durable topology and reconciliation policy for one external content route.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IntegrationRouteConfig {
+    #[serde(default)]
+    pub connector: IntegrationConnectorConfig,
+    pub profile: String,
+    #[serde(default)]
+    pub direction: IntegrationRouteDirectionConfig,
+    #[serde(default)]
+    pub authority: IntegrationRouteAuthorityConfig,
+    pub local_root: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_roots: Vec<String>,
+    pub max_depth: Option<usize>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excluded_documents: Vec<String>,
+    /// Exact remote-document-id to local Markdown path overrides.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub document_bindings: BTreeMap<String, PathBuf>,
+    #[serde(default)]
+    pub apply_remote_moves: bool,
+    #[serde(default)]
+    pub missing_policy: IntegrationMissingPolicyConfig,
+    pub missing_archive: Option<PathBuf>,
+    #[serde(default)]
+    pub stale_attachment_policy: IntegrationMissingPolicyConfig,
+    pub stale_attachment_archive: Option<PathBuf>,
+    pub max_documents: Option<usize>,
+    pub max_content_bytes: Option<usize>,
+    pub max_attachments: Option<usize>,
+    pub max_attachment_bytes: Option<usize>,
+    pub max_total_attachment_bytes: Option<usize>,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    pub schedule: Option<String>,
+}
+
+impl Default for IntegrationRouteConfig {
+    fn default() -> Self {
+        Self {
+            connector: IntegrationConnectorConfig::default(),
+            profile: String::new(),
+            direction: IntegrationRouteDirectionConfig::default(),
+            authority: IntegrationRouteAuthorityConfig::default(),
+            local_root: None,
+            remote_roots: Vec::new(),
+            max_depth: None,
+            excluded_documents: Vec::new(),
+            document_bindings: BTreeMap::new(),
+            apply_remote_moves: false,
+            missing_policy: IntegrationMissingPolicyConfig::default(),
+            missing_archive: None,
+            stale_attachment_policy: IntegrationMissingPolicyConfig::default(),
+            stale_attachment_archive: None,
+            max_documents: None,
+            max_content_bytes: None,
+            max_attachments: None,
+            max_attachment_bytes: None,
+            max_total_attachment_bytes: None,
+            enabled: true,
+            schedule: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct OutlinePublishConfig {
     #[serde(default)]
     pub profiles: BTreeMap<String, OutlinePublishProfileConfig>,
@@ -2330,6 +2447,8 @@ pub struct VaultConfig {
     #[serde(default)]
     pub publish: PublishConfig,
     #[serde(default)]
+    pub integrations: IntegrationsConfig,
+    #[serde(default)]
     pub site: SiteConfig,
     #[serde(default)]
     pub plugins: BTreeMap<String, PluginRegistration>,
@@ -2364,6 +2483,7 @@ impl Default for VaultConfig {
             periodic: PeriodicConfig::default(),
             export: ExportConfig::default(),
             publish: PublishConfig::default(),
+            integrations: IntegrationsConfig::default(),
             site: SiteConfig::default(),
             plugins: BTreeMap::new(),
             aliases: builtin_command_aliases(),
@@ -4562,6 +4682,14 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
                     let target = config.publish.outline.profiles.entry(name).or_default();
                     merge_outline_publish_profile_config(target, profile);
                 }
+            }
+        }
+    }
+
+    if let Some(integrations) = overrides.integrations {
+        if let Some(routes) = integrations.routes {
+            for (name, route) in routes {
+                config.integrations.routes.insert(name, route);
             }
         }
     }

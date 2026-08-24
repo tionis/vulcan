@@ -4,7 +4,7 @@
 
 Vulcan is a local-first Rust information hub for Obsidian-style vaults and plain Markdown directories. It indexes canonical Markdown into a rebuildable local SQLite cache, then exposes search, graph queries, Dataview/Bases-style metadata, TaskNotes workflows, publishing, scripting, MCP tools, and safe note mutations without requiring Obsidian to be running.
 
-The current implementation is a strong single-vault CLI and MCP server; the next major phase is a multi-vault daemon built on the shared `vulcan-core` and `vulcan-app` crates. Later device-sync and external-connector layers will let the materialized vault act as an inspectable hub: pull selected content from systems such as SilverBullet or Git wikis, bind individual notes to remote documents such as HedgeDoc pads, and publish selected local hierarchies to systems such as Outline without making their databases or Vulcan's cache authoritative.
+The current implementation is a strong single-vault CLI and MCP server; the next major phase is a multi-vault daemon built on the shared `vulcan-core` and `vulcan-app` crates. Outline already has first-class named subtree routes and exact local-note/remote-document bindings. Later connector layers extend the same inspectable hub model to SilverBullet, Git wikis, and HedgeDoc without making their databases or Vulcan's cache authoritative.
 
 ## What It Can Do
 
@@ -12,7 +12,7 @@ The current implementation is a strong single-vault CLI and MCP server; the next
 - **Search and explore**: SQLite FTS5, Obsidian-like search operators, graph traversal, backlinks/outgoing links, communities, suggestions, and optional vector search via `sqlite-vec`.
 - **Use structured knowledge models**: Dataview DQL, inline fields, inline expressions, `.base` views, task queries, TaskNotes, recurring tasks, dependencies, Kanban boards, periodic notes, and an emerging pinned mdbase v0.3 compatibility layer.
 - **Edit safely**: `note get/create/append/patch/set/delete/rename`, task create/complete/reschedule/archive, property updates, refactors, dry-run reports, link rewriting, and permission profiles.
-- **Publish and export**: Markdown, JSON, CSV, Graph, EPUB, ZIP, SQLite, static search indexes, frontend bundles, full static sites, Outline-compatible ZIPs, and one-way conflict-aware Outline API publication with profile-based transforms.
+- **Publish, import, and route**: Markdown, JSON, CSV, Graph, EPUB, ZIP, SQLite, static search indexes, frontend bundles, full static sites, Outline-compatible ZIPs, conflict-aware Outline publication/pull, exact document bindings, and named subtree mirror routes.
 - **Automate locally**: JSON output on commands, saved reports, automation runs, checkpoints, shell completions, JavaScript scripting with sandbox tiers, custom skills, skill commands, and plugins.
 - **Integrate with agents**: `vulcan describe`, OpenAI tool schemas, MCP stdio/HTTP, ChatGPT-compatible OAuth/IndieAuth, tool packs, resources, prompts, and Agent Skills-compatible vault guidance.
 
@@ -43,6 +43,8 @@ vulcan --vault ~/notes tasks list --output json
 vulcan --vault ~/notes export markdown 'tag:publish' --path public.md
 vulcan --vault ~/notes export outline-zip --collection-title Wiki --path wiki.zip
 vulcan --vault ~/notes export outline-zip --profile wiki --path wiki.zip
+vulcan --vault ~/notes integration validate players
+vulcan --vault ~/notes integration plan players
 vulcan --vault ~/notes site build
 vulcan --vault ~/notes doctor
 ```
@@ -63,6 +65,7 @@ Vulcan stores vault-local state under `.vulcan/`:
 - `.vulcan/config.local.toml`: device-local overrides, ignored by default
 - `.vulcan/cache.db`: rebuildable SQLite cache
 - `.vulcan/publish/`: durable publisher mappings such as Outline source-to-document identity, stored outside the rebuildable cache
+- `.vulcan/integrations/`: durable pull identities, content snapshots, conflict journals, and named-route run state, stored outside the rebuildable cache
 
 Use `vulcan config ...` and `vulcan help config` for the editable config surface. Vulcan can import settings from supported Obsidian plugins with `vulcan index init --import` or `vulcan config import --all`.
 

@@ -48,6 +48,29 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # link_transform = ".vulcan/transforms/outline-links.js" # required by either custom policy
 # content_transforms can use the same ordered rules as export profiles.
 
+# [integrations.routes.players]
+# connector = "outline"
+# profile = "wiki" # references [publish.outline.profiles.wiki]
+# direction = "mirror" # pull | push | mirror
+# authority = "review" # local | remote | review
+# local_root = "Players/Campaign"
+# remote_roots = ["00000000-0000-0000-0000-000000000000"] # empty selects the collection
+# max_depth = 3 # requires remote_roots
+# excluded_documents = []
+# document_bindings = { "outline-document-id" = "Players/Campaign/Session.md" }
+# apply_remote_moves = true
+# missing_policy = "archive" # retain | archive
+# missing_archive = "Archive/Outline"
+# stale_attachment_policy = "retain" # retain | archive
+# stale_attachment_archive = "Archive/Outline Assets"
+# max_documents = 10000
+# max_content_bytes = 268435456
+# max_attachments = 10000
+# max_attachment_bytes = 26214400
+# max_total_attachment_bytes = 1073741824
+# enabled = true
+# schedule = "every 15m" # @hourly | @daily | @weekly | every Nm/Nh/Nd
+
 # [extraction]
 # command = "sh"
 # args = ["-c", "case \"$2\" in pdf) pdftotext \"$1\" - ;; png|jpg|jpeg|webp) tesseract \"$1\" stdout ;; *) exit 0 ;; esac", "sh", "{path}", "{extension}"]

@@ -1,6 +1,6 @@
 ---
 name: publishing-and-export
-description: Build static sites, export or package vault content, operate one-way Outline publications, and pull an explicitly scoped Outline collection into the vault. Use when the user asks about site builds, export profiles, EPUB/ZIP/SQLite/JSON/CSV output, Outline ZIP, API publishing or pull, graph-based publication scope, reconciliation conflicts, render diagnostics, publish filters, content transforms, or route/link policy.
+description: Build static sites, export or package vault content, and operate Outline publication, pull, exact document bindings, or named subtree routes. Use when the user asks about site builds, export profiles, EPUB/ZIP/SQLite/JSON/CSV output, Outline ZIP, API publishing or pull, wiki synchronization, local/remote document identity, graph-based publication scope, reconciliation conflicts, render diagnostics, publish filters, content transforms, or route/link policy.
 version: 1
 tools:
   - site
@@ -22,7 +22,7 @@ require_confirmation: false
 ## When to Use This Skill
 
 Use this skill when the user wants vault content rendered, packaged, published, or diagnosed for a
-static output target or a configured one-way Outline publication.
+static output target or a configured Outline publication, import, or named route.
 
 ## Recommended Flow
 
@@ -32,6 +32,10 @@ static output target or a configured one-way Outline publication.
 - Use `vulcan site build --profile <name>` for static sites and `vulcan site doctor` for publish diagnostics.
 - Omitting a query exports the full vault. Use a query for one selection rule or `--selection-json` for an additive plan that unions query clauses and bounded or recursive graph traversals. Review global exclusions and permission boundaries because they also stop graph traversal.
 - Use `vulcan export outline-zip ... --dry-run` to inspect the complete Outline-compatible hierarchy and diagnostics before writing an archive.
+- Prefer a named `[integrations.routes.<name>]` route for an Outline wiki that will be pulled or pushed repeatedly. Start with `vulcan integration validate <name>` and `vulcan integration plan <name>`, then use `integration run <name>`. The route owns local/remote subtree topology, direction, authority, archival policy, exact ID/path overrides, work limits, and interval; the referenced publication profile still owns API connection, outgoing selection, and rendering transforms.
+- Use `authority = "review"` for collaborative wikis unless the user has explicitly declared one side authoritative. `review` stops on unresolved drift and supports `integration run <name> --interactive`. `local` publishes managed local state first; `remote` materializes remote state first. Every mirror phase uses the canonical vault as its boundary.
+- Use `vulcan integration bind <route> <remote-id> <local-path> --dry-run` before adopting an already existing local note as an already existing Outline document, then apply only after verifying both identities. Binding rewrites neither document. Use `bindings` to inspect and `unbind` to remove only identity state. Do not hand-edit the mapping file.
+- Use `vulcan integration status <name>` after failures or interruptions. Live route runs are locked and checkpointed. `integration run --scheduled` is the non-daemon timer entrypoint and runs only enabled routes whose configured interval is due; `--all` ignores schedules.
 - Prefer `vulcan export outline-zip --profile <name> --path <archive.zip>` when the archive must match API publication. It reuses the profile's selection, collection title, content/link transforms, link fallback policies, and TOC setting without requiring API endpoint, collection ID, or token fields; do not combine profile mode with direct rendering flags. Compare ZIP document hashes with API report `projections` when verifying parity.
 - For API publication, inspect the configured profile and run `vulcan publish outline <profile> --dry-run` first. A dry run performs remote reads but does not mutate Outline or create mapping state.
 - Review each structured remote-drift conflict's kind, changed dimensions, and base/local/remote metadata before a live publication. Prefer repeating `--overwrite-conflict <source-path>` for only the reviewed managed documents. Use `--overwrite-conflicts` only when every reported conflict should be replaced; check `overwritten_conflicts` in JSON output.
@@ -57,6 +61,8 @@ static output target or a configured one-way Outline publication.
 
 - Exports and sites should be reproducible from vault source plus config.
 - Outline publication is one-way: the local vault remains canonical. Do not treat remote edits as input. Remote drift fails closed unless the user explicitly authorizes the named source with `--overwrite-conflict` or authorizes all reported conflicts with `--overwrite-conflicts` after a dry run. Neither control affects unmanaged documents, and unresolved conflicts prevent all mutations.
+- A named Outline route is the explicit exception to using focused one-way commands independently: it composes them according to declared authority while keeping the materialized vault as the handoff. It still never performs implicit last-writer-wins reconciliation.
+- Route validation errors for overlapping local roots, remote scope, exact local paths, or shared push profiles are ownership failures. Change topology rather than bypassing validation. Keep recoverable archive policies for unattended runs; permanent deletion remains a focused command with an exact live-count confirmation.
 - Outline mappings under `.vulcan/publish/outline/` are durable state, not rebuildable cache. Do not delete or hand-edit them as a routine repair step.
 - Outline pull state under `.vulcan/integrations/outline-pull/` is also durable. Pull and publish state are deliberately separate and do not imply bidirectional synchronization. Missing remote documents remain local unless archive or exact-count-confirmed delete is selected. Referenced Outline attachments are downloaded to deterministic `_attachments/` paths; local attachment drift is preserved unless reviewed overwrite is authorized.
 - The pull manifest references verified content-addressed remote/base snapshots under its `sources/` directory. Back up the entire `.vulcan/integrations/outline-pull/` tree together; copying only `<profile>.json` omits required diff3 baselines.
@@ -73,4 +79,5 @@ static output target or a configured one-way Outline publication.
 - Build a selection plan from several graph seeds, preview its provenance, and reuse it in an export or publication profile.
 - Dry-run an Outline publication, inspect structured drift evidence, selectively authorize reviewed source paths, then apply the same profile while monitoring stderr progress.
 - Dry-run an Outline pull into an explicit namespace, then preserve, overwrite, or materialize markers for reviewed local/remote conflicts.
+- Configure and validate a collaborative-player-wiki mirror route, explicitly bind pre-existing documents, plan it, then run it interactively and inspect durable status.
 - Render one note to HTML to inspect markdown/parser behavior.

@@ -1108,6 +1108,79 @@ fn parses_outline_publish_dry_run_command() {
 }
 
 #[test]
+fn parses_integration_route_commands() {
+    let list = Cli::try_parse_from(["vulcan", "integration", "list"])
+        .expect("integration list should parse");
+    assert_eq!(
+        list.command,
+        Command::Integration {
+            command: IntegrationCommand::List,
+        }
+    );
+
+    let validate = Cli::try_parse_from(["vulcan", "integration", "validate", "campaign"])
+        .expect("integration validation should parse");
+    assert_eq!(
+        validate.command,
+        Command::Integration {
+            command: IntegrationCommand::Validate {
+                name: Some("campaign".to_string()),
+            },
+        }
+    );
+
+    let run = Cli::try_parse_from(["vulcan", "integration", "run", "campaign", "--dry-run"])
+        .expect("integration route run should parse");
+    assert!(matches!(
+        run.command,
+        Command::Integration {
+            command: IntegrationCommand::Run {
+                name: Some(ref name),
+                all: false,
+                scheduled: false,
+                dry_run: true,
+                ..
+            }
+        } if name == "campaign"
+    ));
+
+    let scheduled = Cli::try_parse_from(["vulcan", "integration", "run", "--scheduled"])
+        .expect("scheduled route run should parse");
+    assert!(matches!(
+        scheduled.command,
+        Command::Integration {
+            command: IntegrationCommand::Run {
+                name: None,
+                scheduled: true,
+                ..
+            }
+        }
+    ));
+
+    let bind = Cli::try_parse_from([
+        "vulcan",
+        "integration",
+        "bind",
+        "campaign",
+        "remote-id",
+        "Players/Yemoja.md",
+    ])
+    .expect("exact document binding should parse");
+    assert!(matches!(
+        bind.command,
+        Command::Integration {
+            command: IntegrationCommand::Bind {
+                ref remote_document_id,
+                ref local_path,
+                ..
+            }
+        } if remote_document_id == "remote-id" && local_path == "Players/Yemoja.md"
+    ));
+
+    assert!(Cli::try_parse_from(["vulcan", "integration", "run", "campaign", "--all",]).is_err());
+}
+
+#[test]
 fn parses_outline_publish_overwrite_conflicts_command() {
     let cli = Cli::try_parse_from([
         "vulcan",

@@ -13,14 +13,14 @@ This document describes both the implemented baseline and the planned architectu
 | Repository-level folder-note convention and structural conversion | Implemented |
 | Outline-compatible ZIP export | Implemented |
 | One-way local-vault-to-Outline API publication with durable mappings and conflict detection | Implemented |
-| Scoped Outline collection pull with durable three-way state, attachments, reviewed moves, and missing-document policies | Initial implementation; generic routes and narrower remote selectors remain planned |
+| Scoped Outline collection/subtree pull with durable three-way state, attachments, reviewed moves, and missing-document policies | Implemented |
 | mdbase v0.3 discovery, configuration validation, bundled schemas, and secure schema-reference validation | Partially implemented; later conformance profiles remain a candidate track |
 | Multi-vault daemon and device/file-tree sync backends | Planned in Phases 10–12 |
-| Generic external-document bindings and content routes | Planned in Phase 15 |
-| Generic Outline routes, HedgeDoc routes, Git-wiki routes, and selective SilverBullet routes | Planned first connector wave |
+| Named, authority-aware Outline routes, exact document bindings, route validation/status/history, and interval-driven direct CLI execution | Implemented |
+| Connector-neutral frontmatter bindings, HedgeDoc routes, Git-wiki routes, and selective SilverBullet routes | Planned first connector wave |
 | Full-Space SilverBullet protocol peer, SilverBullet plug, and optional runtime adapter | Planned optional capabilities after their daemon/sync boundaries exist |
 
-The existing Outline publisher remains strictly one-way. The focused Outline pull command is a separate inbound operation with an explicit destination and its own durable state; running both commands does not create implicit bidirectional synchronization.
+The focused Outline publisher remains strictly one-way, and the focused pull command remains an explicit inbound operation. Named Outline routes safely compose those primitives through declared direction and authority; they do not introduce implicit last-writer-wins behavior.
 
 ## Four different integration concepts
 
@@ -105,69 +105,67 @@ Important rules:
 
 Connector-native fields remain useful compatibility surfaces. [HedgeSync](https://community.obsidian.md/plugins/hedgesync), for example, maps a note to one HedgeDoc document through a configurable frontmatter property whose value can be a URL, note ID, or object. Vulcan plans to read and preserve that convention and offer an explicit migration to generic bindings rather than silently rewriting it.
 
-## Planned route configuration
+## Implemented Outline route configuration
 
-The exact schema will be validated during implementation. The intended separation resembles:
+Outline routes reuse a publication profile for endpoint/credentials, outgoing selection, and transforms, then add durable topology and reconciliation policy:
 
 ```toml
-[integrations.profiles.team_hedgedoc]
-connector = "hedgedoc"
-base_url = "https://pad.example.com"
-credential_env = "HEDGEDOC_SESSION"
+[publish.outline.profiles.players]
+base_url = "https://outline.example.com"
+collection_id = "collection-id"
+token_env = "OUTLINE_API_TOKEN"
+query = 'from "Players/Campaign"'
 
-[[integrations.routes]]
-name = "planning-pad"
-profile = "team_hedgedoc"
-direction = "push"
-authority = "local"
-source = "Projects/Planning.md"
-
-[[integrations.routes]]
-name = "silverbullet-import"
-profile = "team_silverbullet"
-direction = "pull"
-authority = "remote"
-remote_scope = "Projects/"
-destination = "Imported/SilverBullet/"
-
-[[integrations.routes]]
-name = "outline-publication"
-profile = "company_outline"
-direction = "push"
-authority = "local"
-query = 'from notes where file.path starts_with "Published/"'
+[integrations.routes.players]
+connector = "outline"
+profile = "players"
+direction = "mirror"
+authority = "review"
+local_root = "Players/Campaign"
+remote_roots = ["remote-root-id"]
+max_depth = 4
+excluded_documents = ["private-subtree-id"]
+document_bindings = { "remote-setting-id" = "Players/Campaign/Setting.md" }
+apply_remote_moves = true
+missing_policy = "archive"
+missing_archive = "Archive/Outline"
+schedule = "every 15m"
 ```
 
 Shared configuration contains non-secret topology and policy. Device-local endpoint overrides, executable paths, and credential environment-variable names may live in ignored local or daemon configuration. Credential values stay in environment variables or a device secret store and must never be logged.
 
-Planned CLI surfaces include:
+Implemented direct CLI surfaces include:
 
 ```sh
-vulcan integration binding list
-vulcan integration binding validate
-vulcan integration route list
-vulcan integration route plan silverbullet-import
-vulcan integration route run silverbullet-import
-vulcan integration run silverbullet-import outline-publication
+vulcan integration list
+vulcan integration show players
+vulcan integration validate players
+vulcan integration plan players
+vulcan integration run players --interactive
 vulcan integration run --all --dry-run --output json
+vulcan integration run --scheduled
+vulcan integration status players
+vulcan integration bindings players
+vulcan integration bind players <remote-id> Players/Campaign/Setting.md
+vulcan integration unbind players <remote-id>
 ```
 
-Manual operations work without a daemon. The daemon adds schedules, route dependencies, cancellation, history, and authenticated remote triggers over the same request/report contracts.
+Manual operations and interval-due automation work without a daemon. Live route runs have an exclusive route lock and durable running/completed/failed checkpoints. The daemon will add its own scheduler, route dependencies, remote triggers, and richer history over the same request/report contracts.
 
 ## Authority and conflict behavior
 
 Every mutating route declares authority:
 
-- `local`: unexpected remote changes are conflicts; Vulcan does not overwrite them by default.
-- `remote`: unexpected local changes are conflicts; Vulcan does not overwrite them by default.
-- `review`: preserve both representations and produce a reconciliation artifact.
-- true bidirectional behavior is future work requiring a durable three-way base; it is not last-writer-wins.
+- `local`: the selected local projection may overwrite drift in already managed remote documents; a mirror publishes before pulling remote-only documents.
+- `remote`: the selected remote projection may overwrite local conflicts; a mirror materializes and indexes that result before publishing it.
+- `review`: preserve unresolved drift, stop the route, and require interactive or focused-command reconciliation.
+- mirror behavior uses the existing durable three-way base and explicit authority; it is never timestamp-based last-writer-wins.
 
 Pull removals are quarantined or otherwise made recoverable by default. Push removals archive remotely when supported. Unmanaged remote objects remain untouched.
 
 ## Durable state and repairability
 
-Operational route state will live under an ignored `.vulcan/integrations/` state area, outside `.vulcan/cache.db`. It records information such as:
+Operational Outline route state lives under `.vulcan/integrations/`, outside `.vulcan/cache.db`. It records information such as:
 
 - connector, profile, route, and remote server identity
 - local source identity and current path
@@ -183,7 +181,7 @@ Writes are locked and atomic. Malformed state stops reconciliation without mutat
 
 ### Outline
 
-The current ZIP exporter and one-way API publisher are the outbound baseline. The separate Outline pull route already supports collection-wide or remote-ID-scoped inbound materialization; Phase 15 will adapt these planner/state concepts to the generic connector model. See [Outline publishing](outline-publishing.md) for commands that exist today.
+The ZIP exporter and one-way API publisher are the outbound baseline. Outline routes now add collection-wide or remote-ID-scoped inbound materialization, exact ID/path binding, authority-aware pull/push composition, topology validation, durable run status, and direct interval automation. Phase 15 will adapt the same concepts to the generic connector model. See [Outline publishing](outline-publishing.md).
 
 ### HedgeDoc
 

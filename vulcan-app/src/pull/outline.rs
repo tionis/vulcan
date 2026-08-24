@@ -51,6 +51,8 @@ pub struct OutlinePullOptions {
     pub stale_attachment_policy: OutlinePullStaleAttachmentPolicy,
     pub confirmed_stale_attachment_delete_count: Option<usize>,
     pub connector_identity: Option<String>,
+    /// Explicit remote-document-id to local Markdown path mappings.
+    pub path_overrides: BTreeMap<String, String>,
     pub max_remote_documents: usize,
     pub max_remote_content_bytes: usize,
     pub max_attachments: usize,
@@ -68,6 +70,7 @@ impl Default for OutlinePullOptions {
             stale_attachment_policy: OutlinePullStaleAttachmentPolicy::default(),
             confirmed_stale_attachment_delete_count: None,
             connector_identity: None,
+            path_overrides: BTreeMap::new(),
             max_remote_documents: 10_000,
             max_remote_content_bytes: DEFAULT_REMOTE_CONTENT_MAX_BYTES,
             max_attachments: DEFAULT_ATTACHMENT_COUNT_MAX,
@@ -400,7 +403,7 @@ struct OutlinePullAttachmentMapping {
     content_type: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OutlinePulledBinding {
     pub local_path: String,
     pub remote_document_id: String,
@@ -410,11 +413,160 @@ pub struct OutlinePulledBinding {
     pub attachments: Vec<OutlinePulledAttachmentBinding>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct OutlinePulledAttachmentBinding {
     pub local_path: String,
     pub remote_url: String,
     pub content_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OutlineDocumentBindingReport {
+    pub profile: String,
+    pub collection_id: String,
+    pub remote_document_id: String,
+    pub local_path: String,
+    pub action: String,
+    pub dry_run: bool,
+    pub applied: bool,
+}
+
+/// Adopts an existing local note as the canonical local representation of an existing Outline
+/// document. This records identity and a three-way baseline without changing either side.
+#[allow(clippy::too_many_arguments)]
+pub fn adopt_outline_document_binding(
+    paths: &VaultPaths,
+    api: &dyn OutlineApi,
+    profile: &str,
+    collection_id: &str,
+    destination: &str,
+    remote_document_id: &str,
+    local_path: &str,
+    connector_identity: Option<&str>,
+    dry_run: bool,
+) -> Result<OutlineDocumentBindingReport, AppError> {
+    let destination = validate_destination(destination)?;
+    validate_managed_path(&destination, local_path)?;
+    let local_content = secure_read_to_string(paths.vault_root(), Path::new(local_path))
+        .map_err(AppError::operation)?;
+    let remote = api.document_info(remote_document_id)?;
+    if remote.id != remote_document_id
+        || remote.collection_id != collection_id
+        || remote.archived_at.is_some()
+    {
+        return Err(AppError::operation(
+            "Outline document binding target is missing, archived, or outside the configured collection",
+        ));
+    }
+    let action = if dry_run { "would_adopt" } else { "adopted" };
+    if !dry_run {
+        let _write_lock =
+            vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
+        let lock = StateLock::acquire(paths, profile)?;
+        let mut state = load_state(
+            paths,
+            profile,
+            collection_id,
+            &destination,
+            connector_identity,
+        )?;
+        if state.incomplete_operation.is_some() {
+            return Err(AppError::operation(
+                "cannot change Outline bindings while a pull operation is incomplete",
+            ));
+        }
+        if let Some((existing_remote, _)) = state.documents.iter().find(|(id, mapping)| {
+            id.as_str() != remote_document_id
+                && portable_path_key(&mapping.local_path) == portable_path_key(local_path)
+        }) {
+            return Err(AppError::operation(format!(
+                "local path `{local_path}` is already bound to Outline document `{existing_remote}`"
+            )));
+        }
+        let hash = content_hash(&local_content);
+        state.documents.insert(
+            remote_document_id.to_string(),
+            OutlinePullMapping {
+                local_path: local_path.to_string(),
+                last_remote_content_hash: hash.clone(),
+                last_remote_source_hash: Some(content_hash(&remote.text)),
+                last_remote_source: Some(remote.text.clone()),
+                last_remote_revision: remote.revision,
+                last_remote_updated_at: remote.updated_at.clone(),
+                last_remote_title: remote.title,
+                last_remote_parent_id: remote.parent_document_id,
+                last_materialized_local_hash: hash,
+                base_content: local_content,
+                attachments: BTreeMap::new(),
+            },
+        );
+        if state.connector_identity.is_none() {
+            state.connector_identity = connector_identity.map(str::to_string);
+        }
+        lock.save(&state)?;
+    }
+    Ok(OutlineDocumentBindingReport {
+        profile: profile.to_string(),
+        collection_id: collection_id.to_string(),
+        remote_document_id: remote_document_id.to_string(),
+        local_path: local_path.to_string(),
+        action: action.to_string(),
+        dry_run,
+        applied: !dry_run,
+    })
+}
+
+/// Removes durable identity state without deleting the local or remote document.
+pub fn remove_outline_document_binding(
+    paths: &VaultPaths,
+    profile: &str,
+    collection_id: &str,
+    destination: &str,
+    remote_document_id: &str,
+    connector_identity: Option<&str>,
+    dry_run: bool,
+) -> Result<OutlineDocumentBindingReport, AppError> {
+    let destination = validate_destination(destination)?;
+    let _write_lock = (!dry_run)
+        .then(|| vulcan_core::write_lock::acquire_write_lock(paths))
+        .transpose()
+        .map_err(AppError::operation)?;
+    let lock = (!dry_run)
+        .then(|| StateLock::acquire(paths, profile))
+        .transpose()?;
+    let mut state = load_state(
+        paths,
+        profile,
+        collection_id,
+        &destination,
+        connector_identity,
+    )?;
+    if state.incomplete_operation.is_some() {
+        return Err(AppError::operation(
+            "cannot change Outline bindings while a pull operation is incomplete",
+        ));
+    }
+    let mapping = state.documents.get(remote_document_id).ok_or_else(|| {
+        AppError::operation(format!(
+            "Outline document `{remote_document_id}` is not bound by profile `{profile}`"
+        ))
+    })?;
+    let local_path = mapping.local_path.clone();
+    if !dry_run {
+        state.documents.remove(remote_document_id);
+        lock.as_ref()
+            .expect("live removal has a state lock")
+            .save(&state)?;
+    }
+    Ok(OutlineDocumentBindingReport {
+        profile: profile.to_string(),
+        collection_id: collection_id.to_string(),
+        remote_document_id: remote_document_id.to_string(),
+        local_path,
+        action: if dry_run { "would_remove" } else { "removed" }.to_string(),
+        dry_run,
+        applied: !dry_run,
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1294,6 +1446,14 @@ fn plan_pull(
         .filter(|document| selected_ids.contains(&document.id))
         .cloned()
         .collect::<Vec<_>>();
+    for (remote_id, local_path) in &options.path_overrides {
+        if !selected_ids.contains(remote_id) {
+            return Err(AppError::operation(format!(
+                "explicit Outline binding `{remote_id}` -> `{local_path}` is outside the selected remote scope"
+            )));
+        }
+        validate_managed_path(&state.destination, local_path)?;
+    }
     let generated_paths = generate_paths(&active, &selected_ids, &state.destination)?;
     let local_paths = active
         .iter()
@@ -1304,7 +1464,9 @@ fn plan_pull(
                     .get(&document.id)
                     .map(|mapping| (document.id.clone(), mapping.local_path.clone()));
             }
-            let path = if options.apply_remote_moves {
+            let path = if let Some(path) = options.path_overrides.get(&document.id) {
+                path.clone()
+            } else if options.apply_remote_moves {
                 generated_paths[&document.id].clone()
             } else {
                 state.documents.get(&document.id).map_or_else(
@@ -2850,8 +3012,12 @@ mod tests {
             })
         }
 
-        fn document_info(&self, _id: &str) -> Result<OutlineRemoteDocument, AppError> {
-            unreachable!()
+        fn document_info(&self, id: &str) -> Result<OutlineRemoteDocument, AppError> {
+            self.documents
+                .iter()
+                .find(|document| document.id == id)
+                .cloned()
+                .ok_or_else(|| AppError::operation("missing mock document"))
         }
 
         fn create_document(
@@ -2991,6 +3157,116 @@ mod tests {
         .expect("idempotent pull");
         assert!(second.applied);
         assert_eq!(second.unchanged, 2);
+    }
+
+    #[test]
+    fn exact_binding_adopts_and_unbinds_without_changing_either_document() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::create_dir_all(temp.path().join("Players")).unwrap();
+        fs::write(temp.path().join("Players/Yemoja.md"), "# Local Yemoja\n").unwrap();
+        let api = api(vec![document(
+            "remote-yemoja",
+            "Yemoja",
+            "# Remote\n",
+            None,
+        )]);
+
+        let preview = adopt_outline_document_binding(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Players",
+            "remote-yemoja",
+            "Players/Yemoja.md",
+            Some("https://outline.example"),
+            true,
+        )
+        .expect("binding preview should succeed");
+        assert!(!preview.applied);
+        assert!(!state_path(&paths, "wiki").unwrap().exists());
+
+        let adopted = adopt_outline_document_binding(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Players",
+            "remote-yemoja",
+            "Players/Yemoja.md",
+            Some("https://outline.example"),
+            false,
+        )
+        .expect("binding should be adopted");
+        assert!(adopted.applied);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("Players/Yemoja.md")).unwrap(),
+            "# Local Yemoja\n"
+        );
+        let bindings = load_outline_pulled_bindings(&paths, "wiki", "collection").unwrap();
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].remote_document_id, "remote-yemoja");
+        assert_eq!(bindings[0].local_path, "Players/Yemoja.md");
+
+        let removed = remove_outline_document_binding(
+            &paths,
+            "wiki",
+            "collection",
+            "Players",
+            "remote-yemoja",
+            Some("https://outline.example"),
+            false,
+        )
+        .expect("binding should be removed");
+        assert!(removed.applied);
+        assert!(load_outline_pulled_bindings(&paths, "wiki", "collection")
+            .unwrap()
+            .is_empty());
+        assert!(temp.path().join("Players/Yemoja.md").is_file());
+    }
+
+    #[test]
+    fn exact_path_override_routes_a_remote_document_to_an_existing_note() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::create_dir_all(temp.path().join("Players")).unwrap();
+        fs::write(temp.path().join("Players/Yemoja.md"), "# Existing\n").unwrap();
+        let api = api(vec![document(
+            "remote-yemoja",
+            "Different title",
+            "# Remote\n",
+            None,
+        )]);
+        let options = OutlinePullOptions {
+            scope: OutlinePullScope {
+                root_document_ids: BTreeSet::from(["remote-yemoja".to_string()]),
+                max_depth: Some(0),
+                ..OutlinePullScope::default()
+            },
+            path_overrides: BTreeMap::from([(
+                "remote-yemoja".to_string(),
+                "Players/Yemoja.md".to_string(),
+            )]),
+            ..OutlinePullOptions::default()
+        };
+
+        let report = pull_outline_with_options_and_write_authorizer(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Players",
+            true,
+            &OutlinePullConflictPolicy::abort(),
+            &options,
+            &|_| Ok(()),
+        )
+        .expect("override should plan");
+        assert_eq!(report.actions[0].local_path, "Players/Yemoja.md");
+        assert_eq!(report.actions[0].kind, OutlinePullActionKind::Conflict);
     }
 
     #[test]

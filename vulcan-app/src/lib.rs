@@ -34,6 +34,7 @@ pub mod browse;
 pub mod config;
 pub mod export;
 pub mod folder_notes;
+pub mod integrations;
 pub mod notes;
 pub mod outline_markdown;
 pub mod plugins;

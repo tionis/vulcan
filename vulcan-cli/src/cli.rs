@@ -26,7 +26,7 @@ Command groups (run `vulcan help` for the full grouped reference):
   Scripting:   run, web, render, plugin, tool, skill
   AI/MCP:      mcp
   Git:         git, changes
-  Automation:  saved, automation, export, checkpoint
+  Automation:  saved, automation, export, integration, checkpoint
   Setup:       init, agent, config, trust
   Reference:   help, describe, completions, status
 
@@ -2569,6 +2569,87 @@ pub enum PullCommand {
         confirm_stale_attachment_delete_count: Option<usize>,
         #[arg(long, help = "Suppress auto-commit for pulled local note changes")]
         no_commit: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum IntegrationCommand {
+    #[command(about = "List configured external-content routes")]
+    List,
+    #[command(about = "Show one configured route and its effective policy")]
+    Show {
+        #[arg(help = "Route name under [integrations.routes.<name>]")]
+        name: String,
+    },
+    #[command(about = "Validate route profiles, topology, selectors, and ownership")]
+    Validate {
+        #[arg(help = "Optional route name; omit to validate every route together")]
+        name: Option<String>,
+    },
+    #[command(about = "Plan one route without mutating the vault, Outline, or route state")]
+    Plan {
+        #[arg(help = "Configured route name")]
+        name: String,
+    },
+    #[command(about = "Run one route using its configured direction and authority")]
+    Run {
+        #[arg(
+            required_unless_present_any = ["all", "scheduled"],
+            help = "Configured route name"
+        )]
+        name: Option<String>,
+        #[arg(
+            long,
+            conflicts_with_all = ["name", "scheduled"],
+            help = "Run every enabled route"
+        )]
+        all: bool,
+        #[arg(
+            long,
+            conflicts_with_all = ["name", "all"],
+            help = "Run enabled routes whose configured interval is due"
+        )]
+        scheduled: bool,
+        #[arg(long, help = "Plan both sides without mutation")]
+        dry_run: bool,
+        #[arg(
+            long,
+            conflicts_with = "dry_run",
+            help = "Review conflicts in the terminal when route authority is `review`"
+        )]
+        interactive: bool,
+        #[arg(long, help = "Suppress auto-commit for pulled local changes")]
+        no_commit: bool,
+    },
+    #[command(about = "Show durable run, binding, and conflict status for one route")]
+    Status {
+        #[arg(help = "Configured route name")]
+        name: String,
+    },
+    #[command(about = "List durable local-note to Outline-document identities for a route")]
+    Bindings {
+        #[arg(help = "Configured route name")]
+        name: String,
+    },
+    #[command(about = "Adopt an existing local note as an existing Outline document")]
+    Bind {
+        #[arg(help = "Configured route name")]
+        name: String,
+        #[arg(help = "Immutable Outline document id")]
+        remote_document_id: String,
+        #[arg(help = "Existing Markdown path beneath the route local_root")]
+        local_path: String,
+        #[arg(long, help = "Validate and preview without recording identity state")]
+        dry_run: bool,
+    },
+    #[command(about = "Remove identity state without deleting either document")]
+    Unbind {
+        #[arg(help = "Configured route name")]
+        name: String,
+        #[arg(help = "Immutable Outline document id")]
+        remote_document_id: String,
+        #[arg(long, help = "Preview without changing identity state")]
+        dry_run: bool,
     },
 }
 
@@ -5171,6 +5252,11 @@ pub enum Command {
     Pull {
         #[command(subcommand)]
         command: PullCommand,
+    },
+    #[command(about = "Manage durable external-content routes")]
+    Integration {
+        #[command(subcommand)]
+        command: IntegrationCommand,
     },
     #[command(
         about = "Inspect and import effective Vulcan configuration",

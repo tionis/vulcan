@@ -263,12 +263,14 @@ Bindings are canonical only as authored relationship intent. Operational facts s
 
 Authority is explicit per route:
 
-- `local` treats unexpected remote edits as conflicts.
-- `remote` treats unexpected local edits as conflicts.
-- `review` preserves both and produces a reconciliation artifact.
-- A future true bidirectional mode requires a durable three-way base; it is never shorthand for last-writer-wins.
+- `local` permits the selected local projection to replace drift in managed remote objects.
+- `remote` permits the selected remote projection to replace local conflicts.
+- `review` preserves unresolved drift and produces an actionable reconciliation artifact.
+- Mirror composition requires a durable three-way base and explicit phase ordering; it is never shorthand for last-writer-wins.
 
 Pulls materialize content or proxy notes through normal atomic vault workflows and quarantine removals by default. Pushes update only managed or explicitly bound objects and archive rather than permanently delete by default. Every route supports deterministic planning, structured reports, bounded retries, interruption-safe progress, secret sanitization, and direct CLI execution; the daemon adds schedules, dependencies, cancellation, and event triggers over the same service contracts.
+
+The first implemented route specialization uses `[integrations.routes.<name>]` for Outline and reuses `[publish.outline.profiles.<name>]` for API connection, outgoing selection, and rendering policy. The route adds direction, authority, contained local root, immutable-ID remote subtree selectors, exact document ID/path overrides, move/archive policy, work limits, and interval hints. Direct `integration plan|run|status` operations compose the existing pull and publisher planners, preserve their separate durable mappings, lock concurrent route runs, and checkpoint running/completed/failed outcomes under `.vulcan/integrations/routes/`. Exact existing-note adoption is explicit and never inserts synchronization frontmatter. Generic connector profiles and authored portable binding projections remain Phase 15 work.
 
 ### 4.3 Delegable capability authorization
 
@@ -1081,7 +1083,7 @@ This is Vulcan's primary configuration file, stored in the `.vulcan/` directory 
 - Automatic cache refresh policy for cache-backed commands (`[scan]`)
 - Template default date/time formats for `{{date}}` / `{{time}}` (`[templates]`)
 - Current static permission profiles and, after Phase 17, the configured authorization-object namespace and portable capability/role templates. Phase 17 identities, groups, roots, issued grants, revocations, policies, public credential metadata, and durable audit records are canonical vault objects; only secret and ephemeral authentication material remains device-local.
-- Non-secret connector profiles and content-route topology/policy (`[integrations.profiles]` and `[[integrations.routes]]` once Phase 15 lands)
+- Implemented named Outline content-route topology/policy (`[integrations.routes.<name>]`) plus future connector-neutral profiles and route extensions
 
 Configuration sections and keys are named after native Vulcan capabilities, not the plugin that originally inspired them. For example, generated navigation, typed relationships, asset localization, and language checking receive capability-oriented sections even when a Waypoint, Wikilink Types, Local Images Plus, or LanguageTool importer seeds them. Importers translate reviewed source settings explicitly, report ignored or lossy mappings, and never make the source plugin configuration a second runtime authority.
 

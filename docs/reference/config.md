@@ -1025,6 +1025,183 @@ Explicit folder-note placement and filename convention used across Vulcan.
   Preferred command: `vulcan refactor folder-notes`
   Example: `vulcan config set folder_notes.placement <value>`
 
+### Integration Routes
+
+Named external-content topology, authority, conflict, limit, and scheduling policy.
+
+- `integrations.routes.<name>` — type: `object`; target: `shared`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.apply_remote_moves` — type: `boolean`; target: `shared`; default: `false`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.authority` — type: `enum`; target: `shared`; default: `review`; values: `local`, `remote`, `review`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.connector` — type: `string`; target: `shared`; default: `outline`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.direction` — type: `enum`; target: `shared`; default: `mirror`; values: `pull`, `push`, `mirror`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.document_bindings` — type: `object`; target: `shared`; default: `{0 keys}`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.enabled` — type: `boolean`; target: `shared`; default: `true`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.excluded_documents` — type: `array`; target: `shared`; default: `[0 items]`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.local_root` — type: `string`; target: `shared`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.max_attachment_bytes` — type: `integer`; target: `shared`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.max_attachments` — type: `integer`; target: `shared`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.max_content_bytes` — type: `integer`; target: `shared`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.max_depth` — type: `integer`; target: `shared`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.max_documents` — type: `integer`; target: `shared`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.max_total_attachment_bytes` — type: `integer`; target: `shared`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.missing_archive` — type: `string`; target: `shared`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.missing_policy` — type: `enum`; target: `shared`; default: `retain`; values: `retain`, `archive`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.profile` — type: `string`; target: `shared`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.remote_roots` — type: `array`; target: `shared`; default: `[0 items]`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.schedule` — type: `string`; target: `shared`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.stale_attachment_archive` — type: `string`; target: `shared`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.<name>.stale_attachment_policy` — type: `enum`; target: `shared`; default: `retain`; values: `retain`, `archive`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players '{ profile = "wiki", direction = "mirror", authority = "review", local_root = "Players/Wiki" }'`
+- `integrations.routes.players.apply_remote_moves` — type: `boolean`; target: `shared|local`; default: `true`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.apply_remote_moves <value>`
+- `integrations.routes.players.authority` — type: `enum`; target: `shared|local`; default: `review`; values: `local`, `remote`, `review`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.authority <value>`
+- `integrations.routes.players.connector` — type: `string`; target: `shared|local`; default: `outline`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.connector <value>`
+- `integrations.routes.players.direction` — type: `enum`; target: `shared|local`; default: `mirror`; values: `pull`, `push`, `mirror`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.direction <value>`
+- `integrations.routes.players.document_bindings` — type: `object`; target: `shared|local`; default: `{1 key}`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.document_bindings <value>`
+- `integrations.routes.players.enabled` — type: `boolean`; target: `shared|local`; default: `true`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.enabled <value>`
+- `integrations.routes.players.excluded_documents` — type: `array`; target: `shared|local`; default: `[0 items]`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.excluded_documents <value>`
+- `integrations.routes.players.local_root` — type: `string`; target: `shared|local`; default: `Players/Campaign`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.local_root <value>`
+- `integrations.routes.players.max_attachment_bytes` — type: `integer`; target: `shared|local`; default: `26214400`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.max_attachment_bytes <value>`
+- `integrations.routes.players.max_attachments` — type: `integer`; target: `shared|local`; default: `10000`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.max_attachments <value>`
+- `integrations.routes.players.max_content_bytes` — type: `integer`; target: `shared|local`; default: `268435456`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.max_content_bytes <value>`
+- `integrations.routes.players.max_depth` — type: `integer`; target: `shared|local`; default: `3`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.max_depth <value>`
+- `integrations.routes.players.max_documents` — type: `integer`; target: `shared|local`; default: `10000`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.max_documents <value>`
+- `integrations.routes.players.max_total_attachment_bytes` — type: `integer`; target: `shared|local`; default: `1073741824`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.max_total_attachment_bytes <value>`
+- `integrations.routes.players.missing_archive` — type: `string`; target: `shared|local`; default: `Archive/Outline`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.missing_archive <value>`
+- `integrations.routes.players.missing_policy` — type: `enum`; target: `shared|local`; default: `archive`; values: `retain`, `archive`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.missing_policy <value>`
+- `integrations.routes.players.profile` — type: `string`; target: `shared|local`; default: `wiki`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.profile <value>`
+- `integrations.routes.players.remote_roots` — type: `array`; target: `shared|local`; default: `[1 item]`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.remote_roots <value>`
+- `integrations.routes.players.schedule` — type: `enum`; target: `shared|local`; default: `every 15m`; values: `@hourly`, `@daily`, `@weekly`, `every Nm/Nh/Nd`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.schedule <value>`
+- `integrations.routes.players.stale_attachment_archive` — type: `string`; target: `shared|local`; default: `Archive/Outline Assets`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.stale_attachment_archive <value>`
+- `integrations.routes.players.stale_attachment_policy` — type: `enum`; target: `shared|local`; default: `retain`; values: `retain`, `archive`
+  Named external-content route topology, authority, conflict policy, bounds, and schedule interval.
+  Preferred command: `vulcan config set`
+  Example: `vulcan config set integrations.routes.players.stale_attachment_policy <value>`
+
 ### Publishing
 
 One-way remote publication profiles and reconciliation settings.

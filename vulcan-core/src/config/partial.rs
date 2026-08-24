@@ -24,6 +24,7 @@ pub(super) struct PartialVulcanConfig {
     pub(super) periodic: Option<PartialPeriodicConfig>,
     pub(super) export: Option<PartialExportConfig>,
     pub(super) publish: Option<PartialPublishConfig>,
+    pub(super) integrations: Option<PartialIntegrationsConfig>,
     pub(super) site: Option<PartialSiteConfig>,
     pub(super) permissions: Option<PartialPermissionsConfig>,
     pub(super) plugins: Option<BTreeMap<String, PartialPluginRegistration>>,
@@ -90,6 +91,11 @@ pub(super) struct PartialPublishConfig {
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct PartialOutlinePublishConfig {
     pub(super) profiles: Option<BTreeMap<String, OutlinePublishProfileConfig>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct PartialIntegrationsConfig {
+    pub(super) routes: Option<BTreeMap<String, IntegrationRouteConfig>>,
 }
 
 #[derive(Debug, Deserialize, Default)]
