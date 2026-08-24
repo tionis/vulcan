@@ -34,10 +34,18 @@ pub fn publish_outline(
     collection_id: &str,
     publication: &OutlinePublicationPlan,
     dry_run: bool,
+    overwrite_conflicts: bool,
 ) -> Result<OutlinePublishReport, AppError> {
     if dry_run {
         let state = load_outline_state(paths, profile, collection_id)?;
-        let plan = plan_outline_reconciliation(api, profile, collection_id, publication, &state)?;
+        let plan = plan_outline_reconciliation(
+            api,
+            profile,
+            collection_id,
+            publication,
+            &state,
+            overwrite_conflicts,
+        )?;
         return Ok(report(
             plan,
             publication.diagnostics.clone(),
@@ -49,7 +57,14 @@ pub fn publish_outline(
 
     let lock = lock_outline_state(paths, profile)?;
     let mut state = load_outline_state(paths, profile, collection_id)?;
-    let mut plan = plan_outline_reconciliation(api, profile, collection_id, publication, &state)?;
+    let mut plan = plan_outline_reconciliation(
+        api,
+        profile,
+        collection_id,
+        publication,
+        &state,
+        overwrite_conflicts,
+    )?;
     plan.dry_run = false;
     if plan.has_conflicts() {
         return Ok(report(
@@ -88,7 +103,7 @@ pub fn publish_outline(
                 .remote_document_id
                 .clone()
                 .unwrap_or_else(|| deterministic_remote_uuid(&source_identity));
-            state
+            let mapping = state
                 .documents
                 .entry(source_identity.clone())
                 .or_insert_with(|| OutlineDocumentMapping {
@@ -102,6 +117,12 @@ pub fn publish_outline(
                     pending_archive: false,
                     attachments: BTreeMap::new(),
                 });
+            mapping.source_path.clone_from(&document.source_path);
+            mapping
+                .source_document_id
+                .clone_from(&document.source_document_id);
+            mapping.remote_document_id.clone_from(&requested_remote_id);
+            mapping.pending_create = true;
             lock.save(&state)?;
             let remote = api.create_document(
                 &requested_remote_id,
@@ -237,15 +258,27 @@ pub fn publish_outline(
             &publication.attachments,
             &remote_urls,
         );
-        let remote = api.document_info(&remote_id)?;
-        if remote.text != desired || remote.title != document.title {
+        let action_kind = plan
+            .actions
+            .iter()
+            .find(|action| action.source_path.as_deref() == Some(document.source_path.as_str()))
+            .map(|action| action.kind)
+            .ok_or_else(|| AppError::operation("Outline plan omitted a local document"))?;
+        let desired_hash = content_hash(&desired);
+        let needs_update = matches!(
+            action_kind,
+            OutlinePublishActionKind::Update | OutlinePublishActionKind::UpdateAndMove
+        ) || (action_kind != OutlinePublishActionKind::AdoptRemoteResult
+            && (desired_hash != mapping.last_published_content_hash
+                || document.title != mapping.last_published_title));
+        if needs_update {
             api.update_document(&remote_id, &document.title, &desired)?;
         }
         let mapping = state
             .documents
             .get_mut(&source_identity)
             .expect("document mapping should exist");
-        mapping.last_published_content_hash = content_hash(&desired);
+        mapping.last_published_content_hash = desired_hash;
         mapping.last_published_title.clone_from(&document.title);
         mapping.pending_create = false;
         mapping.pending_archive = false;
@@ -288,6 +321,28 @@ pub fn publish_outline(
             }
         }
         state.documents.remove(&source_identity);
+        lock.save(&state)?;
+    }
+
+    let selected_paths = publication
+        .documents
+        .iter()
+        .map(|document| document.source_path.as_str())
+        .collect::<BTreeSet<_>>();
+    let adopted_removals = plan
+        .actions
+        .iter()
+        .filter(|action| action.kind == OutlinePublishActionKind::AdoptRemoteResult)
+        .filter(|action| {
+            action
+                .source_path
+                .as_deref()
+                .is_some_and(|path| !selected_paths.contains(path))
+        })
+        .filter_map(|action| action.source_identity.as_deref())
+        .collect::<Vec<_>>();
+    for source_identity in adopted_removals {
+        state.documents.remove(source_identity);
         lock.save(&state)?;
     }
 
@@ -371,6 +426,7 @@ mod tests {
     struct MockApi {
         documents: RefCell<BTreeMap<String, OutlineRemoteDocument>>,
         mutations: RefCell<Vec<String>>,
+        info_calls: RefCell<Vec<String>>,
         fail_next_create: RefCell<bool>,
     }
 
@@ -383,6 +439,7 @@ mod tests {
         }
 
         fn document_info(&self, id: &str) -> Result<OutlineRemoteDocument, AppError> {
+            self.info_calls.borrow_mut().push(id.to_string());
             self.documents
                 .borrow()
                 .get(id)
@@ -517,7 +574,7 @@ mod tests {
                 Some("Projects.md"),
             ),
         ]);
-        let first = publish_outline(&paths, &api, "wiki", "collection", &initial, false)
+        let first = publish_outline(&paths, &api, "wiki", "collection", &initial, false, false)
             .expect("initial publication");
         assert!(first.applied);
         assert_eq!(
@@ -526,15 +583,16 @@ mod tests {
         );
 
         api.mutations.borrow_mut().clear();
-        publish_outline(&paths, &api, "wiki", "collection", &initial, false)
+        publish_outline(&paths, &api, "wiki", "collection", &initial, false, false)
             .expect("idempotent publication");
         assert!(api.mutations.borrow().is_empty());
+        assert!(api.info_calls.borrow().is_empty());
 
         let mut moved = document("Moved.md", "Moved", "child changed", None);
         moved.source_document_id = "cache-Projects/Child.md".to_string();
         let changed = plan(vec![moved]);
         api.mutations.borrow_mut().clear();
-        publish_outline(&paths, &api, "wiki", "collection", &changed, false)
+        publish_outline(&paths, &api, "wiki", "collection", &changed, false, false)
             .expect("changed publication");
         let mutations = api.mutations.borrow();
         assert!(mutations.iter().any(|entry| entry.starts_with("move:")));
@@ -566,8 +624,16 @@ mod tests {
             message: "generated an export-only placeholder".to_string(),
         });
 
-        let report = publish_outline(&paths, &api, "wiki", "collection", &publication, true)
-            .expect("dry-run publication");
+        let report = publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            true,
+            false,
+        )
+        .expect("dry-run publication");
 
         assert_eq!(report.diagnostics, publication.diagnostics);
         assert!(report.diagnostics[0].is_warning());
@@ -583,8 +649,16 @@ mod tests {
             document("Child.md", "Child", "# Details", None),
         ]);
 
-        publish_outline(&paths, &api, "wiki", "collection", &publication, false)
-            .expect("linked publication");
+        publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            false,
+            false,
+        )
+        .expect("linked publication");
 
         let documents = api.documents.borrow();
         let home = documents
@@ -617,8 +691,16 @@ mod tests {
             content_hash: blake3::hash(b"png").to_hex().to_string(),
             size: 3,
         });
-        publish_outline(&paths, &api, "wiki", "collection", &publication, false)
-            .expect("attachment publication");
+        publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            false,
+            false,
+        )
+        .expect("attachment publication");
         assert!(api
             .mutations
             .borrow()
@@ -636,8 +718,16 @@ mod tests {
             .contains("https://outline.test/api/attachments.redirect"));
 
         api.mutations.borrow_mut().clear();
-        publish_outline(&paths, &api, "wiki", "collection", &publication, false)
-            .expect("idempotent attachment publication");
+        publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            false,
+            false,
+        )
+        .expect("idempotent attachment publication");
         assert!(api.mutations.borrow().is_empty());
     }
 
@@ -647,14 +737,30 @@ mod tests {
         let paths = VaultPaths::new(temp.path());
         let api = MockApi::default();
         let publication = plan(vec![document("Home.md", "Home", "home", None)]);
-        let dry_run = publish_outline(&paths, &api, "wiki", "collection", &publication, true)
-            .expect("dry run");
+        let dry_run = publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            true,
+            false,
+        )
+        .expect("dry run");
         assert!(dry_run.dry_run);
         assert!(api.mutations.borrow().is_empty());
         assert!(!paths.vulcan_dir().join("publish").exists());
 
-        publish_outline(&paths, &api, "wiki", "collection", &publication, false)
-            .expect("initial publication");
+        publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            false,
+            false,
+        )
+        .expect("initial publication");
         let remote_id = api
             .documents
             .borrow()
@@ -668,11 +774,54 @@ mod tests {
             .expect("remote")
             .text = "remote edit".to_string();
         api.mutations.borrow_mut().clear();
-        let conflict = publish_outline(&paths, &api, "wiki", "collection", &publication, false)
-            .expect("conflict report");
+        let conflict = publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            false,
+            false,
+        )
+        .expect("conflict report");
         assert_eq!(conflict.conflicts, 1);
         assert!(!conflict.applied);
         assert!(api.mutations.borrow().is_empty());
+    }
+
+    #[test]
+    fn overwrite_conflicts_replaces_remote_drift_and_refreshes_state() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        let api = MockApi::default();
+        let initial = plan(vec![document("Home.md", "Home", "local", None)]);
+        publish_outline(&paths, &api, "wiki", "collection", &initial, false, false)
+            .expect("initial publication");
+        let remote_id = api
+            .documents
+            .borrow()
+            .keys()
+            .next()
+            .cloned()
+            .expect("remote id");
+        api.documents
+            .borrow_mut()
+            .get_mut(&remote_id)
+            .expect("remote")
+            .text = "remote drift".to_string();
+        api.mutations.borrow_mut().clear();
+
+        let report = publish_outline(&paths, &api, "wiki", "collection", &initial, false, true)
+            .expect("overwrite publication");
+
+        assert!(report.applied);
+        assert_eq!(report.conflicts, 0);
+        assert_eq!(report.plan.overwritten_conflicts, 1);
+        assert_eq!(api.mutations.borrow().as_slice(), ["update:Home"]);
+        assert_eq!(
+            api.documents.borrow().get(&remote_id).expect("remote").text,
+            "local"
+        );
     }
 
     #[test]
@@ -682,7 +831,16 @@ mod tests {
         let api = MockApi::default();
         api.fail_next_create.replace(true);
         let publication = plan(vec![document("Home.md", "Home", "home", None)]);
-        assert!(publish_outline(&paths, &api, "wiki", "collection", &publication, false).is_err());
+        assert!(publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            false,
+            false,
+        )
+        .is_err());
         let pending = load_outline_state(&paths, "wiki", "collection").expect("pending state");
         let requested_id = pending
             .documents
@@ -696,8 +854,16 @@ mod tests {
             .values()
             .all(|mapping| mapping.pending_create));
 
-        publish_outline(&paths, &api, "wiki", "collection", &publication, false)
-            .expect("resumed create");
+        publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            false,
+            false,
+        )
+        .expect("resumed create");
         assert!(api.documents.borrow().contains_key(&requested_id));
         let completed = load_outline_state(&paths, "wiki", "collection").expect("completed state");
         assert!(completed

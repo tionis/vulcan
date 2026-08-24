@@ -1332,7 +1332,11 @@ fn run_publish_command(
     command: &PublishCommand,
     read_filter: Option<&PermissionFilter>,
 ) -> Result<(), CliError> {
-    let PublishCommand::Outline { profile, dry_run } = command;
+    let PublishCommand::Outline {
+        profile,
+        dry_run,
+        overwrite_conflicts,
+    } = command;
     let loaded = load_vault_config(paths);
     let profile_config = loaded
         .config
@@ -1408,9 +1412,18 @@ fn run_publish_command(
         &collection_id,
         &publication,
         *dry_run,
+        *overwrite_conflicts,
     )
     .map_err(CliError::operation)?;
-    match cli.output {
+    print_outline_publish_report(cli.output, &report)
+}
+
+#[cfg(feature = "web")]
+fn print_outline_publish_report(
+    output: OutputFormat,
+    report: &vulcan_app::publish::outline::OutlinePublishReport,
+) -> Result<(), CliError> {
+    match output {
         OutputFormat::Json => print_json(&report)?,
         OutputFormat::Human | OutputFormat::Markdown => {
             print_outline_diagnostics(&report.diagnostics);

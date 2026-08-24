@@ -1,6 +1,7 @@
 use super::{OutlineApi, OutlineRemoteAttachment, OutlineRemoteDocument};
 use crate::AppError;
 use reqwest::blocking::{Client, RequestBuilder};
+use reqwest::header::RETRY_AFTER;
 use reqwest::{StatusCode, Url};
 use serde::de::DeserializeOwned;
 use serde::Deserialize;
@@ -86,9 +87,11 @@ impl HttpOutlineClient {
                 .json(body);
             match Self::send::<R>(request) {
                 Ok(value) => return Ok(value),
-                Err(RequestFailure::Retryable(message)) if attempt < self.max_retries => {
-                    let delay = 100_u64.saturating_mul(1_u64 << attempt.min(4));
-                    thread::sleep(Duration::from_millis(delay));
+                Err(RequestFailure::Retryable {
+                    message,
+                    retry_after,
+                }) if attempt < self.max_retries => {
+                    thread::sleep(retry_after.unwrap_or_else(|| exponential_backoff(attempt)));
                     if message.is_empty() {
                         return Err(AppError::operation("Outline request failed"));
                     }
@@ -102,21 +105,26 @@ impl HttpOutlineClient {
     fn send<R: DeserializeOwned>(request: RequestBuilder) -> Result<R, RequestFailure> {
         let response = request.send().map_err(|error| {
             if error.is_timeout() || error.is_connect() {
-                RequestFailure::Retryable(
-                    "Outline request timed out or could not connect".to_string(),
-                )
+                RequestFailure::Retryable {
+                    message: "Outline request timed out or could not connect".to_string(),
+                    retry_after: None,
+                }
             } else {
                 RequestFailure::Fatal("Outline request failed".to_string())
             }
         })?;
         let status = response.status();
+        let retry_after = retry_after_delay(response.headers());
         let bytes = response
             .bytes()
             .map_err(|_| RequestFailure::Fatal("failed to read Outline response".to_string()))?;
         if !status.is_success() {
             let message = sanitized_api_error(status, &bytes);
             return if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
-                Err(RequestFailure::Retryable(message))
+                Err(RequestFailure::Retryable {
+                    message,
+                    retry_after,
+                })
             } else {
                 Err(RequestFailure::Fatal(message))
             };
@@ -278,7 +286,14 @@ impl HttpOutlineClient {
                 Ok(response)
                     if attempt < self.max_retries
                         && (response.status() == StatusCode::TOO_MANY_REQUESTS
-                            || response.status().is_server_error()) => {}
+                            || response.status().is_server_error()) =>
+                {
+                    thread::sleep(
+                        retry_after_delay(response.headers())
+                            .unwrap_or_else(|| exponential_backoff(attempt)),
+                    );
+                    continue;
+                }
                 Ok(response) => {
                     return Err(AppError::operation(format!(
                         "Outline attachment upload returned {}",
@@ -290,8 +305,7 @@ impl HttpOutlineClient {
                 }
                 Err(_) => return Err(AppError::operation("Outline attachment upload failed")),
             }
-            let delay = 100_u64.saturating_mul(1_u64 << attempt.min(4));
-            thread::sleep(Duration::from_millis(delay));
+            thread::sleep(exponential_backoff(attempt));
         }
         Err(AppError::operation(
             "Outline attachment upload exhausted retries",
@@ -333,16 +347,37 @@ struct AttachmentData {
 }
 
 enum RequestFailure {
-    Retryable(String),
+    Retryable {
+        message: String,
+        retry_after: Option<Duration>,
+    },
     Fatal(String),
 }
 
 impl RequestFailure {
     fn message(self) -> String {
         match self {
-            Self::Retryable(message) | Self::Fatal(message) => message,
+            Self::Retryable { message, .. } | Self::Fatal(message) => message,
         }
     }
+}
+
+fn exponential_backoff(attempt: u32) -> Duration {
+    Duration::from_millis(100_u64.saturating_mul(1_u64 << attempt.min(4)))
+}
+
+fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let seconds = headers
+        .get(RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<f64>()
+        .ok()?;
+    if !seconds.is_finite() || seconds < 0.0 {
+        return None;
+    }
+    Duration::try_from_secs_f64(seconds).ok()
 }
 
 fn sanitized_api_error(status: StatusCode, bytes: &[u8]) -> String {
@@ -374,12 +409,23 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     fn mock_server(responses: Vec<(u16, &'static str)>) -> (String, Arc<Mutex<Vec<String>>>) {
+        mock_server_with_headers(
+            responses
+                .into_iter()
+                .map(|(status, body)| (status, body, ""))
+                .collect(),
+        )
+    }
+
+    fn mock_server_with_headers(
+        responses: Vec<(u16, &'static str, &'static str)>,
+    ) -> (String, Arc<Mutex<Vec<String>>>) {
         let listener = TcpListener::bind("127.0.0.1:0").expect("mock listener");
         let address = listener.local_addr().expect("listener address");
         let requests = Arc::new(Mutex::new(Vec::new()));
         let captured = Arc::clone(&requests);
         std::thread::spawn(move || {
-            for (status, body) in responses {
+            for (status, body, headers) in responses {
                 let (mut stream, _) = listener.accept().expect("mock request");
                 let mut buffer = vec![0_u8; 16 * 1024];
                 let read = stream.read(&mut buffer).expect("read mock request");
@@ -389,7 +435,7 @@ mod tests {
                     .push(String::from_utf8_lossy(&buffer[..read]).to_string());
                 let reason = if status == 200 { "OK" } else { "Error" };
                 let response = format!(
-                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\n{headers}Content-Length: {}\r\nConnection: close\r\n\r\n{body}",
                     body.len()
                 );
                 stream
@@ -451,6 +497,39 @@ mod tests {
             .expect_err("authentication failure");
         assert!(error.to_string().contains("401"));
         assert!(!error.to_string().contains("top-secret"));
+    }
+
+    #[test]
+    fn rate_limits_honor_retry_after_before_retrying() {
+        let document = r#"{"data":{"id":"one","title":"One","text":"ok","collectionId":"c","parentDocumentId":null}}"#;
+        let (url, requests) = mock_server_with_headers(vec![
+            (
+                429,
+                r#"{"message":"rate limit exceeded"}"#,
+                "Retry-After: 0.001\r\n",
+            ),
+            (200, document, ""),
+        ]);
+        let client =
+            HttpOutlineClient::new(&url, "secret".to_string(), Duration::from_secs(2), 1, 100)
+                .expect("client");
+
+        assert_eq!(client.document_info("one").expect("retried info").id, "one");
+        assert_eq!(requests.lock().expect("request lock").len(), 2);
+    }
+
+    #[test]
+    fn retry_after_accepts_outline_fractional_seconds_and_rejects_invalid_values() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(RETRY_AFTER, "59.693".parse().expect("header"));
+        assert_eq!(
+            retry_after_delay(&headers),
+            Some(Duration::from_millis(59_693))
+        );
+        headers.insert(RETRY_AFTER, "not-a-delay".parse().expect("header"));
+        assert_eq!(retry_after_delay(&headers), None);
+        headers.insert(RETRY_AFTER, "1e300".parse().expect("header"));
+        assert_eq!(retry_after_delay(&headers), None);
     }
 
     #[test]

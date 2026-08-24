@@ -5699,6 +5699,20 @@
                 "value_names": [
                   "DRY_RUN"
                 ]
+              },
+              {
+                "help": "Replace conflicting managed remote content with the canonical local result",
+                "id": "overwrite_conflicts",
+                "long": "overwrite-conflicts",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "OVERWRITE_CONFLICTS"
+                ]
               }
             ],
             "subcommands": []

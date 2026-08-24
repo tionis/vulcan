@@ -10418,6 +10418,8 @@ fn skill_list_and_get_surface_bundled_skills() {
     let publishing = fs::read_to_string(installed_skills.join("publishing-and-export/SKILL.md"))
         .expect("publishing skill should be installed");
     assert!(publishing.contains("vulcan publish outline <profile> --dry-run"));
+    assert!(publishing.contains("--overwrite-conflicts"));
+    assert!(publishing.contains("overwritten_conflicts"));
     assert!(publishing.contains("--selection-json"));
     assert!(publishing.contains(".vulcan/publish/outline/"));
 

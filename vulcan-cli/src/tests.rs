@@ -1036,6 +1036,29 @@ fn parses_outline_publish_dry_run_command() {
             command: PublishCommand::Outline {
                 profile: "wiki".to_string(),
                 dry_run: true,
+                overwrite_conflicts: false,
+            },
+        }
+    );
+}
+
+#[test]
+fn parses_outline_publish_overwrite_conflicts_command() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "publish",
+        "outline",
+        "wiki",
+        "--overwrite-conflicts",
+    ])
+    .expect("Outline overwrite command should parse");
+    assert_eq!(
+        cli.command,
+        Command::Publish {
+            command: PublishCommand::Outline {
+                profile: "wiki".to_string(),
+                dry_run: false,
+                overwrite_conflicts: true,
             },
         }
     );

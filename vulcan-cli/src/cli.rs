@@ -2381,6 +2381,11 @@ pub enum PublishCommand {
             help = "Plan remote changes without mutating Outline or mapping state"
         )]
         dry_run: bool,
+        #[arg(
+            long,
+            help = "Replace conflicting managed remote content with the canonical local result"
+        )]
+        overwrite_conflicts: bool,
     },
 }
 

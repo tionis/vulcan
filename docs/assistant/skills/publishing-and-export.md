@@ -33,14 +33,14 @@ static output target or a configured one-way Outline publication.
 - Omitting a query exports the full vault. Use a query for one selection rule or `--selection-json` for an additive plan that unions query clauses and bounded or recursive graph traversals. Review global exclusions and permission boundaries because they also stop graph traversal.
 - Use `vulcan export outline-zip ... --dry-run` to inspect the complete Outline-compatible hierarchy and diagnostics before writing an archive.
 - For API publication, inspect the configured profile and run `vulcan publish outline <profile> --dry-run` first. A dry run performs remote reads but does not mutate Outline or create mapping state.
-- Review remote-drift conflicts, generated folder-placeholder warnings, excluded-target and block-reference policies, attachment changes, and custom-transform diagnostics before a live publication.
+- Review remote-drift conflicts, generated folder-placeholder warnings, excluded-target and block-reference policies, attachment changes, and custom-transform diagnostics before a live publication. If the vault should deliberately replace managed remote drift, preview and then repeat with `--overwrite-conflicts`; check `overwritten_conflicts` in JSON output.
 - After a successful or interrupted live publication, rerun the same profile rather than editing reconciliation state. Durable mappings allow Vulcan to adopt completed work and continue safely.
 - Inspect link policy, route collisions, asset policy, publish filters, and hidden-content transforms before changing output.
 
 ## Guardrails
 
 - Exports and sites should be reproducible from vault source plus config.
-- Outline publication is one-way: the local vault remains canonical. Do not treat remote edits as input or silently replace them when reconciliation reports a conflict.
+- Outline publication is one-way: the local vault remains canonical. Do not treat remote edits as input. Remote drift fails closed unless the user explicitly authorizes `--overwrite-conflicts` after reviewing a dry run; the flag does not affect unmanaged documents.
 - Outline mappings under `.vulcan/publish/outline/` are durable state, not rebuildable cache. Do not delete or hand-edit them as a routine repair step.
 - Custom link transforms require an explicitly configured `custom` policy and a trusted vault-local script. Keep the transform deterministic and free of I/O.
 - Generated folder placeholders exist only in the output or remote collection. Add a configured folder note when authored landing-page content is required.
@@ -53,5 +53,5 @@ static output target or a configured one-way Outline publication.
 - Build a public static site profile and diagnose unpublished links.
 - Export a selected set of notes to EPUB while excluding private callouts.
 - Build a selection plan from several graph seeds, preview its provenance, and reuse it in an export or publication profile.
-- Dry-run an Outline publication, resolve remote drift or unsupported-link diagnostics, then apply the same profile.
+- Dry-run an Outline publication, resolve remote drift or explicitly authorize `--overwrite-conflicts`, then apply the same profile.
 - Render one note to HTML to inspect markdown/parser behavior.

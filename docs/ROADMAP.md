@@ -6401,6 +6401,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add an explicit strict/plain-text policy for links outside query-selected partial Outline exports, with export-only rewrites, located structured diagnostics, and aggregated human output.
 - [x] Add an `annotated-text` fallback for unsupported block references and excluded targets that preserves the visible label, authored destination, and embed intent without publishing broken links.
 - [x] Add a trusted, pure, resource-bounded `transform_link(link)` callback shared by Outline ZIP and API publishing, with typed context/output, deterministic guards, located failures, and script path/hash provenance while keeping general audience filters declarative.
+- [x] Add explicit `--overwrite-conflicts` reconciliation, honor Outline `Retry-After` rate-limit delays, and eliminate redundant per-document fetches and unchanged update calls.
 
 **Current boundary and future placement:** The implemented `publish outline` command remains strictly one-way. Phase 15 now plans a separate, explicitly scoped Outline pull route with its own local destination, authority, pagination, attachment, deletion, and conflict policies. Do not evolve this publisher into implicit bidirectional synchronization or use the separate Outline-to-Git backup/audit trail as publisher input.
 

@@ -38,6 +38,7 @@ pub struct OutlinePublishPlan {
     pub collection_id: String,
     pub dry_run: bool,
     pub unmanaged_remote_documents: usize,
+    pub overwritten_conflicts: usize,
     pub actions: Vec<OutlinePublishAction>,
 }
 
@@ -57,6 +58,7 @@ pub fn plan_outline_reconciliation(
     collection_id: &str,
     publication: &OutlinePublicationPlan,
     state: &OutlinePublishState,
+    overwrite_conflicts: bool,
 ) -> Result<OutlinePublishPlan, AppError> {
     state.validate(profile, collection_id)?;
     if !publication.is_valid() {
@@ -102,6 +104,7 @@ pub fn plan_outline_reconciliation(
         .collect::<BTreeMap<_, _>>();
     let mut matched_identities = BTreeSet::new();
     let mut actions = Vec::new();
+    let mut overwritten_conflicts = 0;
     for document in &publication.documents {
         let mapped_identity = document_matches.get(&document.source_path).copied();
         let desired_parent_remote_id = document
@@ -124,7 +127,8 @@ pub fn plan_outline_reconciliation(
         matched_identities.insert(source_identity.to_string());
         let mapping = &state.documents[source_identity];
         if !listed_by_id.contains_key(mapping.remote_document_id.as_str()) {
-            if mapping.pending_create {
+            if mapping.pending_create || overwrite_conflicts {
+                overwritten_conflicts += usize::from(!mapping.pending_create);
                 actions.push(OutlinePublishAction {
                     kind: OutlinePublishActionKind::Create,
                     source_identity: Some(source_identity.to_string()),
@@ -132,7 +136,12 @@ pub fn plan_outline_reconciliation(
                     remote_document_id: Some(mapping.remote_document_id.clone()),
                     parent_source_path: document.parent_source_path.clone(),
                     desired_parent_remote_id,
-                    reason: "resume a provisionally mapped document create".to_string(),
+                    reason: if mapping.pending_create {
+                        "resume a provisionally mapped document create"
+                    } else {
+                        "recreate a managed remote document missing from the collection"
+                    }
+                    .to_string(),
                 });
             } else {
                 actions.push(conflict_action(
@@ -143,7 +152,7 @@ pub fn plan_outline_reconciliation(
             }
             continue;
         }
-        let remote = api.document_info(&mapping.remote_document_id)?;
+        let remote = listed_by_id[mapping.remote_document_id.as_str()];
         let desired_content = render_remote_document_content_with_links(
             document,
             &publication.documents,
@@ -160,11 +169,32 @@ pub fn plan_outline_reconciliation(
             && remote.title == document.title
             && remote.parent_document_id == desired_parent_remote_id;
         if remote_drift && !desired_matches_remote {
-            actions.push(conflict_action(
-                source_identity,
-                mapping,
-                "remote content, title, or parent changed since the last successful publication",
-            ));
+            if overwrite_conflicts {
+                overwritten_conflicts += 1;
+                let content_differs = remote_hash != desired_hash || remote.title != document.title;
+                let parent_differs = remote.parent_document_id != desired_parent_remote_id;
+                let kind = match (content_differs, parent_differs) {
+                    (true, true) => OutlinePublishActionKind::UpdateAndMove,
+                    (true, false) => OutlinePublishActionKind::Update,
+                    (false, true) => OutlinePublishActionKind::Move,
+                    (false, false) => OutlinePublishActionKind::AdoptRemoteResult,
+                };
+                actions.push(OutlinePublishAction {
+                    kind,
+                    source_identity: Some(source_identity.to_string()),
+                    source_path: Some(document.source_path.clone()),
+                    remote_document_id: Some(mapping.remote_document_id.clone()),
+                    parent_source_path: document.parent_source_path.clone(),
+                    desired_parent_remote_id,
+                    reason: "overwrite remote drift with the canonical local document".to_string(),
+                });
+            } else {
+                actions.push(conflict_action(
+                    source_identity,
+                    mapping,
+                    "remote content, title, or parent changed since the last successful publication",
+                ));
+            }
             continue;
         }
         let local_content_changed = desired_hash != mapping.last_published_content_hash
@@ -256,14 +286,29 @@ pub fn plan_outline_reconciliation(
             continue;
         }
         if !listed_by_id.contains_key(mapping.remote_document_id.as_str()) {
-            actions.push(conflict_action(
-                source_identity,
-                mapping,
-                "locally removed mapping points to a missing remote document",
-            ));
+            if overwrite_conflicts {
+                overwritten_conflicts += 1;
+                actions.push(OutlinePublishAction {
+                    kind: OutlinePublishActionKind::AdoptRemoteResult,
+                    source_identity: Some(source_identity.clone()),
+                    source_path: Some(mapping.source_path.clone()),
+                    remote_document_id: Some(mapping.remote_document_id.clone()),
+                    parent_source_path: None,
+                    desired_parent_remote_id: None,
+                    reason:
+                        "adopt the disappearance of a remotely missing, locally removed document"
+                            .to_string(),
+                });
+            } else {
+                actions.push(conflict_action(
+                    source_identity,
+                    mapping,
+                    "locally removed mapping points to a missing remote document",
+                ));
+            }
             continue;
         }
-        let remote = api.document_info(&mapping.remote_document_id)?;
+        let remote = listed_by_id[mapping.remote_document_id.as_str()];
         if remote.archived_at.is_some() {
             actions.push(OutlinePublishAction {
                 kind: OutlinePublishActionKind::AdoptRemoteResult,
@@ -278,11 +323,26 @@ pub fn plan_outline_reconciliation(
             || remote.title != mapping.last_published_title
             || remote.parent_document_id != mapping.remote_parent_id
         {
-            actions.push(conflict_action(
-                source_identity,
-                mapping,
-                "remote document changed after its local source was removed",
-            ));
+            if overwrite_conflicts {
+                overwritten_conflicts += 1;
+                actions.push(OutlinePublishAction {
+                    kind: OutlinePublishActionKind::Archive,
+                    source_identity: Some(source_identity.clone()),
+                    source_path: Some(mapping.source_path.clone()),
+                    remote_document_id: Some(mapping.remote_document_id.clone()),
+                    parent_source_path: None,
+                    desired_parent_remote_id: None,
+                    reason:
+                        "archive the remotely changed document removed from the local selection"
+                            .to_string(),
+                });
+            } else {
+                actions.push(conflict_action(
+                    source_identity,
+                    mapping,
+                    "remote document changed after its local source was removed",
+                ));
+            }
         } else {
             actions.push(OutlinePublishAction {
                 kind: OutlinePublishActionKind::Archive,
@@ -301,6 +361,7 @@ pub fn plan_outline_reconciliation(
         collection_id: collection_id.to_string(),
         dry_run: true,
         unmanaged_remote_documents,
+        overwritten_conflicts,
         actions,
     })
 }
@@ -499,8 +560,9 @@ mod tests {
             ("Projects.md", "parent", None),
             ("Projects/Child.md", "child", Some("Projects.md")),
         ]);
-        let plan = plan_outline_reconciliation(&api, "wiki", "collection", &publication, &state)
-            .expect("initial plan");
+        let plan =
+            plan_outline_reconciliation(&api, "wiki", "collection", &publication, &state, false)
+                .expect("initial plan");
         assert_eq!(
             plan.actions
                 .iter()
@@ -549,8 +611,9 @@ mod tests {
             ("Projects.md", "parent changed", None),
             ("Moved.md", "child", None),
         ]);
-        let plan = plan_outline_reconciliation(&api, "wiki", "collection", &publication, &state)
-            .expect("reconciliation plan");
+        let plan =
+            plan_outline_reconciliation(&api, "wiki", "collection", &publication, &state, false)
+                .expect("reconciliation plan");
         assert_eq!(plan.unmanaged_remote_documents, 1);
         assert_eq!(plan.actions[0].kind, OutlinePublishActionKind::Update);
         assert_eq!(
@@ -559,6 +622,7 @@ mod tests {
         );
         assert_eq!(plan.actions[1].source_path.as_deref(), Some("Moved.md"));
         assert_eq!(plan.actions[2].kind, OutlinePublishActionKind::Archive);
+        assert!(api.info_calls.borrow().is_empty());
     }
 
     #[test]
@@ -580,6 +644,7 @@ mod tests {
             "collection",
             &publication(&[("Home.md", "local edit", None)]),
             &state,
+            false,
         )
         .expect("conflict plan");
         assert!(plan.has_conflicts());
@@ -595,12 +660,50 @@ mod tests {
             "collection",
             &publication(&[("Home.md", "local edit", None)]),
             &state,
+            false,
         )
         .expect("interrupted plan");
         assert_eq!(
             plan.actions[0].kind,
             OutlinePublishActionKind::AdoptRemoteResult
         );
+    }
+
+    #[test]
+    fn overwrite_conflicts_plans_the_canonical_local_result() {
+        let original = remote("remote", "Home", "old", None);
+        let mut state = OutlinePublishState::empty("wiki", "collection");
+        state
+            .documents
+            .insert("source".to_string(), state_entry("Home.md", &original));
+        let drifted = remote(
+            "remote",
+            "Remote title",
+            "remote edit",
+            Some("remote-parent"),
+        );
+        let api = MockApi {
+            documents: BTreeMap::from([("remote".to_string(), drifted)]),
+            info_calls: RefCell::new(Vec::new()),
+        };
+
+        let plan = plan_outline_reconciliation(
+            &api,
+            "wiki",
+            "collection",
+            &publication(&[("Home.md", "local edit", None)]),
+            &state,
+            true,
+        )
+        .expect("overwrite plan");
+
+        assert_eq!(plan.overwritten_conflicts, 1);
+        assert_eq!(
+            plan.actions[0].kind,
+            OutlinePublishActionKind::UpdateAndMove
+        );
+        assert!(!plan.has_conflicts());
+        assert!(api.info_calls.borrow().is_empty());
     }
 
     #[test]
@@ -611,9 +714,15 @@ mod tests {
         let mut state = OutlinePublishState::empty("wiki", "collection");
         state.documents.insert("source".to_string(), mapping);
         let api = MockApi::default();
-        let plan =
-            plan_outline_reconciliation(&api, "wiki", "collection", &publication(&[]), &state)
-                .expect("resume archive plan");
+        let plan = plan_outline_reconciliation(
+            &api,
+            "wiki",
+            "collection",
+            &publication(&[]),
+            &state,
+            false,
+        )
+        .expect("resume archive plan");
         assert_eq!(plan.actions[0].kind, OutlinePublishActionKind::Archive);
         assert!(api.info_calls.borrow().is_empty());
     }
