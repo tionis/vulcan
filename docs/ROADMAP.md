@@ -3539,7 +3539,7 @@ Phase 17 introduces users, groups, explicit root grants, attenuable child grants
 - `note:<path>` — applies to a single note.
 - `*` (wildcard) — matches all resources (equivalent to `all`).
 
-The same specifier syntax is used in Phase 17 grants, ensuring consistency. Existing static profiles continue to accept `allow` and `deny` lists, with deny taking precedence. Phase 17 expresses ordinary user authority as positive, default-deny capabilities; non-delegable root policy ceilings may still narrow the resolved grant.
+The same specifier syntax is used in Phase 17 grants, ensuring consistency. Existing static profiles continue to accept `allow` and `deny` lists, with deny taking precedence. Phase 17 expresses ordinary user authority as positive, default-deny capabilities; non-delegable canonical policy ceilings may still narrow the resolved grant.
 
 ```toml
 [permissions.profiles.agent]
@@ -3611,7 +3611,7 @@ Core types in `vulcan-core`:
 - [x] **`PermissionGrant`** struct: all dimensions (read, write, refactor as `PathPermission`; git, network, index, config, execute, shell as capability flags; network domain allowlist; CPU/memory/stack limits). This is the **resolved** permission set — it has no concept of users or roles.
 - [x] **`PermissionGuard`** trait: `check_read(path) -> Result<()>`, `check_write(path) -> Result<()>`, `check_refactor(path) -> Result<()>`, `check_network(domain) -> Result<()>`, `check_git() -> Result<()>`, `check_shell() -> Result<()>`, `resource_limits() -> ResourceLimits`. Two implementations:
   - `ProfilePermissionGuard` (9.19.13): resolves from a static `PermissionGrant` loaded from config
-  - `CapabilityPermissionGuard` (Phase 17): resolves applicable rooted grants, delegation constraints, and root policy ceilings for an authenticated subject → `PermissionGrant`
+  - `CapabilityPermissionGuard` (Phase 17): resolves applicable rooted grants, delegation constraints, and canonical policy ceilings for an authenticated subject → `PermissionGrant`
 - [x] **`PermissionFilter`** struct: takes a `&dyn PermissionGuard`, generates a set of allowed/denied paths. Provides `fn sql_cte() -> String` for filtered queries and `fn is_allowed(path) -> bool` for single-path checks. Phase 17.3 reuses this identity-neutral filter; it does not need to know whether the guard is profile- or capability-derived.
 
 Integration:
@@ -5308,7 +5308,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [ ] Static SPA assets embedded in the binary at compile time (e.g., `rust-embed` or `include_dir`)
 - [ ] Alternatively: separate frontend repo that builds to static files, daemon serves them
 - [ ] Framework choice: lightweight (Svelte, Solid, or vanilla + htmx) — TBD at implementation time
-- [ ] Auth: multi-user login page (username/password or limited API credential), browser sessions via secure cookie or bearer token. Uses Phase 17 identity and capability resolution. All API calls and rendered views respect the caller's resolved grants and root policy ceilings.
+- [ ] Auth: multi-user login page (username/password or limited API credential), browser sessions via secure cookie or bearer token. Uses Phase 17 identity and capability resolution. All API calls and rendered views respect the caller's resolved grants and canonical policy ceilings.
 
 ### 13.2 Admin panel
 
@@ -5569,93 +5569,111 @@ Automerge compiles to `wasm32`, enabling browser-side editing without a live ser
 
 ## Phase 17: Identity & Delegable Capability Authorization
 
-**Goal:** Add multi-user identity and a capability-first authorization system for humans, groups, agents, automation, services, and external shares. Root configuration grants initial authority; holders may delegate strict subsets of delegable authority. Document-level secrets and limited bearer credentials build on the same model so every web-facing and automated workflow shares one authorization boundary.
+**Goal:** Add multi-user identity and a capability-first authorization system for humans, groups, agents, automation, services, and external shares. A trusted local bootstrap creates the first canonical root grant; holders may then delegate strict subsets of delegable authority through typed wiki objects. Document-level secrets and limited bearer credentials build on the same model so every web-facing and automated workflow shares one authorization boundary.
 
 **Depends on:** Phase 10 (daemon). Sub-phases 17.1–17.3 must be complete before Phase 13 ships. Sub-phases 17.4–17.5 are needed by Phase 16.
 
 **Design principles:**
 
-- **Authority is not a cache.** Identities, memberships, rooted grants, delegation lineage, revocations, sessions, credentials, and audit events are authoritative state and never live in rebuildable vault cache tables.
+- **The wiki is canonical.** Typed wiki objects hold identities, memberships, rooted grants, delegation lineage, revocations, policy ceilings, public credential metadata, and durable audit records. SQLite may project them for fast resolution but remains rebuildable.
 - **Delegation only attenuates.** A child grant can never add an action, broaden a resource, extend an expiry, increase delegation depth, add a network domain, loosen a resource limit, or escape an audience constraint.
-- **Default deny, positive grants.** Ordinary access comes from explicit capabilities. Negative rules are reserved for non-delegable root policy ceilings such as disabled identities, forbidden control paths, or a read-only vault.
+- **Default deny, positive grants.** Ordinary access comes from explicit capabilities. Negative rules are reserved for non-delegable canonical policy ceilings such as disabled identities, forbidden control paths, or a read-only vault.
 - **Roles are templates, not bypasses.** `owner`, `editor`, and `viewer` remain useful UI/configuration presets that issue capability bundles. No role silently bypasses normal authorization.
 - **Enforcement stays shared.** Capability resolution produces the existing `PermissionGrant`; commands, queries, rendering, MCP, plugins, and JavaScript continue using `PermissionGuard` and `PermissionFilter`.
-- **Filesystem access remains outside this boundary.** The daemon/API/WebUI capability layer does not encrypt Markdown or hide it from a user who can directly read the vault working tree.
+- **Filesystem access remains outside this boundary.** A user who controls the working tree or Git repository can already read and change all plaintext data. Vulcan protects authorization objects at WebUI/API/managed-sync/Git-ingestion boundaries rather than adding cryptographic anchoring against the filesystem owner.
 
-### 17.1 Identity and authoritative authorization storage
+### 17.1 Canonical authorization wiki objects and runtime secrets
 
 ```
-~/.config/vulcan/
-├── daemon.toml          # vault registry, root grants, policy ceilings
-├── users.toml           # user accounts and group definitions
-└── auth.db              # grants, lineage, revocations, credentials, sessions, audit log
+System/Authorization/
+├── Identities/          # public identity/profile objects
+├── Groups/              # group definitions and memberships
+├── Grants/              # root and delegated grants
+├── Revocations/         # explicit revocation objects
+├── Policies/            # non-delegable ceilings and namespace policy
+├── Credentials/         # public credential metadata, never bearer values
+├── Audit/               # durable authorization events or journals
+└── Templates/           # role and grant authoring templates
 ```
 
-**Users and groups** remain low-churn, human-editable definitions in `users.toml`:
+The namespace is configurable but reserved. Authorization objects are first-class Markdown for links, Git history, queries, Bases, and administration views, yet generic note operations cannot mutate, move, create, or delete them. The namespace setting is itself security-critical control-plane configuration and receives the same protection. Only dedicated `auth` workflows may write either.
 
-```toml
-[users.alice]
-display_name = "Alice"
-email = "alice@example.com"
-password_hash = "$argon2id$v=19$..."
-disabled = false
+Example identity and group objects:
 
-[groups.gm]
-display_name = "Game Masters"
-members = ["alice"]
+```markdown
+---
+type: vulcan.authorization.identity
+version: 1
+id: user:alice
+display_name: Alice
+email: alice@example.com
+disabled: false
+---
+
+# Alice
 ```
 
-**Root authority** is explicit in `daemon.toml`. It is a trust anchor, not an exportable unconstrained bearer token:
+```markdown
+---
+type: vulcan.authorization.group
+version: 1
+id: group:gm
+members:
+  - user:alice
+---
 
-```toml
-[[vault]]
-id = "campaign"
-path = "/home/user/vaults/campaign"
-
-[[vault.root_grants]]
-subject = "user:alice"
-template = "owner"
-delegation_depth = 8
-
-[[vault.root_grants]]
-subject = "group:gm"
-actions = ["read", "write", "delete", "refactor", "delegate"]
-resources = ["folder:**"]
-delegation_depth = 4
-
-[vault.policy]
-forbid_resources = ["folder:.vulcan/**"]
-shell = "deny"
+# Game Masters
 ```
 
-`auth.db` is a small authoritative database backed up with daemon configuration. It stores durable grants and parent lineage, revocation state, sessions, API/agent/automation/share credentials, credential hashes or verifier material, and append-oriented audit events. Vault `.vulcan/config.toml` may define portable role or grant templates, but editing vault content cannot itself create root authority.
+The first root is created by a trusted local bootstrap command against an uninitialized authorization namespace. Subsequent roots are ordinary canonical grant objects whose creation or widening requires `manage_root_grants` through the dedicated workflow:
 
-Indicative authoritative tables (final migrations remain implementation work):
+```markdown
+---
+type: vulcan.authorization.grant
+version: 1
+id: 01K...
+root: true
+issuer: system:bootstrap
+subject: user:alice
+actions:
+  - "*"
+resources:
+  - "*"
+delegation_depth: 8
+created: 2026-08-24T12:00:00Z
+---
+
+# Initial owner grant
+```
+
+`auth.db` contains only material unsuitable for canonical wiki content:
 
 ```text
-grants:       id, vault_id, parent_id/root_ref, issuer_subject, subject,
-              actions_json, resources_json, constraints_json,
-              delegation_depth, created_at, expires_at, revoked_at
-credentials:  id, subject, audience, token_hash/verifier, grant_ids_json,
-              created_by, created_at, expires_at, revoked_at, last_used_at
-sessions:     id, subject, token_hash, created_at, expires_at, revoked_at
-audit_events: id, actor_subject, credential_id, grant_id, action, resource,
-              decision, reason, created_at, metadata_json
+password_verifiers: identity_id, password_hash, updated_at
+credential_secrets: credential_id, token_hash/verifier, created_at, last_used_at
+sessions:           id, identity_id, token_hash, created_at, expires_at
+oauth_state:         state, verifier/challenge material, expires_at
+runtime_counters:    credential_id, rate/use window and count
 ```
 
-Root records are addressed by stable configuration-derived IDs/hashes so lineage survives daemon restarts and fails closed when a root grant is removed or materially changed.
+These tables are authoritative only for the secrets or temporary runtime facts they contain. They never define actions, resources, parent lineage, group membership, or revocation policy. Cache tables such as authorization-object indexes, effective-grant projections, and lineage closures are disposable and rebuilt from the wiki objects.
+
+Authorization objects use strict versioned schemas. Duplicate IDs, unknown security-critical fields, invalid selectors, missing parents, cycles, widening children, malformed revocations, and unsupported versions fail closed with diagnostics. No signatures or canonical-byte encoding are required. If direct filesystem edits leave the graph invalid, daemon clients lose affected authority until the canonical files are repaired; an unrestricted trusted local CLI remains the recovery path.
 
 **CLI and API management:**
 
-- [ ] `vulcan auth user add|remove|list|disable|enable <username>`
+- [ ] `vulcan auth init --owner <identity>` — initialize the reserved namespace and first root only when no authorization graph exists
+- [ ] `vulcan auth user add|remove|list|disable|enable <username>` using canonical identity objects and separate password-verifier storage
 - [ ] `vulcan auth group add|remove|list` and `vulcan auth group members <group> add|remove <username>`
 - [ ] User/group/session endpoints under `/auth/...`, gated by `manage_identities` / `manage_groups` rather than a hard-coded owner bypass
-- [ ] Atomic configuration and database updates with recovery tests; removal or disablement invalidates sessions and effective grants immediately
-- [ ] Backup/restore and doctor coverage that distinguishes authoritative `auth.db` from rebuildable `.vulcan/cache.db`
+- [ ] Reserve and normalize the authorization namespace across note CRUD, refactors, templates, plugins, skills, MCP, publication, WebUI, and managed sync; protect changes to the namespace setting itself; reject symlink, case-folding, Unicode-normalization, and path-alias bypasses
+- [ ] Apply canonical-file and secret-store changes in fail-closed order: an orphaned public credential without verifier is inactive, and deleting/revoking verifier material precedes canonical revocation when immediate denial matters
+- [ ] Rebuild authorization projections from canonical files and invalidate active request/session caches after relevant file changes
+- [ ] Backup/restore and doctor coverage that distinguishes canonical authorization objects, rebuildable projections, and secret/runtime state
 
 ### 17.2 Rooted capability grants and delegation
 
-Each durable grant has a stable ID, vault, issuer, subject, exactly one parent grant or root source, action set, resource scope, constraints, delegation allowance/depth, timestamps, and revocation state. A subject may hold several grants; their positive authority is combined only after every grant is independently validated against its lineage and root ceilings. When an issued credential needs authority from several parents, it contains or references several independently attenuated grants rather than erasing provenance in one synthetic parent.
+Each durable grant object has a stable ID, vault, issuer, subject, exactly one parent grant or an explicit root marker, action set, resource scope, constraints, delegation allowance/depth, and timestamps. Revocation is represented by a separate canonical object referencing the grant, preserving history rather than rewriting or deleting it. A subject may hold several grants; their positive authority is combined only after every grant is independently validated against its lineage and policy ceilings. When an issued credential needs authority from several parents, it contains or references several independently attenuated grants rather than erasing provenance in one synthetic parent.
 
 Delegation to another registered user or group is an authenticated daemon transaction that creates a durable child grant for that subject. It is not accomplished by copying the issuer's bearer credential. Limited bearer credentials are for possession-based clients such as agents, scripts, services, and external shares; they may additionally bind to an authenticated subject, device, or audience when possession alone is insufficient.
 
@@ -5677,7 +5695,7 @@ Existing Phase 9 profiles treat `write` as create/update/delete. Phase 17 adds f
 - expiration can only move earlier;
 - delegation depth decreases and a grant without `delegate` cannot produce children;
 - audience, source/device binding, allowed network domains, rate limits, and runtime limits only narrow;
-- root policy ceilings intersect every resolved grant and cannot be delegated around;
+- canonical policy ceilings intersect every resolved grant and cannot be delegated around;
 - revoking a grant invalidates its complete descendant tree and associated credentials;
 - cycles and ambiguous/missing parent lineage fail closed.
 
@@ -5685,15 +5703,23 @@ Existing Phase 9 profiles treat `write` as create/update/delete. Phase 17 adds f
 
 **Mutation safety:** folder moves, tag changes, note renames, and other classification-changing operations are checked against both the original and resulting resource states. Possessing write access to content is not enough to move it into a broader scope or attach a tag that expands the caller's effective authority.
 
+**Git and managed-sync ingress:** evaluate candidate changes before they replace the live working tree. The default Git/sync integration rejects any incoming diff touching the reserved authorization namespace or its namespace configuration. An optional governed mode may accept authorization changes only when both conditions hold:
+
+1. Vulcan parses the complete candidate authorization graph and proves identity-management authority, valid lineage, monotonic attenuation, and valid revocations.
+2. A configured ingress policy authenticates the change through either forge-reported protected-branch and CODEOWNERS approvals or verified commit signatures mapped to canonical subjects whose authority covers every authorization mutation.
+
+CODEOWNERS without branch protection is advisory, not enforcement. A signature authenticates a Git actor but neither grants that actor authority nor cryptographically anchors the grant file; both ingress modes still require semantic validation. Direct local Git pulls and filesystem edits remain within the trusted filesystem boundary; the managed daemon endpoint must never pull into the active tree first and attempt to undo an unauthorized control-plane change afterward.
+
 **CLI and tests:**
 
 - [ ] `vulcan auth grant create --subject <p> --from <grant-id> --action ... --resource ... [constraints] --dry-run`
 - [ ] `vulcan auth grant inspect <grant-id>` — show lineage, effective authority, constraints, descendants, and revocation state
 - [ ] `vulcan auth grant list [--subject <p>] [--vault <id>]`
-- [ ] `vulcan auth grant revoke <grant-id> [--reason ...]` — revoke the grant and descendants
-- [ ] `vulcan auth grant check --subject <p> --action <a> --resource <r>` — explain contributing grants and root ceilings
+- [ ] `vulcan auth grant revoke <grant-id> [--reason ...]` — create a canonical revocation object that invalidates the grant and descendants
+- [ ] `vulcan auth grant check --subject <p> --action <a> --resource <r>` — explain contributing grants and canonical policy ceilings
 - [ ] Property tests prove that arbitrary attenuation sequences never widen authority
-- [ ] Regression tests cover groups, expiry, depth, revocation cascades, multiple independent parents, root ceilings, and old/new-state mutation checks
+- [ ] Regression tests cover groups, expiry, depth, revocation cascades, multiple independent parents, policy ceilings, old/new-state mutation checks, reserved-path bypasses, and full rebuild from canonical files
+- [ ] Git-ingress tests cover default rejection, namespace-setting changes, staged/candidate-tree validation, CODEOWNERS-without-protection rejection, required approvals, signer-to-subject authority checks, and mutation-free failure before the live tree changes
 
 ### 17.3 Capability resolution and permission-filtered queries
 
@@ -5703,9 +5729,10 @@ Phase 17 adds `CapabilityPermissionGuard`, which resolves the authenticated subj
 
 ```text
 authenticated identity or limited credential
+  -> load validated canonical identity, grant, policy, and revocation objects
   -> validate subject, grant lineage, expiry, audience, and revocation
   -> include current group-derived grants
-  -> intersect root policy ceilings and request/transport constraints
+  -> intersect canonical policy ceilings and request/transport constraints
   -> resolve PermissionGrant once per request
   -> enforce through PermissionGuard and PermissionFilter
 ```
@@ -5727,12 +5754,12 @@ authenticated identity or limited credential
 
 **Implementation:**
 
-- [ ] Add durable capability/grant types and attenuation validation in the planned `vulcan-auth` crate; compatibly extend reusable resolved permission semantics in `vulcan-core` with create/delete and authority-administration checks
+- [ ] Add typed canonical authorization-object loaders, complete-graph validation, reserved-namespace workflows, and attenuation checks in the planned `vulcan-auth` crate; compatibly extend reusable resolved permission semantics in `vulcan-core` with create/delete and authority-administration checks
 - [ ] Implement `CapabilityPermissionGuard` over an already validated request authority context rather than coupling core query code to sessions or token parsing
 - [ ] Reuse `PermissionFilter::sql_cte()` and existing point checks from 9.19.13
 - [ ] Daemon middleware authenticates the caller, validates grants/credentials, resolves once per request, and passes `&dyn PermissionGuard` to handlers
 - [ ] Direct local CLI mode remains unrestricted for the filesystem owner unless an explicit profile or limited credential is selected
-- [ ] Cache resolved authority per request only; grant/revocation generation invalidates longer-lived session caches
+- [ ] Cache resolved authority per request only; watcher changes to canonical identity/group/grant/revocation/policy objects invalidate longer-lived session caches and rebuild the disposable projection
 - [ ] Integration tests verify that unavailable content cannot leak through search, graph, backlinks, vectors, snippets, completion, exports, rendering, logs, or aggregate counts
 
 ### 17.4 Document-level secrets
@@ -5774,7 +5801,7 @@ Noble of the Eastern Provinces.
 The townsfolk speak highly of Lord Blackwood...
 ```
 
-The `[!secret <label>]` callout type maps the region to a `secret:<label>` resource selector. Rendering strips it unless the resolved grant includes read authority for that selector. Root configuration can grant `secret:gm` to `group:gm`, and a holder may explicitly delegate that narrower authority to an agent or service; group membership or a role name is not an implicit rendering bypass.
+The `[!secret <label>]` callout type maps the region to a `secret:<label>` resource selector. Rendering strips it unless the resolved grant includes read authority for that selector. A canonical root or delegated grant can give `secret:gm` to `group:gm`, and a holder may explicitly delegate that narrower authority to an agent or service; group membership or a role name is not an implicit rendering bypass.
 
 - [ ] Parser recognizes `[!secret <label>]`, validates the label, and extracts its content range
 - [ ] `ParsedDocument` stores secret regions with their required `secret:<label>` selector
@@ -5802,21 +5829,21 @@ vulcan auth token create \
   --dry-run
 ```
 
-The dry run explains which parent grants cover each requested capability and rejects any widening. Applied credentials are displayed once, stored hashed or with verifier-safe material, and attributable to both the credential identity and complete human/service delegation lineage.
+The dry run explains which parent grants cover each requested capability and rejects any widening. Applying it writes canonical public credential metadata under `System/Authorization/Credentials/`, stores only the bearer verifier/secret runtime material in `auth.db`, and displays the bearer value once. Activity remains attributable to both the credential identity and complete human/service delegation lineage.
 
 **Credential requirements:**
 
 - [ ] Credential types share one validation path but carry explicit audiences (`browser-session`, `api`, `mcp`, `agent`, `automation`, `service`, `share`)
 - [ ] Default to no delegation; encourage short expiry for agent and automation credentials
 - [ ] Support action/resource attenuation, expiry, use limits, rate limits, network domains, and optional source/device binding
-- [ ] Immediate credential revocation plus descendant-grant revocation; audit issuance, use, attenuation, denial, and revocation without logging bearer secrets
+- [ ] Immediate credential revocation disables/removes verifier material first, then records canonical credential revocation; grant revocation still cascades to descendants. Audit issuance, use, attenuation, denial, and revocation without logging bearer secrets
 - [ ] Evaluate an opaque reference token first and a typed macaroon-style chained envelope for offline attenuation; token encoding must not change the durable grant semantics
 - [ ] Never issue or honor an unconstrained blank/god token; every external credential has an audience, expiry policy, and explicit grant set
 
 **CLI:**
 
 - [ ] `vulcan auth token create [--from <grant-id>] --name <name> [actions/resources/constraints] --dry-run`
-- [ ] `vulcan auth token list [--subject <p>] [--audience <a>]`
+- [ ] `vulcan auth token list [--subject <p>] [--audience <a>]` — query canonical public credential objects and join runtime status without exposing verifier material
 - [ ] `vulcan auth token inspect <token-id>` — metadata, effective authority, lineage, last use, and expiry without revealing token material
 - [ ] `vulcan auth token revoke <token-id>`
 - [ ] `vulcan auth token attenuate <credential> [narrowing constraints]` where the selected encoding safely supports holder-side attenuation
@@ -5831,7 +5858,7 @@ https://host/s/{share_token}
 - [ ] `GET /{id}/shares` — list active shares (requires grant/audit administration capability)
 - [ ] `DELETE /{id}/shares/{share_id}` — revoke share
 - [ ] `GET /s/{token}` — resolve share, render content (no auth required)
-- [ ] Share credentials use the same durable grant lineage and verifier-safe token storage as other limited credentials
+- [ ] Share credentials use the same canonical grant/credential objects and separate verifier storage as other limited credentials
 - [ ] Resource types: `note:<path>` (single note), `folder:<path>` (folder and children), `tag:<tag>` (all notes with tag)
 - [ ] Permission: `view` (read-only rendered content) or `view-raw` (download markdown source)
 - [ ] Optional password protection: share link prompts for password before rendering
@@ -5849,7 +5876,7 @@ Planned but not in initial scope. Deferred until local identity and capability d
 - [ ] Login flow: browser redirects to IdP, daemon handles callback, creates/updates local user from claims
 - [ ] Group mapping: map reviewed OIDC claims/groups to local groups; group subjects receive authority only through normal rooted grants
 - [ ] Hybrid mode: local accounts and OIDC accounts coexist, OIDC users auto-provisioned on first login
-- [ ] Token refresh and session management integrated with `auth.db`; external IdP tokens never bypass local capability resolution, root ceilings, or revocation
+- [ ] Token refresh and session management integrated with `auth.db`; external IdP tokens never bypass local capability resolution, canonical policy ceilings, or revocation
 
 ---
 
@@ -6019,7 +6046,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] Embed the full Excalidraw editor component in the WebUI (Excalidraw is open-source, MIT licensed)
 - [ ] Save: serialize Excalidraw state back to `.excalidraw.md` or `.excalidraw` format, write via API, rescan, auto-commit
 - [ ] Vault file embedding: picker to insert vault note/image references into the drawing
-- [ ] Capability enforcement: Excalidraw files respect Phase 17 resource-scoped grants and root policy ceilings
+- [ ] Capability enforcement: Excalidraw files respect Phase 17 resource-scoped grants and canonical policy ceilings
 
 ---
 
@@ -6057,7 +6084,7 @@ Phase 9.20 (Static site builder) is intentionally scheduled after Phase 9 and be
 Phase 9.29 (Pre-daemon maintainability and feature-boundary cleanup) is the hard cleanup gate before Phase 10. Phase 10 should not start until 9.29's feature matrix, crate boundaries, MCP split, and verification matrix are complete.
 Phases 9 and 10 can proceed in parallel after Phase 7 only for design exploration. Implementation work for the daemon should wait for 9.29; 9.20 remains the recommended rendering/publication bridge before WebUI/wiki work.
 Phase 11 requires 9.3 (git module) and 10 (daemon). Phase 12 requires 10 and 11.
-Phase 17 requires 10 (daemon). Sub-phases 17.1–17.3 (identities, rooted/delegable grants, capability resolution, and permission-filtered queries) must complete before Phase 13.
+Phase 17 requires 10 (daemon). Sub-phases 17.1–17.3 (canonical authorization objects, reserved mutation/ingress controls, rooted/delegable grants, capability resolution, and permission-filtered queries) must complete before Phase 13.
 Phase 13 requires 10, 9.20, and 17.1–17.3. Phase 14 requires 13 and 10's write endpoints. Phase 14 introduces Automerge as the document model.
 Phase 15 requires 10. Phase 16 requires 13, 14, 9.20, and 17.4–17.5 (document secrets, share links). Phase 16 also uses the Automerge foundation from Phase 14.
 Phase 17.6 (OIDC/SSO) is a future direction — deferred until local identity, rooted grants, delegation, and revocation are stable.
@@ -6695,7 +6722,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 
 - [ ] After Phase 10, implement the pinned server-side file protocol in an async daemon adapter, not in `vulcan-core`. Serve only explicitly configured vaults and routes; keep protocol request/response types separate from transport-neutral vault mutation services.
 - [ ] Implement the reviewed file-list, metadata, read, write, delete, ping/version, authentication, path-encoding, sync-mode, and error contracts. Preserve file bytes and required safe metadata while refusing platform-unsafe permissions or unsupported metadata with explicit diagnostics.
-- [ ] Normalize percent-decoded paths once; reject traversal, absolute paths, reserved/control paths, NULs, invalid Unicode policy, symlink escapes, special files, case/normalization aliases, oversized lists/bodies, and writes outside the selected vault. Apply daemon authentication, resolved capabilities, root policy ceilings, rate/body limits, timeouts, cancellation, and sanitized logs.
+- [ ] Normalize percent-decoded paths once; reject traversal, absolute paths, reserved/control paths, NULs, invalid Unicode policy, symlink escapes, special files, case/normalization aliases, oversized lists/bodies, and writes outside the selected vault. Apply daemon authentication, resolved capabilities, canonical policy ceilings, rate/body limits, timeouts, cancellation, and sanitized logs.
 - [ ] Route accepted writes and deletes through Vulcan's cross-process vault lock, verified temporary file plus atomic replacement, mass-deletion guard, watcher coalescing, incremental scan, optional git checkpoint, and event reporting. A successful protocol response must never expose a partial file or claim an unindexed permanent mutation.
 - [ ] Let the upstream SilverBullet client retain its own sync snapshot and conflict algorithm when Vulcan is only the server peer. Surface conflict copies as ordinary canonical files plus diagnostics; do not silently merge, discard, or reinterpret them.
 - [ ] Provide explicit deployment support for serving or reverse-proxying the pinned SilverBullet client separately from Vulcan's API. Do not fork or silently patch upstream browser assets as part of the protocol adapter.
@@ -6752,7 +6779,7 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 | Crate | Type | Purpose |
 |-------|------|---------|
 | `vulcan-daemon` | lib | axum router, middleware, vault registry, daemon lifecycle |
-| `vulcan-auth` | lib | Identity/group management, rooted capability grants, attenuation and revocation, credential/session handling, audit lineage, and request-authority resolution |
+| `vulcan-auth` | lib | Canonical authorization-object parsing and mutation, rooted grant attenuation/revocation, reserved-path and Git-ingress validation, credential/session secret handling, audit lineage, and request-authority resolution |
 | `vulcan-sync` | lib | Sync backend trait and implementations (obsidian-headless, git remote, passive) |
 
 The `vulcan-cli` binary gains the `daemon` subcommand group by depending on `vulcan-daemon`.
