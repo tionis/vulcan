@@ -5846,6 +5846,42 @@
                 ]
               },
               {
+                "help": "Move documents missing from Outline into this recoverable vault directory",
+                "id": "archive_missing",
+                "long": "archive-missing",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "VAULT_DIRECTORY"
+                ]
+              },
+              {
+                "help": "Permanently delete managed local notes and attachments missing from Outline",
+                "id": "delete_missing",
+                "long": "delete-missing",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DELETE_MISSING"
+                ]
+              },
+              {
+                "help": "Confirm the exact live number of missing documents to delete",
+                "id": "confirm_delete_count",
+                "long": "confirm-delete-count",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "COUNT"
+                ]
+              },
+              {
                 "help": "Suppress auto-commit for pulled local note changes",
                 "id": "no_commit",
                 "long": "no-commit",

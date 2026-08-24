@@ -13,7 +13,7 @@ This document describes both the implemented baseline and the planned architectu
 | Repository-level folder-note convention and structural conversion | Implemented |
 | Outline-compatible ZIP export | Implemented |
 | One-way local-vault-to-Outline API publication with durable mappings and conflict detection | Implemented |
-| Scoped Outline collection pull into an explicit local namespace with durable three-way state and attachment materialization | Initial implementation; generic routes and additional reconciliation policies remain planned |
+| Scoped Outline collection pull with durable three-way state, attachments, reviewed moves, and missing-document policies | Initial implementation; generic routes and narrower remote selectors remain planned |
 | mdbase v0.3 discovery, configuration validation, bundled schemas, and secure schema-reference validation | Partially implemented; later conformance profiles remain a candidate track |
 | Multi-vault daemon and device/file-tree sync backends | Planned in Phases 10–12 |
 | Generic external-document bindings and content routes | Planned in Phase 15 |

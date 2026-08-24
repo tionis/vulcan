@@ -2441,6 +2441,26 @@ pub enum PullCommand {
             help = "Apply remote title and hierarchy changes as link-aware local note moves"
         )]
         apply_remote_moves: bool,
+        #[arg(
+            long,
+            value_name = "VAULT_DIRECTORY",
+            conflicts_with_all = ["delete_missing", "interactive"],
+            help = "Move documents missing from Outline into this recoverable vault directory"
+        )]
+        archive_missing: Option<String>,
+        #[arg(
+            long,
+            conflicts_with_all = ["archive_missing", "interactive"],
+            help = "Permanently delete managed local notes and attachments missing from Outline"
+        )]
+        delete_missing: bool,
+        #[arg(
+            long,
+            value_name = "COUNT",
+            requires = "delete_missing",
+            help = "Confirm the exact live number of missing documents to delete"
+        )]
+        confirm_delete_count: Option<usize>,
         #[arg(long, help = "Suppress auto-commit for pulled local note changes")]
         no_commit: bool,
     },

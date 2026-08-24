@@ -43,6 +43,67 @@ pub struct OutlinePullConflictPolicy {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OutlinePullOptions {
     pub apply_remote_moves: bool,
+    pub missing_policy: OutlinePullMissingPolicy,
+    pub confirmed_delete_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutlinePullMissingResolution {
+    Retain,
+    Archive { directory: String },
+    Delete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlinePullMissingPolicy {
+    resolutions: BTreeMap<String, OutlinePullMissingResolution>,
+    default: OutlinePullMissingResolution,
+}
+
+impl Default for OutlinePullMissingPolicy {
+    fn default() -> Self {
+        Self::retain()
+    }
+}
+
+impl OutlinePullMissingPolicy {
+    #[must_use]
+    pub fn retain() -> Self {
+        Self {
+            resolutions: BTreeMap::new(),
+            default: OutlinePullMissingResolution::Retain,
+        }
+    }
+
+    #[must_use]
+    pub fn archive_all(directory: String) -> Self {
+        Self {
+            resolutions: BTreeMap::new(),
+            default: OutlinePullMissingResolution::Archive { directory },
+        }
+    }
+
+    #[must_use]
+    pub fn delete_all() -> Self {
+        Self {
+            resolutions: BTreeMap::new(),
+            default: OutlinePullMissingResolution::Delete,
+        }
+    }
+
+    #[must_use]
+    pub fn selected(
+        resolutions: impl IntoIterator<Item = (String, OutlinePullMissingResolution)>,
+    ) -> Self {
+        Self {
+            resolutions: resolutions.into_iter().collect(),
+            default: OutlinePullMissingResolution::Retain,
+        }
+    }
+
+    fn resolution(&self, remote_id: &str) -> &OutlinePullMissingResolution {
+        self.resolutions.get(remote_id).unwrap_or(&self.default)
+    }
 }
 
 impl OutlinePullConflictPolicy {
@@ -92,6 +153,8 @@ pub enum OutlinePullActionKind {
     Conflict,
     WriteConflictMarkers,
     RemoteMissing,
+    ArchiveMissing,
+    DeleteMissing,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -129,6 +192,8 @@ pub struct OutlinePullReport {
     pub unchanged: usize,
     pub conflict_markers_written: usize,
     pub remote_missing: usize,
+    pub archived_missing: usize,
+    pub deleted_missing: usize,
     pub attachments_planned: usize,
     pub attachments_downloaded: usize,
     pub actions: Vec<OutlinePullAction>,
@@ -333,6 +398,15 @@ pub fn pull_outline_with_options_and_write_authorizer(
             actions,
         ));
     }
+    let delete_count = actions
+        .iter()
+        .filter(|action| action.kind == OutlinePullActionKind::DeleteMissing)
+        .count();
+    if delete_count > 0 && options.confirmed_delete_count != Some(delete_count) {
+        return Err(AppError::operation(format!(
+            "Outline pull planned {delete_count} permanent deletion(s); confirm that exact live count"
+        )));
+    }
     for action in &actions {
         if matches!(
             action.kind,
@@ -340,6 +414,8 @@ pub fn pull_outline_with_options_and_write_authorizer(
                 | OutlinePullActionKind::Update
                 | OutlinePullActionKind::Move
                 | OutlinePullActionKind::WriteConflictMarkers
+                | OutlinePullActionKind::ArchiveMissing
+                | OutlinePullActionKind::DeleteMissing
         ) {
             if let Some(source_path) = action.source_local_path.as_deref() {
                 authorize_write(source_path)?;
@@ -358,6 +434,31 @@ pub fn pull_outline_with_options_and_write_authorizer(
         .map(|document| (document.id.as_str(), document))
         .collect::<BTreeMap<_, _>>();
     for action in &mut actions {
+        if matches!(
+            action.kind,
+            OutlinePullActionKind::ArchiveMissing | OutlinePullActionKind::DeleteMissing
+        ) {
+            if action.kind == OutlinePullActionKind::ArchiveMissing {
+                if let Some(source_path) = action.source_local_path.as_deref() {
+                    let moved =
+                        vulcan_core::move_note(paths, source_path, &action.local_path, false)
+                            .map_err(AppError::operation)?;
+                    action.rewritten_local_paths = moved
+                        .rewritten_files
+                        .into_iter()
+                        .map(|file| file.path)
+                        .collect();
+                }
+            } else {
+                remove_managed_file(paths, &action.local_path)?;
+                for attachment_path in &action.attachment_paths {
+                    remove_managed_file(paths, attachment_path)?;
+                }
+            }
+            state.documents.remove(&action.remote_document_id);
+            lock.save(&state)?;
+            continue;
+        }
         if !matches!(
             action.kind,
             OutlinePullActionKind::Create
@@ -707,17 +808,63 @@ fn plan_pull(
     }
     for (remote_id, mapping) in &state.documents {
         if !active.iter().any(|document| document.id == *remote_id) {
+            let local_content =
+                match secure_read_to_string(paths.vault_root(), Path::new(&mapping.local_path)) {
+                    Ok(content) => Some(content),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                    Err(error) => return Err(AppError::operation(error)),
+                };
+            let local_changed = local_content.as_deref().map(content_hash).as_deref()
+                != Some(mapping.last_materialized_local_hash.as_str());
+            let (kind, local_path, source_local_path, rewritten_local_paths, reason) =
+                match options.missing_policy.resolution(remote_id) {
+                    OutlinePullMissingResolution::Retain => (
+                        OutlinePullActionKind::RemoteMissing,
+                        mapping.local_path.clone(),
+                        None,
+                        Vec::new(),
+                        "managed Outline document is no longer in scope; local file retained",
+                    ),
+                    OutlinePullMissingResolution::Archive { directory } => {
+                        let directory = validate_destination(directory)?;
+                        let archive_path =
+                            missing_archive_path(&directory, remote_id, &mapping.local_path);
+                        validate_managed_path(&directory, &archive_path)?;
+                        let rewritten = if local_content.is_some() {
+                            vulcan_core::move_note(paths, &mapping.local_path, &archive_path, true)
+                                .map_err(AppError::operation)?
+                                .rewritten_files
+                                .into_iter()
+                                .map(|file| file.path)
+                                .collect()
+                        } else {
+                            Vec::new()
+                        };
+                        (
+                            OutlinePullActionKind::ArchiveMissing,
+                            archive_path,
+                            local_content.as_ref().map(|_| mapping.local_path.clone()),
+                            rewritten,
+                            "archive the missing remote document at a recoverable local path",
+                        )
+                    }
+                    OutlinePullMissingResolution::Delete => (
+                        OutlinePullActionKind::DeleteMissing,
+                        mapping.local_path.clone(),
+                        local_content.as_ref().map(|_| mapping.local_path.clone()),
+                        Vec::new(),
+                        "permanently delete the explicitly confirmed missing remote document",
+                    ),
+                };
             actions.push(OutlinePullAction {
-                kind: OutlinePullActionKind::RemoteMissing,
+                kind,
                 remote_document_id: remote_id.clone(),
-                local_path: mapping.local_path.clone(),
-                reason:
-                    "managed Outline document is no longer in the collection; local file retained"
-                        .to_string(),
-                local_changed: false,
+                local_path,
+                reason: reason.to_string(),
+                local_changed,
                 remote_changed: true,
-                source_local_path: None,
-                rewritten_local_paths: Vec::new(),
+                source_local_path,
+                rewritten_local_paths,
                 attachment_paths: mapping
                     .attachments
                     .values()
@@ -855,6 +1002,15 @@ fn attachment_path(destination: &str, document_id: &str, remote_url: &str, label
     )
 }
 
+fn missing_archive_path(directory: &str, remote_id: &str, source_path: &str) -> String {
+    let remote_hash = bytes_hash(remote_id.as_bytes());
+    let filename = Path::new(source_path)
+        .file_name()
+        .and_then(|filename| filename.to_str())
+        .unwrap_or("missing.md");
+    format!("{directory}/{}-{filename}", &remote_hash[..12])
+}
+
 fn relative_markdown_path(note_path: &str, target_path: &str) -> Result<String, AppError> {
     let note_parent = Path::new(note_path)
         .parent()
@@ -952,6 +1108,14 @@ fn validate_managed_asset_path(destination: &str, local_path: &str) -> Result<()
     Ok(())
 }
 
+fn remove_managed_file(paths: &VaultPaths, local_path: &str) -> Result<(), AppError> {
+    match secure_read(paths.vault_root(), Path::new(local_path)) {
+        Ok(_) => fs::remove_file(paths.vault_root().join(local_path)).map_err(AppError::operation),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AppError::operation(error)),
+    }
+}
+
 fn conflict_markers(local: &str, base: &str, remote: &str, remote_id: &str) -> String {
     format!(
         "<<<<<<< LOCAL\n{}\n||||||| BASE\n{}\n=======\n{}\n>>>>>>> OUTLINE {remote_id}\n",
@@ -995,6 +1159,8 @@ fn report(
         unchanged: count(OutlinePullActionKind::Unchanged),
         conflict_markers_written: count(OutlinePullActionKind::WriteConflictMarkers),
         remote_missing: count(OutlinePullActionKind::RemoteMissing),
+        archived_missing: count(OutlinePullActionKind::ArchiveMissing),
+        deleted_missing: count(OutlinePullActionKind::DeleteMissing),
         attachments_planned,
         attachments_downloaded,
         actions,
@@ -1339,6 +1505,7 @@ mod tests {
         ]);
         let options = OutlinePullOptions {
             apply_remote_moves: true,
+            ..OutlinePullOptions::default()
         };
         let plan = pull_outline_with_options_and_write_authorizer(
             &paths,
@@ -1385,6 +1552,124 @@ mod tests {
             "rewritten reference: {reference}"
         );
         assert!(!reference.contains("Parent/Child"));
+    }
+
+    #[test]
+    fn missing_documents_can_be_archived_recoverably() {
+        let archive_temp = tempdir().expect("archive temp dir");
+        let archive_paths = VaultPaths::new(archive_temp.path());
+        initialize_vulcan_dir(&archive_paths).expect("initialize archive vault");
+        let initial = api(vec![document("home", "Home", "base\n", None)]);
+        pull_outline(
+            &archive_paths,
+            &initial,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("initial archive pull");
+        fs::write(archive_temp.path().join("Imported/Home.md"), "local edit\n")
+            .expect("local edit");
+        let missing = api(Vec::new());
+        let archive_options = OutlinePullOptions {
+            missing_policy: OutlinePullMissingPolicy::archive_all("Archive".to_string()),
+            ..OutlinePullOptions::default()
+        };
+        let archived = pull_outline_with_options_and_write_authorizer(
+            &archive_paths,
+            &missing,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+            &archive_options,
+            &|_| Ok(()),
+        )
+        .expect("archive missing document");
+        assert_eq!(archived.archived_missing, 1);
+        assert!(!archive_temp.path().join("Imported/Home.md").exists());
+        let archive_path = &archived.actions[0].local_path;
+        assert_eq!(
+            fs::read_to_string(archive_temp.path().join(archive_path)).unwrap(),
+            "local edit\n"
+        );
+        let rerun = pull_outline(
+            &archive_paths,
+            &missing,
+            "wiki",
+            "collection",
+            "Imported",
+            true,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("archived mapping is cleared");
+        assert_eq!(rerun.remote_missing, 0);
+    }
+
+    #[test]
+    fn missing_documents_require_exact_count_confirmation_before_delete() {
+        let delete_temp = tempdir().expect("delete temp dir");
+        let delete_paths = VaultPaths::new(delete_temp.path());
+        initialize_vulcan_dir(&delete_paths).expect("initialize delete vault");
+        let with_attachment = api(vec![document(
+            "home",
+            "Home",
+            "![diagram.png](/api/attachments.redirect?id=asset)",
+            None,
+        )]);
+        let pulled = pull_outline(
+            &delete_paths,
+            &with_attachment,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("initial delete pull");
+        let attachment_path = pulled.actions[0].attachment_paths[0].clone();
+        let missing = api(Vec::new());
+        let unconfirmed = OutlinePullOptions {
+            missing_policy: OutlinePullMissingPolicy::delete_all(),
+            ..OutlinePullOptions::default()
+        };
+        assert!(pull_outline_with_options_and_write_authorizer(
+            &delete_paths,
+            &missing,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+            &unconfirmed,
+            &|_| Ok(()),
+        )
+        .is_err());
+        assert!(delete_temp.path().join("Imported/Home.md").is_file());
+
+        let confirmed = OutlinePullOptions {
+            missing_policy: OutlinePullMissingPolicy::delete_all(),
+            confirmed_delete_count: Some(1),
+            ..OutlinePullOptions::default()
+        };
+        let deleted = pull_outline_with_options_and_write_authorizer(
+            &delete_paths,
+            &missing,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+            &confirmed,
+            &|_| Ok(()),
+        )
+        .expect("delete missing document");
+        assert_eq!(deleted.deleted_missing, 1);
+        assert!(!delete_temp.path().join("Imported/Home.md").exists());
+        assert!(!delete_temp.path().join(attachment_path).exists());
     }
 
     #[test]

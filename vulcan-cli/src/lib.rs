@@ -499,8 +499,8 @@ use vulcan_app::publish::outline::{
 #[cfg(feature = "web")]
 use vulcan_app::pull::outline::{
     pull_outline_with_options_and_write_authorizer, OutlinePullAction, OutlinePullActionKind,
-    OutlinePullConflictPolicy, OutlinePullConflictResolution, OutlinePullOptions,
-    OutlinePullReport,
+    OutlinePullConflictPolicy, OutlinePullConflictResolution, OutlinePullMissingPolicy,
+    OutlinePullMissingResolution, OutlinePullOptions, OutlinePullReport,
 };
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::site::{
@@ -1678,6 +1678,9 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
         conflict_markers,
         interactive,
         apply_remote_moves,
+        archive_missing,
+        delete_missing,
+        confirm_delete_count,
         no_commit,
     } = command;
     if *interactive
@@ -1729,8 +1732,17 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
     } else {
         OutlinePullConflictPolicy::abort()
     };
-    let options = OutlinePullOptions {
+    let missing_policy = if let Some(directory) = archive_missing {
+        OutlinePullMissingPolicy::archive_all(directory.clone())
+    } else if *delete_missing {
+        OutlinePullMissingPolicy::delete_all()
+    } else {
+        OutlinePullMissingPolicy::retain()
+    };
+    let mut options = OutlinePullOptions {
         apply_remote_moves: *apply_remote_moves,
+        missing_policy,
+        confirmed_delete_count: *confirm_delete_count,
     };
     let plan = pull_outline_with_options_and_write_authorizer(
         paths,
@@ -1762,6 +1774,32 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
     } else if plan.conflicts > 0 {
         return print_outline_pull_report(cli.output, &plan);
     }
+    if *interactive && plan.remote_missing > 0 {
+        let decisions = {
+            let stdin = io::stdin();
+            let mut input = stdin.lock();
+            let stderr = io::stderr();
+            let mut output = stderr.lock();
+            prompt_outline_missing_documents(
+                &plan.actions,
+                &format!("{}/_removed", into.trim_end_matches(['/', '\\'])),
+                &mut input,
+                &mut output,
+            )?
+        };
+        let Some(decisions) = decisions else {
+            return print_outline_pull_report(cli.output, &plan);
+        };
+        options.confirmed_delete_count = Some(
+            decisions
+                .iter()
+                .filter(|(_, resolution)| {
+                    matches!(resolution, OutlinePullMissingResolution::Delete)
+                })
+                .count(),
+        );
+        options.missing_policy = OutlinePullMissingPolicy::selected(decisions);
+    }
     let guard = selected_permission_guard(cli, paths)?;
     for action in &plan.actions {
         if matches!(
@@ -1770,6 +1808,8 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
                 | OutlinePullActionKind::Update
                 | OutlinePullActionKind::Move
                 | OutlinePullActionKind::WriteConflictMarkers
+                | OutlinePullActionKind::ArchiveMissing
+                | OutlinePullActionKind::DeleteMissing
         ) {
             if let Some(source_path) = action.source_local_path.as_deref() {
                 guard
@@ -1821,6 +1861,8 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
                         | OutlinePullActionKind::Update
                         | OutlinePullActionKind::Move
                         | OutlinePullActionKind::WriteConflictMarkers
+                        | OutlinePullActionKind::ArchiveMissing
+                        | OutlinePullActionKind::DeleteMissing
                 )
             })
             .map(|action| action.local_path.clone())
@@ -1841,6 +1883,13 @@ fn run_pull_command(cli: &Cli, paths: &VaultPaths, command: &PullCommand) -> Res
                     .actions
                     .iter()
                     .flat_map(|action| action.downloaded_attachment_paths.iter().cloned()),
+            )
+            .chain(
+                report
+                    .actions
+                    .iter()
+                    .filter(|action| action.kind == OutlinePullActionKind::DeleteMissing)
+                    .flat_map(|action| action.attachment_paths.iter().cloned()),
             )
             .collect::<Vec<_>>();
         auto_commit
@@ -1955,6 +2004,98 @@ fn prompt_outline_pull_items(
 }
 
 #[cfg(feature = "web")]
+fn prompt_outline_missing_documents(
+    actions: &[OutlinePullAction],
+    archive_directory: &str,
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+) -> Result<Option<Vec<(String, OutlinePullMissingResolution)>>, CliError> {
+    let missing = actions
+        .iter()
+        .filter(|action| action.kind == OutlinePullActionKind::RemoteMissing)
+        .map(|action| OutlineMissingPromptItem {
+            remote_document_id: action.remote_document_id.clone(),
+            local_path: action.local_path.clone(),
+            local_changed: action.local_changed,
+        })
+        .collect::<Vec<_>>();
+    prompt_outline_missing_items(&missing, archive_directory, input, output)
+}
+
+#[cfg(feature = "web")]
+struct OutlineMissingPromptItem {
+    remote_document_id: String,
+    local_path: String,
+    local_changed: bool,
+}
+
+#[cfg(feature = "web")]
+fn prompt_outline_missing_items(
+    missing: &[OutlineMissingPromptItem],
+    archive_directory: &str,
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+) -> Result<Option<Vec<(String, OutlinePullMissingResolution)>>, CliError> {
+    let mut decisions = Vec::with_capacity(missing.len());
+    for (index, action) in missing.iter().enumerate() {
+        writeln!(
+            output,
+            "\nMissing Outline document {}/{}: {}\n  remote_id={}\n  local_changed={}",
+            index + 1,
+            missing.len(),
+            action.local_path,
+            action.remote_document_id,
+            action.local_changed
+        )
+        .map_err(CliError::operation)?;
+        loop {
+            write!(
+                output,
+                "Choose [r]etain/[a]rchive/[d]elete/[ar] retain all/[aa] archive all/[ad] delete all/[q]uit: "
+            )
+            .map_err(CliError::operation)?;
+            output.flush().map_err(CliError::operation)?;
+            let mut answer = String::new();
+            if input.read_line(&mut answer).map_err(CliError::operation)? == 0 {
+                return Ok(None);
+            }
+            let resolution = |answer: &str| match answer {
+                "r" | "retain" => Some(OutlinePullMissingResolution::Retain),
+                "a" | "archive" => Some(OutlinePullMissingResolution::Archive {
+                    directory: archive_directory.to_string(),
+                }),
+                "d" | "delete" => Some(OutlinePullMissingResolution::Delete),
+                _ => None,
+            };
+            let answer = answer.trim().to_ascii_lowercase();
+            if let Some(resolution) = resolution(&answer) {
+                decisions.push((action.remote_document_id.clone(), resolution));
+                break;
+            }
+            let all = match answer.as_str() {
+                "ar" => Some(OutlinePullMissingResolution::Retain),
+                "aa" => Some(OutlinePullMissingResolution::Archive {
+                    directory: archive_directory.to_string(),
+                }),
+                "ad" => Some(OutlinePullMissingResolution::Delete),
+                "" | "q" | "quit" => return Ok(None),
+                _ => None,
+            };
+            if let Some(resolution) = all {
+                decisions.extend(
+                    missing[index..].iter().map(|remaining| {
+                        (remaining.remote_document_id.clone(), resolution.clone())
+                    }),
+                );
+                return Ok(Some(decisions));
+            }
+            writeln!(output, "Enter r, a, d, ar, aa, ad, or q.").map_err(CliError::operation)?;
+        }
+    }
+    Ok(Some(decisions))
+}
+
+#[cfg(feature = "web")]
 fn print_outline_pull_report(
     output: OutputFormat,
     report: &OutlinePullReport,
@@ -1969,7 +2110,7 @@ fn print_outline_pull_report(
                 );
             }
             println!(
-                "created={}; updated={}; moved={}; unchanged={}; markers={}; conflicts={}; remote_missing={}; attachments_downloaded={}",
+                "created={}; updated={}; moved={}; unchanged={}; markers={}; conflicts={}; remote_missing={}; archived_missing={}; deleted_missing={}; attachments_downloaded={}",
                 report.created,
                 report.updated,
                 report.moved,
@@ -1977,6 +2118,8 @@ fn print_outline_pull_report(
                 report.conflict_markers_written,
                 report.conflicts,
                 report.remote_missing,
+                report.archived_missing,
+                report.deleted_missing,
                 report.attachments_downloaded
             );
         }

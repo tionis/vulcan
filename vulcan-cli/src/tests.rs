@@ -1126,6 +1126,28 @@ fn rejects_combining_selective_and_global_outline_conflict_overrides() {
             }
         }
     ));
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "pull",
+        "outline",
+        "wiki",
+        "--into",
+        "Imported",
+        "--delete-missing",
+        "--confirm-delete-count",
+        "2",
+    ])
+    .expect("confirmed delete policy should parse");
+    assert!(matches!(
+        cli.command,
+        Command::Pull {
+            command: PullCommand::Outline {
+                delete_missing: true,
+                confirm_delete_count: Some(2),
+                ..
+            }
+        }
+    ));
 }
 
 #[test]
@@ -1208,6 +1230,9 @@ fn parses_outline_pull_conflict_modes() {
                 conflict_markers: false,
                 interactive: false,
                 apply_remote_moves: false,
+                archive_missing: None,
+                delete_missing: false,
+                confirm_delete_count: None,
                 no_commit: false,
             }
         }
@@ -1256,6 +1281,41 @@ fn interactive_outline_pull_supports_mixed_conflict_resolutions() {
                 "Three.md".to_string(),
                 OutlinePullConflictResolution::ConflictMarkers
             ),
+        ]
+    );
+}
+
+#[cfg(feature = "web")]
+#[test]
+fn interactive_outline_pull_supports_missing_document_policies() {
+    let missing = vec![
+        OutlineMissingPromptItem {
+            remote_document_id: "one".to_string(),
+            local_path: "Imported/One.md".to_string(),
+            local_changed: true,
+        },
+        OutlineMissingPromptItem {
+            remote_document_id: "two".to_string(),
+            local_path: "Imported/Two.md".to_string(),
+            local_changed: false,
+        },
+    ];
+    let mut input = std::io::Cursor::new(b"a\nd\n");
+    let mut output = Vec::new();
+    let decisions =
+        prompt_outline_missing_items(&missing, "Imported/_removed", &mut input, &mut output)
+            .expect("missing decisions")
+            .expect("approved missing decisions");
+    assert_eq!(
+        decisions,
+        vec![
+            (
+                "one".to_string(),
+                OutlinePullMissingResolution::Archive {
+                    directory: "Imported/_removed".to_string()
+                }
+            ),
+            ("two".to_string(), OutlinePullMissingResolution::Delete),
         ]
     );
 }
