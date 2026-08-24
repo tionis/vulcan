@@ -319,7 +319,7 @@ struct OutlinePullMapping {
     last_remote_content_hash: String,
     #[serde(default)]
     last_remote_source_hash: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     last_remote_source: Option<String>,
     #[serde(default)]
     last_remote_revision: Option<u64>,
@@ -328,6 +328,7 @@ struct OutlinePullMapping {
     last_remote_title: String,
     last_remote_parent_id: Option<String>,
     last_materialized_local_hash: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     base_content: String,
     #[serde(default)]
     attachments: BTreeMap<String, OutlinePullAttachmentMapping>,
@@ -2224,9 +2225,10 @@ fn load_state(
             connector_identity,
         ));
     }
-    let bytes = fs::read(path).map_err(AppError::operation)?;
-    let state: OutlinePullState = serde_json::from_slice(&bytes)
+    let bytes = fs::read(&path).map_err(AppError::operation)?;
+    let mut state: OutlinePullState = serde_json::from_slice(&bytes)
         .map_err(|_| AppError::operation("Outline pull state contains malformed JSON"))?;
+    hydrate_state_sources(&path, &mut state)?;
     state.validate(profile, collection_id, destination, connector_identity)?;
     Ok(state)
 }
@@ -2299,7 +2301,32 @@ impl StateLock {
     }
 
     fn save(&self, state: &OutlinePullState) -> Result<(), AppError> {
-        let bytes = serde_json::to_vec_pretty(state).map_err(AppError::operation)?;
+        let mut persisted = state.clone();
+        let snapshot_directory = self
+            .state_path
+            .parent()
+            .expect("state parent")
+            .join("sources");
+        for mapping in persisted.documents.values_mut() {
+            if let Some(source) = mapping.last_remote_source.take() {
+                write_content_snapshot(
+                    &snapshot_directory,
+                    mapping.last_remote_source_hash.as_deref().ok_or_else(|| {
+                        AppError::operation("remote source snapshot omitted its hash")
+                    })?,
+                    &source,
+                )?;
+            }
+            if !mapping.base_content.is_empty() {
+                write_content_snapshot(
+                    &snapshot_directory,
+                    &mapping.last_remote_content_hash,
+                    &mapping.base_content,
+                )?;
+                mapping.base_content.clear();
+            }
+        }
+        let bytes = serde_json::to_vec_pretty(&persisted).map_err(AppError::operation)?;
         let temporary = self.state_path.with_extension("json.tmp");
         let mut file = OpenOptions::new()
             .create(true)
@@ -2314,6 +2341,62 @@ impl StateLock {
             .and_then(|directory| directory.sync_all())
             .map_err(AppError::operation)
     }
+}
+
+fn snapshot_path(directory: &Path, hash: &str) -> Result<PathBuf, AppError> {
+    if hash.len() != 64 || !hash.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(AppError::operation(
+            "Outline pull state contains an invalid snapshot hash",
+        ));
+    }
+    Ok(directory.join(format!("{hash}.md")))
+}
+
+fn write_content_snapshot(directory: &Path, hash: &str, content: &str) -> Result<(), AppError> {
+    fs::create_dir_all(directory).map_err(AppError::operation)?;
+    let path = snapshot_path(directory, hash)?;
+    if path.exists() {
+        let existing = fs::read(&path).map_err(AppError::operation)?;
+        if bytes_hash(&existing) != hash {
+            return Err(AppError::operation(
+                "Outline pull content snapshot hash mismatch",
+            ));
+        }
+        return Ok(());
+    }
+    let temporary = path.with_extension("md.tmp");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary)
+        .map_err(AppError::operation)?;
+    file.write_all(content.as_bytes())
+        .map_err(AppError::operation)?;
+    file.sync_all().map_err(AppError::operation)?;
+    fs::rename(temporary, path).map_err(AppError::operation)
+}
+
+fn hydrate_state_sources(path: &Path, state: &mut OutlinePullState) -> Result<(), AppError> {
+    let directory = path.parent().expect("state parent").join("sources");
+    for mapping in state.documents.values_mut() {
+        if mapping.base_content.is_empty() {
+            let snapshot = snapshot_path(&directory, &mapping.last_remote_content_hash)?;
+            mapping.base_content = fs::read_to_string(snapshot).map_err(|_| {
+                AppError::operation("Outline pull state is missing a required base snapshot")
+            })?;
+        }
+        if mapping.last_remote_source.is_none() {
+            if let Some(hash) = mapping.last_remote_source_hash.as_deref() {
+                let snapshot = snapshot_path(&directory, hash)?;
+                if snapshot.exists() {
+                    mapping.last_remote_source =
+                        Some(fs::read_to_string(snapshot).map_err(AppError::operation)?);
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 impl Drop for StateLock {
@@ -3473,6 +3556,17 @@ mod tests {
         assert_eq!(
             mapping.last_remote_updated_at.as_deref(),
             Some("2026-08-24T12:00:00Z")
+        );
+        let persisted = fs::read_to_string(state_path(&paths, "wiki").unwrap()).unwrap();
+        assert!(!persisted.contains("remote source"));
+        assert!(
+            paths
+                .vulcan_dir()
+                .join("integrations/outline-pull/sources")
+                .read_dir()
+                .unwrap()
+                .count()
+                >= 1
         );
         assert!(load_state(
             &paths,
