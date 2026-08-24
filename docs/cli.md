@@ -166,7 +166,7 @@ Behavior:
 - `vulcan export markdown|json|csv|epub|zip|outline-zip|sqlite [<query>] ...`: materialize notes as combined documents, datasets, books, or archives. Omitting `<query>`, `--query-json`, and `--selection-json` exports the full vault (`from notes`). `--selection-json` accepts the shared additive query/graph selection plan. `outline-zip` plans Outline's sibling file/directory hierarchy; see [Outline publishing](guide/outline-publishing.md).
 - Query-capable `[export.profiles.<name>]` entries use the same full-vault default when neither `query` nor `query_json` is configured.
 - `vulcan export search-index [--path <FILE>] [--pretty]`: write the cached search corpus as a static JSON index.
-- `vulcan publish outline <profile> [--dry-run] [--overwrite-conflicts]`: reconcile a configured one-way publication into an existing Outline collection. Remote drift stops publication unless the explicit overwrite flag is supplied; see [Outline publishing](guide/outline-publishing.md).
+- `vulcan publish outline <profile> [--dry-run] [--overwrite-conflict <source-path>] [--overwrite-conflicts]`: reconcile a configured one-way publication into an existing Outline collection with human-readable phase/item progress. Remote drift stops publication unless selective or all-conflict overwrite authorization is supplied; see [Outline publishing](guide/outline-publishing.md).
 - `vulcan changes [--checkpoint <name>]`: report note, link, property, and embedding changes since the last scan or a named checkpoint.
 - `vulcan note diff <note> [--since <checkpoint>]`: show one note's changes since git `HEAD`, the last scan, or a named checkpoint.
 

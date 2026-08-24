@@ -7,6 +7,88 @@ use crate::AppError;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OutlineConflictPolicy {
+    overwrite_all: bool,
+    overwrite_paths: BTreeSet<String>,
+}
+
+impl OutlineConflictPolicy {
+    #[must_use]
+    pub fn abort() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn overwrite_all() -> Self {
+        Self {
+            overwrite_all: true,
+            overwrite_paths: BTreeSet::new(),
+        }
+    }
+
+    #[must_use]
+    pub fn overwrite_paths(paths: impl IntoIterator<Item = String>) -> Self {
+        Self {
+            overwrite_all: false,
+            overwrite_paths: paths.into_iter().collect(),
+        }
+    }
+
+    fn overwrites(&self, source_path: &str) -> bool {
+        self.overwrite_all || self.overwrite_paths.contains(source_path)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutlineConflictKind {
+    MissingRemoteDocument,
+    RemoteDocumentDrift,
+    RemovedRemoteDocumentMissing,
+    RemovedRemoteDocumentDrift,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OutlineConflictDetail {
+    pub kind: OutlineConflictKind,
+    pub local: OutlineConflictSide,
+    pub remote: OutlineConflictSide,
+    pub base_content_hash: String,
+    pub local_content_hash: Option<String>,
+    pub remote_content_hash: Option<String>,
+    pub base_title: String,
+    pub local_title: Option<String>,
+    pub remote_title: Option<String>,
+    pub base_parent_remote_id: Option<String>,
+    pub local_parent_remote_id: Option<String>,
+    pub remote_parent_remote_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutlineConflictSideState {
+    Unchanged,
+    Changed,
+    Missing,
+    Removed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutlineConflictField {
+    Content,
+    Title,
+    Parent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OutlineConflictSide {
+    pub state: OutlineConflictSideState,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub changed_fields: Vec<OutlineConflictField>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OutlinePublishActionKind {
@@ -30,6 +112,8 @@ pub struct OutlinePublishAction {
     pub parent_source_path: Option<String>,
     pub desired_parent_remote_id: Option<String>,
     pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<OutlineConflictDetail>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -59,6 +143,30 @@ pub fn plan_outline_reconciliation(
     publication: &OutlinePublicationPlan,
     state: &OutlinePublishState,
     overwrite_conflicts: bool,
+) -> Result<OutlinePublishPlan, AppError> {
+    let conflict_policy = if overwrite_conflicts {
+        OutlineConflictPolicy::overwrite_all()
+    } else {
+        OutlineConflictPolicy::abort()
+    };
+    plan_outline_reconciliation_with_policy(
+        api,
+        profile,
+        collection_id,
+        publication,
+        state,
+        &conflict_policy,
+    )
+}
+
+#[allow(clippy::too_many_lines)]
+pub fn plan_outline_reconciliation_with_policy(
+    api: &dyn OutlineApi,
+    profile: &str,
+    collection_id: &str,
+    publication: &OutlinePublicationPlan,
+    state: &OutlinePublishState,
+    conflict_policy: &OutlineConflictPolicy,
 ) -> Result<OutlinePublishPlan, AppError> {
     state.validate(profile, collection_id)?;
     if !publication.is_valid() {
@@ -121,13 +229,22 @@ pub fn plan_outline_reconciliation(
                 parent_source_path: document.parent_source_path.clone(),
                 desired_parent_remote_id,
                 reason: "local document has no durable Outline mapping".to_string(),
+                conflict: None,
             });
             continue;
         };
         matched_identities.insert(source_identity.to_string());
         let mapping = &state.documents[source_identity];
+        let desired_content = render_remote_document_content_with_links(
+            document,
+            &publication.documents,
+            &remote_document_ids,
+            &publication.attachments,
+            &remote_urls,
+        );
+        let desired_hash = content_hash(&desired_content);
         if !listed_by_id.contains_key(mapping.remote_document_id.as_str()) {
-            if mapping.pending_create || overwrite_conflicts {
+            if mapping.pending_create || conflict_policy.overwrites(&document.source_path) {
                 overwritten_conflicts += usize::from(!mapping.pending_create);
                 actions.push(OutlinePublishAction {
                     kind: OutlinePublishActionKind::Create,
@@ -142,25 +259,48 @@ pub fn plan_outline_reconciliation(
                         "recreate a managed remote document missing from the collection"
                     }
                     .to_string(),
+                    conflict: None,
                 });
             } else {
                 actions.push(conflict_action(
                     source_identity,
                     mapping,
+                    &document.source_path,
+                    document.parent_source_path.clone(),
+                    desired_parent_remote_id.clone(),
                     "managed remote document is missing from the collection",
+                    OutlineConflictDetail {
+                        kind: OutlineConflictKind::MissingRemoteDocument,
+                        local: changed_conflict_side([
+                            (
+                                desired_hash != mapping.last_published_content_hash,
+                                OutlineConflictField::Content,
+                            ),
+                            (
+                                document.title != mapping.last_published_title,
+                                OutlineConflictField::Title,
+                            ),
+                            (
+                                desired_parent_remote_id != mapping.remote_parent_id,
+                                OutlineConflictField::Parent,
+                            ),
+                        ]),
+                        remote: conflict_side(OutlineConflictSideState::Missing),
+                        base_content_hash: mapping.last_published_content_hash.clone(),
+                        local_content_hash: Some(desired_hash),
+                        remote_content_hash: None,
+                        base_title: mapping.last_published_title.clone(),
+                        local_title: Some(document.title.clone()),
+                        remote_title: None,
+                        base_parent_remote_id: mapping.remote_parent_id.clone(),
+                        local_parent_remote_id: desired_parent_remote_id.clone(),
+                        remote_parent_remote_id: None,
+                    },
                 ));
             }
             continue;
         }
         let remote = listed_by_id[mapping.remote_document_id.as_str()];
-        let desired_content = render_remote_document_content_with_links(
-            document,
-            &publication.documents,
-            &remote_document_ids,
-            &publication.attachments,
-            &remote_urls,
-        );
-        let desired_hash = content_hash(&desired_content);
         let remote_hash = content_hash(&remote.text);
         let remote_drift = remote_hash != mapping.last_published_content_hash
             || remote.title != mapping.last_published_title
@@ -169,7 +309,7 @@ pub fn plan_outline_reconciliation(
             && remote.title == document.title
             && remote.parent_document_id == desired_parent_remote_id;
         if remote_drift && !desired_matches_remote {
-            if overwrite_conflicts {
+            if conflict_policy.overwrites(&document.source_path) {
                 overwritten_conflicts += 1;
                 let content_differs = remote_hash != desired_hash || remote.title != document.title;
                 let parent_differs = remote.parent_document_id != desired_parent_remote_id;
@@ -187,12 +327,56 @@ pub fn plan_outline_reconciliation(
                     parent_source_path: document.parent_source_path.clone(),
                     desired_parent_remote_id,
                     reason: "overwrite remote drift with the canonical local document".to_string(),
+                    conflict: None,
                 });
             } else {
                 actions.push(conflict_action(
                     source_identity,
                     mapping,
+                    &document.source_path,
+                    document.parent_source_path.clone(),
+                    desired_parent_remote_id.clone(),
                     "remote content, title, or parent changed since the last successful publication",
+                    OutlineConflictDetail {
+                        kind: OutlineConflictKind::RemoteDocumentDrift,
+                        local: changed_conflict_side([
+                            (
+                                desired_hash != mapping.last_published_content_hash,
+                                OutlineConflictField::Content,
+                            ),
+                            (
+                                document.title != mapping.last_published_title,
+                                OutlineConflictField::Title,
+                            ),
+                            (
+                                desired_parent_remote_id != mapping.remote_parent_id,
+                                OutlineConflictField::Parent,
+                            ),
+                        ]),
+                        remote: changed_conflict_side([
+                            (
+                                remote_hash != mapping.last_published_content_hash,
+                                OutlineConflictField::Content,
+                            ),
+                            (
+                                remote.title != mapping.last_published_title,
+                                OutlineConflictField::Title,
+                            ),
+                            (
+                                remote.parent_document_id != mapping.remote_parent_id,
+                                OutlineConflictField::Parent,
+                            ),
+                        ]),
+                        base_content_hash: mapping.last_published_content_hash.clone(),
+                        local_content_hash: Some(desired_hash.clone()),
+                        remote_content_hash: Some(remote_hash.clone()),
+                        base_title: mapping.last_published_title.clone(),
+                        local_title: Some(document.title.clone()),
+                        remote_title: Some(remote.title.clone()),
+                        base_parent_remote_id: mapping.remote_parent_id.clone(),
+                        local_parent_remote_id: desired_parent_remote_id.clone(),
+                        remote_parent_remote_id: remote.parent_document_id.clone(),
+                    },
                 ));
             }
             continue;
@@ -231,6 +415,7 @@ pub fn plan_outline_reconciliation(
             parent_source_path: document.parent_source_path.clone(),
             desired_parent_remote_id,
             reason: reason.to_string(),
+            conflict: None,
         });
     }
 
@@ -266,6 +451,7 @@ pub fn plan_outline_reconciliation(
                 "referenced attachment has not been uploaded"
             }
             .to_string(),
+            conflict: None,
         });
     }
 
@@ -282,11 +468,12 @@ pub fn plan_outline_reconciliation(
                 parent_source_path: None,
                 desired_parent_remote_id: None,
                 reason: "resume an interrupted managed-document archive".to_string(),
+                conflict: None,
             });
             continue;
         }
         if !listed_by_id.contains_key(mapping.remote_document_id.as_str()) {
-            if overwrite_conflicts {
+            if conflict_policy.overwrites(&mapping.source_path) {
                 overwritten_conflicts += 1;
                 actions.push(OutlinePublishAction {
                     kind: OutlinePublishActionKind::AdoptRemoteResult,
@@ -298,12 +485,30 @@ pub fn plan_outline_reconciliation(
                     reason:
                         "adopt the disappearance of a remotely missing, locally removed document"
                             .to_string(),
+                    conflict: None,
                 });
             } else {
                 actions.push(conflict_action(
                     source_identity,
                     mapping,
+                    &mapping.source_path,
+                    None,
+                    None,
                     "locally removed mapping points to a missing remote document",
+                    OutlineConflictDetail {
+                        kind: OutlineConflictKind::RemovedRemoteDocumentMissing,
+                        local: conflict_side(OutlineConflictSideState::Removed),
+                        remote: conflict_side(OutlineConflictSideState::Missing),
+                        base_content_hash: mapping.last_published_content_hash.clone(),
+                        local_content_hash: None,
+                        remote_content_hash: None,
+                        base_title: mapping.last_published_title.clone(),
+                        local_title: None,
+                        remote_title: None,
+                        base_parent_remote_id: mapping.remote_parent_id.clone(),
+                        local_parent_remote_id: None,
+                        remote_parent_remote_id: None,
+                    },
                 ));
             }
             continue;
@@ -318,12 +523,13 @@ pub fn plan_outline_reconciliation(
                 parent_source_path: None,
                 desired_parent_remote_id: None,
                 reason: "remote document was already archived".to_string(),
+                conflict: None,
             });
         } else if content_hash(&remote.text) != mapping.last_published_content_hash
             || remote.title != mapping.last_published_title
             || remote.parent_document_id != mapping.remote_parent_id
         {
-            if overwrite_conflicts {
+            if conflict_policy.overwrites(&mapping.source_path) {
                 overwritten_conflicts += 1;
                 actions.push(OutlinePublishAction {
                     kind: OutlinePublishActionKind::Archive,
@@ -335,12 +541,44 @@ pub fn plan_outline_reconciliation(
                     reason:
                         "archive the remotely changed document removed from the local selection"
                             .to_string(),
+                    conflict: None,
                 });
             } else {
+                let remote_hash = content_hash(&remote.text);
                 actions.push(conflict_action(
                     source_identity,
                     mapping,
+                    &mapping.source_path,
+                    None,
+                    None,
                     "remote document changed after its local source was removed",
+                    OutlineConflictDetail {
+                        kind: OutlineConflictKind::RemovedRemoteDocumentDrift,
+                        local: conflict_side(OutlineConflictSideState::Removed),
+                        remote: changed_conflict_side([
+                            (
+                                remote_hash != mapping.last_published_content_hash,
+                                OutlineConflictField::Content,
+                            ),
+                            (
+                                remote.title != mapping.last_published_title,
+                                OutlineConflictField::Title,
+                            ),
+                            (
+                                remote.parent_document_id != mapping.remote_parent_id,
+                                OutlineConflictField::Parent,
+                            ),
+                        ]),
+                        base_content_hash: mapping.last_published_content_hash.clone(),
+                        local_content_hash: None,
+                        remote_content_hash: Some(remote_hash),
+                        base_title: mapping.last_published_title.clone(),
+                        local_title: None,
+                        remote_title: Some(remote.title.clone()),
+                        base_parent_remote_id: mapping.remote_parent_id.clone(),
+                        local_parent_remote_id: None,
+                        remote_parent_remote_id: remote.parent_document_id.clone(),
+                    },
                 ));
             }
         } else {
@@ -352,6 +590,7 @@ pub fn plan_outline_reconciliation(
                 parent_source_path: None,
                 desired_parent_remote_id: None,
                 reason: "previously managed local source is no longer selected".to_string(),
+                conflict: None,
             });
         }
     }
@@ -414,16 +653,43 @@ fn unique_mapping<'a>(
 fn conflict_action(
     source_identity: &str,
     mapping: &OutlineDocumentMapping,
+    source_path: &str,
+    parent_source_path: Option<String>,
+    desired_parent_remote_id: Option<String>,
     reason: &str,
+    conflict: OutlineConflictDetail,
 ) -> OutlinePublishAction {
     OutlinePublishAction {
         kind: OutlinePublishActionKind::Conflict,
         source_identity: Some(source_identity.to_string()),
-        source_path: Some(mapping.source_path.clone()),
+        source_path: Some(source_path.to_string()),
         remote_document_id: Some(mapping.remote_document_id.clone()),
-        parent_source_path: None,
-        desired_parent_remote_id: mapping.remote_parent_id.clone(),
+        parent_source_path,
+        desired_parent_remote_id,
         reason: reason.to_string(),
+        conflict: Some(conflict),
+    }
+}
+
+fn conflict_side(state: OutlineConflictSideState) -> OutlineConflictSide {
+    OutlineConflictSide {
+        state,
+        changed_fields: Vec::new(),
+    }
+}
+
+fn changed_conflict_side(fields: [(bool, OutlineConflictField); 3]) -> OutlineConflictSide {
+    let changed_fields = fields
+        .into_iter()
+        .filter_map(|(changed, field)| changed.then_some(field))
+        .collect::<Vec<_>>();
+    OutlineConflictSide {
+        state: if changed_fields.is_empty() {
+            OutlineConflictSideState::Unchanged
+        } else {
+            OutlineConflictSideState::Changed
+        },
+        changed_fields,
     }
 }
 
@@ -648,6 +914,21 @@ mod tests {
         )
         .expect("conflict plan");
         assert!(plan.has_conflicts());
+        let conflict = plan.actions[0].conflict.as_ref().expect("conflict detail");
+        assert_eq!(conflict.kind, OutlineConflictKind::RemoteDocumentDrift);
+        assert_eq!(conflict.local.state, OutlineConflictSideState::Changed);
+        assert_eq!(
+            conflict.local.changed_fields,
+            vec![OutlineConflictField::Content]
+        );
+        assert_eq!(conflict.remote.state, OutlineConflictSideState::Changed);
+        assert_eq!(
+            conflict.remote.changed_fields,
+            vec![OutlineConflictField::Content]
+        );
+        assert_eq!(conflict.local_title.as_deref(), Some("Home"));
+        assert_eq!(conflict.remote_title.as_deref(), Some("Home"));
+        assert_ne!(conflict.local_content_hash, conflict.remote_content_hash);
 
         let desired = remote("remote", "Home", "local edit", None);
         let api = MockApi {
@@ -704,6 +985,94 @@ mod tests {
         );
         assert!(!plan.has_conflicts());
         assert!(api.info_calls.borrow().is_empty());
+    }
+
+    #[test]
+    fn selective_conflict_policy_overwrites_only_named_source_paths() {
+        let home = remote("home", "Home", "old home", None);
+        let notes = remote("notes", "Notes", "old notes", None);
+        let mut state = OutlinePublishState::empty("wiki", "collection");
+        state
+            .documents
+            .insert("source-home".to_string(), state_entry("Home.md", &home));
+        state
+            .documents
+            .insert("source-notes".to_string(), state_entry("Notes.md", &notes));
+        let api = MockApi {
+            documents: BTreeMap::from([
+                (
+                    "home".to_string(),
+                    remote("home", "Home", "remote home", None),
+                ),
+                (
+                    "notes".to_string(),
+                    remote("notes", "Notes", "remote notes", None),
+                ),
+            ]),
+            info_calls: RefCell::new(Vec::new()),
+        };
+        let policy = OutlineConflictPolicy::overwrite_paths(["Home.md".to_string()]);
+
+        let plan = plan_outline_reconciliation_with_policy(
+            &api,
+            "wiki",
+            "collection",
+            &publication(&[
+                ("Home.md", "local home", None),
+                ("Notes.md", "local notes", None),
+            ]),
+            &state,
+            &policy,
+        )
+        .expect("selective conflict plan");
+
+        assert_eq!(plan.overwritten_conflicts, 1);
+        assert_eq!(plan.actions[0].kind, OutlinePublishActionKind::Update);
+        assert_eq!(plan.actions[1].kind, OutlinePublishActionKind::Conflict);
+        assert_eq!(plan.actions[1].source_path.as_deref(), Some("Notes.md"));
+    }
+
+    #[test]
+    fn moved_source_conflict_reports_current_local_path_and_three_way_parent_state() {
+        let original = remote("remote", "Home", "old", Some("old-parent"));
+        let mut state = OutlinePublishState::empty("wiki", "collection");
+        state
+            .documents
+            .insert("source".to_string(), state_entry("Home.md", &original));
+        let api = MockApi {
+            documents: BTreeMap::from([(
+                "remote".to_string(),
+                remote("remote", "Home", "remote edit", Some("old-parent")),
+            )]),
+            info_calls: RefCell::new(Vec::new()),
+        };
+        let mut desired = publication(&[("Moved.md", "local edit", None)]);
+        desired.documents[0].source_document_id = "cache-Home.md".to_string();
+
+        let plan = plan_outline_reconciliation(&api, "wiki", "collection", &desired, &state, false)
+            .expect("moved conflict plan");
+
+        let action = &plan.actions[0];
+        assert_eq!(action.source_path.as_deref(), Some("Moved.md"));
+        assert_eq!(action.desired_parent_remote_id, None);
+        let conflict = action.conflict.as_ref().expect("conflict detail");
+        assert!(conflict
+            .local
+            .changed_fields
+            .contains(&OutlineConflictField::Parent));
+        assert!(!conflict
+            .remote
+            .changed_fields
+            .contains(&OutlineConflictField::Parent));
+        assert_eq!(
+            conflict.base_parent_remote_id.as_deref(),
+            Some("old-parent")
+        );
+        assert_eq!(conflict.local_parent_remote_id, None);
+        assert_eq!(
+            conflict.remote_parent_remote_id.as_deref(),
+            Some("old-parent")
+        );
     }
 
     #[test]

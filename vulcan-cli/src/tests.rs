@@ -1037,6 +1037,7 @@ fn parses_outline_publish_dry_run_command() {
                 profile: "wiki".to_string(),
                 dry_run: true,
                 overwrite_conflicts: false,
+                overwrite_conflict: Vec::new(),
             },
         }
     );
@@ -1059,9 +1060,50 @@ fn parses_outline_publish_overwrite_conflicts_command() {
                 profile: "wiki".to_string(),
                 dry_run: false,
                 overwrite_conflicts: true,
+                overwrite_conflict: Vec::new(),
             },
         }
     );
+}
+
+#[test]
+fn parses_outline_publish_selective_conflict_overrides() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "publish",
+        "outline",
+        "wiki",
+        "--overwrite-conflict",
+        "Home.md",
+        "--overwrite-conflict",
+        "Projects/Plan.md",
+    ])
+    .expect("selective Outline overwrite command should parse");
+    assert_eq!(
+        cli.command,
+        Command::Publish {
+            command: PublishCommand::Outline {
+                profile: "wiki".to_string(),
+                dry_run: false,
+                overwrite_conflicts: false,
+                overwrite_conflict: vec!["Home.md".to_string(), "Projects/Plan.md".to_string()],
+            },
+        }
+    );
+}
+
+#[test]
+fn rejects_combining_selective_and_global_outline_conflict_overrides() {
+    assert!(Cli::try_parse_from([
+        "vulcan",
+        "publish",
+        "outline",
+        "wiki",
+        "--overwrite-conflict",
+        "Home.md",
+        "--overwrite-conflicts",
+    ])
+    .is_err());
 }
 
 #[test]

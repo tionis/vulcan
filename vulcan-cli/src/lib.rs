@@ -491,7 +491,10 @@ use vulcan_app::export::{
 use vulcan_app::notes::json_properties_to_frontmatter;
 use vulcan_app::outline_markdown::OutlineMarkdownOptions;
 #[cfg(feature = "web")]
-use vulcan_app::publish::outline::{publish_outline, HttpOutlineClient};
+use vulcan_app::publish::outline::{
+    publish_outline_with_progress, HttpOutlineClient, OutlineConflictField, OutlineConflictPolicy,
+    OutlineConflictSide, OutlineConflictSideState, OutlinePublishPhase, OutlinePublishProgress,
+};
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::site::{
     build_frontend_bundle as app_build_frontend_bundle,
@@ -799,6 +802,59 @@ struct SiteBuildProgressReporter {
     started_at: Instant,
     last_phase: Option<SiteBuildPhase>,
     next_checkpoint: usize,
+}
+
+struct OutlinePublishProgressReporter {
+    palette: AnsiPalette,
+    last_phase: Option<OutlinePublishPhase>,
+}
+
+impl OutlinePublishProgressReporter {
+    fn new(use_color: bool) -> Self {
+        Self {
+            palette: AnsiPalette::new(use_color),
+            last_phase: None,
+        }
+    }
+
+    fn selecting(&self) {
+        eprintln!("{}", self.palette.cyan("Selecting notes for Outline..."));
+    }
+
+    fn preparing(&self) {
+        eprintln!(
+            "{}",
+            self.palette.cyan("Preparing Outline-compatible content...")
+        );
+    }
+
+    fn record(&mut self, progress: &OutlinePublishProgress) {
+        if self.last_phase != Some(progress.phase) {
+            let message = match progress.phase {
+                OutlinePublishPhase::Planning => "Reading Outline and planning reconciliation...",
+                OutlinePublishPhase::ReconcilingDocuments => "Reconciling document hierarchy...",
+                OutlinePublishPhase::UploadingAttachments => "Uploading attachments...",
+                OutlinePublishPhase::UpdatingDocuments => "Updating document content...",
+                OutlinePublishPhase::ArchivingDocuments => "Archiving removed documents...",
+                OutlinePublishPhase::Completed => "Outline reconciliation complete.",
+            };
+            eprintln!("{}", self.palette.cyan(message));
+            self.last_phase = Some(progress.phase);
+        }
+        if let Some(path) = progress.current_path.as_deref() {
+            let ordinal = progress.processed.saturating_add(1).min(progress.total);
+            if progress.total > 10 && ordinal != progress.total && !ordinal.is_multiple_of(25) {
+                return;
+            }
+            eprintln!(
+                "{} {}/{} | {}",
+                self.palette.cyan("Processing"),
+                self.palette.bold(&ordinal.to_string()),
+                progress.total,
+                self.palette.dim(path),
+            );
+        }
+    }
 }
 
 impl SiteBuildProgressReporter {
@@ -1331,11 +1387,13 @@ fn run_publish_command(
     paths: &VaultPaths,
     command: &PublishCommand,
     read_filter: Option<&PermissionFilter>,
+    use_stderr_color: bool,
 ) -> Result<(), CliError> {
     let PublishCommand::Outline {
         profile,
         dry_run,
         overwrite_conflicts,
+        overwrite_conflict,
     } = command;
     let loaded = load_vault_config(paths);
     let profile_config = loaded
@@ -1371,6 +1429,11 @@ fn run_publish_command(
         .collection_title
         .as_deref()
         .unwrap_or(profile);
+    let mut progress = (cli.output == OutputFormat::Human && !cli.quiet)
+        .then(|| OutlinePublishProgressReporter::new(use_stderr_color));
+    if let Some(progress) = progress.as_ref() {
+        progress.selecting();
+    }
     let query_report = execute_export_selection(
         paths,
         request.query,
@@ -1379,6 +1442,9 @@ fn run_publish_command(
         request.read_filter,
     )
     .map_err(CliError::operation)?;
+    if let Some(progress) = progress.as_ref() {
+        progress.preparing();
+    }
     let prepared = prepare_outline_export_data(
         paths,
         &query_report,
@@ -1405,17 +1471,37 @@ fn run_publish_command(
         profile_config.page_size.unwrap_or(100),
     )
     .map_err(CliError::operation)?;
-    let report = publish_outline(
+    let conflict_policy = outline_conflict_policy(*overwrite_conflicts, overwrite_conflict);
+    let report = publish_outline_with_progress(
         paths,
         &client,
         profile,
         &collection_id,
         &publication,
         *dry_run,
-        *overwrite_conflicts,
+        &conflict_policy,
+        |event| {
+            if let Some(progress) = progress.as_mut() {
+                progress.record(event);
+            }
+        },
     )
     .map_err(CliError::operation)?;
     print_outline_publish_report(cli.output, &report)
+}
+
+#[cfg(feature = "web")]
+fn outline_conflict_policy(
+    overwrite_all: bool,
+    overwrite_paths: &[String],
+) -> OutlineConflictPolicy {
+    if overwrite_all {
+        OutlineConflictPolicy::overwrite_all()
+    } else if overwrite_paths.is_empty() {
+        OutlineConflictPolicy::abort()
+    } else {
+        OutlineConflictPolicy::overwrite_paths(overwrite_paths.iter().cloned())
+    }
 }
 
 #[cfg(feature = "web")]
@@ -1434,6 +1520,17 @@ fn print_outline_publish_report(
                     action.source_path.as_deref().unwrap_or("-"),
                     action.reason
                 );
+                if let Some(conflict) = &action.conflict {
+                    println!(
+                        "  conflict={:?}; local={}; remote={}",
+                        conflict.kind,
+                        outline_conflict_side_summary(&conflict.local),
+                        outline_conflict_side_summary(&conflict.remote),
+                    );
+                    println!(
+                        "  review this item, then use --overwrite-conflict <SOURCE_PATH> to replace only this managed document"
+                    );
+                }
             }
         }
     }
@@ -1444,6 +1541,25 @@ fn print_outline_publish_report(
             "Outline publication stopped with {} remote conflict(s)",
             report.conflicts
         )))
+    }
+}
+
+#[cfg(feature = "web")]
+fn outline_conflict_side_summary(side: &OutlineConflictSide) -> String {
+    match side.state {
+        OutlineConflictSideState::Unchanged => "unchanged".to_string(),
+        OutlineConflictSideState::Missing => "missing".to_string(),
+        OutlineConflictSideState::Removed => "removed".to_string(),
+        OutlineConflictSideState::Changed => side
+            .changed_fields
+            .iter()
+            .map(|field| match field {
+                OutlineConflictField::Content => "content",
+                OutlineConflictField::Title => "title",
+                OutlineConflictField::Parent => "parent",
+            })
+            .collect::<Vec<_>>()
+            .join(", "),
     }
 }
 
@@ -1470,6 +1586,7 @@ fn run_publish_command(
     _paths: &VaultPaths,
     _command: &PublishCommand,
     _read_filter: Option<&PermissionFilter>,
+    _use_stderr_color: bool,
 ) -> Result<(), CliError> {
     Err(CliError::operation(
         "Outline publishing requires the `web` feature",
@@ -3605,7 +3722,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         },
         Command::Publish { ref command } => {
             let read_filter = selected_read_permission_filter(cli, &paths)?;
-            run_publish_command(cli, &paths, command, read_filter.as_ref())
+            run_publish_command(cli, &paths, command, read_filter.as_ref(), use_stderr_color)
         }
         Command::Export { ref command } => {
             let read_filter = selected_read_permission_filter(cli, &paths)?;

@@ -2386,6 +2386,14 @@ pub enum PublishCommand {
             help = "Replace conflicting managed remote content with the canonical local result"
         )]
         overwrite_conflicts: bool,
+        #[arg(
+            long = "overwrite-conflict",
+            value_name = "SOURCE_PATH",
+            action = ArgAction::Append,
+            conflicts_with = "overwrite_conflicts",
+            help = "Replace one conflicting managed document; repeat for additional source paths"
+        )]
+        overwrite_conflict: Vec<String>,
     },
 }
 

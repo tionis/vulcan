@@ -106,7 +106,11 @@ The token value is not a valid profile field. Put it in the named environment va
 ```sh
 OUTLINE_API_TOKEN=... vulcan --output json publish outline wiki --dry-run
 OUTLINE_API_TOKEN=... vulcan --output json publish outline wiki
-# After reviewing a conflict plan, intentionally restore the local projection:
+# After reviewing a conflict plan, restore selected local projections:
+OUTLINE_API_TOKEN=... vulcan --output json publish outline wiki \
+  --overwrite-conflict Home.md \
+  --overwrite-conflict Projects/Plan.md
+# Or explicitly restore every reported managed conflict:
 OUTLINE_API_TOKEN=... vulcan --output json publish outline wiki --overwrite-conflicts
 ```
 
@@ -122,9 +126,11 @@ Cache document IDs are hints, not durable synchronization identity. Vulcan first
 
 Reconciliation creates parents before children, updates changed Markdown, moves changed parents, uploads changed attachments, and archives managed documents whose local source is no longer selected. It never permanently deletes documents and never changes remote documents absent from the mapping state. State is saved after each successful remote operation, and new documents use a preselected UUID so an interrupted create can be looked up and adopted on retry.
 
-Before any mutation, Vulcan obtains the current managed documents through the paginated collection listing and compares their title, body, and parent with durable last-published hashes and the desired local projection. It does not issue a second `documents.info` request for every listed document, and it sends `documents.update` only for a planned content/title overwrite or when newly uploaded attachment URLs change rendered Markdown. A changed remote title, body, or parent is a conflict unless it already equals the desired result of an interrupted prior publication. Conflicts stop the entire mutation pass by default and are included in the structured report.
+Before any mutation, Vulcan obtains the current managed documents through the paginated collection listing and compares their title, body, and parent with durable last-published hashes and the desired local projection. It does not issue a second `documents.info` request for every listed document, and it sends `documents.update` only for a planned content/title overwrite or when newly uploaded attachment URLs change rendered Markdown. A changed remote title, body, or parent is a conflict unless it already equals the desired result of an interrupted prior publication. Conflicts stop the entire mutation pass by default. Each conflict action includes a typed conflict kind, whether the remote object is missing, changed content/title/parent dimensions, and base/local/remote hashes, titles, and parent IDs. Content itself is not copied into reports.
 
-After reviewing the conflict plan, pass `--overwrite-conflicts` to reassert the canonical local projection. The flag updates or moves remotely edited managed documents, recreates missing managed documents that still have a local source, archives remotely edited managed documents removed from the selection, and adopts already-missing removed documents. It never touches unmanaged remote documents. JSON plans report the number of `overwritten_conflicts`. The flag also works with `--dry-run`, which performs remote reads only and creates neither locks nor mapping directories.
+After reviewing the conflict plan, repeat `--overwrite-conflict <source-path>` to authorize only the named managed conflicts. Any remaining conflict still stops the entire mutation pass, so a selective live run cannot partially mutate the collection by accident. Use `--overwrite-conflicts` only when every reported managed conflict should be replaced by the canonical local projection. These controls update or move remotely edited managed documents, recreate missing managed documents that still have a local source, archive remotely edited managed documents removed from the selection, and adopt already-missing removed documents. They never touch unmanaged remote documents. JSON plans report the number of `overwritten_conflicts`. Both controls work with `--dry-run`, which performs remote reads only and creates neither locks nor mapping directories.
+
+Human output reports selection, compatibility preparation, remote planning, document hierarchy reconciliation, attachment upload, content update, archival, and completion on stderr, with per-item checkpoints and source paths. `--quiet` suppresses this progress, and JSON/Markdown output remains clean for automation.
 
 ### API publisher limitations
 

@@ -1,7 +1,7 @@
 use super::{
-    deterministic_remote_uuid, load_outline_state, lock_outline_state, plan_outline_reconciliation,
-    OutlineApi, OutlineAttachmentMapping, OutlineDocumentMapping, OutlinePublishActionKind,
-    OutlinePublishPlan,
+    deterministic_remote_uuid, load_outline_state, lock_outline_state,
+    plan_outline_reconciliation_with_policy, OutlineApi, OutlineAttachmentMapping,
+    OutlineConflictPolicy, OutlineDocumentMapping, OutlinePublishActionKind, OutlinePublishPlan,
 };
 use crate::export::outline::{
     planned_document_references_attachment, render_remote_document_content_with_links,
@@ -26,6 +26,26 @@ pub struct OutlinePublishReport {
     pub plan: OutlinePublishPlan,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutlinePublishPhase {
+    Planning,
+    ReconcilingDocuments,
+    UploadingAttachments,
+    UpdatingDocuments,
+    ArchivingDocuments,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OutlinePublishProgress {
+    pub phase: OutlinePublishPhase,
+    pub processed: usize,
+    pub total: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_path: Option<String>,
+}
+
 #[allow(clippy::too_many_lines)]
 pub fn publish_outline(
     paths: &VaultPaths,
@@ -36,16 +56,61 @@ pub fn publish_outline(
     dry_run: bool,
     overwrite_conflicts: bool,
 ) -> Result<OutlinePublishReport, AppError> {
+    let conflict_policy = if overwrite_conflicts {
+        OutlineConflictPolicy::overwrite_all()
+    } else {
+        OutlineConflictPolicy::abort()
+    };
+    publish_outline_with_progress(
+        paths,
+        api,
+        profile,
+        collection_id,
+        publication,
+        dry_run,
+        &conflict_policy,
+        |_| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub fn publish_outline_with_progress<F>(
+    paths: &VaultPaths,
+    api: &dyn OutlineApi,
+    profile: &str,
+    collection_id: &str,
+    publication: &OutlinePublicationPlan,
+    dry_run: bool,
+    conflict_policy: &OutlineConflictPolicy,
+    mut on_progress: F,
+) -> Result<OutlinePublishReport, AppError>
+where
+    F: FnMut(&OutlinePublishProgress),
+{
+    emit_progress(
+        &mut on_progress,
+        OutlinePublishPhase::Planning,
+        0,
+        publication.documents.len(),
+        None,
+    );
     if dry_run {
         let state = load_outline_state(paths, profile, collection_id)?;
-        let plan = plan_outline_reconciliation(
+        let plan = plan_outline_reconciliation_with_policy(
             api,
             profile,
             collection_id,
             publication,
             &state,
-            overwrite_conflicts,
+            conflict_policy,
         )?;
+        emit_progress(
+            &mut on_progress,
+            OutlinePublishPhase::Completed,
+            plan.actions.len(),
+            plan.actions.len(),
+            None,
+        );
         return Ok(report(
             plan,
             publication.diagnostics.clone(),
@@ -57,16 +122,23 @@ pub fn publish_outline(
 
     let lock = lock_outline_state(paths, profile)?;
     let mut state = load_outline_state(paths, profile, collection_id)?;
-    let mut plan = plan_outline_reconciliation(
+    let mut plan = plan_outline_reconciliation_with_policy(
         api,
         profile,
         collection_id,
         publication,
         &state,
-        overwrite_conflicts,
+        conflict_policy,
     )?;
     plan.dry_run = false;
     if plan.has_conflicts() {
+        emit_progress(
+            &mut on_progress,
+            OutlinePublishPhase::Completed,
+            0,
+            plan.actions.len(),
+            None,
+        );
         return Ok(report(
             plan,
             publication.diagnostics.clone(),
@@ -76,7 +148,23 @@ pub fn publish_outline(
         ));
     }
 
-    for document in &publication.documents {
+    if !publication.documents.is_empty() {
+        emit_progress(
+            &mut on_progress,
+            OutlinePublishPhase::ReconcilingDocuments,
+            0,
+            publication.documents.len(),
+            None,
+        );
+    }
+    for (index, document) in publication.documents.iter().enumerate() {
+        emit_progress(
+            &mut on_progress,
+            OutlinePublishPhase::ReconcilingDocuments,
+            index,
+            publication.documents.len(),
+            Some(&document.source_path),
+        );
         let action = plan
             .actions
             .iter()
@@ -164,9 +252,32 @@ pub fn publish_outline(
             .clone_from(&document.source_document_id);
         mapping.remote_parent_id = desired_parent;
         lock.save(&state)?;
+        emit_progress(
+            &mut on_progress,
+            OutlinePublishPhase::ReconcilingDocuments,
+            index + 1,
+            publication.documents.len(),
+            None,
+        );
     }
 
-    for attachment in &publication.attachments {
+    if !publication.attachments.is_empty() {
+        emit_progress(
+            &mut on_progress,
+            OutlinePublishPhase::UploadingAttachments,
+            0,
+            publication.attachments.len(),
+            None,
+        );
+    }
+    for (index, attachment) in publication.attachments.iter().enumerate() {
+        emit_progress(
+            &mut on_progress,
+            OutlinePublishPhase::UploadingAttachments,
+            index,
+            publication.attachments.len(),
+            Some(&attachment.source_path),
+        );
         let existing = state.documents.values().find_map(|mapping| {
             mapping
                 .attachments
@@ -175,6 +286,13 @@ pub fn publish_outline(
                 .cloned()
         });
         if existing.is_some() {
+            emit_progress(
+                &mut on_progress,
+                OutlinePublishPhase::UploadingAttachments,
+                index + 1,
+                publication.attachments.len(),
+                None,
+            );
             continue;
         }
         let owner = publication
@@ -216,6 +334,13 @@ pub fn publish_outline(
                 },
             );
         lock.save(&state)?;
+        emit_progress(
+            &mut on_progress,
+            OutlinePublishPhase::UploadingAttachments,
+            index + 1,
+            publication.attachments.len(),
+            None,
+        );
     }
 
     let selected_attachments = publication
@@ -245,7 +370,23 @@ pub fn publish_outline(
         })
         .collect::<BTreeMap<_, _>>();
 
-    for document in &publication.documents {
+    if !publication.documents.is_empty() {
+        emit_progress(
+            &mut on_progress,
+            OutlinePublishPhase::UpdatingDocuments,
+            0,
+            publication.documents.len(),
+            None,
+        );
+    }
+    for (index, document) in publication.documents.iter().enumerate() {
+        emit_progress(
+            &mut on_progress,
+            OutlinePublishPhase::UpdatingDocuments,
+            index,
+            publication.documents.len(),
+            Some(&document.source_path),
+        );
         let (source_identity, mapping) =
             mapping_by_path(&state.documents, &document.source_path)
                 .ok_or_else(|| AppError::operation("local document has no remote mapping"))?;
@@ -283,6 +424,13 @@ pub fn publish_outline(
         mapping.pending_create = false;
         mapping.pending_archive = false;
         lock.save(&state)?;
+        emit_progress(
+            &mut on_progress,
+            OutlinePublishPhase::UpdatingDocuments,
+            index + 1,
+            publication.documents.len(),
+            None,
+        );
     }
 
     let mut archives = plan
@@ -305,7 +453,24 @@ pub fn publish_outline(
             .cmp(&left.2.matches('/').count())
             .then(right.2.cmp(&left.2))
     });
-    for (source_identity, remote_id, _) in archives {
+    let archive_count = archives.len();
+    if archive_count > 0 {
+        emit_progress(
+            &mut on_progress,
+            OutlinePublishPhase::ArchivingDocuments,
+            0,
+            archive_count,
+            None,
+        );
+    }
+    for (index, (source_identity, remote_id, source_path)) in archives.into_iter().enumerate() {
+        emit_progress(
+            &mut on_progress,
+            OutlinePublishPhase::ArchivingDocuments,
+            index,
+            archive_count,
+            Some(&source_path),
+        );
         state
             .documents
             .get_mut(&source_identity)
@@ -322,6 +487,13 @@ pub fn publish_outline(
         }
         state.documents.remove(&source_identity);
         lock.save(&state)?;
+        emit_progress(
+            &mut on_progress,
+            OutlinePublishPhase::ArchivingDocuments,
+            index + 1,
+            archive_count,
+            None,
+        );
     }
 
     let selected_paths = publication
@@ -346,6 +518,13 @@ pub fn publish_outline(
         lock.save(&state)?;
     }
 
+    emit_progress(
+        &mut on_progress,
+        OutlinePublishPhase::Completed,
+        plan.actions.len(),
+        plan.actions.len(),
+        None,
+    );
     Ok(report(
         plan,
         publication.diagnostics.clone(),
@@ -353,6 +532,21 @@ pub fn publish_outline(
         false,
         true,
     ))
+}
+
+fn emit_progress(
+    on_progress: &mut impl FnMut(&OutlinePublishProgress),
+    phase: OutlinePublishPhase,
+    processed: usize,
+    total: usize,
+    current_path: Option<&str>,
+) {
+    on_progress(&OutlinePublishProgress {
+        phase,
+        processed,
+        total,
+        current_path: current_path.map(str::to_string),
+    });
 }
 
 fn report(
@@ -822,6 +1016,48 @@ mod tests {
             api.documents.borrow().get(&remote_id).expect("remote").text,
             "local"
         );
+    }
+
+    #[test]
+    fn publication_reports_phase_and_item_progress() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        let api = MockApi::default();
+        let publication = plan(vec![document("Home.md", "Home", "home", None)]);
+        let mut progress = Vec::new();
+
+        let report = publish_outline_with_progress(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            false,
+            &OutlineConflictPolicy::abort(),
+            |event| progress.push(event.clone()),
+        )
+        .expect("publication with progress");
+
+        assert!(report.applied);
+        assert_eq!(
+            progress.first().expect("first event").phase,
+            OutlinePublishPhase::Planning
+        );
+        assert_eq!(
+            progress.last().expect("last event").phase,
+            OutlinePublishPhase::Completed
+        );
+        assert!(progress.iter().any(|event| {
+            event.phase == OutlinePublishPhase::ReconcilingDocuments
+                && event.processed == 0
+                && event.total == 1
+                && event.current_path.as_deref() == Some("Home.md")
+        }));
+        assert!(progress.iter().any(|event| {
+            event.phase == OutlinePublishPhase::UpdatingDocuments
+                && event.processed == 1
+                && event.total == 1
+        }));
     }
 
     #[test]

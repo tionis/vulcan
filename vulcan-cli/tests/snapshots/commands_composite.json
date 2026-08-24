@@ -5713,6 +5713,17 @@
                 "value_names": [
                   "OVERWRITE_CONFLICTS"
                 ]
+              },
+              {
+                "help": "Replace one conflicting managed document; repeat for additional source paths",
+                "id": "overwrite_conflict",
+                "long": "overwrite-conflict",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SOURCE_PATH"
+                ]
               }
             ],
             "subcommands": []

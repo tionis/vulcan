@@ -10420,8 +10420,11 @@ fn skill_list_and_get_surface_bundled_skills() {
     let publishing = fs::read_to_string(installed_skills.join("publishing-and-export/SKILL.md"))
         .expect("publishing skill should be installed");
     assert!(publishing.contains("vulcan publish outline <profile> --dry-run"));
+    assert!(publishing.contains("--overwrite-conflict <source-path>"));
     assert!(publishing.contains("--overwrite-conflicts"));
     assert!(publishing.contains("overwritten_conflicts"));
+    assert!(publishing.contains("structured remote-drift conflict"));
+    assert!(publishing.contains("monitoring stderr progress"));
     assert!(publishing.contains("--selection-json"));
     assert!(publishing.contains(".vulcan/publish/outline/"));
 
@@ -15651,7 +15654,7 @@ max_retries = 0
     )
     .expect("Outline config");
 
-    Command::cargo_bin("vulcan")
+    let assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .env("VULCAN_TEST_OUTLINE_TOKEN", "test-outline-token")
         .args([
@@ -15663,11 +15666,16 @@ max_retries = 0
             "--dry-run",
         ])
         .assert()
-        .success()
-        .stderr(predicate::str::contains(
-            "warning: folder `Pantheons` has no selected configured folder note; generated an export-only placeholder",
-        ));
+        .success();
     handle.join().expect("mock Outline server should join");
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    assert!(stderr.contains(
+        "warning: folder `Pantheons` has no selected configured folder note; generated an export-only placeholder"
+    ));
+    assert!(stderr.contains("Selecting notes for Outline..."));
+    assert!(stderr.contains("Preparing Outline-compatible content..."));
+    assert!(stderr.contains("Reading Outline and planning reconciliation..."));
+    assert!(stderr.contains("Outline reconciliation complete."));
 }
 
 #[test]

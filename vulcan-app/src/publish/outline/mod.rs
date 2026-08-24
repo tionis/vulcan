@@ -9,9 +9,14 @@ mod state;
 #[cfg(feature = "web")]
 pub use client::HttpOutlineClient;
 pub use planner::{
-    plan_outline_reconciliation, OutlinePublishAction, OutlinePublishActionKind, OutlinePublishPlan,
+    plan_outline_reconciliation, plan_outline_reconciliation_with_policy, OutlineConflictDetail,
+    OutlineConflictField, OutlineConflictKind, OutlineConflictPolicy, OutlineConflictSide,
+    OutlineConflictSideState, OutlinePublishAction, OutlinePublishActionKind, OutlinePublishPlan,
 };
-pub use publisher::{publish_outline, OutlinePublishReport};
+pub use publisher::{
+    publish_outline, publish_outline_with_progress, OutlinePublishPhase, OutlinePublishProgress,
+    OutlinePublishReport,
+};
 pub use state::{
     load_outline_state, lock_outline_state, OutlineAttachmentMapping, OutlineDocumentMapping,
     OutlinePublishState, OutlineStateLock,
