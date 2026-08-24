@@ -3,7 +3,7 @@
 
 **Implementation brief for the engineering agent**  
 Created: 19 March 2026<br>
-Last architecture/status reconciliation: 23 August 2026
+Last architecture/status reconciliation: 24 August 2026
 
 User-facing CLI usage, filter syntax, and examples are documented separately in `docs/cli.md`. This document focuses on architecture and design decisions.
 
@@ -22,6 +22,7 @@ User-facing CLI usage, filter syntax, and examples are documented separately in 
 - **Property model:** Hybrid JSON + relational projections — Preserves loose Obsidian semantics without making query performance or typing unmanageable.
 - **Correctness model:** Watcher + periodic reconciliation — File watchers improve freshness but should not be treated as a sufficient source of truth.
 - **Information-hub model:** The materialized Markdown vault is the canonical interchange point. Device sync replicates that working tree; external document bindings and content routes import or publish logical documents through connector adapters. External systems never synchronize through SQLite or relay directly through Vulcan without an inspectable local state.
+- **Capability and compatibility model:** Design stable CLI, config, API, and domain boundaries around native Vulcan capabilities. Obsidian plugins and other tools contribute optional persisted-format adapters, settings importers, migration aliases, providers, and conformance profiles; they do not define Vulcan's product taxonomy or cap what a native workflow may do.
 - **Chunk sizing:** Use character count as a proxy for token count (default ~4000 characters ≈ 1024 tokens). A lightweight tokenizer may be added later for model-specific accuracy.
 - **CI:** GitHub Actions (`cargo test` + `clippy` + `fmt --check`), structured for future migration to Forgejo CI.
 
@@ -47,6 +48,7 @@ The first release should optimize for practical vault engineering tasks instead 
 - Support Dataview-style inline fields (`key:: value`) and Dataview Query Language (DQL) as a query surface, since many vaults depend on these conventions for metadata and dynamic views.[17]
 - Let users treat a vault as a dynamic, queryable document database with saved views, ad hoc queries, and safe edit workflows.
 - Offer an implementation-friendly automation surface for scripts, agents, and shell workflows.
+- Migrate useful plugin-authored vault conventions into coherent native capabilities that remain usable without Obsidian, while preserving explicit adapters for users who need upstream format or behavior compatibility.
 - Keep the materialized vault synchronized across devices through replaceable file-tree backends without making remote storage visible as partial cache state.
 - Bind Markdown notes to external documents through portable frontmatter or durable route mappings, including reference, publication, import, mirror, and proxy relationships.
 - Import selected content from systems such as SilverBullet or Git-backed wikis, inspect and edit it locally, then publish selected local content to systems such as Outline or HedgeDoc through explicit conflict-aware routes.
@@ -58,6 +60,7 @@ Do not aim for full visual or behavioral parity with the Obsidian desktop app in
 - Perfect rendering parity with every community plugin.
 - Reproducing the entire interactive Bases UI in version 1.
 - Supporting arbitrary plugin-defined syntax extensions during initial indexing.
+- Reproducing each plugin's command names, configuration layout, implementation limits, or unrelated editor semantics as Vulcan's permanent public model.
 - Using the cache as the authoritative source for note contents.
 - Building a distributed service before the local architecture is stable.
 - Treating a connector that supports both pull and push as implicit conflict-free bidirectional synchronization.
@@ -154,6 +157,35 @@ Regression strategy for boundary cleanup:
 - Use `scripts/compare_feature_matrix.sh` when changing feature flags or dependencies. It writes default, no-default, and individual optional-feature `cargo tree` outputs plus a short dependency-presence summary under `target/feature-matrix/`.
 - Add boundary tests that prevent production CLI code from reintroducing raw SQL, direct HTTP clients, runtime YAML parsing, shared workflow duplication, daemon runtime crates in `vulcan-core`, or MCP transport coupling to CLI rendering.
 - Prefer small mechanical module splits with focused unit tests before semantic changes.
+
+### Native capabilities and compatibility adapters
+
+Vulcan treats external applications and Obsidian plugins as interoperability inputs, not product-module boundaries. A plugin may reveal a useful workflow, but the durable implementation should be named and modeled for the user outcome. Exact upstream behavior is a promise only on an explicitly documented compatibility surface.
+
+Use the following layers:
+
+1. **Native capability:** a Vulcan-owned domain model and reusable `vulcan-core`/`vulcan-app` workflow with stable capability-oriented CLI, config, JSON, daemon, MCP, and assistant terminology.
+2. **Persisted-format adapter:** parses and preserves externally authored Markdown, frontmatter, markers, or sidecar files. Unsupported or version-dependent input produces diagnostics.
+3. **Settings importer:** explicitly translates reviewed external settings into native Vulcan configuration. Import reports retain source and mapping provenance; imported plugin files are never runtime authorities.
+4. **Provider or connector adapter:** integrates a replaceable external service behind a Vulcan-owned trait and capability contract.
+5. **Compatibility profile:** opts into exact or intentionally divergent upstream semantics where portable interpretation cannot be inferred safely. Profiles are scoped and versioned instead of changing normal vault behavior globally.
+
+Native capabilities may deliberately exceed an upstream plugin: they may support more input forms, providers, authentication sources, batch/query selection, daemon scheduling, agents, or safer transactional workflows. Conversely, editor chrome, accidental implementation quirks, and settings with no meaningful headless equivalent need not be copied. User-facing names should mention an upstream product only when selecting an importer, adapter, or compatibility profile, or when reporting provenance and diagnostics.
+
+Apply this model across the existing application rather than creating isolated plugin replicas:
+
+| Native Vulcan capability | Compatibility inputs and adapters |
+| --- | --- |
+| Canonical queries, expressions, and saved views | Dataview DQL/inline fields and Obsidian Bases syntax/settings |
+| Unified task model and task workflows | Tasks inline syntax/query blocks and TaskNotes file/settings conventions |
+| Templates, capture, and programmable automation | Obsidian Templates, Templater, and QuickAdd syntax/settings |
+| Boards and generated navigation | Kanban persisted boards and Waypoint/Landmark markers/settings |
+| Typed graph relationships | Wikilink Types alias/frontmatter conventions |
+| Contact records and interchange | VCF Contacts schemas/settings and vCard adapters |
+| Asset localization and maintenance | Local Images Plus settings and compatible path/naming policies |
+| Web archival, link enrichment, and language diagnostics | Wayback, Auto Link Title, and LanguageTool providers/settings |
+
+Shared infrastructure should be integrated below those surfaces: query selection, deterministic planning, permission checks, dry-run, atomic mutation, incremental refresh, structured reports, optional commits, and daemon scheduling must not be reimplemented per adapter. New compatibility work should first look for an existing native capability to extend; only a genuinely distinct reusable workflow warrants a new domain and command group.
 
 ### Agent Skills and projected skill commands
 
@@ -946,17 +978,17 @@ Dataview support reinforces the design direction in §12 (Bases: Query model bey
 
 All five compile to the same internal query AST, share the same filter and expression evaluation engine, and run against the same cache tables. The difference is where the query is authored (CLI, API, file, or note body) and how results are rendered.
 
-### Integration with other plugin compatibility phases
+### Integration with native capabilities and compatibility adapters
 
-The Dataview foundation in §12b serves as shared infrastructure for several subsequent plugin compatibility phases. Cross-references:
+The Dataview foundation in §12b is one compatibility surface over shared query, expression, property, and task capabilities. Subsequent integrations should reuse those native layers rather than making Dataview the owner of otherwise general semantics. Cross-references:
 
 - **Templater (Roadmap 9.9):** Templater's `<% %>` template syntax reuses the Dataview expression evaluator for template variable expansion. The DataviewJS sandbox (§12b DataviewJS) provides the JS runtime for Templater's `<%* %>` execution commands and `tp.web`/user script features. Native `tp.date`, `tp.file`, `tp.frontmatter` modules are implemented in Rust without the JS runtime.
 
-- **Tasks plugin (Roadmap 9.10):** Tasks plugin compatibility extends the task extraction from §12b (Task metadata) with a separate Tasks DSL parser for `` ```tasks `` query blocks. The Tasks plugin emoji shorthand (📅, ⏳, 🔁, etc.) is already parsed by §12b's task extraction. Phase 9.10 adds recurring task expansion (RRULE), task dependency graphs, and custom status types — queryable via both DQL and the Tasks DSL.
+- **Tasks plugin (Roadmap 9.10):** The Tasks adapter extends the task extraction from §12b (Task metadata) with a separate Tasks DSL parser for `` ```tasks `` query blocks. The Tasks plugin emoji shorthand (📅, ⏳, 🔁, etc.) is already parsed by §12b's task extraction. Recurrence (RRULE), dependencies, priorities, and custom statuses belong to Vulcan's shared task domain and are queryable through canonical queries, DQL, and the Tasks DSL.
 
-- **Kanban (Roadmap 9.11):** Kanban board parsing builds on list item extraction (§12b List item extraction) since cards are Markdown list items under heading-based columns. Card inline fields use the same type inference rules as §12b inline fields.
+- **Kanban (Roadmap 9.11):** The native board model builds on list item extraction (§12b List item extraction); the Kanban adapter maps heading-based columns, card items, and settings into it. Card inline fields use the same property type inference rules.
 
-- **TaskNotes (Roadmap 9.15):** TaskNotes tasks are individual files with rich frontmatter, queried through Bases views with custom source types (see Roadmap 4.5.1). TaskNotes does not use Dataview directly but shares the property query infrastructure from §9 and §12. Its Bases views use the same filter/sort/group/formula pipeline.
+- **TaskNotes (Roadmap 9.15):** TaskNotes files and settings adapt into Vulcan's primary task model. They share the property query infrastructure from §9 and §12, while their Bases views use the same canonical filter/sort/group/formula pipeline.
 
 - **Periodic notes (Roadmap 9.16):** The `file.day` implicit metadata field (§12b `file.*` namespace) depends on periodic note configuration to resolve which notes represent specific dates.
 
@@ -1007,6 +1039,8 @@ This is Vulcan's primary configuration file, stored in the `.vulcan/` directory 
 - Template default date/time formats for `{{date}}` / `{{time}}` (`[templates]`)
 - Non-secret connector profiles and content-route topology/policy (`[integrations.profiles]` and `[[integrations.routes]]` once Phase 15 lands)
 
+Configuration sections and keys are named after native Vulcan capabilities, not the plugin that originally inspired them. For example, generated navigation, typed relationships, asset localization, and language checking receive capability-oriented sections even when a Waypoint, Wikilink Types, Local Images Plus, or LanguageTool importer seeds them. Importers translate reviewed source settings explicitly, report ignored or lossy mappings, and never make the source plugin configuration a second runtime authority.
+
 ### `.vulcan/config.local.toml` (optional device-local override)
 
 This file is loaded after `.vulcan/config.toml` and may override device-local Vulcan settings. It is intended for concerns such as endpoint URLs, API key environment variable names, connector executable paths, auto-refresh preferences, or editor-adjacent workflow tuning that should not be synced back into the shared vault config. Repository identity and structure settings such as `[folder_notes]` remain shared-only and local attempts to override them are diagnosed and ignored. Credential values never belong in either shared or local TOML when an environment variable or device secret store can supply them.
@@ -1022,7 +1056,7 @@ When multiple configuration sources exist, precedence is:
 3. `.obsidian/app.json`
 4. Built-in defaults
 
-This allows users to keep a synced shared config while still overriding any setting locally without modifying the shared file or the Obsidian configuration.
+This allows users to keep a synced shared config while still overriding any setting locally without modifying the shared file or the Obsidian configuration. External settings participate only through explicit import; the precedence list does not authorize arbitrary runtime reads from `.obsidian/plugins/`.
 
 ### `.obsidian` configuration files (optional, read-only)
 
@@ -1305,6 +1339,12 @@ The JS API binds directly to vulcan-core structs (not CLI wrappers). The `vault`
 
 Web search and fetch capabilities serve AI integrations and the JS runtime. Search uses a pluggable `SearchBackend` trait (Kagi first). Fetch supports multiple output modes (markdown, HTML, raw); markdown mode uses `rs-trafilatura` main-content extraction and surfaces an explicit error when no readable main content can be extracted.
 
+Reusable web workflows such as asset localization, title enrichment, archival, publication, and connector pulls should share normalized request policy, SSRF protection, redirect validation, response limits, redaction, and credential handling rather than constructing independent HTTP clients. Public unauthenticated fetch is the default. Authenticated fetch requires an explicit named credential profile or per-invocation credential source and must re-authorize every redirect origin.
+
+Credential profiles may reference static header/cookie secrets in a device secret store or an environment variable. A device-local browser-cookie source may additionally name a supported browser and profile, but using it is a distinct high-risk permission: it is opt-in, origin/domain-scoped, and never an automatic fallback after a public request fails. Browser cookie values are decrypted only for the operation, filtered using browser-equivalent host/path/secure/expiry rules plus the configured allowlist, redacted from all output, and never written to notes, shared config, durable workflow state, cache rows, diagnostics, or logs. Profile selectors and secret references may live in `config.local.toml`; cookie values may not.
+
+Planning and `--dry-run` must not read or decrypt browser cookies, issue authenticated requests, or imply that remote access will succeed. Execution reports disclose that a credential source was used and which origins were authorized without exposing secret material. Permission profiles distinguish ordinary network access, credential use, and browser-cookie access so CLI, daemon, MCP, JavaScript, and assistant entrypoints enforce the same policy.
+
 ## 17e. Deferred native chat integrations
 
 Current recommendation: do not build in-process Telegram, Discord, Matrix, or similar chat adapters as part of the current Phase 9 critical path. Use an external runtime for the conversation loop and keep Vulcan focused on the durable parts of the system: vault semantics, command contracts, permissions, `AGENTS.md`, and skill files.
@@ -1389,7 +1429,7 @@ Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 
 - **Phase 7:** Post-v1 workflow features (move/rename variants, suggest, saved reports, link-mentions, automation)
 - **Phase 8:** Performance optimizations
-- **Phase 9:** CLI refinements and plugin compatibility — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), Tasks plugin compatibility (9.10), Kanban board support (9.11), external-agent integration through JSON/MCP plus vault-native guidance and skills (9.12), QuickAdd automation (9.13), plugin compatibility notes (9.14), TaskNotes full integration with Bases views (9.15), periodic notes with daily events (9.16), unified plugin settings import (9.17), **CLI redesign — two-level command hierarchy, note CRUD, query enhancements, JS runtime/REPL, web tools, git ops, integrated docs, task mutations (9.18)**, MCP/tooling hardening (9.19, 9.23), vault-native programmable skill command tools (9.24), and the completed pre-daemon boundary gate (9.29). Outline publishing (9.30) and folder-note normalization (9.31) are completed optional additions, not extensions of the Phase 10 prerequisite chain.
+- **Phase 9:** CLI refinements, native workflows, and compatibility adapters — edit, browse TUI, auto-commit, additional commands, advanced search operators, enhanced templates (9.1–9.7), Dataview-compatible metadata and querying (9.8), Templater-compatible templates (9.9), shared task semantics with a Tasks adapter (9.10), native boards with Kanban compatibility (9.11), external-agent integration through JSON/MCP plus vault-native guidance and skills (9.12), native capture/automation with QuickAdd import (9.13), capability and adapter notes (9.14), the primary task model with TaskNotes compatibility (9.15), periodic notes with daily events (9.16), unified settings migration (9.17), **CLI redesign — two-level command hierarchy, note CRUD, query enhancements, JS runtime/REPL, web tools, git ops, integrated docs, task mutations (9.18)**, MCP/tooling hardening (9.19, 9.23), vault-native programmable skill command tools (9.24), and the completed pre-daemon boundary gate (9.29). Outline publishing (9.30) and folder-note normalization (9.31) are completed optional additions, not extensions of the Phase 10 prerequisite chain.
 - **Phase 10:** Multi-vault daemon with REST API; the Phase 9.29 prerequisite gate is complete, so this is the next architectural milestone
 - **Phase 11:** Git auto-versioning at the daemon level
 - **Phase 12:** Device and file-tree synchronization through pluggable backends; optional full-Space SilverBullet protocol support belongs here, while selective wiki exchange does not
@@ -1400,7 +1440,7 @@ Post-v1 phases are tracked in `docs/ROADMAP.md` and include:
 - **Phase 17:** User management, group-based ACLs, document-level secrets, share links
 - **Phase 18:** Canvas support (parsing, indexing, CLI, WebUI rendering, interactive editor) and Excalidraw support (18.8)
 
-Detailed mdbase and additional Obsidian-plugin workflow plans remain **candidate capability tracks**, not numbered delivery gates. The SilverBullet appendix is promoted connector design referenced by Phases 12 and 15. Candidate durable Markdown/core slices may still be promoted independently; daemon, sync, editor, and runtime slices belong to Phases 10, 12, 14, and 15 respectively.
+Detailed mdbase and native vault-capability plans with Obsidian compatibility adapters remain **candidate capability tracks**, not numbered delivery gates. The SilverBullet appendix is promoted connector design referenced by Phases 12 and 15. Candidate durable Markdown/core slices may still be promoted independently; daemon, sync, editor, and runtime slices belong to Phases 10, 12, 14, and 15 respectively.
 
 The design decisions in this document (three-layer architecture, cache as derived index, vault as source of truth, provider abstraction, parser pipeline) are load-bearing for all later phases. See the roadmap for dependency edges and implementation details.
 
