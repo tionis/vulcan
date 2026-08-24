@@ -2425,6 +2425,14 @@ pub enum PullCommand {
         dry_run: bool,
         #[arg(
             long,
+            value_enum,
+            value_name = "ACTION",
+            conflicts_with_all = ["overwrite_conflicts", "conflict_markers", "interactive"],
+            help = "Manage durable conflict markers: status, continue, or abort"
+        )]
+        conflict_operation: Option<OutlinePullConflictOperationArg>,
+        #[arg(
+            long,
             conflicts_with_all = ["conflict_markers", "interactive"],
             help = "Replace every conflicting local note with the remote Outline result"
         )]
@@ -2543,6 +2551,13 @@ pub enum PullCommand {
         #[arg(long, help = "Suppress auto-commit for pulled local note changes")]
         no_commit: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OutlinePullConflictOperationArg {
+    Status,
+    Continue,
+    Abort,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Args)]

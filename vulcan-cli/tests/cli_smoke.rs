@@ -10438,6 +10438,7 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(publishing.contains("Unicode-collision"));
     assert!(publishing.contains("Reference-style"));
     assert!(publishing.contains("conflict_markers_available"));
+    assert!(publishing.contains("--conflict-operation status|continue|abort"));
     assert!(publishing.contains("--max-content-bytes"));
     assert!(publishing.contains("--max-total-attachment-bytes"));
     assert!(publishing.contains("content-addressed"));
@@ -15703,6 +15704,45 @@ max_retries = 0
     assert_eq!(report["actions"][0]["local_path"], "Imported/Home.md");
     assert!(!vault_root.join("Imported/Home.md").exists());
     assert!(!vault_root.join(".vulcan/integrations").exists());
+}
+
+#[test]
+fn pull_outline_conflict_status_is_local_and_does_not_require_a_token() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root");
+    run_scan(&vault_root);
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"
+[publish.outline.profiles.wiki]
+collection_id = "collection"
+token_env = "VULCAN_TEST_MISSING_OUTLINE_TOKEN"
+"#,
+    )
+    .expect("Outline config");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "--output",
+            "json",
+            "pull",
+            "outline",
+            "wiki",
+            "--into",
+            "Imported",
+            "--conflict-operation",
+            "status",
+        ])
+        .assert()
+        .success();
+    let report = parse_stdout_json(&assert);
+    assert_eq!(report["found_conflict_files"], 0);
+    assert_eq!(report["restored_local_files"], 0);
+    assert_eq!(report["applied"], false);
 }
 
 #[test]

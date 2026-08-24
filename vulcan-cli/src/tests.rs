@@ -1357,6 +1357,7 @@ fn parses_outline_pull_conflict_modes() {
                 profile: "wiki".to_string(),
                 into: "Imported/Outline".to_string(),
                 dry_run: true,
+                conflict_operation: None,
                 overwrite_conflicts: false,
                 conflict_markers: false,
                 interactive: false,
@@ -1387,6 +1388,39 @@ fn parses_outline_pull_conflict_modes() {
         "--into",
         "Imported",
         "--overwrite-conflicts",
+        "--conflict-markers",
+    ])
+    .is_err());
+
+    let lifecycle = Cli::try_parse_from([
+        "vulcan",
+        "pull",
+        "outline",
+        "wiki",
+        "--into",
+        "Imported",
+        "--conflict-operation",
+        "status",
+    ])
+    .expect("conflict status should parse");
+    assert!(matches!(
+        lifecycle.command,
+        Command::Pull {
+            command: PullCommand::Outline {
+                conflict_operation: Some(OutlinePullConflictOperationArg::Status),
+                ..
+            }
+        }
+    ));
+    assert!(Cli::try_parse_from([
+        "vulcan",
+        "pull",
+        "outline",
+        "wiki",
+        "--into",
+        "Imported",
+        "--conflict-operation",
+        "abort",
         "--conflict-markers",
     ])
     .is_err());

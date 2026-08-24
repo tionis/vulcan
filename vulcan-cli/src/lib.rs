@@ -428,14 +428,15 @@ pub use cli::{
     GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs, KanbanCommand,
     McpToolPackArg, McpToolPackModeArg, McpTransportArg, NoteAppendPeriodicArg, NoteCheckboxState,
     NoteCommand, NoteGetMode, OutlineBlockReferencePolicyArg, OutlineExcludedTargetPolicyArg,
-    OutputFormat, PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg,
-    PluginSandboxArg, PropertySortArg, PublishCommand, PullCommand, QueryEngineArg, QueryFormatArg,
-    RefactorCommand, RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand,
-    SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg, SiteCommand, SkillCommand,
-    SuggestCommand, SuggestLinkStatusArg, TagSortArg, TasksCommand, TasksListSourceArg,
-    TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
-    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, ToolCommand, ToolInitTemplateArg,
-    TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    OutlinePullConflictOperationArg, OutputFormat, PeriodicOpenArgs, PeriodicSubcommand,
+    PluginCommand, PluginEventArg, PluginSandboxArg, PropertySortArg, PublishCommand, PullCommand,
+    QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RenderMode,
+    RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg,
+    SiteCommand, SkillCommand, SuggestCommand, SuggestLinkStatusArg, TagSortArg, TasksCommand,
+    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
+    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, ToolCommand,
+    ToolInitTemplateArg, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand,
+    WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -498,11 +499,13 @@ use vulcan_app::publish::outline::{
 };
 #[cfg(feature = "web")]
 use vulcan_app::pull::outline::{
-    load_outline_pulled_bindings, pull_outline_with_options_and_write_authorizer,
+    abort_outline_pull_conflicts, load_outline_pulled_bindings, outline_pull_conflict_status,
+    pull_outline_with_options_and_write_authorizer,
     pull_outline_with_options_progress_and_write_authorizer, OutlinePullAction,
     OutlinePullActionKind, OutlinePullConflictPolicy, OutlinePullConflictResolution,
-    OutlinePullMissingPolicy, OutlinePullMissingResolution, OutlinePullOptions, OutlinePullPhase,
-    OutlinePullProgress, OutlinePullReport, OutlinePullScope, OutlinePullStaleAttachmentPolicy,
+    OutlinePullConflictStatusReport, OutlinePullMissingPolicy, OutlinePullMissingResolution,
+    OutlinePullOptions, OutlinePullPhase, OutlinePullProgress, OutlinePullReport, OutlinePullScope,
+    OutlinePullStaleAttachmentPolicy,
 };
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::site::{
@@ -1739,6 +1742,7 @@ fn run_pull_command(
         profile,
         into,
         dry_run,
+        conflict_operation,
         overwrite_conflicts,
         conflict_markers,
         interactive,
@@ -1785,8 +1789,61 @@ fn run_pull_command(
                 CliError::operation(format!("Outline profile `{profile}` requires `{name}`"))
             })
     };
-    let base_url = required(&profile_config.base_url, "base_url")?;
     let collection_id = required(&profile_config.collection_id, "collection_id")?;
+    if let Some(operation) = conflict_operation {
+        let status = outline_pull_conflict_status(paths, profile, &collection_id, into)
+            .map_err(CliError::operation)?;
+        match operation {
+            OutlinePullConflictOperationArg::Status => {
+                return print_outline_pull_conflict_status(cli.output, &status);
+            }
+            OutlinePullConflictOperationArg::Continue => {
+                if status.found_conflict_files > 0 {
+                    return Err(CliError::operation(format!(
+                        "cannot continue Outline pull while {} managed file(s) still contain conflict markers",
+                        status.found_conflict_files
+                    )));
+                }
+            }
+            OutlinePullConflictOperationArg::Abort => {
+                let guard = selected_permission_guard(cli, paths)?;
+                let authorize_write = |path: &str| {
+                    guard
+                        .check_write_path(path)
+                        .map_err(vulcan_app::AppError::operation)
+                };
+                let report = abort_outline_pull_conflicts(
+                    paths,
+                    profile,
+                    &collection_id,
+                    into,
+                    *dry_run,
+                    &authorize_write,
+                )
+                .map_err(CliError::operation)?;
+                if report.applied && report.restored_local_files > 0 {
+                    let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
+                    warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+                    let changed_paths = report
+                        .files
+                        .iter()
+                        .map(|file| file.local_path.clone())
+                        .collect::<Vec<_>>();
+                    auto_commit
+                        .commit(
+                            paths,
+                            "pull-outline-abort-conflicts",
+                            &changed_paths,
+                            cli.permissions.as_deref(),
+                            cli.quiet,
+                        )
+                        .map_err(CliError::operation)?;
+                }
+                return print_outline_pull_conflict_status(cli.output, &report);
+            }
+        }
+    }
+    let base_url = required(&profile_config.base_url, "base_url")?;
     let token_env = required(&profile_config.token_env, "token_env")?;
     let token = std::env::var(&token_env).map_err(|_| {
         CliError::operation(format!(
@@ -2289,6 +2346,35 @@ fn print_outline_pull_report(
             "Outline pull stopped with {} local/remote conflict(s)",
             report.conflicts
         )))
+    }
+}
+
+#[cfg(feature = "web")]
+fn print_outline_pull_conflict_status(
+    output: OutputFormat,
+    report: &OutlinePullConflictStatusReport,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            for file in &report.files {
+                println!(
+                    "Conflict\t{}\tremote={}; marker_blocks={}; malformed={}",
+                    file.local_path, file.remote_document_id, file.marker_blocks, file.malformed
+                );
+            }
+            println!(
+                "conflict_files={}; malformed={}; restored_local_files={}; applied={}",
+                report.found_conflict_files,
+                report.malformed_conflict_files,
+                report.restored_local_files,
+                report.applied
+            );
+            if let Some(operation_id) = report.incomplete_operation_id.as_deref() {
+                println!("incomplete_operation_id={operation_id}");
+            }
+            Ok(())
+        }
     }
 }
 

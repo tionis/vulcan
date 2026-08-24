@@ -304,6 +304,29 @@ pub struct OutlinePullProgress {
     pub operation_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OutlinePullConflictFile {
+    pub remote_document_id: String,
+    pub local_path: String,
+    pub marker_blocks: usize,
+    pub malformed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OutlinePullConflictStatusReport {
+    pub profile: String,
+    pub collection_id: String,
+    pub destination: String,
+    pub dry_run: bool,
+    pub applied: bool,
+    pub found_conflict_files: usize,
+    pub malformed_conflict_files: usize,
+    pub restored_local_files: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub incomplete_operation_id: Option<String>,
+    pub files: Vec<OutlinePullConflictFile>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct OutlinePullState {
@@ -486,6 +509,145 @@ impl OutlinePullState {
             ));
         }
         Ok(())
+    }
+}
+
+/// Inspects managed pull notes for unresolved Vulcan diff3 marker blocks without contacting
+/// Outline. The durable operation journal is reported independently because marker-writing pulls
+/// may have completed successfully while leaving conflicts for a person to resolve.
+pub fn outline_pull_conflict_status(
+    paths: &VaultPaths,
+    profile: &str,
+    collection_id: &str,
+    destination: &str,
+) -> Result<OutlinePullConflictStatusReport, AppError> {
+    let destination = validate_destination(destination)?;
+    let state = load_state(paths, profile, collection_id, &destination, None)?;
+    Ok(conflict_status_report(paths, &state, false, false, 0))
+}
+
+/// Aborts unresolved marker files by restoring the LOCAL side of every complete Vulcan diff3
+/// block. All files are validated and authorized before any write occurs.
+pub fn abort_outline_pull_conflicts(
+    paths: &VaultPaths,
+    profile: &str,
+    collection_id: &str,
+    destination: &str,
+    dry_run: bool,
+    authorize_write: &dyn Fn(&str) -> Result<(), AppError>,
+) -> Result<OutlinePullConflictStatusReport, AppError> {
+    let destination = validate_destination(destination)?;
+    let _write_lock =
+        vulcan_core::write_lock::acquire_write_lock(paths).map_err(AppError::operation)?;
+    let _state_lock = StateLock::acquire(paths, profile)?;
+    let state = load_state(paths, profile, collection_id, &destination, None)?;
+    let mut restorations = Vec::new();
+    for (remote_document_id, mapping) in &state.documents {
+        let Ok(content) = secure_read_to_string(paths.vault_root(), Path::new(&mapping.local_path))
+        else {
+            continue;
+        };
+        match parse_local_diff3(&content) {
+            Ok(Some((local, marker_blocks))) => {
+                authorize_write(&mapping.local_path)?;
+                restorations.push((
+                    remote_document_id.clone(),
+                    mapping.local_path.clone(),
+                    local,
+                    marker_blocks,
+                ));
+            }
+            Err(()) => {
+                return Err(AppError::operation(format!(
+                    "managed Outline pull note `{}` contains malformed conflict markers; repair it manually before aborting",
+                    mapping.local_path
+                )));
+            }
+            Ok(None) => {}
+        }
+    }
+    if !dry_run {
+        for (_, local_path, local, _) in &restorations {
+            secure_write(paths.vault_root(), Path::new(local_path), local.as_bytes())
+                .map_err(AppError::operation)?;
+        }
+        if !restorations.is_empty() {
+            vulcan_core::scan::scan_vault_unlocked(paths, vulcan_core::ScanMode::Incremental)
+                .map_err(AppError::operation)?;
+        }
+    }
+    let files = restorations
+        .iter()
+        .map(
+            |(remote_document_id, local_path, _, marker_blocks)| OutlinePullConflictFile {
+                remote_document_id: remote_document_id.clone(),
+                local_path: local_path.clone(),
+                marker_blocks: *marker_blocks,
+                malformed: false,
+            },
+        )
+        .collect::<Vec<_>>();
+    Ok(OutlinePullConflictStatusReport {
+        profile: profile.to_string(),
+        collection_id: collection_id.to_string(),
+        destination,
+        dry_run,
+        applied: !dry_run,
+        found_conflict_files: files.len(),
+        malformed_conflict_files: 0,
+        restored_local_files: if dry_run { 0 } else { files.len() },
+        incomplete_operation_id: state
+            .incomplete_operation
+            .as_ref()
+            .map(|operation| operation.operation_id.clone()),
+        files,
+    })
+}
+
+fn conflict_status_report(
+    paths: &VaultPaths,
+    state: &OutlinePullState,
+    dry_run: bool,
+    applied: bool,
+    restored_local_files: usize,
+) -> OutlinePullConflictStatusReport {
+    let mut files = Vec::new();
+    for (remote_document_id, mapping) in &state.documents {
+        let Ok(content) = secure_read_to_string(paths.vault_root(), Path::new(&mapping.local_path))
+        else {
+            continue;
+        };
+        match parse_local_diff3(&content) {
+            Ok(Some((_, marker_blocks))) => files.push(OutlinePullConflictFile {
+                remote_document_id: remote_document_id.clone(),
+                local_path: mapping.local_path.clone(),
+                marker_blocks,
+                malformed: false,
+            }),
+            Err(()) => files.push(OutlinePullConflictFile {
+                remote_document_id: remote_document_id.clone(),
+                local_path: mapping.local_path.clone(),
+                marker_blocks: 0,
+                malformed: true,
+            }),
+            Ok(None) => {}
+        }
+    }
+    let malformed_conflict_files = files.iter().filter(|file| file.malformed).count();
+    OutlinePullConflictStatusReport {
+        profile: state.profile.clone(),
+        collection_id: state.collection_id.clone(),
+        destination: state.destination.clone(),
+        dry_run,
+        applied,
+        found_conflict_files: files.len(),
+        malformed_conflict_files,
+        restored_local_files,
+        incomplete_operation_id: state
+            .incomplete_operation
+            .as_ref()
+            .map(|operation| operation.operation_id.clone()),
+        files,
     }
 }
 
@@ -2154,6 +2316,13 @@ fn three_way_merge(
 }
 
 fn extract_local_from_diff3(content: &str) -> String {
+    parse_local_diff3(content)
+        .ok()
+        .flatten()
+        .map_or_else(|| content.to_string(), |(local, _)| local)
+}
+
+fn parse_local_diff3(content: &str) -> Result<Option<(String, usize)>, ()> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Section {
         Normal,
@@ -2164,24 +2333,38 @@ fn extract_local_from_diff3(content: &str) -> String {
     let mut section = Section::Normal;
     let mut extracted = String::with_capacity(content.len());
     let mut complete_markers = 0usize;
+    let mut saw_marker = false;
     for line in content.split_inclusive('\n') {
         let marker = line.trim_end_matches(['\r', '\n']);
         match section {
-            Section::Normal if marker == "<<<<<<< LOCAL" => section = Section::Local,
+            Section::Normal if marker == "<<<<<<< LOCAL" => {
+                saw_marker = true;
+                section = Section::Local;
+            }
             Section::Local if marker == "||||||| BASE" => section = Section::Base,
             Section::Base if marker == "=======" => section = Section::Remote,
             Section::Remote if marker.starts_with(">>>>>>> OUTLINE ") => {
                 section = Section::Normal;
                 complete_markers += 1;
             }
-            Section::Normal | Section::Local => extracted.push_str(line),
+            Section::Normal | Section::Local => {
+                if saw_marker
+                    && (matches!(marker, "||||||| BASE" | "=======")
+                        || marker.starts_with(">>>>>>> OUTLINE "))
+                {
+                    return Err(());
+                }
+                extracted.push_str(line);
+            }
             Section::Base | Section::Remote => {}
         }
     }
-    if section == Section::Normal && complete_markers > 0 {
-        extracted
+    if section != Section::Normal {
+        Err(())
+    } else if complete_markers > 0 {
+        Ok(Some((extracted, complete_markers)))
     } else {
-        content.to_string()
+        Ok(None)
     }
 }
 
@@ -3177,6 +3360,75 @@ mod tests {
         assert_eq!(
             fs::read_to_string(temp.path().join("Imported/Home.md")).unwrap(),
             "remote edit\n"
+        );
+    }
+
+    #[test]
+    fn conflict_lifecycle_reports_and_aborts_marker_files_locally() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        pull_outline(
+            &paths,
+            &api(vec![document("home", "Home", "base\n", None)]),
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("initial pull");
+        fs::write(temp.path().join("Imported/Home.md"), "local edit\n").expect("local edit");
+        pull_outline(
+            &paths,
+            &api(vec![document("home", "Home", "remote edit\n", None)]),
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::markers_all(),
+        )
+        .expect("marker pull");
+
+        let status = outline_pull_conflict_status(&paths, "wiki", "collection", "Imported")
+            .expect("conflict status");
+        assert_eq!(status.found_conflict_files, 1);
+        assert_eq!(status.files[0].marker_blocks, 1);
+        assert!(status.incomplete_operation_id.is_none());
+
+        let dry_run =
+            abort_outline_pull_conflicts(&paths, "wiki", "collection", "Imported", true, &|_| {
+                Ok(())
+            })
+            .expect("abort preview");
+        assert_eq!(dry_run.found_conflict_files, 1);
+        assert_eq!(dry_run.restored_local_files, 0);
+        assert!(fs::read_to_string(temp.path().join("Imported/Home.md"))
+            .unwrap()
+            .contains("<<<<<<< LOCAL"));
+
+        let aborted = abort_outline_pull_conflicts(
+            &paths,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &|path| {
+                assert_eq!(path, "Imported/Home.md");
+                Ok(())
+            },
+        )
+        .expect("abort conflicts");
+        assert_eq!(aborted.restored_local_files, 1);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("Imported/Home.md")).unwrap(),
+            "local edit\n"
+        );
+        assert_eq!(
+            outline_pull_conflict_status(&paths, "wiki", "collection", "Imported")
+                .unwrap()
+                .found_conflict_files,
+            0
         );
     }
 

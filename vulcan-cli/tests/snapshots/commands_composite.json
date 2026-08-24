@@ -5804,6 +5804,21 @@
                 ]
               },
               {
+                "help": "Manage durable conflict markers: status, continue, or abort",
+                "id": "conflict_operation",
+                "long": "conflict-operation",
+                "possible_values": [
+                  "status",
+                  "continue",
+                  "abort"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ACTION"
+                ]
+              },
+              {
                 "help": "Replace every conflicting local note with the remote Outline result",
                 "id": "overwrite_conflicts",
                 "long": "overwrite-conflicts",
