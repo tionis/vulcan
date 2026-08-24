@@ -4,7 +4,10 @@
 //! future pull routes use the same rules. File materialization (notably remote
 //! attachments) remains the responsibility of the surrounding workflow.
 
-use regex::{Captures, Regex};
+use pulldown_cmark::{Event, LinkType, Options, Parser, Tag};
+use regex::Regex;
+use std::collections::{BTreeMap, BTreeSet};
+use std::ops::Range;
 use std::sync::LazyLock;
 
 static OBSIDIAN_CALLOUT_OPEN: LazyLock<Regex> = LazyLock::new(|| {
@@ -15,17 +18,9 @@ static OUTLINE_CALLOUT_OPEN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?P<indent>[ \t]*):::(?P<kind>info|tip|success|warning)[ \t]*$")
         .expect("Outline callout regex should compile")
 });
-static MARKDOWN_LINK_DESTINATION: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\]\((?P<destination>[^\s)]+)\)")
-        .expect("Markdown link destination regex should compile")
-});
 static OUTLINE_DOCUMENT_DESTINATION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:https?://[^/]+)?/doc/(?P<id>[^/?#]+)(?P<suffix>[?#].*)?$")
         .expect("Outline document destination regex should compile")
-});
-static MARKDOWN_DOCUMENT_LINK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\[(?P<label>[^\]]+)\]\((?P<destination>[^\s)]+)\)")
-        .expect("Markdown document link regex should compile")
 });
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -67,15 +62,76 @@ pub fn rewrite_markdown_link_destinations(
     source: &str,
     mut resolve: impl FnMut(&str) -> Option<String>,
 ) -> String {
-    MARKDOWN_LINK_DESTINATION
-        .replace_all(source, |captures: &Captures<'_>| {
-            let destination = &captures["destination"];
-            resolve(destination).map_or_else(
-                || captures[0].to_string(),
-                |replacement| format!("]({replacement})"),
+    let parser = Parser::new_ext(source, Options::all());
+    let reference_definitions = parser
+        .reference_definitions()
+        .iter()
+        .map(|(id, definition)| {
+            (
+                id.to_string(),
+                (definition.dest.to_string(), definition.span.clone()),
             )
         })
-        .into_owned()
+        .collect::<BTreeMap<_, _>>();
+    let mut edits = BTreeMap::<usize, (usize, String)>::new();
+    let mut seen_references = BTreeSet::new();
+    for (event, span) in parser.into_offset_iter() {
+        let Event::Start(
+            Tag::Link {
+                link_type,
+                dest_url,
+                id,
+                ..
+            }
+            | Tag::Image {
+                link_type,
+                dest_url,
+                id,
+                ..
+            },
+        ) = event
+        else {
+            continue;
+        };
+        let Some(replacement) = resolve(&dest_url) else {
+            continue;
+        };
+        let target = match link_type {
+            LinkType::Inline | LinkType::Autolink | LinkType::Email => {
+                destination_source_range(source, span, &dest_url)
+            }
+            LinkType::Reference | LinkType::Collapsed | LinkType::Shortcut => {
+                if !seen_references.insert(id.to_string()) {
+                    continue;
+                }
+                reference_definitions
+                    .get(id.as_ref())
+                    .and_then(|(dest, span)| destination_source_range(source, span.clone(), dest))
+            }
+            LinkType::ReferenceUnknown
+            | LinkType::CollapsedUnknown
+            | LinkType::ShortcutUnknown
+            | LinkType::WikiLink { .. } => None,
+        };
+        if let Some(target) = target {
+            edits.insert(target.start, (target.end, replacement));
+        }
+    }
+    let mut rewritten = source.to_string();
+    for (start, (end, replacement)) in edits.into_iter().rev() {
+        rewritten.replace_range(start..end, &replacement);
+    }
+    rewritten
+}
+
+fn destination_source_range(
+    source: &str,
+    span: Range<usize>,
+    destination: &str,
+) -> Option<Range<usize>> {
+    let fragment = source.get(span.clone())?;
+    let relative = fragment.find(destination)?;
+    Some((span.start + relative)..(span.start + relative + destination.len()))
 }
 
 /// Turn Outline `/doc/<id>` links into Obsidian wikilinks when the remote ID
@@ -85,30 +141,47 @@ pub fn outline_document_links_to_obsidian(
     source: &str,
     mut resolve: impl FnMut(&str) -> Option<String>,
 ) -> String {
-    MARKDOWN_DOCUMENT_LINK
-        .replace_all(source, |captures: &Captures<'_>| {
-            let destination = &captures["destination"];
-            let Some(destination_captures) = OUTLINE_DOCUMENT_DESTINATION.captures(destination)
-            else {
-                return captures[0].to_string();
-            };
-            let Some(local_target) = resolve(&destination_captures["id"]) else {
-                return captures[0].to_string();
-            };
-            let local_target = local_target.strip_suffix(".md").unwrap_or(&local_target);
-            let suffix = destination_captures
-                .name("suffix")
-                .map_or("", |value| value.as_str());
-            let label = &captures["label"];
-            let target = format!("{local_target}{suffix}");
-            let default_label = local_target.rsplit('/').next().unwrap_or(local_target);
-            if suffix.is_empty() && label == default_label {
-                format!("[[{target}]]")
-            } else {
-                format!("[[{target}|{label}]]")
+    let mut current = None::<(Range<usize>, String, String, String)>;
+    let mut edits = BTreeMap::<usize, (usize, String)>::new();
+    for (event, span) in Parser::new_ext(source, Options::all()).into_offset_iter() {
+        match event {
+            Event::Start(Tag::Link { dest_url, .. }) => {
+                let Some(captures) = OUTLINE_DOCUMENT_DESTINATION.captures(&dest_url) else {
+                    continue;
+                };
+                let Some(local_target) = resolve(&captures["id"]) else {
+                    continue;
+                };
+                let suffix = captures.name("suffix").map_or("", |value| value.as_str());
+                current = Some((span, local_target, suffix.to_string(), String::new()));
             }
-        })
-        .into_owned()
+            Event::Text(text) | Event::Code(text) => {
+                if let Some((_, _, _, label)) = current.as_mut() {
+                    label.push_str(&text);
+                }
+            }
+            Event::End(pulldown_cmark::TagEnd::Link) => {
+                let Some((span, local_target, suffix, label)) = current.take() else {
+                    continue;
+                };
+                let local_target = local_target.strip_suffix(".md").unwrap_or(&local_target);
+                let target = format!("{local_target}{suffix}");
+                let default_label = local_target.rsplit('/').next().unwrap_or(local_target);
+                let replacement = if suffix.is_empty() && label == default_label {
+                    format!("[[{target}]]")
+                } else {
+                    format!("[[{target}|{label}]]")
+                };
+                edits.insert(span.start, (span.end, replacement));
+            }
+            _ => {}
+        }
+    }
+    let mut rewritten = source.to_string();
+    for (start, (end, replacement)) in edits.into_iter().rev() {
+        rewritten.replace_range(start..end, &replacement);
+    }
+    rewritten
 }
 
 #[must_use]
@@ -381,6 +454,29 @@ mod tests {
         assert_eq!(
             inbound,
             "See [[Guides/Guide#setup|Guide]] and [web](https://example.com)"
+        );
+
+        let references = "[Guide][remote]\n\n[remote]: </doc/remote-guide?view=all>\n\n`[code](/doc/remote-guide)`";
+        let inbound = outline_document_links_to_obsidian(references, |remote_id| {
+            (remote_id == "remote-guide").then(|| "Guides/Guide.md".to_string())
+        });
+        assert_eq!(
+            inbound,
+            "[[Guides/Guide?view=all|Guide]]\n\n[remote]: </doc/remote-guide?view=all>\n\n`[code](/doc/remote-guide)`"
+        );
+    }
+
+    #[test]
+    fn destination_rewrite_handles_reference_angle_and_parenthesized_links() {
+        let source = "[reference][asset]\n\n[asset]: </api/attachments.redirect?id=(one)> \"title\"\n\n![inline](</api/attachments.redirect?id=(two)> \"diagram\")\n\n`[code](/api/attachments.redirect?id=ignored)`";
+        let rewritten = rewrite_markdown_link_destinations(source, |destination| {
+            destination
+                .contains("attachments.redirect")
+                .then(|| "_attachments/local file.png".to_string())
+        });
+        assert_eq!(
+            rewritten,
+            "[reference][asset]\n\n[asset]: <_attachments/local file.png> \"title\"\n\n![inline](<_attachments/local file.png> \"diagram\")\n\n`[code](/api/attachments.redirect?id=ignored)`"
         );
     }
 

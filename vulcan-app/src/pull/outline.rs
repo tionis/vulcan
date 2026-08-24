@@ -5,6 +5,7 @@ use crate::outline_markdown::{
 use crate::publish::outline::{OutlineApi, OutlineRemoteDocument};
 use crate::AppError;
 use fs2::FileExt;
+use pulldown_cmark::{Event, Options as MarkdownOptions, Parser, Tag, TagEnd};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -13,16 +14,13 @@ use std::io::Write;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::LazyLock;
+use unicode_normalization::UnicodeNormalization;
 use vulcan_core::paths::{secure_read, secure_read_to_string, secure_write};
 use vulcan_core::VaultPaths;
 
 const STATE_VERSION: u32 = 1;
 pub const DEFAULT_ATTACHMENT_MAX_BYTES: usize = 25 * 1024 * 1024;
 
-static MARKDOWN_LINK: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"!?\[(?P<label>[^\]]*)\]\((?P<destination>[^\s)]+)\)")
-        .expect("Markdown link regex should compile")
-});
 static OUTLINE_ATTACHMENT_DESTINATION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:https?://[^/]+)?/api/attachments\.redirect(?:[/?#].*)?$")
         .expect("Outline attachment destination regex should compile")
@@ -429,7 +427,7 @@ impl OutlinePullState {
                 ));
             }
             validate_managed_path(destination, &mapping.local_path)?;
-            if !local_paths.insert(mapping.local_path.to_lowercase()) {
+            if !local_paths.insert(portable_path_key(&mapping.local_path)) {
                 return Err(AppError::operation(
                     "Outline pull state maps multiple documents to the same local path",
                 ));
@@ -441,7 +439,7 @@ impl OutlinePullState {
                     ));
                 }
                 validate_managed_asset_path(destination, &attachment.local_path)?;
-                if !local_paths.insert(attachment.local_path.to_lowercase()) {
+                if !local_paths.insert(portable_path_key(&attachment.local_path)) {
                     return Err(AppError::operation(
                         "Outline pull state maps multiple objects to the same local path",
                     ));
@@ -1085,10 +1083,10 @@ fn plan_pull(
     for (remote_id, local_path) in &local_paths {
         validate_managed_path(&state.destination, local_path)?;
         if let Some(existing) =
-            seen_local_paths.insert(local_path.to_lowercase(), remote_id.clone())
+            seen_local_paths.insert(portable_path_key(local_path), remote_id.clone())
         {
             return Err(AppError::operation(format!(
-                "Outline documents `{existing}` and `{remote_id}` map to the same case-insensitive local path `{local_path}`"
+                "Outline documents `{existing}` and `{remote_id}` map to the same portable local path `{local_path}`"
             )));
         }
     }
@@ -1408,7 +1406,10 @@ fn generate_paths(
                 ));
             }
             let Some(parent_document) = by_id.get(parent_id) else {
-                break;
+                return Err(AppError::operation(format!(
+                    "Outline document `{}` references missing or archived parent `{parent_id}`",
+                    document.id
+                )));
             };
             titles.push(safe_title(&parent_document.title, &parent_document.id));
             parent = parent_document.parent_document_id.as_deref();
@@ -1418,6 +1419,7 @@ fn generate_paths(
         let mut path = PathBuf::from(destination);
         path.extend(titles);
         path.push(format!("{file}.md"));
+        validate_portable_generated_path(&path)?;
         paths.insert(
             document.id.clone(),
             path.to_string_lossy().replace('\\', "/"),
@@ -1425,9 +1427,9 @@ fn generate_paths(
     }
     let mut seen = BTreeMap::<String, String>::new();
     for (remote_id, path) in &paths {
-        if let Some(existing) = seen.insert(path.to_lowercase(), remote_id.clone()) {
+        if let Some(existing) = seen.insert(portable_path_key(path), remote_id.clone()) {
             return Err(AppError::operation(format!(
-                "Outline hierarchy maps remote documents `{existing}` and `{remote_id}` to the same case-insensitive local path `{path}`"
+                "Outline hierarchy maps remote documents `{existing}` and `{remote_id}` to the same portable local path `{path}`"
             )));
         }
     }
@@ -1520,15 +1522,7 @@ fn plan_document_attachments(
     source: &str,
     mapping: Option<&OutlinePullMapping>,
 ) -> Result<(String, Vec<OutlinePullAttachmentPlan>), AppError> {
-    let mut labels = BTreeMap::new();
-    for captures in MARKDOWN_LINK.captures_iter(source) {
-        let destination = &captures["destination"];
-        if OUTLINE_ATTACHMENT_DESTINATION.is_match(destination) {
-            labels
-                .entry(destination.to_string())
-                .or_insert_with(|| captures["label"].to_string());
-        }
-    }
+    let labels = outline_attachment_links(source);
     let mut attachments = Vec::with_capacity(labels.len());
     let mut replacements = BTreeMap::new();
     for (remote_url, label) in labels {
@@ -1562,6 +1556,32 @@ fn plan_document_attachments(
         replacements.get(destination).cloned()
     });
     Ok((desired, attachments))
+}
+
+fn outline_attachment_links(source: &str) -> BTreeMap<String, String> {
+    let mut labels = BTreeMap::new();
+    let mut current = None::<(String, String)>;
+    for event in Parser::new_ext(source, MarkdownOptions::all()) {
+        match event {
+            Event::Start(Tag::Link { dest_url, .. } | Tag::Image { dest_url, .. })
+                if OUTLINE_ATTACHMENT_DESTINATION.is_match(&dest_url) =>
+            {
+                current = Some((dest_url.to_string(), String::new()));
+            }
+            Event::Text(text) | Event::Code(text) => {
+                if let Some((_, label)) = current.as_mut() {
+                    label.push_str(&text);
+                }
+            }
+            Event::End(TagEnd::Link | TagEnd::Image) => {
+                if let Some((destination, label)) = current.take() {
+                    labels.entry(destination).or_insert(label);
+                }
+            }
+            _ => {}
+        }
+    }
+    labels
 }
 
 fn plan_stale_attachment_actions(
@@ -1659,7 +1679,7 @@ fn attachment_path(destination: &str, document_id: &str, remote_url: &str, label
     if !filename.contains('.') {
         filename.push_str(".bin");
     }
-    let filename = filename.chars().take(96).collect::<String>();
+    let filename = truncate_filename_preserving_extension(&filename, 96);
     format!(
         "{destination}/_attachments/{}/{}-{filename}",
         &document_hash[..16],
@@ -1722,12 +1742,73 @@ fn safe_title(title: &str, remote_id: &str) -> String {
             }
         })
         .collect::<String>();
-    let title = title.trim().trim_matches('.');
-    if title.is_empty() {
+    let title = title.trim().trim_matches('.').trim_end_matches([' ', '.']);
+    let title = if title.is_empty() {
         format!("untitled-{}", &remote_id[..remote_id.len().min(8)])
     } else {
         title.to_string()
+    };
+    let title = if is_windows_reserved_component(&title) {
+        format!("_{title}")
+    } else {
+        title
+    };
+    truncate_filename_preserving_extension(&title, 120)
+}
+
+fn is_windows_reserved_component(component: &str) -> bool {
+    let stem = component.split('.').next().unwrap_or(component);
+    let upper = stem.to_ascii_uppercase();
+    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || upper
+            .strip_prefix("COM")
+            .or_else(|| upper.strip_prefix("LPT"))
+            .is_some_and(|number| {
+                matches!(number, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
+            })
+}
+
+fn truncate_utf8_bytes(value: &str, maximum: usize) -> &str {
+    if value.len() <= maximum {
+        return value;
     }
+    let mut boundary = maximum;
+    while !value.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    value[..boundary].trim_end_matches([' ', '.'])
+}
+
+fn truncate_filename_preserving_extension(value: &str, maximum: usize) -> String {
+    if value.len() <= maximum {
+        return value.to_string();
+    }
+    let Some((stem, extension)) = value.rsplit_once('.') else {
+        return truncate_utf8_bytes(value, maximum).to_string();
+    };
+    let suffix = format!(".{extension}");
+    if suffix.len() >= maximum {
+        return truncate_utf8_bytes(value, maximum).to_string();
+    }
+    format!(
+        "{}{}",
+        truncate_utf8_bytes(stem, maximum - suffix.len()),
+        suffix
+    )
+}
+
+fn portable_path_key(path: &str) -> String {
+    path.nfkc().flat_map(char::to_lowercase).collect()
+}
+
+fn validate_portable_generated_path(path: &Path) -> Result<(), AppError> {
+    let rendered = path.to_string_lossy().replace('\\', "/");
+    if rendered.len() > 240 {
+        return Err(AppError::operation(format!(
+            "Outline hierarchy generates a local path longer than the portable 240-byte limit: `{rendered}`"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_destination(destination: &str) -> Result<String, AppError> {
@@ -2392,6 +2473,36 @@ mod tests {
     }
 
     #[test]
+    fn pull_materializes_reference_style_and_parenthesized_attachment_links() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        let api = api(vec![document(
+            "home",
+            "Home",
+            "[diagram][asset]\n\n[asset]: </api/attachments.redirect?id=(asset)> \"diagram\"\n\n`![ignored](/api/attachments.redirect?id=ignored)`",
+            None,
+        )]);
+
+        let report = pull_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect("reference attachment pull");
+        assert_eq!(report.attachments_planned, 1);
+        assert_eq!(report.attachments_downloaded, 1);
+        let note = fs::read_to_string(temp.path().join("Imported/Home.md")).unwrap();
+        assert!(note.contains("[diagram][asset]"));
+        assert!(note.contains("[asset]: <_attachments/"));
+        assert!(note.contains("id=ignored"));
+    }
+
+    #[test]
     fn stale_managed_attachments_are_retained_or_recoverably_archived() {
         let temp = tempdir().expect("temp dir");
         let paths = VaultPaths::new(temp.path());
@@ -2913,6 +3024,58 @@ mod tests {
             &OutlinePullConflictPolicy::abort(),
         )
         .is_err());
+    }
+
+    #[test]
+    fn pull_rejects_unicode_collisions_or_orphaned_hierarchy() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        let collision = api(vec![
+            document("one", "Café", "one", None),
+            document("two", "Cafe\u{301}", "two", None),
+        ]);
+        let error = pull_outline(
+            &paths,
+            &collision,
+            "wiki",
+            "collection",
+            "Imported",
+            true,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect_err("canonical Unicode collision must fail closed");
+        assert!(error.to_string().contains("portable local path"));
+
+        let orphan = api(vec![document("child", "Child", "body", Some("missing"))]);
+        let error = pull_outline(
+            &paths,
+            &orphan,
+            "wiki",
+            "collection",
+            "Imported",
+            true,
+            &OutlinePullConflictPolicy::abort(),
+        )
+        .expect_err("orphaned hierarchy must fail closed");
+        assert!(error.to_string().contains("missing or archived parent"));
+    }
+
+    #[test]
+    fn generated_names_are_windows_safe_and_byte_bounded() {
+        assert_eq!(safe_title("CON", "remote"), "_CON");
+        assert_eq!(safe_title("lpt9.txt", "remote"), "_lpt9.txt");
+        assert_eq!(safe_title("name. ", "remote"), "name");
+        let long = format!("{}🍵.png", "é".repeat(100));
+        let truncated = truncate_filename_preserving_extension(&safe_title(&long, "remote"), 96);
+        assert!(truncated.len() <= 96);
+        assert_eq!(
+            Path::new(&truncated)
+                .extension()
+                .and_then(|ext| ext.to_str()),
+            Some("png")
+        );
+        assert!(std::str::from_utf8(truncated.as_bytes()).is_ok());
     }
 
     #[test]
