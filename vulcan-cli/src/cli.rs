@@ -2394,6 +2394,12 @@ pub enum PublishCommand {
             help = "Replace one conflicting managed document; repeat for additional source paths"
         )]
         overwrite_conflict: Vec<String>,
+        #[arg(
+            long,
+            conflicts_with_all = ["dry_run", "overwrite_conflicts", "overwrite_conflict"],
+            help = "Review remote conflicts in the terminal before applying approved overwrites"
+        )]
+        interactive: bool,
     },
 }
 

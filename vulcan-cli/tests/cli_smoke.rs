@@ -10424,6 +10424,7 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(publishing.contains("--overwrite-conflicts"));
     assert!(publishing.contains("overwritten_conflicts"));
     assert!(publishing.contains("structured remote-drift conflict"));
+    assert!(publishing.contains("--interactive"));
     assert!(publishing.contains("one-time reviewed overwrite"));
     assert!(publishing.contains("monitoring stderr progress"));
     assert!(publishing.contains("--selection-json"));

@@ -1038,6 +1038,7 @@ fn parses_outline_publish_dry_run_command() {
                 dry_run: true,
                 overwrite_conflicts: false,
                 overwrite_conflict: Vec::new(),
+                interactive: false,
             },
         }
     );
@@ -1061,6 +1062,7 @@ fn parses_outline_publish_overwrite_conflicts_command() {
                 dry_run: false,
                 overwrite_conflicts: true,
                 overwrite_conflict: Vec::new(),
+                interactive: false,
             },
         }
     );
@@ -1087,6 +1089,7 @@ fn parses_outline_publish_selective_conflict_overrides() {
                 dry_run: false,
                 overwrite_conflicts: false,
                 overwrite_conflict: vec!["Home.md".to_string(), "Projects/Plan.md".to_string()],
+                interactive: false,
             },
         }
     );
@@ -1104,6 +1107,63 @@ fn rejects_combining_selective_and_global_outline_conflict_overrides() {
         "--overwrite-conflicts",
     ])
     .is_err());
+}
+
+#[test]
+fn parses_interactive_outline_conflict_handling() {
+    let cli = Cli::try_parse_from(["vulcan", "publish", "outline", "wiki", "--interactive"])
+        .expect("interactive Outline publish should parse");
+    assert!(matches!(
+        cli.command,
+        Command::Publish {
+            command: PublishCommand::Outline {
+                interactive: true,
+                ..
+            }
+        }
+    ));
+    assert!(Cli::try_parse_from([
+        "vulcan",
+        "publish",
+        "outline",
+        "wiki",
+        "--interactive",
+        "--dry-run",
+    ])
+    .is_err());
+}
+
+#[cfg(feature = "web")]
+#[test]
+fn interactive_outline_conflicts_require_every_item_to_be_approved() {
+    let action = |path: &str| OutlinePublishAction {
+        kind: vulcan_app::publish::outline::OutlinePublishActionKind::Conflict,
+        source_identity: Some(path.to_string()),
+        source_path: Some(path.to_string()),
+        remote_document_id: Some(format!("remote-{path}")),
+        parent_source_path: None,
+        desired_parent_remote_id: None,
+        reason: "remote content changed".to_string(),
+        conflict: None,
+    };
+    let actions = vec![action("One.md"), action("Two.md"), action("Three.md")];
+
+    let mut input = std::io::Cursor::new(b"yes\nall\n");
+    let mut output = Vec::new();
+    let approved = prompt_outline_conflicts(&actions, &mut input, &mut output)
+        .expect("interactive decisions")
+        .expect("approved publication");
+    assert_eq!(approved, vec!["One.md", "Two.md", "Three.md"]);
+    assert!(String::from_utf8(output)
+        .expect("prompt output")
+        .contains("Conflict 2/3: Two.md"));
+
+    let mut input = std::io::Cursor::new(b"yes\nno\n");
+    let mut output = Vec::new();
+    assert_eq!(
+        prompt_outline_conflicts(&actions, &mut input, &mut output).expect("declined decisions"),
+        None
+    );
 }
 
 #[test]

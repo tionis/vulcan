@@ -5724,6 +5724,20 @@
                 "value_names": [
                   "SOURCE_PATH"
                 ]
+              },
+              {
+                "help": "Review remote conflicts in the terminal before applying approved overwrites",
+                "id": "interactive",
+                "long": "interactive",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "INTERACTIVE"
+                ]
               }
             ],
             "subcommands": []

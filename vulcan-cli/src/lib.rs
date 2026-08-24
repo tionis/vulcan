@@ -493,7 +493,8 @@ use vulcan_app::outline_markdown::OutlineMarkdownOptions;
 #[cfg(feature = "web")]
 use vulcan_app::publish::outline::{
     publish_outline_with_progress, HttpOutlineClient, OutlineConflictField, OutlineConflictPolicy,
-    OutlineConflictSide, OutlineConflictSideState, OutlinePublishPhase, OutlinePublishProgress,
+    OutlineConflictSide, OutlineConflictSideState, OutlinePublishAction, OutlinePublishPhase,
+    OutlinePublishProgress,
 };
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::site::{
@@ -1382,6 +1383,7 @@ fn outline_export_request<'a>(
 }
 
 #[cfg(feature = "web")]
+#[allow(clippy::too_many_lines)]
 fn run_publish_command(
     cli: &Cli,
     paths: &VaultPaths,
@@ -1394,7 +1396,17 @@ fn run_publish_command(
         dry_run,
         overwrite_conflicts,
         overwrite_conflict,
+        interactive,
     } = command;
+    if *interactive
+        && (cli.output != OutputFormat::Human
+            || !io::stdin().is_terminal()
+            || !io::stderr().is_terminal())
+    {
+        return Err(CliError::operation(
+            "interactive Outline conflict handling requires human output and terminal stdin/stderr",
+        ));
+    }
     let loaded = load_vault_config(paths);
     let profile_config = loaded
         .config
@@ -1472,7 +1484,7 @@ fn run_publish_command(
     )
     .map_err(CliError::operation)?;
     let conflict_policy = outline_conflict_policy(*overwrite_conflicts, overwrite_conflict);
-    let report = publish_outline_with_progress(
+    let mut report = publish_outline_with_progress(
         paths,
         &client,
         profile,
@@ -1487,7 +1499,99 @@ fn run_publish_command(
         },
     )
     .map_err(CliError::operation)?;
+    if *interactive && report.conflicts > 0 {
+        let approved = {
+            let stdin = io::stdin();
+            let mut input = stdin.lock();
+            let stderr = io::stderr();
+            let mut output = stderr.lock();
+            prompt_outline_conflicts(&report.plan.actions, &mut input, &mut output)?
+        };
+        if let Some(paths_to_overwrite) = approved {
+            let reviewed_policy = OutlineConflictPolicy::overwrite_paths(paths_to_overwrite);
+            report = publish_outline_with_progress(
+                paths,
+                &client,
+                profile,
+                &collection_id,
+                &publication,
+                false,
+                &reviewed_policy,
+                |event| {
+                    if let Some(progress) = progress.as_mut() {
+                        progress.record(event);
+                    }
+                },
+            )
+            .map_err(CliError::operation)?;
+        }
+    }
     print_outline_publish_report(cli.output, &report)
+}
+
+#[cfg(feature = "web")]
+fn prompt_outline_conflicts(
+    actions: &[OutlinePublishAction],
+    input: &mut impl io::BufRead,
+    output: &mut impl io::Write,
+) -> Result<Option<Vec<String>>, CliError> {
+    let conflicts = actions
+        .iter()
+        .filter(|action| {
+            action.kind == vulcan_app::publish::outline::OutlinePublishActionKind::Conflict
+        })
+        .collect::<Vec<_>>();
+    let mut approved = Vec::with_capacity(conflicts.len());
+    for (index, action) in conflicts.iter().enumerate() {
+        let path = action.source_path.as_deref().unwrap_or("-");
+        writeln!(
+            output,
+            "\nConflict {}/{}: {path}\n  {}",
+            index + 1,
+            conflicts.len(),
+            action.reason
+        )
+        .map_err(CliError::operation)?;
+        if let Some(conflict) = &action.conflict {
+            writeln!(
+                output,
+                "  kind={:?}; local={}; remote={}",
+                conflict.kind,
+                outline_conflict_side_summary(&conflict.local),
+                outline_conflict_side_summary(&conflict.remote)
+            )
+            .map_err(CliError::operation)?;
+        }
+        loop {
+            write!(
+                output,
+                "Overwrite this managed document with the local version? [y]es/[n]o/[a]ll: "
+            )
+            .map_err(CliError::operation)?;
+            output.flush().map_err(CliError::operation)?;
+            let mut answer = String::new();
+            if input.read_line(&mut answer).map_err(CliError::operation)? == 0 {
+                return Ok(None);
+            }
+            match answer.trim().to_ascii_lowercase().as_str() {
+                "y" | "yes" => {
+                    approved.push(path.to_string());
+                    break;
+                }
+                "a" | "all" => {
+                    approved.extend(
+                        conflicts[index..]
+                            .iter()
+                            .filter_map(|remaining| remaining.source_path.clone()),
+                    );
+                    return Ok(Some(approved));
+                }
+                "" | "n" | "no" | "q" | "quit" => return Ok(None),
+                _ => writeln!(output, "Enter y, n, or a.").map_err(CliError::operation)?,
+            }
+        }
+    }
+    Ok(Some(approved))
 }
 
 #[cfg(feature = "web")]

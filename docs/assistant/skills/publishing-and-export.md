@@ -34,6 +34,7 @@ static output target or a configured one-way Outline publication.
 - Use `vulcan export outline-zip ... --dry-run` to inspect the complete Outline-compatible hierarchy and diagnostics before writing an archive.
 - For API publication, inspect the configured profile and run `vulcan publish outline <profile> --dry-run` first. A dry run performs remote reads but does not mutate Outline or create mapping state.
 - Review each structured remote-drift conflict's kind, changed dimensions, and base/local/remote metadata before a live publication. Prefer repeating `--overwrite-conflict <source-path>` for only the reviewed managed documents. Use `--overwrite-conflicts` only when every reported conflict should be replaced; check `overwritten_conflicts` in JSON output.
+- When a person is present at a terminal, `--interactive` can review and approve each push conflict. Cancellation remains mutation-free, and Vulcan re-plans after approval before applying.
 - After upgrading an older mapping, normalization-only conflicts may require a one-time reviewed overwrite to seed Outline's observed representation. Do not delete or hand-edit state, and do not assume every content-only conflict is normalization rather than a real remote edit.
 - After a successful or interrupted live publication, rerun the same profile rather than editing reconciliation state. Durable mappings allow Vulcan to adopt completed work and continue safely.
 - Inspect link policy, route collisions, asset policy, publish filters, and hidden-content transforms before changing output.
