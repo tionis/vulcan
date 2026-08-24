@@ -6406,6 +6406,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add explicit `--overwrite-conflicts` reconciliation, honor Outline `Retry-After` rate-limit delays, and eliminate redundant per-document fetches and unchanged update calls.
 - [x] Add phase/item Outline publish progress, structured base/local/remote conflict evidence, and selective `--overwrite-conflict <source-path>` authorization.
 - [x] Track the submitted local projection separately from Outline's observed, potentially normalized Markdown so repeated publications stay idempotent without weakening remote-drift detection.
+- [x] Index publication mappings, actions, and remote render destinations so large Outline publications avoid repeated whole-plan scans and all-pairs link rendering.
 
 **Current boundary and future placement:** The implemented `publish outline` command remains strictly one-way. Phase 15 now plans a separate, explicitly scoped Outline pull route with its own local destination, authority, pagination, attachment, deletion, and conflict policies. Do not evolve this publisher into implicit bidirectional synchronization or use the separate Outline-to-Git backup/audit trail as publisher input.
 

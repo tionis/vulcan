@@ -1,7 +1,6 @@
 use super::{deterministic_remote_uuid, OutlineApi, OutlineDocumentMapping, OutlinePublishState};
 use crate::export::outline::{
-    planned_document_references_attachment, render_remote_document_content_with_links,
-    OutlinePublicationPlan,
+    planned_document_references_attachment, OutlinePublicationPlan, OutlineRemoteRenderIndex,
 };
 use crate::AppError;
 use serde::Serialize;
@@ -210,6 +209,12 @@ pub fn plan_outline_reconciliation_with_policy(
             (document.source_path.clone(), remote_id)
         })
         .collect::<BTreeMap<_, _>>();
+    let render_index = OutlineRemoteRenderIndex::new(
+        &publication.documents,
+        &remote_document_ids,
+        &publication.attachments,
+        &remote_urls,
+    );
     let mut matched_identities = BTreeSet::new();
     let mut actions = Vec::new();
     let mut overwritten_conflicts = 0;
@@ -235,13 +240,7 @@ pub fn plan_outline_reconciliation_with_policy(
         };
         matched_identities.insert(source_identity.to_string());
         let mapping = &state.documents[source_identity];
-        let desired_content = render_remote_document_content_with_links(
-            document,
-            &publication.documents,
-            &remote_document_ids,
-            &publication.attachments,
-            &remote_urls,
-        );
+        let desired_content = render_index.render(document);
         let desired_hash = content_hash(&desired_content);
         if !listed_by_id.contains_key(mapping.remote_document_id.as_str()) {
             if mapping.pending_create || conflict_policy.overwrites(&document.source_path) {
@@ -619,20 +618,16 @@ fn match_local_documents<'a>(
         .keys()
         .map(String::as_str)
         .collect::<BTreeSet<_>>();
+    let by_document_id = mapping_index(state, |mapping| &mapping.source_document_id);
+    let by_path = mapping_index(state, |mapping| &mapping.source_path);
+    let by_content_hash = mapping_index(state, |mapping| &mapping.last_published_content_hash);
     for document in &publication.documents {
-        let mapped_identity = unique_mapping(&available, state, |mapping| {
-            mapping.source_document_id == document.source_document_id
-        })
-        .or_else(|| {
-            unique_mapping(&available, state, |mapping| {
-                mapping.source_path == document.source_path
-            })
-        })
-        .or_else(|| {
-            unique_mapping(&available, state, |mapping| {
-                mapping.last_published_content_hash == document.content_hash
-            })
-        });
+        let mapped_identity =
+            unique_available_mapping(&available, &by_document_id, &document.source_document_id)
+                .or_else(|| unique_available_mapping(&available, &by_path, &document.source_path))
+                .or_else(|| {
+                    unique_available_mapping(&available, &by_content_hash, &document.content_hash)
+                });
         if let Some(source_identity) = mapped_identity {
             available.remove(source_identity);
             document_matches.insert(document.source_path.clone(), source_identity);
@@ -641,15 +636,27 @@ fn match_local_documents<'a>(
     document_matches
 }
 
-fn unique_mapping<'a>(
-    available: &BTreeSet<&'a str>,
+fn mapping_index<'a>(
     state: &'a OutlinePublishState,
-    predicate: impl Fn(&OutlineDocumentMapping) -> bool,
+    key: impl Fn(&'a OutlineDocumentMapping) -> &'a str,
+) -> BTreeMap<&'a str, BTreeSet<&'a str>> {
+    let mut index = BTreeMap::<&str, BTreeSet<&str>>::new();
+    for (identity, mapping) in &state.documents {
+        index.entry(key(mapping)).or_default().insert(identity);
+    }
+    index
+}
+
+fn unique_available_mapping<'a>(
+    available: &BTreeSet<&'a str>,
+    index: &BTreeMap<&str, BTreeSet<&'a str>>,
+    key: &str,
 ) -> Option<&'a str> {
-    let mut matches = available
+    let mut matches = index
+        .get(key)?
         .iter()
         .copied()
-        .filter(|identity| predicate(&state.documents[*identity]));
+        .filter(|identity| available.contains(identity));
     let first = matches.next()?;
     matches.next().is_none().then_some(first)
 }

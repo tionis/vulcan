@@ -178,25 +178,65 @@ pub fn render_remote_document_content_with_links(
     attachments: &[OutlinePlannedAttachment],
     remote_attachment_urls: &BTreeMap<String, String>,
 ) -> String {
-    let content = render_remote_document_content(document, attachments, remote_attachment_urls);
-    let destinations = documents
-        .iter()
-        .filter_map(|target| {
-            let remote_id = remote_document_ids.get(&target.source_path)?;
-            let relative = relative_archive_path(&document.archive_path, &target.archive_path);
-            Some((encode_uri_path(&relative), outline_document_url(remote_id)))
-        })
-        .collect::<BTreeMap<_, _>>();
+    OutlineRemoteRenderIndex::new(
+        documents,
+        remote_document_ids,
+        attachments,
+        remote_attachment_urls,
+    )
+    .render(document)
+}
 
-    rewrite_markdown_link_destinations(&content, |destination| {
-        let (path, fragment) = destination
-            .split_once('#')
-            .map_or((destination, None), |(path, fragment)| {
-                (path, Some(fragment))
-            });
-        let remote = destinations.get(path)?;
-        Some(fragment.map_or_else(|| remote.clone(), |fragment| format!("{remote}#{fragment}")))
-    })
+/// Precomputed remote destinations for rendering a whole Outline publication.
+///
+/// Building this once avoids rescanning every selected document and attachment
+/// for each rendered document.
+#[derive(Debug, Clone, Default)]
+pub struct OutlineRemoteRenderIndex {
+    destinations: BTreeMap<String, String>,
+}
+
+impl OutlineRemoteRenderIndex {
+    #[must_use]
+    pub fn new(
+        documents: &[OutlinePlannedDocument],
+        remote_document_ids: &BTreeMap<String, String>,
+        attachments: &[OutlinePlannedAttachment],
+        remote_attachment_urls: &BTreeMap<String, String>,
+    ) -> Self {
+        let mut destinations = documents
+            .iter()
+            .filter_map(|target| {
+                let remote_id = remote_document_ids.get(&target.source_path)?;
+                Some((
+                    encode_uri_path(&target.archive_path),
+                    outline_document_url(remote_id),
+                ))
+            })
+            .collect::<BTreeMap<_, _>>();
+        destinations.extend(attachments.iter().filter_map(|attachment| {
+            Some((
+                encode_uri_path(&attachment.archive_path),
+                remote_attachment_urls.get(&attachment.source_path)?.clone(),
+            ))
+        }));
+        Self { destinations }
+    }
+
+    #[must_use]
+    pub fn render(&self, document: &OutlinePlannedDocument) -> String {
+        let encoded_parent = encode_uri_path(&parent_path(&document.archive_path));
+        rewrite_markdown_link_destinations(&document.content, |destination| {
+            let (path, fragment) = destination
+                .split_once('#')
+                .map_or((destination, None), |(path, fragment)| {
+                    (path, Some(fragment))
+                });
+            let archive_path = resolve_encoded_archive_path(&encoded_parent, path)?;
+            let remote = self.destinations.get(&archive_path)?;
+            Some(fragment.map_or_else(|| remote.clone(), |fragment| format!("{remote}#{fragment}")))
+        })
+    }
 }
 
 #[must_use]
@@ -1337,6 +1377,26 @@ fn encode_uri_fragment(value: &str) -> String {
     percent_encode(value, false)
 }
 
+fn resolve_encoded_archive_path(parent: &str, relative: &str) -> Option<String> {
+    if relative.starts_with('/') {
+        return None;
+    }
+    let mut parts = parent
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    for part in relative.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            part => parts.push(part),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
 fn percent_encode(value: &str, allow_slash: bool) -> String {
     let mut encoded = String::new();
     for byte in value.as_bytes() {
@@ -1420,6 +1480,55 @@ mod tests {
             },
         )
         .expect("plan Outline publication")
+    }
+
+    #[test]
+    fn remote_render_index_rewrites_only_referenced_nested_unicode_targets() {
+        let documents = vec![
+            OutlinePlannedDocument {
+                source_path: "Pantheons/Yemoja.md".to_string(),
+                source_document_id: "yemoja".to_string(),
+                title: "Yemoja".to_string(),
+                archive_path: "Wiki/Pantheons/THE ÒRÌSHÀ/Yemoja.md".to_string(),
+                parent_source_path: None,
+                content_hash: "source".to_string(),
+                content:
+                    "[Olókun](Ol%C3%B3kun.md#deep) ![image](../../uploads/hash/image%20one.png)"
+                        .to_string(),
+            },
+            OutlinePlannedDocument {
+                source_path: "Pantheons/Olokun.md".to_string(),
+                source_document_id: "olokun".to_string(),
+                title: "Olókun".to_string(),
+                archive_path: "Wiki/Pantheons/THE ÒRÌSHÀ/Olókun.md".to_string(),
+                parent_source_path: None,
+                content_hash: "target".to_string(),
+                content: String::new(),
+            },
+        ];
+        let attachments = vec![OutlinePlannedAttachment {
+            source_path: "assets/image one.png".to_string(),
+            archive_path: "Wiki/uploads/hash/image one.png".to_string(),
+            content_hash: "asset".to_string(),
+            size: 1,
+        }];
+        let index = OutlineRemoteRenderIndex::new(
+            &documents,
+            &BTreeMap::from([
+                ("Pantheons/Yemoja.md".to_string(), "yemoja-id".to_string()),
+                ("Pantheons/Olokun.md".to_string(), "olokun-id".to_string()),
+            ]),
+            &attachments,
+            &BTreeMap::from([(
+                "assets/image one.png".to_string(),
+                "https://outline.test/image".to_string(),
+            )]),
+        );
+
+        assert_eq!(
+            index.render(&documents[0]),
+            "[Olókun](/doc/olokun-id#deep) ![image](https://outline.test/image)"
+        );
     }
 
     fn configure_folder_notes(paths: &VaultPaths, placement: &str, name: &str) {

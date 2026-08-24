@@ -5,8 +5,8 @@ use super::{
     OutlineRemoteDocument, OutlineRemoteSnapshot,
 };
 use crate::export::outline::{
-    planned_document_references_attachment, render_remote_document_content_with_links,
-    OutlineDiagnostic, OutlineLinkTransform, OutlinePublicationPlan,
+    planned_document_references_attachment, OutlineDiagnostic, OutlineLinkTransform,
+    OutlinePublicationPlan, OutlineRemoteRenderIndex,
 };
 use crate::AppError;
 use serde::Serialize;
@@ -149,6 +149,23 @@ where
         ));
     }
 
+    let document_actions = plan
+        .actions
+        .iter()
+        .filter(|action| {
+            !matches!(
+                action.kind,
+                OutlinePublishActionKind::UploadAttachment | OutlinePublishActionKind::Archive
+            )
+        })
+        .filter_map(|action| Some((action.source_path.as_deref()?, action)))
+        .collect::<BTreeMap<_, _>>();
+    let mut identity_by_path = state
+        .documents
+        .iter()
+        .map(|(identity, mapping)| (mapping.source_path.clone(), identity.clone()))
+        .collect::<BTreeMap<_, _>>();
+
     if !publication.documents.is_empty() {
         emit_progress(
             &mut on_progress,
@@ -166,23 +183,16 @@ where
             publication.documents.len(),
             Some(&document.source_path),
         );
-        let action = plan
-            .actions
-            .iter()
-            .find(|action| {
-                action.source_path.as_deref() == Some(document.source_path.as_str())
-                    && !matches!(
-                        action.kind,
-                        OutlinePublishActionKind::UploadAttachment
-                            | OutlinePublishActionKind::Archive
-                    )
-            })
+        let action = document_actions
+            .get(document.source_path.as_str())
+            .copied()
             .ok_or_else(|| AppError::operation("Outline plan omitted a local document"))?;
         let desired_parent = document
             .parent_source_path
             .as_deref()
-            .and_then(|path| mapping_by_path(&state.documents, path))
-            .map(|(_, mapping)| mapping.remote_document_id.clone());
+            .and_then(|path| identity_by_path.get(path))
+            .and_then(|identity| state.documents.get(identity))
+            .map(|mapping| mapping.remote_document_id.clone());
         let source_identity = if action.kind == OutlinePublishActionKind::Create {
             let source_identity = action
                 .source_identity
@@ -239,6 +249,7 @@ where
             .documents
             .get_mut(&source_identity)
             .ok_or_else(|| AppError::operation("Outline mapping disappeared during publication"))?;
+        let previous_path = mapping.source_path.clone();
         if matches!(
             action.kind,
             OutlinePublishActionKind::Move | OutlinePublishActionKind::UpdateAndMove
@@ -255,6 +266,10 @@ where
             .source_document_id
             .clone_from(&document.source_document_id);
         mapping.remote_parent_id = desired_parent;
+        if previous_path != document.source_path {
+            identity_by_path.remove(&previous_path);
+        }
+        identity_by_path.insert(document.source_path.clone(), source_identity);
         lock.save(&state)?;
         emit_progress(
             &mut on_progress,
@@ -304,9 +319,14 @@ where
             .iter()
             .find(|document| planned_document_references_attachment(document, attachment))
             .ok_or_else(|| AppError::operation("planned attachment has no owning document"))?;
-        let (owner_identity, owner_mapping) = mapping_by_path(&state.documents, &owner.source_path)
+        let owner_identity = identity_by_path
+            .get(&owner.source_path)
+            .cloned()
             .ok_or_else(|| AppError::operation("attachment owner has no remote mapping"))?;
-        let owner_identity = owner_identity.to_string();
+        let owner_mapping = state
+            .documents
+            .get(&owner_identity)
+            .ok_or_else(|| AppError::operation("attachment owner mapping disappeared"))?;
         let owner_remote_id = owner_mapping.remote_document_id.clone();
         let bytes = fs::read(paths.vault_root().join(&attachment.source_path))
             .map_err(AppError::operation)?;
@@ -373,6 +393,12 @@ where
             )
         })
         .collect::<BTreeMap<_, _>>();
+    let render_index = OutlineRemoteRenderIndex::new(
+        &publication.documents,
+        &remote_document_ids,
+        &publication.attachments,
+        &remote_urls,
+    );
 
     if !publication.documents.is_empty() {
         emit_progress(
@@ -391,22 +417,18 @@ where
             publication.documents.len(),
             Some(&document.source_path),
         );
-        let (source_identity, mapping) =
-            mapping_by_path(&state.documents, &document.source_path)
-                .ok_or_else(|| AppError::operation("local document has no remote mapping"))?;
-        let source_identity = source_identity.to_string();
+        let source_identity = identity_by_path
+            .get(&document.source_path)
+            .cloned()
+            .ok_or_else(|| AppError::operation("local document has no remote mapping"))?;
+        let mapping = state
+            .documents
+            .get(&source_identity)
+            .ok_or_else(|| AppError::operation("local document mapping disappeared"))?;
         let remote_id = mapping.remote_document_id.clone();
-        let desired = render_remote_document_content_with_links(
-            document,
-            &publication.documents,
-            &remote_document_ids,
-            &publication.attachments,
-            &remote_urls,
-        );
-        let action_kind = plan
-            .actions
-            .iter()
-            .find(|action| action.source_path.as_deref() == Some(document.source_path.as_str()))
+        let desired = render_index.render(document);
+        let action_kind = document_actions
+            .get(document.source_path.as_str())
             .map(|action| action.kind)
             .ok_or_else(|| AppError::operation("Outline plan omitted a local document"))?;
         let desired_hash = content_hash(&desired);
@@ -576,16 +598,6 @@ fn report(
         link_transform,
         plan,
     }
-}
-
-fn mapping_by_path<'a>(
-    mappings: &'a BTreeMap<String, OutlineDocumentMapping>,
-    path: &str,
-) -> Option<(&'a str, &'a OutlineDocumentMapping)> {
-    mappings
-        .iter()
-        .find(|(_, mapping)| mapping.source_path == path)
-        .map(|(identity, mapping)| (identity.as_str(), mapping))
 }
 
 fn content_hash(content: &str) -> String {
