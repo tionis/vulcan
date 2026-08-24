@@ -1280,6 +1280,14 @@ fn parses_outline_pull_remote_work_limit() {
         "Imported",
         "--max-documents",
         "2500",
+        "--max-content-bytes",
+        "5000000",
+        "--max-attachments",
+        "200",
+        "--max-attachment-bytes",
+        "1000000",
+        "--max-total-attachment-bytes",
+        "9000000",
     ])
     .expect("remote work limit should parse");
     assert!(matches!(
@@ -1287,6 +1295,10 @@ fn parses_outline_pull_remote_work_limit() {
         Command::Pull {
             command: PullCommand::Outline {
                 max_documents: 2500,
+                max_content_bytes: 5_000_000,
+                max_attachments: 200,
+                max_attachment_bytes: 1_000_000,
+                max_total_attachment_bytes: 9_000_000,
                 ..
             }
         }
@@ -1353,6 +1365,10 @@ fn parses_outline_pull_conflict_modes() {
                 max_depth: None,
                 exclude_document: Vec::new(),
                 max_documents: 10_000,
+                max_content_bytes: 268_435_456,
+                max_attachments: 10_000,
+                max_attachment_bytes: 26_214_400,
+                max_total_attachment_bytes: 1_073_741_824,
                 archive_missing: None,
                 delete_missing: false,
                 confirm_delete_count: None,

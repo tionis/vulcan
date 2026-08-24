@@ -10438,6 +10438,8 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(publishing.contains("Unicode-collision"));
     assert!(publishing.contains("Reference-style"));
     assert!(publishing.contains("conflict_markers_available"));
+    assert!(publishing.contains("--max-content-bytes"));
+    assert!(publishing.contains("--max-total-attachment-bytes"));
     assert!(publishing.contains("--root-document"));
     assert!(publishing.contains("out_of_scope"));
     assert!(publishing.contains("--adopt-pulled"));

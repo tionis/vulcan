@@ -2474,6 +2474,34 @@ pub enum PullCommand {
         max_documents: usize,
         #[arg(
             long,
+            value_name = "BYTES",
+            default_value_t = 268_435_456,
+            help = "Abort if listed remote Markdown exceeds this cumulative byte count"
+        )]
+        max_content_bytes: usize,
+        #[arg(
+            long,
+            value_name = "COUNT",
+            default_value_t = 10_000,
+            help = "Abort if selected documents reference more attachments than this"
+        )]
+        max_attachments: usize,
+        #[arg(
+            long,
+            value_name = "BYTES",
+            default_value_t = 26_214_400,
+            help = "Maximum bytes accepted for one downloaded attachment"
+        )]
+        max_attachment_bytes: usize,
+        #[arg(
+            long,
+            value_name = "BYTES",
+            default_value_t = 1_073_741_824,
+            help = "Maximum cumulative attachment bytes downloaded by one pull invocation"
+        )]
+        max_total_attachment_bytes: usize,
+        #[arg(
+            long,
             value_name = "VAULT_DIRECTORY",
             conflicts_with_all = ["delete_missing", "interactive"],
             help = "Move documents missing from Outline into this recoverable vault directory"

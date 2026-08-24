@@ -20,6 +20,9 @@ use vulcan_core::VaultPaths;
 
 const STATE_VERSION: u32 = 1;
 pub const DEFAULT_ATTACHMENT_MAX_BYTES: usize = 25 * 1024 * 1024;
+pub const DEFAULT_REMOTE_CONTENT_MAX_BYTES: usize = 256 * 1024 * 1024;
+pub const DEFAULT_ATTACHMENT_COUNT_MAX: usize = 10_000;
+pub const DEFAULT_TOTAL_ATTACHMENT_MAX_BYTES: usize = 1024 * 1024 * 1024;
 
 static OUTLINE_ATTACHMENT_DESTINATION: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^(?:https?://[^/]+)?/api/attachments\.redirect(?:[/?#].*)?$")
@@ -49,6 +52,10 @@ pub struct OutlinePullOptions {
     pub confirmed_stale_attachment_delete_count: Option<usize>,
     pub connector_identity: Option<String>,
     pub max_remote_documents: usize,
+    pub max_remote_content_bytes: usize,
+    pub max_attachments: usize,
+    pub max_attachment_bytes: usize,
+    pub max_total_attachment_bytes: usize,
 }
 
 impl Default for OutlinePullOptions {
@@ -62,6 +69,10 @@ impl Default for OutlinePullOptions {
             confirmed_stale_attachment_delete_count: None,
             connector_identity: None,
             max_remote_documents: 10_000,
+            max_remote_content_bytes: DEFAULT_REMOTE_CONTENT_MAX_BYTES,
+            max_attachments: DEFAULT_ATTACHMENT_COUNT_MAX,
+            max_attachment_bytes: DEFAULT_ATTACHMENT_MAX_BYTES,
+            max_total_attachment_bytes: DEFAULT_TOTAL_ATTACHMENT_MAX_BYTES,
         }
     }
 }
@@ -570,7 +581,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
             options.connector_identity.as_deref(),
         )?;
         let remote = api.list_collection_documents(collection_id)?;
-        validate_remote_work_limit(&remote, options.max_remote_documents)?;
+        validate_remote_work_limit(&remote, options)?;
         ensure_pull_not_cancelled(is_cancelled, None)?;
         emit_pull_progress(
             on_progress,
@@ -581,6 +592,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
             None,
         );
         let actions = plan_pull(paths, &remote, &state, conflict_policy, options, false)?;
+        validate_attachment_work_limit(&actions, options)?;
         let operation_id = state
             .incomplete_operation
             .as_ref()
@@ -617,7 +629,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
         options.connector_identity.as_deref(),
     )?;
     let remote = api.list_collection_documents(collection_id)?;
-    validate_remote_work_limit(&remote, options.max_remote_documents)?;
+    validate_remote_work_limit(&remote, options)?;
     ensure_pull_not_cancelled(is_cancelled, None)?;
     emit_pull_progress(
         on_progress,
@@ -628,6 +640,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
         None,
     );
     let mut actions = plan_pull(paths, &remote, &state, conflict_policy, options, true)?;
+    validate_attachment_work_limit(&actions, options)?;
     if actions
         .iter()
         .any(|action| action.kind == OutlinePullActionKind::Conflict)
@@ -736,6 +749,7 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
         .sum();
     let mut mutations_processed = 0usize;
     let mut attachments_processed = 0usize;
+    let mut attachment_bytes_downloaded = 0usize;
     emit_pull_progress(
         on_progress,
         OutlinePullPhase::Applying,
@@ -893,8 +907,17 @@ pub fn pull_outline_with_options_progress_and_write_authorizer(
                     );
                     let downloaded = api.download_attachment(
                         &attachment.remote_url,
-                        DEFAULT_ATTACHMENT_MAX_BYTES,
+                        options.max_attachment_bytes,
                     )?;
+                    attachment_bytes_downloaded = attachment_bytes_downloaded
+                        .checked_add(downloaded.bytes.len())
+                        .filter(|total| *total <= options.max_total_attachment_bytes)
+                        .ok_or_else(|| {
+                            AppError::operation(format!(
+                                "Outline pull attachment downloads exceed the configured total byte limit of {}",
+                                options.max_total_attachment_bytes
+                            ))
+                        })?;
                     secure_write(
                         paths.vault_root(),
                         Path::new(&attachment.local_path),
@@ -2113,17 +2136,52 @@ fn content_hash(content: &str) -> String {
 
 fn validate_remote_work_limit(
     remote: &[OutlineRemoteDocument],
-    max_remote_documents: usize,
+    options: &OutlinePullOptions,
 ) -> Result<(), AppError> {
-    if max_remote_documents == 0 {
+    if options.max_remote_documents == 0 || options.max_remote_content_bytes == 0 {
         return Err(AppError::operation(
-            "Outline pull max_remote_documents must be greater than zero",
+            "Outline pull document and content byte limits must be greater than zero",
         ));
     }
-    if remote.len() > max_remote_documents {
+    if remote.len() > options.max_remote_documents {
         return Err(AppError::operation(format!(
-            "Outline collection contains {} documents, exceeding the configured pull limit of {max_remote_documents}",
-            remote.len()
+            "Outline collection contains {} documents, exceeding the configured pull limit of {}",
+            remote.len(),
+            options.max_remote_documents
+        )));
+    }
+    let content_bytes = remote.iter().try_fold(0usize, |total, document| {
+        total.checked_add(document.text.len())
+    });
+    if content_bytes.is_none_or(|total| total > options.max_remote_content_bytes) {
+        return Err(AppError::operation(format!(
+            "Outline collection content exceeds the configured pull byte limit of {}",
+            options.max_remote_content_bytes
+        )));
+    }
+    Ok(())
+}
+
+fn validate_attachment_work_limit(
+    actions: &[OutlinePullAction],
+    options: &OutlinePullOptions,
+) -> Result<(), AppError> {
+    if options.max_attachments == 0
+        || options.max_attachment_bytes == 0
+        || options.max_total_attachment_bytes == 0
+    {
+        return Err(AppError::operation(
+            "Outline pull attachment limits must be greater than zero",
+        ));
+    }
+    let count = actions
+        .iter()
+        .map(|action| action.attachments.len())
+        .sum::<usize>();
+    if count > options.max_attachments {
+        return Err(AppError::operation(format!(
+            "Outline pull references {count} attachments, exceeding the configured limit of {}",
+            options.max_attachments
         )));
     }
     Ok(())
@@ -3441,5 +3499,73 @@ mod tests {
             &|_| Ok(()),
         )
         .is_err());
+    }
+
+    #[test]
+    fn pull_enforces_content_attachment_count_and_total_byte_budgets() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        let api = api(vec![document(
+            "home",
+            "Home",
+            "![asset](/api/attachments.redirect?id=asset)",
+            None,
+        )]);
+
+        let content_limited = OutlinePullOptions {
+            max_remote_content_bytes: 8,
+            ..OutlinePullOptions::default()
+        };
+        let error = pull_outline_with_options_and_write_authorizer(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            true,
+            &OutlinePullConflictPolicy::abort(),
+            &content_limited,
+            &|_| Ok(()),
+        )
+        .expect_err("remote content budget");
+        assert!(error.to_string().contains("content exceeds"));
+
+        let count_limited = OutlinePullOptions {
+            max_attachments: 0,
+            ..OutlinePullOptions::default()
+        };
+        let error = pull_outline_with_options_and_write_authorizer(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            true,
+            &OutlinePullConflictPolicy::abort(),
+            &count_limited,
+            &|_| Ok(()),
+        )
+        .expect_err("attachment count budget");
+        assert!(error.to_string().contains("attachment limits"));
+
+        let total_limited = OutlinePullOptions {
+            max_total_attachment_bytes: 1,
+            ..OutlinePullOptions::default()
+        };
+        let error = pull_outline_with_options_and_write_authorizer(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            "Imported",
+            false,
+            &OutlinePullConflictPolicy::abort(),
+            &total_limited,
+            &|_| Ok(()),
+        )
+        .expect_err("total attachment byte budget");
+        assert!(error.to_string().contains("total byte limit"));
+        assert!(!temp.path().join("Imported/Home.md").exists());
     }
 }

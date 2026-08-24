@@ -5904,6 +5904,50 @@
                 ]
               },
               {
+                "help": "Abort if listed remote Markdown exceeds this cumulative byte count",
+                "id": "max_content_bytes",
+                "long": "max-content-bytes",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "BYTES"
+                ]
+              },
+              {
+                "help": "Abort if selected documents reference more attachments than this",
+                "id": "max_attachments",
+                "long": "max-attachments",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "COUNT"
+                ]
+              },
+              {
+                "help": "Maximum bytes accepted for one downloaded attachment",
+                "id": "max_attachment_bytes",
+                "long": "max-attachment-bytes",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "BYTES"
+                ]
+              },
+              {
+                "help": "Maximum cumulative attachment bytes downloaded by one pull invocation",
+                "id": "max_total_attachment_bytes",
+                "long": "max-total-attachment-bytes",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "BYTES"
+                ]
+              },
+              {
                 "help": "Move documents missing from Outline into this recoverable vault directory",
                 "id": "archive_missing",
                 "long": "archive-missing",

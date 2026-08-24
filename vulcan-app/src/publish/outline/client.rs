@@ -10,6 +10,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
+use std::io::Read;
 use std::thread;
 use std::time::Duration;
 
@@ -20,6 +21,7 @@ pub struct HttpOutlineClient {
     token: String,
     max_retries: u32,
     page_size: usize,
+    max_response_bytes: usize,
 }
 
 impl HttpOutlineClient {
@@ -62,7 +64,14 @@ impl HttpOutlineClient {
             token,
             max_retries: max_retries.min(10),
             page_size: page_size.clamp(1, 100),
+            max_response_bytes: 64 * 1024 * 1024,
         })
+    }
+
+    #[must_use]
+    pub fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
+        self.max_response_bytes = max_response_bytes.max(1);
+        self
     }
 
     fn endpoint(&self, method: &str) -> Result<Url, AppError> {
@@ -93,7 +102,7 @@ impl HttpOutlineClient {
                 .post(endpoint.clone())
                 .bearer_auth(&self.token)
                 .json(body);
-            match Self::send::<R>(request) {
+            match self.send::<R>(request) {
                 Ok(value) => return Ok(value),
                 Err(RequestFailure::Retryable {
                     message,
@@ -110,8 +119,8 @@ impl HttpOutlineClient {
         Err(AppError::operation("Outline request exhausted retries"))
     }
 
-    fn send<R: DeserializeOwned>(request: RequestBuilder) -> Result<R, RequestFailure> {
-        let response = request.send().map_err(|error| {
+    fn send<R: DeserializeOwned>(&self, request: RequestBuilder) -> Result<R, RequestFailure> {
+        let mut response = request.send().map_err(|error| {
             if error.is_timeout() || error.is_connect() {
                 RequestFailure::Retryable {
                     message: "Outline request timed out or could not connect".to_string(),
@@ -123,9 +132,30 @@ impl HttpOutlineClient {
         })?;
         let status = response.status();
         let retry_after = retry_after_delay(response.headers());
-        let bytes = response
-            .bytes()
+        if response
+            .headers()
+            .get(CONTENT_LENGTH)
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.parse::<usize>().ok())
+            .is_some_and(|length| length > self.max_response_bytes)
+        {
+            return Err(RequestFailure::Fatal(format!(
+                "Outline API response exceeds the {}-byte limit",
+                self.max_response_bytes
+            )));
+        }
+        let mut bytes = Vec::new();
+        response
+            .by_ref()
+            .take(self.max_response_bytes as u64 + 1)
+            .read_to_end(&mut bytes)
             .map_err(|_| RequestFailure::Fatal("failed to read Outline response".to_string()))?;
+        if bytes.len() > self.max_response_bytes {
+            return Err(RequestFailure::Fatal(format!(
+                "Outline API response exceeds the {}-byte limit",
+                self.max_response_bytes
+            )));
+        }
         if !status.is_success() {
             let message = sanitized_api_error(status, &bytes);
             return if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
@@ -609,6 +639,20 @@ mod tests {
         let document = client.document_info("one").expect("document info");
         assert_eq!(document.revision, Some(9));
         assert_eq!(document.updated_at.as_deref(), Some("2026-08-24T12:00:00Z"));
+    }
+
+    #[test]
+    fn api_responses_are_bounded_before_json_parsing() {
+        let body = r#"{"data":{"id":"one","title":"One","text":"oversized","collectionId":"c","parentDocumentId":null}}"#;
+        let (url, _) = mock_server(vec![(200, body)]);
+        let client =
+            HttpOutlineClient::new(&url, "secret".to_string(), Duration::from_secs(2), 0, 100)
+                .expect("client")
+                .with_max_response_bytes(32);
+        let error = client
+            .document_info("one")
+            .expect_err("oversized API response");
+        assert!(error.to_string().contains("32-byte limit"));
     }
 
     #[test]
