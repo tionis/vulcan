@@ -8,6 +8,7 @@ use crate::export::outline::{
     planned_document_references_attachment, OutlineDiagnostic, OutlineLinkTransform,
     OutlinePublicationPlan, OutlineRemoteRenderIndex,
 };
+use crate::pull::outline::OutlinePulledBinding;
 use crate::AppError;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -20,11 +21,17 @@ pub struct OutlinePublishReport {
     pub dry_run: bool,
     pub applied: bool,
     pub conflicts: usize,
+    pub adopted_pull_bindings: usize,
     pub diagnostics: Vec<OutlineDiagnostic>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link_transform: Option<OutlineLinkTransform>,
     #[serde(flatten)]
     pub plan: OutlinePublishPlan,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct OutlinePublishOptions {
+    pub adopt_pull_bindings: Vec<OutlinePulledBinding>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -83,6 +90,34 @@ pub fn publish_outline_with_progress<F>(
     publication: &OutlinePublicationPlan,
     dry_run: bool,
     conflict_policy: &OutlineConflictPolicy,
+    on_progress: F,
+) -> Result<OutlinePublishReport, AppError>
+where
+    F: FnMut(&OutlinePublishProgress),
+{
+    publish_outline_with_options_and_progress(
+        paths,
+        api,
+        profile,
+        collection_id,
+        publication,
+        dry_run,
+        conflict_policy,
+        &OutlinePublishOptions::default(),
+        on_progress,
+    )
+}
+
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
+pub fn publish_outline_with_options_and_progress<F>(
+    paths: &VaultPaths,
+    api: &dyn OutlineApi,
+    profile: &str,
+    collection_id: &str,
+    publication: &OutlinePublicationPlan,
+    dry_run: bool,
+    conflict_policy: &OutlineConflictPolicy,
+    options: &OutlinePublishOptions,
     mut on_progress: F,
 ) -> Result<OutlinePublishReport, AppError>
 where
@@ -96,7 +131,14 @@ where
         None,
     );
     if dry_run {
-        let state = load_outline_state(paths, profile, collection_id)?;
+        let mut state = load_outline_state(paths, profile, collection_id)?;
+        let adopted_pull_bindings = apply_pull_adoptions(
+            api,
+            collection_id,
+            publication,
+            &mut state,
+            &options.adopt_pull_bindings,
+        )?;
         let plan = plan_outline_reconciliation_with_policy(
             api,
             profile,
@@ -118,11 +160,19 @@ where
             publication.link_transform.clone(),
             true,
             false,
+            adopted_pull_bindings,
         ));
     }
 
     let lock = lock_outline_state(paths, profile)?;
     let mut state = load_outline_state(paths, profile, collection_id)?;
+    let adopted_pull_bindings = apply_pull_adoptions(
+        api,
+        collection_id,
+        publication,
+        &mut state,
+        &options.adopt_pull_bindings,
+    )?;
     let mut plan = plan_outline_reconciliation_with_policy(
         api,
         profile,
@@ -146,6 +196,7 @@ where
             publication.link_transform.clone(),
             false,
             false,
+            adopted_pull_bindings,
         ));
     }
 
@@ -560,7 +611,109 @@ where
         publication.link_transform.clone(),
         false,
         true,
+        adopted_pull_bindings,
     ))
+}
+
+fn apply_pull_adoptions(
+    api: &dyn OutlineApi,
+    collection_id: &str,
+    publication: &OutlinePublicationPlan,
+    state: &mut super::OutlinePublishState,
+    candidates: &[OutlinePulledBinding],
+) -> Result<usize, AppError> {
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+    let selected = publication
+        .documents
+        .iter()
+        .map(|document| (document.source_path.as_str(), document))
+        .collect::<BTreeMap<_, _>>();
+    let remote = api
+        .list_collection_documents(collection_id)?
+        .into_iter()
+        .map(|document| (document.id.clone(), document))
+        .collect::<BTreeMap<_, _>>();
+    let mut adopted = 0;
+    for candidate in candidates {
+        let Some(document) = selected.get(candidate.local_path.as_str()) else {
+            continue;
+        };
+        if let Some((identity, mapping)) = state
+            .documents
+            .iter()
+            .find(|(_, mapping)| mapping.source_path == candidate.local_path)
+        {
+            if mapping.remote_document_id != candidate.remote_document_id {
+                return Err(AppError::operation(format!(
+                    "cannot adopt `{}`: existing publication mapping `{identity}` owns a different remote document",
+                    candidate.local_path
+                )));
+            }
+            continue;
+        }
+        if let Some((identity, mapping)) = state
+            .documents
+            .iter()
+            .find(|(_, mapping)| mapping.remote_document_id == candidate.remote_document_id)
+        {
+            return Err(AppError::operation(format!(
+                "cannot adopt `{}`: remote document `{}` is already owned by publication mapping `{identity}` at `{}`",
+                candidate.local_path, candidate.remote_document_id, mapping.source_path
+            )));
+        }
+        let current = remote.get(&candidate.remote_document_id).ok_or_else(|| {
+            AppError::operation(format!(
+                "cannot adopt `{}`: pulled remote document `{}` is missing",
+                candidate.local_path, candidate.remote_document_id
+            ))
+        })?;
+        if current.archived_at.is_some()
+            || current.collection_id != collection_id
+            || content_hash(&current.text) != candidate.last_remote_source_hash
+            || current.title != candidate.last_remote_title
+            || current.parent_document_id != candidate.last_remote_parent_id
+        {
+            return Err(AppError::operation(format!(
+                "cannot adopt `{}`: remote content, title, parent, or collection changed since the last successful pull",
+                candidate.local_path
+            )));
+        }
+        let source_identity = format!("outline-pull:{}", candidate.remote_document_id);
+        let attachments = candidate
+            .attachments
+            .iter()
+            .map(|attachment| {
+                (
+                    attachment.local_path.clone(),
+                    OutlineAttachmentMapping {
+                        remote_attachment_id: attachment.remote_url.clone(),
+                        remote_url: attachment.remote_url.clone(),
+                        content_hash: attachment.content_hash.clone(),
+                        owner_remote_document_id: candidate.remote_document_id.clone(),
+                    },
+                )
+            })
+            .collect();
+        state.documents.insert(
+            source_identity,
+            OutlineDocumentMapping {
+                source_path: candidate.local_path.clone(),
+                source_document_id: document.source_document_id.clone(),
+                remote_document_id: candidate.remote_document_id.clone(),
+                last_published_content_hash: content_hash(&current.text),
+                last_published_title: current.title.clone(),
+                remote_parent_id: current.parent_document_id.clone(),
+                last_observed_remote: Some(remote_snapshot(current)),
+                pending_create: false,
+                pending_archive: false,
+                attachments,
+            },
+        );
+        adopted += 1;
+    }
+    Ok(adopted)
 }
 
 fn emit_progress(
@@ -584,6 +737,7 @@ fn report(
     link_transform: Option<OutlineLinkTransform>,
     dry_run: bool,
     applied: bool,
+    adopted_pull_bindings: usize,
 ) -> OutlinePublishReport {
     let conflicts = plan
         .actions
@@ -594,6 +748,7 @@ fn report(
         dry_run,
         applied,
         conflicts,
+        adopted_pull_bindings,
         diagnostics,
         link_transform,
         plan,
@@ -830,6 +985,122 @@ mod tests {
         assert!(mutations.iter().any(|entry| entry.starts_with("move:")));
         assert!(mutations.iter().any(|entry| entry == "update:Moved"));
         assert!(mutations.iter().any(|entry| entry.starts_with("archive:")));
+    }
+
+    #[test]
+    fn explicit_pull_adoption_updates_the_existing_remote_document_without_duplication() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        let remote = OutlineRemoteDocument {
+            id: "remote-home".to_string(),
+            title: "Home".to_string(),
+            text: "pulled baseline".to_string(),
+            collection_id: "collection".to_string(),
+            parent_document_id: None,
+            archived_at: None,
+        };
+        let api = MockApi::default();
+        api.documents
+            .borrow_mut()
+            .insert(remote.id.clone(), remote.clone());
+        let publication = plan(vec![document(
+            "Imported/Home.md",
+            "Home",
+            "local edit",
+            None,
+        )]);
+        let options = OutlinePublishOptions {
+            adopt_pull_bindings: vec![OutlinePulledBinding {
+                local_path: "Imported/Home.md".to_string(),
+                remote_document_id: remote.id.clone(),
+                last_remote_source_hash: content_hash(&remote.text),
+                last_remote_title: remote.title.clone(),
+                last_remote_parent_id: None,
+                attachments: Vec::new(),
+            }],
+        };
+
+        let dry_run = publish_outline_with_options_and_progress(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            true,
+            &OutlineConflictPolicy::abort(),
+            &options,
+            |_| {},
+        )
+        .expect("adoption dry run");
+        assert_eq!(dry_run.adopted_pull_bindings, 1);
+        assert!(!paths.vulcan_dir().join("publish").exists());
+
+        let applied = publish_outline_with_options_and_progress(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            false,
+            &OutlineConflictPolicy::abort(),
+            &options,
+            |_| {},
+        )
+        .expect("adopt and publish local edit");
+        assert!(applied.applied);
+        assert_eq!(applied.adopted_pull_bindings, 1);
+        assert_eq!(api.mutations.borrow().as_slice(), ["update:Home"]);
+        assert_eq!(api.documents.borrow().len(), 1);
+        assert_eq!(api.documents.borrow()["remote-home"].text, "local edit");
+        let state = load_outline_state(&paths, "wiki", "collection").expect("publish state");
+        assert_eq!(state.documents.len(), 1);
+        assert_eq!(
+            state.documents.values().next().unwrap().remote_document_id,
+            "remote-home"
+        );
+    }
+
+    #[test]
+    fn explicit_pull_adoption_rejects_remote_drift() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        let api = MockApi::default();
+        api.documents.borrow_mut().insert(
+            "remote-home".to_string(),
+            OutlineRemoteDocument {
+                id: "remote-home".to_string(),
+                title: "Home".to_string(),
+                text: "remote edit".to_string(),
+                collection_id: "collection".to_string(),
+                parent_document_id: None,
+                archived_at: None,
+            },
+        );
+        let options = OutlinePublishOptions {
+            adopt_pull_bindings: vec![OutlinePulledBinding {
+                local_path: "Imported/Home.md".to_string(),
+                remote_document_id: "remote-home".to_string(),
+                last_remote_source_hash: content_hash("old baseline"),
+                last_remote_title: "Home".to_string(),
+                last_remote_parent_id: None,
+                attachments: Vec::new(),
+            }],
+        };
+        let error = publish_outline_with_options_and_progress(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &plan(vec![document("Imported/Home.md", "Home", "local", None)]),
+            true,
+            &OutlineConflictPolicy::abort(),
+            &options,
+            |_| {},
+        )
+        .expect_err("remote drift must prevent adoption");
+        assert!(error
+            .message()
+            .contains("changed since the last successful pull"));
     }
 
     #[test]

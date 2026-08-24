@@ -14,8 +14,8 @@ pub use planner::{
     OutlineConflictSideState, OutlinePublishAction, OutlinePublishActionKind, OutlinePublishPlan,
 };
 pub use publisher::{
-    publish_outline, publish_outline_with_progress, OutlinePublishPhase, OutlinePublishProgress,
-    OutlinePublishReport,
+    publish_outline, publish_outline_with_options_and_progress, publish_outline_with_progress,
+    OutlinePublishOptions, OutlinePublishPhase, OutlinePublishProgress, OutlinePublishReport,
 };
 pub use state::{
     load_outline_state, lock_outline_state, OutlineAttachmentMapping, OutlineDocumentMapping,

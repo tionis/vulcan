@@ -1038,6 +1038,7 @@ fn parses_outline_publish_dry_run_command() {
                 dry_run: true,
                 overwrite_conflicts: false,
                 overwrite_conflict: Vec::new(),
+                adopt_pulled: false,
                 interactive: false,
             },
         }
@@ -1062,10 +1063,34 @@ fn parses_outline_publish_overwrite_conflicts_command() {
                 dry_run: false,
                 overwrite_conflicts: true,
                 overwrite_conflict: Vec::new(),
+                adopt_pulled: false,
                 interactive: false,
             },
         }
     );
+}
+
+#[test]
+fn parses_outline_publish_pull_adoption() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "publish",
+        "outline",
+        "wiki",
+        "--dry-run",
+        "--adopt-pulled",
+    ])
+    .expect("pull adoption should parse");
+    assert!(matches!(
+        cli.command,
+        Command::Publish {
+            command: PublishCommand::Outline {
+                dry_run: true,
+                adopt_pulled: true,
+                ..
+            }
+        }
+    ));
 }
 
 #[test]
@@ -1089,6 +1114,7 @@ fn parses_outline_publish_selective_conflict_overrides() {
                 dry_run: false,
                 overwrite_conflicts: false,
                 overwrite_conflict: vec!["Home.md".to_string(), "Projects/Plan.md".to_string()],
+                adopt_pulled: false,
                 interactive: false,
             },
         }

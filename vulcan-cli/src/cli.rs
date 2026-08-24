@@ -2396,6 +2396,11 @@ pub enum PublishCommand {
         overwrite_conflict: Vec<String>,
         #[arg(
             long,
+            help = "Explicitly adopt matching durable pull bindings before publication"
+        )]
+        adopt_pulled: bool,
+        #[arg(
+            long,
             conflicts_with_all = ["dry_run", "overwrite_conflicts", "overwrite_conflict"],
             help = "Review remote conflicts in the terminal before applying approved overwrites"
         )]

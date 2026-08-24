@@ -10432,6 +10432,8 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(publishing.contains("--confirm-delete-count"));
     assert!(publishing.contains("--root-document"));
     assert!(publishing.contains("out_of_scope"));
+    assert!(publishing.contains("--adopt-pulled"));
+    assert!(publishing.contains("adopted_pull_bindings"));
     assert!(publishing.contains("monitoring stderr progress"));
     assert!(publishing.contains("--selection-json"));
     assert!(publishing.contains(".vulcan/publish/outline/"));

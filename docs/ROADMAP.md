@@ -5434,6 +5434,7 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 ### 15.4 Durable identity, reconciliation, and conflict policy
 
 - [x] Initial Outline pull slice: persist locked, versioned remote-ID/local-path mappings and local/remote/base content hashes under `.vulcan/integrations/outline-pull/`, with atomic state replacement and fail-closed validation.
+- [x] Add explicit fail-closed adoption from durable Outline pull bindings into publication state, preserving remote document and attachment identity while rejecting drift, duplicate ownership, and unselected mappings.
 - [ ] Store per-route state under a locked, ignored `.vulcan/integrations/` state area outside `cache.db`, using validated schemas, versioning, verified temporary files, `fsync`, and atomic replacement. A malformed or unsupported state file stops the route without local or remote mutation.
 - [ ] Record route/profile identity, connector/server identity, local source identity/path, remote object ID/type/parent, last pulled remote revision/hash, last pushed local/projection hash, last agreed base hash, attachment mappings, tombstones, cursor, and incomplete operation journal entries.
 - [ ] Do not depend on cache ULIDs as durable cross-system identity. Use explicit frontmatter binding identity when present, then durable route mappings and conservative path/hash recovery; ambiguous adoption is a conflict, not an automatic claim.

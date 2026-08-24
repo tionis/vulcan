@@ -244,6 +244,23 @@ struct OutlinePullAttachmentMapping {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlinePulledBinding {
+    pub local_path: String,
+    pub remote_document_id: String,
+    pub last_remote_source_hash: String,
+    pub last_remote_title: String,
+    pub last_remote_parent_id: Option<String>,
+    pub attachments: Vec<OutlinePulledAttachmentBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutlinePulledAttachmentBinding {
+    pub local_path: String,
+    pub remote_url: String,
+    pub content_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct OutlinePullAttachmentPlan {
     remote_url: String,
     local_path: String,
@@ -1315,6 +1332,50 @@ fn load_state(
     Ok(state)
 }
 
+/// Loads durable pull bindings for an explicit, fail-closed publisher adoption.
+pub fn load_outline_pulled_bindings(
+    paths: &VaultPaths,
+    profile: &str,
+    collection_id: &str,
+) -> Result<Vec<OutlinePulledBinding>, AppError> {
+    let path = state_path(paths, profile)?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let bytes = fs::read(path).map_err(AppError::operation)?;
+    let state: OutlinePullState = serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::operation("Outline pull state contains malformed JSON"))?;
+    let destination = state.destination.clone();
+    state.validate(profile, collection_id, &destination)?;
+    state
+        .documents
+        .into_iter()
+        .map(|(remote_document_id, mapping)| {
+            let last_remote_source_hash = mapping.last_remote_source_hash.ok_or_else(|| {
+                AppError::operation(format!(
+                    "pulled Outline document `{remote_document_id}` predates adoption-safe remote baselines; pull it again before adoption"
+                ))
+            })?;
+            Ok(OutlinePulledBinding {
+                local_path: mapping.local_path,
+                remote_document_id,
+                last_remote_source_hash,
+                last_remote_title: mapping.last_remote_title,
+                last_remote_parent_id: mapping.last_remote_parent_id,
+                attachments: mapping
+                    .attachments
+                    .into_iter()
+                    .map(|(remote_url, attachment)| OutlinePulledAttachmentBinding {
+                        local_path: attachment.local_path,
+                        remote_url,
+                        content_hash: attachment.content_hash,
+                    })
+                    .collect(),
+            })
+        })
+        .collect()
+}
+
 struct StateLock {
     file: File,
     state_path: PathBuf,
@@ -1495,6 +1556,13 @@ mod tests {
         assert!(parent.contains("> [!warning]"));
         assert!(parent.contains("[[Imported/THE ÒRÌSHÀ/Yemoja]]"));
         assert!(temp.path().join("Imported/THE ÒRÌSHÀ/Yemoja.md").is_file());
+        let bindings = load_outline_pulled_bindings(&paths, "wiki", "collection")
+            .expect("durable pulled bindings");
+        assert_eq!(bindings.len(), 2);
+        assert!(bindings.iter().any(|binding| {
+            binding.remote_document_id == "child"
+                && binding.local_path == "Imported/THE ÒRÌSHÀ/Yemoja.md"
+        }));
 
         let second = pull_outline(
             &paths,

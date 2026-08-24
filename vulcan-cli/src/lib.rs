@@ -492,15 +492,16 @@ use vulcan_app::notes::json_properties_to_frontmatter;
 use vulcan_app::outline_markdown::OutlineMarkdownOptions;
 #[cfg(feature = "web")]
 use vulcan_app::publish::outline::{
-    publish_outline_with_progress, HttpOutlineClient, OutlineConflictField, OutlineConflictPolicy,
-    OutlineConflictSide, OutlineConflictSideState, OutlinePublishAction, OutlinePublishPhase,
-    OutlinePublishProgress,
+    publish_outline_with_options_and_progress, HttpOutlineClient, OutlineConflictField,
+    OutlineConflictPolicy, OutlineConflictSide, OutlineConflictSideState, OutlinePublishAction,
+    OutlinePublishOptions, OutlinePublishPhase, OutlinePublishProgress,
 };
 #[cfg(feature = "web")]
 use vulcan_app::pull::outline::{
-    pull_outline_with_options_and_write_authorizer, OutlinePullAction, OutlinePullActionKind,
-    OutlinePullConflictPolicy, OutlinePullConflictResolution, OutlinePullMissingPolicy,
-    OutlinePullMissingResolution, OutlinePullOptions, OutlinePullReport, OutlinePullScope,
+    load_outline_pulled_bindings, pull_outline_with_options_and_write_authorizer,
+    OutlinePullAction, OutlinePullActionKind, OutlinePullConflictPolicy,
+    OutlinePullConflictResolution, OutlinePullMissingPolicy, OutlinePullMissingResolution,
+    OutlinePullOptions, OutlinePullReport, OutlinePullScope,
 };
 use vulcan_app::scan::refresh_cache_incrementally_with_progress;
 use vulcan_app::site::{
@@ -1404,6 +1405,7 @@ fn run_publish_command(
         dry_run,
         overwrite_conflicts,
         overwrite_conflict,
+        adopt_pulled,
         interactive,
     } = command;
     if *interactive
@@ -1492,7 +1494,15 @@ fn run_publish_command(
     )
     .map_err(CliError::operation)?;
     let conflict_policy = outline_conflict_policy(*overwrite_conflicts, overwrite_conflict);
-    let mut report = publish_outline_with_progress(
+    let publish_options = OutlinePublishOptions {
+        adopt_pull_bindings: if *adopt_pulled {
+            load_outline_pulled_bindings(paths, profile, &collection_id)
+                .map_err(CliError::operation)?
+        } else {
+            Vec::new()
+        },
+    };
+    let mut report = publish_outline_with_options_and_progress(
         paths,
         &client,
         profile,
@@ -1500,6 +1510,7 @@ fn run_publish_command(
         &publication,
         *dry_run,
         &conflict_policy,
+        &publish_options,
         |event| {
             if let Some(progress) = progress.as_mut() {
                 progress.record(event);
@@ -1517,7 +1528,7 @@ fn run_publish_command(
         };
         if let Some(paths_to_overwrite) = approved {
             let reviewed_policy = OutlineConflictPolicy::overwrite_paths(paths_to_overwrite);
-            report = publish_outline_with_progress(
+            report = publish_outline_with_options_and_progress(
                 paths,
                 &client,
                 profile,
@@ -1525,6 +1536,7 @@ fn run_publish_command(
                 &publication,
                 false,
                 &reviewed_policy,
+                &publish_options,
                 |event| {
                     if let Some(progress) = progress.as_mut() {
                         progress.record(event);
@@ -1654,6 +1666,9 @@ fn print_outline_publish_report(
                         "  review this item, then use --overwrite-conflict <SOURCE_PATH> to replace only this managed document"
                     );
                 }
+            }
+            if report.adopted_pull_bindings > 0 {
+                println!("adopted_pull_bindings={}", report.adopted_pull_bindings);
             }
         }
     }

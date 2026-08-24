@@ -5726,6 +5726,20 @@
                 ]
               },
               {
+                "help": "Explicitly adopt matching durable pull bindings before publication",
+                "id": "adopt_pulled",
+                "long": "adopt-pulled",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ADOPT_PULLED"
+                ]
+              },
+              {
                 "help": "Review remote conflicts in the terminal before applying approved overwrites",
                 "id": "interactive",
                 "long": "interactive",
