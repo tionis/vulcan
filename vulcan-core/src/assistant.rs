@@ -805,6 +805,12 @@ fn validated_assistant_root(
                     current.display()
                 )));
             }
+            Ok(metadata) if !metadata.is_dir() => {
+                return Err(AssistantError::message(format!(
+                    "assistant {kind} root component is not a directory: {}",
+                    current.display()
+                )));
+            }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
             Err(error) => return Err(AssistantError::io(&current, error)),
@@ -956,8 +962,8 @@ fn directory_name(path: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use super::{
-        assistant_config_summary, list_assistant_prompts, list_assistant_skills,
-        load_assistant_prompt, load_assistant_skill, read_vault_agents_file,
+        assistant_config_summary, assistant_skills_root, list_assistant_prompts,
+        list_assistant_skills, load_assistant_prompt, load_assistant_skill, read_vault_agents_file,
         render_assistant_prompt, skill_source_is_vulcan_managed,
     };
     use crate::paths::{initialize_vulcan_dir, VaultPaths};
@@ -1189,5 +1195,18 @@ Use this skill to curate links.
 
         let error = list_assistant_prompts(&paths).expect_err("outside root must be rejected");
         assert!(error.to_string().contains("unsafe assistant prompts root"));
+    }
+
+    #[test]
+    fn assistant_root_rejects_a_non_directory_component() {
+        let (_dir, paths) = test_paths();
+        fs::write(paths.vault_root().join(".agents"), "not a directory\n")
+            .expect("obstructing file should be created");
+
+        let error = assistant_skills_root(&paths).expect_err("file component must be rejected");
+        assert!(error
+            .to_string()
+            .contains("assistant skills root component is not a directory"));
+        assert!(error.to_string().contains(".agents"));
     }
 }

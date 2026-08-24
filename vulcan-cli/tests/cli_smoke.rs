@@ -10295,8 +10295,10 @@ fn agent_install_reports_obstructed_support_file_parent() {
         .failure()
         .stderr(
             predicate::str::contains("failed to resolve bundled agent skills directory")
-                .and(predicate::str::contains(".agents/skills"))
-                .and(predicate::str::contains("Not a directory")),
+                .and(predicate::str::contains(
+                    "assistant skills root component is not a directory",
+                ))
+                .and(predicate::str::contains(".agents")),
         );
 }
 
