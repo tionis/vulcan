@@ -127,9 +127,70 @@ __vulcan_append_completion_candidate() {
     COMPREPLY+=("$candidate")
 }
 
+__vulcan_named_completion_context() {
+    local previous="${COMP_WORDS[COMP_CWORD - 1]}"
+    local joined=" ${COMP_WORDS[*]:0:COMP_CWORD} "
+    case "$previous" in
+        --permissions|--clone|--permission-profile)
+            printf '%s\n' permission-profile
+            return
+            ;;
+        --site-profile)
+            printf '%s\n' site-profile
+            return
+            ;;
+        --profile)
+            if [[ "$joined" == *" export outline-zip "* ]]; then
+                printf '%s\n' outline-profile
+            elif [[ "$joined" == *" site "* ]]; then
+                printf '%s\n' site-profile
+            elif [[ "$joined" == *" tool "* ]]; then
+                printf '%s\n' permission-profile
+            fi
+            return
+            ;;
+    esac
+
+    if [[ "$previous" == outline && "$joined" =~ \ (publish|pull)\ outline\ $ ]]; then
+        printf '%s\n' outline-profile
+    elif [[ "$joined" == *" outline collections "* && "$previous" =~ ^(list|show|create|update|archive|restore|bind)$ ]]; then
+        printf '%s\n' outline-profile
+    elif [[ "$joined" == *" export profile rule "* && "$previous" =~ ^(list|add|update|delete|move)$ ]]; then
+        printf '%s\n' export-profile
+    elif [[ "$joined" == *" export profile "* && "$previous" =~ ^(run|serve|show|set|delete)$ ]]; then
+        printf '%s\n' export-profile
+    elif [[ "$joined" == *" integration "* && "$previous" =~ ^(show|validate|plan|run|status|bindings|bind|unbind)$ ]]; then
+        printf '%s\n' integration-route
+    elif [[ "$joined" == *" config alias "* && "$previous" =~ ^(set|delete)$ ]]; then
+        printf '%s\n' config-alias
+    elif [[ "$joined" == *" config permissions profile "* && "$previous" =~ ^(show|set|delete)$ ]]; then
+        printf '%s\n' permission-profile
+    elif [[ "$joined" == *" plugin "* && "$previous" =~ ^(enable|disable|set|delete|run)$ ]]; then
+        printf '%s\n' plugin
+    elif [[ "$joined" == *" saved "* && "$previous" =~ ^(show|delete|run)$ ]]; then
+        printf '%s\n' saved-report
+    elif [[ "$joined" == *" automation run "* && "${COMP_WORDS[COMP_CWORD]}" != -* && ! "$previous" =~ ^--(vault|output|refresh|fields|provider|permissions|limit|offset|color)$ ]]; then
+        printf '%s\n' saved-report
+    elif [[ "$joined" == *" template "* && "$previous" =~ ^(show|insert|preview)$ ]]; then
+        printf '%s\n' template
+    elif [[ "$joined" == *" skill "* && "$previous" =~ ^(get|show|commands|run)$ ]]; then
+        printf '%s\n' skill
+    elif [[ "$joined" =~ \ skill\ run\ ([^\ ]+)\ $ ]]; then
+        printf 'skill-command:%s\n' "${BASH_REMATCH[1]}"
+    fi
+}
+
 __vulcan_dynamic_dispatch() {
     _vulcan "$@"
-    if __vulcan_is_tool_run_context; then
+    local named_context
+    named_context="$(__vulcan_named_completion_context)"
+    if [[ -n "$named_context" ]]; then
+        COMPREPLY=()
+        local candidate
+        while IFS= read -r candidate; do
+            __vulcan_append_completion_candidate "$candidate"
+        done < <(__vulcan_dynamic_candidates "$named_context" "${COMP_WORDS[COMP_CWORD]}")
+    elif __vulcan_is_tool_run_context; then
         local tool candidate
         tool="$(__vulcan_tool_run_name)"
         if [[ -z "$tool" && "${cur:-${COMP_WORDS[COMP_CWORD]}}" != -* ]]; then

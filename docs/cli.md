@@ -1115,7 +1115,12 @@ Supported shells:
 - `zsh`
 
 Bash, Fish, and Zsh completions include vault-aware dynamic candidates for notes,
-task views, scripts, and skill-backed custom tools. When a skill command declares
+task views, scripts, templates, saved reports, skills, plugins, aliases, permission
+profiles, export profiles, Outline publication profiles, site profiles, and
+integration routes. This includes positional profile arguments such as
+`vulcan outline collections list <TAB>` and applicable option values such as
+`--profile`, `--site-profile`, `--permissions`, and `--permission-profile`.
+When a skill command declares
 `metadata.vulcan.commands[].cli`, `vulcan tool run <TAB>` completes its projected
 tool name and aliases, and `vulcan tool run <alias> --<TAB>` completes the
 declared custom flags. Flags with `choices` or `completion` metadata also complete

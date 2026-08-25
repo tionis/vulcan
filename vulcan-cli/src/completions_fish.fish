@@ -25,9 +25,9 @@ function __fish_vulcan_completion_prefix_args
         set -l word $words[$i]
         switch $word
             case '--vault' '--output' '--refresh' '--fields' '--provider' '--permissions' '--limit' '--offset' '--color'
-                set args $args $word
                 set -l next (math $i + 1)
                 if test $next -le (count $words)
+                    set args $args $word
                     if test "$word" = "--vault"
                         set args $args (__fish_vulcan_expand_leading_tilde $words[$next])
                     else
@@ -111,6 +111,74 @@ function __fish_vulcan_dynamic_complete_custom_tool
     set -l prefix (commandline -ct)
     set -l cmd "__VULCAN_CMD__"
     $cmd $args complete custom-tool "$prefix" 2>/dev/null
+end
+
+function __fish_vulcan_named_completion_context
+    set -l words (commandline -opc)
+    set -l previous $words[-1]
+    set -l joined " "(string join " " -- $words)" "
+
+    switch $previous
+        case '--permissions' '--clone' '--permission-profile'
+            printf '%s\n' permission-profile
+            return
+        case '--site-profile'
+            printf '%s\n' site-profile
+            return
+        case '--profile'
+            if string match -q '* export outline-zip *' "$joined"
+                printf '%s\n' outline-profile
+            else if string match -q '* site *' "$joined"
+                printf '%s\n' site-profile
+            else if string match -q '* tool *' "$joined"
+                printf '%s\n' permission-profile
+            end
+            return
+    end
+
+    if test "$previous" = outline; and string match -rq ' (publish|pull) outline $' "$joined"
+        printf '%s\n' outline-profile
+    else if string match -q '* outline collections *' "$joined"; and contains -- $previous list show create update archive restore bind
+        printf '%s\n' outline-profile
+    else if string match -q '* export profile rule *' "$joined"; and contains -- $previous list add update delete move
+        printf '%s\n' export-profile
+    else if string match -q '* export profile *' "$joined"; and contains -- $previous run serve show set delete
+        printf '%s\n' export-profile
+    else if string match -q '* integration *' "$joined"; and contains -- $previous show validate plan run status bindings bind unbind
+        printf '%s\n' integration-route
+    else if string match -q '* config alias *' "$joined"; and contains -- $previous set delete
+        printf '%s\n' config-alias
+    else if string match -q '* config permissions profile *' "$joined"; and contains -- $previous show set delete
+        printf '%s\n' permission-profile
+    else if string match -q '* plugin *' "$joined"; and contains -- $previous enable disable set delete run
+        printf '%s\n' plugin
+    else if string match -q '* saved *' "$joined"; and contains -- $previous show delete run
+        printf '%s\n' saved-report
+    else if string match -q '* automation run *' "$joined"; and not string match -q -- '-*' (commandline -ct); and not contains -- $previous --vault --output --refresh --fields --provider --permissions --limit --offset --color
+        printf '%s\n' saved-report
+    else if string match -q '* template *' "$joined"; and contains -- $previous show insert preview
+        printf '%s\n' template
+    else if string match -q '* skill *' "$joined"; and contains -- $previous get show commands run
+        printf '%s\n' skill
+    else if string match -rq ' skill run [^ ]+ $' "$joined"
+        printf 'skill-command:%s\n' $previous
+    end
+end
+
+function __fish_vulcan_dynamic_complete_named
+    set -l context (__fish_vulcan_named_completion_context)
+    if test -z "$context"
+        return
+    end
+    set -l args (__fish_vulcan_completion_prefix_args)
+    set -l prefix (commandline -ct)
+    set -l cmd "__VULCAN_CMD__"
+    $cmd $args complete "$context" "$prefix" 2>/dev/null
+end
+
+function __fish_vulcan_has_named_completion
+    set -l context (__fish_vulcan_named_completion_context)
+    test -n "$context"
 end
 
 function __fish_vulcan_tool_run_name
@@ -211,3 +279,6 @@ complete -c vulcan -n "__fish_vulcan_using_subcommand git; and __fish_seen_subco
 # Task view names for tasks view show <name>
 # Condition: view has been seen AND show has been seen (nested sub-subcommand context).
 complete -c vulcan -n "__fish_vulcan_using_subcommand tasks; and __fish_seen_subcommand_from view; and __fish_seen_subcommand_from show" -f -a "(__fish_vulcan_dynamic_complete_task_view)" -d "View"
+
+# Configured profile, route, report, template, plugin, alias, and skill names.
+complete -c vulcan -n "__fish_vulcan_has_named_completion" -f -a "(__fish_vulcan_dynamic_complete_named)" -d "Configured name"

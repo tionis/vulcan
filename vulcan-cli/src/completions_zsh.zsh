@@ -182,10 +182,66 @@ _vulcan_custom_tool_candidates() {
     (( ${#candidates} )) && compadd -a candidates
 }
 
+_vulcan_named_completion_context() {
+    local previous="${words[CURRENT - 1]}"
+    local joined=" ${(j: :)words[1,CURRENT-1]} "
+    case "$previous" in
+        --permissions|--clone|--permission-profile)
+            print -r -- permission-profile
+            return
+            ;;
+        --site-profile)
+            print -r -- site-profile
+            return
+            ;;
+        --profile)
+            if [[ "$joined" == *" export outline-zip "* ]]; then
+                print -r -- outline-profile
+            elif [[ "$joined" == *" site "* ]]; then
+                print -r -- site-profile
+            elif [[ "$joined" == *" tool "* ]]; then
+                print -r -- permission-profile
+            fi
+            return
+            ;;
+    esac
+
+    if [[ "$previous" == outline && "$joined" =~ ' (publish|pull) outline $' ]]; then
+        print -r -- outline-profile
+    elif [[ "$joined" == *" outline collections "* && "$previous" =~ '^(list|show|create|update|archive|restore|bind)$' ]]; then
+        print -r -- outline-profile
+    elif [[ "$joined" == *" export profile rule "* && "$previous" =~ '^(list|add|update|delete|move)$' ]]; then
+        print -r -- export-profile
+    elif [[ "$joined" == *" export profile "* && "$previous" =~ '^(run|serve|show|set|delete)$' ]]; then
+        print -r -- export-profile
+    elif [[ "$joined" == *" integration "* && "$previous" =~ '^(show|validate|plan|run|status|bindings|bind|unbind)$' ]]; then
+        print -r -- integration-route
+    elif [[ "$joined" == *" config alias "* && "$previous" =~ '^(set|delete)$' ]]; then
+        print -r -- config-alias
+    elif [[ "$joined" == *" config permissions profile "* && "$previous" =~ '^(show|set|delete)$' ]]; then
+        print -r -- permission-profile
+    elif [[ "$joined" == *" plugin "* && "$previous" =~ '^(enable|disable|set|delete|run)$' ]]; then
+        print -r -- plugin
+    elif [[ "$joined" == *" saved "* && "$previous" =~ '^(show|delete|run)$' ]]; then
+        print -r -- saved-report
+    elif [[ "$joined" == *" automation run "* && "${words[CURRENT]}" != -* && ! "$previous" =~ '^--(vault|output|refresh|fields|provider|permissions|limit|offset|color)$' ]]; then
+        print -r -- saved-report
+    elif [[ "$joined" == *" template "* && "$previous" =~ '^(show|insert|preview)$' ]]; then
+        print -r -- template
+    elif [[ "$joined" == *" skill "* && "$previous" =~ '^(get|show|commands|run)$' ]]; then
+        print -r -- skill
+    elif [[ "$joined" =~ ' skill run ([^ ]+) $' ]]; then
+        print -r -- "skill-command:${match[1]}"
+    fi
+}
+
 if functions -c _vulcan _vulcan_static 2>/dev/null; then
     _vulcan() {
         _vulcan_static "$@"
-        if _vulcan_is_tool_run_context; then
+        local named_context="$(_vulcan_named_completion_context)"
+        if [[ -n "$named_context" ]]; then
+            _vulcan_custom_tool_candidates "$named_context" "${words[CURRENT]}"
+        elif _vulcan_is_tool_run_context; then
             local tool="$(_vulcan_tool_run_name)"
             if [[ -z "$tool" && "${words[CURRENT]}" != -* ]]; then
                 _vulcan_custom_tool_candidates custom-tool "${words[CURRENT]}"

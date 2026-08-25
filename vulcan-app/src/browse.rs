@@ -1,6 +1,6 @@
 use crate::scan::refresh_cache_incrementally;
 use crate::tools::{build_custom_tool_js_registry, CustomToolRegistryOptions};
-use crate::{tools, AppError};
+use crate::{plugins, templates, tools, AppError};
 use serde::Serialize;
 use std::collections::{BTreeSet, HashMap};
 use std::process::Command as ProcessCommand;
@@ -12,12 +12,14 @@ use vulcan_core::{
     evaluate_dql as core_evaluate_dql, evaluate_dql_with_filter as core_evaluate_dql_with_filter,
     evaluate_note_inline_expressions as core_evaluate_note_inline_expressions,
     git_log as core_git_log, git_status as core_git_status, inspect_cache as core_inspect_cache,
-    is_git_repo as core_is_git_repo, list_daily_note_events as core_list_daily_note_events,
+    is_git_repo as core_is_git_repo, list_assistant_skills,
+    list_daily_note_events as core_list_daily_note_events,
     list_kanban_boards as core_list_kanban_boards,
-    list_note_identities as core_list_note_identities,
+    list_note_identities as core_list_note_identities, list_saved_reports,
     list_tagged_note_identities as core_list_tagged_note_identities, list_tags as core_list_tags,
-    load_dataview_blocks as core_load_dataview_blocks, load_kanban_board as core_load_kanban_board,
-    load_vault_config, move_note as core_move_note, query_backlinks as core_query_backlinks,
+    load_assistant_skill, load_dataview_blocks as core_load_dataview_blocks,
+    load_kanban_board as core_load_kanban_board, load_permission_profiles, load_vault_config,
+    move_note as core_move_note, query_backlinks as core_query_backlinks,
     query_graph_analytics as core_query_graph_analytics, query_links as core_query_links,
     query_notes as core_query_notes, resolve_note_reference, search_vault as core_search_vault,
     AutoScanMode, BacklinksReport, BasesEvalReport, CacheDatabase, DailyNoteEvents,
@@ -501,6 +503,73 @@ pub fn collect_complete_candidates(
             out.append(&mut base_files);
             dedupe_strings_preserve_order(out)
         }
+        "export-profile" => load_vault_config(paths)
+            .config
+            .export
+            .profiles
+            .into_keys()
+            .collect(),
+        "outline-profile" => load_vault_config(paths)
+            .config
+            .publish
+            .outline
+            .profiles
+            .into_keys()
+            .collect(),
+        "integration-route" => load_vault_config(paths)
+            .config
+            .integrations
+            .routes
+            .into_keys()
+            .collect(),
+        "site-profile" => load_vault_config(paths)
+            .config
+            .site
+            .profiles
+            .into_keys()
+            .collect(),
+        "permission-profile" => load_permission_profiles(paths)
+            .profiles
+            .into_keys()
+            .collect(),
+        "config-alias" => load_vault_config(paths)
+            .config
+            .aliases
+            .into_keys()
+            .collect(),
+        "plugin" => plugins::list_plugins(paths)
+            .into_iter()
+            .map(|plugin| plugin.name)
+            .collect(),
+        "saved-report" => list_saved_reports(paths)
+            .map_err(AppError::operation)?
+            .into_iter()
+            .map(|report| report.name)
+            .collect(),
+        "template" => templates::build_template_list_report(paths)?
+            .templates
+            .into_iter()
+            .map(|template| template.name.trim_end_matches(".md").to_string())
+            .collect(),
+        "skill" => list_assistant_skills(paths)
+            .map_err(AppError::operation)?
+            .into_iter()
+            .map(|skill| skill.name)
+            .collect(),
+        context if context.starts_with("skill-command:") => {
+            let skill = context.trim_start_matches("skill-command:");
+            if skill.is_empty() {
+                Vec::new()
+            } else {
+                load_assistant_skill(paths, skill)
+                    .map_err(AppError::operation)?
+                    .summary
+                    .commands
+                    .into_iter()
+                    .map(|command| command.id)
+                    .collect()
+            }
+        }
         "custom-tool" => tools::collect_custom_tool_cli_name_candidates(
             paths,
             &tools::CustomToolRegistryOptions::default(),
@@ -752,6 +821,70 @@ value = "blocked"
             collect_complete_candidates(&paths, "task-view").expect("task views"),
             vec!["blocked".to_string(), "Views/Tasks.base".to_string()]
         );
+    }
+
+    #[test]
+    fn collect_complete_candidates_lists_configured_identifiers_and_resources() {
+        let (_dir, paths) = test_paths();
+        fs::write(
+            paths.config_file(),
+            r#"[export.profiles.book]
+format = "epub"
+
+[publish.outline.profiles.players]
+collection_title = "Players"
+
+[integrations.routes.campaign]
+profile = "players"
+
+[site.profiles.public]
+title = "Public"
+
+[plugins.calendar]
+enabled = true
+"#,
+        )
+        .expect("config should write");
+        fs::write(paths.local_config_file(), "[aliases]\nqq = \"query\"\n")
+            .expect("local config should write");
+        fs::create_dir_all(paths.vulcan_dir().join("templates")).expect("template dir");
+        fs::write(
+            paths.vulcan_dir().join("templates/session.md"),
+            "# Session\n",
+        )
+        .expect("template should write");
+        fs::create_dir_all(paths.reports_dir()).expect("reports dir");
+        fs::write(
+            paths.reports_dir().join("open-quests.toml"),
+            "kind = \"notes\"\nfilters = []\nsort_descending = false\n",
+        )
+        .expect("saved report should write");
+        fs::create_dir_all(paths.vulcan_dir().join("plugins")).expect("plugins dir");
+        fs::write(
+            paths.vulcan_dir().join("plugins/weather.js"),
+            "export function main() {}\n",
+        )
+        .expect("plugin should write");
+
+        for (context, expected) in [
+            ("export-profile", "book"),
+            ("outline-profile", "players"),
+            ("integration-route", "campaign"),
+            ("site-profile", "public"),
+            ("config-alias", "qq"),
+            ("plugin", "calendar"),
+            ("plugin", "weather"),
+            ("saved-report", "open-quests"),
+            ("template", "session"),
+            ("permission-profile", "readonly"),
+        ] {
+            assert!(
+                collect_complete_candidates(&paths, context)
+                    .unwrap_or_else(|error| panic!("{context} candidates failed: {error}"))
+                    .contains(&expected.to_string()),
+                "{context} should include {expected}"
+            );
+        }
     }
 
     #[test]

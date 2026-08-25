@@ -25774,6 +25774,53 @@ fn fish_note_completion_uses_selected_vault_outside_cwd() {
 }
 
 #[test]
+fn fish_outline_collection_completion_uses_configured_profiles() {
+    if !fish_is_available() {
+        return;
+    }
+
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    copy_fixture_vault("basic", &vault_root);
+    initialize_vulcan_dir(&vault_root);
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[publish.outline.profiles.players]
+collection_title = "Players"
+
+[publish.outline.profiles.private]
+collection_title = "Private"
+"#,
+    )
+    .expect("config should write");
+    let script_path = write_fish_completion_script(&temp_dir);
+
+    let output = ProcessCommand::new("fish")
+        .arg("-c")
+        .arg(format!(
+            "source '{}'; complete -C 'vulcan --vault {} outline collections list pla'",
+            script_path.display(),
+            vault_root.display()
+        ))
+        .output()
+        .expect("fish should launch");
+    assert!(
+        output.status.success(),
+        "fish Outline completion should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        text.lines().any(|line| line.starts_with("players\t")),
+        "Outline collection commands should complete matching profiles, got: {text}"
+    );
+    assert!(
+        !text.contains("private"),
+        "Outline profile completion should respect the current prefix, got: {text}"
+    );
+}
+
+#[test]
 fn fish_completion_expands_tilde_prefixed_vault_argument() {
     if !fish_is_available() {
         return;

@@ -5458,6 +5458,67 @@ done
 }
 
 #[test]
+fn bash_dynamic_completions_complete_configured_outline_profiles() {
+    #[cfg(windows)]
+    let Some(bash_path) = completion_test_bash_path() else {
+        return;
+    };
+    #[cfg(not(windows))]
+    let bash_path = completion_test_bash_path();
+    let dynamic = generate_bash_dynamic_completions().replace(
+        &format!("local cmd=\"{}\"", completion_command_path_literal()),
+        "local cmd=\"$tmpdir/vulcan\"",
+    );
+    let script = format!(
+        r#"
+set -uo pipefail
+tmpdir="$(mktemp -d)"
+cat > "$tmpdir/vulcan" <<'EOF'
+#!/bin/sh
+set -eu
+while [ "$#" -gt 0 ]; do
+    if [ "$1" = "complete" ]; then
+        if [ "$2" = "outline-profile" ]; then
+            printf 'players\n'
+        fi
+        exit 0
+    fi
+    shift
+done
+EOF
+chmod +x "$tmpdir/vulcan"
+_vulcan() {{ COMPREPLY=(); }}
+{dynamic}
+COMP_WORDS=(vulcan outline collections list pla)
+COMP_CWORD=4
+COMPREPLY=()
+__vulcan_dynamic_dispatch vulcan pla list
+for reply in "${{COMPREPLY[@]}}"; do
+    printf 'PROFILE:%s\n' "$reply"
+done
+"#
+    );
+
+    let output = ProcessCommand::new(&bash_path)
+        .arg("-lc")
+        .arg(script)
+        .output()
+        .expect("bash should run generated completion helper");
+    assert!(
+        output.status.success(),
+        "bash helper should succeed (shell: {:?}, status: {:?})\nstdout:\n{}\nstderr:\n{}",
+        bash_path,
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("PROFILE:players"),
+        "Outline collection commands should complete configured profiles"
+    );
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn dynamic_completion_scripts_replay_leading_global_args() {
     let fish = generate_fish_dynamic_completions();
@@ -5504,6 +5565,13 @@ fn dynamic_completion_scripts_replay_leading_global_args() {
     assert!(
         fish.contains("$cmd $args complete custom-tool-value:$tool:$flag \"$prefix\""),
         "fish custom tool value completion should include the selected tool and flag"
+    );
+    assert!(
+        fish.contains("function __fish_vulcan_named_completion_context")
+            && fish.contains("outline-profile")
+            && fish.contains("export-profile")
+            && fish.contains("integration-route"),
+        "fish completions should dispatch configured identifiers"
     );
 
     let bash = generate_bash_dynamic_completions();
@@ -5553,6 +5621,12 @@ fn dynamic_completion_scripts_replay_leading_global_args() {
         bash.contains("__vulcan_dynamic_candidates \"custom-tool-value:$tool:$flag\""),
         "bash custom tool value completion should include the selected tool and flag"
     );
+    assert!(
+        bash.contains("__vulcan_named_completion_context")
+            && bash.contains("outline-profile")
+            && bash.contains("permission-profile"),
+        "bash completions should dispatch configured identifiers"
+    );
 
     let zsh = generate_zsh_dynamic_completions();
     assert!(
@@ -5586,6 +5660,41 @@ fn dynamic_completion_scripts_replay_leading_global_args() {
     assert!(
         zsh.contains("functions -c _vulcan _vulcan_static"),
         "zsh completions should wrap the generated completer for dynamic tool run completions"
+    );
+    assert!(
+        zsh.contains("_vulcan_named_completion_context")
+            && zsh.contains("outline-profile")
+            && zsh.contains("saved-report"),
+        "zsh completions should dispatch configured identifiers"
+    );
+}
+
+#[test]
+fn configured_name_completion_filters_profile_prefixes() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    fs::create_dir_all(temp_dir.path().join(".vulcan")).expect("internal dir should exist");
+    fs::write(
+        temp_dir.path().join(".vulcan/config.toml"),
+        r#"[publish.outline.profiles.players]
+collection_title = "Players"
+
+[publish.outline.profiles.private]
+collection_title = "Private"
+
+[export.profiles.book]
+format = "epub"
+"#,
+    )
+    .expect("config should write");
+    let paths = VaultPaths::new(temp_dir.path().to_path_buf());
+
+    assert_eq!(
+        collect_complete_candidates(&paths, "outline-profile", Some("play")),
+        vec!["players".to_string()]
+    );
+    assert_eq!(
+        collect_complete_candidates(&paths, "export-profile", Some("b")),
+        vec!["book".to_string()]
     );
 }
 

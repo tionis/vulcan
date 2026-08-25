@@ -6046,7 +6046,9 @@ Examples:
     },
     /// Return dynamic completion candidates for a given context (newline-separated).
     ///
-    /// Contexts: note, kanban-board, bases-view, daily-date, script, task-view, vault-path, custom-tool, custom-tool-flag:<tool>, custom-tool-value:<tool>:<flag>
+    /// Contexts include vault resources (note, template, saved-report), configured names
+    /// (export-profile, outline-profile, integration-route, site-profile, permission-profile,
+    /// config-alias, plugin), skills, and custom-tool argument metadata.
     #[command(hide = true)]
     Complete {
         #[arg(help = "Completion context")]
