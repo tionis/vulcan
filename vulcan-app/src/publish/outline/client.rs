@@ -1,5 +1,6 @@
 use super::{
-    OutlineApi, OutlineDownloadedAttachment, OutlineRemoteAttachment, OutlineRemoteDocument,
+    OutlineApi, OutlineCollectionCreate, OutlineCollectionUpdate, OutlineDownloadedAttachment,
+    OutlineRemoteAttachment, OutlineRemoteCollection, OutlineRemoteDocument,
 };
 use crate::AppError;
 use reqwest::blocking::{Client, RequestBuilder};
@@ -179,6 +180,94 @@ impl HttpOutlineClient {
 }
 
 impl OutlineApi for HttpOutlineClient {
+    fn list_collections(
+        &self,
+        query: Option<&str>,
+        archived: bool,
+    ) -> Result<Vec<OutlineRemoteCollection>, AppError> {
+        let mut collections = Vec::new();
+        let mut offset = 0_usize;
+        let mut expected_total = None;
+        let mut collection_ids = BTreeSet::new();
+        loop {
+            let mut body = json!({
+                "limit": self.page_size,
+                "offset": offset,
+            });
+            if let Some(query) = query.filter(|query| !query.trim().is_empty()) {
+                body["query"] = Value::String(query.to_string());
+            }
+            if archived {
+                body["statusFilter"] = json!(["archived"]);
+            }
+            let page: CollectionPage = self.post_envelope("collections.list", &body)?;
+            if page.ok == Some(false) {
+                return Err(AppError::operation(
+                    "Outline returned an unsuccessful collection listing with a success status",
+                ));
+            }
+            if expected_total
+                .replace(page.pagination.total)
+                .is_some_and(|total| total != page.pagination.total)
+            {
+                return Err(AppError::operation(
+                    "Outline collections changed while their paginated snapshot was being listed; retry",
+                ));
+            }
+            let count = page.collections.len();
+            if page
+                .collections
+                .iter()
+                .any(|collection| !collection_ids.insert(collection.id.clone()))
+            {
+                return Err(AppError::operation(
+                    "Outline returned a duplicate collection while paginating; retry",
+                ));
+            }
+            collections.extend(page.collections);
+            if count == 0 || offset.saturating_add(count) >= page.pagination.total {
+                break;
+            }
+            offset = offset.saturating_add(count);
+        }
+        if collections.len() != expected_total.unwrap_or_default() {
+            return Err(AppError::operation(
+                "Outline returned an incomplete paginated collection snapshot; retry",
+            ));
+        }
+        Ok(collections)
+    }
+
+    fn collection_info(&self, id: &str) -> Result<OutlineRemoteCollection, AppError> {
+        self.post("collections.info", &json!({ "id": id }))
+    }
+
+    fn create_collection(
+        &self,
+        request: &OutlineCollectionCreate,
+    ) -> Result<OutlineRemoteCollection, AppError> {
+        let body = serde_json::to_value(request).map_err(AppError::operation)?;
+        self.post("collections.create", &body)
+    }
+
+    fn update_collection(
+        &self,
+        id: &str,
+        request: &OutlineCollectionUpdate,
+    ) -> Result<OutlineRemoteCollection, AppError> {
+        let mut body = serde_json::to_value(request).map_err(AppError::operation)?;
+        body["id"] = Value::String(id.to_string());
+        self.post("collections.update", &body)
+    }
+
+    fn archive_collection(&self, id: &str) -> Result<OutlineRemoteCollection, AppError> {
+        self.post("collections.archive", &json!({ "id": id }))
+    }
+
+    fn restore_collection(&self, id: &str) -> Result<OutlineRemoteCollection, AppError> {
+        self.post("collections.restore", &json!({ "id": id }))
+    }
+
     fn list_collection_documents(
         &self,
         collection_id: &str,
@@ -488,6 +577,15 @@ struct DocumentPage {
 }
 
 #[derive(Debug, Deserialize)]
+struct CollectionPage {
+    #[serde(rename = "data")]
+    collections: Vec<OutlineRemoteCollection>,
+    pagination: Pagination,
+    #[serde(default)]
+    ok: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
 struct Pagination {
     total: usize,
 }
@@ -627,6 +725,71 @@ mod tests {
                 || request.contains("Authorization: Bearer secret")));
         assert!(requests[0].contains("\"offset\":0"));
         assert!(requests[1].contains("\"offset\":1"));
+    }
+
+    #[test]
+    fn collection_lifecycle_uses_typed_outline_endpoints() {
+        let collection = r#"{"data":{"id":"11111111-1111-4111-8111-111111111111","name":"Players","description":"Shared lore","url":"/collection/players","urlId":"players","permission":"read_write","sharing":true,"archivedAt":null}}"#;
+        let list_one = r#"{"data":[{"id":"11111111-1111-4111-8111-111111111111","name":"Players","url":"/collection/players","urlId":"players"}],"pagination":{"total":2}}"#;
+        let list_two = r#"{"data":[{"id":"22222222-2222-4222-8222-222222222222","name":"Lore","url":"/collection/lore","urlId":"lore"}],"pagination":{"total":2}}"#;
+        let (url, requests) = mock_server(vec![
+            (200, list_one),
+            (200, list_two),
+            (200, collection),
+            (200, collection),
+            (200, collection),
+            (200, collection),
+            (200, collection),
+        ]);
+        let client =
+            HttpOutlineClient::new(&url, "secret".to_string(), Duration::from_secs(2), 0, 1)
+                .expect("client");
+
+        assert_eq!(
+            client
+                .list_collections(Some("play"), false)
+                .expect("collections")
+                .len(),
+            2
+        );
+        client
+            .collection_info("11111111-1111-4111-8111-111111111111")
+            .expect("collection info");
+        client
+            .create_collection(&OutlineCollectionCreate {
+                name: "Players".to_string(),
+                description: Some("Shared lore".to_string()),
+                ..OutlineCollectionCreate::default()
+            })
+            .expect("collection create");
+        client
+            .update_collection(
+                "11111111-1111-4111-8111-111111111111",
+                &OutlineCollectionUpdate {
+                    description: Some(Value::Null),
+                    sharing: Some(false),
+                    ..OutlineCollectionUpdate::default()
+                },
+            )
+            .expect("collection update");
+        client
+            .archive_collection("11111111-1111-4111-8111-111111111111")
+            .expect("collection archive");
+        client
+            .restore_collection("11111111-1111-4111-8111-111111111111")
+            .expect("collection restore");
+
+        let requests = requests.lock().expect("request lock");
+        assert!(requests[0].starts_with("POST /api/collections.list "));
+        assert!(requests[0].contains("\"query\":\"play\""));
+        assert!(requests[2].starts_with("POST /api/collections.info "));
+        assert!(requests[3].starts_with("POST /api/collections.create "));
+        assert!(requests[3].contains("\"description\":\"Shared lore\""));
+        assert!(requests[4].starts_with("POST /api/collections.update "));
+        assert!(requests[4].contains("\"description\":null"));
+        assert!(requests[4].contains("\"sharing\":false"));
+        assert!(requests[5].starts_with("POST /api/collections.archive "));
+        assert!(requests[6].starts_with("POST /api/collections.restore "));
     }
 
     #[test]

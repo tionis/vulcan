@@ -428,6 +428,7 @@ pub use cli::{
     GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs, IntegrationCommand,
     KanbanCommand, McpToolPackArg, McpToolPackModeArg, McpTransportArg, NoteAppendPeriodicArg,
     NoteCheckboxState, NoteCommand, NoteGetMode, OutlineBlockReferencePolicyArg,
+    OutlineCollectionPermissionArg, OutlineCollectionsCommand, OutlineCommand,
     OutlineExcludedTargetPolicyArg, OutlinePullConflictOperationArg, OutputFormat,
     PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg, PluginSandboxArg,
     PropertySortArg, PublishCommand, PullCommand, QueryEngineArg, QueryFormatArg, RefactorCommand,
@@ -499,9 +500,12 @@ use vulcan_app::notes::json_properties_to_frontmatter;
 use vulcan_app::outline_markdown::OutlineMarkdownOptions;
 #[cfg(feature = "web")]
 use vulcan_app::publish::outline::{
-    publish_outline_with_options_and_progress, HttpOutlineClient, OutlineConflictField,
-    OutlineConflictPolicy, OutlineConflictSide, OutlineConflictSideState, OutlinePublishAction,
-    OutlinePublishOptions, OutlinePublishPhase, OutlinePublishProgress,
+    bind_outline_profile_collection, provision_outline_profile_collection,
+    publish_outline_with_options_and_progress, validate_outline_collection_create,
+    validate_outline_collection_update, HttpOutlineClient, OutlineApi, OutlineCollectionCreate,
+    OutlineCollectionUpdate, OutlineConflictField, OutlineConflictPolicy, OutlineConflictSide,
+    OutlineConflictSideState, OutlinePublishAction, OutlinePublishOptions, OutlinePublishPhase,
+    OutlinePublishProgress, OutlineRemoteCollection,
 };
 #[cfg(feature = "web")]
 use vulcan_app::pull::outline::{
@@ -1463,6 +1467,7 @@ fn run_publish_command(
         overwrite_conflict,
         adopt_pulled,
         interactive,
+        create_collection,
     } = command;
     if *interactive
         && (cli.output != OutputFormat::Human
@@ -1495,7 +1500,6 @@ fn run_publish_command(
             })
     };
     let base_url = required(&profile_config.base_url, "base_url")?;
-    let collection_id = required(&profile_config.collection_id, "collection_id")?;
     let token_env = required(&profile_config.token_env, "token_env")?;
     let token = std::env::var(&token_env).map_err(|_| {
         CliError::operation(format!(
@@ -1549,6 +1553,49 @@ fn run_publish_command(
         profile_config.page_size.unwrap_or(100),
     )
     .map_err(CliError::operation)?;
+    let (collection_id, provision) = match profile_config
+        .collection_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        Some(collection_id) => (collection_id.to_string(), None),
+        None if *create_collection || profile_config.auto_create_collection.unwrap_or(false) => {
+            if *dry_run {
+                return Err(CliError::operation(format!(
+                    "Outline profile `{profile}` has no collection_id; dry-run cannot create or inspect the collection. Run `vulcan outline collections create {profile} {collection_title:?} --dry-run`, then run a live publish or collection create."
+                )));
+            }
+            let provision = provision_outline_profile_collection(
+                paths,
+                &client,
+                profile,
+                &OutlineCollectionCreate {
+                    name: collection_title.to_string(),
+                    ..OutlineCollectionCreate::default()
+                },
+                false,
+                false,
+            )
+            .map_err(CliError::operation)?;
+            let collection_id = provision
+                .collection
+                .as_ref()
+                .map(|collection| collection.id.clone())
+                .ok_or_else(|| CliError::operation("Outline collection creation returned no UUID"))?;
+            if cli.output == OutputFormat::Human && !cli.quiet {
+                eprintln!(
+                    "Created Outline collection `{}` ({collection_id}) and saved it to {}.",
+                    collection_title, provision.config_path
+                );
+            }
+            (collection_id, Some(provision))
+        }
+        None => {
+            return Err(CliError::operation(format!(
+                "Outline publish profile `{profile}` requires `collection_id`; set `auto_create_collection = true` or pass --create-collection"
+            )))
+        }
+    };
     let conflict_policy = outline_conflict_policy(*overwrite_conflicts, overwrite_conflict);
     let publish_options = OutlinePublishOptions {
         adopt_pull_bindings: if *adopt_pulled {
@@ -1602,7 +1649,366 @@ fn run_publish_command(
             .map_err(CliError::operation)?;
         }
     }
+    report.collection_provision = provision;
     print_outline_publish_report(cli.output, &report)
+}
+
+#[cfg(feature = "web")]
+#[allow(clippy::too_many_lines)]
+fn run_outline_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &OutlineCommand,
+) -> Result<(), CliError> {
+    let OutlineCommand::Collections { command } = command;
+    let profile_name = match command {
+        OutlineCollectionsCommand::List { profile, .. }
+        | OutlineCollectionsCommand::Show { profile, .. }
+        | OutlineCollectionsCommand::Create { profile, .. }
+        | OutlineCollectionsCommand::Update { profile, .. }
+        | OutlineCollectionsCommand::Archive { profile, .. }
+        | OutlineCollectionsCommand::Restore { profile, .. }
+        | OutlineCollectionsCommand::Bind { profile, .. } => profile,
+    };
+    let loaded = load_vault_config(paths);
+    let profile = loaded
+        .config
+        .publish
+        .outline
+        .profiles
+        .get(profile_name)
+        .ok_or_else(|| {
+            CliError::operation(format!(
+                "Outline publish profile `{profile_name}` was not found"
+            ))
+        })?;
+    let required = |value: &Option<String>, name: &str| {
+        value
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| {
+                CliError::operation(format!(
+                    "Outline publish profile `{profile_name}` requires `{name}`"
+                ))
+            })
+    };
+    let base_url = required(&profile.base_url, "base_url")?;
+    let token_env = required(&profile.token_env, "token_env")?;
+    let token = std::env::var(&token_env).map_err(|_| {
+        CliError::operation(format!(
+            "Outline token environment variable `{token_env}` is not set"
+        ))
+    })?;
+    let client = HttpOutlineClient::new(
+        &base_url,
+        token,
+        Duration::from_secs(profile.timeout_seconds.unwrap_or(30).clamp(1, 300)),
+        profile.max_retries.unwrap_or(3),
+        profile.page_size.unwrap_or(100),
+    )
+    .map_err(CliError::operation)?;
+
+    match command {
+        OutlineCollectionsCommand::List {
+            query, archived, ..
+        } => {
+            let collections = client
+                .list_collections(query.as_deref(), *archived)
+                .map_err(CliError::operation)?;
+            print_outline_collections(cli.output, &collections, &ListOutputControls::from_cli(cli))
+        }
+        OutlineCollectionsCommand::Show { collection_id, .. } => {
+            let collection = client
+                .collection_info(collection_id)
+                .map_err(CliError::operation)?;
+            print_outline_collection(cli.output, &collection)
+        }
+        OutlineCollectionsCommand::Create {
+            name,
+            description,
+            icon,
+            color,
+            permission,
+            sharing,
+            no_bind_profile,
+            replace_profile_collection,
+            dry_run,
+            ..
+        } => {
+            let request = OutlineCollectionCreate {
+                name: name.clone(),
+                description: description.clone(),
+                icon: icon.clone(),
+                color: color.clone(),
+                permission: permission.map(|value| value.as_outline_value().to_string()),
+                sharing: *sharing,
+            };
+            validate_outline_collection_create(&request).map_err(CliError::operation)?;
+            if *no_bind_profile {
+                if *dry_run {
+                    print_outline_mutation_plan(cli.output, "create", None, &request)
+                } else {
+                    let collection = client
+                        .create_collection(&request)
+                        .map_err(CliError::operation)?;
+                    print_outline_collection(cli.output, &collection)
+                }
+            } else {
+                let report = provision_outline_profile_collection(
+                    paths,
+                    &client,
+                    profile_name,
+                    &request,
+                    *replace_profile_collection,
+                    *dry_run,
+                )
+                .map_err(CliError::operation)?;
+                match cli.output {
+                    OutputFormat::Json => print_json(&report),
+                    OutputFormat::Human | OutputFormat::Markdown => {
+                        if let Some(collection) = &report.collection {
+                            println!(
+                                "Created Outline collection `{}` ({}) and saved collection_id to {}.",
+                                collection.name, collection.id, report.config_path
+                            );
+                        } else {
+                            println!(
+                                "Would create Outline collection `{}` and save its UUID to {}.",
+                                report.requested_name, report.config_path
+                            );
+                        }
+                        Ok(())
+                    }
+                }
+            }
+        }
+        OutlineCollectionsCommand::Update {
+            collection_id,
+            name,
+            description,
+            clear_description,
+            icon,
+            clear_icon,
+            color,
+            clear_color,
+            permission,
+            clear_permission,
+            sharing,
+            dry_run,
+            ..
+        } => {
+            let request = OutlineCollectionUpdate {
+                name: name.clone(),
+                description: optional_nullable(description.as_ref(), *clear_description),
+                icon: optional_nullable(icon.as_ref(), *clear_icon),
+                color: optional_nullable(color.as_ref(), *clear_color),
+                permission: if *clear_permission {
+                    Some(Value::Null)
+                } else {
+                    permission.map(|value| Value::String(value.as_outline_value().to_string()))
+                },
+                sharing: *sharing,
+            };
+            validate_outline_collection_update(&request).map_err(CliError::operation)?;
+            if *dry_run {
+                print_outline_mutation_plan(cli.output, "update", Some(collection_id), &request)
+            } else {
+                let collection = client
+                    .update_collection(collection_id, &request)
+                    .map_err(CliError::operation)?;
+                print_outline_collection(cli.output, &collection)
+            }
+        }
+        OutlineCollectionsCommand::Archive {
+            collection_id,
+            allow_bound,
+            dry_run,
+            ..
+        } => {
+            let bound_profiles = outline_profiles_for_collection(paths, collection_id);
+            if !*allow_bound && !bound_profiles.is_empty() {
+                return Err(CliError::operation(format!(
+                    "Outline collection `{collection_id}` is referenced by profile(s) {}; unbind them or pass --allow-bound",
+                    bound_profiles.join(", ")
+                )));
+            }
+            if *dry_run {
+                print_outline_mutation_plan(cli.output, "archive", Some(collection_id), &json!({}))
+            } else {
+                let collection = client
+                    .archive_collection(collection_id)
+                    .map_err(CliError::operation)?;
+                print_outline_collection(cli.output, &collection)
+            }
+        }
+        OutlineCollectionsCommand::Restore {
+            collection_id,
+            dry_run,
+            ..
+        } => {
+            if *dry_run {
+                print_outline_mutation_plan(cli.output, "restore", Some(collection_id), &json!({}))
+            } else {
+                let collection = client
+                    .restore_collection(collection_id)
+                    .map_err(CliError::operation)?;
+                print_outline_collection(cli.output, &collection)
+            }
+        }
+        OutlineCollectionsCommand::Bind {
+            collection_id,
+            replace_profile_collection,
+            dry_run,
+            ..
+        } => {
+            client
+                .collection_info(collection_id)
+                .map_err(CliError::operation)?;
+            let report = bind_outline_profile_collection(
+                paths,
+                profile_name,
+                collection_id,
+                *replace_profile_collection,
+                *dry_run,
+            )
+            .map_err(CliError::operation)?;
+            match cli.output {
+                OutputFormat::Json => print_json(&report),
+                OutputFormat::Human | OutputFormat::Markdown => {
+                    println!(
+                        "{} collection_id `{collection_id}` in {}.",
+                        if *dry_run { "Would set" } else { "Set" },
+                        report.config_path.display()
+                    );
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+#[cfg(feature = "web")]
+fn optional_nullable(value: Option<&String>, clear: bool) -> Option<Value> {
+    if clear {
+        Some(Value::Null)
+    } else {
+        value.cloned().map(Value::String)
+    }
+}
+
+#[cfg(feature = "web")]
+fn outline_profiles_for_collection(paths: &VaultPaths, collection_id: &str) -> Vec<String> {
+    load_vault_config(paths)
+        .config
+        .publish
+        .outline
+        .profiles
+        .into_iter()
+        .filter_map(|(name, profile)| {
+            (profile.collection_id.as_deref() == Some(collection_id)).then_some(name)
+        })
+        .collect()
+}
+
+#[cfg(feature = "web")]
+fn print_outline_collections(
+    output: OutputFormat,
+    collections: &[OutlineRemoteCollection],
+    controls: &ListOutputControls,
+) -> Result<(), CliError> {
+    let collections = paginated_items(collections, controls);
+    match output {
+        OutputFormat::Json => {
+            let rows = collections
+                .iter()
+                .map(serde_json::to_value)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(CliError::operation)?
+                .into_iter()
+                .map(|row| select_fields(row, controls.fields.as_deref()))
+                .collect::<Vec<_>>();
+            print_json(&rows)
+        }
+        OutputFormat::Human | OutputFormat::Markdown => {
+            for collection in collections {
+                println!(
+                    "{}\t{}\t{}{}",
+                    collection.id,
+                    collection.name,
+                    collection.url.as_deref().unwrap_or("-"),
+                    if collection.archived_at.is_some() {
+                        "\tarchived"
+                    } else {
+                        ""
+                    }
+                );
+            }
+            Ok(())
+        }
+    }
+}
+
+#[cfg(feature = "web")]
+fn print_outline_collection(
+    output: OutputFormat,
+    collection: &OutlineRemoteCollection,
+) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(collection),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!("name\t{}", collection.name);
+            println!("id\t{}", collection.id);
+            println!("url\t{}", collection.url.as_deref().unwrap_or("-"));
+            println!(
+                "status\t{}",
+                if collection.archived_at.is_some() {
+                    "archived"
+                } else {
+                    "active"
+                }
+            );
+            Ok(())
+        }
+    }
+}
+
+#[cfg(feature = "web")]
+fn print_outline_mutation_plan(
+    output: OutputFormat,
+    action: &str,
+    collection_id: Option<&str>,
+    request: &impl Serialize,
+) -> Result<(), CliError> {
+    let report = json!({
+        "action": action,
+        "collection_id": collection_id,
+        "request": request,
+        "dry_run": true,
+    });
+    match output {
+        OutputFormat::Json => print_json(&report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            println!(
+                "Would {action} Outline collection{}.",
+                collection_id
+                    .map(|id| format!(" `{id}`"))
+                    .unwrap_or_default()
+            );
+            Ok(())
+        }
+    }
+}
+
+#[cfg(not(feature = "web"))]
+fn run_outline_command(
+    _cli: &Cli,
+    _paths: &VaultPaths,
+    _command: &OutlineCommand,
+) -> Result<(), CliError> {
+    Err(CliError::operation(
+        "Outline collection management requires the `web` feature",
+    ))
 }
 
 #[cfg(not(feature = "web"))]
@@ -2106,6 +2512,7 @@ fn run_configured_integration_route(
         overwrite_conflict: Vec::new(),
         adopt_pulled: true,
         interactive: interactive && route.authority == Authority::Review,
+        create_collection: false,
     };
     let run_pull = || {
         if cli.output == OutputFormat::Human && !cli.quiet {
@@ -5201,6 +5608,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             run_pull_command(cli, &paths, command, use_stderr_color, None, None)
         }
         Command::Integration { ref command } => run_integration_command(cli, &paths, command),
+        Command::Outline { ref command } => run_outline_command(cli, &paths, command),
         Command::Export { ref command } => {
             let read_filter = selected_read_permission_filter(cli, &paths)?;
             match command {

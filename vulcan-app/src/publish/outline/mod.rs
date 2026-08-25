@@ -2,12 +2,18 @@
 
 #[cfg(feature = "web")]
 mod client;
+mod collections;
 mod planner;
 mod publisher;
 mod state;
 
 #[cfg(feature = "web")]
 pub use client::HttpOutlineClient;
+pub use collections::{
+    bind_outline_profile_collection, provision_outline_profile_collection,
+    validate_outline_collection_create, validate_outline_collection_update,
+    OutlineCollectionProvisionReport, OutlineCollectionProvisionStatus,
+};
 pub use planner::{
     plan_outline_reconciliation, plan_outline_reconciliation_with_policy, OutlineConflictDetail,
     OutlineConflictField, OutlineConflictKind, OutlineConflictPolicy, OutlineConflictSide,
@@ -19,12 +25,13 @@ pub use publisher::{
     OutlinePublishReport,
 };
 pub use state::{
-    load_outline_state, lock_outline_state, OutlineAttachmentMapping, OutlineDocumentMapping,
-    OutlinePublishState, OutlineRemoteSnapshot, OutlineStateLock,
+    load_outline_state, lock_outline_state, outline_state_collection_id, OutlineAttachmentMapping,
+    OutlineDocumentMapping, OutlinePublishState, OutlineRemoteSnapshot, OutlineStateLock,
 };
 
 use crate::AppError;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 pub(crate) fn deterministic_remote_uuid(seed: &str) -> String {
     let mut bytes = *blake3::hash(seed.as_bytes()).as_bytes();
@@ -53,6 +60,68 @@ pub struct OutlineRemoteDocument {
     pub updated_at: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlineRemoteCollection {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub url_id: Option<String>,
+    #[serde(default)]
+    pub icon: Option<String>,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub permission: Option<String>,
+    #[serde(default)]
+    pub sharing: Option<bool>,
+    #[serde(default)]
+    pub commenting: Option<bool>,
+    #[serde(default)]
+    pub created_at: Option<String>,
+    #[serde(default)]
+    pub updated_at: Option<String>,
+    #[serde(default)]
+    pub archived_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlineCollectionCreate {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sharing: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OutlineCollectionUpdate {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub icon: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub permission: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sharing: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutlineRemoteAttachment {
     pub id: String,
@@ -66,6 +135,47 @@ pub struct OutlineDownloadedAttachment {
 }
 
 pub trait OutlineApi {
+    fn list_collections(
+        &self,
+        _query: Option<&str>,
+        _archived: bool,
+    ) -> Result<Vec<OutlineRemoteCollection>, AppError> {
+        Err(AppError::operation(
+            "this Outline connector does not support collection listing",
+        ))
+    }
+    fn collection_info(&self, _id: &str) -> Result<OutlineRemoteCollection, AppError> {
+        Err(AppError::operation(
+            "this Outline connector does not support collection inspection",
+        ))
+    }
+    fn create_collection(
+        &self,
+        _request: &OutlineCollectionCreate,
+    ) -> Result<OutlineRemoteCollection, AppError> {
+        Err(AppError::operation(
+            "this Outline connector does not support collection creation",
+        ))
+    }
+    fn update_collection(
+        &self,
+        _id: &str,
+        _request: &OutlineCollectionUpdate,
+    ) -> Result<OutlineRemoteCollection, AppError> {
+        Err(AppError::operation(
+            "this Outline connector does not support collection updates",
+        ))
+    }
+    fn archive_collection(&self, _id: &str) -> Result<OutlineRemoteCollection, AppError> {
+        Err(AppError::operation(
+            "this Outline connector does not support collection archiving",
+        ))
+    }
+    fn restore_collection(&self, _id: &str) -> Result<OutlineRemoteCollection, AppError> {
+        Err(AppError::operation(
+            "this Outline connector does not support collection restoration",
+        ))
+    }
     fn list_collection_documents(
         &self,
         collection_id: &str,

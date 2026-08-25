@@ -2424,7 +2424,186 @@ pub enum PublishCommand {
             help = "Review remote conflicts in the terminal before applying approved overwrites"
         )]
         interactive: bool,
+        #[arg(
+            long,
+            help = "Create and persist the configured collection title when collection_id is missing"
+        )]
+        create_collection: bool,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum OutlineCommand {
+    #[command(about = "List, inspect, create, and modify Outline collections")]
+    Collections {
+        #[command(subcommand)]
+        command: OutlineCollectionsCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum OutlineCollectionsCommand {
+    #[command(about = "List accessible Outline collections and UUIDs")]
+    List {
+        #[arg(help = "Outline profile supplying base_url and token_env")]
+        profile: String,
+        #[arg(long, help = "Filter collection names")]
+        query: Option<String>,
+        #[arg(long, help = "List archived collections instead of active collections")]
+        archived: bool,
+    },
+    #[command(about = "Show one Outline collection by UUID")]
+    Show {
+        #[arg(help = "Outline profile supplying base_url and token_env")]
+        profile: String,
+        #[arg(help = "Immutable Outline collection UUID")]
+        collection_id: String,
+    },
+    #[command(about = "Create an Outline collection and bind its UUID to the profile")]
+    Create {
+        #[arg(help = "Outline profile supplying base_url and token_env")]
+        profile: String,
+        #[arg(help = "Name for the new Outline collection")]
+        name: String,
+        #[arg(long, help = "Collection landing-page description in Markdown")]
+        description: Option<String>,
+        #[arg(long, help = "Outline icon name or emoji")]
+        icon: Option<String>,
+        #[arg(
+            long = "collection-color",
+            id = "collection_color",
+            value_name = "HEX",
+            help = "Collection color accepted by Outline"
+        )]
+        color: Option<String>,
+        #[arg(long, value_enum, help = "Default collection access permission")]
+        permission: Option<OutlineCollectionPermissionArg>,
+        #[arg(long, action = ArgAction::Set, help = "Allow public sharing links")]
+        sharing: Option<bool>,
+        #[arg(
+            long,
+            help = "Create remotely without writing collection_id into the profile"
+        )]
+        no_bind_profile: bool,
+        #[arg(
+            long,
+            conflicts_with = "no_bind_profile",
+            help = "Replace an existing profile collection_id when no publication state exists"
+        )]
+        replace_profile_collection: bool,
+        #[arg(
+            long,
+            help = "Validate the creation and profile update without mutation"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Update an Outline collection")]
+    Update {
+        #[arg(help = "Outline profile supplying base_url and token_env")]
+        profile: String,
+        #[arg(help = "Immutable Outline collection UUID")]
+        collection_id: String,
+        #[arg(long, help = "Replace the collection name")]
+        name: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "clear_description",
+            help = "Replace the collection landing-page description"
+        )]
+        description: Option<String>,
+        #[arg(long, help = "Remove the collection description")]
+        clear_description: bool,
+        #[arg(
+            long,
+            conflicts_with = "clear_icon",
+            help = "Replace the collection icon"
+        )]
+        icon: Option<String>,
+        #[arg(long, help = "Remove the collection icon")]
+        clear_icon: bool,
+        #[arg(
+            long = "collection-color",
+            id = "collection_color",
+            value_name = "HEX",
+            help = "Replace the collection color",
+            conflicts_with = "clear_color"
+        )]
+        color: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "collection_color",
+            help = "Remove the collection color"
+        )]
+        clear_color: bool,
+        #[arg(
+            long,
+            value_enum,
+            conflicts_with = "clear_permission",
+            help = "Replace the default collection access permission"
+        )]
+        permission: Option<OutlineCollectionPermissionArg>,
+        #[arg(long, help = "Remove the default collection access permission")]
+        clear_permission: bool,
+        #[arg(long, action = ArgAction::Set, help = "Allow public sharing links")]
+        sharing: Option<bool>,
+        #[arg(long, help = "Show the requested changes without calling Outline")]
+        dry_run: bool,
+    },
+    #[command(about = "Recoverably archive an Outline collection")]
+    Archive {
+        #[arg(help = "Outline profile supplying base_url and token_env")]
+        profile: String,
+        #[arg(help = "Immutable Outline collection UUID")]
+        collection_id: String,
+        #[arg(
+            long,
+            help = "Allow archiving a collection still referenced by a profile"
+        )]
+        allow_bound: bool,
+        #[arg(long, help = "Show the archive action without calling Outline")]
+        dry_run: bool,
+    },
+    #[command(about = "Restore an archived Outline collection")]
+    Restore {
+        #[arg(help = "Outline profile supplying base_url and token_env")]
+        profile: String,
+        #[arg(help = "Immutable Outline collection UUID")]
+        collection_id: String,
+        #[arg(long, help = "Show the restore action without calling Outline")]
+        dry_run: bool,
+    },
+    #[command(about = "Bind an existing collection UUID to an Outline profile")]
+    Bind {
+        #[arg(help = "Outline profile to update")]
+        profile: String,
+        #[arg(help = "Existing immutable Outline collection UUID")]
+        collection_id: String,
+        #[arg(
+            long,
+            help = "Replace a different configured UUID when no publication state conflicts"
+        )]
+        replace_profile_collection: bool,
+        #[arg(long, help = "Validate the binding without changing config")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum OutlineCollectionPermissionArg {
+    Read,
+    ReadWrite,
+    Admin,
+}
+
+impl OutlineCollectionPermissionArg {
+    #[must_use]
+    pub fn as_outline_value(self) -> &'static str {
+        match self {
+            Self::Read => "read",
+            Self::ReadWrite => "read_write",
+            Self::Admin => "admin",
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
@@ -5257,6 +5436,11 @@ pub enum Command {
     Integration {
         #[command(subcommand)]
         command: IntegrationCommand,
+    },
+    #[command(about = "Inspect and manage configured Outline workspaces")]
+    Outline {
+        #[command(subcommand)]
+        command: OutlineCommand,
     },
     #[command(
         about = "Inspect and import effective Vulcan configuration",

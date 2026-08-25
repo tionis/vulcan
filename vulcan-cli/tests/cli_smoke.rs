@@ -10464,6 +10464,9 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(publishing.contains("vulcan integration bind <route>"));
     assert!(publishing.contains("integration run --scheduled"));
     assert!(publishing.contains("overlapping local roots"));
+    assert!(publishing.contains("vulcan outline collections list <profile>"));
+    assert!(publishing.contains("auto_create_collection = true"));
+    assert!(publishing.contains("--allow-bound"));
 
     let refactoring = fs::read_to_string(installed_skills.join("refactoring/SKILL.md"))
         .expect("refactoring skill should be installed");
@@ -15648,6 +15651,134 @@ max_retries = 0
         .contains("generated an export-only placeholder"));
     assert_eq!(report["actions"][0]["kind"], "create");
     assert!(!vault_root.join(".vulcan/publish").exists());
+}
+
+#[test]
+fn outline_collections_list_reports_names_and_uuids() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan directory");
+    let listener = TcpListener::bind("127.0.0.1:0").expect("mock Outline listener");
+    let address = listener.local_addr().expect("mock Outline address");
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("Outline collection list request");
+        let mut request = [0_u8; 8192];
+        let read = stream.read(&mut request).expect("read Outline request");
+        let request = String::from_utf8_lossy(&request[..read]);
+        assert!(request.contains("/api/collections.list"));
+        assert!(request.contains("Bearer test-outline-token"));
+        let body = r#"{"data":[{"id":"11111111-1111-4111-8111-111111111111","name":"Players","url":"/collection/players","urlId":"players"}],"pagination":{"total":1}}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .expect("write Outline response");
+    });
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        format!(
+            "[publish.outline.profiles.wiki]\nbase_url = \"http://{address}\"\ntoken_env = \"VULCAN_TEST_OUTLINE_TOKEN\"\nmax_retries = 0\n"
+        ),
+    )
+    .expect("Outline config");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("VULCAN_TEST_OUTLINE_TOKEN", "test-outline-token")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "--output",
+            "json",
+            "outline",
+            "collections",
+            "list",
+            "wiki",
+        ])
+        .assert()
+        .success();
+    handle.join().expect("mock Outline server should join");
+    let report = parse_stdout_json(&assert);
+    assert_eq!(report[0]["name"], "Players");
+    assert_eq!(report[0]["id"], "11111111-1111-4111-8111-111111111111");
+}
+
+#[test]
+fn publish_outline_creates_missing_collection_and_persists_profile_uuid() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault root");
+    run_scan(&vault_root);
+    let listener = TcpListener::bind("127.0.0.1:0").expect("mock Outline listener");
+    let address = listener.local_addr().expect("mock Outline address");
+    let handle = std::thread::spawn(move || {
+        let responses = [
+            r#"{"data":[],"pagination":{"total":0}}"#,
+            r#"{"data":{"id":"11111111-1111-4111-8111-111111111111","name":"Players","url":"/collection/players","urlId":"players"}}"#,
+            r#"{"data":[],"pagination":{"total":0}}"#,
+        ];
+        let expected_paths = [
+            "/api/collections.list",
+            "/api/collections.create",
+            "/api/documents.list",
+        ];
+        for (body, expected_path) in responses.into_iter().zip(expected_paths) {
+            let (mut stream, _) = listener.accept().expect("Outline request");
+            let mut request = [0_u8; 8192];
+            let read = stream.read(&mut request).expect("read Outline request");
+            let request = String::from_utf8_lossy(&request[..read]);
+            assert!(request.contains(expected_path), "{request}");
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("write Outline response");
+        }
+    });
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        format!(
+            r#"
+[publish.outline.profiles.wiki]
+base_url = "http://{address}"
+collection_title = "Players"
+query = 'from notes where file.path = "Missing.md"'
+token_env = "VULCAN_TEST_OUTLINE_TOKEN"
+max_retries = 0
+"#
+        ),
+    )
+    .expect("Outline config");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("VULCAN_TEST_OUTLINE_TOKEN", "test-outline-token")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "--output",
+            "json",
+            "publish",
+            "outline",
+            "wiki",
+            "--create-collection",
+        ])
+        .assert()
+        .success();
+    handle.join().expect("mock Outline server should join");
+    let report = parse_stdout_json(&assert);
+    assert_eq!(report["collection_provision"]["status"], "created");
+    assert_eq!(
+        report["collection_id"],
+        "11111111-1111-4111-8111-111111111111"
+    );
+    let config =
+        fs::read_to_string(vault_root.join(".vulcan/config.toml")).expect("updated Outline config");
+    assert!(config.contains("collection_id = \"11111111-1111-4111-8111-111111111111\""));
 }
 
 #[test]

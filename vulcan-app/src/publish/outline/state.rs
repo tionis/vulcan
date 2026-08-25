@@ -186,6 +186,25 @@ pub fn load_outline_state(
     Ok(state)
 }
 
+pub fn outline_state_collection_id(
+    paths: &VaultPaths,
+    profile: &str,
+) -> Result<Option<String>, AppError> {
+    let state_path = outline_state_path(paths, profile)?;
+    if !state_path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(&state_path).map_err(AppError::operation)?;
+    let state = serde_json::from_slice::<OutlinePublishState>(&bytes).map_err(|error| {
+        AppError::operation(format!(
+            "failed to parse Outline mapping state {}: {error}",
+            state_path.display()
+        ))
+    })?;
+    state.validate(profile, &state.collection_id)?;
+    Ok(Some(state.collection_id))
+}
+
 pub fn lock_outline_state(paths: &VaultPaths, profile: &str) -> Result<OutlineStateLock, AppError> {
     let state_path = outline_state_path(paths, profile)?;
     let parent = state_path

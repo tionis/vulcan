@@ -3181,6 +3181,7 @@ query = "from notes where publish = true"
 [publish.outline.profiles.wiki]
 base_url = "https://outline.example.test"
 collection_id = "collection-id"
+auto_create_collection = true
 token_env = "OUTLINE_TOKEN"
 
 [[publish.outline.profiles.wiki.selection.clauses]]
@@ -3213,6 +3214,10 @@ paths = ["Private"]
         .expect("Outline selection");
     assert_eq!(outline.clauses.len(), 1);
     assert_eq!(outline.exclusions.paths, ["Private"]);
+    assert_eq!(
+        loaded.config.publish.outline.profiles["wiki"].auto_create_collection,
+        Some(true)
+    );
 }
 
 #[test]
@@ -3221,6 +3226,7 @@ fn default_outline_publish_config_is_empty_and_template_never_contains_a_token()
     let template = default_config_template();
     assert!(template.contains("[publish.outline.profiles.wiki]"));
     assert!(template.contains("token_env = \"OUTLINE_API_TOKEN\""));
+    assert!(template.contains("auto_create_collection = false"));
     assert!(template.contains("block_reference_policy = \"error\""));
     assert!(template.contains("excluded_target_policy = \"error\""));
     assert!(template.contains("link_transform = \".vulcan/transforms/outline-links.js\""));

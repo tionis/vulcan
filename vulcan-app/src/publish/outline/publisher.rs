@@ -28,6 +28,8 @@ pub struct OutlinePublishReport {
     pub projections: Vec<OutlinePublishProjection>,
     #[serde(flatten)]
     pub plan: OutlinePublishPlan,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collection_provision: Option<super::OutlineCollectionProvisionReport>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -763,6 +765,7 @@ fn report(
             })
             .collect(),
         plan,
+        collection_provision: None,
     }
 }
 

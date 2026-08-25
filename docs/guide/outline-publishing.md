@@ -1,6 +1,6 @@
 # Outline publishing
 
-Vulcan can package a selected Markdown hierarchy for Outline, publish it into an existing collection, pull an Outline collection or subtree into a contained vault namespace, and compose pull/push into a named conflict-aware route. The Markdown vault remains the inspectable hub; synchronization is never implicit last-writer-wins.
+Vulcan can package a selected Markdown hierarchy for Outline, create or manage its target collection, publish it, pull a collection or subtree into a contained vault namespace, and compose pull/push into a named conflict-aware route. The Markdown vault remains the inspectable hub; synchronization is never implicit last-writer-wins.
 
 ## First-class Outline routes
 
@@ -168,6 +168,45 @@ excluded_target_policy = "error" # error | plain-text | annotated-text | custom
 # link_transform = ".vulcan/transforms/outline-links.js" # required by either custom policy
 ```
 
+For a new wiki, omit `collection_id` and opt in to provisioning:
+
+```toml
+[publish.outline.profiles.players]
+base_url = "https://outline.example.com"
+collection_title = "Players Wiki"
+auto_create_collection = true
+query = 'from "Players"'
+token_env = "OUTLINE_API_TOKEN"
+```
+
+The first live publication creates the collection, stores the returned UUID as `collection_id` in shared `.vulcan/config.toml`, and continues with normal reconciliation. `--create-collection` enables the same behavior for one invocation. Provisioning is deliberately unavailable during publish `--dry-run`, because there is no remote collection to inspect; preview it with `outline collections create ... --dry-run`, then perform a live create or publication. A pre-existing exact-name collection stops automatic creation and reports its UUID for explicit `bind`, avoiding unsafe title-based adoption or accidental duplicates. Vulcan compares collection UUIDs before and after an uncertain create response so a uniquely identifiable completed request can be recovered without creating a second collection. Existing durable publication state prevents automatic replacement, and any config-write failure reports the created collection UUID for explicit recovery.
+
+### Collection discovery and management
+
+An Outline publication profile may contain only `base_url` and `token_env` while it is being used to discover collections. The utility surface exposes collection names and immutable UUIDs and supports the non-destructive lifecycle operations used during setup:
+
+```sh
+OUTLINE_API_TOKEN=... vulcan outline collections list wiki
+OUTLINE_API_TOKEN=... vulcan --output json outline collections list wiki
+OUTLINE_API_TOKEN=... vulcan outline collections show wiki <collection-uuid>
+
+# Creation binds the returned UUID to the selected profile by default.
+OUTLINE_API_TOKEN=... vulcan outline collections create wiki "Players Wiki" --dry-run
+OUTLINE_API_TOKEN=... vulcan outline collections create wiki "Players Wiki"
+# Create without changing the profile, or bind an existing collection explicitly.
+OUTLINE_API_TOKEN=... vulcan outline collections create wiki "Scratch" --no-bind-profile
+OUTLINE_API_TOKEN=... vulcan outline collections bind wiki <collection-uuid> --dry-run
+OUTLINE_API_TOKEN=... vulcan outline collections bind wiki <collection-uuid>
+
+OUTLINE_API_TOKEN=... vulcan outline collections update wiki <collection-uuid> \
+  --name "Players Wiki" --description "Shared campaign lore" \
+  --permission read-write --sharing=true
+OUTLINE_API_TOKEN=... vulcan outline collections archive wiki <collection-uuid> --dry-run
+OUTLINE_API_TOKEN=... vulcan outline collections restore wiki <collection-uuid>
+```
+
+Create accepts `--description`, `--icon`, `--collection-color`, `--permission read|read-write|admin`, and `--sharing`. Update accepts the same mutable fields, plus `--clear-description`, `--clear-icon`, `--clear-color`, and `--clear-permission`. A create refuses to replace an existing profile UUID unless `--replace-profile-collection` is supplied and no durable publication state belongs to the profile. Archive is recoverable and refuses a UUID still referenced by any effective profile unless `--allow-bound` is explicit. Permanent collection deletion is not exposed.
+
 The token value is not a valid profile field. Put it in the named environment variable; device-specific non-secret overrides such as `base_url` or `token_env` may go in ignored `.vulcan/config.local.toml`. Then preview and apply:
 
 ```sh
@@ -187,7 +226,7 @@ OUTLINE_API_TOKEN=... vulcan publish outline wiki --adopt-pulled
 
 The profile must select exactly one of `query`, `query_json`, or the shared additive `selection` plan. A selection plan may union query clauses and bounded or recursive graph traversals from multiple seeds; its global exclusions and permission boundaries stop traversal. The profile may also contain the same ordered `[[publish.outline.profiles.wiki.content_transforms]]` rules used by export profiles. Set `remove_toc = true` to enable the optional heading-link TOC cleanup. Set either link policy to `annotated-text` to preserve visible labels and authored destinations, or `plain-text` when labels alone are sufficient. Set a policy to `custom` and configure `link_transform` to use the same callback contract as ZIP export. Publishing uses the same folder-note, callout/frontmatter compatibility, resolved-link, attachment, collision, excluded-target validation, and pure transform runtime as ZIP export. Generated folder-placeholder and fallback warnings are printed in human output and included in the JSON publish report's `diagnostics` array; custom-transform path/hash provenance is also included. Unlike ZIP-relative links, direct API publication rewrites links between managed documents to `/doc/<remote-id>` targets after durable mappings are known.
 
-Vulcan uses Outline's documented `documents.list`, `documents.info`, `documents.create`, `documents.update`, `documents.move`, `documents.archive`, and `attachments.create` POST APIs. Collection listing is paginated. Requests have bounded timeouts and retries; `429 Too Many Requests` responses honor Outline's `Retry-After` delay (including fractional seconds) before consuming a retry, while transient transport and server failures use bounded exponential backoff. Credentials and response bodies that appear credential-bearing are not included in errors. Attachment uploads support Outline's returned POST-form and PUT upload modes. See Outline's [official API documentation](https://docs.getoutline.com/s/guide/doc/api-1rEIXDfLF6) and [OpenAPI specification](https://github.com/outline/openapi/blob/main/spec3.yml).
+Vulcan uses Outline's documented collection, document, and attachment POST APIs. Collection and document listing are paginated and reject changing, duplicate, or incomplete snapshots. Requests have bounded timeouts and retries; `429 Too Many Requests` responses honor Outline's `Retry-After` delay (including fractional seconds) before consuming a retry, while transient transport and server failures use bounded exponential backoff. Credentials and response bodies that appear credential-bearing are not included in errors. Attachment uploads support Outline's returned POST-form and PUT upload modes. See Outline's [official API documentation](https://docs.getoutline.com/s/guide/doc/api-1rEIXDfLF6) and [OpenAPI specification](https://github.com/outline/openapi/blob/main/spec3.yml).
 
 ### Mapping and reconciliation
 

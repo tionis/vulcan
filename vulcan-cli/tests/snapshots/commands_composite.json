@@ -5763,6 +5763,20 @@
                 "value_names": [
                   "INTERACTIVE"
                 ]
+              },
+              {
+                "help": "Create and persist the configured collection title when collection_id is missing",
+                "id": "create_collection",
+                "long": "create-collection",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CREATE_COLLECTION"
+                ]
               }
             ],
             "subcommands": []
@@ -6349,6 +6363,554 @@
               }
             ],
             "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": "Inspect and manage configured Outline workspaces",
+        "name": "outline",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "List, inspect, create, and modify Outline collections",
+            "name": "collections",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "List accessible Outline collections and UUIDs",
+                "name": "list",
+                "options": [
+                  {
+                    "help": "Outline profile supplying base_url and token_env",
+                    "id": "profile",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PROFILE"
+                    ]
+                  },
+                  {
+                    "help": "Filter collection names",
+                    "id": "query",
+                    "long": "query",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "QUERY"
+                    ]
+                  },
+                  {
+                    "help": "List archived collections instead of active collections",
+                    "id": "archived",
+                    "long": "archived",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ARCHIVED"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Show one Outline collection by UUID",
+                "name": "show",
+                "options": [
+                  {
+                    "help": "Outline profile supplying base_url and token_env",
+                    "id": "profile",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PROFILE"
+                    ]
+                  },
+                  {
+                    "help": "Immutable Outline collection UUID",
+                    "id": "collection_id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "COLLECTION_ID"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Create an Outline collection and bind its UUID to the profile",
+                "name": "create",
+                "options": [
+                  {
+                    "help": "Outline profile supplying base_url and token_env",
+                    "id": "profile",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PROFILE"
+                    ]
+                  },
+                  {
+                    "help": "Name for the new Outline collection",
+                    "id": "name",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Collection landing-page description in Markdown",
+                    "id": "description",
+                    "long": "description",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DESCRIPTION"
+                    ]
+                  },
+                  {
+                    "help": "Outline icon name or emoji",
+                    "id": "icon",
+                    "long": "icon",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ICON"
+                    ]
+                  },
+                  {
+                    "help": "Collection color accepted by Outline",
+                    "id": "collection_color",
+                    "long": "collection-color",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "HEX"
+                    ]
+                  },
+                  {
+                    "help": "Default collection access permission",
+                    "id": "permission",
+                    "long": "permission",
+                    "possible_values": [
+                      "read",
+                      "read-write",
+                      "admin"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "PERMISSION"
+                    ]
+                  },
+                  {
+                    "help": "Allow public sharing links",
+                    "id": "sharing",
+                    "long": "sharing",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "SHARING"
+                    ]
+                  },
+                  {
+                    "help": "Create remotely without writing collection_id into the profile",
+                    "id": "no_bind_profile",
+                    "long": "no-bind-profile",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_BIND_PROFILE"
+                    ]
+                  },
+                  {
+                    "help": "Replace an existing profile collection_id when no publication state exists",
+                    "id": "replace_profile_collection",
+                    "long": "replace-profile-collection",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REPLACE_PROFILE_COLLECTION"
+                    ]
+                  },
+                  {
+                    "help": "Validate the creation and profile update without mutation",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Update an Outline collection",
+                "name": "update",
+                "options": [
+                  {
+                    "help": "Outline profile supplying base_url and token_env",
+                    "id": "profile",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PROFILE"
+                    ]
+                  },
+                  {
+                    "help": "Immutable Outline collection UUID",
+                    "id": "collection_id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "COLLECTION_ID"
+                    ]
+                  },
+                  {
+                    "help": "Replace the collection name",
+                    "id": "name",
+                    "long": "name",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NAME"
+                    ]
+                  },
+                  {
+                    "help": "Replace the collection landing-page description",
+                    "id": "description",
+                    "long": "description",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DESCRIPTION"
+                    ]
+                  },
+                  {
+                    "help": "Remove the collection description",
+                    "id": "clear_description",
+                    "long": "clear-description",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CLEAR_DESCRIPTION"
+                    ]
+                  },
+                  {
+                    "help": "Replace the collection icon",
+                    "id": "icon",
+                    "long": "icon",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ICON"
+                    ]
+                  },
+                  {
+                    "help": "Remove the collection icon",
+                    "id": "clear_icon",
+                    "long": "clear-icon",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CLEAR_ICON"
+                    ]
+                  },
+                  {
+                    "help": "Replace the collection color",
+                    "id": "collection_color",
+                    "long": "collection-color",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "HEX"
+                    ]
+                  },
+                  {
+                    "help": "Remove the collection color",
+                    "id": "clear_color",
+                    "long": "clear-color",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CLEAR_COLOR"
+                    ]
+                  },
+                  {
+                    "help": "Replace the default collection access permission",
+                    "id": "permission",
+                    "long": "permission",
+                    "possible_values": [
+                      "read",
+                      "read-write",
+                      "admin"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "PERMISSION"
+                    ]
+                  },
+                  {
+                    "help": "Remove the default collection access permission",
+                    "id": "clear_permission",
+                    "long": "clear-permission",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "CLEAR_PERMISSION"
+                    ]
+                  },
+                  {
+                    "help": "Allow public sharing links",
+                    "id": "sharing",
+                    "long": "sharing",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "SHARING"
+                    ]
+                  },
+                  {
+                    "help": "Show the requested changes without calling Outline",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Recoverably archive an Outline collection",
+                "name": "archive",
+                "options": [
+                  {
+                    "help": "Outline profile supplying base_url and token_env",
+                    "id": "profile",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PROFILE"
+                    ]
+                  },
+                  {
+                    "help": "Immutable Outline collection UUID",
+                    "id": "collection_id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "COLLECTION_ID"
+                    ]
+                  },
+                  {
+                    "help": "Allow archiving a collection still referenced by a profile",
+                    "id": "allow_bound",
+                    "long": "allow-bound",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "ALLOW_BOUND"
+                    ]
+                  },
+                  {
+                    "help": "Show the archive action without calling Outline",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Restore an archived Outline collection",
+                "name": "restore",
+                "options": [
+                  {
+                    "help": "Outline profile supplying base_url and token_env",
+                    "id": "profile",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PROFILE"
+                    ]
+                  },
+                  {
+                    "help": "Immutable Outline collection UUID",
+                    "id": "collection_id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "COLLECTION_ID"
+                    ]
+                  },
+                  {
+                    "help": "Show the restore action without calling Outline",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Bind an existing collection UUID to an Outline profile",
+                "name": "bind",
+                "options": [
+                  {
+                    "help": "Outline profile to update",
+                    "id": "profile",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PROFILE"
+                    ]
+                  },
+                  {
+                    "help": "Existing immutable Outline collection UUID",
+                    "id": "collection_id",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "COLLECTION_ID"
+                    ]
+                  },
+                  {
+                    "help": "Replace a different configured UUID when no publication state conflicts",
+                    "id": "replace_profile_collection",
+                    "long": "replace-profile-collection",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REPLACE_PROFILE_COLLECTION"
+                    ]
+                  },
+                  {
+                    "help": "Validate the binding without changing config",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
           }
         ]
       },

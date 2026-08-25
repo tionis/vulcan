@@ -2213,6 +2213,7 @@ pub struct OutlinePublishProfileConfig {
     pub base_url: Option<String>,
     pub collection_id: Option<String>,
     pub collection_title: Option<String>,
+    pub auto_create_collection: Option<bool>,
     pub query: Option<String>,
     pub query_json: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3841,6 +3842,9 @@ fn merge_outline_publish_profile_config(
     }
     if let Some(collection_title) = profile.collection_title {
         target.collection_title = Some(collection_title);
+    }
+    if let Some(auto_create_collection) = profile.auto_create_collection {
+        target.auto_create_collection = Some(auto_create_collection);
     }
     if let Some(query) = profile.query {
         target.query = Some(query);

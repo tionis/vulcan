@@ -1102,9 +1102,106 @@ fn parses_outline_publish_dry_run_command() {
                 overwrite_conflict: Vec::new(),
                 adopt_pulled: false,
                 interactive: false,
+                create_collection: false,
             },
         }
     );
+}
+
+#[test]
+fn parses_outline_collection_management_commands() {
+    let list = Cli::try_parse_from([
+        "vulcan",
+        "outline",
+        "collections",
+        "list",
+        "wiki",
+        "--archived",
+    ])
+    .expect("Outline collection list should parse");
+    assert!(matches!(
+        list.command,
+        Command::Outline {
+            command: OutlineCommand::Collections {
+                command: OutlineCollectionsCommand::List {
+                    ref profile,
+                    archived: true,
+                    ..
+                }
+            }
+        } if profile == "wiki"
+    ));
+
+    let create = Cli::try_parse_from([
+        "vulcan",
+        "outline",
+        "collections",
+        "create",
+        "wiki",
+        "Players",
+        "--permission",
+        "read-write",
+        "--sharing=false",
+        "--dry-run",
+    ])
+    .expect("Outline collection create should parse");
+    assert!(matches!(
+        create.command,
+        Command::Outline {
+            command: OutlineCommand::Collections {
+                command: OutlineCollectionsCommand::Create {
+                    ref name,
+                    permission: Some(OutlineCollectionPermissionArg::ReadWrite),
+                    sharing: Some(false),
+                    dry_run: true,
+                    ..
+                }
+            }
+        } if name == "Players"
+    ));
+
+    let update = Cli::try_parse_from([
+        "vulcan",
+        "outline",
+        "collections",
+        "update",
+        "wiki",
+        "collection-id",
+        "--clear-description",
+    ])
+    .expect("Outline collection update should parse");
+    assert!(matches!(
+        update.command,
+        Command::Outline {
+            command: OutlineCommand::Collections {
+                command: OutlineCollectionsCommand::Update {
+                    clear_description: true,
+                    ..
+                }
+            }
+        }
+    ));
+}
+
+#[test]
+fn parses_publish_time_outline_collection_creation() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "publish",
+        "outline",
+        "wiki",
+        "--create-collection",
+    ])
+    .expect("publish collection creation should parse");
+    assert!(matches!(
+        cli.command,
+        Command::Publish {
+            command: PublishCommand::Outline {
+                create_collection: true,
+                ..
+            }
+        }
+    ));
 }
 
 #[test]
@@ -1200,6 +1297,7 @@ fn parses_outline_publish_overwrite_conflicts_command() {
                 overwrite_conflict: Vec::new(),
                 adopt_pulled: false,
                 interactive: false,
+                create_collection: false,
             },
         }
     );
@@ -1251,6 +1349,7 @@ fn parses_outline_publish_selective_conflict_overrides() {
                 overwrite_conflict: vec!["Home.md".to_string(), "Projects/Plan.md".to_string()],
                 adopt_pulled: false,
                 interactive: false,
+                create_collection: false,
             },
         }
     );

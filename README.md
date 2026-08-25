@@ -43,6 +43,8 @@ vulcan --vault ~/notes tasks list --output json
 vulcan --vault ~/notes export markdown 'tag:publish' --path public.md
 vulcan --vault ~/notes export outline-zip --collection-title Wiki --path wiki.zip
 vulcan --vault ~/notes export outline-zip --profile wiki --path wiki.zip
+vulcan --vault ~/notes outline collections list wiki
+vulcan --vault ~/notes publish outline wiki --create-collection
 vulcan --vault ~/notes integration validate players
 vulcan --vault ~/notes integration plan players
 vulcan --vault ~/notes site build

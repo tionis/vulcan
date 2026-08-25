@@ -37,6 +37,7 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # base_url = "https://outline.example.com" # API publication/pull only; optional for outline-zip
 # collection_id = "00000000-0000-0000-0000-000000000000" # API publication/pull only
 # collection_title = "Wiki"
+# auto_create_collection = false # create and persist a missing collection during live publication
 # query = "from notes"
 # token_env = "OUTLINE_API_TOKEN" # API only; the token value is never stored in shared config
 # timeout_seconds = 30

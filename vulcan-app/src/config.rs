@@ -1203,6 +1203,14 @@ fn dynamic_config_descriptors() -> Vec<ConfigDescriptor> {
         &[],
     );
     push(
+        "publish.outline.profiles.<name>.auto_create_collection",
+        ConfigValueKind::Boolean,
+        ConfigTargetSupport::SharedAndLocal,
+        Some("vulcan outline collections create"),
+        Some(TomlValue::Boolean(false)),
+        &[],
+    );
+    push(
         "publish.outline.profiles.<name>.block_reference_policy",
         ConfigValueKind::Enum,
         ConfigTargetSupport::SharedAndLocal,

@@ -6454,6 +6454,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Allow Outline ZIP export to reuse publication profiles without API credentials, with exclusive direct/profile configuration and projection-hash parity across ZIP and API publication.
 - [x] Standardize omitted queries across direct and profile-based exports as the full-vault `from notes` selection.
 - [x] Add non-secret Outline profiles in shared config with device-local endpoint/token bindings.
+- [x] Add typed Outline collection list/show/create/update/archive/restore utilities, explicit existing-UUID binding, and opt-in publish-time collection provisioning that persists the returned UUID with dry-run and durable-state safeguards.
 - [x] Add a bounded-retry, paginated Outline API client and mock transport tests.
 - [x] Add durable, locked, atomically-written source-to-Outline mapping state outside `cache.db`.
 - [x] Add create/update/move/archive reconciliation, remote-drift conflicts, attachment uploads, idempotency, and mutation-free publish dry runs.
