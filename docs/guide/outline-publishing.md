@@ -246,7 +246,7 @@ After reviewing the conflict plan, repeat `--overwrite-conflict <source-path>` t
 
 For human terminal use, `--interactive` displays each conflict's path, kind, and changed local/remote dimensions and asks whether the canonical local version may overwrite it. `all` approves the current and remaining conflicts; `no`, Enter, EOF, or quit cancels without mutation. After approval Vulcan fetches and plans the collection again before applying, so changes made while the prompt was open are not overwritten from a stale plan. Interactive mode is intentionally unavailable with `--dry-run`, structured output, redirected input, or the non-interactive overwrite flags.
 
-Human output reports selection, compatibility preparation, remote planning, document hierarchy reconciliation, attachment upload, content update, archival, and completion on stderr, with per-item checkpoints and source paths. `--quiet` suppresses this progress, and JSON/Markdown output remains clean for automation.
+Human output reports selection, compatibility preparation, and phase totals on stderr, followed by one action summary on stdout. Conflicts remain individually visible because they require review. Add global `--verbose` to show every processed source path and every planned action; `--quiet` suppresses progress, and JSON output remains clean for automation.
 
 ### API publisher limitations
 

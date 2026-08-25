@@ -94,6 +94,53 @@ fn query_ast_rendering_requires_explicit_diagnostics() {
     assert!(!should_render_query_ast(OutputFormat::Json, false, true));
 }
 
+#[cfg(feature = "web")]
+#[test]
+fn outline_publish_human_output_summarizes_actions_and_only_expands_verbose_details() {
+    let summary = summarize_outline_publish_actions([
+        OutlinePublishActionKind::Create,
+        OutlinePublishActionKind::Update,
+        OutlinePublishActionKind::Move,
+        OutlinePublishActionKind::UpdateAndMove,
+        OutlinePublishActionKind::UploadAttachment,
+        OutlinePublishActionKind::Archive,
+        OutlinePublishActionKind::AdoptRemoteResult,
+        OutlinePublishActionKind::Unchanged,
+        OutlinePublishActionKind::Unchanged,
+        OutlinePublishActionKind::Conflict,
+    ]);
+
+    assert_eq!(summary.created, 1);
+    assert_eq!(summary.updated, 1);
+    assert_eq!(summary.moved, 1);
+    assert_eq!(summary.updated_and_moved, 1);
+    assert_eq!(summary.attachments, 1);
+    assert_eq!(summary.archived, 1);
+    assert_eq!(summary.adopted, 1);
+    assert_eq!(summary.unchanged, 2);
+    assert_eq!(summary.conflicts, 1);
+    assert_eq!(
+        render_outline_publish_action_summary(&summary, 3),
+        "Outline publication summary: created=1, updated=1, moved=1, updated_and_moved=1, attachments=1, archived=1, adopted=1, unchanged=2, conflicts=1, unmanaged=3"
+    );
+    assert!(!should_print_outline_publish_action(
+        OutlinePublishActionKind::Unchanged,
+        false
+    ));
+    assert!(!should_print_outline_publish_action(
+        OutlinePublishActionKind::Create,
+        false
+    ));
+    assert!(should_print_outline_publish_action(
+        OutlinePublishActionKind::Conflict,
+        false
+    ));
+    assert!(should_print_outline_publish_action(
+        OutlinePublishActionKind::Unchanged,
+        true
+    ));
+}
+
 #[test]
 fn parses_defaults_for_doctor_command() {
     let cli = Cli::try_parse_from(["vulcan", "doctor"]).expect("cli should parse");

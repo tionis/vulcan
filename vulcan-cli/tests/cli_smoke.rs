@@ -16131,13 +16131,18 @@ max_retries = 0
         .success();
     handle.join().expect("mock Outline server should join");
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+    let stdout = String::from_utf8_lossy(&assert.get_output().stdout);
     assert!(stderr.contains(
         "warning: folder `Pantheons` has no selected configured folder note; generated an export-only placeholder"
     ));
     assert!(stderr.contains("Selecting notes for Outline..."));
     assert!(stderr.contains("Preparing Outline-compatible content..."));
-    assert!(stderr.contains("Reading Outline and planning reconciliation..."));
+    assert!(stderr.contains("Reading Outline and planning reconciliation (2 documents)..."));
     assert!(stderr.contains("Outline reconciliation complete."));
+    assert!(stdout.contains(
+        "Outline publication summary: created=2, updated=0, moved=0, updated_and_moved=0, attachments=0, archived=0, adopted=0, unchanged=0, conflicts=0, unmanaged=0"
+    ));
+    assert!(!stdout.contains("Create\t"));
 }
 
 #[test]

@@ -6472,6 +6472,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add a trusted, pure, resource-bounded `transform_link(link)` callback shared by Outline ZIP and API publishing, with typed context/output, deterministic guards, located failures, and script path/hash provenance while keeping general audience filters declarative.
 - [x] Add explicit `--overwrite-conflicts` reconciliation, honor Outline `Retry-After` rate-limit delays, and eliminate redundant per-document fetches and unchanged update calls.
 - [x] Add phase/item Outline publish progress, structured base/local/remote conflict evidence, and selective `--overwrite-conflict <source-path>` authorization.
+- [x] Keep default Outline publication output compact with phase totals and an aggregate action summary; reserve per-path progress and routine action listings for `--verbose` while always showing conflicts.
 - [x] Track the submitted local projection separately from Outline's observed, potentially normalized Markdown so repeated publications stay idempotent without weakening remote-drift detection.
 - [x] Index publication mappings, actions, and remote render destinations so large Outline publications avoid repeated whole-plan scans and all-pairs link rendering.
 - [x] Add optional terminal-guided Outline push conflict review with per-document approval, an approve-remaining shortcut, a fresh pre-apply reconciliation, and fail-closed cancellation.

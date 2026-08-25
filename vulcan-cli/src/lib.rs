@@ -504,8 +504,8 @@ use vulcan_app::publish::outline::{
     publish_outline_with_options_and_progress, validate_outline_collection_create,
     validate_outline_collection_update, HttpOutlineClient, OutlineApi, OutlineCollectionCreate,
     OutlineCollectionUpdate, OutlineConflictField, OutlineConflictPolicy, OutlineConflictSide,
-    OutlineConflictSideState, OutlinePublishAction, OutlinePublishOptions, OutlinePublishPhase,
-    OutlinePublishProgress, OutlineRemoteCollection,
+    OutlineConflictSideState, OutlinePublishAction, OutlinePublishActionKind,
+    OutlinePublishOptions, OutlinePublishPhase, OutlinePublishProgress, OutlineRemoteCollection,
 };
 #[cfg(feature = "web")]
 use vulcan_app::pull::outline::{
@@ -833,6 +833,7 @@ struct SiteBuildProgressReporter {
 struct OutlinePublishProgressReporter {
     palette: AnsiPalette,
     last_phase: Option<OutlinePublishPhase>,
+    verbose: bool,
 }
 
 #[cfg(feature = "web")]
@@ -880,10 +881,11 @@ impl OutlinePullProgressReporter {
 
 #[cfg(feature = "web")]
 impl OutlinePublishProgressReporter {
-    fn new(use_color: bool) -> Self {
+    fn new(use_color: bool, verbose: bool) -> Self {
         Self {
             palette: AnsiPalette::new(use_color),
             last_phase: None,
+            verbose,
         }
     }
 
@@ -908,14 +910,34 @@ impl OutlinePublishProgressReporter {
                 OutlinePublishPhase::ArchivingDocuments => "Archiving removed documents...",
                 OutlinePublishPhase::Completed => "Outline reconciliation complete.",
             };
-            eprintln!("{}", self.palette.cyan(message));
+            if progress.total > 0 && progress.phase != OutlinePublishPhase::Completed {
+                let unit = match progress.phase {
+                    OutlinePublishPhase::UploadingAttachments => "attachments",
+                    OutlinePublishPhase::Planning
+                    | OutlinePublishPhase::ReconcilingDocuments
+                    | OutlinePublishPhase::UpdatingDocuments
+                    | OutlinePublishPhase::ArchivingDocuments => "documents",
+                    OutlinePublishPhase::Completed => unreachable!(),
+                };
+                eprintln!(
+                    "{}",
+                    self.palette.cyan(&format!(
+                        "{} ({} {})...",
+                        message.trim_end_matches("..."),
+                        progress.total,
+                        unit,
+                    ))
+                );
+            } else {
+                eprintln!("{}", self.palette.cyan(message));
+            }
             self.last_phase = Some(progress.phase);
         }
-        if let Some(path) = progress.current_path.as_deref() {
-            let ordinal = progress.processed.saturating_add(1).min(progress.total);
-            if progress.total > 10 && ordinal != progress.total && !ordinal.is_multiple_of(25) {
+        if self.verbose {
+            let Some(path) = progress.current_path.as_deref() else {
                 return;
-            }
+            };
+            let ordinal = progress.processed.saturating_add(1).min(progress.total);
             eprintln!(
                 "{} {}/{} | {}",
                 self.palette.cyan("Processing"),
@@ -1512,7 +1534,7 @@ fn run_publish_command(
         .as_deref()
         .unwrap_or(profile);
     let mut progress = (cli.output == OutputFormat::Human && !cli.quiet)
-        .then(|| OutlinePublishProgressReporter::new(use_stderr_color));
+        .then(|| OutlinePublishProgressReporter::new(use_stderr_color, cli.verbose));
     if let Some(progress) = progress.as_ref() {
         progress.selecting();
     }
@@ -1650,7 +1672,7 @@ fn run_publish_command(
         }
     }
     report.collection_provision = provision;
-    print_outline_publish_report(cli.output, &report)
+    print_outline_publish_report(cli.output, &report, cli.verbose)
 }
 
 #[cfg(feature = "web")]
@@ -2653,12 +2675,17 @@ fn outline_conflict_policy(
 fn print_outline_publish_report(
     output: OutputFormat,
     report: &vulcan_app::publish::outline::OutlinePublishReport,
+    verbose: bool,
 ) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => print_json(&report)?,
         OutputFormat::Human | OutputFormat::Markdown => {
             print_outline_diagnostics(&report.diagnostics);
+            println!("{}", outline_publish_action_summary(report));
             for action in &report.plan.actions {
+                if !should_print_outline_publish_action(action.kind, verbose) {
+                    continue;
+                }
                 println!(
                     "{:?}\t{}\t{}",
                     action.kind,
@@ -2690,6 +2717,75 @@ fn print_outline_publish_report(
             report.conflicts
         )))
     }
+}
+
+#[cfg(feature = "web")]
+#[derive(Default)]
+struct OutlinePublishActionSummary {
+    created: usize,
+    updated: usize,
+    moved: usize,
+    updated_and_moved: usize,
+    attachments: usize,
+    archived: usize,
+    adopted: usize,
+    unchanged: usize,
+    conflicts: usize,
+}
+
+#[cfg(feature = "web")]
+fn summarize_outline_publish_actions(
+    kinds: impl IntoIterator<Item = OutlinePublishActionKind>,
+) -> OutlinePublishActionSummary {
+    let mut summary = OutlinePublishActionSummary::default();
+    for kind in kinds {
+        match kind {
+            OutlinePublishActionKind::Create => summary.created += 1,
+            OutlinePublishActionKind::Update => summary.updated += 1,
+            OutlinePublishActionKind::Move => summary.moved += 1,
+            OutlinePublishActionKind::UpdateAndMove => summary.updated_and_moved += 1,
+            OutlinePublishActionKind::UploadAttachment => summary.attachments += 1,
+            OutlinePublishActionKind::Archive => summary.archived += 1,
+            OutlinePublishActionKind::AdoptRemoteResult => summary.adopted += 1,
+            OutlinePublishActionKind::Unchanged => summary.unchanged += 1,
+            OutlinePublishActionKind::Conflict => summary.conflicts += 1,
+        }
+    }
+    summary
+}
+
+#[cfg(feature = "web")]
+fn outline_publish_action_summary(
+    report: &vulcan_app::publish::outline::OutlinePublishReport,
+) -> String {
+    let summary =
+        summarize_outline_publish_actions(report.plan.actions.iter().map(|action| action.kind));
+    render_outline_publish_action_summary(&summary, report.plan.unmanaged_remote_documents)
+}
+
+#[cfg(feature = "web")]
+fn render_outline_publish_action_summary(
+    summary: &OutlinePublishActionSummary,
+    unmanaged_remote_documents: usize,
+) -> String {
+    format!(
+        "Outline publication summary: created={}, updated={}, moved={}, updated_and_moved={}, attachments={}, archived={}, adopted={}, unchanged={}, conflicts={}, unmanaged={}",
+        summary.created,
+        summary.updated,
+        summary.moved,
+        summary.updated_and_moved,
+        summary.attachments,
+        summary.archived,
+        summary.adopted,
+        summary.unchanged,
+        summary.conflicts,
+        unmanaged_remote_documents,
+    )
+}
+
+#[cfg(feature = "web")]
+fn should_print_outline_publish_action(kind: OutlinePublishActionKind, verbose: bool) -> bool {
+    verbose || kind == OutlinePublishActionKind::Conflict
 }
 
 #[cfg(feature = "web")]
