@@ -461,7 +461,7 @@ use std::ffi::OsString;
 use std::fmt::{Display, Formatter, Write as FmtWrite};
 use std::fs;
 use std::io;
-use std::io::{IsTerminal, Read};
+use std::io::{IsTerminal, Read, Write as IoWrite};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use toml::Value as TomlValue;
@@ -834,6 +834,9 @@ struct OutlinePublishProgressReporter {
     palette: AnsiPalette,
     last_phase: Option<OutlinePublishPhase>,
     verbose: bool,
+    interactive: bool,
+    compact_line_active: bool,
+    last_compact_processed: Option<usize>,
 }
 
 #[cfg(feature = "web")]
@@ -881,11 +884,14 @@ impl OutlinePullProgressReporter {
 
 #[cfg(feature = "web")]
 impl OutlinePublishProgressReporter {
-    fn new(use_color: bool, verbose: bool) -> Self {
+    fn new(use_color: bool, verbose: bool, interactive: bool) -> Self {
         Self {
             palette: AnsiPalette::new(use_color),
             last_phase: None,
             verbose,
+            interactive,
+            compact_line_active: false,
+            last_compact_processed: None,
         }
     }
 
@@ -902,6 +908,7 @@ impl OutlinePublishProgressReporter {
 
     fn record(&mut self, progress: &OutlinePublishProgress) {
         if self.last_phase != Some(progress.phase) {
+            self.finish_compact_line();
             let message = match progress.phase {
                 OutlinePublishPhase::Planning => "Reading Outline and planning reconciliation...",
                 OutlinePublishPhase::ReconcilingDocuments => "Reconciling document hierarchy...",
@@ -932,6 +939,7 @@ impl OutlinePublishProgressReporter {
                 eprintln!("{}", self.palette.cyan(message));
             }
             self.last_phase = Some(progress.phase);
+            self.last_compact_processed = None;
         }
         if self.verbose {
             let Some(path) = progress.current_path.as_deref() else {
@@ -945,8 +953,62 @@ impl OutlinePublishProgressReporter {
                 progress.total,
                 self.palette.dim(path),
             );
+        } else if progress.current_path.is_none()
+            && matches!(
+                progress.phase,
+                OutlinePublishPhase::ReconcilingDocuments
+                    | OutlinePublishPhase::UploadingAttachments
+                    | OutlinePublishPhase::UpdatingDocuments
+                    | OutlinePublishPhase::ArchivingDocuments
+            )
+        {
+            self.compact(progress.processed, progress.total);
         }
     }
+
+    fn compact(&mut self, processed: usize, total: usize) {
+        if total == 0 || self.last_compact_processed == Some(processed) {
+            return;
+        }
+        self.last_compact_processed = Some(processed);
+        let message = outline_publish_progress_counter(processed, total);
+        if self.interactive {
+            eprint!("\r  {}", self.palette.cyan(&message));
+            let _ = IoWrite::flush(&mut io::stderr());
+            self.compact_line_active = true;
+        } else if should_print_outline_publish_progress_checkpoint(processed, total) {
+            eprintln!("  {}", self.palette.cyan(&message));
+        }
+    }
+
+    fn finish_compact_line(&mut self) {
+        if self.compact_line_active {
+            eprintln!();
+            self.compact_line_active = false;
+        }
+    }
+}
+
+#[cfg(feature = "web")]
+impl Drop for OutlinePublishProgressReporter {
+    fn drop(&mut self) {
+        self.finish_compact_line();
+    }
+}
+
+#[cfg(feature = "web")]
+fn outline_publish_progress_counter(processed: usize, total: usize) -> String {
+    let bounded = processed.min(total);
+    let percentage = bounded
+        .saturating_mul(100)
+        .checked_div(total)
+        .unwrap_or(100);
+    format!("Progress: {bounded}/{total} ({percentage}%)")
+}
+
+#[cfg(feature = "web")]
+fn should_print_outline_publish_progress_checkpoint(processed: usize, total: usize) -> bool {
+    processed == total || (processed > 0 && processed.is_multiple_of(25))
 }
 
 impl SiteBuildProgressReporter {
@@ -1533,8 +1595,13 @@ fn run_publish_command(
         .collection_title
         .as_deref()
         .unwrap_or(profile);
-    let mut progress = (cli.output == OutputFormat::Human && !cli.quiet)
-        .then(|| OutlinePublishProgressReporter::new(use_stderr_color, cli.verbose));
+    let mut progress = (cli.output == OutputFormat::Human && !cli.quiet).then(|| {
+        OutlinePublishProgressReporter::new(
+            use_stderr_color,
+            cli.verbose,
+            io::stderr().is_terminal(),
+        )
+    });
     if let Some(progress) = progress.as_ref() {
         progress.selecting();
     }

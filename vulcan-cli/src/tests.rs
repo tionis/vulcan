@@ -141,6 +141,23 @@ fn outline_publish_human_output_summarizes_actions_and_only_expands_verbose_deta
     ));
 }
 
+#[cfg(feature = "web")]
+#[test]
+fn outline_publish_progress_counters_are_compact_and_bounded() {
+    assert_eq!(
+        outline_publish_progress_counter(25, 419),
+        "Progress: 25/419 (5%)"
+    );
+    assert_eq!(
+        outline_publish_progress_counter(500, 419),
+        "Progress: 419/419 (100%)"
+    );
+    assert!(!should_print_outline_publish_progress_checkpoint(0, 419));
+    assert!(!should_print_outline_publish_progress_checkpoint(24, 419));
+    assert!(should_print_outline_publish_progress_checkpoint(25, 419));
+    assert!(should_print_outline_publish_progress_checkpoint(419, 419));
+}
+
 #[test]
 fn parses_defaults_for_doctor_command() {
     let cli = Cli::try_parse_from(["vulcan", "doctor"]).expect("cli should parse");
