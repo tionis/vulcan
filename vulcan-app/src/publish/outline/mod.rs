@@ -33,8 +33,19 @@ use crate::AppError;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub(crate) fn deterministic_remote_uuid(seed: &str) -> String {
-    let mut bytes = *blake3::hash(seed.as_bytes()).as_bytes();
+pub(crate) fn deterministic_remote_uuid(
+    profile: &str,
+    collection_id: &str,
+    source_seed: &str,
+) -> String {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(b"vulcan-outline-document-v2\0");
+    hasher.update(profile.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(collection_id.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(source_seed.as_bytes());
+    let mut bytes = *hasher.finalize().as_bytes();
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     format!(
@@ -54,6 +65,8 @@ pub struct OutlineRemoteDocument {
     pub parent_document_id: Option<String>,
     #[serde(default)]
     pub archived_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub deleted_at: Option<String>,
     #[serde(default)]
     pub revision: Option<u64>,
     #[serde(default)]
@@ -181,6 +194,9 @@ pub trait OutlineApi {
         collection_id: &str,
     ) -> Result<Vec<OutlineRemoteDocument>, AppError>;
     fn document_info(&self, id: &str) -> Result<OutlineRemoteDocument, AppError>;
+    fn document_info_optional(&self, id: &str) -> Result<Option<OutlineRemoteDocument>, AppError> {
+        self.document_info(id).map(Some)
+    }
     fn create_document(
         &self,
         id: &str,

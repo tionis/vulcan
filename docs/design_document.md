@@ -261,6 +261,8 @@ The final schema must be versioned and round-trip safely. Connector-native field
 
 Bindings are canonical only as authored relationship intent. Operational facts such as last pulled revision, last published projection hash, three-way base hash, attachment IDs, cursors, tombstones, and interruption journals live in locked, atomically written `.vulcan/integrations/` state outside `cache.db`. The cache may project bindings and remote objects into typed graph edges for query and diagnostics, but those rows remain rebuildable from files plus durable integration state.
 
+Publisher-owned remote identities are scoped to the configured publication profile and target container. Selecting the same canonical note through another profile or into another collection allocates a distinct remote identity; reuse across that boundary requires explicit adoption or binding with connector-side ownership validation. A pending create is durable before mutation and becomes an established mapping only after the connector response and target-container readback agree. Proven foreign-container or deleted-ID collisions may rotate an uncommitted identity automatically, while an established mapping whose remote object simply disappears remains a fail-closed conflict.
+
 Authority is explicit per route:
 
 - `local` permits the selected local projection to replace drift in managed remote objects.

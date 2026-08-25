@@ -113,6 +113,43 @@ impl HttpOutlineClient {
                 Err(RequestFailure::Retryable {
                     message,
                     retry_after,
+                    ..
+                }) if attempt < self.max_retries => {
+                    thread::sleep(retry_after.unwrap_or_else(|| exponential_backoff(attempt)));
+                    if message.is_empty() {
+                        return Err(AppError::operation("Outline request failed"));
+                    }
+                }
+                Err(failure) => return Err(AppError::operation(failure.message())),
+            }
+        }
+        Err(AppError::operation("Outline request exhausted retries"))
+    }
+
+    fn post_optional<R: DeserializeOwned>(
+        &self,
+        method: &str,
+        body: &Value,
+    ) -> Result<Option<R>, AppError> {
+        let endpoint = self.endpoint(method)?;
+        for attempt in 0..=self.max_retries {
+            let request = self
+                .client
+                .post(endpoint.clone())
+                .bearer_auth(&self.token)
+                .json(body);
+            match self.send::<ApiEnvelope<R>>(request) {
+                Ok(envelope) if envelope.ok != Some(false) => return Ok(Some(envelope.data)),
+                Ok(_) => {
+                    return Err(AppError::operation(
+                        "Outline returned an unsuccessful response with a success status",
+                    ))
+                }
+                Err(failure) if failure.status() == Some(StatusCode::NOT_FOUND) => return Ok(None),
+                Err(RequestFailure::Retryable {
+                    message,
+                    retry_after,
+                    ..
                 }) if attempt < self.max_retries => {
                     thread::sleep(retry_after.unwrap_or_else(|| exponential_backoff(attempt)));
                     if message.is_empty() {
@@ -131,9 +168,13 @@ impl HttpOutlineClient {
                 RequestFailure::Retryable {
                     message: "Outline request timed out or could not connect".to_string(),
                     retry_after: None,
+                    status: None,
                 }
             } else {
-                RequestFailure::Fatal("Outline request failed".to_string())
+                RequestFailure::Fatal {
+                    message: "Outline request failed".to_string(),
+                    status: None,
+                }
             }
         })?;
         let status = response.status();
@@ -145,22 +186,31 @@ impl HttpOutlineClient {
             .and_then(|value| value.parse::<usize>().ok())
             .is_some_and(|length| length > self.max_response_bytes)
         {
-            return Err(RequestFailure::Fatal(format!(
-                "Outline API response exceeds the {}-byte limit",
-                self.max_response_bytes
-            )));
+            return Err(RequestFailure::Fatal {
+                message: format!(
+                    "Outline API response exceeds the {}-byte limit",
+                    self.max_response_bytes
+                ),
+                status: Some(status),
+            });
         }
         let mut bytes = Vec::new();
         response
             .by_ref()
             .take(self.max_response_bytes as u64 + 1)
             .read_to_end(&mut bytes)
-            .map_err(|_| RequestFailure::Fatal("failed to read Outline response".to_string()))?;
+            .map_err(|_| RequestFailure::Fatal {
+                message: "failed to read Outline response".to_string(),
+                status: Some(status),
+            })?;
         if bytes.len() > self.max_response_bytes {
-            return Err(RequestFailure::Fatal(format!(
-                "Outline API response exceeds the {}-byte limit",
-                self.max_response_bytes
-            )));
+            return Err(RequestFailure::Fatal {
+                message: format!(
+                    "Outline API response exceeds the {}-byte limit",
+                    self.max_response_bytes
+                ),
+                status: Some(status),
+            });
         }
         if !status.is_success() {
             let message = sanitized_api_error(status, &bytes);
@@ -168,13 +218,19 @@ impl HttpOutlineClient {
                 Err(RequestFailure::Retryable {
                     message,
                     retry_after,
+                    status: Some(status),
                 })
             } else {
-                Err(RequestFailure::Fatal(message))
+                Err(RequestFailure::Fatal {
+                    message,
+                    status: Some(status),
+                })
             };
         }
-        let value = serde_json::from_slice::<R>(&bytes)
-            .map_err(|_| RequestFailure::Fatal("Outline returned malformed JSON".to_string()))?;
+        let value = serde_json::from_slice::<R>(&bytes).map_err(|_| RequestFailure::Fatal {
+            message: "Outline returned malformed JSON".to_string(),
+            status: Some(status),
+        })?;
         Ok(value)
     }
 }
@@ -326,6 +382,10 @@ impl OutlineApi for HttpOutlineClient {
         self.post("documents.info", &json!({ "id": id }))
     }
 
+    fn document_info_optional(&self, id: &str) -> Result<Option<OutlineRemoteDocument>, AppError> {
+        self.post_optional("documents.info", &json!({ "id": id }))
+    }
+
     fn create_document(
         &self,
         id: &str,
@@ -347,7 +407,16 @@ impl OutlineApi for HttpOutlineClient {
         );
         match result {
             Ok(document) => Ok(document),
-            Err(create_error) => self.document_info(id).or(Err(create_error)),
+            Err(create_error) => match self.document_info_optional(id) {
+                Ok(Some(document))
+                    if document.collection_id == collection_id
+                        && document.archived_at.is_none()
+                        && document.deleted_at.is_none() =>
+                {
+                    Ok(document)
+                }
+                _ => Err(create_error),
+            },
         }
     }
 
@@ -651,14 +720,24 @@ enum RequestFailure {
     Retryable {
         message: String,
         retry_after: Option<Duration>,
+        status: Option<StatusCode>,
     },
-    Fatal(String),
+    Fatal {
+        message: String,
+        status: Option<StatusCode>,
+    },
 }
 
 impl RequestFailure {
     fn message(self) -> String {
         match self {
-            Self::Retryable { message, .. } | Self::Fatal(message) => message,
+            Self::Retryable { message, .. } | Self::Fatal { message, .. } => message,
+        }
+    }
+
+    fn status(&self) -> Option<StatusCode> {
+        match self {
+            Self::Retryable { status, .. } | Self::Fatal { status, .. } => *status,
         }
     }
 }
@@ -909,6 +988,38 @@ mod tests {
         let document = client.document_info("one").expect("document info");
         assert_eq!(document.revision, Some(9));
         assert_eq!(document.updated_at.as_deref(), Some("2026-08-24T12:00:00Z"));
+    }
+
+    #[test]
+    fn create_does_not_adopt_a_colliding_deleted_document_from_another_collection() {
+        let foreign = r#"{"data":{"id":"collision","title":"Old","text":"old","collectionId":"old-collection","parentDocumentId":null,"deletedAt":"2026-08-25T22:44:45Z"}}"#;
+        let (url, requests) = mock_server(vec![
+            (403, r#"{"message":"document UUID is unavailable"}"#),
+            (200, foreign),
+        ]);
+        let client =
+            HttpOutlineClient::new(&url, "secret".to_string(), Duration::from_secs(2), 0, 100)
+                .expect("client");
+
+        let error = client
+            .create_document("collision", "new-collection", None, "New", "new")
+            .expect_err("foreign collision must not be treated as a successful create");
+        assert!(error.message().contains("403 Forbidden"));
+        assert!(error.message().contains("document UUID is unavailable"));
+        assert_eq!(requests.lock().expect("requests").len(), 2);
+    }
+
+    #[test]
+    fn optional_document_lookup_distinguishes_not_found() {
+        let (url, _) = mock_server(vec![(404, r#"{"message":"Document not found"}"#)]);
+        let client =
+            HttpOutlineClient::new(&url, "secret".to_string(), Duration::from_secs(2), 0, 100)
+                .expect("client");
+
+        assert!(client
+            .document_info_optional("missing")
+            .expect("optional lookup")
+            .is_none());
     }
 
     #[test]

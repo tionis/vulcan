@@ -256,10 +256,9 @@ where
                 .source_identity
                 .clone()
                 .unwrap_or_else(|| Ulid::new().to_string());
-            let requested_remote_id = action
-                .remote_document_id
-                .clone()
-                .unwrap_or_else(|| deterministic_remote_uuid(&source_identity));
+            let requested_remote_id = action.remote_document_id.clone().unwrap_or_else(|| {
+                deterministic_remote_uuid(profile, collection_id, &source_identity)
+            });
             let mapping = state
                 .documents
                 .entry(source_identity.clone())
@@ -279,22 +278,64 @@ where
             mapping
                 .source_document_id
                 .clone_from(&document.source_document_id);
-            mapping.remote_document_id.clone_from(&requested_remote_id);
+            if mapping.remote_document_id != requested_remote_id {
+                mapping.remote_document_id.clone_from(&requested_remote_id);
+                mapping.last_observed_remote = None;
+                mapping.attachments.clear();
+            }
             mapping.pending_create = true;
             lock.save(&state)?;
-            let remote = api.create_document(
-                &requested_remote_id,
+            let remote = api
+                .create_document(
+                    &requested_remote_id,
+                    collection_id,
+                    desired_parent.as_deref(),
+                    &document.title,
+                    &document.content,
+                )
+                .map_err(|error| {
+                    outline_mutation_error(
+                        profile,
+                        &document.source_path,
+                        "create",
+                        "documents.create",
+                        &error,
+                    )
+                })?;
+            validate_created_document(
+                profile,
+                &document.source_path,
                 collection_id,
                 desired_parent.as_deref(),
-                &document.title,
-                &document.content,
+                &remote,
+                "documents.create response",
+            )?;
+            let verified = api.document_info(&remote.id).map_err(|error| {
+                outline_mutation_error(
+                    profile,
+                    &document.source_path,
+                    "verify create",
+                    "documents.info",
+                    &error,
+                )
+            })?;
+            validate_created_document(
+                profile,
+                &document.source_path,
+                collection_id,
+                desired_parent.as_deref(),
+                &verified,
+                "documents.info readback",
             )?;
             let mapping = state
                 .documents
                 .get_mut(&source_identity)
                 .expect("provisional mapping should exist");
-            mapping.remote_document_id.clone_from(&remote.id);
-            mapping.last_observed_remote = Some(remote_snapshot(&remote));
+            mapping.remote_document_id.clone_from(&verified.id);
+            mapping
+                .remote_parent_id
+                .clone_from(&verified.parent_document_id);
+            mapping.last_observed_remote = Some(remote_snapshot(&verified));
             mapping.pending_create = false;
             lock.save(&state)?;
             source_identity
@@ -312,11 +353,21 @@ where
             action.kind,
             OutlinePublishActionKind::Move | OutlinePublishActionKind::UpdateAndMove
         ) {
-            let remote = api.move_document(
-                &mapping.remote_document_id,
-                collection_id,
-                desired_parent.as_deref(),
-            )?;
+            let remote = api
+                .move_document(
+                    &mapping.remote_document_id,
+                    collection_id,
+                    desired_parent.as_deref(),
+                )
+                .map_err(|error| {
+                    outline_mutation_error(
+                        profile,
+                        &document.source_path,
+                        "move",
+                        "documents.move",
+                        &error,
+                    )
+                })?;
             mapping.last_observed_remote = Some(remote_snapshot(&remote));
         }
         mapping.source_path.clone_from(&document.source_path);
@@ -388,16 +439,26 @@ where
         let owner_remote_id = owner_mapping.remote_document_id.clone();
         let bytes = fs::read(paths.vault_root().join(&attachment.source_path))
             .map_err(AppError::operation)?;
-        let remote = api.upload_attachment(
-            &owner_remote_id,
-            attachment
-                .source_path
-                .rsplit('/')
-                .next()
-                .unwrap_or(&attachment.source_path),
-            attachment_content_type(&attachment.source_path),
-            &bytes,
-        )?;
+        let remote = api
+            .upload_attachment(
+                &owner_remote_id,
+                attachment
+                    .source_path
+                    .rsplit('/')
+                    .next()
+                    .unwrap_or(&attachment.source_path),
+                attachment_content_type(&attachment.source_path),
+                &bytes,
+            )
+            .map_err(|error| {
+                outline_mutation_error(
+                    profile,
+                    &attachment.source_path,
+                    "upload attachment",
+                    "attachments.create/upload target",
+                    &error,
+                )
+            })?;
         for mapping in state.documents.values_mut() {
             mapping.attachments.remove(&attachment.source_path);
         }
@@ -497,7 +558,18 @@ where
             && (desired_hash != mapping.last_published_content_hash
                 || document.title != mapping.last_published_title));
         let updated_remote = needs_update
-            .then(|| api.update_document(&remote_id, &document.title, &desired))
+            .then(|| {
+                api.update_document(&remote_id, &document.title, &desired)
+                    .map_err(|error| {
+                        outline_mutation_error(
+                            profile,
+                            &document.source_path,
+                            "update",
+                            "documents.update",
+                            &error,
+                        )
+                    })
+            })
             .transpose()?;
         let mapping = state
             .documents
@@ -569,7 +641,13 @@ where
                 .document_info(&remote_id)
                 .is_ok_and(|document| document.archived_at.is_some());
             if !already_archived {
-                return Err(archive_error);
+                return Err(outline_mutation_error(
+                    profile,
+                    &source_path,
+                    "archive",
+                    "documents.archive",
+                    &archive_error,
+                ));
             }
         }
         state.documents.remove(&source_identity);
@@ -669,13 +747,9 @@ fn apply_pull_adoptions(
                 candidate.local_path, candidate.remote_document_id, mapping.source_path
             )));
         }
-        let current = remote.get(&candidate.remote_document_id).ok_or_else(|| {
-            AppError::operation(format!(
-                "cannot adopt `{}`: pulled remote document `{}` is missing",
-                candidate.local_path, candidate.remote_document_id
-            ))
-        })?;
+        let current = resolve_adoption_remote(api, collection_id, &remote, candidate)?;
         if current.archived_at.is_some()
+            || current.deleted_at.is_some()
             || current.collection_id != collection_id
             || content_hash(&current.text) != candidate.last_remote_source_hash
             || current.title != candidate.last_remote_title
@@ -711,7 +785,7 @@ fn apply_pull_adoptions(
                 last_published_content_hash: content_hash(&current.text),
                 last_published_title: current.title.clone(),
                 remote_parent_id: current.parent_document_id.clone(),
-                last_observed_remote: Some(remote_snapshot(current)),
+                last_observed_remote: Some(remote_snapshot(&current)),
                 pending_create: false,
                 pending_archive: false,
                 attachments,
@@ -720,6 +794,37 @@ fn apply_pull_adoptions(
         adopted += 1;
     }
     Ok(adopted)
+}
+
+fn resolve_adoption_remote(
+    api: &dyn OutlineApi,
+    collection_id: &str,
+    listed: &BTreeMap<String, OutlineRemoteDocument>,
+    candidate: &OutlinePulledBinding,
+) -> Result<OutlineRemoteDocument, AppError> {
+    if let Some(current) = listed.get(&candidate.remote_document_id) {
+        return Ok(current.clone());
+    }
+    match api.document_info_optional(&candidate.remote_document_id)? {
+        Some(document)
+            if document.collection_id != collection_id
+                || document.archived_at.is_some()
+                || document.deleted_at.is_some() =>
+        {
+            Err(AppError::operation(format!(
+                "cannot adopt `{}`: remote document `{}` does not belong to active target collection `{collection_id}`",
+                candidate.local_path, candidate.remote_document_id
+            )))
+        }
+        Some(_) => Err(AppError::operation(format!(
+            "cannot adopt `{}`: remote document `{}` was omitted from the target collection listing; retry after Outline returns a consistent snapshot",
+            candidate.local_path, candidate.remote_document_id
+        ))),
+        None => Err(AppError::operation(format!(
+            "cannot adopt `{}`: pulled remote document `{}` is missing",
+            candidate.local_path, candidate.remote_document_id
+        ))),
+    }
 }
 
 fn emit_progress(
@@ -773,6 +878,39 @@ fn content_hash(content: &str) -> String {
     blake3::hash(content.as_bytes()).to_hex().to_string()
 }
 
+fn outline_mutation_error(
+    profile: &str,
+    source_path: &str,
+    action: &str,
+    endpoint: &str,
+    error: &AppError,
+) -> AppError {
+    AppError::operation(format!(
+        "Outline profile `{profile}` failed to {action} `{source_path}` via `{endpoint}`: {error}"
+    ))
+}
+
+fn validate_created_document(
+    profile: &str,
+    source_path: &str,
+    collection_id: &str,
+    parent_document_id: Option<&str>,
+    remote: &OutlineRemoteDocument,
+    verification: &str,
+) -> Result<(), AppError> {
+    if remote.collection_id != collection_id
+        || remote.parent_document_id.as_deref() != parent_document_id
+        || remote.archived_at.is_some()
+        || remote.deleted_at.is_some()
+    {
+        return Err(AppError::operation(format!(
+            "Outline profile `{profile}` could not verify create for `{source_path}`: {verification} returned document `{}` outside active target collection `{collection_id}` or under the wrong parent",
+            remote.id
+        )));
+    }
+    Ok(())
+}
+
 fn remote_snapshot(document: &OutlineRemoteDocument) -> OutlineRemoteSnapshot {
     OutlineRemoteSnapshot {
         content_hash: content_hash(&document.text),
@@ -818,6 +956,8 @@ mod tests {
         mutations: RefCell<Vec<String>>,
         info_calls: RefCell<Vec<String>>,
         fail_next_create: RefCell<bool>,
+        next_create_collection_override: RefCell<Option<String>>,
+        next_create_id_override: RefCell<Option<String>>,
         normalize_markdown: bool,
     }
 
@@ -834,9 +974,19 @@ mod tests {
     impl OutlineApi for MockApi {
         fn list_collection_documents(
             &self,
-            _collection_id: &str,
+            collection_id: &str,
         ) -> Result<Vec<OutlineRemoteDocument>, AppError> {
-            Ok(self.documents.borrow().values().cloned().collect())
+            Ok(self
+                .documents
+                .borrow()
+                .values()
+                .filter(|document| {
+                    document.collection_id == collection_id
+                        && document.archived_at.is_none()
+                        && document.deleted_at.is_none()
+                })
+                .cloned()
+                .collect())
         }
 
         fn document_info(&self, id: &str) -> Result<OutlineRemoteDocument, AppError> {
@@ -846,6 +996,14 @@ mod tests {
                 .get(id)
                 .cloned()
                 .ok_or_else(|| AppError::operation("missing mock document"))
+        }
+
+        fn document_info_optional(
+            &self,
+            id: &str,
+        ) -> Result<Option<OutlineRemoteDocument>, AppError> {
+            self.info_calls.borrow_mut().push(id.to_string());
+            Ok(self.documents.borrow().get(id).cloned())
         }
 
         fn create_document(
@@ -861,18 +1019,27 @@ mod tests {
                 return Err(AppError::operation("interrupted create"));
             }
             let document = OutlineRemoteDocument {
-                id: id.to_string(),
+                id: self
+                    .next_create_id_override
+                    .borrow_mut()
+                    .take()
+                    .unwrap_or_else(|| id.to_string()),
                 title: title.to_string(),
                 text: self.stored_text(text),
-                collection_id: collection_id.to_string(),
+                collection_id: self
+                    .next_create_collection_override
+                    .borrow_mut()
+                    .take()
+                    .unwrap_or_else(|| collection_id.to_string()),
                 parent_document_id: parent_document_id.map(str::to_string),
                 archived_at: None,
+                deleted_at: None,
                 revision: None,
                 updated_at: None,
             };
             self.documents
                 .borrow_mut()
-                .insert(id.to_string(), document.clone());
+                .insert(document.id.clone(), document.clone());
             Ok(document)
         }
 
@@ -984,8 +1151,10 @@ mod tests {
             api.mutations.borrow().as_slice(),
             ["create:Projects", "create:Projects/Child"]
         );
+        assert_eq!(api.info_calls.borrow().len(), 2);
 
         api.mutations.borrow_mut().clear();
+        api.info_calls.borrow_mut().clear();
         publish_outline(&paths, &api, "wiki", "collection", &initial, false, false)
             .expect("idempotent publication");
         assert!(api.mutations.borrow().is_empty());
@@ -1004,6 +1173,339 @@ mod tests {
     }
 
     #[test]
+    fn profiles_and_collections_scope_remote_ids_and_parent_hierarchy() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        let api = MockApi::default();
+        let publication = plan(vec![
+            document("Root.md", "Root", "root", None),
+            document("Root/Child.md", "Child", "child", Some("Root.md")),
+        ]);
+
+        publish_outline(
+            &paths,
+            &api,
+            "players",
+            "collection-a",
+            &publication,
+            false,
+            false,
+        )
+        .expect("first profile publication");
+        publish_outline(
+            &paths,
+            &api,
+            "chronicles",
+            "collection-b",
+            &publication,
+            false,
+            false,
+        )
+        .expect("second profile publication");
+
+        let first = load_outline_state(&paths, "players", "collection-a").expect("first state");
+        let second =
+            load_outline_state(&paths, "chronicles", "collection-b").expect("second state");
+        let first_ids = first
+            .documents
+            .values()
+            .map(|mapping| mapping.remote_document_id.as_str())
+            .collect::<BTreeSet<_>>();
+        let second_ids = second
+            .documents
+            .values()
+            .map(|mapping| mapping.remote_document_id.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(first_ids.is_disjoint(&second_ids));
+
+        let second_root = second
+            .documents
+            .values()
+            .find(|mapping| mapping.source_path == "Root.md")
+            .expect("second root");
+        let second_child = second
+            .documents
+            .values()
+            .find(|mapping| mapping.source_path == "Root/Child.md")
+            .expect("second child");
+        assert_eq!(
+            second_child.remote_parent_id.as_deref(),
+            Some(second_root.remote_document_id.as_str())
+        );
+        let documents = api.documents.borrow();
+        assert!(documents.values().all(|document| {
+            document.parent_document_id.is_none()
+                || documents.contains_key(
+                    document
+                        .parent_document_id
+                        .as_deref()
+                        .expect("checked parent"),
+                )
+        }));
+    }
+
+    #[test]
+    fn corrupted_cross_collection_mapping_recovers_without_manual_state_edits() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        let api = MockApi::default();
+        let publication = plan(vec![document("Home.md", "Home", "home", None)]);
+        publish_outline(
+            &paths,
+            &api,
+            "old-profile",
+            "old-collection",
+            &publication,
+            false,
+            false,
+        )
+        .expect("old publication");
+        let old_state =
+            load_outline_state(&paths, "old-profile", "old-collection").expect("old state");
+        let old_id = old_state
+            .documents
+            .values()
+            .next()
+            .expect("old mapping")
+            .remote_document_id
+            .clone();
+        api.documents
+            .borrow_mut()
+            .get_mut(&old_id)
+            .expect("old remote")
+            .deleted_at = Some("2026-08-25T22:44:45Z".to_string());
+
+        let lock = lock_outline_state(&paths, "chronicles").expect("new state lock");
+        let mut corrupted =
+            super::super::OutlinePublishState::empty("chronicles", "new-collection");
+        corrupted.documents = old_state.documents.clone();
+        lock.save(&corrupted).expect("corrupted state fixture");
+        drop(lock);
+
+        let dry_run = publish_outline(
+            &paths,
+            &api,
+            "chronicles",
+            "new-collection",
+            &publication,
+            true,
+            false,
+        )
+        .expect("recoverable dry run");
+        assert_eq!(dry_run.conflicts, 0);
+        let recovery = dry_run
+            .plan
+            .actions
+            .iter()
+            .find(|action| action.source_path.as_deref() == Some("Home.md"))
+            .expect("recovery action");
+        assert_eq!(recovery.kind, OutlinePublishActionKind::Create);
+        assert_ne!(
+            recovery.remote_document_id.as_deref(),
+            Some(old_id.as_str())
+        );
+
+        publish_outline(
+            &paths,
+            &api,
+            "chronicles",
+            "new-collection",
+            &publication,
+            false,
+            false,
+        )
+        .expect("automatic recovery");
+        let recovered =
+            load_outline_state(&paths, "chronicles", "new-collection").expect("recovered state");
+        let mapping = recovered.documents.values().next().expect("new mapping");
+        assert_ne!(mapping.remote_document_id, old_id);
+        assert!(!mapping.pending_create);
+        assert_eq!(
+            api.documents.borrow()[&mapping.remote_document_id].collection_id,
+            "new-collection"
+        );
+        assert_eq!(
+            load_outline_state(&paths, "old-profile", "old-collection")
+                .expect("old state remains")
+                .documents,
+            old_state.documents
+        );
+    }
+
+    #[test]
+    fn explicit_adoption_rejects_cross_collection_or_deleted_ownership() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        let api = MockApi::default();
+        api.documents.borrow_mut().insert(
+            "foreign".to_string(),
+            OutlineRemoteDocument {
+                id: "foreign".to_string(),
+                title: "Home".to_string(),
+                text: "home".to_string(),
+                collection_id: "old-collection".to_string(),
+                parent_document_id: None,
+                archived_at: None,
+                deleted_at: Some("now".to_string()),
+                revision: None,
+                updated_at: None,
+            },
+        );
+        let options = OutlinePublishOptions {
+            adopt_pull_bindings: vec![OutlinePulledBinding {
+                local_path: "Home.md".to_string(),
+                remote_document_id: "foreign".to_string(),
+                last_remote_source_hash: content_hash("home"),
+                last_remote_title: "Home".to_string(),
+                last_remote_parent_id: None,
+                attachments: Vec::new(),
+            }],
+        };
+
+        let error = publish_outline_with_options_and_progress(
+            &paths,
+            &api,
+            "chronicles",
+            "new-collection",
+            &plan(vec![document("Home.md", "Home", "home", None)]),
+            true,
+            &OutlineConflictPolicy::abort(),
+            &options,
+            |_| {},
+        )
+        .expect_err("foreign adoption must fail");
+        assert!(error
+            .message()
+            .contains("does not belong to active target collection"));
+    }
+
+    #[test]
+    fn established_missing_remote_document_remains_a_fail_closed_conflict() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        let api = MockApi::default();
+        let publication = plan(vec![document("Home.md", "Home", "home", None)]);
+        publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            false,
+            false,
+        )
+        .expect("initial publication");
+        api.documents.borrow_mut().clear();
+
+        let report = publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &publication,
+            false,
+            false,
+        )
+        .expect("conflict report");
+        assert_eq!(report.conflicts, 1);
+        assert_eq!(
+            report.plan.actions[0]
+                .conflict
+                .as_ref()
+                .expect("conflict detail")
+                .kind,
+            super::super::OutlineConflictKind::MissingRemoteDocument
+        );
+        assert!(!report.applied);
+    }
+
+    #[test]
+    fn uncommitted_foreign_create_result_stays_pending_and_rotates_safely() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        let api = MockApi::default();
+        api.next_create_collection_override
+            .replace(Some("foreign-collection".to_string()));
+        let publication = plan(vec![document("Home.md", "Home", "home", None)]);
+
+        let error = publish_outline(
+            &paths,
+            &api,
+            "chronicles",
+            "target-collection",
+            &publication,
+            false,
+            false,
+        )
+        .expect_err("foreign create response must not finalize state");
+        assert!(error.message().contains("could not verify create"));
+        let pending =
+            load_outline_state(&paths, "chronicles", "target-collection").expect("pending state");
+        let colliding_id = pending
+            .documents
+            .values()
+            .next()
+            .expect("pending mapping")
+            .remote_document_id
+            .clone();
+        assert!(pending
+            .documents
+            .values()
+            .all(|mapping| mapping.pending_create));
+
+        publish_outline(
+            &paths,
+            &api,
+            "chronicles",
+            "target-collection",
+            &publication,
+            false,
+            false,
+        )
+        .expect("retry rotates the uncommitted foreign ID");
+        let completed =
+            load_outline_state(&paths, "chronicles", "target-collection").expect("completed state");
+        let mapping = completed.documents.values().next().expect("mapping");
+        assert_ne!(mapping.remote_document_id, colliding_id);
+        assert!(!mapping.pending_create);
+        assert_eq!(
+            api.documents.borrow()[&mapping.remote_document_id].collection_id,
+            "target-collection"
+        );
+    }
+
+    #[test]
+    fn successful_create_uses_the_verified_server_returned_id() {
+        let temp = tempdir().expect("temp dir");
+        let paths = VaultPaths::new(temp.path());
+        let api = MockApi::default();
+        api.next_create_id_override
+            .replace(Some("server-authoritative-id".to_string()));
+
+        publish_outline(
+            &paths,
+            &api,
+            "wiki",
+            "collection",
+            &plan(vec![document("Home.md", "Home", "home", None)]),
+            false,
+            false,
+        )
+        .expect("publication");
+
+        let state = load_outline_state(&paths, "wiki", "collection").expect("state");
+        assert_eq!(
+            state
+                .documents
+                .values()
+                .next()
+                .expect("mapping")
+                .remote_document_id,
+            "server-authoritative-id"
+        );
+    }
+
+    #[test]
     fn explicit_pull_adoption_updates_the_existing_remote_document_without_duplication() {
         let temp = tempdir().expect("temp dir");
         let paths = VaultPaths::new(temp.path());
@@ -1014,6 +1516,7 @@ mod tests {
             collection_id: "collection".to_string(),
             parent_document_id: None,
             archived_at: None,
+            deleted_at: None,
             revision: None,
             updated_at: None,
         };
@@ -1092,6 +1595,7 @@ mod tests {
                 collection_id: "collection".to_string(),
                 parent_document_id: None,
                 archived_at: None,
+                deleted_at: None,
                 revision: None,
                 updated_at: None,
             },
@@ -1505,8 +2009,11 @@ mod tests {
         let paths = VaultPaths::new(temp.path());
         let api = MockApi::default();
         api.fail_next_create.replace(true);
-        let publication = plan(vec![document("Home.md", "Home", "home", None)]);
-        assert!(publish_outline(
+        let publication = plan(vec![
+            document("Home.md", "Home", "home", None),
+            document("Home/Child.md", "Child", "child", Some("Home.md")),
+        ]);
+        let error = publish_outline(
             &paths,
             &api,
             "wiki",
@@ -1515,7 +2022,11 @@ mod tests {
             false,
             false,
         )
-        .is_err());
+        .expect_err("interrupted create");
+        assert!(error.message().contains("profile `wiki`"));
+        assert!(error.message().contains("create `Home.md`"));
+        assert!(error.message().contains("documents.create"));
+        assert!(error.message().contains("interrupted create"));
         let pending = load_outline_state(&paths, "wiki", "collection").expect("pending state");
         let requested_id = pending
             .documents
@@ -1524,6 +2035,7 @@ mod tests {
             .expect("provisional mapping")
             .remote_document_id
             .clone();
+        assert_eq!(pending.documents.len(), 1);
         assert!(pending
             .documents
             .values()
@@ -1541,9 +2053,19 @@ mod tests {
         .expect("resumed create");
         assert!(api.documents.borrow().contains_key(&requested_id));
         let completed = load_outline_state(&paths, "wiki", "collection").expect("completed state");
+        assert_eq!(completed.documents.len(), 2);
         assert!(completed
             .documents
             .values()
             .all(|mapping| !mapping.pending_create));
+        let child = completed
+            .documents
+            .values()
+            .find(|mapping| mapping.source_path == "Home/Child.md")
+            .expect("child mapping");
+        assert_eq!(
+            child.remote_parent_id.as_deref(),
+            Some(requested_id.as_str())
+        );
     }
 }

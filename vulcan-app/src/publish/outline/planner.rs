@@ -189,9 +189,45 @@ pub fn plan_outline_reconciliation_with_policy(
         .count();
 
     let document_matches = match_local_documents(publication, state);
+    let mut recovered_remote_ids = BTreeMap::new();
+    for document in &publication.documents {
+        let Some(source_identity) = document_matches.get(&document.source_path).copied() else {
+            continue;
+        };
+        let mapping = &state.documents[source_identity];
+        if listed_by_id.contains_key(mapping.remote_document_id.as_str()) {
+            continue;
+        }
+        let Some(remote) = api.document_info_optional(&mapping.remote_document_id)? else {
+            continue;
+        };
+        if remote_is_outside_active_collection(&remote, collection_id) {
+            recovered_remote_ids.insert(
+                document.source_path.clone(),
+                deterministic_remote_uuid(
+                    profile,
+                    collection_id,
+                    &format!(
+                        "{}\0recover\0{}",
+                        document.source_document_id, mapping.remote_document_id
+                    ),
+                ),
+            );
+        } else {
+            return Err(AppError::operation(format!(
+                "Outline profile `{profile}` cannot reconcile `{}`: document `{}` is active in target collection `{collection_id}` but was omitted from its collection listing; retry after Outline returns a consistent snapshot",
+                document.source_path, mapping.remote_document_id
+            )));
+        }
+    }
+    let recovered_paths = recovered_remote_ids
+        .keys()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
     let remote_urls = state
         .documents
         .values()
+        .filter(|mapping| !recovered_paths.contains(mapping.source_path.as_str()))
         .flat_map(|mapping| &mapping.attachments)
         .map(|(path, attachment)| (path.clone(), attachment.remote_url.clone()))
         .collect::<BTreeMap<_, _>>();
@@ -203,8 +239,19 @@ pub fn plan_outline_reconciliation_with_policy(
                 .get(&document.source_path)
                 .and_then(|identity| state.documents.get(*identity))
                 .map_or_else(
-                    || deterministic_remote_uuid(&document.source_document_id),
-                    |mapping| mapping.remote_document_id.clone(),
+                    || {
+                        deterministic_remote_uuid(
+                            profile,
+                            collection_id,
+                            &document.source_document_id,
+                        )
+                    },
+                    |mapping| {
+                        recovered_remote_ids
+                            .get(&document.source_path)
+                            .cloned()
+                            .unwrap_or_else(|| mapping.remote_document_id.clone())
+                    },
                 );
             (document.source_path.clone(), remote_id)
         })
@@ -243,6 +290,20 @@ pub fn plan_outline_reconciliation_with_policy(
         let desired_content = render_index.render(document);
         let desired_hash = content_hash(&desired_content);
         if !listed_by_id.contains_key(mapping.remote_document_id.as_str()) {
+            if let Some(recovered_remote_id) = recovered_remote_ids.get(&document.source_path) {
+                actions.push(OutlinePublishAction {
+                    kind: OutlinePublishActionKind::Create,
+                    source_identity: Some(source_identity.to_string()),
+                    source_path: Some(document.source_path.clone()),
+                    remote_document_id: Some(recovered_remote_id.clone()),
+                    parent_source_path: document.parent_source_path.clone(),
+                    desired_parent_remote_id,
+                    reason: "recover a mapping whose remote UUID belongs to another collection or a deleted document"
+                        .to_string(),
+                    conflict: None,
+                });
+                continue;
+            }
             if mapping.pending_create || conflict_policy.overwrites(&document.source_path) {
                 overwritten_conflicts += usize::from(!mapping.pending_create);
                 actions.push(OutlinePublishAction {
@@ -423,6 +484,7 @@ pub fn plan_outline_reconciliation_with_policy(
     let mapped_attachments = state
         .documents
         .values()
+        .filter(|mapping| !recovered_paths.contains(mapping.source_path.as_str()))
         .flat_map(|mapping| &mapping.attachments)
         .collect::<BTreeMap<_, _>>();
     for attachment in &publication.attachments {
@@ -729,6 +791,15 @@ fn content_hash(content: &str) -> String {
     blake3::hash(content.as_bytes()).to_hex().to_string()
 }
 
+fn remote_is_outside_active_collection(
+    remote: &super::OutlineRemoteDocument,
+    collection_id: &str,
+) -> bool {
+    remote.collection_id != collection_id
+        || remote.archived_at.is_some()
+        || remote.deleted_at.is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -745,9 +816,18 @@ mod tests {
     impl OutlineApi for MockApi {
         fn list_collection_documents(
             &self,
-            _collection_id: &str,
+            collection_id: &str,
         ) -> Result<Vec<OutlineRemoteDocument>, AppError> {
-            Ok(self.documents.values().cloned().collect())
+            Ok(self
+                .documents
+                .values()
+                .filter(|document| {
+                    document.collection_id == collection_id
+                        && document.archived_at.is_none()
+                        && document.deleted_at.is_none()
+                })
+                .cloned()
+                .collect())
         }
 
         fn document_info(&self, id: &str) -> Result<OutlineRemoteDocument, AppError> {
@@ -756,6 +836,14 @@ mod tests {
                 .get(id)
                 .cloned()
                 .ok_or_else(|| AppError::operation("missing mock document"))
+        }
+
+        fn document_info_optional(
+            &self,
+            id: &str,
+        ) -> Result<Option<OutlineRemoteDocument>, AppError> {
+            self.info_calls.borrow_mut().push(id.to_string());
+            Ok(self.documents.get(id).cloned())
         }
 
         fn create_document(
@@ -833,6 +921,7 @@ mod tests {
             collection_id: "collection".to_string(),
             parent_document_id: parent.map(str::to_string),
             archived_at: None,
+            deleted_at: None,
             revision: None,
             updated_at: None,
         }
