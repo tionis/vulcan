@@ -2903,20 +2903,27 @@ impl StateLock {
             }
         }
         let bytes = serde_json::to_vec_pretty(&persisted).map_err(AppError::operation)?;
-        let temporary = self.state_path.with_extension("json.tmp");
-        let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
-            .write(true)
-            .open(&temporary)
+        let parent = self.state_path.parent().expect("state parent");
+        let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(AppError::operation)?;
+        temporary.write_all(&bytes).map_err(AppError::operation)?;
+        temporary
+            .as_file()
+            .sync_all()
             .map_err(AppError::operation)?;
-        file.write_all(&bytes).map_err(AppError::operation)?;
-        file.sync_all().map_err(AppError::operation)?;
-        fs::rename(&temporary, &self.state_path).map_err(AppError::operation)?;
-        File::open(self.state_path.parent().expect("state parent"))
-            .and_then(|directory| directory.sync_all())
-            .map_err(AppError::operation)
+        temporary
+            .persist(&self.state_path)
+            .map_err(|error| AppError::operation(error.error))?;
+        #[cfg(unix)]
+        sync_parent_directory(parent)?;
+        Ok(())
     }
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> Result<(), AppError> {
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(AppError::operation)
 }
 
 fn snapshot_path(directory: &Path, hash: &str) -> Result<PathBuf, AppError> {
@@ -2940,17 +2947,20 @@ fn write_content_snapshot(directory: &Path, hash: &str, content: &str) -> Result
         }
         return Ok(());
     }
-    let temporary = path.with_extension("md.tmp");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&temporary)
+    let mut temporary = tempfile::NamedTempFile::new_in(directory).map_err(AppError::operation)?;
+    temporary
+        .write_all(content.as_bytes())
         .map_err(AppError::operation)?;
-    file.write_all(content.as_bytes())
+    temporary
+        .as_file()
+        .sync_all()
         .map_err(AppError::operation)?;
-    file.sync_all().map_err(AppError::operation)?;
-    fs::rename(temporary, path).map_err(AppError::operation)
+    temporary
+        .persist(path)
+        .map_err(|error| AppError::operation(error.error))?;
+    #[cfg(unix)]
+    sync_parent_directory(directory)?;
+    Ok(())
 }
 
 fn hydrate_state_sources(path: &Path, state: &mut OutlinePullState) -> Result<(), AppError> {

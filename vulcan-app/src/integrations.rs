@@ -203,20 +203,26 @@ fn validate_state_route_name(route: &str) -> Result<(), AppError> {
 
 fn save_route_state(path: &Path, state: &RouteRuntimeState) -> Result<(), AppError> {
     let bytes = serde_json::to_vec_pretty(state).map_err(AppError::operation)?;
-    let temporary = path.with_extension("json.tmp");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&temporary)
+    let parent = path.parent().expect("route state parent");
+    let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(AppError::operation)?;
+    temporary.write_all(&bytes).map_err(AppError::operation)?;
+    temporary
+        .as_file()
+        .sync_all()
         .map_err(AppError::operation)?;
-    file.write_all(&bytes).map_err(AppError::operation)?;
-    file.sync_all().map_err(AppError::operation)?;
-    fs::rename(temporary, path).map_err(AppError::operation)?;
-    File::open(path.parent().expect("route state parent"))
-        .and_then(|directory| directory.sync_all())
-        .map_err(AppError::operation)?;
+    temporary
+        .persist(path)
+        .map_err(|error| AppError::operation(error.error))?;
+    #[cfg(unix)]
+    sync_parent_directory(parent)?;
     Ok(())
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(parent: &Path) -> Result<(), AppError> {
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(AppError::operation)
 }
 
 fn unix_seconds() -> Result<u64, AppError> {

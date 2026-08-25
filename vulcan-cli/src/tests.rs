@@ -5584,10 +5584,12 @@ fn dynamic_completion_scripts_replay_leading_global_args() {
         "bash completions should pin the generating vulcan binary path"
     );
     assert!(
-        bash.contains(
-            "\"$cmd\" \"${args[@]}\" complete \"$context\" \"${COMP_WORDS[COMP_CWORD]}\""
-        ),
-        "bash completions should replay collected args and the current token into vulcan complete"
+        bash.contains("${args[@]+\"${args[@]}\"} complete \"$context\""),
+        "bash completions should replay collected args with a Bash 3.2 nounset-safe expansion"
+    );
+    assert!(
+        !bash.contains("\"${args[@]}\" complete"),
+        "bash completions must not expand an empty array unsafely under Bash 3.2 set -u"
     );
     assert!(
         bash.contains("while IFS= read -r arg; do"),

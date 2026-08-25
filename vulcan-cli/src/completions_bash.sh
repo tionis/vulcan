@@ -32,7 +32,9 @@ __vulcan_completion_prefix_args() {
                 ;;
         esac
     done
-    printf '%s\n' "${args[@]}"
+    if [[ -n "${args[*]-}" ]]; then
+        printf '%s\n' "${args[@]}"
+    fi
 }
 
 __vulcan_dynamic_complete() {
@@ -46,7 +48,7 @@ __vulcan_dynamic_complete() {
     done < <(__vulcan_completion_prefix_args)
     while IFS= read -r candidate; do
         COMPREPLY+=("$candidate")
-    done < <("$cmd" "${args[@]}" complete "$context" "${COMP_WORDS[COMP_CWORD]}" 2>/dev/null)
+    done < <("$cmd" ${args[@]+"${args[@]}"} complete "$context" "${COMP_WORDS[COMP_CWORD]}" 2>/dev/null)
     return 0
 }
 
@@ -61,7 +63,7 @@ __vulcan_dynamic_candidates() {
     done < <(__vulcan_completion_prefix_args)
     while IFS= read -r candidate; do
         printf '%s\n' "$candidate"
-    done < <("$cmd" "${args[@]}" complete "$context" "$prefix" 2>/dev/null)
+    done < <("$cmd" ${args[@]+"${args[@]}"} complete "$context" "$prefix" 2>/dev/null)
 }
 
 __vulcan_tool_run_name() {
