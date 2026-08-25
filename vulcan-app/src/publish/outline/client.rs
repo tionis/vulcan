@@ -706,7 +706,7 @@ fn sanitized_api_error(status: StatusCode, bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::io::{Read, Write};
-    use std::net::TcpListener;
+    use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, Mutex};
 
     fn mock_server(responses: Vec<(u16, &'static str)>) -> (String, Arc<Mutex<Vec<String>>>) {
@@ -745,6 +745,33 @@ mod tests {
             }
         });
         (format!("http://{address}"), requests)
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> Vec<u8> {
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 8192];
+        loop {
+            let read = stream.read(&mut chunk).expect("read HTTP request");
+            assert!(read > 0, "HTTP request ended before its body was complete");
+            request.extend_from_slice(&chunk[..read]);
+            let Some(header_end) = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|index| index + 4)
+            else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers.lines().find_map(|line| {
+                let (name, value) = line.split_once(':')?;
+                name.eq_ignore_ascii_case("content-length")
+                    .then(|| value.trim().parse::<usize>().ok())
+                    .flatten()
+            });
+            if content_length.is_none_or(|length| request.len() >= header_end + length) {
+                return request;
+            }
+        }
     }
 
     #[test]
@@ -1037,11 +1064,8 @@ mod tests {
             .expect("create response");
 
             let (mut upload_stream, _) = listener.accept().expect("attachment upload request");
-            let mut upload = vec![0_u8; 16 * 1024];
-            let read = upload_stream
-                .read(&mut upload)
-                .expect("read upload request");
-            let upload = String::from_utf8_lossy(&upload[..read]);
+            let upload = read_http_request(&mut upload_stream);
+            let upload = String::from_utf8_lossy(&upload);
             assert!(upload.starts_with("POST /api/files.create"));
             assert!(
                 upload.contains("authorization: Bearer secret")
