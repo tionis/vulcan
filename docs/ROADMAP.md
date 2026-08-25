@@ -6461,7 +6461,7 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add typed Outline collection list/show/create/update/archive/restore utilities, explicit existing-UUID binding, and opt-in publish-time collection provisioning that persists the returned UUID with dry-run and durable-state safeguards.
 - [x] Add a bounded-retry, paginated Outline API client and mock transport tests.
 - [x] Add durable, locked, atomically-written source-to-Outline mapping state outside `cache.db`.
-- [x] Add create/update/move/archive reconciliation, remote-drift conflicts, attachment uploads, idempotency, and mutation-free publish dry runs.
+- [x] Add create/update/move/archive reconciliation, remote-drift conflicts, attachment uploads (including authenticated self-hosted local-storage targets without leaking credentials to external object stores), idempotency, and mutation-free publish dry runs.
 - [x] Add a shared bidirectional Obsidian/Outline Markdown compatibility layer: outbound frontmatter stripping, callout fence conversion, opt-in TOC removal, API document-link translation to durable remote IDs, and reusable inbound callout/link reversal for Phase 15 pull routes.
 - [x] Complete CLI/reference documentation and full workspace verification.
 - [x] Degrade missing selected folder notes to deduplicated warnings and generate deterministic export-only Outline hierarchy placeholders.

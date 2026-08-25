@@ -400,6 +400,7 @@ impl OutlineApi for HttpOutlineClient {
             }),
         )?;
         if let Some(upload_url) = upload.upload_url {
+            let (upload_url, authenticate) = self.attachment_upload_target(&upload_url)?;
             let fields = upload.form.unwrap_or_default();
             self.send_attachment_with_retries(|| {
                 let mut form = reqwest::blocking::multipart::Form::new();
@@ -410,15 +411,20 @@ impl OutlineApi for HttpOutlineClient {
                     .file_name(name.to_string())
                     .mime_str(content_type)
                     .map_err(|_| AppError::operation("invalid attachment content type"))?;
-                Ok(self
+                let mut request = self
                     .client
-                    .post(&upload_url)
-                    .multipart(form.part("file", part)))
+                    .post(upload_url.clone())
+                    .multipart(form.part("file", part));
+                if authenticate {
+                    request = request.bearer_auth(&self.token);
+                }
+                Ok(request)
             })?;
         } else if let Some(url) = upload.url {
+            let (url, _) = self.attachment_upload_target(&url)?;
             let headers = upload.headers.unwrap_or_default();
             self.send_attachment_with_retries(|| {
-                let mut request = self.client.put(&url).body(bytes.to_vec());
+                let mut request = self.client.put(url.clone()).body(bytes.to_vec());
                 for (name, value) in &headers {
                     request = request.header(name, value);
                 }
@@ -505,6 +511,26 @@ impl OutlineApi for HttpOutlineClient {
 }
 
 impl HttpOutlineClient {
+    fn attachment_upload_target(&self, target: &str) -> Result<(Url, bool), AppError> {
+        let url = Url::parse(target)
+            .or_else(|_| self.base_url.join(target))
+            .map_err(|_| AppError::operation("Outline attachment upload URL is invalid"))?;
+        if !matches!(url.scheme(), "http" | "https")
+            || url.host_str().is_none()
+            || !url.username().is_empty()
+            || url.password().is_some()
+        {
+            return Err(AppError::operation(
+                "Outline attachment upload URL must be HTTP(S) without embedded credentials",
+            ));
+        }
+        let same_origin = url.scheme() == self.base_url.scheme()
+            && url.host_str() == self.base_url.host_str()
+            && url.port_or_known_default() == self.base_url.port_or_known_default();
+        let authenticate = same_origin && url.path().ends_with("/api/files.create");
+        Ok((url, authenticate))
+    }
+
     fn attachment_download_url(&self, url: &str) -> Result<Url, AppError> {
         let url = Url::parse(url)
             .or_else(|_| self.base_url.join(url))
@@ -550,7 +576,22 @@ impl HttpOutlineClient {
                 Err(error)
                     if attempt < self.max_retries && (error.is_timeout() || error.is_connect()) => {
                 }
-                Err(_) => return Err(AppError::operation("Outline attachment upload failed")),
+                Err(error) => {
+                    let message = if error.is_timeout() {
+                        "Outline attachment upload timed out"
+                    } else if error.is_connect() {
+                        "Outline attachment upload could not connect to its storage target"
+                    } else if error.is_builder() {
+                        "Outline attachment upload request could not be built"
+                    } else if error.is_redirect() {
+                        "Outline attachment upload redirect failed"
+                    } else if error.is_body() {
+                        "Outline attachment upload request body failed"
+                    } else {
+                        "Outline attachment upload transport failed"
+                    };
+                    return Err(AppError::operation(message));
+                }
             }
             thread::sleep(exponential_backoff(attempt));
         }
@@ -972,6 +1013,92 @@ mod tests {
         assert_eq!(attachment.id, "asset");
         assert_eq!(attachment.url, "https://outline.test/asset");
         handle.join().expect("mock server");
+    }
+
+    #[test]
+    fn attachment_create_resolves_and_authenticates_local_storage_uploads() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("mock listener");
+        let address = listener.local_addr().expect("listener address");
+        let handle = std::thread::spawn(move || {
+            let (mut create_stream, _) = listener.accept().expect("attachment create request");
+            let mut request = vec![0_u8; 16 * 1024];
+            let read = create_stream
+                .read(&mut request)
+                .expect("read create request");
+            let create_request = String::from_utf8_lossy(&request[..read]);
+            assert!(create_request.contains("/api/attachments.create"));
+            let body = r#"{"data":{"attachment":{"id":"asset","url":"/api/attachments.redirect?id=asset"},"uploadUrl":"/api/files.create","form":{"key":"uploads/asset.png"}}}"#;
+            write!(
+                create_stream,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            )
+            .expect("create response");
+
+            let (mut upload_stream, _) = listener.accept().expect("attachment upload request");
+            let mut upload = vec![0_u8; 16 * 1024];
+            let read = upload_stream
+                .read(&mut upload)
+                .expect("read upload request");
+            let upload = String::from_utf8_lossy(&upload[..read]);
+            assert!(upload.starts_with("POST /api/files.create"));
+            assert!(
+                upload.contains("authorization: Bearer secret")
+                    || upload.contains("Authorization: Bearer secret")
+            );
+            assert!(upload.contains("name=\"key\""));
+            assert!(upload.contains("uploads/asset.png"));
+            upload_stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .expect("upload response");
+        });
+        let client = HttpOutlineClient::new(
+            &format!("http://{address}"),
+            "secret".to_string(),
+            Duration::from_secs(2),
+            0,
+            100,
+        )
+        .expect("client");
+
+        client
+            .upload_attachment("document", "asset.png", "image/png", b"png bytes")
+            .expect("local attachment upload");
+        handle.join().expect("mock server");
+    }
+
+    #[test]
+    fn attachment_upload_credentials_are_limited_to_outline_files_endpoint() {
+        let client = HttpOutlineClient::new(
+            "https://outline.example.test",
+            "secret".to_string(),
+            Duration::from_secs(2),
+            0,
+            100,
+        )
+        .expect("client");
+
+        let (local, authenticate) = client
+            .attachment_upload_target("/api/files.create")
+            .expect("local target");
+        assert_eq!(
+            local.as_str(),
+            "https://outline.example.test/api/files.create"
+        );
+        assert!(authenticate);
+
+        let (_, authenticate) = client
+            .attachment_upload_target("https://storage.example.test/upload?signature=secret")
+            .expect("external target");
+        assert!(!authenticate);
+        let (_, authenticate) = client
+            .attachment_upload_target("https://outline.example.test/custom-upload")
+            .expect("custom same-origin target");
+        assert!(!authenticate);
+        assert!(client
+            .attachment_upload_target("https://user:pass@storage.example.test/upload")
+            .is_err());
     }
 
     #[test]
