@@ -13,6 +13,12 @@ use vulcan_core::{
     SourceByteSpan, VaultPaths,
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MissingFragmentPolicy {
+    Error,
+    Preserve,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SplitNoteRequest {
     pub source: String,
@@ -20,6 +26,7 @@ pub struct SplitNoteRequest {
     pub from_level: u8,
     pub through_level: u8,
     pub keep_source: bool,
+    pub missing_fragment_policy: MissingFragmentPolicy,
     pub navigation: bool,
     pub dry_run: bool,
 }
@@ -135,6 +142,21 @@ fn split_note_unlocked(
 
     let links = load_related_links(&connection, &resolved.id)?;
     ensure_related_sources_are_current(&connection, paths, &source_path, &links)?;
+    if request.missing_fragment_policy == MissingFragmentPolicy::Preserve {
+        plan.diagnostics.extend(missing_fragment_diagnostics(
+            &links,
+            &plan,
+            &resolved.id,
+            &source_path,
+            request.keep_source,
+        ));
+        plan.diagnostics.sort_by(|left, right| {
+            left.code
+                .cmp(&right.code)
+                .then_with(|| left.heading.cmp(&right.heading))
+                .then_with(|| left.fragment.cmp(&right.fragment))
+        });
+    }
     let parsed_source = parse_document(&source, &config);
     let mut document_paths = load_document_paths(&connection)?;
     if !request.keep_source {
@@ -174,6 +196,7 @@ fn split_note_unlocked(
                 &resolved.id,
                 &source_path,
                 request.keep_source,
+                request.missing_fragment_policy,
             )?
             else {
                 continue;
@@ -224,6 +247,7 @@ fn split_note_unlocked(
         &resolved.id,
         &plan,
         request.keep_source,
+        request.missing_fragment_policy,
         &document_paths,
         &config,
     )?;
@@ -464,25 +488,33 @@ fn rewrite_target(
     source_document_id: &str,
     source_path: &str,
     keep_source: bool,
+    missing_fragment_policy: MissingFragmentPolicy,
 ) -> Result<Option<RewriteTarget>, AppError> {
-    let targets_source = link.resolved_target_id.as_deref() == Some(source_document_id)
-        || (link.resolved_target_id.is_none()
-            && link.target_path_candidate.is_none()
-            && (link.target_heading.is_some() || link.target_block.is_some()));
-    if targets_source {
-        if let Some(heading) = link.target_heading.as_deref() {
-            if plan.heading_target_count(heading) > 1 {
+    if link_targets_source(link, source_document_id) {
+        if let Some(fragment) = link.target_heading.as_deref() {
+            if plan.fragment_target_count(fragment) > 1 {
                 return Err(AppError::operation(format!(
-                    "link `{}` targets duplicate heading `{heading}` in `{source_path}`; disambiguate the heading before splitting",
+                    "link `{}` targets duplicate heading or HTML anchor `{fragment}` in `{source_path}`; disambiguate the target before splitting",
                     link.raw_text
                 )));
             }
-            let target = plan.heading_target(heading).ok_or_else(|| {
-                AppError::operation(format!(
-                    "link `{}` targets missing heading `{heading}` in `{source_path}`",
+            let Some(target) = plan.fragment_target(fragment) else {
+                if missing_fragment_policy == MissingFragmentPolicy::Preserve {
+                    return Ok(Some(RewriteTarget {
+                        path: Some(if keep_source {
+                            source_path.to_string()
+                        } else {
+                            plan.root_path.clone()
+                        }),
+                        heading: Some(fragment.to_string()),
+                        block: None,
+                    }));
+                }
+                return Err(AppError::operation(format!(
+                    "link `{}` targets missing heading or HTML anchor `{fragment}` in `{source_path}`",
                     link.raw_text
-                ))
-            })?;
+                )));
+            };
             return Ok(Some(RewriteTarget {
                 path: Some(target.path.clone()),
                 heading: target.fragment.clone(),
@@ -529,6 +561,50 @@ fn rewrite_target(
     Ok(None)
 }
 
+fn link_targets_source(link: &CachedLink, source_document_id: &str) -> bool {
+    link.resolved_target_id.as_deref() == Some(source_document_id)
+        || (link.resolved_target_id.is_none()
+            && link.target_path_candidate.is_none()
+            && (link.target_heading.is_some() || link.target_block.is_some()))
+}
+
+fn missing_fragment_diagnostics(
+    links: &[CachedLink],
+    plan: &DecompositionPlan,
+    source_document_id: &str,
+    source_path: &str,
+    keep_source: bool,
+) -> Vec<DecompositionDiagnostic> {
+    let mut missing = BTreeMap::<String, (&str, usize, &str)>::new();
+    for link in links {
+        if !link_targets_source(link, source_document_id) {
+            continue;
+        }
+        let Some(fragment) = link.target_heading.as_deref() else {
+            continue;
+        };
+        if plan.fragment_target_count(fragment) == 0 {
+            missing.entry(fragment.to_string()).or_insert((
+                &link.source_path,
+                link.byte_offset,
+                &link.raw_text,
+            ));
+        }
+    }
+    missing
+        .into_iter()
+        .map(|(fragment, (link_source, byte_offset, raw_text))| DecompositionDiagnostic {
+            code: "preserved_missing_fragment".to_string(),
+            message: format!(
+                "fragment `{fragment}` has no matching heading or HTML anchor; preserved link `{raw_text}` from `{link_source}` byte {byte_offset} against {} `{source_path}`",
+                if keep_source { "retained source" } else { "generated root" }
+            ),
+            heading: None,
+            fragment: Some(fragment),
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 fn plan_external_inbound_rewrites(
     paths: &VaultPaths,
@@ -537,6 +613,7 @@ fn plan_external_inbound_rewrites(
     source_document_id: &str,
     plan: &DecompositionPlan,
     keep_source: bool,
+    missing_fragment_policy: MissingFragmentPolicy,
     document_paths: &[String],
     config: &vulcan_core::VaultConfig,
 ) -> Result<Vec<ExternalRewritePlan>, AppError> {
@@ -565,9 +642,15 @@ fn plan_external_inbound_rewrites(
                     link.byte_offset == cached.byte_offset && link.raw_text == cached.raw_text
                 })
                 .ok_or_else(|| stale_link_error(&path, cached.byte_offset))?;
-            let target =
-                rewrite_target(cached, plan, source_document_id, source_path, keep_source)?
-                    .expect("resolved inbound source link has a rewrite target");
+            let target = rewrite_target(
+                cached,
+                plan,
+                source_document_id,
+                source_path,
+                keep_source,
+                missing_fragment_policy,
+            )?
+            .expect("resolved inbound source link has a rewrite target");
             let replacement = rewrite_link_destination(
                 raw_link,
                 &path,
@@ -735,6 +818,7 @@ mod tests {
             from_level: 2,
             through_level: 3,
             keep_source: false,
+            missing_fragment_policy: MissingFragmentPolicy::Error,
             navigation: true,
             dry_run: false,
         }
@@ -804,6 +888,68 @@ mod tests {
         assert!(report.changed_paths.contains(&"Index.md".to_string()));
         assert_eq!(report.rewritten_files.len(), 2);
         resolve_note_reference(&paths, "Rulebook/Combat/Damage").expect("reindexed output");
+    }
+
+    #[test]
+    fn rewrites_pdf_converter_html_anchor_links_to_the_owning_note() {
+        let (_temp, paths) = setup_vault();
+        fs::write(
+            paths.vault_root().join("Rulebook.md"),
+            "# <span id=\"page-1-0\"></span>Rules\nSee [combat](#page-2-0).\n\n## <span id=\"page-2-0\"></span>Combat\nFight.\n",
+        )
+        .expect("source");
+        fs::write(
+            paths.vault_root().join("Index.md"),
+            "See [[Rulebook#page-2-0|combat page]].\n",
+        )
+        .expect("index");
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+
+        split_note(&paths, &request()).expect("split");
+
+        let root =
+            fs::read_to_string(paths.vault_root().join("Rulebook/Rulebook.md")).expect("root");
+        assert!(
+            root.contains("[combat](Combat.md#page-2-0)"),
+            "unexpected root: {root}"
+        );
+        let combat =
+            fs::read_to_string(paths.vault_root().join("Rulebook/Combat.md")).expect("combat");
+        assert!(combat.starts_with("# <span id=\"page-2-0\"></span>Combat"));
+        let index = fs::read_to_string(paths.vault_root().join("Index.md")).expect("index");
+        assert!(
+            index.contains("[[Combat#page-2-0|combat page]]"),
+            "unexpected index: {index}"
+        );
+    }
+
+    #[test]
+    fn missing_fragments_fail_closed_unless_preservation_is_explicit() {
+        let (_temp, paths) = setup_vault();
+        fs::write(
+            paths.vault_root().join("Rulebook.md"),
+            "# Rules\nSee [[#page-404-0]].\n\n## Combat\nFight.\n",
+        )
+        .expect("source");
+        scan_vault(&paths, ScanMode::Full).expect("scan");
+
+        let error = split_note(&paths, &request()).expect_err("missing fragment");
+        assert!(error.to_string().contains("missing heading or HTML anchor"));
+
+        let preserve = SplitNoteRequest {
+            missing_fragment_policy: MissingFragmentPolicy::Preserve,
+            ..request()
+        };
+        let report = split_note(&paths, &preserve).expect("preserved split");
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(report.diagnostics[0].code, "preserved_missing_fragment");
+        assert_eq!(
+            report.diagnostics[0].fragment.as_deref(),
+            Some("page-404-0")
+        );
+        let root =
+            fs::read_to_string(paths.vault_root().join("Rulebook/Rulebook.md")).expect("root");
+        assert!(root.contains("[[#page-404-0]]"), "unexpected root: {root}");
     }
 
     #[test]
@@ -890,6 +1036,7 @@ mod tests {
             notes: vec![note("Generated/Root.md"), note("blocked/Second.md")],
             diagnostics: Vec::new(),
             heading_targets: Vec::new(),
+            anchor_targets: Vec::new(),
             block_targets: Vec::new(),
         };
 

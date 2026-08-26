@@ -4562,6 +4562,11 @@ pub enum RefactorCommand {
             help = "Retain the original source note in addition to the generated tree"
         )]
         keep_source: bool,
+        #[arg(
+            long,
+            help = "Preserve links to missing source fragments against the root note and report warnings"
+        )]
+        preserve_missing_fragments: bool,
         #[arg(long, help = "Do not generate parent-to-child Contents lists")]
         no_navigation: bool,
         #[arg(long, help = "Report the complete plan without modifying files")]

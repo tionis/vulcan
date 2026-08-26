@@ -9,7 +9,9 @@ use crate::{
     BulkNoteSelection, Cli, CliError, FolderNotePlacementArg, OutputFormat, RefactorCommand,
     SuggestCommand, SuggestLinkStatusArg,
 };
-use vulcan_app::decomposition::{split_note, SplitNoteReport, SplitNoteRequest};
+use vulcan_app::decomposition::{
+    split_note, MissingFragmentPolicy, SplitNoteReport, SplitNoteRequest,
+};
 use vulcan_app::folder_notes::{
     convert_folder_notes, FolderNoteConversionReport, FolderNoteConversionRequest,
 };
@@ -284,6 +286,7 @@ pub(crate) fn handle_refactor_command(
             from_level,
             through_level,
             keep_source,
+            preserve_missing_fragments,
             no_navigation,
             dry_run,
             no_commit,
@@ -304,6 +307,11 @@ pub(crate) fn handle_refactor_command(
                     from_level: *from_level,
                     through_level: through_level.unwrap_or(*from_level),
                     keep_source: *keep_source,
+                    missing_fragment_policy: if *preserve_missing_fragments {
+                        MissingFragmentPolicy::Preserve
+                    } else {
+                        MissingFragmentPolicy::Error
+                    },
                     navigation: !*no_navigation,
                     dry_run: *dry_run,
                 },

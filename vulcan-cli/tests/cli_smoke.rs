@@ -6298,7 +6298,7 @@ fn refactor_split_note_dry_run_and_apply_materialize_a_link_safe_tree() {
     fs::write(vault_root.join("assets/map.png"), b"map").expect("asset");
     fs::write(
         vault_root.join("Rulebook.md"),
-        "# Rules\n\n## Combat\nSee [map](assets/map.png) and [[#Damage]].\n\n### Damage\nTake harm.\n",
+        "# Rules\nSee [[#missing-page]].\n\n## Combat\nSee [map](assets/map.png) and [[#Damage]].\n\n### Damage\nTake harm.\n",
     )
     .expect("rulebook");
     fs::write(
@@ -6323,6 +6323,7 @@ fn refactor_split_note_dry_run_and_apply_materialize_a_link_safe_tree() {
             "2",
             "--through-level",
             "3",
+            "--preserve-missing-fragments",
             "--dry-run",
             "--no-commit",
         ])
@@ -6334,6 +6335,7 @@ fn refactor_split_note_dry_run_and_apply_materialize_a_link_safe_tree() {
     assert_eq!(plan["root_path"], "Rulebook/Rulebook.md");
     assert_eq!(plan["notes"].as_array().map(Vec::len), Some(3));
     assert_eq!(plan["notes"][2]["path"], "Rulebook/Combat/Damage.md");
+    assert_eq!(plan["diagnostics"][0]["code"], "preserved_missing_fragment");
     assert!(vault_root.join("Rulebook.md").is_file());
     assert!(!vault_root.join("Rulebook/Rulebook.md").exists());
 
@@ -6349,6 +6351,7 @@ fn refactor_split_note_dry_run_and_apply_materialize_a_link_safe_tree() {
             "2",
             "--through-level",
             "3",
+            "--preserve-missing-fragments",
             "--dry-run",
             "--no-commit",
         ])
@@ -6361,6 +6364,9 @@ fn refactor_split_note_dry_run_and_apply_materialize_a_link_safe_tree() {
                 ))
                 .and(predicate::str::contains(
                     "Would replace source note Rulebook.md",
+                ))
+                .and(predicate::str::contains(
+                    "Warning [preserved_missing_fragment]",
                 )),
         );
 
@@ -6378,6 +6384,7 @@ fn refactor_split_note_dry_run_and_apply_materialize_a_link_safe_tree() {
             "2",
             "--through-level",
             "3",
+            "--preserve-missing-fragments",
             "--no-commit",
         ])
         .assert()
@@ -6387,6 +6394,9 @@ fn refactor_split_note_dry_run_and_apply_materialize_a_link_safe_tree() {
     assert_eq!(report["source_retained"], false);
     assert!(!vault_root.join("Rulebook.md").exists());
     assert!(vault_root.join("assets/map.png").exists());
+    assert!(fs::read_to_string(vault_root.join("Rulebook/Rulebook.md"))
+        .expect("root note")
+        .contains("[[#missing-page]]"));
     assert!(
         fs::read_to_string(vault_root.join("Rulebook/Combat/Combat.md"))
             .expect("combat note")
@@ -10580,6 +10590,7 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(refactoring.contains("vulcan refactor folder-notes --dry-run"));
     assert!(refactoring.contains("vulcan refactor split-note <source>"));
     assert!(refactoring.contains("preserves asset files in place"));
+    assert!(refactoring.contains("--preserve-missing-fragments"));
 
     let configuration =
         fs::read_to_string(installed_skills.join("configuration-and-permissions/SKILL.md"))

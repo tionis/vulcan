@@ -478,6 +478,17 @@ mod tests {
     }
 
     #[test]
+    fn inline_html_anchor_markup_is_not_part_of_heading_text() {
+        let parsed = parse_document(
+            "# <span id=\"page-9-0\"></span>READ <em>THIS</em> FIRST\n",
+            &VaultConfig::default(),
+        );
+
+        assert_eq!(parsed.headings.len(), 1);
+        assert_eq!(parsed.headings[0].text, "READ THIS FIRST");
+    }
+
+    #[test]
     fn footnotes_and_callouts_keep_links_visible() {
         let parsed = parse_document(
             "> [!NOTE]\n> Callout [[Callout Note]]\n\nReference[^1]\n\n[^1]: Footnote [[Footnote Note]]",

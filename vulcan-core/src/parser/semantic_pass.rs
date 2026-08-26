@@ -387,9 +387,6 @@ impl<'a> SemanticProcessor<'a> {
             self.saw_body_content = true;
         }
         self.push_text_to_active(text);
-        if let Some(heading) = self.current_heading.as_mut() {
-            heading.text.push_str(text);
-        }
     }
 
     fn push_comment_gap(&mut self) {

@@ -12268,6 +12268,20 @@
                 ]
               },
               {
+                "help": "Preserve links to missing source fragments against the root note and report warnings",
+                "id": "preserve_missing_fragments",
+                "long": "preserve-missing-fragments",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PRESERVE_MISSING_FRAGMENTS"
+                ]
+              },
+              {
                 "help": "Do not generate parent-to-child Contents lists",
                 "id": "no_navigation",
                 "long": "no-navigation",

@@ -521,13 +521,26 @@ pub fn rewrite_link_destination(
                 .display_text
                 .clone()
                 .unwrap_or_else(|| extract_markdown_label(&link.raw_text));
-            format!("![{label}]({target})")
+            let markdown_target = if original_target.is_empty() {
+                markdown_rewrite_target(destination_path, &rewritten_target, &suffix, target_style)
+            } else {
+                target.clone()
+            };
+            format!(
+                "![{label}]({})",
+                safe_markdown_destination(&markdown_target)
+            )
         } else if link.raw_text.starts_with('[') {
             let label = link
                 .display_text
                 .clone()
                 .unwrap_or_else(|| extract_markdown_label(&link.raw_text));
-            format!("[{label}]({target})")
+            let markdown_target = if original_target.is_empty() {
+                markdown_rewrite_target(destination_path, &rewritten_target, &suffix, target_style)
+            } else {
+                target.clone()
+            };
+            format!("[{label}]({})", safe_markdown_destination(&markdown_target))
         } else {
             link.raw_text.clone()
         };
@@ -536,13 +549,10 @@ pub fn rewrite_link_destination(
     match preferred_style {
         LinkStylePreference::Wikilink => format!("[[{target}]]"),
         LinkStylePreference::Markdown => {
-            let markdown_target = if destination_path.is_none() {
-                suffix
-            } else {
-                markdown_target_path(&rewritten_target, &suffix, target_style)
-            };
+            let markdown_target =
+                markdown_rewrite_target(destination_path, &rewritten_target, &suffix, target_style);
             format!(
-                "[{}]({markdown_target})",
+                "[{}]({})",
                 default_markdown_label(
                     link,
                     if original_target.is_empty() {
@@ -550,9 +560,40 @@ pub fn rewrite_link_destination(
                     } else {
                         original_target
                     }
-                )
+                ),
+                safe_markdown_destination(&markdown_target)
             )
         }
+    }
+}
+
+fn markdown_rewrite_target(
+    destination_path: Option<&str>,
+    rewritten_target: &str,
+    suffix: &str,
+    target_style: TargetPathStyle,
+) -> String {
+    if destination_path.is_none() {
+        suffix.to_string()
+    } else {
+        markdown_target_path(rewritten_target, suffix, target_style)
+    }
+}
+
+fn safe_markdown_destination(target: &str) -> String {
+    let escaped = target
+        .replace('<', "%3C")
+        .replace('>', "%3E")
+        .replace('\n', "%0A")
+        .replace('\r', "%0D")
+        .replace('\t', "%09");
+    if escaped
+        .chars()
+        .any(|character| character.is_whitespace() || matches!(character, '(' | ')'))
+    {
+        format!("<{escaped}>")
+    } else {
+        escaped
     }
 }
 
@@ -892,6 +933,43 @@ mod tests {
                 LinkStylePreference::Markdown,
             ),
             "![Logo](../media/logo.png)"
+        );
+    }
+
+    #[test]
+    fn rewritten_markdown_destinations_with_spaces_are_commonmark_safe() {
+        let link = RawLink {
+            raw_text: "[Chapter One](#page-135-0)".to_string(),
+            link_kind: crate::LinkKind::Markdown,
+            display_text: Some("Chapter One".to_string()),
+            target_path_candidate: None,
+            target_heading: Some("page-135-0".to_string()),
+            target_block: None,
+            origin_context: crate::OriginContext::Body,
+            byte_offset: 0,
+            is_note_embed: false,
+        };
+        let rewritten = rewrite_link_destination(
+            &link,
+            "Books/Setting.md",
+            Some("Books/CHAPTER ONE —.md"),
+            Some("page-135-0"),
+            None,
+            &["Books/CHAPTER ONE —.md".to_string()],
+            LinkResolutionMode::Relative,
+            LinkStylePreference::Markdown,
+        );
+
+        assert_eq!(rewritten, "[Chapter One](<CHAPTER ONE —.md#page-135-0>)");
+        let parsed = crate::parse_document(&rewritten, &crate::VaultConfig::default());
+        assert_eq!(parsed.links.len(), 1);
+        assert_eq!(
+            parsed.links[0].target_path_candidate.as_deref(),
+            Some("CHAPTER ONE —.md")
+        );
+        assert_eq!(
+            parsed.links[0].target_heading.as_deref(),
+            Some("page-135-0")
         );
     }
 

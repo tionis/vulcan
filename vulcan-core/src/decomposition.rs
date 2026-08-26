@@ -1,12 +1,24 @@
-use crate::parser::{parse_document, ParseDiagnosticKind, ParsedDocument, RawHeading};
+use crate::parser::{
+    parse_document, parser_options, ParseDiagnosticKind, ParsedDocument, RawHeading,
+};
 use crate::paths::{normalize_relative_input_path, RelativePathOptions};
 use crate::{FolderNotesConfig, VaultConfig};
+use pulldown_cmark::{Event, Parser};
+use regex::Regex;
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{Display, Formatter, Write as _};
 use std::ops::Range;
 use std::path::Path;
+use std::sync::LazyLock;
+
+static HTML_ANCHOR_PATTERN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)<[a-z][^>]*\s(?:id|name)\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s\"'=<>`]+))[^>]*>"#,
+    )
+    .expect("HTML anchor pattern must compile")
+});
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecompositionOptions {
@@ -43,6 +55,8 @@ pub struct DecompositionDiagnostic {
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heading: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fragment: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -84,6 +98,8 @@ pub struct DecompositionPlan {
     #[serde(skip)]
     pub heading_targets: Vec<DecompositionSubpathTarget>,
     #[serde(skip)]
+    pub anchor_targets: Vec<DecompositionSubpathTarget>,
+    #[serde(skip)]
     pub block_targets: Vec<DecompositionSubpathTarget>,
 }
 
@@ -108,6 +124,25 @@ impl DecompositionPlan {
             .iter()
             .filter(|target| target.source_text == heading)
             .count()
+    }
+
+    #[must_use]
+    pub fn fragment_target(&self, fragment: &str) -> Option<&DecompositionSubpathTarget> {
+        self.heading_target(fragment).or_else(|| {
+            self.anchor_targets
+                .iter()
+                .find(|target| target.source_text == fragment)
+        })
+    }
+
+    #[must_use]
+    pub fn fragment_target_count(&self, fragment: &str) -> usize {
+        self.heading_target_count(fragment)
+            + self
+                .anchor_targets
+                .iter()
+                .filter(|target| target.source_text == fragment)
+                .count()
     }
 
     #[must_use]
@@ -148,6 +183,12 @@ struct SelectedHeading {
     path: String,
     parent_path: String,
     source_span: SourceByteSpan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExplicitHtmlAnchor {
+    id: String,
+    byte_offset: usize,
 }
 
 #[allow(clippy::too_many_lines)]
@@ -226,7 +267,9 @@ pub fn plan_document_decomposition(
         .collect::<Vec<_>>();
     let root_spans = complement_spans(source.len(), &selected_spans)?;
 
+    let anchors = explicit_html_anchors(source);
     let mut diagnostics = duplicate_heading_diagnostics(&parsed);
+    diagnostics.extend(duplicate_anchor_diagnostics(&anchors));
     let mut notes = Vec::with_capacity(selected.len() + 1);
     notes.push(build_note_plan(
         source,
@@ -266,11 +309,13 @@ pub fn plan_document_decomposition(
 
     verify_complete_coverage(source.len(), &notes)?;
     let heading_targets = build_heading_targets(&parsed, &selected, &notes)?;
+    let anchor_targets = build_anchor_targets(&anchors, &notes)?;
     let block_targets = build_block_targets(&parsed, &notes)?;
     diagnostics.sort_by(|left, right| {
         left.code
             .cmp(&right.code)
             .then_with(|| left.heading.cmp(&right.heading))
+            .then_with(|| left.fragment.cmp(&right.fragment))
     });
 
     Ok(DecompositionPlan {
@@ -280,6 +325,7 @@ pub fn plan_document_decomposition(
         notes,
         diagnostics,
         heading_targets,
+        anchor_targets,
         block_targets,
     })
 }
@@ -758,6 +804,46 @@ fn build_heading_targets(
         .collect()
 }
 
+fn explicit_html_anchors(source: &str) -> Vec<ExplicitHtmlAnchor> {
+    let mut anchors = Vec::new();
+    for (event, range) in Parser::new_ext(source, parser_options()).into_offset_iter() {
+        let (Event::Html(html) | Event::InlineHtml(html)) = event else {
+            continue;
+        };
+        for captures in HTML_ANCHOR_PATTERN.captures_iter(&html) {
+            let Some(whole_match) = captures.get(0) else {
+                continue;
+            };
+            let Some(id) = (1..=3).find_map(|index| captures.get(index)) else {
+                continue;
+            };
+            anchors.push(ExplicitHtmlAnchor {
+                id: id.as_str().to_string(),
+                byte_offset: range.start + whole_match.start(),
+            });
+        }
+    }
+    anchors
+}
+
+fn build_anchor_targets(
+    anchors: &[ExplicitHtmlAnchor],
+    notes: &[DecompositionNotePlan],
+) -> Result<Vec<DecompositionSubpathTarget>, DecompositionError> {
+    anchors
+        .iter()
+        .map(|anchor| {
+            let note = note_for_offset(notes, anchor.byte_offset)?;
+            Ok(DecompositionSubpathTarget {
+                source_byte_offset: anchor.byte_offset,
+                source_text: anchor.id.clone(),
+                path: note.path.clone(),
+                fragment: Some(anchor.id.clone()),
+            })
+        })
+        .collect()
+}
+
 fn build_block_targets(
     parsed: &ParsedDocument,
     notes: &[DecompositionNotePlan],
@@ -805,6 +891,26 @@ fn duplicate_heading_diagnostics(parsed: &ParsedDocument) -> Vec<DecompositionDi
                 "heading `{heading}` occurs {count} times; filename paths are disambiguated, but links to that heading are ambiguous"
             ),
             heading: Some(heading.to_string()),
+            fragment: None,
+        })
+        .collect()
+}
+
+fn duplicate_anchor_diagnostics(anchors: &[ExplicitHtmlAnchor]) -> Vec<DecompositionDiagnostic> {
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for anchor in anchors {
+        *counts.entry(&anchor.id).or_default() += 1;
+    }
+    counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(anchor, count)| DecompositionDiagnostic {
+            code: "duplicate_anchor_target".to_string(),
+            message: format!(
+                "HTML anchor `{anchor}` occurs {count} times; links to that anchor are ambiguous"
+            ),
+            heading: None,
+            fragment: Some(anchor.to_string()),
         })
         .collect()
 }
@@ -911,6 +1017,27 @@ mod tests {
         assert_eq!(plan.notes[3].path, "Rulebook/_CON.md");
         assert_eq!(plan.diagnostics.len(), 1);
         assert_eq!(plan.heading_target_count("A/B: C?"), 2);
+    }
+
+    #[test]
+    fn preserves_explicit_html_anchors_without_polluting_note_titles() {
+        let source = "# <span id=\"page-1-0\"></span>Rules\nSee [combat](#page-2-0).\n\n## <span id=\"page-2-0\"></span>Combat\nFight.\n";
+        let plan =
+            plan_document_decomposition("Rulebook.md", source, &VaultConfig::default(), &options())
+                .expect("plan");
+
+        assert_eq!(plan.notes[1].path, "Rulebook/Combat.md");
+        assert_eq!(plan.notes[1].title, "Combat");
+        assert!(plan.notes[1]
+            .content
+            .starts_with("# <span id=\"page-2-0\"></span>Combat"));
+
+        let root_anchor = plan.fragment_target("page-1-0").expect("root anchor");
+        assert_eq!(root_anchor.path, "Rulebook/Rulebook.md");
+        assert_eq!(root_anchor.fragment.as_deref(), Some("page-1-0"));
+        let combat_anchor = plan.fragment_target("page-2-0").expect("combat anchor");
+        assert_eq!(combat_anchor.path, "Rulebook/Combat.md");
+        assert_eq!(combat_anchor.fragment.as_deref(), Some("page-2-0"));
     }
 
     #[test]

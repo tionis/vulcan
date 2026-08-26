@@ -6505,17 +6505,17 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 **Dependencies:** Reuse the canonical parser and semantic note outline, resolved link identities and move-safe rewrite machinery, first-class attachment graph, shared application workflow layer, and configured folder-note convention. Keep reusable planning and mutation logic out of `vulcan-cli`.
 
-- [ ] Inventory representative structures and conversion artifacts under `references/rulebooks/`; use them for manual acceptance coverage while keeping automated fixtures synthetic and minimal.
+- [x] Inventory representative structures and conversion artifacts from the local-only rulebook corpus without recording source identities or checking private artifacts into the repository; keep automated fixtures synthetic and minimal.
 - [x] Add a deterministic decomposition planner for a configurable heading-level range, including preamble placement, parent/child hierarchy, filename normalization, duplicate-heading disambiguation, configured folder notes, and exact source-span coverage checks.
 - [x] Define explicit frontmatter, heading, footnote/reference-definition, block-reference, and generated-navigation policies; surface unsupported or ambiguous constructs as located diagnostics instead of silently dropping content.
-- [x] Plan link rewrites for inbound links to the source document and its heading/block subpaths, cross-section links within the source, self-fragment links inside emitted notes, and relative links whose source directory changes while preserving authored Markdown/wikilink/embed style.
+- [x] Plan link rewrites for inbound links to the source document and its heading/block/explicit-HTML-anchor subpaths, cross-section links within the source, self-fragment links inside emitted notes, and relative links whose source directory changes while preserving authored Markdown/wikilink/embed style and CommonMark-safe destinations.
 - [x] Preserve referenced assets in their current canonical locations by default, rewrite relative destinations for every emitted note, and report missing, ambiguous, or unsafe asset references before mutation.
 - [x] Add a reusable locked application workflow with complete preflight validation, mutation-free dry runs, collision and stale-cache checks, deterministic action ordering, and a structured report suitable for CLI, MCP, and future daemon surfaces.
-- [x] Add `vulcan refactor split-note <source>` with heading-range, destination, source-retention, navigation, `--dry-run`, and `--output json` controls; use the configured folder-note convention and conservative root-only frontmatter policy by default.
-- [ ] Add per-invocation folder-note and frontmatter-policy overrides only if representative rulebooks demonstrate a recurring need beyond the repository convention and root-only default.
+- [x] Add `vulcan refactor split-note <source>` with heading-range, destination, source-retention, navigation, explicit missing-fragment preservation, `--dry-run`, and `--output json` controls; use the configured folder-note convention and conservative root-only frontmatter policy by default.
+- [x] Review the local representative corpus for per-invocation folder-note and frontmatter-policy needs; retain the repository convention and root-only default because no recurring override requirement was demonstrated.
 - [x] Reindex after successful application and verify that the source content is fully represented, planned links resolve as expected, and repeated dry runs are deterministic.
 - [x] Add core planner tests, application mutation/rollback tests, CLI JSON and human-output integration tests, attachment-heavy synthetic fixtures, duplicate/collision cases, and link-rewrite regressions.
-- [ ] Run and document representative rulebook acceptance checks once `references/rulebooks/` is available in the checkout.
+- [x] Run representative rulebook acceptance locally without committing source identities, corpus details, or private artifacts.
 - [x] Update CLI/reference documentation and the bundled note/refactor agent skill so external agents discover dry-run-first decomposition and its asset/link safety policies.
 
 ---
