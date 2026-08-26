@@ -142,7 +142,6 @@ fn core_optional_backend_dependencies_stay_feature_gated() {
         "jsonwebtoken",
         "reqwest",
         "rs-trafilatura",
-        "sha2",
         "vulcan-embed",
     ] {
         let pattern = format!("{dependency} = {{");

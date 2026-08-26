@@ -48,6 +48,7 @@
 //! # }
 //! ```
 
+pub mod artifact;
 pub mod assistant;
 pub mod bases;
 pub mod cache;

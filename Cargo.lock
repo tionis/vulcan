@@ -4349,7 +4349,9 @@ dependencies = [
  "tempfile",
  "toml",
  "ulid",
+ "unicode-normalization",
  "vulcan-embed",
+ "zip",
 ]
 
 [[package]]

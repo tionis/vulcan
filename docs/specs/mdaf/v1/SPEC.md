@@ -73,6 +73,8 @@ Native responses are retained byte-for-byte after mandatory secret filtering. A 
 
 Tools require name and version; build revisions are included when available. Models record provider, identifier, returned identifier, and revision or checksum when exposed. A mutable or unresolved model alias is explicitly marked and produces a reproducibility warning, never invented provenance. Full dependency locks, runtime descriptions, hardware inventories, SPDX documents, or CycloneDX documents are optional environment members.
 
+`parameters_sha256` is the lowercase SHA-256 of `parameters` serialized as compact UTF-8 JSON: object keys are sorted recursively by Unicode scalar value, arrays retain their order, strings use normal JSON escaping without ASCII-only conversion, numbers use their JSON lexical representation, and no whitespace or trailing newline is emitted. Producers should prefer strings for values whose numeric lexical form is itself significant.
+
 Transport secrets, credentials, signed URLs, and private endpoint topology are forbidden. Unknown exact versions or revisions remain explicit `unavailable` values with diagnostics.
 
 ## Consumer behavior

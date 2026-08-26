@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulcan.tionis.dev/schemas/mdaf/v1/outline.schema.json",
+  "title": "MDAF v1 aligned outline",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "document_sha256", "nodes"],
+  "properties": {
+    "version": { "const": 1 },
+    "document_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "title": { "type": "string" },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "level", "title", "heading", "section"],
+        "properties": {
+          "id": { "type": "string", "minLength": 1 },
+          "parent": { "type": ["string", "null"] },
+          "level": { "type": "integer", "minimum": 1 },
+          "title": { "type": "string", "minLength": 1 },
+          "heading": { "$ref": "#/$defs/span" },
+          "section": { "$ref": "#/$defs/span" },
+          "source": { "$ref": "#/$defs/interval" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "span": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["start", "end"],
+      "properties": {
+        "start": { "type": "integer", "minimum": 0 },
+        "end": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "interval": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "coordinate_system", "start", "end"],
+      "properties": {
+        "source_id": { "type": "string", "minLength": 1 },
+        "coordinate_system": { "type": "string", "minLength": 1 },
+        "start": { "type": "number", "minimum": 0 },
+        "end": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    }
+  }
+}
