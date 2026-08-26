@@ -1,6 +1,6 @@
 # Markdown Artifact Format (MDAF) version 1
 
-MDAF is an immutable, extractor-neutral package for one primary Markdown document and the evidence needed to reinterpret or materialize it later. A conforming artifact is either a directory whose name ends in `.mdaf` or a ZIP file whose name ends in `.mdaf`. Both representations expose the same root members and have the same logical identity.
+MDAF is an immutable, extractor- and source-format-neutral package for one primary Markdown document and the evidence needed to reinterpret or materialize it later. Inputs may be PDFs, images, audio, video, web pages, ebooks, office documents, structured data, plain text, compound media, or formats not yet anticipated. `Markdown` describes the normalized primary output, not the source. A conforming artifact is either a directory whose name ends in `.mdaf` or a ZIP file whose name ends in `.mdaf`. Both representations expose the same root members and have the same logical identity.
 
 MDAF deliberately does not define OCR, PDF conversion, table extraction, or a universal document-block ontology. Producers normalize only the information consumers share today and retain complete native responses as opaque declared members. Consumers must never select behavior from a producer, tool, model, asset filename, or extension namespace.
 
@@ -11,7 +11,7 @@ info.json          required manifest
 text.md            required primary Markdown
 provenance.json    required activity graph
 assets/            optional files referenced by text.md
-source-map.json    optional normalized source coordinates and references
+source-map.json    optional normalized source selectors and references
 outline.json       optional aligned alternative hierarchy
 renditions/        optional complete native or alternate outputs
 sources/           optional embedded source documents
@@ -53,9 +53,23 @@ The artifact identity is `sha256:` followed by the SHA-256 of the concatenated U
 
 `source-map.json` conforms to `source-map.schema.json` and binds to the SHA-256 of `text.md`. All document ranges are zero-based, half-open UTF-8 byte ranges whose endpoints are character boundaries.
 
-A coordinate system belongs to one declared source and defines a namespaced ID, unit, origin, and optional display-label map. Units are open strings such as `page`, `slide`, `sheet`, `frame`, `millisecond`, or `line`; consumers operate on ordered numeric intervals rather than special-casing PDF pages.
+A mapping connects a Markdown span to a source locator and may carry confidence and a namespaced method. A reference connects authored Markdown text to a target locator. Mappings may overlap, may be partial, and may repeat the same Markdown span for multiple sources. Producers decide which inferred records are reliable enough to publish; consumers preserve confidence and method but do not rerun extraction.
 
-Mappings connect a Markdown span to one source interval and may carry confidence and a namespaced method. Mappings may overlap and may be partial. References identify authored Markdown text and a target source coordinate. Producers decide which inferred records are reliable enough to publish; consumers preserve confidence and method but do not rerun extraction.
+A locator names exactly one declared source and contains an ordered list of selectors. An empty selector list denotes the complete source. Otherwise selectors are conjunctive refinements: an `interval` selecting page 12 followed by a `rectangle` selects that rectangle on page 12. Order records the natural outside-in refinement and is preserved, but does not change the selected segment. Half-open ranges include their start and exclude their end.
+
+MDAF v1 defines these normalized selectors:
+
+- `interval`: an ordered numeric range with an open unit such as `byte`, `unicode-scalar`, `line`, `page`, `slide`, `frame`, `sample`, `millisecond`, or `second`; optional origin and display labels preserve numbering conventions without changing the numeric range;
+- `rectangle`: an `x`, `y`, `width`, and `height` region in an open unit; `pixel`, `percent`, and `normalized` have their ordinary top-left-origin media meaning, with percent bounded by 100 and normalized values bounded by 1;
+- `polygon`: three or more non-degenerate points in an open spatial unit, for regions that a rectangle cannot represent accurately;
+- `grid`: zero-based, half-open row and column ranges plus an optional sheet name, for spreadsheets, tables, matrices, and similar media;
+- `text-quote`: exact text with optional prefix and suffix context, providing a content-stable complement to positional intervals;
+- `fragment`: a media-defined fragment value and optional public `conforms_to` specification identifier, for HTML IDs, EPUB CFI, CSV fragments, track identifiers, or another established addressing scheme;
+- `extension`: reverse-domain-namespaced opaque JSON for a selector that cannot be represented without loss in the normalized core.
+
+Numbers must be finite. Intervals, rectangles, grids, and polygons must be non-empty. Consumers validate normalized selectors but never infer their meaning from a source media type. Unknown future source formats therefore require neither a new MDAF version nor a Vulcan code branch; they use the closest lossless normalized selectors and retain any richer native locator in an extension or rendition.
+
+Source-reference resolution is conservative. A target selector must be matched by a compatible mapping selector for the same declared source; all target selectors must overlap or identify the same segment. Ambiguous or unsupported matches remain authored Markdown and produce a diagnostic rather than an inferred link.
 
 ## Alternative outline
 
@@ -63,7 +77,7 @@ Mappings connect a Markdown span to one source interval and may carry confidence
 
 ## Native evidence and extensions
 
-Complete extractor responses belong below `renditions/<namespace>/` and are declared with their real media types and schemas when known. They may contain provider-native block trees, bounding boxes, polygons, confidence values, page Markdown, tables, hyperlinks, or binary databases. MDAF does not rewrite or interpret them.
+Complete extractor responses belong below `renditions/<namespace>/` and are declared with their real media types and schemas when known. They may contain provider-native block trees, bounding boxes, polygons, masks, timestamps, tracks, frames, page Markdown, tables, hyperlinks, DOM trees, or binary databases. MDAF does not rewrite or interpret them.
 
 Native responses are retained byte-for-byte after mandatory secret filtering. A redaction creates a provenance record naming the field location, reason, and original-field digest when safe to compute. Assets may use arbitrary names; only declared roles and Markdown-relative references carry meaning.
 

@@ -6431,8 +6431,12 @@ fn artifact_inspect_validate_and_import_use_the_synthetic_mdaf_fixture() {
     let inspection = parse_stdout_json(&inspect);
     assert_eq!(inspection["valid"], true);
     assert_eq!(inspection["producer"]["name"], "example-producer");
-    assert_eq!(inspection["source_mappings"], 1);
+    assert_eq!(inspection["source_mappings"], 5);
     assert_eq!(inspection["outline_nodes"], 1);
+    assert_eq!(inspection["sources"].as_array().map(Vec::len), Some(4));
+    assert_eq!(inspection["selector_counts"]["rectangle"], 1);
+    assert_eq!(inspection["selector_counts"]["interval"], 1);
+    assert_eq!(inspection["selector_counts"]["grid"], 1);
 
     Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -6509,6 +6513,9 @@ fn artifact_inspect_validate_and_import_use_the_synthetic_mdaf_fixture() {
     let encounter =
         fs::read_to_string(vault_root.join("Imported/Rules/Encounter.md")).expect("imported note");
     assert!(encounter.contains("artifact: sha256:"));
+    assert!(encounter.contains("source_id: synthetic-audio"));
+    assert!(encounter.contains("type: interval"));
+    assert!(encounter.contains("type: rectangle"));
     assert!(encounter.contains("[map](assets/map.txt)"));
 }
 

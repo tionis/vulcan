@@ -3,11 +3,12 @@ use crate::templates::{
 };
 use crate::AppError;
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 use vulcan_core::artifact::{
-    inspect_mdaf, MdafArtifact, MdafDiagnostic, MdafMemberRole, MdafOutline, MdafSourceMap,
+    inspect_mdaf, MdafArtifact, MdafDiagnostic, MdafMemberRole, MdafOutline, MdafSelector,
+    MdafSourceLocator as ArtifactSourceLocator, MdafSourceMap,
 };
 use vulcan_core::move_rewrite::rewrite_link_destination;
 use vulcan_core::parser::{parse_document, RawLink};
@@ -105,10 +106,7 @@ struct NoteSourceSpan {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 struct NoteSourceLocator {
     source_id: String,
-    coordinate_system: String,
-    unit: String,
-    start: u64,
-    end: u64,
+    selectors: Vec<MdafSelector>,
     #[serde(skip_serializing_if = "Option::is_none")]
     confidence: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -502,11 +500,7 @@ fn import_link_target(
     let targets = source_map
         .mappings
         .iter()
-        .filter(|mapping| {
-            mapping.source.coordinate_system == reference.target.coordinate_system
-                && mapping.source.start <= reference.target.start
-                && reference.target.start < mapping.source.end
-        })
+        .filter(|mapping| source_locators_overlap(&mapping.source, &reference.target))
         .filter_map(|mapping| plan.note_for_source_offset(mapping.document.start))
         .map(|note| note.path.clone())
         .collect::<BTreeSet<_>>();
@@ -523,6 +517,147 @@ fn import_link_target(
         path: None,
     });
     None
+}
+
+fn source_locators_overlap(left: &ArtifactSourceLocator, right: &ArtifactSourceLocator) -> bool {
+    left.source_id == right.source_id
+        && (right.selectors.is_empty()
+            || right.selectors.iter().all(|selector| {
+                left.selectors
+                    .iter()
+                    .any(|other| selectors_overlap(other, selector))
+            }))
+}
+
+fn selectors_overlap(left: &MdafSelector, right: &MdafSelector) -> bool {
+    match (left, right) {
+        (MdafSelector::Interval { .. }, MdafSelector::Interval { .. }) => {
+            interval_selectors_overlap(left, right)
+        }
+        (MdafSelector::Rectangle { .. }, MdafSelector::Rectangle { .. }) => {
+            rectangle_selectors_overlap(left, right)
+        }
+        (MdafSelector::Polygon { .. }, MdafSelector::Polygon { .. })
+        | (MdafSelector::Extension { .. }, MdafSelector::Extension { .. }) => left == right,
+        (MdafSelector::Grid { .. }, MdafSelector::Grid { .. }) => {
+            grid_selectors_overlap(left, right)
+        }
+        (MdafSelector::TextQuote { .. }, MdafSelector::TextQuote { .. }) => {
+            text_quote_selectors_overlap(left, right)
+        }
+        (MdafSelector::Fragment { .. }, MdafSelector::Fragment { .. }) => {
+            fragment_selectors_overlap(left, right)
+        }
+        _ => false,
+    }
+}
+
+fn interval_selectors_overlap(left: &MdafSelector, right: &MdafSelector) -> bool {
+    let (
+        MdafSelector::Interval {
+            unit: left_unit,
+            start: left_start,
+            end: left_end,
+            ..
+        },
+        MdafSelector::Interval {
+            unit: right_unit,
+            start: right_start,
+            end: right_end,
+            ..
+        },
+    ) = (left, right)
+    else {
+        return false;
+    };
+    left_unit == right_unit && left_start < right_end && right_start < left_end
+}
+
+fn rectangle_selectors_overlap(left: &MdafSelector, right: &MdafSelector) -> bool {
+    let (
+        MdafSelector::Rectangle {
+            unit: left_unit,
+            x: left_x,
+            y: left_y,
+            width: left_width,
+            height: left_height,
+        },
+        MdafSelector::Rectangle {
+            unit: right_unit,
+            x: right_x,
+            y: right_y,
+            width: right_width,
+            height: right_height,
+        },
+    ) = (left, right)
+    else {
+        return false;
+    };
+    left_unit == right_unit
+        && left_x < &(right_x + right_width)
+        && right_x < &(left_x + left_width)
+        && left_y < &(right_y + right_height)
+        && right_y < &(left_y + left_height)
+}
+
+fn grid_selectors_overlap(left: &MdafSelector, right: &MdafSelector) -> bool {
+    let (
+        MdafSelector::Grid {
+            sheet: left_sheet,
+            row_start: left_row_start,
+            row_end: left_row_end,
+            column_start: left_column_start,
+            column_end: left_column_end,
+        },
+        MdafSelector::Grid {
+            sheet: right_sheet,
+            row_start: right_row_start,
+            row_end: right_row_end,
+            column_start: right_column_start,
+            column_end: right_column_end,
+        },
+    ) = (left, right)
+    else {
+        return false;
+    };
+    left_sheet == right_sheet
+        && left_row_start < right_row_end
+        && right_row_start < left_row_end
+        && left_column_start < right_column_end
+        && right_column_start < left_column_end
+}
+
+fn fragment_selectors_overlap(left: &MdafSelector, right: &MdafSelector) -> bool {
+    let (
+        MdafSelector::Fragment {
+            value: left_value,
+            conforms_to: left_conforms,
+        },
+        MdafSelector::Fragment {
+            value: right_value,
+            conforms_to: right_conforms,
+        },
+    ) = (left, right)
+    else {
+        return false;
+    };
+    left_value == right_value
+        && (left_conforms == right_conforms || left_conforms.is_none() || right_conforms.is_none())
+}
+
+fn text_quote_selectors_overlap(left: &MdafSelector, right: &MdafSelector) -> bool {
+    let (
+        MdafSelector::TextQuote {
+            exact: left_exact, ..
+        },
+        MdafSelector::TextQuote {
+            exact: right_exact, ..
+        },
+    ) = (left, right)
+    else {
+        return false;
+    };
+    left_exact == right_exact
 }
 
 fn apply_edits(source: &str, edits: &[TextEdit], path: &str) -> Result<String, AppError> {
@@ -595,26 +730,15 @@ fn source_locators(
     let Some(source_map) = source_map else {
         return Vec::new();
     };
-    let systems = source_map
-        .coordinate_systems
-        .iter()
-        .map(|system| (system.id.as_str(), system))
-        .collect::<BTreeMap<_, _>>();
     source_map
         .mappings
         .iter()
         .filter(|mapping| mapping.document.start < span.end && span.start < mapping.document.end)
-        .filter_map(|mapping| {
-            let system = systems.get(mapping.source.coordinate_system.as_str())?;
-            Some(NoteSourceLocator {
-                source_id: system.source.clone(),
-                coordinate_system: system.id.clone(),
-                unit: system.unit.clone(),
-                start: mapping.source.start,
-                end: mapping.source.end,
-                confidence: mapping.confidence,
-                method: mapping.method.clone(),
-            })
+        .map(|mapping| NoteSourceLocator {
+            source_id: mapping.source.source_id.clone(),
+            selectors: mapping.source.selectors.clone(),
+            confidence: mapping.confidence,
+            method: mapping.method.clone(),
         })
         .collect()
 }
@@ -736,7 +860,7 @@ mod tests {
             "format":"mdaf","version":1,
             "markdown":{"path":"text.md","sha256":sha256(markdown.as_bytes()),"media_type":"text/markdown"},
             "producer":{"name":"synthetic","version":"1"},"members":members,
-            "sources":[{"id":"fixture","media_type":"application/pdf","sha256":sha256(b"fixture")}],
+            "sources":[{"id":"fixture","media_type":"application/octet-stream","sha256":sha256(b"fixture")}],
             "capabilities":capabilities
         });
         fs::write(
@@ -853,23 +977,21 @@ mod tests {
         let source_map = MdafSourceMap {
             version: 1,
             document_sha256: "0".repeat(64),
-            coordinate_systems: vec![vulcan_core::artifact::MdafCoordinateSystem {
-                id: "fixture/page".to_string(),
-                source: "fixture".to_string(),
-                unit: "page".to_string(),
-                origin: 1,
-            }],
             mappings: vec![vulcan_core::artifact::MdafSourceMapping {
                 document: vulcan_core::artifact::MdafByteSpan {
                     start: magic_offset,
                     end: markdown.len(),
                 },
-                source: vulcan_core::artifact::MdafSourceInterval {
-                    coordinate_system: "fixture/page".to_string(),
-                    start: 2,
-                    end: 3,
-                    label_start: None,
-                    label_end: None,
+                source: ArtifactSourceLocator {
+                    source_id: "fixture".to_string(),
+                    selectors: vec![MdafSelector::Interval {
+                        unit: "page".to_string(),
+                        start: 2.0,
+                        end: 3.0,
+                        origin: Some(1.0),
+                        label_start: None,
+                        label_end: None,
+                    }],
                 },
                 confidence: Some(1.0),
                 method: Some("fixture/alignment".to_string()),
@@ -879,12 +1001,16 @@ mod tests {
                     start: link.byte_offset,
                     end: link.byte_offset + link.raw_text.len(),
                 },
-                target: vulcan_core::artifact::MdafSourceInterval {
-                    coordinate_system: "fixture/page".to_string(),
-                    start: 2,
-                    end: 3,
-                    label_start: Some("2".to_string()),
-                    label_end: None,
+                target: ArtifactSourceLocator {
+                    source_id: "fixture".to_string(),
+                    selectors: vec![MdafSelector::Interval {
+                        unit: "page".to_string(),
+                        start: 2.0,
+                        end: 3.0,
+                        origin: Some(1.0),
+                        label_start: Some("2".to_string()),
+                        label_end: None,
+                    }],
                 },
                 kind: Some("page-reference".to_string()),
             }],
@@ -894,6 +1020,86 @@ mod tests {
             .expect("unique target");
         assert_eq!(target.0, "Book/Magic.md");
         assert!(diagnostics.is_empty());
+    }
+
+    #[test]
+    fn source_locator_matching_composes_temporal_spatial_and_grid_selectors() {
+        let mapping = ArtifactSourceLocator {
+            source_id: "video".to_string(),
+            selectors: vec![
+                MdafSelector::Interval {
+                    unit: "millisecond".to_string(),
+                    start: 1000.0,
+                    end: 5000.0,
+                    origin: Some(0.0),
+                    label_start: None,
+                    label_end: None,
+                },
+                MdafSelector::Rectangle {
+                    unit: "normalized".to_string(),
+                    x: 0.1,
+                    y: 0.1,
+                    width: 0.5,
+                    height: 0.5,
+                },
+            ],
+        };
+        let target = ArtifactSourceLocator {
+            source_id: "video".to_string(),
+            selectors: vec![
+                MdafSelector::Interval {
+                    unit: "millisecond".to_string(),
+                    start: 2000.0,
+                    end: 3000.0,
+                    origin: None,
+                    label_start: None,
+                    label_end: None,
+                },
+                MdafSelector::Rectangle {
+                    unit: "normalized".to_string(),
+                    x: 0.2,
+                    y: 0.2,
+                    width: 0.1,
+                    height: 0.1,
+                },
+            ],
+        };
+        assert!(source_locators_overlap(&mapping, &target));
+
+        let outside_time = ArtifactSourceLocator {
+            selectors: vec![MdafSelector::Interval {
+                unit: "millisecond".to_string(),
+                start: 6000.0,
+                end: 7000.0,
+                origin: None,
+                label_start: None,
+                label_end: None,
+            }],
+            ..target.clone()
+        };
+        assert!(!source_locators_overlap(&mapping, &outside_time));
+
+        let table = ArtifactSourceLocator {
+            source_id: "sheet".to_string(),
+            selectors: vec![MdafSelector::Grid {
+                sheet: Some("Data".to_string()),
+                row_start: 2,
+                row_end: 8,
+                column_start: 1,
+                column_end: 4,
+            }],
+        };
+        let cell = ArtifactSourceLocator {
+            source_id: "sheet".to_string(),
+            selectors: vec![MdafSelector::Grid {
+                sheet: Some("Data".to_string()),
+                row_start: 3,
+                row_end: 4,
+                column_start: 2,
+                column_end: 3,
+            }],
+        };
+        assert!(source_locators_overlap(&table, &cell));
     }
 
     #[test]

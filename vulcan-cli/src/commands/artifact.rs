@@ -5,6 +5,7 @@ use crate::{
     Cli, CliError, OutputFormat,
 };
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::path::Path;
 use vulcan_app::artifact::{
     import_artifact, ArtifactHierarchyAuthority, ArtifactImportReport, ArtifactImportRequest,
@@ -27,6 +28,7 @@ struct ArtifactInspectionReport<'a> {
     markdown_bytes: Option<usize>,
     source_mappings: usize,
     source_references: usize,
+    selector_counts: BTreeMap<&'static str, usize>,
     outline_nodes: usize,
     provenance_activities: usize,
     diagnostics: &'a [MdafDiagnostic],
@@ -124,6 +126,23 @@ fn inspection_report(artifact: &MdafArtifact) -> ArtifactInspectionReport<'_> {
             .source_map
             .as_ref()
             .map_or(0, |map| map.references.len()),
+        selector_counts: artifact
+            .source_map
+            .as_ref()
+            .map_or_else(BTreeMap::new, |map| {
+                map.mappings
+                    .iter()
+                    .flat_map(|mapping| &mapping.source.selectors)
+                    .chain(
+                        map.references
+                            .iter()
+                            .flat_map(|reference| &reference.target.selectors),
+                    )
+                    .fold(BTreeMap::new(), |mut counts, selector| {
+                        *counts.entry(selector.kind()).or_insert(0) += 1;
+                        counts
+                    })
+            }),
         outline_nodes: artifact
             .outline
             .as_ref()
@@ -149,7 +168,21 @@ fn print_inspection(output: OutputFormat, artifact: &MdafArtifact) -> Result<(),
             }
             println!("Members: {}", report.members.len());
             println!("Sources: {}", report.sources.len());
+            for source in report.sources {
+                println!("- {} ({})", source.id, source.media_type);
+            }
             println!("Source mappings: {}", report.source_mappings);
+            if !report.selector_counts.is_empty() {
+                println!(
+                    "Selectors: {}",
+                    report
+                        .selector_counts
+                        .iter()
+                        .map(|(kind, count)| format!("{kind}={count}"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                );
+            }
             println!("Outline nodes: {}", report.outline_nodes);
             println!("Provenance activities: {}", report.provenance_activities);
             for diagnostic in report.diagnostics {

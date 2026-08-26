@@ -32,33 +32,51 @@
       "path": "source-map.json",
       "role": "source-map",
       "media_type": "application/json",
-      "size": 579,
-      "sha256": "5fd04cec17172bfd281a00f6e123a3a5ae6a72fd20550915a1934806747ad239",
+      "size": 2180,
+      "sha256": "225842460e642daa4bff59dcc7de0ba5dd40b4fbd57d500383cc5875955e3787",
       "created_by": "activity:extract"
     },
     {
       "path": "outline.json",
       "role": "outline",
       "media_type": "application/json",
-      "size": 539,
-      "sha256": "79f0fb0f785470f0c8a7d6fa4c3122e19d5075c4e2520f0ae85bc2603eb745f8",
+      "size": 552,
+      "sha256": "b849ed9bc6282287864c73fe56f06f1c45aeb9e2c9058ea3b57339679694f023",
       "created_by": "activity:extract"
     },
     {
       "path": "provenance.json",
       "role": "provenance",
       "media_type": "application/json",
-      "size": 711,
-      "sha256": "7f9214ecfd1115a35122372cb1fc788c48d8de7369033a735567fc5280f0823e",
+      "size": 818,
+      "sha256": "8cdc5cd74ec35146a4eb312ecdb46046a4f809dc0d9ad39fde8817563b66e554",
       "created_by": "activity:extract"
     }
   ],
   "sources": [
     {
-      "id": "synthetic",
-      "media_type": "application/pdf",
-      "sha256": "e4754206b666afc86c26e1039e723731a9a44a4cb73f8365d31c9864a1e20b21",
-      "name": "synthetic-source.pdf"
+      "id": "synthetic-image",
+      "media_type": "image/png",
+      "sha256": "6f252e1d85c9df6308cbb574aa764fcb8d35d477e9cca0adfa6257617f1fffd7",
+      "name": "synthetic-image.png"
+    },
+    {
+      "id": "synthetic-audio",
+      "media_type": "audio/wav",
+      "sha256": "ef746a1a59afecba50d3ce36e3506ee52784236e91034569ccb54f73fbc3c632",
+      "name": "synthetic-audio.wav"
+    },
+    {
+      "id": "synthetic-sheet",
+      "media_type": "text/csv",
+      "sha256": "ba5da59aa66c04df83bcd22cd15275bfb845c8fa19730c1504a6440318b24a8c",
+      "name": "synthetic-sheet.csv"
+    },
+    {
+      "id": "synthetic-html",
+      "media_type": "text/html",
+      "sha256": "63cbd0bf30fc9be57bac0c7441d9354c6bbf4b243dd5ec5f6ab764331c6aaba2",
+      "name": "synthetic-page.html"
     }
   ],
   "capabilities": [

@@ -1,28 +1,69 @@
 {
   "version": 1,
   "document_sha256": "ab6f56620c079a7c155b79040f8e5d88596d0f3be0afd0b4214ba398d91229c7",
-  "coordinate_systems": [
-    {
-      "id": "example.test/page",
-      "source": "synthetic",
-      "unit": "page",
-      "origin": 1
-    }
-  ],
   "mappings": [
     {
-      "document": {
-        "start": 0,
-        "end": 56
-      },
+      "document": { "start": 0, "end": 56 },
       "source": {
-        "coordinate_system": "example.test/page",
-        "start": 1,
-        "end": 2,
-        "label_start": "1"
+        "source_id": "synthetic-image",
+        "selectors": [
+          { "type": "rectangle", "unit": "normalized", "x": 0.1, "y": 0.2, "width": 0.7, "height": 0.5 }
+        ]
       },
       "confidence": 1,
-      "method": "example.test/alignment"
+      "method": "example.test/image-alignment"
+    },
+    {
+      "document": { "start": 19, "end": 56 },
+      "source": {
+        "source_id": "synthetic-image",
+        "selectors": [
+          {
+            "type": "polygon",
+            "unit": "normalized",
+            "points": [
+              { "x": 0.1, "y": 0.2 },
+              { "x": 0.8, "y": 0.2 },
+              { "x": 0.7, "y": 0.7 },
+              { "x": 0.2, "y": 0.7 }
+            ]
+          }
+        ]
+      },
+      "method": "example.test/polygon-alignment"
+    },
+    {
+      "document": { "start": 19, "end": 56 },
+      "source": {
+        "source_id": "synthetic-audio",
+        "selectors": [
+          { "type": "interval", "unit": "millisecond", "start": 1200, "end": 4800, "origin": 0 }
+        ]
+      },
+      "confidence": 0.98,
+      "method": "example.test/transcript-alignment"
+    },
+    {
+      "document": { "start": 29, "end": 56 },
+      "source": {
+        "source_id": "synthetic-sheet",
+        "selectors": [
+          { "type": "grid", "sheet": "Encounter", "row_start": 1, "row_end": 3, "column_start": 0, "column_end": 2 }
+        ]
+      },
+      "method": "example.test/table-alignment"
+    },
+    {
+      "document": { "start": 29, "end": 56 },
+      "source": {
+        "source_id": "synthetic-html",
+        "selectors": [
+          { "type": "fragment", "value": "encounter", "conforms_to": "https://html.spec.whatwg.org/multipage/browsing-the-web.html#scroll-to-fragid" },
+          { "type": "text-quote", "exact": "See map.", "prefix": "Combat: ", "suffix": " End." },
+          { "type": "extension", "namespace": "example.test/dom-path", "data": { "path": [1, 2, 1] } }
+        ]
+      },
+      "method": "example.test/dom-alignment"
     }
   ],
   "references": []

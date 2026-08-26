@@ -519,7 +519,7 @@ The source note is replaced by default. `--keep-source` retains it as an archiva
 
 ## Importing evidence-preserving Markdown artifacts
 
-`vulcan artifact` consumes extractor-neutral Markdown Artifact Format (MDAF) directories and `.mdaf` ZIP files. The versioned format specification and schemas live in [`docs/specs/mdaf/v1/`](specs/mdaf/v1/). Vulcan validates hashes, archive safety, normalized source coordinates, aligned outline evidence, and tool/model provenance without interpreting extractor-native renditions or extensions.
+`vulcan artifact` consumes extractor- and source-format-neutral Markdown Artifact Format (MDAF) directories and `.mdaf` ZIP files. Sources may be PDFs, images, audiovisual media, web or office documents, structured data, text, compound media, or future formats; Markdown is the normalized output. The versioned format specification and schemas live in [`docs/specs/mdaf/v1/`](specs/mdaf/v1/). Vulcan validates hashes, archive safety, composable source selectors, aligned outline evidence, and tool/model provenance without interpreting extractor-native renditions or extensions.
 
 ```bash
 vulcan --output json artifact inspect ./book.mdaf
@@ -531,7 +531,7 @@ vulcan artifact import ./book.mdaf \
   --from-level 2 --through-level 3
 ```
 
-Import always requires a new explicit vault-relative destination. Markdown headings are the default hierarchy authority; `--hierarchy outline` is opt-in and requires a completely aligned `outline.json`. The dry-run report lists every generated note, copied asset, source span, diagnostic, and rewritten link without creating the destination. A live import streams declared assets, adds `vulcan.source` artifact identity and source-coordinate spans to each note, rewrites declared asset links and uniquely resolvable normalized source references, refreshes the cache, and removes the partial destination if writing or reindexing fails. The MDAF package remains external evidence rather than becoming canonical vault state.
+Import always requires a new explicit vault-relative destination. Markdown headings are the default hierarchy authority; `--hierarchy outline` is opt-in and requires a completely aligned `outline.json`. The dry-run report lists every generated note, copied asset, source span, diagnostic, and rewritten link without creating the destination. A live import streams declared assets, adds `vulcan.source` artifact identity and source locators to each note, rewrites declared asset links and uniquely resolvable normalized source references, refreshes the cache, and removes the partial destination if writing or reindexing fails. The MDAF package remains external evidence rather than becoming canonical vault state.
 
 ## Searching with `search`
 

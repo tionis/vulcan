@@ -8,19 +8,13 @@
       "parent": null,
       "level": 2,
       "title": "Encounter",
-      "heading": {
-        "start": 19,
-        "end": 28
-      },
-      "section": {
-        "start": 19,
-        "end": 56
-      },
+      "heading": { "start": 19, "end": 28 },
+      "section": { "start": 19, "end": 56 },
       "source": {
-        "source_id": "synthetic",
-        "coordinate_system": "example.test/page",
-        "start": 1,
-        "end": 2
+        "source_id": "synthetic-image",
+        "selectors": [
+          { "type": "rectangle", "unit": "normalized", "x": 0.1, "y": 0.2, "width": 0.7, "height": 0.5 }
+        ]
       }
     }
   ]

@@ -16,7 +16,10 @@
       ],
       "models": [],
       "inputs": [
-        "source:synthetic"
+        "source:synthetic-image",
+        "source:synthetic-audio",
+        "source:synthetic-sheet",
+        "source:synthetic-html"
       ],
       "outputs": [
         "text.md",

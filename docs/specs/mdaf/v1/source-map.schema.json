@@ -4,11 +4,10 @@
   "title": "MDAF v1 source map",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "document_sha256", "coordinate_systems", "mappings", "references"],
+  "required": ["version", "document_sha256", "mappings", "references"],
   "properties": {
     "version": { "const": 1 },
     "document_sha256": { "$ref": "#/$defs/sha256" },
-    "coordinate_systems": { "type": "array", "items": { "$ref": "#/$defs/system" } },
     "mappings": { "type": "array", "items": { "$ref": "#/$defs/mapping" } },
     "references": { "type": "array", "items": { "$ref": "#/$defs/reference" } }
   },
@@ -23,27 +22,114 @@
         "end": { "type": "integer", "minimum": 0 }
       }
     },
+    "locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "selectors"],
+      "properties": {
+        "source_id": { "type": "string", "minLength": 1 },
+        "selectors": { "type": "array", "items": { "$ref": "#/$defs/selector" } }
+      }
+    },
+    "selector": {
+      "oneOf": [
+        { "$ref": "#/$defs/interval" },
+        { "$ref": "#/$defs/rectangle" },
+        { "$ref": "#/$defs/polygon" },
+        { "$ref": "#/$defs/grid" },
+        { "$ref": "#/$defs/text_quote" },
+        { "$ref": "#/$defs/fragment" },
+        { "$ref": "#/$defs/extension" }
+      ]
+    },
     "interval": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["coordinate_system", "start", "end"],
+      "required": ["type", "unit", "start", "end"],
       "properties": {
-        "coordinate_system": { "type": "string", "minLength": 1 },
-        "start": { "type": "integer", "minimum": 0 },
-        "end": { "type": "integer", "minimum": 0 },
+        "type": { "const": "interval" },
+        "unit": { "type": "string", "minLength": 1 },
+        "start": { "type": "number", "minimum": 0 },
+        "end": { "type": "number", "exclusiveMinimum": 0 },
+        "origin": { "type": "number" },
         "label_start": { "type": "string" },
         "label_end": { "type": "string" }
       }
     },
-    "system": {
+    "rectangle": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "source", "unit", "origin"],
+      "required": ["type", "unit", "x", "y", "width", "height"],
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
-        "source": { "type": "string", "minLength": 1 },
+        "type": { "const": "rectangle" },
         "unit": { "type": "string", "minLength": 1 },
-        "origin": { "type": "integer" }
+        "x": { "type": "number", "minimum": 0 },
+        "y": { "type": "number", "minimum": 0 },
+        "width": { "type": "number", "exclusiveMinimum": 0 },
+        "height": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      }
+    },
+    "polygon": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "unit", "points"],
+      "properties": {
+        "type": { "const": "polygon" },
+        "unit": { "type": "string", "minLength": 1 },
+        "points": { "type": "array", "minItems": 3, "items": { "$ref": "#/$defs/point" } }
+      }
+    },
+    "grid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "row_start", "row_end", "column_start", "column_end"],
+      "properties": {
+        "type": { "const": "grid" },
+        "sheet": { "type": "string" },
+        "row_start": { "type": "integer", "minimum": 0 },
+        "row_end": { "type": "integer", "minimum": 1 },
+        "column_start": { "type": "integer", "minimum": 0 },
+        "column_end": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "text_quote": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "exact"],
+      "properties": {
+        "type": { "const": "text-quote" },
+        "exact": { "type": "string", "minLength": 1 },
+        "prefix": { "type": "string" },
+        "suffix": { "type": "string" }
+      }
+    },
+    "fragment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "value"],
+      "properties": {
+        "type": { "const": "fragment" },
+        "value": { "type": "string", "minLength": 1 },
+        "conforms_to": { "type": "string", "minLength": 1 }
+      }
+    },
+    "extension": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "namespace", "data"],
+      "properties": {
+        "type": { "const": "extension" },
+        "namespace": { "type": "string", "pattern": "^[A-Za-z0-9-]+(?:\\.[A-Za-z0-9-]+)+/.+$" },
+        "data": true
       }
     },
     "mapping": {
@@ -52,7 +138,7 @@
       "required": ["document", "source"],
       "properties": {
         "document": { "$ref": "#/$defs/span" },
-        "source": { "$ref": "#/$defs/interval" },
+        "source": { "$ref": "#/$defs/locator" },
         "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
         "method": { "type": "string" }
       }
@@ -63,7 +149,7 @@
       "required": ["document", "target"],
       "properties": {
         "document": { "$ref": "#/$defs/span" },
-        "target": { "$ref": "#/$defs/interval" },
+        "target": { "$ref": "#/$defs/locator" },
         "kind": { "type": "string" }
       }
     }

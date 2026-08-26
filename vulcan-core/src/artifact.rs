@@ -118,32 +118,91 @@ pub struct MdafByteSpan {
     pub end: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "kebab-case", deny_unknown_fields)]
+pub enum MdafSelector {
+    Interval {
+        unit: String,
+        start: f64,
+        end: f64,
+        #[serde(default)]
+        origin: Option<f64>,
+        #[serde(default)]
+        label_start: Option<String>,
+        #[serde(default)]
+        label_end: Option<String>,
+    },
+    Rectangle {
+        unit: String,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    },
+    Polygon {
+        unit: String,
+        points: Vec<MdafPoint>,
+    },
+    Grid {
+        #[serde(default)]
+        sheet: Option<String>,
+        row_start: u64,
+        row_end: u64,
+        column_start: u64,
+        column_end: u64,
+    },
+    TextQuote {
+        exact: String,
+        #[serde(default)]
+        prefix: Option<String>,
+        #[serde(default)]
+        suffix: Option<String>,
+    },
+    Fragment {
+        value: String,
+        #[serde(default)]
+        conforms_to: Option<String>,
+    },
+    Extension {
+        namespace: String,
+        data: serde_json::Value,
+    },
+}
+
+impl MdafSelector {
+    #[must_use]
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::Interval { .. } => "interval",
+            Self::Rectangle { .. } => "rectangle",
+            Self::Polygon { .. } => "polygon",
+            Self::Grid { .. } => "grid",
+            Self::TextQuote { .. } => "text-quote",
+            Self::Fragment { .. } => "fragment",
+            Self::Extension { .. } => "extension",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MdafCoordinateSystem {
-    pub id: String,
-    pub source: String,
-    pub unit: String,
-    pub origin: i64,
+pub struct MdafPoint {
+    pub x: f64,
+    pub y: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct MdafSourceInterval {
-    pub coordinate_system: String,
-    pub start: u64,
-    pub end: u64,
-    #[serde(default)]
-    pub label_start: Option<String>,
-    #[serde(default)]
-    pub label_end: Option<String>,
+pub struct MdafSourceLocator {
+    pub source_id: String,
+    pub selectors: Vec<MdafSelector>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MdafSourceMapping {
     pub document: MdafByteSpan,
-    pub source: MdafSourceInterval,
+    pub source: MdafSourceLocator,
     #[serde(default)]
     pub confidence: Option<f64>,
     #[serde(default)]
@@ -154,7 +213,7 @@ pub struct MdafSourceMapping {
 #[serde(deny_unknown_fields)]
 pub struct MdafSourceReference {
     pub document: MdafByteSpan,
-    pub target: MdafSourceInterval,
+    pub target: MdafSourceLocator,
     #[serde(default)]
     pub kind: Option<String>,
 }
@@ -164,18 +223,8 @@ pub struct MdafSourceReference {
 pub struct MdafSourceMap {
     pub version: u32,
     pub document_sha256: String,
-    pub coordinate_systems: Vec<MdafCoordinateSystem>,
     pub mappings: Vec<MdafSourceMapping>,
     pub references: Vec<MdafSourceReference>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct MdafOutlineSource {
-    pub source_id: String,
-    pub coordinate_system: String,
-    pub start: f64,
-    pub end: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -189,7 +238,7 @@ pub struct MdafOutlineNode {
     pub heading: MdafByteSpan,
     pub section: MdafByteSpan,
     #[serde(default)]
-    pub source: Option<MdafOutlineSource>,
+    pub source: Option<MdafSourceLocator>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1073,7 +1122,6 @@ fn validate_semantics(
             markdown,
             &markdown_digest,
             &source_ids,
-            source_map,
             diagnostics,
         );
     }
@@ -1158,57 +1206,129 @@ fn validate_source_map(
             "source-map.json",
         );
     }
-    let mut systems = BTreeMap::new();
-    for system in &map.coordinate_systems {
-        if systems.insert(system.id.as_str(), system).is_some() {
-            error_diag(
-                diagnostics,
-                "coordinate_system_duplicate",
-                "coordinate system ids must be unique",
-                "source-map.json",
-            );
-        }
-        if !source_ids.contains(system.source.as_str()) {
-            error_diag(
-                diagnostics,
-                "coordinate_source_unknown",
-                format!("unknown source {}", system.source),
-                "source-map.json",
-            );
-        }
-    }
     for mapping in &map.mappings {
         validate_span(mapping.document, markdown, "source-map.json", diagnostics);
-        validate_interval(&mapping.source, &systems, "source-map.json", diagnostics);
+        validate_locator(&mapping.source, source_ids, "source-map.json", diagnostics);
     }
     for reference in &map.references {
         validate_span(reference.document, markdown, "source-map.json", diagnostics);
-        validate_interval(&reference.target, &systems, "source-map.json", diagnostics);
+        validate_locator(
+            &reference.target,
+            source_ids,
+            "source-map.json",
+            diagnostics,
+        );
     }
 }
 
-fn validate_interval(
-    interval: &MdafSourceInterval,
-    systems: &BTreeMap<&str, &MdafCoordinateSystem>,
+fn validate_locator(
+    locator: &MdafSourceLocator,
+    source_ids: &BTreeSet<&str>,
     path: &str,
     diagnostics: &mut Vec<MdafDiagnostic>,
 ) {
-    if interval.start >= interval.end {
+    if !source_ids.contains(locator.source_id.as_str()) {
         error_diag(
             diagnostics,
-            "source_interval_invalid",
-            "source interval must be non-empty",
+            "locator_source_unknown",
+            format!("unknown source {}", locator.source_id),
             path,
         );
     }
-    if !systems.contains_key(interval.coordinate_system.as_str()) {
-        error_diag(
-            diagnostics,
-            "coordinate_system_unknown",
-            format!("unknown coordinate system {}", interval.coordinate_system),
-            path,
-        );
+    for selector in &locator.selectors {
+        let valid = match selector {
+            MdafSelector::Interval {
+                unit,
+                start,
+                end,
+                origin,
+                ..
+            } => {
+                !unit.is_empty()
+                    && start.is_finite()
+                    && end.is_finite()
+                    && *start >= 0.0
+                    && start < end
+                    && origin.is_none_or(f64::is_finite)
+            }
+            MdafSelector::Rectangle {
+                unit,
+                x,
+                y,
+                width,
+                height,
+            } => {
+                let finite = [x, y, width, height]
+                    .into_iter()
+                    .all(|value| value.is_finite());
+                let bounded = match unit.as_str() {
+                    "percent" => *x + *width <= 100.0 && *y + *height <= 100.0,
+                    "normalized" => *x + *width <= 1.0 && *y + *height <= 1.0,
+                    _ => true,
+                };
+                !unit.is_empty()
+                    && finite
+                    && *x >= 0.0
+                    && *y >= 0.0
+                    && *width > 0.0
+                    && *height > 0.0
+                    && bounded
+            }
+            MdafSelector::Polygon { unit, points } => {
+                !unit.is_empty()
+                    && points.len() >= 3
+                    && points
+                        .iter()
+                        .all(|point| point.x.is_finite() && point.y.is_finite())
+                    && polygon_area(points).abs() > f64::EPSILON
+                    && match unit.as_str() {
+                        "percent" => points.iter().all(|point| {
+                            (0.0..=100.0).contains(&point.x) && (0.0..=100.0).contains(&point.y)
+                        }),
+                        "normalized" => points.iter().all(|point| {
+                            (0.0..=1.0).contains(&point.x) && (0.0..=1.0).contains(&point.y)
+                        }),
+                        _ => true,
+                    }
+            }
+            MdafSelector::Grid {
+                row_start,
+                row_end,
+                column_start,
+                column_end,
+                ..
+            } => row_start < row_end && column_start < column_end,
+            MdafSelector::TextQuote { exact, .. } => !exact.is_empty(),
+            MdafSelector::Fragment { value, conforms_to } => {
+                !value.is_empty() && conforms_to.as_deref().is_none_or(|value| !value.is_empty())
+            }
+            MdafSelector::Extension { namespace, .. } => valid_namespace(namespace),
+        };
+        if !valid {
+            error_diag(
+                diagnostics,
+                "source_selector_invalid",
+                "source selector is empty, non-finite, degenerate, out of bounds, or not namespaced",
+                path,
+            );
+        }
     }
+}
+
+fn polygon_area(points: &[MdafPoint]) -> f64 {
+    points
+        .iter()
+        .zip(points.iter().cycle().skip(1))
+        .take(points.len())
+        .map(|(left, right)| left.x * right.y - right.x * left.y)
+        .sum::<f64>()
+        / 2.0
+}
+
+fn valid_namespace(namespace: &str) -> bool {
+    namespace
+        .split_once('/')
+        .is_some_and(|(authority, name)| authority.contains('.') && !name.is_empty())
 }
 
 fn validate_outline(
@@ -1216,7 +1336,6 @@ fn validate_outline(
     markdown: &str,
     digest: &str,
     source_ids: &BTreeSet<&str>,
-    source_map: Option<&MdafSourceMap>,
     diagnostics: &mut Vec<MdafDiagnostic>,
 ) {
     if outline.document_sha256 != digest {
@@ -1227,12 +1346,6 @@ fn validate_outline(
             "outline.json",
         );
     }
-    let systems = source_map.map_or_else(BTreeSet::new, |map| {
-        map.coordinate_systems
-            .iter()
-            .map(|system| system.id.as_str())
-            .collect()
-    });
     let mut nodes: BTreeMap<&str, &MdafOutlineNode> = BTreeMap::new();
     let mut previous_start = None;
     for node in &outline.nodes {
@@ -1289,22 +1402,7 @@ fn validate_outline(
             }
         }
         if let Some(source) = node.source.as_ref() {
-            if !source_ids.contains(source.source_id.as_str()) || source.start >= source.end {
-                error_diag(
-                    diagnostics,
-                    "outline_source_invalid",
-                    format!("invalid source binding for {}", node.id),
-                    "outline.json",
-                );
-            }
-            if source_map.is_some() && !systems.contains(source.coordinate_system.as_str()) {
-                error_diag(
-                    diagnostics,
-                    "coordinate_system_unknown",
-                    format!("unknown coordinate system {}", source.coordinate_system),
-                    "outline.json",
-                );
-            }
+            validate_locator(source, source_ids, "outline.json", diagnostics);
         }
         if nodes.insert(node.id.as_str(), node).is_some() {
             error_diag(
@@ -1573,7 +1671,7 @@ mod tests {
             "markdown":{"path":"text.md","sha256":sha256(markdown.as_bytes()),"media_type":"text/markdown"},
             "producer":{"name":"fixture-builder","version":"1.0.0"},
             "members":members,
-            "sources":[{"id":"synthetic","media_type":"application/pdf","sha256":sha256(b"not embedded")}],
+            "sources":[{"id":"synthetic","media_type":"application/octet-stream","sha256":sha256(b"not embedded")}],
             "capabilities":capabilities
         });
         fs::write(
@@ -1712,11 +1810,106 @@ mod tests {
             PROVENANCE_SCHEMA,
             include_str!("../../docs/specs/mdaf/v1/provenance.schema.json")
         );
+        let source_map: Value = serde_json::from_str(SOURCE_MAP_SCHEMA).expect("source-map schema");
+        let outline: Value = serde_json::from_str(OUTLINE_SCHEMA).expect("outline schema");
+        for definition in [
+            "locator",
+            "selector",
+            "interval",
+            "rectangle",
+            "point",
+            "polygon",
+            "grid",
+            "text_quote",
+            "fragment",
+            "extension",
+        ] {
+            assert_eq!(
+                source_map["$defs"][definition], outline["$defs"][definition],
+                "shared locator schema definition {definition} drifted"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_normalized_selectors_and_accepts_whole_source_locators() {
+        let source_ids = BTreeSet::from(["known"]);
+        let mut diagnostics = Vec::new();
+        validate_locator(
+            &MdafSourceLocator {
+                source_id: "known".to_string(),
+                selectors: Vec::new(),
+            },
+            &source_ids,
+            "source-map.json",
+            &mut diagnostics,
+        );
+        assert!(diagnostics.is_empty());
+
+        let invalid = MdafSourceLocator {
+            source_id: "missing".to_string(),
+            selectors: vec![
+                MdafSelector::Interval {
+                    unit: "page".to_string(),
+                    start: 2.0,
+                    end: 2.0,
+                    origin: None,
+                    label_start: None,
+                    label_end: None,
+                },
+                MdafSelector::Rectangle {
+                    unit: "normalized".to_string(),
+                    x: 0.8,
+                    y: 0.0,
+                    width: 0.3,
+                    height: 0.5,
+                },
+                MdafSelector::Polygon {
+                    unit: "pixel".to_string(),
+                    points: vec![
+                        MdafPoint { x: 0.0, y: 0.0 },
+                        MdafPoint { x: 1.0, y: 1.0 },
+                        MdafPoint { x: 2.0, y: 2.0 },
+                    ],
+                },
+                MdafSelector::Grid {
+                    sheet: None,
+                    row_start: 1,
+                    row_end: 1,
+                    column_start: 0,
+                    column_end: 1,
+                },
+                MdafSelector::TextQuote {
+                    exact: String::new(),
+                    prefix: None,
+                    suffix: None,
+                },
+                MdafSelector::Fragment {
+                    value: String::new(),
+                    conforms_to: None,
+                },
+                MdafSelector::Extension {
+                    namespace: "not-namespaced".to_string(),
+                    data: Value::Null,
+                },
+            ],
+        };
+        validate_locator(&invalid, &source_ids, "source-map.json", &mut diagnostics);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code == "source_selector_invalid")
+                .count(),
+            7
+        );
+        assert!(diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "locator_source_unknown"));
     }
 
     #[test]
     #[allow(clippy::too_many_lines)]
-    fn validates_generic_coordinates_aligned_outline_and_multi_tool_provenance() {
+    fn validates_source_neutral_selectors_aligned_outline_and_multi_tool_provenance() {
         let markdown = "# A\n\nBody\n\n## B\n\nMore\n";
         let digest = sha256(markdown.as_bytes());
         let manifest = MdafManifest {
@@ -1758,23 +1951,58 @@ mod tests {
         let source_map = MdafSourceMap {
             version: 1,
             document_sha256: digest.clone(),
-            coordinate_systems: vec![MdafCoordinateSystem {
-                id: "provider.example/page".to_string(),
-                source: "source-a".to_string(),
-                unit: "page".to_string(),
-                origin: 1,
-            }],
             mappings: vec![MdafSourceMapping {
                 document: MdafByteSpan {
                     start: 0,
                     end: markdown.len(),
                 },
-                source: MdafSourceInterval {
-                    coordinate_system: "provider.example/page".to_string(),
-                    start: 1,
-                    end: 3,
-                    label_start: Some("1".to_string()),
-                    label_end: Some("2".to_string()),
+                source: MdafSourceLocator {
+                    source_id: "source-a".to_string(),
+                    selectors: vec![
+                        MdafSelector::Interval {
+                            unit: "page".to_string(),
+                            start: 1.0,
+                            end: 3.0,
+                            origin: Some(1.0),
+                            label_start: Some("1".to_string()),
+                            label_end: Some("2".to_string()),
+                        },
+                        MdafSelector::Rectangle {
+                            unit: "percent".to_string(),
+                            x: 10.0,
+                            y: 20.0,
+                            width: 30.0,
+                            height: 40.0,
+                        },
+                        MdafSelector::Polygon {
+                            unit: "normalized".to_string(),
+                            points: vec![
+                                MdafPoint { x: 0.1, y: 0.1 },
+                                MdafPoint { x: 0.4, y: 0.1 },
+                                MdafPoint { x: 0.2, y: 0.4 },
+                            ],
+                        },
+                        MdafSelector::Grid {
+                            sheet: Some("Rules".to_string()),
+                            row_start: 0,
+                            row_end: 2,
+                            column_start: 1,
+                            column_end: 3,
+                        },
+                        MdafSelector::TextQuote {
+                            exact: "Body".to_string(),
+                            prefix: None,
+                            suffix: None,
+                        },
+                        MdafSelector::Fragment {
+                            value: "chapter-a".to_string(),
+                            conforms_to: Some("https://example.test/fragments".to_string()),
+                        },
+                        MdafSelector::Extension {
+                            namespace: "example.test/selector".to_string(),
+                            data: serde_json::json!({"mask": "region-1"}),
+                        },
+                    ],
                 },
                 confidence: Some(0.9),
                 method: Some("provider.example/alignment".to_string()),
@@ -1808,11 +2036,16 @@ mod tests {
                         start: 12,
                         end: markdown.len(),
                     },
-                    source: Some(MdafOutlineSource {
+                    source: Some(MdafSourceLocator {
                         source_id: "source-a".to_string(),
-                        coordinate_system: "provider.example/page".to_string(),
-                        start: 2.0,
-                        end: 3.0,
+                        selectors: vec![MdafSelector::Interval {
+                            unit: "page".to_string(),
+                            start: 2.0,
+                            end: 3.0,
+                            origin: Some(1.0),
+                            label_start: Some("2".to_string()),
+                            label_end: None,
+                        }],
                     }),
                 },
             ],
