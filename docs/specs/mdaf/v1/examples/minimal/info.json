@@ -1,0 +1,44 @@
+{
+  "format": "mdaf",
+  "version": 1,
+  "title": "Synthetic example",
+  "markdown": {
+    "path": "text.md",
+    "sha256": "836746828781f1385343c0004d3ef37481b7a2c9650d16fff5aa5c1765484207",
+    "media_type": "text/markdown",
+    "variant": "CommonMark",
+    "features": []
+  },
+  "producer": {
+    "name": "example-packager",
+    "version": "1.0.0"
+  },
+  "members": [
+    {
+      "path": "text.md",
+      "role": "primary",
+      "media_type": "text/markdown",
+      "size": 31,
+      "sha256": "836746828781f1385343c0004d3ef37481b7a2c9650d16fff5aa5c1765484207",
+      "created_by": "activity:extract"
+    },
+    {
+      "path": "provenance.json",
+      "role": "provenance",
+      "media_type": "application/json",
+      "size": 579,
+      "sha256": "0f45120997903fa1935dfe7f31b99e939842129c76d6bf7140348ebcf054deb3",
+      "created_by": "activity:extract",
+      "schema": "https://vulcan.tionis.dev/schemas/mdaf/v1/provenance.schema.json"
+    }
+  ],
+  "sources": [
+    {
+      "id": "source:example",
+      "media_type": "application/pdf",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "name": "synthetic.pdf"
+    }
+  ],
+  "capabilities": []
+}

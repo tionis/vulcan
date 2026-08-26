@@ -314,6 +314,14 @@ Incoming Git changes are validated in a candidate tree before they replace the l
 
 Folder and tag selectors require transition-aware mutation checks. Moving a document, changing a security-relevant tag, or rewriting a selector-bearing object must be authorized against both the old and resulting states so a writer cannot expand their own authority by reclassification. Query, graph, vector, rendering, embed, export, publication, and collaborative-editing paths filter before producing derived output. This protects daemon/API/WebUI and managed-sync access; raw Markdown and authorization objects remain directly visible and editable to trusted principals with filesystem access.
 
+### 4.4 Evidence-preserving Markdown artifact boundary
+
+Document extraction is an upstream producer concern rather than a Vulcan parser backend. The Markdown Artifact Format (MDAF) provides the stable boundary: one primary Markdown document and its assets, normalized source-coordinate and optional outline sidecars, complete opaque producer renditions, and an activity-level provenance graph travel together as an immutable directory or ZIP artifact. Vulcan validates and imports this neutral contract without running OCR or branching on extractor identities, native block types, page-anchor conventions, or asset filenames.
+
+The normalized core stays deliberately small. UTF-8 Markdown byte spans map to ordered source-coordinate intervals whose unit is an open string, so pages, slides, sheets, frames, timestamps, and source lines share one consumer model. A separately aligned outline remains an explicit alternative to Markdown-heading authority rather than a silent merge. Bounding boxes, tables, confidence payloads, recursive block trees, and other extractor-native evidence remain lossless declared renditions or namespaced extensions until a cross-producer consumer requirement justifies another normalized capability.
+
+Every generated member is attributable to a provenance activity that records its inputs, outputs, direct tools and versions, models and exposed revisions, sanitized output-affecting parameters, and dependencies. Later enrichment creates a self-contained derivative artifact with immutable lineage instead of rewriting or inventing provenance for an existing artifact. On import, the resulting ordinary Markdown tree becomes canonical vault content; MDAF remains an external exchange/evidence artifact, and the rebuildable cache never becomes its authority.
+
 ## 5. Data model overview
 
 The implementation should use stable internal identifiers rather than paths as primary keys. Paths move; identities should survive moves.

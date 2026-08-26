@@ -1,0 +1,13 @@
+{
+  "files": {
+    "info.json": "{}\n",
+    "provenance.json": "{}\n",
+    "text.md": "# Example\n"
+  },
+  "records": [
+    "{\"path\":\"info.json\",\"size\":3,\"sha256\":\"ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356\"}\n",
+    "{\"path\":\"provenance.json\",\"size\":3,\"sha256\":\"ca3d163bab055381827226140568f3bef7eaac187cebd76878e0b63e9e442356\"}\n",
+    "{\"path\":\"text.md\",\"size\":10,\"sha256\":\"8ef0b048ad51a9d2ccaf9177716d7c83159a1d8c22fd37aa2b7d03c11b21b40d\"}\n"
+  ],
+  "identity": "sha256:28a614a9e0c9c06c275ff4150f51e2c767b56fd1e52f9869b41710bd861746f9"
+}

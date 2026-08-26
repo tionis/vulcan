@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "activities": [
+    {
+      "id": "activity:extract",
+      "kind": "document-extraction",
+      "tools": [
+        {
+          "name": "example-extractor",
+          "version": "1.0.0"
+        }
+      ],
+      "models": [],
+      "inputs": [
+        "source:example"
+      ],
+      "outputs": [
+        "text.md",
+        "provenance.json"
+      ],
+      "depends_on": [],
+      "parameters": {
+        "mode": "synthetic"
+      },
+      "parameters_sha256": "20fe08a28b64c88a77555928f5719b23d8f0fe22bcb4fc40722870012e1eb97f"
+    }
+  ],
+  "redactions": []
+}

@@ -6520,6 +6520,21 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 ---
 
+## Phase 9.36: Evidence-preserving Markdown artifacts and wiki import
+
+**Goal:** Define and consume an extractor-neutral Markdown Artifact Format (`.mdaf`) that carries one primary Markdown document, assets, normalized source mappings, alternative hierarchy evidence, complete native extractor output, and reproducible conversion provenance into Vulcan's canonical wiki-tree workflow.
+
+**Boundary:** Vulcan specifies, validates, inspects, and imports MDAF artifacts. It does not run OCR or branch on Marker, Mistral, DeepSeek, Docling, or any other extractor. Producer-specific responses remain lossless declared renditions or namespaced extensions; only the minimal Markdown/source-coordinate/outline contract is normalized. BlobForge production and legacy-artifact repackaging follow after this Vulcan-first slice, and `pdf-to-wiki` receives no further architectural investment.
+
+- [x] Publish the MDAF v1 logical layout, JSON Schemas, identity algorithm, archive-safety rules, provenance activity graph, immutable-derivative rules, and synthetic examples.
+- [ ] Add extractor-neutral core models and safe directory/ZIP readers with declared-member hashing, logical artifact identity, bounded expansion, opaque rendition/extension preservation, and semantic validation.
+- [ ] Validate primary Markdown bindings, UTF-8 source spans, generic ordered coordinate systems, source references, aligned alternative outlines, activity/member provenance, source digests, and derivative lineage without interpreting producer-native data.
+- [ ] Add an atomic application import workflow that requires an explicit destination, copies declared assets, materializes either Markdown-heading or explicitly selected aligned-outline hierarchy, propagates `vulcan.source` frontmatter, rewrites uniquely resolvable source references, refreshes the cache, and rolls back on failure.
+- [ ] Add `vulcan artifact inspect`, `validate`, and `import` with dry-run, JSON output, decomposition controls, auto-commit integration, deterministic diagnostics, documentation, and bundled agent guidance.
+- [ ] Cover directory/ZIP parity, multiple synthetic producer shapes, native metadata retention, multi-tool/version provenance, derivatives, unsafe archives, assets, hierarchy selection, reference resolution, collisions, rollback, reindexing, and CLI snapshots without committing real source documents or corpus identities.
+
+---
+
 ## Capability tracks and connector appendices
 
 The MDB and OBS tracks preserve candidate implementation research and acceptance criteria without extending the Phase 9 completion gate. The SB appendix is a promoted connector-specific plan referenced by Phases 12 and 15. None forms a serial queue: schedule bounded slices through the numbered phase that owns their daemon, sync, UI, or runtime infrastructure.

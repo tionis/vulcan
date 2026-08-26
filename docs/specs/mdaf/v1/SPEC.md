@@ -1,0 +1,82 @@
+# Markdown Artifact Format (MDAF) version 1
+
+MDAF is an immutable, extractor-neutral package for one primary Markdown document and the evidence needed to reinterpret or materialize it later. A conforming artifact is either a directory whose name ends in `.mdaf` or a ZIP file whose name ends in `.mdaf`. Both representations expose the same root members and have the same logical identity.
+
+MDAF deliberately does not define OCR, PDF conversion, table extraction, or a universal document-block ontology. Producers normalize only the information consumers share today and retain complete native responses as opaque declared members. Consumers must never select behavior from a producer, tool, model, asset filename, or extension namespace.
+
+## Root layout
+
+```text
+info.json          required manifest
+text.md            required primary Markdown
+provenance.json    required activity graph
+assets/            optional files referenced by text.md
+source-map.json    optional normalized source coordinates and references
+outline.json       optional aligned alternative hierarchy
+renditions/        optional complete native or alternate outputs
+sources/           optional embedded source documents
+environments/      optional locks, inventories, or SBOMs
+extensions/        optional reverse-domain-namespaced producer data
+```
+
+Every regular file except `info.json` must appear exactly once in `info.json.members`. Empty directories have no meaning. Unknown files at the root are invalid. `renditions/`, `environments/`, and `extensions/` are opaque to Vulcan after path, size, and digest validation.
+
+## Paths and archive safety
+
+Member paths use UTF-8, `/` separators, Unicode NFC, and relative POSIX syntax. Empty components, `.`, `..`, absolute paths, backslashes, control characters, Windows drive/UNC prefixes, case-fold-equivalent duplicates, and Unicode-normalization-equivalent duplicates are invalid. Directory readers reject symlinks and special files. ZIP readers reject encrypted members, symlink modes, duplicate normalized paths, more than 100,000 entries, any non-asset member larger than 512 MiB, any asset larger than 2 GiB, total declared or expanded content above 8 GiB, or an expansion ratio above 1,000:1.
+
+Readers validate declared sizes before extraction, stream bytes through bounded readers, and do not write outside an isolated staging directory. ZIP timestamps, compression method, ordering, and permissions do not affect logical identity.
+
+## Manifest and member roles
+
+`info.json` conforms to `info.schema.json`. Version 1 fixes the primary paths to `text.md` and `provenance.json`. Optional normalized sidecars use their fixed root names. Other members are declared with one of these roles:
+
+- `asset`: path below `assets/`;
+- `rendition`: path below `renditions/`;
+- `source`: path below `sources/`;
+- `environment`: path below `environments/`;
+- `extension`: path below `extensions/<reverse-domain-namespace>/`.
+
+The primary Markdown media type is `text/markdown`. `markdown.variant` and `markdown.features` describe syntax without changing the MDAF contract. Sources have stable artifact-local IDs, media types, SHA-256 digests, and optional embedded member paths. Portable core fields must not contain credentials, signed URLs, authorization headers, or absolute local paths.
+
+## Logical identity
+
+The logical artifact identity is independent of directory versus ZIP serialization. For every regular member including `info.json`, compute the lowercase SHA-256 hex digest of its bytes. Sort records by normalized UTF-8 path bytes. Serialize each record as compact JSON with keys in this exact order and a trailing LF:
+
+```json
+{"path":"text.md","size":123,"sha256":"<64 lowercase hex>"}
+```
+
+The artifact identity is `sha256:` followed by the SHA-256 of the concatenated UTF-8 records. Strings use JSON escaping with no ASCII-only conversion. The specification fixtures provide a test vector. `info.json.derived_from` contains logical identities of immutable parents; it is lineage, not an instruction to fetch them. A derivative remains self-contained and carries forward evidence needed for future processing.
+
+## Normalized source map
+
+`source-map.json` conforms to `source-map.schema.json` and binds to the SHA-256 of `text.md`. All document ranges are zero-based, half-open UTF-8 byte ranges whose endpoints are character boundaries.
+
+A coordinate system belongs to one declared source and defines a namespaced ID, unit, origin, and optional display-label map. Units are open strings such as `page`, `slide`, `sheet`, `frame`, `millisecond`, or `line`; consumers operate on ordered numeric intervals rather than special-casing PDF pages.
+
+Mappings connect a Markdown span to one source interval and may carry confidence and a namespaced method. Mappings may overlap and may be partial. References identify authored Markdown text and a target source coordinate. Producers decide which inferred records are reliable enough to publish; consumers preserve confidence and method but do not rerun extraction.
+
+## Alternative outline
+
+`outline.json` conforms to `outline.schema.json` and binds to `text.md`. Nodes form one ordered forest with stable IDs, parent IDs, levels, titles, heading spans, section spans, and optional source locators. Section spans must be ordered and either disjoint or properly nested; a heading span lies inside its section. Selecting the outline as import authority requires complete valid alignment. Markdown headings remain the default authority, and consumers never merge authorities silently.
+
+## Native evidence and extensions
+
+Complete extractor responses belong below `renditions/<namespace>/` and are declared with their real media types and schemas when known. They may contain provider-native block trees, bounding boxes, polygons, confidence values, page Markdown, tables, hyperlinks, or binary databases. MDAF does not rewrite or interpret them.
+
+Native responses are retained byte-for-byte after mandatory secret filtering. A redaction creates a provenance record naming the field location, reason, and original-field digest when safe to compute. Assets may use arbitrary names; only declared roles and Markdown-relative references carry meaning.
+
+## Provenance
+
+`provenance.json` conforms to `provenance.schema.json`. It is an activity DAG. Every generated member names one producing activity. Each activity records inputs, outputs, dependencies, sanitized output-affecting parameters and their digest, and every directly participating transformation tool and model.
+
+Tools require name and version; build revisions are included when available. Models record provider, identifier, returned identifier, and revision or checksum when exposed. A mutable or unresolved model alias is explicitly marked and produces a reproducibility warning, never invented provenance. Full dependency locks, runtime descriptions, hardware inventories, SPDX documents, or CycloneDX documents are optional environment members.
+
+Transport secrets, credentials, signed URLs, and private endpoint topology are forbidden. Unknown exact versions or revisions remain explicit `unavailable` values with diagnostics.
+
+## Consumer behavior
+
+Consumers validate schemas, members, hashes, normalized semantics, and provenance relationships before mutation. Unknown namespaced extensions and native renditions are accepted and ignored. A new extractor requires only a producer adapter that emits the normalized core and declares its native evidence; it never requires a Vulcan code branch or an MDAF version change.
+
+Vulcan imports an artifact into a required vault-relative destination. The output Markdown tree becomes canonical vault content. The artifact itself remains external. Vulcan may materialize normalized source ranges and uniquely resolvable source references, but it never projects opaque native evidence into notes or the rebuildable cache.
