@@ -30,6 +30,7 @@
 
 mod error;
 
+pub mod artifact;
 pub mod browse;
 pub mod config;
 pub mod decomposition;

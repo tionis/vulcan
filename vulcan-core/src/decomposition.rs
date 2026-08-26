@@ -191,7 +191,13 @@ struct ExplicitHtmlAnchor {
     byte_offset: usize,
 }
 
-#[allow(clippy::too_many_lines)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlignedOutlineHeading {
+    pub level: u8,
+    pub title: String,
+    pub byte_offset: usize,
+}
+
 pub fn plan_document_decomposition(
     source_path: &str,
     source: &str,
@@ -203,12 +209,60 @@ pub fn plan_document_decomposition(
         .folder_notes
         .validate()
         .map_err(DecompositionError::new)?;
+    let parsed = validated_parsed_document(source, config)?;
+    plan_parsed_document_decomposition(source_path, source, config, options, &parsed, true)
+}
+
+pub fn plan_document_decomposition_with_aligned_outline(
+    source_path: &str,
+    source: &str,
+    config: &VaultConfig,
+    options: &DecompositionOptions,
+    headings: &[AlignedOutlineHeading],
+) -> Result<DecompositionPlan, DecompositionError> {
+    validate_options(options)?;
+    config
+        .folder_notes
+        .validate()
+        .map_err(DecompositionError::new)?;
+    if headings.is_empty() {
+        return Err(DecompositionError::new("aligned outline has no headings"));
+    }
+    let mut previous = None;
+    for heading in headings {
+        if !(1..=6).contains(&heading.level)
+            || heading.title.trim().is_empty()
+            || heading.byte_offset >= source.len()
+            || !source.is_char_boundary(heading.byte_offset)
+            || previous.is_some_and(|offset| heading.byte_offset <= offset)
+        {
+            return Err(DecompositionError::new(
+                "aligned outline headings must have non-empty titles, levels 1..=6, and strictly increasing UTF-8 byte offsets inside the document",
+            ));
+        }
+        previous = Some(heading.byte_offset);
+    }
+    let mut parsed = validated_parsed_document(source, config)?;
+    parsed.headings = headings
+        .iter()
+        .map(|heading| RawHeading {
+            level: heading.level,
+            text: heading.title.clone(),
+            byte_offset: heading.byte_offset,
+        })
+        .collect();
+    plan_parsed_document_decomposition(source_path, source, config, options, &parsed, false)
+}
+
+fn validated_parsed_document(
+    source: &str,
+    config: &VaultConfig,
+) -> Result<ParsedDocument, DecompositionError> {
     if let Some(line) = unsupported_definition_line(source) {
         return Err(DecompositionError::new(format!(
             "split-note does not yet support Markdown footnotes or reference-style definitions (first occurrence at line {line}); convert them to inline links or keep them within one note before splitting"
         )));
     }
-
     let parsed = parse_document(source, config);
     if let Some(diagnostic) = parsed.diagnostics.iter().find(|diagnostic| {
         matches!(
@@ -228,6 +282,18 @@ pub fn plan_document_decomposition(
             diagnostic.message
         )));
     }
+    Ok(parsed)
+}
+
+#[allow(clippy::too_many_lines)]
+fn plan_parsed_document_decomposition(
+    source_path: &str,
+    source: &str,
+    config: &VaultConfig,
+    options: &DecompositionOptions,
+    parsed: &ParsedDocument,
+    normalize_heading_markers: bool,
+) -> Result<DecompositionPlan, DecompositionError> {
     let selected_flags = parsed
         .headings
         .iter()
@@ -252,7 +318,7 @@ pub fn plan_document_decomposition(
             ))
         })?;
     let root_title = source_title(source_path)?;
-    let mut selected = build_selected_headings(source, &parsed, &selected_flags);
+    let mut selected = build_selected_headings(source, parsed, &selected_flags);
     assign_output_paths(
         &mut selected,
         &parsed.headings,
@@ -268,12 +334,12 @@ pub fn plan_document_decomposition(
     let root_spans = complement_spans(source.len(), &selected_spans)?;
 
     let anchors = explicit_html_anchors(source);
-    let mut diagnostics = duplicate_heading_diagnostics(&parsed);
+    let mut diagnostics = duplicate_heading_diagnostics(parsed);
     diagnostics.extend(duplicate_anchor_diagnostics(&anchors));
     let mut notes = Vec::with_capacity(selected.len() + 1);
     notes.push(build_note_plan(
         source,
-        &parsed,
+        parsed,
         &root_path,
         &root_title,
         None,
@@ -292,10 +358,10 @@ pub fn plan_document_decomposition(
         let parsed_heading = &parsed.headings[heading.heading_index];
         notes.push(build_note_plan(
             source,
-            &parsed,
+            parsed,
             &heading.path,
             &parsed_heading.text,
-            Some(parsed_heading.level),
+            normalize_heading_markers.then_some(parsed_heading.level),
             vec![heading.source_span.clone()],
             heading
                 .children
@@ -308,9 +374,9 @@ pub fn plan_document_decomposition(
     }
 
     verify_complete_coverage(source.len(), &notes)?;
-    let heading_targets = build_heading_targets(&parsed, &selected, &notes)?;
+    let heading_targets = build_heading_targets(parsed, &selected, &notes)?;
     let anchor_targets = build_anchor_targets(&anchors, &notes)?;
-    let block_targets = build_block_targets(&parsed, &notes)?;
+    let block_targets = build_block_targets(parsed, &notes)?;
     diagnostics.sort_by(|left, right| {
         left.code
             .cmp(&right.code)
@@ -972,6 +1038,42 @@ mod tests {
         assert!(spans
             .windows(2)
             .all(|window| window[0].end == window[1].start));
+    }
+
+    #[test]
+    fn aligned_outline_can_supply_titles_without_rewriting_source_markers() {
+        let source = "Preface.\n\nFirst section.\n\nSecond section.\n";
+        let first = source.find("First").expect("first offset");
+        let second = source.find("Second").expect("second offset");
+        let plan = plan_document_decomposition_with_aligned_outline(
+            "document.md",
+            source,
+            &VaultConfig::default(),
+            &DecompositionOptions {
+                from_level: 1,
+                through_level: 2,
+                destination_root: "Artifact".to_string(),
+                navigation: false,
+            },
+            &[
+                AlignedOutlineHeading {
+                    level: 1,
+                    title: "Opening".to_string(),
+                    byte_offset: first,
+                },
+                AlignedOutlineHeading {
+                    level: 2,
+                    title: "Continuation".to_string(),
+                    byte_offset: second,
+                },
+            ],
+        )
+        .expect("aligned plan");
+
+        assert_eq!(plan.notes[1].title, "Opening");
+        assert_eq!(plan.notes[2].title, "Continuation");
+        assert!(plan.notes[1].content.starts_with("First section."));
+        assert!(!plan.notes[1].content.starts_with('#'));
     }
 
     #[test]

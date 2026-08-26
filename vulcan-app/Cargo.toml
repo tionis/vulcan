@@ -31,5 +31,8 @@ vulcan-core = { path = "../vulcan-core", version = "0.1.0", default-features = f
 rquickjs = { workspace = true, optional = true }
 zip.workspace = true
 
+[dev-dependencies]
+sha2.workspace = true
+
 [lints]
 workspace = true

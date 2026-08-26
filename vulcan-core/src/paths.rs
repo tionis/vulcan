@@ -368,6 +368,13 @@ pub fn secure_create(
     )
 }
 
+/// Open a new regular file below `root` without following symlinks in any path
+/// component. Callers can stream large trusted-by-digest payloads into the
+/// returned handle without buffering them in memory.
+pub fn secure_create_file(root: &Path, relative_path: &Path) -> Result<fs::File, std::io::Error> {
+    secure_open(root, relative_path, SecureOpenMode::CreateNew)
+}
+
 pub fn secure_set_permissions(
     root: &Path,
     relative_path: &Path,
@@ -772,6 +779,17 @@ mod tests {
         );
         secure_write(temp_dir.path(), Path::new("notes/alpha.md"), "second")
             .expect("contained file should be writable");
+        let mut streamed = secure_create_file(temp_dir.path(), Path::new("assets/large.bin"))
+            .expect("stream destination should be created");
+        streamed
+            .write_all(b"streamed")
+            .expect("stream payload should be written");
+        drop(streamed);
+        assert_eq!(
+            secure_read(temp_dir.path(), Path::new("assets/large.bin"))
+                .expect("streamed file should be readable"),
+            b"streamed"
+        );
         assert_eq!(
             fs::read_to_string(temp_dir.path().join("notes/alpha.md")).expect("file should exist"),
             "second"

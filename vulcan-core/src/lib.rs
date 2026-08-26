@@ -155,9 +155,10 @@ pub use dataview_js::{
     DataviewJsToolDefinition, DataviewJsToolDescriptor, DataviewJsToolRegistry,
 };
 pub use decomposition::{
-    plan_document_decomposition, DecompositionDiagnostic, DecompositionError,
-    DecompositionLinkPlacement, DecompositionNotePlan, DecompositionOptions, DecompositionPlan,
-    DecompositionSubpathTarget, SourceByteSpan,
+    plan_document_decomposition, plan_document_decomposition_with_aligned_outline,
+    AlignedOutlineHeading, DecompositionDiagnostic, DecompositionError, DecompositionLinkPlacement,
+    DecompositionNotePlan, DecompositionOptions, DecompositionPlan, DecompositionSubpathTarget,
+    SourceByteSpan,
 };
 pub use doctor::{
     doctor_fix, doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorFixAction,
