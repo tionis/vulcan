@@ -11,6 +11,7 @@ The numbered phases describe dependency order, not a requirement to implement ev
 
 - **Committed delivery path:** Phase 9's pre-daemon gate ends at 9.29 and is complete. Phase 10 is therefore the next architectural milestone; unfinished candidate integrations do not block it.
 - **Completed optional additions:** 9.30 (Outline publishing) and 9.31 (folder-note normalization) landed as independently useful work after the Phase 9 gate. Their numbering records implementation history rather than extending the daemon prerequisite chain.
+- **Active optional addition:** 9.35 materializes large hierarchical Markdown documents as link-safe wiki trees. It builds on completed parser, refactor, attachment, and folder-note foundations without extending the Phase 10 gate.
 - **Committed hub direction:** Phase 12 owns device/file-tree synchronization and Phase 15 owns external document bindings, content routes, and knowledge-system connectors. SilverBullet, Outline, HedgeDoc, and Git wiki work should extend those shared layers rather than become parallel product architectures.
 - **Candidate capability tracks:** mdbase expansion and additional native vault workflows with compatibility adapters are maintained below as detailed design backlogs. They retain no implied promise of implementation order or completion before Phase 10.
 - **Promotion gate:** move a candidate into the committed path only when there is a concrete use case, a capability-oriented domain and public surface, an identified dependency/ownership boundary, a sustainable adapter compatibility and testing strategy, and enough maintenance budget to support the advertised surface. Promote only the smallest independently useful native slice; importing one plugin's settings is not by itself a product boundary.
@@ -6493,6 +6494,27 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add a dry-run/JSON-capable `refactor folder-notes` conversion workflow with overwrite, case-collision, unsafe-config, and deterministic-planning checks.
 - [x] Recalculate resolved outbound relative links as well as inbound links when structural conversions move a note.
 - [x] Document configuration, conversion, retry behavior, supported layouts, and limitations; cover the shared semantics and CLI with focused tests.
+
+---
+
+## Phase 9.35: Semantic document decomposition and wiki-tree materialization
+
+**Goal:** Turn a large heading-structured Markdown document, such as a PDF-derived rulebook with a companion asset directory, into a deterministic tree of ordinary vault notes so chapters and concepts become independently readable, linkable, searchable, and publishable.
+
+**Boundary:** This is an explicit source-vault refactor: the materialized Markdown files become canonical vault content. Keep publication-only section projection as a separate future export capability. The initial workflow preserves referenced assets in place and rewrites destinations; it does not duplicate or reorganize asset files implicitly.
+
+**Dependencies:** Reuse the canonical parser and semantic note outline, resolved link identities and move-safe rewrite machinery, first-class attachment graph, shared application workflow layer, and configured folder-note convention. Keep reusable planning and mutation logic out of `vulcan-cli`.
+
+- [ ] Inventory representative structures and conversion artifacts under `references/rulebooks/`; use them for manual acceptance coverage while keeping automated fixtures synthetic and minimal.
+- [ ] Add a deterministic decomposition planner for a configurable heading-level range, including preamble placement, parent/child hierarchy, filename normalization, duplicate-heading disambiguation, configured folder notes, and exact source-span coverage checks.
+- [ ] Define explicit frontmatter, heading, footnote/reference-definition, block-reference, and generated-navigation policies; surface unsupported or ambiguous constructs as located diagnostics instead of silently dropping content.
+- [ ] Plan link rewrites for inbound links to the source document and its heading/block subpaths, cross-section links within the source, self-fragment links inside emitted notes, and relative links whose source directory changes while preserving authored Markdown/wikilink/embed style.
+- [ ] Preserve referenced assets in their current canonical locations by default, rewrite relative destinations for every emitted note, and report missing, ambiguous, or unsafe asset references before mutation.
+- [ ] Add a reusable locked application workflow with complete preflight validation, mutation-free dry runs, collision and stale-cache checks, deterministic action ordering, and a structured report suitable for CLI, MCP, and future daemon surfaces.
+- [ ] Add `vulcan refactor split-note <source>` with heading-range, destination, folder-note, frontmatter, source-retention, navigation, `--dry-run`, and `--output json` controls; keep the default conservative and non-interactive.
+- [ ] Reindex after successful application and verify that the source content is fully represented, planned links resolve as expected, and repeated dry runs are deterministic.
+- [ ] Add core planner tests, application mutation/rollback tests, CLI JSON and human-output integration tests, attachment-heavy fixtures, duplicate/collision cases, link-rewrite regressions, and representative rulebook acceptance checks.
+- [ ] Update CLI/reference documentation and the bundled note/refactor agent skill so external agents discover dry-run-first decomposition and its asset/link safety policies.
 
 ---
 
