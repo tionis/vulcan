@@ -6557,6 +6557,22 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 
 ---
 
+## Phase 9.38: Portable document and wiki exchange packages
+
+**Goal:** Give Vulcan interoperable, safely inspectable package boundaries for one editable Markdown document with assets and for a complete multi-document Markdown wiki snapshot without introducing a second canonical vault backend.
+
+**Boundary:** TextBundle/TextPack is a compatibility adapter for one mutable text document and its assets. MDAF remains the immutable evidence-bearing extraction format. Markdown Wiki Packages exchange immutable multi-document snapshots as either directories or ZIP files. Ordinary materialized Markdown remains canonical after import; neither a ZIP nor SQLite becomes an implicitly writable or synchronized vault.
+
+- [ ] Add safe TextBundle v1/v2 and TextPack readers that preserve unknown application metadata, validate one `text.*` member and `assets/`, reject unsafe containers, and expose deterministic inspection diagnostics.
+- [ ] Add dry-run-capable TextBundle/TextPack import into an explicit new vault destination, collision-safe asset materialization and link rewriting, cache refresh, rollback, JSON output, and auto-commit integration.
+- [ ] Add TextBundle/TextPack export for one canonical Markdown note and its referenced local assets while preserving the standardized metadata boundary.
+- [ ] Specify the Markdown Wiki Package v1 manifest, BLAKE3 logical identity, `.wikibundle` directory and `.wikipack` ZIP serializations, path/archive safety limits, immutable lineage, synthetic fixtures, and JSON Schema.
+- [ ] Add wiki-package inspect, validate, export, and dry-run/import workflows that preserve Markdown and asset bytes, exclude cache/device/credential/Git state, require a new destination, rebuild the cache, and roll back partial writes.
+- [ ] Cover directory/ZIP parity, TextPack compatibility metadata, asset/reference rewrites, unknown metadata preservation, traversal/symlink/duplicate/collision failures, deterministic identities, rollback, CLI output, and installed agent guidance.
+- [ ] Keep SQLite as a documented alternative serialization of the same wiki-package model. Do not implement a writable SQLite vault until a separate storage, revision, conflict, and interoperability design is approved.
+
+---
+
 ## Capability tracks and connector appendices
 
 The MDB and OBS tracks preserve candidate implementation research and acceptance criteria without extending the Phase 9 completion gate. The SB appendix is a promoted connector-specific plan referenced by Phases 12 and 15. None forms a serial queue: schedule bounded slices through the numbered phase that owns their daemon, sync, UI, or runtime infrastructure.
