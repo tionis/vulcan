@@ -94,6 +94,7 @@ pub mod selection;
 pub mod suggestions;
 pub mod tasknotes;
 pub mod tasks;
+pub mod textbundle;
 #[cfg(feature = "vectors")]
 pub mod vector;
 pub mod watch;

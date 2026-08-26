@@ -12610,6 +12610,156 @@
         ]
       },
       {
+        "about": "Import and export portable Markdown package formats",
+        "name": "exchange",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Exchange one Markdown document as TextBundle or TextPack",
+            "name": "textbundle",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Inspect a TextBundle directory or TextPack ZIP",
+                "name": "inspect",
+                "options": [
+                  {
+                    "help": "TextBundle directory or TextPack ZIP path",
+                    "id": "package",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PACKAGE"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Validate a TextBundle directory or TextPack ZIP",
+                "name": "validate",
+                "options": [
+                  {
+                    "help": "TextBundle directory or TextPack ZIP path",
+                    "id": "package",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PACKAGE"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Import a TextBundle or TextPack into a new vault folder",
+                "name": "import",
+                "options": [
+                  {
+                    "help": "TextBundle directory or TextPack ZIP path",
+                    "id": "package",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PACKAGE"
+                    ]
+                  },
+                  {
+                    "help": "Required new vault-relative destination folder",
+                    "id": "destination",
+                    "long": "destination",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "DESTINATION"
+                    ]
+                  },
+                  {
+                    "help": "Validate and report without writing files",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Suppress auto-commit for this invocation",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Export one Markdown note as TextBundle or TextPack",
+                "name": "export",
+                "options": [
+                  {
+                    "help": "Vault-relative Markdown note",
+                    "id": "note",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "NOTE"
+                    ]
+                  },
+                  {
+                    "help": "Output path ending in .textbundle or .textpack",
+                    "id": "package_output",
+                    "long": "package",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PACKAGE_OUTPUT"
+                    ]
+                  },
+                  {
+                    "help": "Plan and report without writing the package",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
+          }
+        ]
+      },
+      {
         "about": "Show integrated command and concept documentation",
         "after_help": "Topics:\n  Commands: help query, help note get, help refactor\n  Concepts: help filters, help query-dsl, help getting-started, help examples\n\nExamples:\n  vulcan help\n  vulcan help query\n  vulcan help note get --output json\n  vulcan help --search graph",
         "name": "help",

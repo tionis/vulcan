@@ -423,11 +423,11 @@ pub use cli::{
     CheckpointCommand, Cli, ColorMode, Command, ConfigAliasCommand, ConfigCommand,
     ConfigImportArgs, ConfigImportCommand, ConfigImportSelection, ConfigPermissionsCommand,
     ConfigPermissionsProfileCommand, ConfigTargetArg, DailyCommand, DataviewCommand,
-    DescribeFormatArg, EpubTocStyle, ExportArgs, ExportCommand, ExportFormat, ExportProfileCommand,
-    ExportProfileFormatArg, ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs,
-    FolderNotePlacementArg, GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs,
-    IntegrationCommand, KanbanCommand, McpToolPackArg, McpToolPackModeArg, McpTransportArg,
-    NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
+    DescribeFormatArg, EpubTocStyle, ExchangeCommand, ExportArgs, ExportCommand, ExportFormat,
+    ExportProfileCommand, ExportProfileFormatArg, ExportProfileRuleCommand, ExportQueryArgs,
+    ExportTransformArgs, FolderNotePlacementArg, GitCommand, GraphCommand, GraphExportFormat,
+    IndexCommand, InitArgs, IntegrationCommand, KanbanCommand, McpToolPackArg, McpToolPackModeArg,
+    McpTransportArg, NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
     OutlineBlockReferencePolicyArg, OutlineCollectionPermissionArg, OutlineCollectionsCommand,
     OutlineCommand, OutlineExcludedTargetPolicyArg, OutlinePullConflictOperationArg, OutputFormat,
     PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg, PluginSandboxArg,
@@ -436,8 +436,8 @@ pub use cli::{
     SearchBackendArg, SearchMode, SearchSortArg, SiteCommand, SkillCommand, SuggestCommand,
     SuggestLinkStatusArg, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
     TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
-    TemplateRenderArgs, TemplateSubcommand, ToolCommand, ToolInitTemplateArg, TrustCommand,
-    VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    TemplateRenderArgs, TemplateSubcommand, TextBundleCommand, ToolCommand, ToolInitTemplateArg,
+    TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -5662,6 +5662,11 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Artifact { ref command } => {
             commands::artifact::handle_artifact_command(cli, &paths, command)
         }
+        Command::Exchange { ref command } => match command {
+            ExchangeCommand::Textbundle { command } => {
+                commands::textbundle::handle_textbundle_command(cli, &paths, command)
+            }
+        },
         Command::Suggest { ref command } => commands::refactor::handle_suggest_command(
             cli,
             &paths,

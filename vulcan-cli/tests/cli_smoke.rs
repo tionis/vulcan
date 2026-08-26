@@ -6556,6 +6556,134 @@ fn artifact_validate_reports_digest_errors_with_issue_exit_code() {
 }
 
 #[test]
+fn textbundle_exchange_exports_inspects_and_imports_a_textpack() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("Notes/images")).expect("fixture directories");
+    fs::write(
+        vault_root.join("Notes/Page.md"),
+        "# Page\n\n![Map](images/map.txt)\n",
+    )
+    .expect("fixture note");
+    fs::write(vault_root.join("Notes/images/map.txt"), "synthetic map\n").expect("fixture asset");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path"),
+            "index",
+            "init",
+        ])
+        .assert()
+        .success();
+
+    let package = temp_dir.path().join("page.textpack");
+    let package_path = package.to_str().expect("package path");
+    let preview = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path"),
+            "--output",
+            "json",
+            "exchange",
+            "textbundle",
+            "export",
+            "Notes/Page.md",
+            "--package",
+            package_path,
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let preview_json = parse_stdout_json(&preview);
+    assert_eq!(preview_json["dry_run"], true);
+    assert_eq!(preview_json["assets"].as_array().map(Vec::len), Some(1));
+    assert!(!package.exists());
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path"),
+            "exchange",
+            "textbundle",
+            "export",
+            "Notes/Page.md",
+            "--package",
+            package_path,
+        ])
+        .assert()
+        .success();
+
+    let inspect = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--output",
+            "json",
+            "exchange",
+            "textbundle",
+            "inspect",
+            package_path,
+        ])
+        .assert()
+        .success();
+    let inspection = parse_stdout_json(&inspect);
+    assert_eq!(inspection["valid"], true);
+    assert_eq!(inspection["info"]["version"], 2);
+    assert!(inspection["identity"]
+        .as_str()
+        .is_some_and(|identity| identity.starts_with("blake3:")));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args(["exchange", "textbundle", "validate", package_path])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Valid: true"));
+
+    let import_preview = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path"),
+            "--output",
+            "json",
+            "exchange",
+            "textbundle",
+            "import",
+            package_path,
+            "--destination",
+            "Imported/Page",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&import_preview)["dry_run"], true);
+    assert!(!vault_root.join("Imported").exists());
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path"),
+            "exchange",
+            "textbundle",
+            "import",
+            package_path,
+            "--destination",
+            "Imported/Page",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    assert!(vault_root.join("Imported/Page/text.md").exists());
+    assert!(vault_root
+        .join("Imported/Page/assets/Notes/images/map.txt")
+        .exists());
+}
+
+#[test]
 fn config_import_preview_shows_diff_without_writing_files() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -10434,6 +10562,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .join(".agents/skills/artifact-import/SKILL.md")
         .exists());
     assert!(vault_root
+        .join(".agents/skills/portable-exchange/SKILL.md")
+        .exists());
+    assert!(vault_root
         .join(".agents/skills/diagnostics-and-repair/SKILL.md")
         .exists());
     assert!(vault_root.join("AI/Prompts/summarize-note.md").exists());
@@ -10618,6 +10749,7 @@ fn skill_list_and_get_surface_bundled_skills() {
         "diagnostics-and-repair",
         "conversation-export",
         "artifact-import",
+        "portable-exchange",
     ] {
         assert!(
             list_json["skills"]
@@ -10749,6 +10881,12 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(artifact_import.contains("artifact import <artifact> --destination <new-folder>"));
     assert!(artifact_import.contains("--hierarchy outline"));
     assert!(artifact_import.contains("vulcan.source"));
+
+    let portable_exchange = fs::read_to_string(installed_skills.join("portable-exchange/SKILL.md"))
+        .expect("portable exchange skill should be installed");
+    assert!(portable_exchange.contains("exchange textbundle export"));
+    assert!(portable_exchange.contains("exchange textbundle import"));
+    assert!(portable_exchange.contains("--dry-run"));
 
     let configuration =
         fs::read_to_string(installed_skills.join("configuration-and-permissions/SKILL.md"))

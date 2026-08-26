@@ -4686,6 +4686,52 @@ pub enum ArtifactCommand {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum TextBundleCommand {
+    #[command(about = "Inspect a TextBundle directory or TextPack ZIP")]
+    Inspect {
+        #[arg(help = "TextBundle directory or TextPack ZIP path")]
+        package: PathBuf,
+    },
+    #[command(about = "Validate a TextBundle directory or TextPack ZIP")]
+    Validate {
+        #[arg(help = "TextBundle directory or TextPack ZIP path")]
+        package: PathBuf,
+    },
+    #[command(about = "Import a TextBundle or TextPack into a new vault folder")]
+    Import {
+        #[arg(help = "TextBundle directory or TextPack ZIP path")]
+        package: PathBuf,
+        #[arg(long, help = "Required new vault-relative destination folder")]
+        destination: String,
+        #[arg(long, help = "Validate and report without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Export one Markdown note as TextBundle or TextPack")]
+    Export {
+        #[arg(help = "Vault-relative Markdown note")]
+        note: String,
+        #[arg(
+            long = "package",
+            help = "Output path ending in .textbundle or .textpack"
+        )]
+        package_output: PathBuf,
+        #[arg(long, help = "Plan and report without writing the package")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ExchangeCommand {
+    #[command(about = "Exchange one Markdown document as TextBundle or TextPack")]
+    Textbundle {
+        #[command(subcommand)]
+        command: TextBundleCommand,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum FolderNotePlacementArg {
     Inside,
@@ -6106,6 +6152,11 @@ Examples:
     Artifact {
         #[command(subcommand)]
         command: ArtifactCommand,
+    },
+    #[command(about = "Import and export portable Markdown package formats")]
+    Exchange {
+        #[command(subcommand)]
+        command: ExchangeCommand,
     },
     #[command(
         about = "Show integrated command and concept documentation",

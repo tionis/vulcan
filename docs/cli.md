@@ -533,6 +533,21 @@ vulcan artifact import ./book.mdaf \
 
 Import always requires a new explicit vault-relative destination. Markdown headings are the default hierarchy authority; `--hierarchy outline` is opt-in and requires a completely aligned `outline.json`. The dry-run report lists every generated note, copied asset, source span, diagnostic, and rewritten link without creating the destination. A live import streams declared assets, adds `vulcan.source` artifact identity and source locators to each note, rewrites declared asset links and uniquely resolvable normalized source references, refreshes the cache, and removes the partial destination if writing or reindexing fails. The MDAF package remains external evidence rather than becoming canonical vault state.
 
+## Exchanging a single Markdown document
+
+`vulcan exchange textbundle` reads and writes the TextBundle v1/v2 directory format and its compressed TextPack form. Use this boundary when one editable Markdown document and its referenced local assets should move between applications. Use MDAF instead when original-source selectors, extraction provenance, or alternative evidence must survive.
+
+```bash
+vulcan --output json exchange textbundle inspect ./note.textpack
+vulcan exchange textbundle validate ./note.textpack
+vulcan --output json exchange textbundle import ./note.textpack \
+  --destination Imported/Note --dry-run
+vulcan exchange textbundle export Notes/Note.md \
+  --package ./note.textpack --dry-run
+```
+
+Import requires a new explicit vault-relative folder. It preserves the standard `assets/` layout, refreshes the cache after applying, removes partial output on failure, and supports normal auto-commit controls. Unknown application-specific fields in `info.json` remain visible in inspection and import reports. Export rewrites references to included local assets into collision-safe package paths; it does not copy remote resources, other Markdown notes, or files outside the vault. A `.textbundle` output creates a directory package, while `.textpack` creates a ZIP package.
+
 ## Searching with `search`
 
 `vulcan search` searches indexed note content and can be combined with typed filters.

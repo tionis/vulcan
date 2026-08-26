@@ -24,6 +24,7 @@ pub(crate) mod skill;
 pub(crate) mod status;
 pub(crate) mod tasks;
 pub(crate) mod template;
+pub(crate) mod textbundle;
 pub(crate) mod tool;
 pub(crate) mod tool_init;
 #[cfg(feature = "vectors")]

@@ -47,6 +47,7 @@ pub mod serve;
 pub mod site;
 pub mod tasks;
 pub mod templates;
+pub mod textbundle;
 pub mod tools;
 pub mod trust;
 #[cfg(feature = "web")]
