@@ -7,8 +7,10 @@
 use crate::config::VaultConfig;
 use crate::parser::parse_document;
 use crate::paths::{normalize_relative_input_path, secure_read_to_string, RelativePathOptions};
+use chrono::{DateTime, NaiveDate};
 use chrono_tz::Tz;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_yaml::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -523,6 +525,29 @@ pub struct MdbaseTypeRegistry {
     pub diagnostics: Vec<MdbaseTypeDiagnostic>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MdbaseTypeMatchMode {
+    Explicit,
+    Inferred,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MdbaseTypeMatchDiagnostic {
+    pub code: String,
+    pub message: String,
+    pub path: String,
+    pub field: String,
+    pub type_name: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MdbaseTypeMatchResult {
+    pub types: Vec<String>,
+    pub mode: MdbaseTypeMatchMode,
+    pub diagnostics: Vec<MdbaseTypeMatchDiagnostic>,
+}
+
 impl MdbaseTypeRegistry {
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&MdbaseTypeDefinition> {
@@ -792,6 +817,471 @@ pub fn load_mdbase_type_registry(
     build_mdbase_type_registry(collection, &discovery.type_files)
 }
 
+/// Resolve the types for one record using raw persisted frontmatter.
+/// Explicit declarations take precedence over all inferred match rules.
+#[must_use]
+pub fn match_mdbase_record_types(
+    collection: &MdbaseCollection,
+    registry: &MdbaseTypeRegistry,
+    record_path: &str,
+    frontmatter: &serde_json::Value,
+) -> MdbaseTypeMatchResult {
+    let Ok(record_path) = normalize_relative_input_path(
+        record_path,
+        RelativePathOptions {
+            expected_extension: None,
+            append_extension_if_missing: false,
+        },
+    ) else {
+        return MdbaseTypeMatchResult {
+            types: Vec::new(),
+            mode: MdbaseTypeMatchMode::Inferred,
+            diagnostics: vec![match_diagnostic(
+                record_path,
+                "record_path_invalid",
+                "record path must be collection-relative and traversal-free",
+                "path",
+                None,
+            )],
+        };
+    };
+    let Some(frontmatter) = frontmatter.as_object() else {
+        return MdbaseTypeMatchResult {
+            types: Vec::new(),
+            mode: MdbaseTypeMatchMode::Inferred,
+            diagnostics: vec![match_diagnostic(
+                &record_path,
+                "frontmatter_invalid",
+                "record frontmatter must be a mapping",
+                "",
+                None,
+            )],
+        };
+    };
+    if collection
+        .config
+        .settings
+        .explicit_type_keys
+        .iter()
+        .any(|key| frontmatter.contains_key(key))
+    {
+        return match_explicit_types(collection, registry, &record_path, frontmatter);
+    }
+    match_inferred_types(registry, &record_path, frontmatter)
+}
+
+fn match_explicit_types(
+    collection: &MdbaseCollection,
+    registry: &MdbaseTypeRegistry,
+    record_path: &str,
+    frontmatter: &serde_json::Map<String, serde_json::Value>,
+) -> MdbaseTypeMatchResult {
+    let mut types = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut diagnostics = Vec::new();
+    for key in &collection.config.settings.explicit_type_keys {
+        let Some(value) = frontmatter.get(key) else {
+            continue;
+        };
+        let Some(declarations) = explicit_type_declarations(value) else {
+            diagnostics.push(match_diagnostic(
+                record_path,
+                "type_declaration_invalid",
+                "explicit type declaration must be a type name or non-empty list of type names",
+                key,
+                None,
+            ));
+            continue;
+        };
+        for declaration in declarations {
+            if !valid_type_name(declaration) {
+                diagnostics.push(match_diagnostic(
+                    record_path,
+                    "type_declaration_invalid",
+                    format!("`{declaration}` is not a valid mdbase type name"),
+                    key,
+                    Some(declaration.to_string()),
+                ));
+                continue;
+            }
+            let normalized = normalize_type_name(declaration);
+            if !seen.insert(normalized) {
+                continue;
+            }
+            if let Some(definition) = registry.get(declaration) {
+                types.push(definition.name.clone());
+            } else {
+                diagnostics.push(match_diagnostic(
+                    record_path,
+                    "type_not_found",
+                    format!("explicit type `{declaration}` is not defined"),
+                    key,
+                    Some(declaration.to_string()),
+                ));
+            }
+        }
+    }
+    sort_match_diagnostics(&mut diagnostics);
+    MdbaseTypeMatchResult {
+        types,
+        mode: MdbaseTypeMatchMode::Explicit,
+        diagnostics,
+    }
+}
+
+fn explicit_type_declarations(value: &serde_json::Value) -> Option<Vec<&str>> {
+    if let Some(name) = value.as_str() {
+        return Some(vec![name]);
+    }
+    let values = value.as_array()?;
+    if values.is_empty() {
+        return None;
+    }
+    values
+        .iter()
+        .map(serde_json::Value::as_str)
+        .collect::<Option<Vec<_>>>()
+}
+
+fn valid_type_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|character| character.is_ascii_alphabetic())
+        && name.len() <= 128
+        && characters
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+}
+
+fn match_inferred_types(
+    registry: &MdbaseTypeRegistry,
+    record_path: &str,
+    frontmatter: &serde_json::Map<String, serde_json::Value>,
+) -> MdbaseTypeMatchResult {
+    let mut types = Vec::new();
+    for definition in registry.iter() {
+        let Some(rule) = definition.frontmatter.get("match") else {
+            continue;
+        };
+        if inferred_rule_matches(rule, record_path, frontmatter) {
+            types.push(definition.name.clone());
+        }
+    }
+    MdbaseTypeMatchResult {
+        types,
+        mode: MdbaseTypeMatchMode::Inferred,
+        diagnostics: Vec::new(),
+    }
+}
+
+fn inferred_rule_matches(
+    rule: &serde_json::Value,
+    record_path: &str,
+    frontmatter: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    let rule = rule
+        .as_object()
+        .expect("type-file validation guarantees a match object");
+    if let Some(patterns) = rule.get("path_glob") {
+        if !match_glob_patterns(patterns).iter().any(|pattern| {
+            mdbase_glob(pattern)
+                .expect("match globs are validated while loading types")
+                .compile_matcher()
+                .is_match(record_path)
+        }) {
+            return false;
+        }
+    }
+    if let Some(fields) = rule.get("fields_present") {
+        let fields = fields
+            .as_array()
+            .expect("type-file validation guarantees fields_present is an array");
+        if !fields.iter().all(|field| {
+            resolve_match_field(
+                frontmatter,
+                field
+                    .as_str()
+                    .expect("validated field reference should be a string"),
+            )
+            .values
+            .iter()
+            .any(|value| !value.is_null())
+        }) {
+            return false;
+        }
+    }
+    rule.get("where")
+        .is_none_or(|predicates| structured_where_matches(predicates, frontmatter))
+}
+
+#[derive(Debug)]
+struct ResolvedMatchField<'a> {
+    exists: bool,
+    values: Vec<&'a serde_json::Value>,
+}
+
+fn resolve_match_field<'a>(
+    frontmatter: &'a serde_json::Map<String, serde_json::Value>,
+    selector: &str,
+) -> ResolvedMatchField<'a> {
+    if selector.starts_with('/') {
+        return resolve_json_pointer(frontmatter, selector);
+    }
+    let mut values: Vec<&serde_json::Value> = Vec::new();
+    let mut exists = false;
+    for (index, component) in selector.split('.').enumerate() {
+        let expand = component.ends_with("[]");
+        let key = component.strip_suffix("[]").unwrap_or(component);
+        let selected = if index == 0 {
+            frontmatter.get(key).into_iter().collect::<Vec<_>>()
+        } else {
+            values
+                .iter()
+                .filter_map(|value| value.as_object().and_then(|object| object.get(key)))
+                .collect::<Vec<_>>()
+        };
+        if selected.is_empty() {
+            return ResolvedMatchField {
+                exists: false,
+                values: Vec::new(),
+            };
+        }
+        exists = true;
+        values = if expand {
+            selected
+                .into_iter()
+                .filter_map(serde_json::Value::as_array)
+                .flatten()
+                .collect()
+        } else {
+            selected
+        };
+    }
+    ResolvedMatchField { exists, values }
+}
+
+fn resolve_json_pointer<'a>(
+    frontmatter: &'a serde_json::Map<String, serde_json::Value>,
+    selector: &str,
+) -> ResolvedMatchField<'a> {
+    let mut tokens = selector[1..].split('/').map(decode_json_pointer_token);
+    let Some(first) = tokens.next() else {
+        return ResolvedMatchField {
+            exists: false,
+            values: Vec::new(),
+        };
+    };
+    let Some(mut value) = frontmatter.get(&first) else {
+        return ResolvedMatchField {
+            exists: false,
+            values: Vec::new(),
+        };
+    };
+    for token in tokens {
+        let next = match value {
+            serde_json::Value::Object(object) => object.get(&token),
+            serde_json::Value::Array(values) => token
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| values.get(index)),
+            _ => None,
+        };
+        let Some(next) = next else {
+            return ResolvedMatchField {
+                exists: false,
+                values: Vec::new(),
+            };
+        };
+        value = next;
+    }
+    ResolvedMatchField {
+        exists: true,
+        values: vec![value],
+    }
+}
+
+fn decode_json_pointer_token(token: &str) -> String {
+    token.replace("~1", "/").replace("~0", "~")
+}
+
+fn structured_where_matches(
+    predicates: &serde_json::Value,
+    frontmatter: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    predicates
+        .as_object()
+        .expect("type-file validation guarantees a where object")
+        .iter()
+        .all(|(selector, predicate)| {
+            structured_predicate_matches(&resolve_match_field(frontmatter, selector), predicate)
+        })
+}
+
+fn structured_predicate_matches(
+    field: &ResolvedMatchField<'_>,
+    predicate: &serde_json::Value,
+) -> bool {
+    let Some(operators) = predicate.as_object() else {
+        return field.values.contains(&predicate);
+    };
+    if let Some(expected) = operators.get("exists").and_then(serde_json::Value::as_bool) {
+        if field.exists != expected {
+            return false;
+        }
+    }
+    let value_operators = operators
+        .iter()
+        .filter(|(operator, _)| operator.as_str() != "exists")
+        .collect::<Vec<_>>();
+    value_operators.is_empty()
+        || field.values.iter().any(|value| {
+            !value.is_null()
+                && value_operators
+                    .iter()
+                    .all(|(operator, operand)| match_operator(value, operator, operand))
+        })
+}
+
+fn match_operator(value: &serde_json::Value, operator: &str, operand: &serde_json::Value) -> bool {
+    match operator {
+        "eq" => value == operand,
+        "neq" => value != operand,
+        "contains" => match value {
+            serde_json::Value::String(value) => operand
+                .as_str()
+                .is_some_and(|operand| value.contains(operand)),
+            serde_json::Value::Array(values) => values.contains(operand),
+            _ => false,
+        },
+        "containsAll" => contains_requested_values(value, operand, true),
+        "containsAny" => contains_requested_values(value, operand, false),
+        "startsWith" => {
+            string_operator(value, operand, |value, operand| value.starts_with(operand))
+        }
+        "endsWith" => string_operator(value, operand, |value, operand| value.ends_with(operand)),
+        "matches" => value.as_str().is_some_and(|value| {
+            Regex::new(
+                operand
+                    .as_str()
+                    .expect("validated regex operand should be a string"),
+            )
+            .expect("match regexes are validated while loading types")
+            .is_match(value)
+        }),
+        "gt" => compare_match_values(value, operand).is_some_and(std::cmp::Ordering::is_gt),
+        "gte" => compare_match_values(value, operand).is_some_and(std::cmp::Ordering::is_ge),
+        "lt" => compare_match_values(value, operand).is_some_and(std::cmp::Ordering::is_lt),
+        "lte" => compare_match_values(value, operand).is_some_and(std::cmp::Ordering::is_le),
+        "exists" => true,
+        _ => unreachable!("type-file validation rejects unknown match operators"),
+    }
+}
+
+fn contains_requested_values(
+    value: &serde_json::Value,
+    operand: &serde_json::Value,
+    require_all: bool,
+) -> bool {
+    let (Some(values), Some(requested)) = (value.as_array(), operand.as_array()) else {
+        return false;
+    };
+    if require_all {
+        requested.iter().all(|item| values.contains(item))
+    } else {
+        requested.iter().any(|item| values.contains(item))
+    }
+}
+
+fn string_operator(
+    value: &serde_json::Value,
+    operand: &serde_json::Value,
+    operation: fn(&str, &str) -> bool,
+) -> bool {
+    value
+        .as_str()
+        .zip(operand.as_str())
+        .is_some_and(|(value, operand)| operation(value, operand))
+}
+
+fn compare_match_values(
+    left: &serde_json::Value,
+    right: &serde_json::Value,
+) -> Option<std::cmp::Ordering> {
+    if let (Some(left), Some(right)) = (left.as_f64(), right.as_f64()) {
+        return left.partial_cmp(&right);
+    }
+    let (Some(left), Some(right)) = (left.as_str(), right.as_str()) else {
+        return None;
+    };
+    if let (Ok(left), Ok(right)) = (
+        DateTime::parse_from_rfc3339(left),
+        DateTime::parse_from_rfc3339(right),
+    ) {
+        return Some(left.cmp(&right));
+    }
+    if let (Ok(left), Ok(right)) = (
+        NaiveDate::parse_from_str(left, "%Y-%m-%d"),
+        NaiveDate::parse_from_str(right, "%Y-%m-%d"),
+    ) {
+        return Some(left.cmp(&right));
+    }
+    if let (Ok(left), Ok(right)) = (
+        DateTime::parse_from_rfc3339(&format!("1970-01-01T{left}")),
+        DateTime::parse_from_rfc3339(&format!("1970-01-01T{right}")),
+    ) {
+        return Some(left.cmp(&right));
+    }
+    Some(left.cmp(right))
+}
+
+fn mdbase_glob(pattern: &str) -> Result<globset::Glob, globset::Error> {
+    GlobBuilder::new(pattern)
+        .literal_separator(true)
+        .backslash_escape(false)
+        .build()
+}
+
+fn match_glob_patterns(value: &serde_json::Value) -> Vec<&str> {
+    match value {
+        serde_json::Value::String(pattern) => vec![pattern],
+        serde_json::Value::Array(patterns) => patterns
+            .iter()
+            .map(|pattern| {
+                pattern
+                    .as_str()
+                    .expect("type-file validation guarantees path_glob strings")
+            })
+            .collect(),
+        _ => unreachable!("type-file validation guarantees path_glob strings"),
+    }
+}
+
+fn match_diagnostic(
+    path: &str,
+    code: &str,
+    message: impl Into<String>,
+    field: &str,
+    type_name: Option<String>,
+) -> MdbaseTypeMatchDiagnostic {
+    MdbaseTypeMatchDiagnostic {
+        code: code.to_string(),
+        message: message.into(),
+        path: path.to_string(),
+        field: field.to_string(),
+        type_name,
+    }
+}
+
+fn sort_match_diagnostics(diagnostics: &mut [MdbaseTypeMatchDiagnostic]) {
+    diagnostics.sort_by(|left, right| {
+        left.field
+            .cmp(&right.field)
+            .then_with(|| left.code.cmp(&right.code))
+            .then_with(|| left.type_name.cmp(&right.type_name))
+            .then_with(|| left.message.cmp(&right.message))
+    });
+}
+
 fn build_mdbase_type_registry(
     collection: &MdbaseCollection,
     type_files: &[String],
@@ -898,6 +1388,10 @@ fn load_mdbase_type_file(
                 .collect(),
         ));
     }
+    let match_diagnostics = validate_type_match_rule(&frontmatter, path);
+    if !match_diagnostics.is_empty() {
+        return Ok(TypeFileLoad::Invalid(match_diagnostics));
+    }
 
     let wrapped_schema = frontmatter
         .get("schema")
@@ -977,6 +1471,60 @@ fn parse_type_frontmatter(
             "",
         )
     })
+}
+
+fn validate_type_match_rule(
+    frontmatter: &serde_json::Value,
+    path: &str,
+) -> Vec<MdbaseTypeDiagnostic> {
+    let Some(rule) = frontmatter
+        .get("match")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return Vec::new();
+    };
+    let mut diagnostics = Vec::new();
+    if rule.contains_key("expr") {
+        diagnostics.push(type_diagnostic(
+            path,
+            "unsupported_profile",
+            "match.expr requires the cel_match profile, which is not enabled",
+            "/match/expr",
+        ));
+    }
+    if let Some(patterns) = rule.get("path_glob") {
+        for pattern in match_glob_patterns(patterns) {
+            if let Err(error) = mdbase_glob(pattern) {
+                diagnostics.push(type_diagnostic(
+                    path,
+                    "match_pattern_invalid",
+                    format!("invalid match.path_glob pattern `{pattern}`: {error}"),
+                    "/match/path_glob",
+                ));
+            }
+        }
+    }
+    if let Some(predicates) = rule.get("where").and_then(serde_json::Value::as_object) {
+        for (selector, predicate) in predicates {
+            let Some(pattern) = predicate
+                .as_object()
+                .and_then(|operators| operators.get("matches"))
+                .and_then(serde_json::Value::as_str)
+            else {
+                continue;
+            };
+            if let Err(error) = Regex::new(pattern) {
+                diagnostics.push(type_diagnostic(
+                    path,
+                    "match_pattern_invalid",
+                    format!("invalid match.where regex `{pattern}`: {error}"),
+                    &format!("/match/where/{selector}/matches"),
+                ));
+            }
+        }
+    }
+    sort_type_diagnostics(&mut diagnostics);
+    diagnostics
 }
 
 fn normalize_type_name(name: &str) -> String {
@@ -1412,6 +1960,16 @@ mod tests {
         fs::create_dir_all(path.parent().expect("type file should have a parent"))
             .expect("type directory should be created");
         fs::write(path, format!("---\n{frontmatter}---\n")).expect("type file should be written");
+    }
+
+    fn write_matching_type(root: &Path, relative: &str, name: &str, match_rule: &str) {
+        write_type_file(
+            root,
+            relative,
+            &format!(
+                "kind: mdbase.type\nname: {name}\nmatch:\n{match_rule}schema:\n  dialect: json-schema-2020-12\n  value: {{type: object}}\n"
+            ),
+        );
     }
 
     fn fixture_collection(name: &str) -> PathBuf {
@@ -1858,6 +2416,227 @@ schema:
             .expect("authored type name should be registered case-insensitively");
         assert_eq!(contact.name, "contact_card");
         assert!(contact.frontmatter.get("implements").is_some());
+    }
+
+    #[test]
+    fn explicit_type_declarations_override_inference_and_preserve_key_order() {
+        let directory = tempdir().expect("temporary collection should exist");
+        write_config(
+            directory.path(),
+            "spec_version: \"0.3.0\"\nsettings:\n  explicit_type_keys: [kind, type, types]\n",
+        );
+        write_matching_type(
+            directory.path(),
+            "_types/publishable.md",
+            "Publishable",
+            "  fields_present: [title]\n",
+        );
+        write_matching_type(
+            directory.path(),
+            "_types/review.md",
+            "Review",
+            "  fields_present: [review]\n",
+        );
+        write_matching_type(
+            directory.path(),
+            "_types/task.md",
+            "Task",
+            "  fields_present: [task]\n",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+        let registry = load_mdbase_type_registry(&collection).expect("types should load");
+
+        let result = match_mdbase_record_types(
+            &collection,
+            &registry,
+            "notes/work.md",
+            &serde_json::json!({
+                "kind": ["review", "TASK"],
+                "type": "task",
+                "types": ["Missing"],
+                "title": "Would otherwise infer Publishable"
+            }),
+        );
+
+        assert_eq!(result.mode, MdbaseTypeMatchMode::Explicit);
+        assert_eq!(result.types, ["Review", "Task"]);
+        assert_eq!(result.diagnostics.len(), 1);
+        assert_eq!(result.diagnostics[0].code, "type_not_found");
+        assert_eq!(result.diagnostics[0].field, "types");
+        assert_eq!(result.diagnostics[0].type_name.as_deref(), Some("Missing"));
+    }
+
+    #[test]
+    fn invalid_explicit_declaration_still_suppresses_inference() {
+        let directory = tempdir().expect("temporary collection should exist");
+        write_config(directory.path(), "spec_version: \"0.3.0\"\n");
+        write_matching_type(
+            directory.path(),
+            "_types/publishable.md",
+            "Publishable",
+            "  fields_present: [title]\n",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+        let registry = load_mdbase_type_registry(&collection).expect("types should load");
+
+        let result = match_mdbase_record_types(
+            &collection,
+            &registry,
+            "note.md",
+            &serde_json::json!({"type": [], "title": "Present"}),
+        );
+
+        assert_eq!(result.mode, MdbaseTypeMatchMode::Explicit);
+        assert!(result.types.is_empty());
+        assert_eq!(result.diagnostics[0].code, "type_declaration_invalid");
+    }
+
+    #[test]
+    fn inferred_types_match_conjunctively_in_canonical_name_order() {
+        let directory = tempdir().expect("temporary collection should exist");
+        write_config(directory.path(), "spec_version: \"0.3.0\"\n");
+        write_matching_type(
+            directory.path(),
+            "_types/reviewable.md",
+            "reviewable",
+            "  path_glob: ['notes/review*.md', 'drafts/*.md']\n  where:\n    reviewStatus: {neq: done}\n",
+        );
+        write_matching_type(
+            directory.path(),
+            "_types/publishable.md",
+            "Publishable",
+            "  fields_present: [title, enabled, items]\n",
+        );
+        write_matching_type(
+            directory.path(),
+            "_types/jsonld.md",
+            "jsonld_contact",
+            "  fields_present: ['/metadata/@type']\n  where:\n    '/metadata/@type': Contact\n",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+        let registry = load_mdbase_type_registry(&collection).expect("types should load");
+
+        let result = match_mdbase_record_types(
+            &collection,
+            &registry,
+            "notes/review-one.md",
+            &serde_json::json!({
+                "title": "Review",
+                "enabled": false,
+                "items": [],
+                "reviewStatus": "pending",
+                "metadata": {"@type": "Contact"}
+            }),
+        );
+
+        assert_eq!(result.mode, MdbaseTypeMatchMode::Inferred);
+        assert_eq!(
+            result.types,
+            ["jsonld_contact", "Publishable", "reviewable"]
+        );
+        assert!(result.diagnostics.is_empty());
+    }
+
+    #[test]
+    fn structured_where_supports_match_operators_and_expanded_fields() {
+        let directory = tempdir().expect("temporary collection should exist");
+        write_config(directory.path(), "spec_version: \"0.3.0\"\n");
+        write_matching_type(
+            directory.path(),
+            "_types/rich.md",
+            "Rich",
+            r"  where:
+    status: {eq: open, neq: closed}
+    score: {gte: 2, lt: 3}
+    due: {gt: 2026-01-01, lte: 2026-12-31}
+    title: {startsWith: Plan, endsWith: v1, matches: '^Plan.*v1$'}
+    tags: {contains: rust, containsAll: [rust, markdown], containsAny: [other, rust]}
+    authors[].name: {eq: Ada}
+    missing: {exists: false}
+",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+        let registry = load_mdbase_type_registry(&collection).expect("types should load");
+        let matching = serde_json::json!({
+            "status": "open",
+            "score": 2.5,
+            "due": "2026-08-26",
+            "title": "Plan mdbase v1",
+            "tags": ["rust", "markdown"],
+            "authors": [{"name": "Grace"}, {"name": "Ada"}]
+        });
+
+        assert_eq!(
+            match_mdbase_record_types(&collection, &registry, "rich.md", &matching).types,
+            ["Rich"]
+        );
+        let null_field = serde_json::json!({
+            "status": null,
+            "score": 2.5,
+            "due": "2026-08-26",
+            "title": "Plan mdbase v1",
+            "tags": ["rust", "markdown"],
+            "authors": [{"name": "Ada"}]
+        });
+        assert!(
+            match_mdbase_record_types(&collection, &registry, "rich.md", &null_field)
+                .types
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn invalid_match_patterns_and_unsupported_expr_exclude_types() {
+        let directory = tempdir().expect("temporary collection should exist");
+        write_config(directory.path(), "spec_version: \"0.3.0\"\n");
+        write_matching_type(
+            directory.path(),
+            "_types/glob.md",
+            "BadGlob",
+            "  path_glob: '[invalid'\n",
+        );
+        write_matching_type(
+            directory.path(),
+            "_types/regex.md",
+            "BadRegex",
+            "  where:\n    title: {matches: '[invalid'}\n",
+        );
+        write_matching_type(
+            directory.path(),
+            "_types/expr.md",
+            "NeedsCel",
+            "  expr: {$expr: 'true'}\n",
+        );
+        write_matching_type(
+            directory.path(),
+            "_types/valid.md",
+            "Valid",
+            "  fields_present: [title]\n",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+
+        let registry = load_mdbase_type_registry(&collection).expect("registry should load");
+
+        assert_eq!(registry.len(), 1);
+        assert!(registry.get("valid").is_some());
+        assert_eq!(
+            registry
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["match_pattern_invalid", "unsupported_profile"])
+        );
     }
 
     #[test]

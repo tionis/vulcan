@@ -17,6 +17,7 @@ aho-corasick = "1"
 ammonia.workspace = true
 base64 = { workspace = true, optional = true }
 blake3.workspace = true
+chrono.workspace = true
 chrono-tz.workspace = true
 csv.workspace = true
 fs2.workspace = true
