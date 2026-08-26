@@ -4,7 +4,9 @@
 //! describes portable collection semantics, while `.vulcan/config*.toml`
 //! configures Vulcan itself.
 
-use crate::paths::{normalize_relative_input_path, RelativePathOptions};
+use crate::config::VaultConfig;
+use crate::parser::parse_document;
+use crate::paths::{normalize_relative_input_path, secure_read_to_string, RelativePathOptions};
 use chrono_tz::Tz;
 use globset::{GlobBuilder, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
@@ -494,6 +496,97 @@ pub struct MdbaseDiscovery {
     pub nested_collections: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MdbaseTypeDefinition {
+    pub name: String,
+    pub normalized_name: String,
+    pub path: String,
+    pub version: Option<u64>,
+    pub description: Option<String>,
+    pub schema: serde_json::Value,
+    pub schema_ref: Option<String>,
+    pub frontmatter: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MdbaseTypeDiagnostic {
+    pub code: String,
+    pub message: String,
+    pub path: String,
+    pub field: String,
+    pub related_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct MdbaseTypeRegistry {
+    types: BTreeMap<String, MdbaseTypeDefinition>,
+    pub diagnostics: Vec<MdbaseTypeDiagnostic>,
+}
+
+impl MdbaseTypeRegistry {
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&MdbaseTypeDefinition> {
+        self.types.get(&normalize_type_name(name))
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &MdbaseTypeDefinition> {
+        self.types.values()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.types.len()
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.types.is_empty()
+    }
+}
+
+#[derive(Debug)]
+pub enum MdbaseTypeRegistryError {
+    Discovery(MdbaseDiscoveryError),
+    Read {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    BundledSchema {
+        source: serde_json::Error,
+    },
+}
+
+impl Display for MdbaseTypeRegistryError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Discovery(error) => error.fmt(formatter),
+            Self::Read { path, source } => {
+                write!(
+                    formatter,
+                    "failed to read mdbase type file {}: {source}",
+                    path.display()
+                )
+            }
+            Self::BundledSchema { source } => {
+                write!(
+                    formatter,
+                    "bundled mdbase type-file schema is invalid: {source}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for MdbaseTypeRegistryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Discovery(error) => Some(error),
+            Self::Read { source, .. } => Some(source),
+            Self::BundledSchema { source } => Some(source),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum MdbaseDiscoveryError {
     Io {
@@ -684,6 +777,246 @@ pub fn discover_mdbase_files(
     discovery.contract_files.sort();
     discovery.nested_collections.sort();
     Ok(discovery)
+}
+
+/// Load valid `kind: mdbase.type` files into a deterministic registry.
+///
+/// Names are matched case-insensitively while the authored spelling remains
+/// available on each definition. Conflicting names are excluded rather than
+/// selecting a filesystem-order-dependent winner.
+pub fn load_mdbase_type_registry(
+    collection: &MdbaseCollection,
+) -> Result<MdbaseTypeRegistry, MdbaseTypeRegistryError> {
+    let discovery =
+        discover_mdbase_files(collection).map_err(MdbaseTypeRegistryError::Discovery)?;
+    build_mdbase_type_registry(collection, &discovery.type_files)
+}
+
+fn build_mdbase_type_registry(
+    collection: &MdbaseCollection,
+    type_files: &[String],
+) -> Result<MdbaseTypeRegistry, MdbaseTypeRegistryError> {
+    let type_schema = bundled_mdbase_schema(&format!(
+        "{MDBASE_CANONICAL_SCHEMA_BASE}type-file.schema.json"
+    ))
+    .expect("the type-file schema is part of the pinned bundle");
+    let type_schema: serde_json::Value = serde_json::from_str(type_schema.json)
+        .map_err(|source| MdbaseTypeRegistryError::BundledSchema { source })?;
+    let mut candidates = BTreeMap::<String, Vec<MdbaseTypeDefinition>>::new();
+    let mut diagnostics = Vec::new();
+    let mut paths = type_files.to_vec();
+    paths.sort();
+    paths.dedup();
+
+    for path in paths {
+        match load_mdbase_type_file(collection, &path, &type_schema)? {
+            TypeFileLoad::Valid(definition) => candidates
+                .entry(definition.normalized_name.clone())
+                .or_default()
+                .push(definition),
+            TypeFileLoad::Invalid(mut file_diagnostics) => {
+                diagnostics.append(&mut file_diagnostics);
+            }
+        }
+    }
+
+    let mut types = BTreeMap::new();
+    for (normalized_name, mut definitions) in candidates {
+        definitions.sort_by(|left, right| left.path.cmp(&right.path));
+        if definitions.len() == 1 {
+            let definition = definitions.pop().expect("one definition should remain");
+            types.insert(normalized_name, definition);
+            continue;
+        }
+        let all_paths = definitions
+            .iter()
+            .map(|definition| definition.path.clone())
+            .collect::<Vec<_>>();
+        for definition in definitions {
+            diagnostics.push(MdbaseTypeDiagnostic {
+                code: "type_name_conflict".to_string(),
+                message: format!(
+                    "type name `{}` conflicts case-insensitively with another type definition",
+                    definition.name
+                ),
+                path: definition.path.clone(),
+                field: "name".to_string(),
+                related_paths: all_paths
+                    .iter()
+                    .filter(|path| *path != &definition.path)
+                    .cloned()
+                    .collect(),
+            });
+        }
+    }
+    sort_type_diagnostics(&mut diagnostics);
+    Ok(MdbaseTypeRegistry { types, diagnostics })
+}
+
+enum TypeFileLoad {
+    Valid(MdbaseTypeDefinition),
+    Invalid(Vec<MdbaseTypeDiagnostic>),
+}
+
+fn load_mdbase_type_file(
+    collection: &MdbaseCollection,
+    path: &str,
+    type_schema: &serde_json::Value,
+) -> Result<TypeFileLoad, MdbaseTypeRegistryError> {
+    let source = secure_read_to_string(&collection.root, Path::new(path)).map_err(|source| {
+        MdbaseTypeRegistryError::Read {
+            path: collection.root.join(path),
+            source,
+        }
+    })?;
+    let frontmatter = match parse_type_frontmatter(&source, path) {
+        Ok(frontmatter) => frontmatter,
+        Err(diagnostic) => return Ok(TypeFileLoad::Invalid(vec![diagnostic])),
+    };
+    let absolute_path = collection.root.join(path);
+    let schema_diagnostics = match validate_mdbase_schema_value_with_local_refs(
+        type_schema,
+        &frontmatter,
+        &absolute_path,
+        &collection.root,
+    ) {
+        Ok(diagnostics) => diagnostics,
+        Err(error) => {
+            return Ok(TypeFileLoad::Invalid(vec![type_diagnostic(
+                path,
+                "schema_invalid",
+                format!("failed to compile the mdbase type-file schema: {error}"),
+                "schema",
+            )]));
+        }
+    };
+    if !schema_diagnostics.is_empty() {
+        return Ok(TypeFileLoad::Invalid(
+            schema_diagnostics
+                .into_iter()
+                .map(|diagnostic| type_schema_diagnostic(path, diagnostic))
+                .collect(),
+        ));
+    }
+
+    let wrapped_schema = frontmatter
+        .get("schema")
+        .expect("validated type frontmatter should contain schema");
+    let (schema, schema_ref) = if let Some(value) = wrapped_schema.get("value") {
+        (value.clone(), None)
+    } else {
+        let reference = wrapped_schema
+            .get("ref")
+            .and_then(serde_json::Value::as_str)
+            .expect("validated schema wrapper should contain value or ref")
+            .to_string();
+        (serde_json::json!({"$ref": reference}), Some(reference))
+    };
+    if let Err(error) = validate_mdbase_schema_value_with_local_refs(
+        &schema,
+        &serde_json::Value::Null,
+        &absolute_path,
+        &collection.root,
+    ) {
+        return Ok(TypeFileLoad::Invalid(vec![type_diagnostic(
+            path,
+            "schema_invalid",
+            format!("failed to compile type schema: {error}"),
+            "schema",
+        )]));
+    }
+
+    let name = frontmatter
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .expect("validated type frontmatter should contain a string name")
+        .to_string();
+    Ok(TypeFileLoad::Valid(MdbaseTypeDefinition {
+        normalized_name: normalize_type_name(&name),
+        name,
+        path: path.to_string(),
+        version: frontmatter
+            .get("version")
+            .and_then(serde_json::Value::as_u64),
+        description: frontmatter
+            .get("description")
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        schema,
+        schema_ref,
+        frontmatter,
+    }))
+}
+
+fn parse_type_frontmatter(
+    source: &str,
+    path: &str,
+) -> Result<serde_json::Value, MdbaseTypeDiagnostic> {
+    let parsed = parse_document(source, &VaultConfig::default());
+    let raw_frontmatter = parsed.raw_frontmatter.ok_or_else(|| {
+        type_diagnostic(
+            path,
+            "type_frontmatter_missing",
+            "mdbase type files require leading YAML frontmatter",
+            "",
+        )
+    })?;
+    let yaml = serde_yaml::from_str::<serde_yaml::Value>(&raw_frontmatter).map_err(|error| {
+        type_diagnostic(
+            path,
+            "type_frontmatter_invalid",
+            format!("failed to parse type frontmatter: {error}"),
+            "",
+        )
+    })?;
+    serde_json::to_value(yaml).map_err(|error| {
+        type_diagnostic(
+            path,
+            "type_frontmatter_invalid",
+            format!("type frontmatter is not JSON-compatible: {error}"),
+            "",
+        )
+    })
+}
+
+fn normalize_type_name(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
+fn type_schema_diagnostic(path: &str, diagnostic: MdbaseSchemaDiagnostic) -> MdbaseTypeDiagnostic {
+    MdbaseTypeDiagnostic {
+        code: diagnostic.code,
+        message: diagnostic.message,
+        path: path.to_string(),
+        field: diagnostic.instance_path,
+        related_paths: Vec::new(),
+    }
+}
+
+fn type_diagnostic(
+    path: &str,
+    code: &str,
+    message: impl Into<String>,
+    field: &str,
+) -> MdbaseTypeDiagnostic {
+    MdbaseTypeDiagnostic {
+        code: code.to_string(),
+        message: message.into(),
+        path: path.to_string(),
+        field: field.to_string(),
+        related_paths: Vec::new(),
+    }
+}
+
+fn sort_type_diagnostics(diagnostics: &mut [MdbaseTypeDiagnostic]) {
+    diagnostics.sort_by(|left, right| {
+        left.path
+            .cmp(&right.path)
+            .then_with(|| left.code.cmp(&right.code))
+            .then_with(|| left.field.cmp(&right.field))
+            .then_with(|| left.message.cmp(&right.message))
+            .then_with(|| left.related_paths.cmp(&right.related_paths))
+    });
 }
 
 fn discover_control_files(
@@ -1074,6 +1407,13 @@ mod tests {
         fs::write(path, "---\ntitle: Fixture\n---\n").expect("file should be written");
     }
 
+    fn write_type_file(root: &Path, relative: &str, frontmatter: &str) {
+        let path = root.join(relative);
+        fs::create_dir_all(path.parent().expect("type file should have a parent"))
+            .expect("type directory should be created");
+        fs::write(path, format!("---\n{frontmatter}---\n")).expect("type file should be written");
+    }
+
     fn fixture_collection(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../tests/fixtures/vaults/mdbase")
@@ -1343,6 +1683,181 @@ settings:
         assert_eq!(discovered.type_files, ["Schema/Types/Person.md"]);
         assert_eq!(discovered.contract_files, ["Schema/Contracts/People.md"]);
         assert_eq!(discovered.nested_collections, ["Nested"]);
+    }
+
+    #[test]
+    fn type_registry_loads_inline_and_referenced_schemas_case_insensitively() {
+        let directory = tempdir().expect("temporary collection should exist");
+        write_config(directory.path(), "spec_version: \"0.3.0\"\n");
+        write_type_file(
+            directory.path(),
+            "_types/Task.md",
+            r"kind: mdbase.type
+name: Task
+version: 2
+description: Work item
+schema:
+  dialect: json-schema-2020-12
+  value:
+    type: object
+    required: [title]
+    properties:
+      title: { type: string }
+",
+        );
+        write_type_file(
+            directory.path(),
+            "_types/Contact.md",
+            r"kind: mdbase.type
+name: Contact
+schema:
+  dialect: json-schema-2020-12
+  ref: ./contact.schema.json#/$defs/contact
+",
+        );
+        fs::write(
+            directory.path().join("_types/contact.schema.json"),
+            r#"{"$defs":{"contact":{"type":"object","required":["name"]}}}"#,
+        )
+        .expect("referenced schema should be written");
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+
+        let registry = load_mdbase_type_registry(&collection).expect("types should load");
+
+        assert_eq!(registry.len(), 2);
+        assert!(registry.diagnostics.is_empty());
+        let task = registry
+            .get("tAsK")
+            .expect("lookup should ignore ASCII case");
+        assert_eq!(task.name, "Task");
+        assert_eq!(task.normalized_name, "task");
+        assert_eq!(task.version, Some(2));
+        assert_eq!(task.description.as_deref(), Some("Work item"));
+        let contact = registry
+            .get("CONTACT")
+            .expect("referenced type should load");
+        assert_eq!(
+            contact.schema_ref.as_deref(),
+            Some("./contact.schema.json#/$defs/contact")
+        );
+        assert_eq!(
+            registry
+                .iter()
+                .map(|definition| definition.name.as_str())
+                .collect::<Vec<_>>(),
+            ["Contact", "Task"]
+        );
+    }
+
+    #[test]
+    fn type_registry_excludes_case_conflicts_independently_of_input_order() {
+        let directory = tempdir().expect("temporary collection should exist");
+        write_config(directory.path(), "spec_version: \"0.3.0\"\n");
+        for (path, name) in [("_types/z.md", "Person"), ("_types/a.md", "person")] {
+            write_type_file(
+                directory.path(),
+                path,
+                &format!(
+                    "kind: mdbase.type\nname: {name}\nschema:\n  dialect: json-schema-2020-12\n  value: {{type: object}}\n"
+                ),
+            );
+        }
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+
+        let forward = build_mdbase_type_registry(
+            &collection,
+            &["_types/a.md".to_string(), "_types/z.md".to_string()],
+        )
+        .expect("registry should load");
+        let reverse = build_mdbase_type_registry(
+            &collection,
+            &["_types/z.md".to_string(), "_types/a.md".to_string()],
+        )
+        .expect("registry should load");
+
+        assert_eq!(forward, reverse);
+        assert!(forward.is_empty());
+        assert_eq!(forward.diagnostics.len(), 2);
+        assert!(forward
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code == "type_name_conflict"));
+        assert_eq!(forward.diagnostics[0].path, "_types/a.md");
+        assert_eq!(forward.diagnostics[0].related_paths, ["_types/z.md"]);
+    }
+
+    #[test]
+    fn type_registry_reports_invalid_files_without_hiding_valid_types() {
+        let directory = tempdir().expect("temporary collection should exist");
+        write_config(directory.path(), "spec_version: \"0.3.0\"\n");
+        write_file(directory.path(), "_types/missing-frontmatter.md");
+        fs::write(
+            directory.path().join("_types/missing-frontmatter.md"),
+            "# Not a type\n",
+        )
+        .expect("invalid type file should be written");
+        write_type_file(
+            directory.path(),
+            "_types/wrong-kind.md",
+            "kind: note\nname: Wrong\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\n",
+        );
+        write_type_file(
+            directory.path(),
+            "_types/broken-schema.md",
+            "kind: mdbase.type\nname: Broken\nschema:\n  dialect: json-schema-2020-12\n  value:\n    type: string\n    pattern: '['\n",
+        );
+        write_type_file(
+            directory.path(),
+            "_types/valid.md",
+            "kind: mdbase.type\nname: Valid\nschema:\n  dialect: json-schema-2020-12\n  value: {type: object}\n",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+
+        let registry = load_mdbase_type_registry(&collection).expect("registry should load");
+
+        assert_eq!(registry.len(), 1);
+        assert!(registry.get("valid").is_some());
+        assert_eq!(
+            registry
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["schema_const", "schema_invalid", "type_frontmatter_missing"])
+        );
+    }
+
+    #[test]
+    fn type_registry_accepts_the_pinned_data_contract_type_fixture() {
+        let directory = tempdir().expect("temporary collection should exist");
+        write_config(directory.path(), "spec_version: \"0.3.0\"\n");
+        let type_directory = directory.path().join("_types");
+        fs::create_dir_all(&type_directory).expect("type directory should exist");
+        fs::write(
+            type_directory.join("contact.md"),
+            include_str!(
+                "../resources/mdbase/v0.3/upstream/tests/fixtures/data-contracts/json-pointer-contact-type.md"
+            ),
+        )
+        .expect("pinned type fixture should be written");
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+
+        let registry = load_mdbase_type_registry(&collection).expect("fixture type should load");
+
+        assert!(registry.diagnostics.is_empty());
+        let contact = registry
+            .get("CONTACT_CARD")
+            .expect("authored type name should be registered case-insensitively");
+        assert_eq!(contact.name, "contact_card");
+        assert!(contact.frontmatter.get("implements").is_some());
     }
 
     #[test]

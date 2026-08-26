@@ -6520,7 +6520,7 @@ The MDB and OBS tracks preserve candidate implementation research and acceptance
 #### MDB.2 JSON Schema, type registry, and data contracts
 
 - [x] Replace or supplement the small internal tool-schema validator with an MSRV-compatible JSON Schema 2020-12 implementation that covers every mdbase-required keyword, asserted date/time/date-time formats, fragment references, bounded local file references, cycle detection, and canonical `schema_*` diagnostics.
-- [ ] Load and validate `kind: mdbase.type` control files into a deterministic case-insensitive registry while preserving authored names and reporting conflicts independently of filesystem order.
+- [x] Load and validate `kind: mdbase.type` control files into a deterministic case-insensitive registry while preserving authored names and reporting conflicts independently of filesystem order.
 - [ ] Implement explicit type declaration precedence and structured inferred matching (`path_glob`, `fields_present`, and `match.where`) against persisted frontmatter, including multiple matched types and deterministic ordering.
 - [ ] Implement compatible multi-type composition for schemas, defaults, links, uniqueness, paths, lifecycle declarations, projections, and display metadata; report `type_conflict` before applying conflicted behavior.
 - [ ] Load exact-version `mdbase.contract` files, validate `implements` bindings, produce deterministic contract/implementation digests, and expose projected record contract views required by `core_read`.
