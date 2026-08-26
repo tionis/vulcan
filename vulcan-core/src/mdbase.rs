@@ -548,6 +548,36 @@ pub struct MdbaseTypeMatchResult {
     pub diagnostics: Vec<MdbaseTypeMatchDiagnostic>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct MdbaseDeclaredTypeValue {
+    pub type_name: String,
+    pub value: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MdbaseTypeCompositionDiagnostic {
+    pub code: String,
+    pub message: String,
+    pub field: String,
+    pub type_names: Vec<String>,
+    pub locations: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+pub struct MdbaseComposedTypeBehavior {
+    pub types: Vec<String>,
+    pub schemas: Vec<MdbaseDeclaredTypeValue>,
+    pub read_defaults: BTreeMap<String, serde_json::Value>,
+    pub links: BTreeMap<String, serde_json::Value>,
+    pub unique: Vec<MdbaseDeclaredTypeValue>,
+    pub path: Option<serde_json::Value>,
+    pub lifecycle: BTreeMap<String, BTreeMap<String, serde_json::Value>>,
+    pub projections: BTreeMap<String, serde_json::Value>,
+    pub display_by_type: BTreeMap<String, serde_json::Value>,
+    pub display: Option<serde_json::Value>,
+    pub diagnostics: Vec<MdbaseTypeCompositionDiagnostic>,
+}
+
 impl MdbaseTypeRegistry {
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&MdbaseTypeDefinition> {
@@ -868,6 +898,282 @@ pub fn match_mdbase_record_types(
         return match_explicit_types(collection, registry, &record_path, frontmatter);
     }
     match_inferred_types(registry, &record_path, frontmatter)
+}
+
+/// Compose collection behavior for an already ordered set of matched types.
+///
+/// Schemas and uniqueness rules remain associated with their declaring type.
+/// Compatible derived behavior coalesces, while conflicted values are omitted
+/// and reported before a caller can apply them.
+#[must_use]
+pub fn compose_mdbase_type_behavior(
+    registry: &MdbaseTypeRegistry,
+    matched_types: &[String],
+) -> MdbaseComposedTypeBehavior {
+    let mut behavior = MdbaseComposedTypeBehavior::default();
+    let mut declarations = BTreeMap::<CompositionKey, Vec<CompositionDeclaration>>::new();
+    for type_name in matched_types {
+        let Some(definition) = registry.get(type_name) else {
+            behavior.diagnostics.push(MdbaseTypeCompositionDiagnostic {
+                code: "type_not_found".to_string(),
+                message: format!("matched type `{type_name}` is not defined"),
+                field: "types".to_string(),
+                type_names: vec![type_name.clone()],
+                locations: Vec::new(),
+            });
+            continue;
+        };
+        behavior.types.push(definition.name.clone());
+        behavior.schemas.push(MdbaseDeclaredTypeValue {
+            type_name: definition.name.clone(),
+            value: definition.schema.clone(),
+        });
+        if behavior.types.len() == 1 {
+            behavior.display = definition
+                .frontmatter
+                .pointer("/collection/display")
+                .cloned();
+        }
+        collect_type_behavior(definition, &mut behavior, &mut declarations);
+    }
+    resolve_composition_declarations(declarations, &mut behavior);
+    behavior.diagnostics.sort_by(|left, right| {
+        left.field
+            .cmp(&right.field)
+            .then_with(|| left.code.cmp(&right.code))
+            .then_with(|| left.type_names.cmp(&right.type_names))
+    });
+    behavior
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum CompositionKey {
+    ReadDefault(String),
+    Link(String),
+    Path,
+    Lifecycle { event: String, field: String },
+    Projection(String),
+}
+
+#[derive(Debug, Clone)]
+struct CompositionDeclaration {
+    type_name: String,
+    location: String,
+    value: serde_json::Value,
+}
+
+fn collect_type_behavior(
+    definition: &MdbaseTypeDefinition,
+    behavior: &mut MdbaseComposedTypeBehavior,
+    declarations: &mut BTreeMap<CompositionKey, Vec<CompositionDeclaration>>,
+) {
+    let collection = definition
+        .frontmatter
+        .get("collection")
+        .and_then(serde_json::Value::as_object);
+    if let Some(display) = collection.and_then(|value| value.get("display")) {
+        behavior
+            .display_by_type
+            .insert(definition.name.clone(), display.clone());
+    }
+    if let Some(rules) = collection
+        .and_then(|value| value.get("unique"))
+        .and_then(serde_json::Value::as_array)
+    {
+        behavior
+            .unique
+            .extend(rules.iter().cloned().map(|value| MdbaseDeclaredTypeValue {
+                type_name: definition.name.clone(),
+                value,
+            }));
+    }
+    collect_object_declarations(
+        definition,
+        collection.and_then(|value| value.get("read_defaults")),
+        "collection.read_defaults",
+        CompositionKey::ReadDefault,
+        declarations,
+    );
+    collect_object_declarations(
+        definition,
+        collection.and_then(|value| value.get("links")),
+        "collection.links",
+        CompositionKey::Link,
+        declarations,
+    );
+    collect_object_declarations(
+        definition,
+        collection.and_then(|value| value.get("projections")),
+        "collection.projections",
+        CompositionKey::Projection,
+        declarations,
+    );
+    if let Some(path) = collection.and_then(|value| value.get("path")) {
+        push_composition_declaration(
+            declarations,
+            CompositionKey::Path,
+            definition,
+            "collection.path".to_string(),
+            path.clone(),
+        );
+    }
+    collect_lifecycle_declarations(definition, declarations);
+}
+
+fn collect_object_declarations(
+    definition: &MdbaseTypeDefinition,
+    object: Option<&serde_json::Value>,
+    location: &str,
+    key: fn(String) -> CompositionKey,
+    declarations: &mut BTreeMap<CompositionKey, Vec<CompositionDeclaration>>,
+) {
+    let Some(object) = object.and_then(serde_json::Value::as_object) else {
+        return;
+    };
+    for (field, value) in object {
+        push_composition_declaration(
+            declarations,
+            key(field.clone()),
+            definition,
+            format!("{location}.{field}"),
+            value.clone(),
+        );
+    }
+}
+
+fn collect_lifecycle_declarations(
+    definition: &MdbaseTypeDefinition,
+    declarations: &mut BTreeMap<CompositionKey, Vec<CompositionDeclaration>>,
+) {
+    let Some(lifecycle) = definition
+        .frontmatter
+        .get("lifecycle")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return;
+    };
+    for (event, actions) in lifecycle {
+        let actions = actions.as_array().map_or_else(
+            || vec![actions],
+            |actions| actions.iter().collect::<Vec<_>>(),
+        );
+        let mut by_field = BTreeMap::<String, Vec<serde_json::Value>>::new();
+        for action in actions {
+            let action = action
+                .as_object()
+                .expect("validated lifecycle action should be an object");
+            let guard = action.get("if");
+            let assignments = action
+                .get("set")
+                .and_then(serde_json::Value::as_object)
+                .expect("validated lifecycle action should contain set");
+            for (field, value) in assignments {
+                by_field.entry(field.clone()).or_default().push(
+                    serde_json::json!({"if": guard.cloned().unwrap_or(serde_json::Value::Null), "value": value}),
+                );
+            }
+        }
+        for (field, assignments) in by_field {
+            push_composition_declaration(
+                declarations,
+                CompositionKey::Lifecycle {
+                    event: event.clone(),
+                    field: field.clone(),
+                },
+                definition,
+                format!("lifecycle.{event}.{field}"),
+                serde_json::Value::Array(assignments),
+            );
+        }
+    }
+}
+
+fn push_composition_declaration(
+    declarations: &mut BTreeMap<CompositionKey, Vec<CompositionDeclaration>>,
+    key: CompositionKey,
+    definition: &MdbaseTypeDefinition,
+    location: String,
+    value: serde_json::Value,
+) {
+    declarations
+        .entry(key)
+        .or_default()
+        .push(CompositionDeclaration {
+            type_name: definition.name.clone(),
+            location,
+            value,
+        });
+}
+
+fn resolve_composition_declarations(
+    declarations: BTreeMap<CompositionKey, Vec<CompositionDeclaration>>,
+    behavior: &mut MdbaseComposedTypeBehavior,
+) {
+    for (key, values) in declarations {
+        let first = &values[0].value;
+        if values.iter().all(|value| value.value == *first) {
+            insert_composed_value(behavior, key, first.clone());
+            continue;
+        }
+        let mut type_names = values
+            .iter()
+            .map(|value| value.type_name.clone())
+            .collect::<Vec<_>>();
+        type_names.sort_by_key(|name| normalize_type_name(name));
+        type_names.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+        let mut locations = values
+            .iter()
+            .map(|value| format!("{}:{}", value.type_name, value.location))
+            .collect::<Vec<_>>();
+        locations.sort_by_key(|location| location.to_ascii_lowercase());
+        let field = composition_field(&key);
+        behavior.diagnostics.push(MdbaseTypeCompositionDiagnostic {
+            code: "type_conflict".to_string(),
+            message: format!(
+                "matched types define incompatible values for `{field}`: {}",
+                type_names.join(", ")
+            ),
+            field,
+            type_names,
+            locations,
+        });
+    }
+}
+
+fn insert_composed_value(
+    behavior: &mut MdbaseComposedTypeBehavior,
+    key: CompositionKey,
+    value: serde_json::Value,
+) {
+    match key {
+        CompositionKey::ReadDefault(field) => {
+            behavior.read_defaults.insert(field, value);
+        }
+        CompositionKey::Link(field) => {
+            behavior.links.insert(field, value);
+        }
+        CompositionKey::Path => behavior.path = Some(value),
+        CompositionKey::Lifecycle { event, field } => {
+            behavior
+                .lifecycle
+                .entry(event)
+                .or_default()
+                .insert(field, value);
+        }
+        CompositionKey::Projection(field) => {
+            behavior.projections.insert(field, value);
+        }
+    }
+}
+
+fn composition_field(key: &CompositionKey) -> String {
+    match key {
+        CompositionKey::ReadDefault(field)
+        | CompositionKey::Link(field)
+        | CompositionKey::Projection(field)
+        | CompositionKey::Lifecycle { field, .. } => field.clone(),
+        CompositionKey::Path => "path".to_string(),
+    }
 }
 
 fn match_explicit_types(
@@ -1972,6 +2278,16 @@ mod tests {
         );
     }
 
+    fn write_behavior_type(root: &Path, relative: &str, name: &str, behavior: &str) {
+        write_type_file(
+            root,
+            relative,
+            &format!(
+                "kind: mdbase.type\nname: {name}\nschema:\n  dialect: json-schema-2020-12\n  value: {{type: object}}\n{behavior}"
+            ),
+        );
+    }
+
     fn fixture_collection(name: &str) -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR"))
             .join("../tests/fixtures/vaults/mdbase")
@@ -2637,6 +2953,167 @@ schema:
                 .collect::<BTreeSet<_>>(),
             BTreeSet::from(["match_pattern_invalid", "unsupported_profile"])
         );
+    }
+
+    #[test]
+    fn compatible_type_behavior_coalesces_with_declaring_type_provenance() {
+        let directory = tempdir().expect("temporary collection should exist");
+        write_config(directory.path(), "spec_version: \"0.3.0\"\n");
+        let shared = r"collection:
+  read_defaults: {status: open}
+  links:
+    owner: {target_type: Person, validate_exists: true}
+  path: {pattern: 'notes/{id}.md'}
+  projections:
+    label: {expr: title}
+lifecycle:
+  on_update:
+    set:
+      updated: {now: true}
+";
+        write_behavior_type(directory.path(), "_types/zeta.md", "Zeta", shared);
+        write_behavior_type(
+            directory.path(),
+            "_types/alpha.md",
+            "Alpha",
+            r"collection:
+  read_defaults: {status: open}
+  links:
+    owner: {target_type: Person, validate_exists: true}
+  unique:
+    - {field: id, scope: type}
+  path: {pattern: 'notes/{id}.md'}
+  projections:
+    label: {expr: title}
+lifecycle:
+  on_update:
+    set:
+      updated: {now: true}
+",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+        let registry = load_mdbase_type_registry(&collection).expect("types should load");
+
+        let behavior =
+            compose_mdbase_type_behavior(&registry, &["Alpha".to_string(), "Zeta".to_string()]);
+
+        assert!(behavior.diagnostics.is_empty());
+        assert_eq!(behavior.types, ["Alpha", "Zeta"]);
+        assert_eq!(behavior.schemas.len(), 2);
+        assert_eq!(behavior.read_defaults["status"], "open");
+        assert_eq!(behavior.links["owner"]["target_type"], "Person");
+        assert_eq!(
+            behavior.path.as_ref().expect("path should compose")["pattern"],
+            "notes/{id}.md"
+        );
+        assert_eq!(behavior.projections["label"]["expr"], "title");
+        assert_eq!(
+            behavior.lifecycle["on_update"]["updated"]
+                .as_array()
+                .expect("assignments should be normalized")
+                .len(),
+            1
+        );
+        assert_eq!(behavior.unique.len(), 1);
+        assert_eq!(behavior.unique[0].type_name, "Alpha");
+    }
+
+    #[test]
+    fn incompatible_type_behavior_is_reported_and_left_unavailable() {
+        let directory = tempdir().expect("temporary collection should exist");
+        write_config(directory.path(), "spec_version: \"0.3.0\"\n");
+        write_behavior_type(
+            directory.path(),
+            "_types/a.md",
+            "A",
+            r"collection:
+  read_defaults: {status: open}
+  links:
+    owner: {target_type: Person}
+  path: {pattern: 'a/{id}.md'}
+  projections:
+    label: {expr: title}
+lifecycle:
+  on_update:
+    set:
+      stamp: {literal: a}
+",
+        );
+        write_behavior_type(
+            directory.path(),
+            "_types/b.md",
+            "B",
+            r"collection:
+  read_defaults: {status: done}
+  links:
+    owner: {target_type: Team}
+  path: {pattern: 'b/{id}.md'}
+  projections:
+    label: {expr: summary}
+lifecycle:
+  on_update:
+    set:
+      stamp: {literal: b}
+",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+        let registry = load_mdbase_type_registry(&collection).expect("types should load");
+
+        let behavior = compose_mdbase_type_behavior(&registry, &["B".to_string(), "A".to_string()]);
+
+        assert_eq!(behavior.diagnostics.len(), 5);
+        assert!(behavior
+            .diagnostics
+            .iter()
+            .all(|diagnostic| diagnostic.code == "type_conflict"));
+        assert_eq!(
+            behavior
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.field.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from(["label", "owner", "path", "stamp", "status"])
+        );
+        assert!(!behavior.read_defaults.contains_key("status"));
+        assert!(!behavior.links.contains_key("owner"));
+        assert!(behavior.path.is_none());
+        assert!(!behavior.projections.contains_key("label"));
+        assert!(!behavior.lifecycle.contains_key("on_update"));
+        assert_eq!(behavior.diagnostics[0].type_names, ["A", "B"]);
+    }
+
+    #[test]
+    fn flattened_display_comes_only_from_the_first_matched_type() {
+        let directory = tempdir().expect("temporary collection should exist");
+        write_config(directory.path(), "spec_version: \"0.3.0\"\n");
+        write_behavior_type(directory.path(), "_types/plain.md", "Plain", "");
+        write_behavior_type(
+            directory.path(),
+            "_types/visual.md",
+            "Visual",
+            "collection:\n  display: {name_field: title, icon: note}\n",
+        );
+        let collection = load_mdbase_collection(directory.path())
+            .expect("config should load")
+            .expect("collection should be detected");
+        let registry = load_mdbase_type_registry(&collection).expect("types should load");
+
+        let plain_first =
+            compose_mdbase_type_behavior(&registry, &["Plain".to_string(), "Visual".to_string()]);
+        let visual_first =
+            compose_mdbase_type_behavior(&registry, &["Visual".to_string(), "Plain".to_string()]);
+
+        assert!(plain_first.display.is_none());
+        assert_eq!(
+            visual_first.display.expect("display should flatten")["icon"],
+            "note"
+        );
+        assert_eq!(plain_first.display_by_type.len(), 1);
+        assert!(plain_first.display_by_type.contains_key("Visual"));
     }
 
     #[test]
