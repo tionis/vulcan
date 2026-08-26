@@ -11743,7 +11743,7 @@
       },
       {
         "about": "Apply vault-wide refactors and suggestion passes",
-        "after_help": "Subcommands:\n  rename-alias     Rename an alias inside one note's frontmatter\n  rename-heading   Rename a heading and rewrite inbound heading links\n  rename-block-ref Rename a block reference and rewrite inbound block links\n  rename-property  Rename a frontmatter property key across notes\n  merge-tags       Merge one tag into another across frontmatter and note bodies\n  rewrite          Apply a literal find/replace across filtered notes\n  move             Move a note or attachment and rewrite inbound links\n  link-mentions    Convert plain-text note mentions into links\n\nNotes:\n  All refactor subcommands support `--dry-run` to preview changes without writing files.\n  Mutating refactor commands participate in auto-commit when git integration is enabled.\n  Use `--no-commit` to suppress the auto-commit for a single invocation.\n\nExamples:\n  vulcan refactor rename-heading Projects/Alpha \"## Status\" \"## Current Status\" --dry-run\n  vulcan refactor rename-property status project_status --dry-run\n  vulcan refactor merge-tags \"#wip\" \"#in-progress\" --dry-run\n  vulcan refactor move Projects/Alpha.md Archive/Alpha.md --dry-run\n  vulcan refactor rewrite --where 'status = draft' --find TODO --replace DONE\n  vulcan refactor link-mentions Projects/Alpha --dry-run",
+        "after_help": "Subcommands:\n  rename-alias     Rename an alias inside one note's frontmatter\n  rename-heading   Rename a heading and rewrite inbound heading links\n  rename-block-ref Rename a block reference and rewrite inbound block links\n  rename-property  Rename a frontmatter property key across notes\n  merge-tags       Merge one tag into another across frontmatter and note bodies\n  rewrite          Apply a literal find/replace across filtered notes\n  move             Move a note or attachment and rewrite inbound links\n  split-note       Materialize heading sections as a wiki-like note tree\n  folder-notes     Convert folder notes to another configured layout\n  link-mentions    Convert plain-text note mentions into links\n\nNotes:\n  All refactor subcommands support `--dry-run` to preview changes without writing files.\n  Mutating refactor commands participate in auto-commit when git integration is enabled.\n  Use `--no-commit` to suppress the auto-commit for a single invocation.\n\nExamples:\n  vulcan refactor rename-heading Projects/Alpha \"## Status\" \"## Current Status\" --dry-run\n  vulcan refactor rename-property status project_status --dry-run\n  vulcan refactor merge-tags \"#wip\" \"#in-progress\" --dry-run\n  vulcan refactor move Projects/Alpha.md Archive/Alpha.md --dry-run\n  vulcan refactor split-note Rulebook.md --from-level 2 --through-level 3 --dry-run\n  vulcan refactor rewrite --where 'status = draft' --find TODO --replace DONE\n  vulcan refactor link-mentions Projects/Alpha --dry-run",
         "name": "refactor",
         "options": [],
         "subcommands": [
@@ -12176,6 +12176,113 @@
               },
               {
                 "help": "Report rewrite changes without moving files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Materialize heading sections as a link-safe wiki note tree",
+            "name": "split-note",
+            "options": [
+              {
+                "help": "Source note path, filename, or alias",
+                "id": "source",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "SOURCE"
+                ]
+              },
+              {
+                "help": "Destination folder; defaults to a same-name folder beside the source note",
+                "id": "destination",
+                "long": "destination",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DESTINATION"
+                ]
+              },
+              {
+                "help": "First heading level to materialize as notes",
+                "id": "from_level",
+                "long": "from-level",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FROM_LEVEL"
+                ]
+              },
+              {
+                "help": "Deepest heading level to materialize; defaults to --from-level",
+                "id": "through_level",
+                "long": "through-level",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "THROUGH_LEVEL"
+                ]
+              },
+              {
+                "help": "Retain the original source note in addition to the generated tree",
+                "id": "keep_source",
+                "long": "keep-source",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "KEEP_SOURCE"
+                ]
+              },
+              {
+                "help": "Do not generate parent-to-child Contents lists",
+                "id": "no_navigation",
+                "long": "no-navigation",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_NAVIGATION"
+                ]
+              },
+              {
+                "help": "Report the complete plan without modifying files",
                 "id": "dry_run",
                 "long": "dry-run",
                 "possible_values": [

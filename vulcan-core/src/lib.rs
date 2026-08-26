@@ -55,6 +55,7 @@ pub mod chunking;
 pub mod config;
 pub mod content_transforms;
 pub mod dataview_js;
+pub mod decomposition;
 pub mod doctor;
 pub mod dql;
 pub mod expression;
@@ -151,6 +152,11 @@ pub use dataview_js::{
     evaluate_dataview_js, evaluate_dataview_js_query, evaluate_dataview_js_with_options,
     DataviewJsError, DataviewJsEvalOptions, DataviewJsOutput, DataviewJsResult, DataviewJsSession,
     DataviewJsToolDefinition, DataviewJsToolDescriptor, DataviewJsToolRegistry,
+};
+pub use decomposition::{
+    plan_document_decomposition, DecompositionDiagnostic, DecompositionError,
+    DecompositionLinkPlacement, DecompositionNotePlan, DecompositionOptions, DecompositionPlan,
+    DecompositionSubpathTarget, SourceByteSpan,
 };
 pub use doctor::{
     doctor_fix, doctor_vault, DoctorByteRange, DoctorDiagnosticIssue, DoctorError, DoctorFixAction,

@@ -6291,6 +6291,113 @@ fn refactor_folder_notes_dry_run_and_apply_are_structured_and_mutation_safe() {
 }
 
 #[test]
+fn refactor_split_note_dry_run_and_apply_materialize_a_link_safe_tree() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("assets")).expect("asset dir");
+    fs::write(vault_root.join("assets/map.png"), b"map").expect("asset");
+    fs::write(
+        vault_root.join("Rulebook.md"),
+        "# Rules\n\n## Combat\nSee [map](assets/map.png) and [[#Damage]].\n\n### Damage\nTake harm.\n",
+    )
+    .expect("rulebook");
+    fs::write(
+        vault_root.join("Index.md"),
+        "Read [[Rulebook#Damage|damage rules]].\n",
+    )
+    .expect("index");
+    run_scan(&vault_root);
+    let vault = vault_root.to_str().expect("utf-8 vault path");
+
+    let dry_run = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault,
+            "--output",
+            "json",
+            "refactor",
+            "split-note",
+            "Rulebook.md",
+            "--from-level",
+            "2",
+            "--through-level",
+            "3",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let plan = parse_stdout_json(&dry_run);
+    assert_eq!(plan["dry_run"], true);
+    assert_eq!(plan["source_path"], "Rulebook.md");
+    assert_eq!(plan["root_path"], "Rulebook/Rulebook.md");
+    assert_eq!(plan["notes"].as_array().map(Vec::len), Some(3));
+    assert_eq!(plan["notes"][2]["path"], "Rulebook/Combat/Damage.md");
+    assert!(vault_root.join("Rulebook.md").is_file());
+    assert!(!vault_root.join("Rulebook/Rulebook.md").exists());
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault,
+            "refactor",
+            "split-note",
+            "Rulebook.md",
+            "--from-level",
+            "2",
+            "--through-level",
+            "3",
+            "--dry-run",
+            "--no-commit",
+        ])
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("Planned note tree from Rulebook.md")
+                .and(predicate::str::contains(
+                    "Would create Rulebook/Combat/Damage.md",
+                ))
+                .and(predicate::str::contains(
+                    "Would replace source note Rulebook.md",
+                )),
+        );
+
+    let apply = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault,
+            "--output",
+            "json",
+            "refactor",
+            "split-note",
+            "Rulebook.md",
+            "--from-level",
+            "2",
+            "--through-level",
+            "3",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    let report = parse_stdout_json(&apply);
+    assert_eq!(report["dry_run"], false);
+    assert_eq!(report["source_retained"], false);
+    assert!(!vault_root.join("Rulebook.md").exists());
+    assert!(vault_root.join("assets/map.png").exists());
+    assert!(
+        fs::read_to_string(vault_root.join("Rulebook/Combat/Combat.md"))
+            .expect("combat note")
+            .contains("[map](../../assets/map.png)")
+    );
+    assert!(fs::read_to_string(vault_root.join("Index.md"))
+        .expect("rewritten index")
+        .contains("[[Damage|damage rules]]"));
+}
+
+#[test]
 fn config_import_preview_shows_diff_without_writing_files() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -10471,6 +10578,8 @@ fn skill_list_and_get_surface_bundled_skills() {
     let refactoring = fs::read_to_string(installed_skills.join("refactoring/SKILL.md"))
         .expect("refactoring skill should be installed");
     assert!(refactoring.contains("vulcan refactor folder-notes --dry-run"));
+    assert!(refactoring.contains("vulcan refactor split-note <source>"));
+    assert!(refactoring.contains("preserves asset files in place"));
 
     let configuration =
         fs::read_to_string(installed_skills.join("configuration-and-permissions/SKILL.md"))

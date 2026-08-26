@@ -4856,6 +4856,43 @@ fn parses_folder_note_conversion_command() {
 }
 
 #[test]
+fn parses_split_note_command() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "refactor",
+        "split-note",
+        "Rulebook.md",
+        "--destination",
+        "Rules/Rulebook",
+        "--from-level",
+        "2",
+        "--through-level",
+        "4",
+        "--keep-source",
+        "--no-navigation",
+        "--dry-run",
+        "--no-commit",
+    ])
+    .expect("split-note should parse");
+
+    assert_eq!(
+        cli.command,
+        Command::Refactor {
+            command: RefactorCommand::SplitNote {
+                source: "Rulebook.md".to_string(),
+                destination: Some("Rules/Rulebook".to_string()),
+                from_level: 2,
+                through_level: Some(4),
+                keep_source: true,
+                no_navigation: true,
+                dry_run: true,
+                no_commit: true,
+            },
+        }
+    );
+}
+
+#[test]
 fn parses_config_import_folder_notes_command() {
     let cli = Cli::try_parse_from(["vulcan", "config", "import", "folder-notes"])
         .expect("folder-notes import should parse");

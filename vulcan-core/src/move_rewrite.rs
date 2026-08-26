@@ -445,23 +445,56 @@ fn rewrite_link(
     resolution_mode: LinkResolutionMode,
     preferred_style: LinkStylePreference,
 ) -> String {
-    let Some(original_target) = link.target_path_candidate.as_deref() else {
+    if link.target_path_candidate.is_none() {
         return link.raw_text.clone();
-    };
-    let target_style = target_path_style(destination_path, original_target);
-    let rewritten_target = match resolution_mode {
-        LinkResolutionMode::Absolute => format_target_path(destination_path, target_style),
-        LinkResolutionMode::Relative => {
-            let relative = relative_path_from_source(source_path, destination_path);
-            format_target_path(&relative, target_style)
-        }
-        LinkResolutionMode::Shortest => {
-            shortest_unique_path(destination_path, document_paths_after_move, target_style)
-        }
-    };
-    let suffix = if let Some(heading) = link.target_heading.as_deref() {
+    }
+    rewrite_link_destination(
+        link,
+        source_path,
+        Some(destination_path),
+        link.target_heading.as_deref(),
+        link.target_block.as_deref(),
+        document_paths_after_move,
+        resolution_mode,
+        preferred_style,
+    )
+}
+
+/// Rewrites one parsed link to a resolved destination while preserving its authored form.
+///
+/// `destination_path` is vault-relative. Pass `None` for a fragment that remains local to
+/// `source_path`. Callers may replace or remove the original heading/block suffix, which is
+/// useful when a heading is materialized as the root of a new note.
+#[must_use]
+#[allow(clippy::too_many_arguments)]
+pub fn rewrite_link_destination(
+    link: &RawLink,
+    source_path: &str,
+    destination_path: Option<&str>,
+    target_heading: Option<&str>,
+    target_block: Option<&str>,
+    document_paths: &[String],
+    resolution_mode: LinkResolutionMode,
+    preferred_style: LinkStylePreference,
+) -> String {
+    let original_target = link.target_path_candidate.as_deref().unwrap_or("");
+    let target_style = destination_path.map_or(TargetPathStyle::NoteWithoutExtension, |path| {
+        target_path_style(path, original_target)
+    });
+    let rewritten_target =
+        destination_path.map_or_else(String::new, |destination_path| match resolution_mode {
+            LinkResolutionMode::Absolute => format_target_path(destination_path, target_style),
+            LinkResolutionMode::Relative => {
+                let relative = relative_path_from_source(source_path, destination_path);
+                format_target_path(&relative, target_style)
+            }
+            LinkResolutionMode::Shortest => {
+                shortest_unique_path(destination_path, document_paths, target_style)
+            }
+        });
+    let suffix = if let Some(heading) = target_heading {
         format!("#{heading}")
-    } else if let Some(block) = link.target_block.as_deref() {
+    } else if let Some(block) = target_block {
         format!("#^{block}")
     } else {
         String::new()
@@ -503,10 +536,21 @@ fn rewrite_link(
     match preferred_style {
         LinkStylePreference::Wikilink => format!("[[{target}]]"),
         LinkStylePreference::Markdown => {
-            let markdown_target = markdown_target_path(&rewritten_target, &suffix, target_style);
+            let markdown_target = if destination_path.is_none() {
+                suffix
+            } else {
+                markdown_target_path(&rewritten_target, &suffix, target_style)
+            };
             format!(
                 "[{}]({markdown_target})",
-                default_markdown_label(link, original_target)
+                default_markdown_label(
+                    link,
+                    if original_target.is_empty() {
+                        destination_path.unwrap_or("")
+                    } else {
+                        original_target
+                    }
+                )
             )
         }
     }
@@ -588,7 +632,8 @@ fn default_markdown_label(link: &RawLink, original_target: &str) -> String {
     }
 }
 
-fn relative_path_from_source(source_path: &str, destination_path: &str) -> String {
+#[must_use]
+pub fn relative_path_from_source(source_path: &str, destination_path: &str) -> String {
     let source_dir = Path::new(source_path)
         .parent()
         .unwrap_or_else(|| Path::new(""));
@@ -678,6 +723,40 @@ mod tests {
     use std::sync::{Arc, Barrier};
     use std::thread;
     use tempfile::TempDir;
+
+    #[test]
+    fn reusable_link_rewrite_supports_new_note_roots_and_local_fragments() {
+        let config = crate::VaultConfig::default();
+        let parsed = parse_document("See [[Rulebook#Combat]] and [damage](#Damage).", &config);
+        let documents = vec!["Rules/Combat.md".to_string()];
+
+        assert_eq!(
+            rewrite_link_destination(
+                &parsed.links[0],
+                "Index.md",
+                Some("Rules/Combat.md"),
+                None,
+                None,
+                &documents,
+                LinkResolutionMode::Shortest,
+                LinkStylePreference::Wikilink,
+            ),
+            "[[Combat]]"
+        );
+        assert_eq!(
+            rewrite_link_destination(
+                &parsed.links[1],
+                "Rules/Combat.md",
+                None,
+                Some("Damage"),
+                None,
+                &documents,
+                LinkResolutionMode::Relative,
+                LinkStylePreference::Markdown,
+            ),
+            "[damage](#Damage)"
+        );
+    }
 
     #[cfg(unix)]
     #[test]

@@ -1266,6 +1266,8 @@ Subcommands:
   merge-tags       Merge one tag into another across frontmatter and note bodies
   rewrite          Apply a literal find/replace across filtered notes
   move             Move a note or attachment and rewrite inbound links
+  split-note       Materialize heading sections as a wiki-like note tree
+  folder-notes     Convert folder notes to another configured layout
   link-mentions    Convert plain-text note mentions into links
 
 Notes:
@@ -1278,6 +1280,7 @@ Examples:
   vulcan refactor rename-property status project_status --dry-run
   vulcan refactor merge-tags \"#wip\" \"#in-progress\" --dry-run
   vulcan refactor move Projects/Alpha.md Archive/Alpha.md --dry-run
+  vulcan refactor split-note Rulebook.md --from-level 2 --through-level 3 --dry-run
   vulcan refactor rewrite --where 'status = draft' --find TODO --replace DONE
   vulcan refactor link-mentions Projects/Alpha --dry-run";
 
@@ -4525,6 +4528,43 @@ pub enum RefactorCommand {
         #[arg(help = "Destination note or attachment path")]
         dest: String,
         #[arg(long, help = "Report rewrite changes without moving files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(
+        name = "split-note",
+        about = "Materialize heading sections as a link-safe wiki note tree"
+    )]
+    SplitNote {
+        #[arg(help = "Source note path, filename, or alias")]
+        source: String,
+        #[arg(
+            long,
+            help = "Destination folder; defaults to a same-name folder beside the source note"
+        )]
+        destination: Option<String>,
+        #[arg(
+            long,
+            default_value_t = 2,
+            value_parser = clap::value_parser!(u8).range(1..=6),
+            help = "First heading level to materialize as notes"
+        )]
+        from_level: u8,
+        #[arg(
+            long,
+            value_parser = clap::value_parser!(u8).range(1..=6),
+            help = "Deepest heading level to materialize; defaults to --from-level"
+        )]
+        through_level: Option<u8>,
+        #[arg(
+            long,
+            help = "Retain the original source note in addition to the generated tree"
+        )]
+        keep_source: bool,
+        #[arg(long, help = "Do not generate parent-to-child Contents lists")]
+        no_navigation: bool,
+        #[arg(long, help = "Report the complete plan without modifying files")]
         dry_run: bool,
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,

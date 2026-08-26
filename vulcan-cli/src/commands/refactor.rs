@@ -9,6 +9,7 @@ use crate::{
     BulkNoteSelection, Cli, CliError, FolderNotePlacementArg, OutputFormat, RefactorCommand,
     SuggestCommand, SuggestLinkStatusArg,
 };
+use vulcan_app::decomposition::{split_note, SplitNoteReport, SplitNoteRequest};
 use vulcan_app::folder_notes::{
     convert_folder_notes, FolderNoteConversionReport, FolderNoteConversionRequest,
 };
@@ -277,6 +278,51 @@ pub(crate) fn handle_refactor_command(
             }
             crate::print_move_summary(cli.output, &summary)
         }
+        RefactorCommand::SplitNote {
+            source,
+            destination,
+            from_level,
+            through_level,
+            keep_source,
+            no_navigation,
+            dry_run,
+            no_commit,
+        } => {
+            let auto_commit = AutoCommitPolicy::for_mutation(paths, *no_commit);
+            warn_auto_commit_if_needed(&auto_commit, cli.quiet);
+            let guard = selected_permission_guard(cli, paths)?;
+            if !guard.refactor_filter().path_permission().is_unrestricted() {
+                return Err(CliError::operation(
+                    "permission denied: split-note requires unrestricted refactor scope because it may rewrite inbound links",
+                ));
+            }
+            let report = split_note(
+                paths,
+                &SplitNoteRequest {
+                    source: source.clone(),
+                    destination: destination.clone(),
+                    from_level: *from_level,
+                    through_level: through_level.unwrap_or(*from_level),
+                    keep_source: *keep_source,
+                    navigation: !*no_navigation,
+                    dry_run: *dry_run,
+                },
+            )
+            .map_err(CliError::operation)?;
+            if !dry_run {
+                auto_commit
+                    .commit(
+                        paths,
+                        "split-note",
+                        &report.changed_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                    )
+                    .map_err(CliError::operation)?;
+                dispatch_refactor_plugin_hooks(cli, paths, "split-note", &report.changed_paths);
+            }
+            print_split_note_report(cli.output, &report)
+        }
         RefactorCommand::FolderNotes {
             from_placement,
             from_name,
@@ -405,6 +451,60 @@ fn print_folder_note_conversion(
                     },
                     report.config_path.display()
                 );
+            }
+            Ok(())
+        }
+    }
+}
+
+fn print_split_note_report(output: OutputFormat, report: &SplitNoteReport) -> Result<(), CliError> {
+    match output {
+        OutputFormat::Json => print_json(report),
+        OutputFormat::Human | OutputFormat::Markdown => {
+            let action = if report.dry_run {
+                "Would create"
+            } else {
+                "Created"
+            };
+            println!(
+                "{} note tree from {} at {} ({} notes)",
+                if report.dry_run {
+                    "Planned"
+                } else {
+                    "Materialized"
+                },
+                report.source_path,
+                report.destination_root,
+                report.notes.len()
+            );
+            for note in &report.notes {
+                println!("{action} {} ({})", note.path, note.title);
+            }
+            let rewrite_count = report
+                .rewritten_files
+                .iter()
+                .map(|file| file.changes.len())
+                .sum::<usize>();
+            if rewrite_count > 0 {
+                println!(
+                    "{} {rewrite_count} link(s) across {} file(s).",
+                    if report.dry_run {
+                        "Would rewrite"
+                    } else {
+                        "Rewrote"
+                    },
+                    report.rewritten_files.len()
+                );
+            }
+            if report.source_retained {
+                println!("Retained source note {}.", report.source_path);
+            } else if report.dry_run {
+                println!("Would replace source note {}.", report.source_path);
+            } else {
+                println!("Replaced source note {}.", report.source_path);
+            }
+            for diagnostic in &report.diagnostics {
+                println!("Warning [{}]: {}", diagnostic.code, diagnostic.message);
             }
             Ok(())
         }

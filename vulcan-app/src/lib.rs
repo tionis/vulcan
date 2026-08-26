@@ -32,6 +32,7 @@ mod error;
 
 pub mod browse;
 pub mod config;
+pub mod decomposition;
 pub mod export;
 pub mod folder_notes;
 pub mod integrations;

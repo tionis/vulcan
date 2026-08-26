@@ -497,6 +497,24 @@ vulcan refactor folder-notes \
 
 When `--from-*` is omitted, the source is the effective repository config. The command preflights every move, rejects overwrites and case-insensitive conflicts, uses the normal resolved-link move engine, and updates shared config only after every move succeeds. A dry run changes neither notes nor config. `vulcan init --import` or `vulcan config import folder-notes` can seed the convention from `.obsidian/plugins/folder-notes/data.json`; that setup import does not enable runtime auto-detection.
 
+## Splitting large documents into note trees
+
+`vulcan refactor split-note` materializes a heading range from one large Markdown note as a folder-note-aware wiki tree. This is intended for sources such as PDF-derived rulebooks whose images and other assets already live in a companion vault directory.
+
+```bash
+vulcan --output json refactor split-note Rulebook.md \
+  --from-level 2 --through-level 3 --dry-run
+vulcan refactor split-note Rulebook.md \
+  --destination Rules/Rulebook \
+  --from-level 2 --through-level 3
+```
+
+The first selected heading level becomes children of the generated root folder note; headings through `--through-level` become nested notes. Deeper headings remain inside their nearest materialized note. The original frontmatter and preamble remain on the generated root note rather than being copied into every child. Generated filenames are portable and collision-safe, selected headings are promoted to page-level headings, and optional `Contents` lists link parents to immediate children.
+
+The operation preflights the entire plan under the vault write lock. It rejects existing destinations, a stale cache, unresolved local links, ambiguous links to duplicate headings, unsafe asset references, and incomplete source-span ownership before writing. Inbound heading/block links, cross-section links, and relative Markdown links are retargeted while preserving authored wikilink, Markdown-link, label, and embed forms. Referenced asset files remain in place; only their destinations are rewritten. A successful apply refreshes the cache before returning.
+
+The source note is replaced by default. `--keep-source` retains it as an archival copy while creating the tree at a distinct folder-note path. Use `--no-navigation` to suppress generated parent/child lists. Markdown footnotes and reference-style definitions currently fail closed because their definitions are file-local; convert them to inline links or keep the affected material within one output note before splitting.
+
 ## Searching with `search`
 
 `vulcan search` searches indexed note content and can be combined with typed filters.
@@ -712,6 +730,7 @@ Common mutating commands:
 
 - `note`
 - `refactor move`
+- `refactor split-note`
 - `refactor folder-notes`
 - `refactor link-mentions`
 - `refactor rewrite`
