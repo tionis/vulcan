@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "document_sha256": "ab6f56620c079a7c155b79040f8e5d88596d0f3be0afd0b4214ba398d91229c7",
+  "title": "Synthetic Rules",
+  "nodes": [
+    {
+      "id": "combat",
+      "parent": null,
+      "level": 2,
+      "title": "Encounter",
+      "heading": {
+        "start": 19,
+        "end": 28
+      },
+      "section": {
+        "start": 19,
+        "end": 56
+      },
+      "source": {
+        "source_id": "synthetic",
+        "coordinate_system": "example.test/page",
+        "start": 1,
+        "end": 2
+      }
+    }
+  ]
+}

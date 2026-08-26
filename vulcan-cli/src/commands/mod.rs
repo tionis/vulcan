@@ -1,4 +1,5 @@
 pub(crate) mod agent;
+pub(crate) mod artifact;
 pub(crate) mod bases;
 pub(crate) mod browse;
 pub(crate) mod cache;

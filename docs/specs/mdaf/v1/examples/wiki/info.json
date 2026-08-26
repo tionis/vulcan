@@ -1,0 +1,68 @@
+{
+  "format": "mdaf",
+  "version": 1,
+  "title": "Synthetic Rules",
+  "markdown": {
+    "path": "text.md",
+    "sha256": "ab6f56620c079a7c155b79040f8e5d88596d0f3be0afd0b4214ba398d91229c7",
+    "media_type": "text/markdown"
+  },
+  "producer": {
+    "name": "example-producer",
+    "version": "1.0.0"
+  },
+  "members": [
+    {
+      "path": "text.md",
+      "role": "primary",
+      "media_type": "text/markdown",
+      "size": 56,
+      "sha256": "ab6f56620c079a7c155b79040f8e5d88596d0f3be0afd0b4214ba398d91229c7",
+      "created_by": "activity:extract"
+    },
+    {
+      "path": "assets/map.txt",
+      "role": "asset",
+      "media_type": "text/plain",
+      "size": 16,
+      "sha256": "5278178a2992814e1295e073f037b88f9fd62f9db751e42597fb12f7db4d961e",
+      "created_by": "activity:extract"
+    },
+    {
+      "path": "source-map.json",
+      "role": "source-map",
+      "media_type": "application/json",
+      "size": 579,
+      "sha256": "5fd04cec17172bfd281a00f6e123a3a5ae6a72fd20550915a1934806747ad239",
+      "created_by": "activity:extract"
+    },
+    {
+      "path": "outline.json",
+      "role": "outline",
+      "media_type": "application/json",
+      "size": 539,
+      "sha256": "79f0fb0f785470f0c8a7d6fa4c3122e19d5075c4e2520f0ae85bc2603eb745f8",
+      "created_by": "activity:extract"
+    },
+    {
+      "path": "provenance.json",
+      "role": "provenance",
+      "media_type": "application/json",
+      "size": 711,
+      "sha256": "7f9214ecfd1115a35122372cb1fc788c48d8de7369033a735567fc5280f0823e",
+      "created_by": "activity:extract"
+    }
+  ],
+  "sources": [
+    {
+      "id": "synthetic",
+      "media_type": "application/pdf",
+      "sha256": "e4754206b666afc86c26e1039e723731a9a44a4cb73f8365d31c9864a1e20b21",
+      "name": "synthetic-source.pdf"
+    }
+  ],
+  "capabilities": [
+    "source-map",
+    "outline"
+  ]
+}

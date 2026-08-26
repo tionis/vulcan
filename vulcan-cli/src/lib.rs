@@ -419,17 +419,17 @@ mod app_config {
 
 pub use cli::{
     AgentCommand, AgentImportArgs, AgentInstallArgs, AgentPrintConfigArgs, AgentRuntimeArg,
-    AutomationCommand, BasesCommand, CacheCommand, CheckpointCommand, Cli, ColorMode, Command,
-    ConfigAliasCommand, ConfigCommand, ConfigImportArgs, ConfigImportCommand,
-    ConfigImportSelection, ConfigPermissionsCommand, ConfigPermissionsProfileCommand,
-    ConfigTargetArg, DailyCommand, DataviewCommand, DescribeFormatArg, EpubTocStyle, ExportArgs,
-    ExportCommand, ExportFormat, ExportProfileCommand, ExportProfileFormatArg,
-    ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs, FolderNotePlacementArg,
-    GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs, IntegrationCommand,
-    KanbanCommand, McpToolPackArg, McpToolPackModeArg, McpTransportArg, NoteAppendPeriodicArg,
-    NoteCheckboxState, NoteCommand, NoteGetMode, OutlineBlockReferencePolicyArg,
-    OutlineCollectionPermissionArg, OutlineCollectionsCommand, OutlineCommand,
-    OutlineExcludedTargetPolicyArg, OutlinePullConflictOperationArg, OutputFormat,
+    ArtifactCommand, ArtifactHierarchyArg, AutomationCommand, BasesCommand, CacheCommand,
+    CheckpointCommand, Cli, ColorMode, Command, ConfigAliasCommand, ConfigCommand,
+    ConfigImportArgs, ConfigImportCommand, ConfigImportSelection, ConfigPermissionsCommand,
+    ConfigPermissionsProfileCommand, ConfigTargetArg, DailyCommand, DataviewCommand,
+    DescribeFormatArg, EpubTocStyle, ExportArgs, ExportCommand, ExportFormat, ExportProfileCommand,
+    ExportProfileFormatArg, ExportProfileRuleCommand, ExportQueryArgs, ExportTransformArgs,
+    FolderNotePlacementArg, GitCommand, GraphCommand, GraphExportFormat, IndexCommand, InitArgs,
+    IntegrationCommand, KanbanCommand, McpToolPackArg, McpToolPackModeArg, McpTransportArg,
+    NoteAppendPeriodicArg, NoteCheckboxState, NoteCommand, NoteGetMode,
+    OutlineBlockReferencePolicyArg, OutlineCollectionPermissionArg, OutlineCollectionsCommand,
+    OutlineCommand, OutlineExcludedTargetPolicyArg, OutlinePullConflictOperationArg, OutputFormat,
     PeriodicOpenArgs, PeriodicSubcommand, PluginCommand, PluginEventArg, PluginSandboxArg,
     PropertySortArg, PublishCommand, PullCommand, QueryEngineArg, QueryFormatArg, RefactorCommand,
     RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand, SavedCreateCommand,
@@ -5659,6 +5659,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             stdout_is_tty,
             use_stdout_color,
         ),
+        Command::Artifact { ref command } => {
+            commands::artifact::handle_artifact_command(cli, &paths, command)
+        }
         Command::Suggest { ref command } => commands::refactor::handle_suggest_command(
             cli,
             &paths,

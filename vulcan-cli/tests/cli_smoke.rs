@@ -18,6 +18,13 @@ use zip::ZipArchive;
 
 const FIXED_NOW: &str = "2026-04-04T12:00:00Z";
 
+fn mdaf_wiki_fixture() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("workspace root")
+        .join("docs/specs/mdaf/v1/examples/wiki")
+}
+
 fn run_git_ok(vault_root: &Path, args: &[&str]) {
     let status = ProcessCommand::new("git")
         .arg("-C")
@@ -6408,6 +6415,136 @@ fn refactor_split_note_dry_run_and_apply_materialize_a_link_safe_tree() {
 }
 
 #[test]
+fn artifact_inspect_validate_and_import_use_the_synthetic_mdaf_fixture() {
+    let fixture = mdaf_wiki_fixture();
+    let inspect = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--output",
+            "json",
+            "artifact",
+            "inspect",
+            fixture.to_str().expect("fixture path"),
+        ])
+        .assert()
+        .success();
+    let inspection = parse_stdout_json(&inspect);
+    assert_eq!(inspection["valid"], true);
+    assert_eq!(inspection["producer"]["name"], "example-producer");
+    assert_eq!(inspection["source_mappings"], 1);
+    assert_eq!(inspection["outline_nodes"], 1);
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "artifact",
+            "validate",
+            fixture.to_str().expect("fixture path"),
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Valid: true"));
+
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(&vault_root).expect("vault directory");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path"),
+            "index",
+            "init",
+        ])
+        .assert()
+        .success();
+
+    let preview = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path"),
+            "--output",
+            "json",
+            "artifact",
+            "import",
+            fixture.to_str().expect("fixture path"),
+            "--destination",
+            "Imported/Rules",
+            "--from-level",
+            "2",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let preview_json = parse_stdout_json(&preview);
+    assert_eq!(preview_json["dry_run"], true);
+    assert_eq!(preview_json["assets"].as_array().map(Vec::len), Some(1));
+    assert!(!vault_root.join("Imported").exists());
+
+    let applied = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path"),
+            "--output",
+            "json",
+            "artifact",
+            "import",
+            fixture.to_str().expect("fixture path"),
+            "--destination",
+            "Imported/Rules",
+            "--hierarchy",
+            "outline",
+            "--from-level",
+            "2",
+        ])
+        .assert()
+        .success();
+    let applied_json = parse_stdout_json(&applied);
+    assert!(applied_json["notes"]
+        .as_array()
+        .is_some_and(|notes| notes.iter().any(|note| note["title"] == "Encounter")));
+    assert!(vault_root.join("Imported/Rules/assets/map.txt").exists());
+    let encounter =
+        fs::read_to_string(vault_root.join("Imported/Rules/Encounter.md")).expect("imported note");
+    assert!(encounter.contains("artifact: sha256:"));
+    assert!(encounter.contains("[map](assets/map.txt)"));
+}
+
+#[test]
+fn artifact_validate_reports_digest_errors_with_issue_exit_code() {
+    let source = mdaf_wiki_fixture();
+    let temp_dir = TempDir::new().expect("temp dir");
+    let artifact = temp_dir.path().join("invalid.mdaf");
+    fs::create_dir_all(artifact.join("assets")).expect("artifact directories");
+    for path in [
+        "info.json",
+        "text.md",
+        "provenance.json",
+        "source-map.json",
+        "outline.json",
+        "assets/map.txt",
+    ] {
+        fs::copy(source.join(path), artifact.join(path)).expect("copy fixture member");
+    }
+    fs::write(artifact.join("text.md"), "changed\n").expect("corrupt Markdown");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--output",
+            "json",
+            "artifact",
+            "validate",
+            artifact.to_str().expect("artifact path"),
+        ])
+        .assert()
+        .code(2)
+        .stdout(predicate::str::contains("member_digest_mismatch"));
+}
+
+#[test]
 fn config_import_preview_shows_diff_without_writing_files() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -10283,6 +10420,9 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .join(".agents/skills/mcp-setup/SKILL.md")
         .exists());
     assert!(vault_root
+        .join(".agents/skills/artifact-import/SKILL.md")
+        .exists());
+    assert!(vault_root
         .join(".agents/skills/diagnostics-and-repair/SKILL.md")
         .exists());
     assert!(vault_root.join("AI/Prompts/summarize-note.md").exists());
@@ -10466,6 +10606,7 @@ fn skill_list_and_get_surface_bundled_skills() {
         "plugin-authoring",
         "diagnostics-and-repair",
         "conversation-export",
+        "artifact-import",
     ] {
         assert!(
             list_json["skills"]
@@ -10591,6 +10732,12 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(refactoring.contains("vulcan refactor split-note <source>"));
     assert!(refactoring.contains("preserves asset files in place"));
     assert!(refactoring.contains("--preserve-missing-fragments"));
+
+    let artifact_import = fs::read_to_string(installed_skills.join("artifact-import/SKILL.md"))
+        .expect("artifact import skill should be installed");
+    assert!(artifact_import.contains("artifact import <artifact> --destination <new-folder>"));
+    assert!(artifact_import.contains("--hierarchy outline"));
+    assert!(artifact_import.contains("vulcan.source"));
 
     let configuration =
         fs::read_to_string(installed_skills.join("configuration-and-permissions/SKILL.md"))

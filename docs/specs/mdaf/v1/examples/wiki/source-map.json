@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "document_sha256": "ab6f56620c079a7c155b79040f8e5d88596d0f3be0afd0b4214ba398d91229c7",
+  "coordinate_systems": [
+    {
+      "id": "example.test/page",
+      "source": "synthetic",
+      "unit": "page",
+      "origin": 1
+    }
+  ],
+  "mappings": [
+    {
+      "document": {
+        "start": 0,
+        "end": 56
+      },
+      "source": {
+        "coordinate_system": "example.test/page",
+        "start": 1,
+        "end": 2,
+        "label_start": "1"
+      },
+      "confidence": 1,
+      "method": "example.test/alignment"
+    }
+  ],
+  "references": []
+}

@@ -4626,6 +4626,66 @@ pub enum RefactorCommand {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum ArtifactHierarchyArg {
+    #[default]
+    Markdown,
+    Outline,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum ArtifactCommand {
+    #[command(about = "Inspect MDAF identity, members, capabilities, and diagnostics")]
+    Inspect {
+        #[arg(help = "MDAF directory or ZIP path")]
+        artifact: PathBuf,
+    },
+    #[command(about = "Validate an MDAF artifact and exit non-zero on errors")]
+    Validate {
+        #[arg(help = "MDAF directory or ZIP path")]
+        artifact: PathBuf,
+    },
+    #[command(about = "Import a validated MDAF artifact as a Markdown wiki tree")]
+    Import {
+        #[arg(help = "MDAF directory or ZIP path")]
+        artifact: PathBuf,
+        #[arg(
+            long,
+            help = "Required new vault-relative destination folder for notes and assets"
+        )]
+        destination: String,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ArtifactHierarchyArg::Markdown,
+            help = "Hierarchy authority: primary Markdown headings or aligned outline.json"
+        )]
+        hierarchy: ArtifactHierarchyArg,
+        #[arg(
+            long,
+            default_value_t = 2,
+            value_parser = clap::value_parser!(u8).range(1..=6),
+            help = "First hierarchy level to materialize as a note"
+        )]
+        from_level: u8,
+        #[arg(
+            long,
+            value_parser = clap::value_parser!(u8).range(1..=6),
+            help = "Last hierarchy level to materialize (defaults to --from-level)"
+        )]
+        through_level: Option<u8>,
+        #[arg(long, help = "Do not append child navigation lists")]
+        no_navigation: bool,
+        #[arg(
+            long,
+            help = "Validate and report the import plan without writing files"
+        )]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum FolderNotePlacementArg {
     Inside,
@@ -6041,6 +6101,11 @@ Examples:
     Refactor {
         #[command(subcommand)]
         command: RefactorCommand,
+    },
+    #[command(about = "Inspect, validate, and import Markdown Artifact Format packages")]
+    Artifact {
+        #[command(subcommand)]
+        command: ArtifactCommand,
     },
     #[command(
         about = "Show integrated command and concept documentation",

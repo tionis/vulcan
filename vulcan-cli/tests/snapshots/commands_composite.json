@@ -12460,6 +12460,156 @@
         ]
       },
       {
+        "about": "Inspect, validate, and import Markdown Artifact Format packages",
+        "name": "artifact",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Inspect MDAF identity, members, capabilities, and diagnostics",
+            "name": "inspect",
+            "options": [
+              {
+                "help": "MDAF directory or ZIP path",
+                "id": "artifact",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "ARTIFACT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Validate an MDAF artifact and exit non-zero on errors",
+            "name": "validate",
+            "options": [
+              {
+                "help": "MDAF directory or ZIP path",
+                "id": "artifact",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "ARTIFACT"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Import a validated MDAF artifact as a Markdown wiki tree",
+            "name": "import",
+            "options": [
+              {
+                "help": "MDAF directory or ZIP path",
+                "id": "artifact",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "ARTIFACT"
+                ]
+              },
+              {
+                "help": "Required new vault-relative destination folder for notes and assets",
+                "id": "destination",
+                "long": "destination",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "DESTINATION"
+                ]
+              },
+              {
+                "help": "Hierarchy authority: primary Markdown headings or aligned outline.json",
+                "id": "hierarchy",
+                "long": "hierarchy",
+                "possible_values": [
+                  "markdown",
+                  "outline"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "HIERARCHY"
+                ]
+              },
+              {
+                "help": "First hierarchy level to materialize as a note",
+                "id": "from_level",
+                "long": "from-level",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "FROM_LEVEL"
+                ]
+              },
+              {
+                "help": "Last hierarchy level to materialize (defaults to --from-level)",
+                "id": "through_level",
+                "long": "through-level",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "THROUGH_LEVEL"
+                ]
+              },
+              {
+                "help": "Do not append child navigation lists",
+                "id": "no_navigation",
+                "long": "no-navigation",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_NAVIGATION"
+                ]
+              },
+              {
+                "help": "Validate and report the import plan without writing files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Suppress auto-commit for this invocation",
+                "id": "no_commit",
+                "long": "no-commit",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_COMMIT"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
         "about": "Show integrated command and concept documentation",
         "after_help": "Topics:\n  Commands: help query, help note get, help refactor\n  Concepts: help filters, help query-dsl, help getting-started, help examples\n\nExamples:\n  vulcan help\n  vulcan help query\n  vulcan help note get --output json\n  vulcan help --search graph",
         "name": "help",

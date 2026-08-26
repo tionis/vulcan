@@ -98,6 +98,12 @@ const BUNDLED_SKILL_FILES: &[BundledTextFile] = &[
     },
     BundledTextFile {
         kind: "skill",
+        relative_path: "artifact-import/SKILL.md",
+        contents: include_str!("../../../docs/assistant/skills/artifact-import.md"),
+        target: BundledFileTarget::SkillsFolder,
+    },
+    BundledTextFile {
+        kind: "skill",
         relative_path: "web-research/SKILL.md",
         contents: include_str!("../../../docs/assistant/skills/web-research.md"),
         target: BundledFileTarget::SkillsFolder,
