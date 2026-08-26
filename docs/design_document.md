@@ -1069,7 +1069,7 @@ Suggested Rust stack:
 - `ulid` for stable internal identifiers (`vulcan-core`)
 - `reqwest` for HTTP embedding provider (`vulcan-embed`)
 - `sqlite-vec` loaded as an extension behind a local trait or adapter (`vulcan-embed`)
-- `sha2` or `blake3` for content hashing (`vulcan-core`)
+- `blake3` for content hashing (`vulcan-core`)
 
 ### Secondary recommendation: Go
 Choose Go only if delivery speed and implementation simplicity matter more than maximum parsing control.

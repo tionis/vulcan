@@ -12,10 +12,10 @@
     "markdown": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "sha256", "media_type"],
+      "required": ["path", "digest", "media_type"],
       "properties": {
         "path": { "const": "text.md" },
-        "sha256": { "$ref": "#/$defs/sha256" },
+        "digest": { "$ref": "#/$defs/digest" },
         "media_type": { "const": "text/markdown" },
         "variant": { "type": "string" },
         "features": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
@@ -46,22 +46,23 @@
     },
     "derived_from": {
       "type": "array",
-      "items": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+      "items": { "$ref": "#/$defs/digest" },
       "uniqueItems": true
     }
   },
   "$defs": {
-    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "digest": { "type": "string", "pattern": "^blake3:[0-9a-f]{64}$" },
+    "alternate_digest": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]*:[0-9a-f]+$" },
     "member": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "role", "media_type", "size", "sha256", "created_by"],
+      "required": ["path", "role", "media_type", "size", "digest", "created_by"],
       "properties": {
         "path": { "type": "string", "minLength": 1 },
         "role": { "enum": ["primary", "provenance", "source-map", "outline", "asset", "rendition", "source", "environment", "extension"] },
         "media_type": { "type": "string", "minLength": 1 },
         "size": { "type": "integer", "minimum": 0 },
-        "sha256": { "$ref": "#/$defs/sha256" },
+        "digest": { "$ref": "#/$defs/digest" },
         "created_by": { "type": "string", "minLength": 1 },
         "schema": { "type": "string" },
         "namespace": { "type": "string" }
@@ -70,11 +71,12 @@
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "media_type", "sha256"],
+      "required": ["id", "media_type", "digest"],
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "media_type": { "type": "string", "minLength": 1 },
-        "sha256": { "$ref": "#/$defs/sha256" },
+        "digest": { "$ref": "#/$defs/digest" },
+        "alternate_digests": { "type": "array", "items": { "$ref": "#/$defs/alternate_digest" }, "uniqueItems": true },
         "name": { "type": "string" },
         "embedded_path": { "type": "string" }
       }

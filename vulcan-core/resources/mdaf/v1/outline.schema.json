@@ -4,10 +4,10 @@
   "title": "MDAF v1 aligned outline",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "document_sha256", "nodes"],
+  "required": ["version", "document_digest", "nodes"],
   "properties": {
     "version": { "const": 1 },
-    "document_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "document_digest": { "type": "string", "pattern": "^blake3:[0-9a-f]{64}$" },
     "title": { "type": "string" },
     "nodes": {
       "type": "array",

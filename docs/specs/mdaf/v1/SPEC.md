@@ -37,21 +37,21 @@ Readers validate declared sizes before extraction, stream bytes through bounded 
 - `environment`: path below `environments/`;
 - `extension`: path below `extensions/<reverse-domain-namespace>/`.
 
-The primary Markdown media type is `text/markdown`. `markdown.variant` and `markdown.features` describe syntax without changing the MDAF contract. Sources have stable artifact-local IDs, media types, SHA-256 digests, and optional embedded member paths. Portable core fields must not contain credentials, signed URLs, authorization headers, or absolute local paths.
+The primary Markdown media type is `text/markdown`. `markdown.variant` and `markdown.features` describe syntax without changing the MDAF contract. Sources have stable artifact-local IDs, media types, canonical BLAKE3 digests, optional alternate algorithm-tagged digests, and optional embedded member paths. Alternate digests preserve upstream identities without weakening or replacing the canonical digest. Portable core fields must not contain credentials, signed URLs, authorization headers, or absolute local paths.
 
 ## Logical identity
 
-The logical artifact identity is independent of directory versus ZIP serialization. For every regular member including `info.json`, compute the lowercase SHA-256 hex digest of its bytes. Sort records by normalized UTF-8 path bytes. Serialize each record as compact JSON with keys in this exact order and a trailing LF:
+The logical artifact identity is independent of directory versus ZIP serialization. MDAF v1 uses the default 256-bit BLAKE3 output for all canonical digests. Digest values are lowercase hexadecimal prefixed by `blake3:`. For every regular member including `info.json`, compute its canonical digest. Sort records by normalized UTF-8 path bytes. Serialize each record as compact JSON with keys in this exact order and a trailing LF:
 
 ```json
-{"path":"text.md","size":123,"sha256":"<64 lowercase hex>"}
+{"path":"text.md","size":123,"digest":"blake3:<64 lowercase hex>"}
 ```
 
-The artifact identity is `sha256:` followed by the SHA-256 of the concatenated UTF-8 records. Strings use JSON escaping with no ASCII-only conversion. The specification fixtures provide a test vector. `info.json.derived_from` contains logical identities of immutable parents; it is lineage, not an instruction to fetch them. A derivative remains self-contained and carries forward evidence needed for future processing.
+The artifact identity is the canonical BLAKE3 digest of the concatenated UTF-8 records. Strings use JSON escaping with no ASCII-only conversion. The specification fixtures provide a test vector. `info.json.derived_from` contains canonical logical identities of immutable parents; it is lineage, not an instruction to fetch them. A derivative remains self-contained and carries forward evidence needed for future processing.
 
 ## Normalized source map
 
-`source-map.json` conforms to `source-map.schema.json` and binds to the SHA-256 of `text.md`. All document ranges are zero-based, half-open UTF-8 byte ranges whose endpoints are character boundaries.
+`source-map.json` conforms to `source-map.schema.json` and binds to the canonical digest of `text.md`. All document ranges are zero-based, half-open UTF-8 byte ranges whose endpoints are character boundaries.
 
 A mapping connects a Markdown span to a source locator and may carry confidence and a namespaced method. A reference connects authored Markdown text to a target locator. Mappings may overlap, may be partial, and may repeat the same Markdown span for multiple sources. Producers decide which inferred records are reliable enough to publish; consumers preserve confidence and method but do not rerun extraction.
 
@@ -87,7 +87,7 @@ Native responses are retained byte-for-byte after mandatory secret filtering. A 
 
 Tools require name and version; build revisions are included when available. Models record provider, identifier, returned identifier, and revision or checksum when exposed. A mutable or unresolved model alias is explicitly marked and produces a reproducibility warning, never invented provenance. Full dependency locks, runtime descriptions, hardware inventories, SPDX documents, or CycloneDX documents are optional environment members.
 
-`parameters_sha256` is the lowercase SHA-256 of `parameters` serialized as compact UTF-8 JSON: object keys are sorted recursively by Unicode scalar value, arrays retain their order, strings use normal JSON escaping without ASCII-only conversion, numbers use their JSON lexical representation, and no whitespace or trailing newline is emitted. Producers should prefer strings for values whose numeric lexical form is itself significant.
+`parameters_digest` is the canonical BLAKE3 digest of `parameters` serialized as compact UTF-8 JSON: object keys are sorted recursively by Unicode scalar value, arrays retain their order, strings use normal JSON escaping without ASCII-only conversion, numbers use their JSON lexical representation, and no whitespace or trailing newline is emitted. Producers should prefer strings for values whose numeric lexical form is itself significant.
 
 Transport secrets, credentials, signed URLs, and private endpoint topology are forbidden. Unknown exact versions or revisions remain explicit `unavailable` values with diagnostics.
 

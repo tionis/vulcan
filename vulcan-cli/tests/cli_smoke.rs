@@ -6484,6 +6484,10 @@ fn artifact_inspect_validate_and_import_use_the_synthetic_mdaf_fixture() {
     let preview_json = parse_stdout_json(&preview);
     assert_eq!(preview_json["dry_run"], true);
     assert_eq!(preview_json["assets"].as_array().map(Vec::len), Some(1));
+    assert!(preview_json["assets"][0]["digest"]
+        .as_str()
+        .is_some_and(|digest| digest.starts_with("blake3:")));
+    assert!(preview_json["assets"][0].get("sha256").is_none());
     assert!(!vault_root.join("Imported").exists());
 
     let applied = Command::cargo_bin("vulcan")
@@ -6512,7 +6516,7 @@ fn artifact_inspect_validate_and_import_use_the_synthetic_mdaf_fixture() {
     assert!(vault_root.join("Imported/Rules/assets/map.txt").exists());
     let encounter =
         fs::read_to_string(vault_root.join("Imported/Rules/Encounter.md")).expect("imported note");
-    assert!(encounter.contains("artifact: sha256:"));
+    assert!(encounter.contains("artifact: blake3:"));
     assert!(encounter.contains("source_id: synthetic-audio"));
     assert!(encounter.contains("type: interval"));
     assert!(encounter.contains("type: rectangle"));

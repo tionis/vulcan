@@ -56,7 +56,7 @@ pub struct ArtifactImportAsset {
     pub member_path: String,
     pub vault_path: String,
     pub size: u64,
-    pub sha256: String,
+    pub digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -386,7 +386,7 @@ fn artifact_assets(artifact: &MdafArtifact, destination: &str) -> Vec<ArtifactIm
             member_path: member.path.clone(),
             vault_path: format!("{destination}/{}", member.path),
             size: member.size,
-            sha256: member.sha256.clone(),
+            digest: member.digest.clone(),
         })
         .collect::<Vec<_>>();
     assets.sort_by(|left, right| left.member_path.cmp(&right.member_path));
@@ -797,12 +797,11 @@ fn rollback_destination(paths: &VaultPaths, destination: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sha2::{Digest, Sha256};
     use tempfile::tempdir;
     use vulcan_core::{initialize_vulcan_dir, scan_vault};
 
-    fn sha256(bytes: &[u8]) -> String {
-        format!("{:x}", Sha256::digest(bytes))
+    fn digest(bytes: &[u8]) -> String {
+        format!("blake3:{}", blake3::hash(bytes))
     }
 
     fn write_artifact(root: &Path, with_outline: bool) {
@@ -818,20 +817,20 @@ mod tests {
                 "id":"extract","kind":"synthetic","tools":[{"name":"fixture","version":"1"}],
                 "models":[],"inputs":["source:fixture"],
                 "outputs":["text.md","assets/map.png","provenance.json"],"depends_on":[],
-                "parameters":parameters,"parameters_sha256":sha256(b"{}")
+                "parameters":parameters,"parameters_digest":digest(b"{}")
             }],"redactions":[]
         });
         let provenance_bytes = serde_json::to_vec_pretty(&provenance).expect("provenance");
         fs::write(root.join("provenance.json"), &provenance_bytes).expect("provenance file");
         let mut members = vec![
-            serde_json::json!({"path":"text.md","role":"primary","media_type":"text/markdown","size":markdown.len(),"sha256":sha256(markdown.as_bytes()),"created_by":"extract"}),
-            serde_json::json!({"path":"assets/map.png","role":"asset","media_type":"image/png","size":asset.len(),"sha256":sha256(asset),"created_by":"extract"}),
-            serde_json::json!({"path":"provenance.json","role":"provenance","media_type":"application/json","size":provenance_bytes.len(),"sha256":sha256(&provenance_bytes),"created_by":"extract"}),
+            serde_json::json!({"path":"text.md","role":"primary","media_type":"text/markdown","size":markdown.len(),"digest":digest(markdown.as_bytes()),"created_by":"extract"}),
+            serde_json::json!({"path":"assets/map.png","role":"asset","media_type":"image/png","size":asset.len(),"digest":digest(asset),"created_by":"extract"}),
+            serde_json::json!({"path":"provenance.json","role":"provenance","media_type":"application/json","size":provenance_bytes.len(),"digest":digest(&provenance_bytes),"created_by":"extract"}),
         ];
         let mut capabilities = Vec::<&str>::new();
         if with_outline {
             let outline = serde_json::json!({
-                "version":1,"document_sha256":sha256(markdown.as_bytes()),
+                "version":1,"document_digest":digest(markdown.as_bytes()),
                 "nodes":[
                     {"id":"combat","parent":null,"level":2,"title":"Encounter","heading":{"start":9,"end":18},"section":{"start":9,"end":markdown.len()}},
                     {"id":"damage","parent":"combat","level":3,"title":"Harm","heading":{"start":markdown.find("### Damage").expect("damage heading"),"end":markdown.find("### Damage").expect("damage heading") + "### Damage".len()},"section":{"start":markdown.find("### Damage").expect("damage heading"),"end":markdown.len()}}
@@ -839,7 +838,7 @@ mod tests {
             });
             let bytes = serde_json::to_vec_pretty(&outline).expect("outline");
             fs::write(root.join("outline.json"), &bytes).expect("outline file");
-            members.push(serde_json::json!({"path":"outline.json","role":"outline","media_type":"application/json","size":bytes.len(),"sha256":sha256(&bytes),"created_by":"extract"}));
+            members.push(serde_json::json!({"path":"outline.json","role":"outline","media_type":"application/json","size":bytes.len(),"digest":digest(&bytes),"created_by":"extract"}));
             capabilities.push("outline");
             let mut value: serde_json::Value =
                 serde_json::from_slice(&provenance_bytes).expect("parse provenance");
@@ -854,13 +853,13 @@ mod tests {
                 .find(|member| member["path"] == "provenance.json")
                 .expect("member");
             member["size"] = serde_json::json!(updated.len());
-            member["sha256"] = serde_json::json!(sha256(&updated));
+            member["digest"] = serde_json::json!(digest(&updated));
         }
         let info = serde_json::json!({
             "format":"mdaf","version":1,
-            "markdown":{"path":"text.md","sha256":sha256(markdown.as_bytes()),"media_type":"text/markdown"},
+            "markdown":{"path":"text.md","digest":digest(markdown.as_bytes()),"media_type":"text/markdown"},
             "producer":{"name":"synthetic","version":"1"},"members":members,
-            "sources":[{"id":"fixture","media_type":"application/octet-stream","sha256":sha256(b"fixture")}],
+            "sources":[{"id":"fixture","media_type":"application/octet-stream","digest":digest(b"fixture")}],
             "capabilities":capabilities
         });
         fs::write(
@@ -898,7 +897,8 @@ mod tests {
             .exists());
         let combat = fs::read_to_string(paths.vault_root().join("Imported/Rules/Combat/Combat.md"))
             .expect("combat");
-        assert!(combat.contains("artifact: sha256:"), "{combat}");
+        assert!(combat.contains("artifact: blake3:"), "{combat}");
+        assert!(report.assets[0].digest.starts_with("blake3:"));
         assert!(combat.contains("[map](../assets/map.png)"), "{combat}");
         assert_eq!(report.changed_paths.len(), report.notes.len() + 1);
         vulcan_core::resolve_note_reference(&paths, "Imported/Rules/Combat/Combat.md")
@@ -976,7 +976,7 @@ mod tests {
         let magic_offset = markdown.find("## Magic").expect("magic offset");
         let source_map = MdafSourceMap {
             version: 1,
-            document_sha256: "0".repeat(64),
+            document_digest: format!("blake3:{}", "0".repeat(64)),
             mappings: vec![vulcan_core::artifact::MdafSourceMapping {
                 document: vulcan_core::artifact::MdafByteSpan {
                     start: magic_offset,

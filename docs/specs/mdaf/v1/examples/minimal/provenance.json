@@ -22,7 +22,7 @@
       "parameters": {
         "mode": "synthetic"
       },
-      "parameters_sha256": "20fe08a28b64c88a77555928f5719b23d8f0fe22bcb4fc40722870012e1eb97f"
+      "parameters_digest": "blake3:5ea54201a84078e0433629fee2037e0e977deddd60f013fc097140a293c538c3"
     }
   ],
   "redactions": []

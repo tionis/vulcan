@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "document_sha256": "ab6f56620c079a7c155b79040f8e5d88596d0f3be0afd0b4214ba398d91229c7",
+  "document_digest": "blake3:4a1966cd5757837f2c4135aa22c0109ef79f2969bef69d4f9055845c7df9a55a",
   "mappings": [
     {
       "document": { "start": 0, "end": 56 },

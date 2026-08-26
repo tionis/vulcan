@@ -4,15 +4,15 @@
   "title": "MDAF v1 source map",
   "type": "object",
   "additionalProperties": false,
-  "required": ["version", "document_sha256", "mappings", "references"],
+  "required": ["version", "document_digest", "mappings", "references"],
   "properties": {
     "version": { "const": 1 },
-    "document_sha256": { "$ref": "#/$defs/sha256" },
+    "document_digest": { "$ref": "#/$defs/digest" },
     "mappings": { "type": "array", "items": { "$ref": "#/$defs/mapping" } },
     "references": { "type": "array", "items": { "$ref": "#/$defs/reference" } }
   },
   "$defs": {
-    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "digest": { "type": "string", "pattern": "^blake3:[0-9a-f]{64}$" },
     "span": {
       "type": "object",
       "additionalProperties": false,

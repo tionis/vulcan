@@ -3,7 +3,6 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::{Display, Formatter};
 use std::fs::{self, File};
@@ -50,7 +49,7 @@ pub enum MdafMemberRole {
 #[serde(deny_unknown_fields)]
 pub struct MdafMarkdownBinding {
     pub path: String,
-    pub sha256: String,
+    pub digest: String,
     pub media_type: String,
     #[serde(default)]
     pub variant: Option<String>,
@@ -74,7 +73,7 @@ pub struct MdafMember {
     pub role: MdafMemberRole,
     pub media_type: String,
     pub size: u64,
-    pub sha256: String,
+    pub digest: String,
     pub created_by: String,
     #[serde(default)]
     pub schema: Option<String>,
@@ -87,7 +86,9 @@ pub struct MdafMember {
 pub struct MdafSource {
     pub id: String,
     pub media_type: String,
-    pub sha256: String,
+    pub digest: String,
+    #[serde(default)]
+    pub alternate_digests: Vec<String>,
     #[serde(default)]
     pub name: Option<String>,
     #[serde(default)]
@@ -222,7 +223,7 @@ pub struct MdafSourceReference {
 #[serde(deny_unknown_fields)]
 pub struct MdafSourceMap {
     pub version: u32,
-    pub document_sha256: String,
+    pub document_digest: String,
     pub mappings: Vec<MdafSourceMapping>,
     pub references: Vec<MdafSourceReference>,
 }
@@ -245,7 +246,7 @@ pub struct MdafOutlineNode {
 #[serde(deny_unknown_fields)]
 pub struct MdafOutline {
     pub version: u32,
-    pub document_sha256: String,
+    pub document_digest: String,
     #[serde(default)]
     pub title: Option<String>,
     pub nodes: Vec<MdafOutlineNode>,
@@ -299,7 +300,7 @@ pub struct MdafActivity {
     pub outputs: Vec<String>,
     pub depends_on: Vec<String>,
     pub parameters: serde_json::Map<String, Value>,
-    pub parameters_sha256: String,
+    pub parameters_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -309,7 +310,7 @@ pub struct MdafRedaction {
     pub location: String,
     pub reason: String,
     #[serde(default)]
-    pub original_sha256: Option<String>,
+    pub original_digest: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -341,7 +342,7 @@ pub struct MdafDiagnostic {
 pub struct MdafObservedMember {
     pub path: String,
     pub size: u64,
-    pub sha256: String,
+    pub digest: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -377,7 +378,7 @@ impl MdafArtifact {
             .member(path)
             .ok_or_else(|| MdafError::InvalidMember(format!("undeclared member: {path}")))?;
         let (size, digest) = copy_member(&self.artifact_path, self.representation, path, writer)?;
-        if size != member.size || digest != member.sha256 {
+        if size != member.size || digest != member.digest {
             return Err(MdafError::InvalidMember(format!(
                 "member changed since validation: {path}"
             )));
@@ -630,7 +631,7 @@ fn insert_observed(
     files: &mut BTreeMap<String, MdafObservedMember>,
     path: String,
     size: u64,
-    sha256: String,
+    digest: String,
 ) -> Result<(), MdafError> {
     let folded = path.to_lowercase();
     if files
@@ -641,7 +642,7 @@ fn insert_observed(
             "duplicate or case-fold-colliding member: {path}"
         )));
     }
-    files.insert(path.clone(), MdafObservedMember { path, size, sha256 });
+    files.insert(path.clone(), MdafObservedMember { path, size, digest });
     Ok(())
 }
 
@@ -682,17 +683,17 @@ fn normalized_member_path(path: &Path) -> Result<String, MdafError> {
 }
 
 fn hash_reader(mut reader: impl Read, expected_size: u64) -> Result<String, MdafError> {
-    let mut hasher = Sha256::new();
+    let mut hasher = blake3::Hasher::new();
     let copied = io::copy(&mut reader, &mut DigestWriter(&mut hasher))?;
     if copied != expected_size {
         return Err(MdafError::InvalidContainer(format!(
             "member declared {expected_size} bytes but yielded {copied}"
         )));
     }
-    Ok(format!("{:x}", hasher.finalize()))
+    Ok(tagged_blake3(hasher.finalize()))
 }
 
-struct DigestWriter<'a>(&'a mut Sha256);
+struct DigestWriter<'a>(&'a mut blake3::Hasher);
 
 impl Write for DigestWriter<'_> {
     fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
@@ -706,16 +707,16 @@ impl Write for DigestWriter<'_> {
 }
 
 fn logical_identity(observed: &BTreeMap<String, MdafObservedMember>) -> String {
-    let mut hasher = Sha256::new();
+    let mut hasher = blake3::Hasher::new();
     for member in observed.values() {
         let path = serde_json::to_string(&member.path).expect("member path serializes");
         let record = format!(
-            "{{\"path\":{path},\"size\":{},\"sha256\":\"{}\"}}\n",
-            member.size, member.sha256
+            "{{\"path\":{path},\"size\":{},\"digest\":\"{}\"}}\n",
+            member.size, member.digest
         );
         hasher.update(record.as_bytes());
     }
-    format!("sha256:{:x}", hasher.finalize())
+    tagged_blake3(hasher.finalize())
 }
 
 fn read_member_bytes(
@@ -754,7 +755,7 @@ fn copy_member(
     member: &str,
     writer: &mut impl Write,
 ) -> Result<(u64, String), MdafError> {
-    let mut hasher = Sha256::new();
+    let mut hasher = blake3::Hasher::new();
     let size = match representation {
         MdafRepresentation::Directory => copy_and_hash(
             open_directory_member(artifact, member)?,
@@ -767,7 +768,7 @@ fn copy_member(
             copy_and_hash(file, writer, &mut hasher)?
         }
     };
-    Ok((size, format!("{:x}", hasher.finalize())))
+    Ok((size, tagged_blake3(hasher.finalize())))
 }
 
 fn open_directory_member(root: &Path, member: &str) -> Result<File, MdafError> {
@@ -791,7 +792,7 @@ fn open_directory_member(root: &Path, member: &str) -> Result<File, MdafError> {
 fn copy_and_hash(
     mut reader: impl Read,
     writer: &mut impl Write,
-    hasher: &mut Sha256,
+    hasher: &mut blake3::Hasher,
 ) -> Result<u64, MdafError> {
     let mut size = 0_u64;
     let mut buffer = vec![0_u8; 64 * 1024].into_boxed_slice();
@@ -956,11 +957,11 @@ fn validate_manifest(
                         &member.path,
                     );
                 }
-                if actual.sha256 != member.sha256 {
+                if actual.digest != member.digest {
                     error_diag(
                         diagnostics,
                         "member_digest_mismatch",
-                        "declared SHA-256 does not match",
+                        "declared BLAKE3 digest does not match",
                         &member.path,
                     );
                 }
@@ -1084,7 +1085,7 @@ fn validate_semantics(
         if let Some(path) = source.embedded_path.as_deref() {
             match manifest.members.iter().find(|member| member.path == path) {
                 Some(member)
-                    if member.role == MdafMemberRole::Source && member.sha256 == source.sha256 => {}
+                    if member.role == MdafMemberRole::Source && member.digest == source.digest => {}
                 _ => error_diag(
                     diagnostics,
                     "embedded_source_invalid",
@@ -1095,10 +1096,10 @@ fn validate_semantics(
         }
     }
     let Some(markdown) = markdown else { return };
-    let markdown_digest = sha256(markdown.as_bytes());
+    let markdown_digest = blake3_digest(markdown.as_bytes());
     if manifest.markdown.path != "text.md"
         || manifest.markdown.media_type != "text/markdown"
-        || manifest.markdown.sha256 != markdown_digest
+        || manifest.markdown.digest != markdown_digest
     {
         error_diag(
             diagnostics,
@@ -1198,7 +1199,7 @@ fn validate_source_map(
     source_ids: &BTreeSet<&str>,
     diagnostics: &mut Vec<MdafDiagnostic>,
 ) {
-    if map.document_sha256 != digest {
+    if map.document_digest != digest {
         error_diag(
             diagnostics,
             "document_digest_mismatch",
@@ -1338,7 +1339,7 @@ fn validate_outline(
     source_ids: &BTreeSet<&str>,
     diagnostics: &mut Vec<MdafDiagnostic>,
 ) {
-    if outline.document_sha256 != digest {
+    if outline.document_digest != digest {
         error_diag(
             diagnostics,
             "document_digest_mismatch",
@@ -1460,8 +1461,8 @@ fn validate_provenance(
         );
     }
     for activity in &provenance.activities {
-        let expected = sha256(&canonical_json(&Value::Object(activity.parameters.clone())));
-        if expected != activity.parameters_sha256 {
+        let expected = blake3_digest(&canonical_json(&Value::Object(activity.parameters.clone())));
+        if expected != activity.parameters_digest {
             error_diag(
                 diagnostics,
                 "parameters_digest_mismatch",
@@ -1587,8 +1588,12 @@ fn canonical_json(value: &Value) -> Vec<u8> {
     serde_json::to_vec(&sort(value)).expect("JSON value serializes")
 }
 
-fn sha256(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
+fn blake3_digest(bytes: &[u8]) -> String {
+    tagged_blake3(blake3::hash(bytes))
+}
+
+fn tagged_blake3(hash: blake3::Hash) -> String {
+    format!("blake3:{hash}")
 }
 
 fn error_diag(
@@ -1630,7 +1635,7 @@ mod tests {
         fs::create_dir_all(root).expect("create artifact");
         let markdown = "# Synthetic\n\nPrivate-free fixture.\n";
         let parameters = serde_json::json!({"mode":"synthetic"});
-        let parameters_sha256 = sha256(&canonical_json(&parameters));
+        let parameters_digest = blake3_digest(&canonical_json(&parameters));
         let mut outputs = vec!["text.md", "provenance.json"];
         if let Some(path) = native_path {
             outputs.push(path);
@@ -1642,7 +1647,7 @@ mod tests {
                 "tools": [{"name":"synthetic-extractor","version":"2.0.0"}],
                 "models": [], "inputs": ["source:synthetic"], "outputs": outputs,
                 "depends_on": [], "parameters": parameters,
-                "parameters_sha256": parameters_sha256
+                "parameters_digest": parameters_digest
             }],
             "redactions": []
         });
@@ -1657,21 +1662,21 @@ mod tests {
             fs::write(target, br#"{"opaque":[1,2,3]}"#).expect("write native");
         }
         let mut members = vec![
-            serde_json::json!({"path":"text.md","role":"primary","media_type":"text/markdown","size":markdown.len(),"sha256":sha256(markdown.as_bytes()),"created_by":"activity:extract"}),
-            serde_json::json!({"path":"provenance.json","role":"provenance","media_type":"application/json","size":provenance_bytes.len(),"sha256":sha256(&provenance_bytes),"created_by":"activity:extract"}),
+            serde_json::json!({"path":"text.md","role":"primary","media_type":"text/markdown","size":markdown.len(),"digest":blake3_digest(markdown.as_bytes()),"created_by":"activity:extract"}),
+            serde_json::json!({"path":"provenance.json","role":"provenance","media_type":"application/json","size":provenance_bytes.len(),"digest":blake3_digest(&provenance_bytes),"created_by":"activity:extract"}),
         ];
         let mut capabilities = Vec::<String>::new();
         if let Some(path) = native_path {
             let bytes = fs::read(root.join(path)).expect("read native");
-            members.push(serde_json::json!({"path":path,"role":"rendition","media_type":"application/json","size":bytes.len(),"sha256":sha256(&bytes),"created_by":"activity:extract","namespace":"example.test/extractor"}));
+            members.push(serde_json::json!({"path":path,"role":"rendition","media_type":"application/json","size":bytes.len(),"digest":blake3_digest(&bytes),"created_by":"activity:extract","namespace":"example.test/extractor"}));
             capabilities.push("native-renditions".to_string());
         }
         let info = serde_json::json!({
             "format":"mdaf", "version":1,
-            "markdown":{"path":"text.md","sha256":sha256(markdown.as_bytes()),"media_type":"text/markdown"},
+            "markdown":{"path":"text.md","digest":blake3_digest(markdown.as_bytes()),"media_type":"text/markdown"},
             "producer":{"name":"fixture-builder","version":"1.0.0"},
             "members":members,
-            "sources":[{"id":"synthetic","media_type":"application/octet-stream","sha256":sha256(b"not embedded")}],
+            "sources":[{"id":"synthetic","media_type":"application/octet-stream","digest":blake3_digest(b"not embedded"),"alternate_digests":["sha256:0f45120997903fa1935dfe7f31b99e939842129c76d6bf7140348ebcf054deb3"]}],
             "capabilities":capabilities
         });
         fs::write(
@@ -1742,6 +1747,34 @@ mod tests {
     }
 
     #[test]
+    fn legacy_sha256_manifest_fields_are_rejected() {
+        let temporary = TempDir::new().expect("temporary directory");
+        write_minimal(temporary.path(), None);
+        let info_path = temporary.path().join("info.json");
+        let mut info: Value = serde_json::from_slice(&fs::read(&info_path).expect("read manifest"))
+            .expect("parse manifest");
+        let markdown = info["markdown"].as_object_mut().expect("Markdown binding");
+        let digest = markdown.remove("digest").expect("canonical digest");
+        markdown.insert("sha256".to_string(), digest);
+        fs::write(
+            info_path,
+            serde_json::to_vec_pretty(&info).expect("serialize legacy manifest"),
+        )
+        .expect("write legacy manifest");
+
+        let artifact = inspect_mdaf(temporary.path()).expect("inspect");
+        assert!(!artifact.valid);
+        assert!(artifact
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "schema_violation"));
+        assert!(artifact
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "control_document_invalid"));
+    }
+
+    #[test]
     fn zip_traversal_and_symlinked_directory_members_fail_closed() {
         let temporary = TempDir::new().expect("temporary directory");
         let zip_path = temporary.path().join("unsafe.mdaf");
@@ -1781,7 +1814,7 @@ mod tests {
                 let item = MdafObservedMember {
                     path: path.clone(),
                     size: bytes.len() as u64,
-                    sha256: sha256(bytes),
+                    digest: blake3_digest(bytes),
                 };
                 (item.path.clone(), item)
             })
@@ -1911,14 +1944,14 @@ mod tests {
     #[allow(clippy::too_many_lines)]
     fn validates_source_neutral_selectors_aligned_outline_and_multi_tool_provenance() {
         let markdown = "# A\n\nBody\n\n## B\n\nMore\n";
-        let digest = sha256(markdown.as_bytes());
+        let digest = blake3_digest(markdown.as_bytes());
         let manifest = MdafManifest {
             format: "mdaf".to_string(),
             version: 1,
             title: None,
             markdown: MdafMarkdownBinding {
                 path: "text.md".to_string(),
-                sha256: digest.clone(),
+                digest: digest.clone(),
                 media_type: "text/markdown".to_string(),
                 variant: None,
                 features: Vec::new(),
@@ -1933,7 +1966,7 @@ mod tests {
                 role: MdafMemberRole::Primary,
                 media_type: "text/markdown".to_string(),
                 size: markdown.len() as u64,
-                sha256: digest.clone(),
+                digest: digest.clone(),
                 created_by: "activity:normalize".to_string(),
                 schema: None,
                 namespace: None,
@@ -1941,16 +1974,20 @@ mod tests {
             sources: vec![MdafSource {
                 id: "source-a".to_string(),
                 media_type: "application/octet-stream".to_string(),
-                sha256: sha256(b"source"),
+                digest: blake3_digest(b"source"),
+                alternate_digests: vec![
+                    "sha256:41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d"
+                        .to_string(),
+                ],
                 name: None,
                 embedded_path: None,
             }],
             capabilities: vec!["source-map".to_string(), "outline".to_string()],
-            derived_from: vec![format!("sha256:{}", sha256(b"parent"))],
+            derived_from: vec![blake3_digest(b"parent")],
         };
         let source_map = MdafSourceMap {
             version: 1,
-            document_sha256: digest.clone(),
+            document_digest: digest.clone(),
             mappings: vec![MdafSourceMapping {
                 document: MdafByteSpan {
                     start: 0,
@@ -2011,7 +2048,7 @@ mod tests {
         };
         let outline = MdafOutline {
             version: 1,
-            document_sha256: digest,
+            document_digest: digest,
             title: None,
             nodes: vec![
                 MdafOutlineNode {
@@ -2086,7 +2123,9 @@ mod tests {
                 inputs: vec!["source:source-a".to_string()],
                 outputs: vec!["text.md".to_string()],
                 depends_on: Vec::new(),
-                parameters_sha256: sha256(&canonical_json(&Value::Object(parameters.clone()))),
+                parameters_digest: blake3_digest(&canonical_json(&Value::Object(
+                    parameters.clone(),
+                ))),
                 parameters,
             }],
             redactions: Vec::new(),

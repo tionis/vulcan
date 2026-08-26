@@ -4,7 +4,7 @@
   "title": "Synthetic example",
   "markdown": {
     "path": "text.md",
-    "sha256": "836746828781f1385343c0004d3ef37481b7a2c9650d16fff5aa5c1765484207",
+    "digest": "blake3:e6803b4c8e8cffe7c1b113926b63baf6e45b765e565178a81cef417fd9516121",
     "media_type": "text/markdown",
     "variant": "CommonMark",
     "features": []
@@ -19,24 +19,25 @@
       "role": "primary",
       "media_type": "text/markdown",
       "size": 31,
-      "sha256": "836746828781f1385343c0004d3ef37481b7a2c9650d16fff5aa5c1765484207",
+      "digest": "blake3:e6803b4c8e8cffe7c1b113926b63baf6e45b765e565178a81cef417fd9516121",
       "created_by": "activity:extract"
     },
     {
       "path": "provenance.json",
       "role": "provenance",
       "media_type": "application/json",
-      "size": 579,
-      "sha256": "0f45120997903fa1935dfe7f31b99e939842129c76d6bf7140348ebcf054deb3",
+      "size": 586,
+      "digest": "blake3:d94c44a24b93083bfd9c5de31726e9ebf66cb16a35dc768fb04867a862150796",
       "created_by": "activity:extract",
       "schema": "https://vulcan.tionis.dev/schemas/mdaf/v1/provenance.schema.json"
     }
   ],
   "sources": [
     {
-      "id": "source:example",
+      "id": "example",
       "media_type": "application/pdf",
-      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "digest": "blake3:812e50cb0297ee1e6d0f0403491de16f161deec0a558f4f9a4cc7d29999f37d9",
+      "alternate_digests": ["sha256:0c671415a7cce1cf06093d1cb42fb87cacd92b0b218aceec091e65f9638fc2a6"],
       "name": "synthetic.pdf"
     }
   ],
