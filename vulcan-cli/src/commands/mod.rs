@@ -29,6 +29,7 @@ pub(crate) mod tool;
 pub(crate) mod tool_init;
 #[cfg(feature = "vectors")]
 pub(crate) mod vectors;
+pub(crate) mod wiki_package;
 
 #[cfg(not(feature = "vectors"))]
 pub(crate) mod vectors {

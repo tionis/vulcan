@@ -6566,10 +6566,10 @@ No skill changes required. Confidence tagging is internal metadata that enriches
 - [x] Add safe TextBundle v1/v2 and TextPack readers that preserve unknown application metadata, validate one `text.*` member and `assets/`, reject unsafe containers, and expose deterministic inspection diagnostics.
 - [x] Add dry-run-capable TextBundle/TextPack import into an explicit new vault destination, collision-safe asset materialization, standard asset-relative link preservation, cache refresh, rollback, JSON output, and auto-commit integration.
 - [x] Add TextBundle/TextPack export for one canonical Markdown note and its referenced local assets while preserving the standardized metadata boundary.
-- [ ] Specify the Markdown Wiki Package v1 manifest, BLAKE3 logical identity, `.wikibundle` directory and `.wikipack` ZIP serializations, path/archive safety limits, immutable lineage, synthetic fixtures, and JSON Schema.
-- [ ] Add wiki-package inspect, validate, export, and dry-run/import workflows that preserve Markdown and asset bytes, exclude cache/device/credential/Git state, require a new destination, rebuild the cache, and roll back partial writes.
-- [ ] Cover directory/ZIP parity, TextPack compatibility metadata, asset/reference rewrites, unknown metadata preservation, traversal/symlink/duplicate/collision failures, deterministic identities, rollback, CLI output, and installed agent guidance.
-- [ ] Keep SQLite as a documented alternative serialization of the same wiki-package model. Do not implement a writable SQLite vault until a separate storage, revision, conflict, and interoperability design is approved.
+- [x] Specify the Markdown Wiki Package v1 manifest, BLAKE3 logical identity, `.wikibundle` directory and `.wikipack` ZIP serializations, path/archive safety limits, immutable lineage, synthetic fixtures, and JSON Schema.
+- [x] Add wiki-package inspect, validate, export, and dry-run/import workflows that preserve Markdown and asset bytes, exclude cache/device/credential/Git state, require a new destination, rebuild the cache, and roll back partial writes.
+- [x] Cover directory/ZIP parity, TextPack compatibility metadata, asset/reference rewrites, unknown metadata preservation, traversal/symlink/duplicate/collision failures, deterministic identities, rollback, CLI output, and installed agent guidance.
+- [x] Keep SQLite as a documented alternative serialization of the same wiki-package model. Do not implement a writable SQLite vault until a separate storage, revision, conflict, and interoperability design is approved.
 
 ---
 

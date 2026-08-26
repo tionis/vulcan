@@ -4730,6 +4730,45 @@ pub enum ExchangeCommand {
         #[command(subcommand)]
         command: TextBundleCommand,
     },
+    #[command(about = "Exchange a complete Markdown wiki snapshot")]
+    Wiki {
+        #[command(subcommand)]
+        command: WikiPackageCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum WikiPackageCommand {
+    #[command(about = "Inspect a Wiki Bundle directory or Wiki Pack ZIP")]
+    Inspect {
+        #[arg(help = "Wiki Bundle directory or Wiki Pack ZIP path")]
+        package: PathBuf,
+    },
+    #[command(about = "Validate a Wiki Bundle directory or Wiki Pack ZIP")]
+    Validate {
+        #[arg(help = "Wiki Bundle directory or Wiki Pack ZIP path")]
+        package: PathBuf,
+    },
+    #[command(about = "Import a wiki package into a new vault folder")]
+    Import {
+        #[arg(help = "Wiki Bundle directory or Wiki Pack ZIP path")]
+        package: PathBuf,
+        #[arg(long, help = "Required new vault-relative destination folder")]
+        destination: String,
+        #[arg(long, help = "Validate and report without writing files")]
+        dry_run: bool,
+        #[arg(long, help = "Suppress auto-commit for this invocation")]
+        no_commit: bool,
+    },
+    #[command(about = "Export the vault as a complete wiki snapshot")]
+    Export {
+        #[arg(long = "package", help = "Output .wikibundle or .wikipack path")]
+        package_output: PathBuf,
+        #[arg(long, help = "Optional human-readable package title")]
+        title: Option<String>,
+        #[arg(long, help = "Plan and report without writing the package")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

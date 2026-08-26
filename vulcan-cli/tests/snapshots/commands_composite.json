@@ -12756,6 +12756,149 @@
                 "subcommands": []
               }
             ]
+          },
+          {
+            "about": "Exchange a complete Markdown wiki snapshot",
+            "name": "wiki",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Inspect a Wiki Bundle directory or Wiki Pack ZIP",
+                "name": "inspect",
+                "options": [
+                  {
+                    "help": "Wiki Bundle directory or Wiki Pack ZIP path",
+                    "id": "package",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PACKAGE"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Validate a Wiki Bundle directory or Wiki Pack ZIP",
+                "name": "validate",
+                "options": [
+                  {
+                    "help": "Wiki Bundle directory or Wiki Pack ZIP path",
+                    "id": "package",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PACKAGE"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Import a wiki package into a new vault folder",
+                "name": "import",
+                "options": [
+                  {
+                    "help": "Wiki Bundle directory or Wiki Pack ZIP path",
+                    "id": "package",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PACKAGE"
+                    ]
+                  },
+                  {
+                    "help": "Required new vault-relative destination folder",
+                    "id": "destination",
+                    "long": "destination",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "DESTINATION"
+                    ]
+                  },
+                  {
+                    "help": "Validate and report without writing files",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  },
+                  {
+                    "help": "Suppress auto-commit for this invocation",
+                    "id": "no_commit",
+                    "long": "no-commit",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_COMMIT"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Export the vault as a complete wiki snapshot",
+                "name": "export",
+                "options": [
+                  {
+                    "help": "Output .wikibundle or .wikipack path",
+                    "id": "package_output",
+                    "long": "package",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "PACKAGE_OUTPUT"
+                    ]
+                  },
+                  {
+                    "help": "Optional human-readable package title",
+                    "id": "title",
+                    "long": "title",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "TITLE"
+                    ]
+                  },
+                  {
+                    "help": "Plan and report without writing the package",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
           }
         ]
       },

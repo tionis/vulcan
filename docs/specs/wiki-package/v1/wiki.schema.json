@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://vulcan.tionis.dev/specs/wiki-package/v1/wiki.schema.json",
+  "title": "Markdown Wiki Package v1",
+  "type": "object",
+  "required": ["format", "version", "producer", "members"],
+  "properties": {
+    "format": { "const": "dev.tionis.markdown-wiki-package" },
+    "version": { "const": 1 },
+    "title": { "type": "string" },
+    "producer": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "lineage": {
+      "type": "array",
+      "items": { "pattern": "^blake3:[0-9a-f]{64}$" },
+      "uniqueItems": true
+    },
+    "members": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["path", "role", "size", "digest"],
+        "properties": {
+          "path": { "pattern": "^content/.+" },
+          "role": { "enum": ["note", "asset"] },
+          "media_type": { "type": "string" },
+          "size": { "type": "integer", "minimum": 0 },
+          "digest": { "pattern": "^blake3:[0-9a-f]{64}$" },
+          "document_id": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": true
+      }
+    }
+  },
+  "additionalProperties": true
+}

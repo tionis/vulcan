@@ -100,6 +100,7 @@ pub mod vector;
 pub mod watch;
 #[cfg(feature = "web")]
 pub mod web;
+pub mod wiki_package;
 pub mod write_lock;
 
 pub use assistant::{

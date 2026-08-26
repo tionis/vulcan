@@ -384,7 +384,7 @@ fn write_textpack_zip(
     Ok(())
 }
 
-fn validate_new_destination(
+pub(crate) fn validate_new_destination(
     paths: &VaultPaths,
     destination: &str,
     kind: &str,

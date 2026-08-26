@@ -6684,6 +6684,98 @@ fn textbundle_exchange_exports_inspects_and_imports_a_textpack() {
 }
 
 #[test]
+fn wiki_exchange_exports_validates_and_imports_a_complete_snapshot() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join("assets")).expect("fixture directories");
+    fs::write(vault_root.join("Home.md"), "# Home\n\n![](assets/a.txt)\n").expect("note");
+    fs::write(vault_root.join("assets/a.txt"), "asset\n").expect("asset");
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault"),
+            "index",
+            "init",
+        ])
+        .assert()
+        .success();
+    let package = temp_dir.path().join("wiki.wikipack");
+    let package_path = package.to_str().expect("package");
+    let exported = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault"),
+            "--output",
+            "json",
+            "exchange",
+            "wiki",
+            "export",
+            "--package",
+            package_path,
+            "--title",
+            "Synthetic",
+        ])
+        .assert()
+        .success();
+    let exported = parse_stdout_json(&exported);
+    assert_eq!(exported["notes"], 1);
+    assert_eq!(exported["assets"], 1);
+    assert!(exported["identity"]
+        .as_str()
+        .is_some_and(|value| value.starts_with("blake3:")));
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args(["exchange", "wiki", "validate", package_path])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Valid: true"));
+    let preview = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault"),
+            "--output",
+            "json",
+            "exchange",
+            "wiki",
+            "import",
+            package_path,
+            "--destination",
+            "Imported",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&preview)["dry_run"], true);
+    assert!(!vault_root.join("Imported").exists());
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault"),
+            "exchange",
+            "wiki",
+            "import",
+            package_path,
+            "--destination",
+            "Imported",
+            "--no-commit",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        fs::read(vault_root.join("Home.md")).expect("source"),
+        fs::read(vault_root.join("Imported/Home.md")).expect("imported")
+    );
+    assert_eq!(
+        fs::read(vault_root.join("assets/a.txt")).expect("source asset"),
+        fs::read(vault_root.join("Imported/assets/a.txt")).expect("imported asset")
+    );
+}
+
+#[test]
 fn config_import_preview_shows_diff_without_writing_files() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -10886,6 +10978,8 @@ fn skill_list_and_get_surface_bundled_skills() {
         .expect("portable exchange skill should be installed");
     assert!(portable_exchange.contains("exchange textbundle export"));
     assert!(portable_exchange.contains("exchange textbundle import"));
+    assert!(portable_exchange.contains("exchange wiki export"));
+    assert!(portable_exchange.contains("exchange wiki import"));
     assert!(portable_exchange.contains("--dry-run"));
 
     let configuration =

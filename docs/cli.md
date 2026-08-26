@@ -548,6 +548,18 @@ vulcan exchange textbundle export Notes/Note.md \
 
 Import requires a new explicit vault-relative folder. It preserves the standard `assets/` layout, refreshes the cache after applying, removes partial output on failure, and supports normal auto-commit controls. Unknown application-specific fields in `info.json` remain visible in inspection and import reports. Export rewrites references to included local assets into collision-safe package paths; it does not copy remote resources, other Markdown notes, or files outside the vault. A `.textbundle` output creates a directory package, while `.textpack` creates a ZIP package.
 
+For a complete multi-document snapshot, use the versioned Markdown Wiki Package format:
+
+```bash
+vulcan --output json exchange wiki export \
+  --package ./knowledge.wikipack --title "Knowledge" --dry-run
+vulcan exchange wiki validate ./knowledge.wikipack
+vulcan --output json exchange wiki import ./knowledge.wikipack \
+  --destination Imported/Knowledge --dry-run
+```
+
+`.wikibundle` is the directory serialization and `.wikipack` is the ZIP serialization. Both contain `wiki.json` plus byte-preserved files below `content/` and have the same BLAKE3 logical identity. Export excludes Vulcan, Git, Obsidian, trash, synchronization, and common operating-system metadata state and rejects symbolic or special files. Import requires a new destination, validates every declared digest, refreshes the cache, and rolls back partial output. The package is an immutable exchange snapshot; materialized Markdown remains canonical. The specification, schema, test vector, and synthetic example live in [`docs/specs/wiki-package/v1/`](specs/wiki-package/v1/).
+
 ## Searching with `search`
 
 `vulcan search` searches indexed note content and can be combined with typed filters.

@@ -259,7 +259,7 @@ pub fn inspect_text_bundle(path: &Path) -> Result<TextBundle, TextBundleError> {
     })
 }
 
-fn observe_members(
+pub(crate) fn observe_members(
     path: &Path,
     representation: TextBundleRepresentation,
 ) -> Result<BTreeMap<String, TextBundleMember>, TextBundleError> {
@@ -420,7 +420,7 @@ fn enforce_limits(count: usize, size: u64, total: &mut u64) -> Result<(), TextBu
     Ok(())
 }
 
-fn read_member(
+pub(crate) fn read_member(
     package: &Path,
     representation: TextBundleRepresentation,
     member: &str,
@@ -461,7 +461,7 @@ fn read_member(
     Ok(bytes)
 }
 
-fn copy_member(
+pub(crate) fn copy_member(
     package: &Path,
     representation: TextBundleRepresentation,
     member: &str,

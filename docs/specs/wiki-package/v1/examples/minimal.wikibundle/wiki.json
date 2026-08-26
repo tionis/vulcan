@@ -1,0 +1,20 @@
+{
+  "format": "dev.tionis.markdown-wiki-package",
+  "version": 1,
+  "title": "Synthetic example",
+  "producer": {
+    "name": "spec-example"
+  },
+  "members": [
+    {
+      "path": "content/Home.md",
+      "role": "note",
+      "media_type": "text/markdown",
+      "size": 7,
+      "digest": "blake3:4a35382afeb839bddc4f34ffe6396ba82d1bcc187d96dc438492b62352f26c3a"
+    }
+  ],
+  "example.extension": {
+    "preserved": true
+  }
+}

@@ -52,6 +52,7 @@ pub mod tools;
 pub mod trust;
 #[cfg(feature = "web")]
 pub mod web;
+pub mod wiki_package;
 
 pub use error::AppError;
 

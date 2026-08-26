@@ -437,7 +437,7 @@ pub use cli::{
     SuggestLinkStatusArg, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
     TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
     TemplateRenderArgs, TemplateSubcommand, TextBundleCommand, ToolCommand, ToolInitTemplateArg,
-    TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -5665,6 +5665,9 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         Command::Exchange { ref command } => match command {
             ExchangeCommand::Textbundle { command } => {
                 commands::textbundle::handle_textbundle_command(cli, &paths, command)
+            }
+            ExchangeCommand::Wiki { command } => {
+                commands::wiki_package::handle_wiki_package_command(cli, &paths, command)
             }
         },
         Command::Suggest { ref command } => commands::refactor::handle_suggest_command(

@@ -1,0 +1,12 @@
+{
+  "members": [
+    {
+      "path": "content/Home.md",
+      "role": "note",
+      "size": 7,
+      "digest": "blake3:4a35382afeb839bddc4f34ffe6396ba82d1bcc187d96dc438492b62352f26c3a"
+    }
+  ],
+  "canonical_jsonl": "{\"path\":\"content/Home.md\",\"role\":\"note\",\"size\":7,\"digest\":\"blake3:4a35382afeb839bddc4f34ffe6396ba82d1bcc187d96dc438492b62352f26c3a\"}\n",
+  "identity": "blake3:0b5e99c9032535cbd53dacc1f58ef8354af80d321ff29fd9f7ad908c2865d30c"
+}
