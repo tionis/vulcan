@@ -11449,6 +11449,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync status"));
     assert!(git_skill.contains("vulcan sync doctor [<wiki>]"));
     assert!(git_skill.contains("vulcan sync run --dry-run"));
+    assert!(git_skill.contains("vulcan sync run --max-retries <n>"));
     assert!(git_skill.contains("vulcan sync run <wiki>"));
     assert!(git_skill.contains("vulcan sync pause [<wiki>]"));
     assert!(git_skill.contains("state.recovered_from"));

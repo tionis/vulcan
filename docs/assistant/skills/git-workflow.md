@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 12
+version: 13
 tools:
   - git_status
   - git_diff
@@ -34,6 +34,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Only after the user explicitly chooses a preserved side, preview it with `vulcan sync resolve <id> --side base|local|remote --dry-run`, then rerun without `--dry-run` on approval. The choice applies only to conflicted paths while retaining clean merge results; Vulcan captures current bytes first, rejects stale inputs, publishes with compare-and-swap, and retains the original conflict refs and record.
 - Inspect JSON sync reports: `state.recovered_from` means Vulcan found an interruption-sensitive device-local transaction and recaptured before continuing; `state.retained` identifies the exact paused, conflicted, cancelled, or failed phase and any captured object IDs available for follow-up.
 - Use `vulcan sync run --dry-run` to inspect the selected remote and live ref without creating objects, refs, or files; use `vulcan sync run` for one finite direct-mode cycle.
+- `vulcan sync run --max-retries <n>` bounds rejected compare-and-swap reconciliation attempts. Retries recapture and re-fetch with capped exponential backoff and remain cancellable; do not replace them with unconditional force pushes.
 - Use `vulcan sync run <wiki>`, `--group <name>`, or `--all` for registered selections. Group/all results are independent per-wiki transactions with aggregate counts, never one atomic cross-repository operation.
 - Use `vulcan sync pause [<wiki>]` and `vulcan sync resume [<wiki>]` to change device-local automatic behavior. Omitting the ID resolves the selected vault's registration; add `--dry-run` to preview the registry mutation.
 - Use `vulcan sync checkpoint [<wiki>] --dry-run` before deliberately retaining the accepted live commit; add `--kind semantic` when the retention intent is human-facing semantic history rather than recovery. Checkpoints create unique local refs without copying objects or advancing the checked-out branch, and refuse when local accepted refs disagree with the remote.

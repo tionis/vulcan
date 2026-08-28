@@ -13,6 +13,7 @@ use std::fs::{self, File, OpenOptions};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 const SYNC_PROTOCOL_VERSION: u32 = 1;
 const MERGE_POLICY_VERSION: u32 = 1;
@@ -566,7 +567,8 @@ pub fn sync_git_once_with_control(
     }
 
     let _lock = RepositoryLock::acquire(&report.repository)?;
-    for attempt in 0..options.max_retries.max(1) {
+    let attempts = options.max_retries.max(1);
+    for attempt in 0..attempts {
         cancellation.check()?;
         report.retries = attempt;
         let mut control = AttemptControl {
@@ -577,11 +579,22 @@ pub fn sync_git_once_with_control(
         if run_attempt(engine, options, &mut report, &mut control)? == AttemptResult::Finished {
             return Ok(report);
         }
+        if attempt + 1 < attempts {
+            control.check()?;
+            std::thread::sleep(retry_backoff(attempt));
+            control.check()?;
+        }
     }
 
-    Err(GitSyncError::RetryLimit {
-        attempts: options.max_retries.max(1),
-    })
+    Err(GitSyncError::RetryLimit { attempts })
+}
+
+fn retry_backoff(attempt: usize) -> Duration {
+    const BASE_MILLIS: u64 = 25;
+    const MAX_MILLIS: u64 = 400;
+    let shift = u32::try_from(attempt.min(16)).expect("bounded retry shift fits u32");
+    let multiplier = 1_u64.checked_shl(shift).unwrap_or(u64::MAX);
+    Duration::from_millis(BASE_MILLIS.saturating_mul(multiplier).min(MAX_MILLIS))
 }
 
 fn emit_progress(
@@ -963,6 +976,29 @@ mod tests {
         }
     }
 
+    struct RejectFirstPushObserver {
+        repository: PathBuf,
+        fired: bool,
+    }
+
+    impl GitSyncObserver for RejectFirstPushObserver {
+        fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
+            if progress.phase == GitSyncPhase::Pushing && !self.fired {
+                self.fired = true;
+                run_git(
+                    &self.repository,
+                    &[
+                        "push",
+                        "--quiet",
+                        "origin",
+                        "HEAD:refs/heads/__vulcan-sync/live",
+                    ],
+                );
+            }
+            Ok(())
+        }
+    }
+
     fn run_git(path: &Path, arguments: &[&str]) {
         let status = Command::new("git")
             .current_dir(path)
@@ -1138,6 +1174,44 @@ mod tests {
         }));
         assert_eq!(remote.category, SyncErrorCategory::Network);
         assert!(remote.retryable);
+    }
+
+    #[test]
+    fn rejected_push_retry_backoff_is_exponential_and_bounded() {
+        assert_eq!(retry_backoff(0), Duration::from_millis(25));
+        assert_eq!(retry_backoff(1), Duration::from_millis(50));
+        assert_eq!(retry_backoff(4), Duration::from_millis(400));
+        assert_eq!(retry_backoff(usize::MAX), Duration::from_millis(400));
+    }
+
+    #[test]
+    fn rejected_compare_and_swap_is_refetched_and_retried() {
+        let (temporary, remote, writer) = setup_remote_and_writer();
+        let peer = clone_reader(&temporary, &remote, &writer);
+        fs::write(peer.join("Race.md"), "peer won the first push\n").expect("peer edit");
+        commit_all(&peer, "peer race");
+        let cancellation = SyncCancellationToken::default();
+        let mut observer = RejectFirstPushObserver {
+            repository: peer,
+            fired: false,
+        };
+
+        let report = sync_git_once_with_control(
+            &GitCliEngine::default(),
+            &writer,
+            &GitSyncOptions::default(),
+            &cancellation,
+            &mut observer,
+        )
+        .expect("rejected push should converge on retry");
+
+        assert!(observer.fired);
+        assert_eq!(report.retries, 1);
+        assert_eq!(report.outcome, GitSyncOutcome::Pulled);
+        assert_eq!(
+            fs::read_to_string(writer.join("Race.md")).expect("peer file pulled"),
+            "peer won the first push\n"
+        );
     }
 
     #[test]
