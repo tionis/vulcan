@@ -435,11 +435,11 @@ pub use cli::{
     QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RenderMode,
     RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg,
     SiteCommand, SkillCommand, SuggestCommand, SuggestLinkStatusArg, SyncCommand,
-    SyncSelectionArgs, SyncTargetArgs, TagSortArg, TasksCommand, TasksListSourceArg,
-    TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
-    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TextBundleCommand, ToolCommand,
-    ToolInitTemplateArg, TrustCommand, VaultCommand, VectorQueueCommand, VectorsCommand,
-    WebCommand, WebFetchMode, WikiPackageCommand,
+    SyncConflictSideArg, SyncSelectionArgs, SyncTargetArgs, TagSortArg, TasksCommand,
+    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
+    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TextBundleCommand,
+    ToolCommand, ToolInitTemplateArg, TrustCommand, VaultCommand, VectorQueueCommand,
+    VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
 };
 
 use crate::commit::AutoCommitPolicy;

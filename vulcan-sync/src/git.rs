@@ -93,6 +93,12 @@ pub trait GitEngine: Send + Sync {
         local_candidate: &GitOid,
     ) -> Result<GitMerge, GitEngineError>;
 
+    fn resolve_merge_tree(
+        &self,
+        repository: &GitRepository,
+        request: &GitMergeResolutionRequest,
+    ) -> Result<GitOid, GitEngineError>;
+
     fn create_commit(
         &self,
         repository: &GitRepository,
@@ -553,6 +559,23 @@ pub struct GitMerge {
     pub base: Option<GitOid>,
     pub conflict_paths: Vec<String>,
     pub diagnostics: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitConflictSide {
+    Base,
+    Local,
+    Remote,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitMergeResolutionRequest {
+    pub base: GitOid,
+    pub accepted_remote: GitOid,
+    pub local_candidate: GitOid,
+    pub paths: Vec<String>,
+    pub side: GitConflictSide,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1031,11 +1054,7 @@ impl GitEngine for GitCliEngine {
         commit: &GitOid,
         path: &str,
     ) -> Result<Option<GitPathObject>, GitEngineError> {
-        if path.is_empty() || path.starts_with('/') || path.split('/').any(|part| part == "..") {
-            return Err(GitEngineError::UnsupportedRepository {
-                detail: format!("unsafe conflict path `{path}` returned by Git"),
-            });
-        }
+        validate_repository_path(path)?;
         let mut command = self.repository_command(repository);
         command
             .args(["ls-tree", "-z"])
@@ -1325,6 +1344,72 @@ impl GitEngine for GitCliEngine {
             conflict_paths,
             diagnostics,
         })
+    }
+
+    fn resolve_merge_tree(
+        &self,
+        repository: &GitRepository,
+        request: &GitMergeResolutionRequest,
+    ) -> Result<GitOid, GitEngineError> {
+        repository.require_work_tree()?;
+        if request.paths.is_empty() {
+            return Err(GitEngineError::UnsupportedRepository {
+                detail: "a merge resolution must name at least one conflicted path".to_string(),
+            });
+        }
+        let index_path = repository.sync_index();
+        std::fs::create_dir_all(
+            index_path
+                .parent()
+                .expect("the sync index path always has a parent"),
+        )?;
+        remove_file_if_present(&index_path)?;
+        self.index_output(
+            repository,
+            &index_path,
+            "prepare a conflicted merge resolution",
+            [
+                "read-tree",
+                "-m",
+                request.base.as_str(),
+                request.accepted_remote.as_str(),
+                request.local_candidate.as_str(),
+            ],
+        )?;
+        let selected = match request.side {
+            GitConflictSide::Base => &request.base,
+            GitConflictSide::Local => &request.local_candidate,
+            GitConflictSide::Remote => &request.accepted_remote,
+        };
+        for path in &request.paths {
+            validate_repository_path(path)?;
+            if let Some(object) = self.path_object(repository, selected, path)? {
+                let mut command = self.index_command(repository, &index_path)?;
+                command
+                    .args(["update-index", "--add", "--cacheinfo"])
+                    .arg(&object.mode)
+                    .arg(object.oid.as_str())
+                    .arg(path);
+                let output = self.execute(command)?;
+                ensure_success("select a preserved conflict side", output)?;
+            } else {
+                let mut command = self.index_command(repository, &index_path)?;
+                command
+                    .args(["update-index", "--force-remove", "--"])
+                    .arg(path);
+                let output = self.execute(command)?;
+                ensure_success("select a preserved conflict deletion", output)?;
+            }
+        }
+        GitOid::parse(
+            self.index_capture(
+                repository,
+                &index_path,
+                "write the resolved merge tree",
+                ["write-tree"],
+            )?
+            .trim(),
+        )
     }
 
     fn create_commit(
@@ -1737,6 +1822,20 @@ fn remove_file_if_present(path: &Path) -> Result<(), GitEngineError> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(GitEngineError::Io(error)),
+    }
+}
+
+fn validate_repository_path(path: &str) -> Result<(), GitEngineError> {
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\0')
+        || path.split('/').any(|part| part.is_empty() || part == "..")
+    {
+        Err(GitEngineError::UnsupportedRepository {
+            detail: format!("unsafe conflict path `{path}` returned by Git"),
+        })
+    } else {
+        Ok(())
     }
 }
 

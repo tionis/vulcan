@@ -1,6 +1,7 @@
 use crate::output::print_json;
 use crate::{
-    selected_permission_guard, Cli, CliError, OutputFormat, SyncCommand, SyncSelectionArgs,
+    selected_permission_guard, Cli, CliError, OutputFormat, SyncCommand, SyncConflictSideArg,
+    SyncSelectionArgs,
 };
 use serde::Serialize;
 use vulcan_app::sync::{
@@ -8,7 +9,9 @@ use vulcan_app::sync::{
     SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
 };
 use vulcan_app::sync_conflicts::{
-    get_sync_conflict, list_sync_conflicts, SyncConflictDetailReport, SyncConflictListReport,
+    get_sync_conflict, list_sync_conflicts, resolve_sync_conflict, ResolveSyncConflictOptions,
+    ResolveSyncConflictReport, SyncConflictDetailReport, SyncConflictListReport,
+    SyncConflictResolutionSide,
 };
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
@@ -33,6 +36,23 @@ pub(crate) fn handle_sync_command(
         }
         SyncCommand::Conflicts { conflict_id, wiki } => {
             return run_sync_conflicts(cli, paths, wiki.as_deref(), conflict_id.as_deref());
+        }
+        SyncCommand::Resolve {
+            conflict_id,
+            side,
+            wiki,
+            target,
+            dry_run,
+        } => {
+            return run_sync_resolve(
+                cli,
+                paths,
+                wiki.as_deref(),
+                conflict_id,
+                *side,
+                target,
+                *dry_run,
+            );
         }
         SyncCommand::Run { .. } | SyncCommand::Status { .. } => {}
     }
@@ -62,6 +82,7 @@ pub(crate) fn handle_sync_command(
         ),
         SyncCommand::Doctor { .. }
         | SyncCommand::Conflicts { .. }
+        | SyncCommand::Resolve { .. }
         | SyncCommand::Pause { .. }
         | SyncCommand::Resume { .. } => unreachable!(),
     };
@@ -84,6 +105,55 @@ pub(crate) fn handle_sync_command(
         .map_err(CliError::operation)?;
     let report = sync_git_vault(paths, &options).map_err(CliError::operation)?;
     print_sync_report(cli.output, &report)
+}
+
+fn run_sync_resolve(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    conflict_id: &str,
+    side: SyncConflictSideArg,
+    target: &crate::SyncTargetArgs,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let report = resolve_sync_conflict(
+        &paths,
+        conflict_id,
+        &ResolveSyncConflictOptions {
+            side: match side {
+                SyncConflictSideArg::Base => SyncConflictResolutionSide::Base,
+                SyncConflictSideArg::Local => SyncConflictResolutionSide::Local,
+                SyncConflictSideArg::Remote => SyncConflictResolutionSide::Remote,
+            },
+            remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
+            live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
+            dry_run,
+        },
+    )
+    .map_err(CliError::operation)?;
+    print_sync_resolution(cli.output, &report)
+}
+
+fn print_sync_resolution(
+    output: OutputFormat,
+    report: &ResolveSyncConflictReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Conflict {}: {:?} ({:?})",
+        report.conflict_id, report.outcome, report.side
+    );
+    if let Some(commit) = &report.resolution_commit {
+        println!("Accepted: {commit}");
+    }
+    if let Some(recovery) = &report.recovery_revision {
+        println!("Recovery: {recovery}");
+    }
+    Ok(())
 }
 
 fn run_sync_doctor(

@@ -21,10 +21,11 @@ pub use contracts::{
 };
 
 pub use git::{
-    GitCapture, GitCaptureRequest, GitCaseRenamePolicy, GitCliEngine, GitCloneRequest, GitEngine,
-    GitEngineError, GitEngineKind, GitExecutableBitsPolicy, GitFilterRequirement, GitInstallation,
-    GitMerge, GitObjectFormat, GitOid, GitPathLengthPolicy, GitPathObject, GitPlatformPolicy,
-    GitPlatformProfile, GitPushResult, GitRefName, GitRemote, GitRepository, GitRepositoryLayout,
+    GitCapture, GitCaptureRequest, GitCaseRenamePolicy, GitCliEngine, GitCloneRequest,
+    GitConflictSide, GitEngine, GitEngineError, GitEngineKind, GitExecutableBitsPolicy,
+    GitFilterRequirement, GitInstallation, GitMerge, GitMergeResolutionRequest, GitObjectFormat,
+    GitOid, GitPathLengthPolicy, GitPathObject, GitPlatformPolicy, GitPlatformProfile,
+    GitPushResult, GitRefName, GitRemote, GitRepository, GitRepositoryLayout,
     GitRepositoryRequirements, GitReservedNamesPolicy, GitSafetyState, GitSymlinkPolicy,
     GitTimestampPolicy, GitVersion,
 };

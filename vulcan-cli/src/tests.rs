@@ -2267,6 +2267,37 @@ fn parses_sync_conflicts_commands() {
 }
 
 #[test]
+fn parses_sync_resolve_command() {
+    let resolve = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "resolve",
+        "0123456789abcdef0123456789abcdef",
+        "--side",
+        "local",
+        "--wiki",
+        "personal",
+        "--dry-run",
+    ])
+    .expect("sync conflict resolution should parse");
+    assert_eq!(
+        resolve.command,
+        Command::Sync {
+            command: SyncCommand::Resolve {
+                conflict_id: "0123456789abcdef0123456789abcdef".to_string(),
+                side: SyncConflictSideArg::Local,
+                wiki: Some("personal".to_string()),
+                target: SyncTargetArgs {
+                    remote: "origin".to_string(),
+                    live_ref: "refs/heads/__vulcan-sync/live".to_string(),
+                },
+                dry_run: true,
+            },
+        }
+    );
+}
+
+#[test]
 fn parses_vault_registry_commands() {
     let clone = Cli::try_parse_from([
         "vulcan",

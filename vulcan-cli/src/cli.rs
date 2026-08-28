@@ -571,6 +571,7 @@ Subcommands:
   status       inspect local safety and remote live-ref state without mutating either
   doctor       diagnose Git, refs, filters, recovery state, and cache coherence
   conflicts    list preserved conflicts or show one immutable record
+  resolve      resolve preserved conflict paths with one explicitly selected side
   pause        disable future automatic sync for one registered wiki
   resume       enable future automatic sync for one registered wiki
 
@@ -591,6 +592,7 @@ Examples:
   vulcan sync doctor
   vulcan sync conflicts
   vulcan sync conflicts <conflict-id>
+  vulcan sync resolve <conflict-id> --side local --dry-run
   vulcan sync pause personal
   vulcan sync resume personal
   vulcan --vault ./wiki sync run --remote origin";
@@ -3897,6 +3899,13 @@ pub struct SyncSelectionArgs {
     pub(crate) group: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SyncConflictSideArg {
+    Base,
+    Local,
+    Remote,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SyncCommand {
     #[command(about = "Run one finite Git synchronization cycle")]
@@ -3930,6 +3939,22 @@ pub enum SyncCommand {
         conflict_id: Option<String>,
         #[arg(long, help = "Optional registered wiki ID")]
         wiki: Option<String>,
+    },
+    #[command(about = "Resolve preserved conflict paths with an explicit side")]
+    Resolve {
+        #[arg(help = "Immutable conflict ID to resolve")]
+        conflict_id: String,
+        #[arg(long, value_enum, help = "Preserved side to use for conflicted paths")]
+        side: SyncConflictSideArg,
+        #[arg(long, help = "Optional registered wiki ID")]
+        wiki: Option<String>,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+        #[arg(
+            long,
+            help = "Validate and report without creating objects, refs, or files"
+        )]
+        dry_run: bool,
     },
     #[command(about = "Diagnose Git synchronization without changing it")]
     Doctor {

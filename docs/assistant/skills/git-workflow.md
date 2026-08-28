@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 10
+version: 11
 tools:
   - git_status
   - git_diff
@@ -30,7 +30,8 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Commit only after the note or refactor workflow is understood.
 - Run `vulcan sync status` before a sync when staged changes or an in-progress Git operation may be present.
 - Run `vulcan sync doctor [<wiki>]` for a read-only installation, layout, hidden-ref/object, remote, lock, recovery-journal, ignore, filter/LFS, and cache-coherence check. Warnings describe reviewable or offline state; `healthy: false` means at least one error-level invariant failed.
-- Use `vulcan sync conflicts` to list preserved conflicts for the selected vault, `vulcan sync conflicts <id>` for the immutable full record, or add `--wiki <id>` for a registered wiki. Artifact paths in detail output are device-local evidence, not vault-relative note paths.
+- Use `vulcan sync conflicts` to list unresolved preserved conflicts for the selected vault, `vulcan sync conflicts <id>` for the immutable full record and current resolution state, or add `--wiki <id>` for a registered wiki. Artifact paths in detail output are device-local evidence, not vault-relative note paths.
+- Only after the user explicitly chooses a preserved side, preview it with `vulcan sync resolve <id> --side base|local|remote --dry-run`, then rerun without `--dry-run` on approval. The choice applies only to conflicted paths while retaining clean merge results; Vulcan captures current bytes first, rejects stale inputs, publishes with compare-and-swap, and retains the original conflict refs and record.
 - Inspect JSON sync reports: `state.recovered_from` means Vulcan found an interruption-sensitive device-local transaction and recaptured before continuing; `state.retained` identifies the exact paused, conflicted, cancelled, or failed phase and any captured object IDs available for follow-up.
 - Use `vulcan sync run --dry-run` to inspect the selected remote and live ref without creating objects, refs, or files; use `vulcan sync run` for one finite direct-mode cycle.
 - Use `vulcan sync run <wiki>`, `--group <name>`, or `--all` for registered selections. Group/all results are independent per-wiki transactions with aggregate counts, never one atomic cross-repository operation.
@@ -43,7 +44,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Treat unrelated dirty worktree state as a coordination issue, not something to silently overwrite.
 - Prefer explicit commits over assuming auto-commit covers every workflow.
 - Do not reset or discard staged state to make synchronization proceed. Vulcan pauses worktree sync until that state is resolved by the user.
-- Treat a `conflicted` sync outcome as preserved work requiring review. Its immutable `conflict.id`, base/local/remote revisions, path list, policy identity, and `preserved_refs` are stable; `conflict_record` points to device-local byte-preserving artifacts outside the vault. Do not choose a side, delete the record, or edit Vulcan-owned refs without explicit direction.
+- Treat a `conflicted` sync outcome as preserved work requiring review. Its immutable `conflict.id`, base/local/remote revisions, path list, policy identity, and `preserved_refs` are stable; `conflict_record` points to device-local byte-preserving artifacts outside the vault. Do not choose a side, run mutating resolution, delete the record, or edit Vulcan-owned refs without explicit user direction.
 - Sync defaults to remote `origin` and `refs/heads/__vulcan-sync/live`; pass `--remote` or `--live-ref` only when the repository uses a different agreed profile.
 - A clone that succeeds before registration fails is deliberately preserved. Report the partial state and register or remove it only with explicit user direction.
 - Treat the Android shared-storage policy as a real capability constraint: executable bits are not representable, symlinks become link files, and case-only renames require an intermediate path. Do not silently substitute it for native Linux policy.
