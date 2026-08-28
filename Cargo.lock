@@ -4362,11 +4362,13 @@ version = "0.1.0"
 dependencies = [
  "fs2",
  "serde",
+ "serde_json",
  "tempfile",
  "toml",
  "ulid",
  "vulcan-app",
  "vulcan-core",
+ "vulcan-sync",
 ]
 
 [[package]]
