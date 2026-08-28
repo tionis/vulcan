@@ -4360,10 +4360,14 @@ dependencies = [
 name = "vulcan-daemon"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "fs2",
+ "getrandom 0.3.4",
  "notify",
  "serde",
  "serde_json",
+ "sha2",
+ "subtle",
  "tempfile",
  "toml",
  "ulid",

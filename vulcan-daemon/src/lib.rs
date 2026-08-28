@@ -8,6 +8,7 @@
 
 pub mod clone;
 pub mod companion;
+pub mod credentials;
 pub mod registry;
 pub mod runtime;
 pub mod status;
