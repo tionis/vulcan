@@ -816,6 +816,25 @@ mod tests {
         assert!(status.success(), "Git failed: {arguments:?}");
     }
 
+    fn assert_conflict_read_workflows(
+        paths: &VaultPaths,
+        store: &SyncStateStore,
+        record: &SyncConflictRecord,
+    ) {
+        let listed = crate::sync_conflicts::list_sync_conflicts_with_state_store(paths, store)
+            .expect("list workflow");
+        assert_eq!(listed.count, 1);
+        assert_eq!(listed.conflicts[0].id, record.id);
+        let detail =
+            crate::sync_conflicts::get_sync_conflict_with_state_store(paths, &record.id, store)
+                .expect("detail workflow");
+        assert_eq!(&detail.record, record);
+        let records = SyncConflictStore::from_state_store(store)
+            .list(&record.repository_key)
+            .expect("list conflict records");
+        assert_eq!(records, [record.clone()]);
+    }
+
     #[test]
     fn applied_remote_tree_refreshes_an_existing_cache() {
         let temporary = tempdir().expect("temporary directory");
@@ -1239,10 +1258,7 @@ mod tests {
         assert_eq!(read_artifact(&record.paths[0].base.artifact), b"base\n");
         assert_eq!(read_artifact(&record.paths[0].local.artifact), b"reader\n");
         assert_eq!(read_artifact(&record.paths[0].remote.artifact), b"writer\n");
-        let records = SyncConflictStore::from_state_store(&store)
-            .list(&record.repository_key)
-            .expect("list conflict records");
-        assert_eq!(records, [record]);
+        assert_conflict_read_workflows(&VaultPaths::new(&reader), &store, &record);
         assert_eq!(
             fs::read_to_string(reader.join("Home.md")).expect("reader bytes"),
             "reader\n"

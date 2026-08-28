@@ -55,6 +55,95 @@ pub struct SyncConflictSideRecord {
     pub bytes: Option<u64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncConflictSummary {
+    pub id: String,
+    pub paths: Vec<String>,
+    pub base_revision: Option<String>,
+    pub local_revision: String,
+    pub remote_revision: String,
+    pub policy_version: u32,
+    pub resolution: SyncConflictResolutionState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncConflictResolutionState {
+    Unresolved,
+    Resolved,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncConflictListReport {
+    pub vault: PathBuf,
+    pub repository_key: String,
+    pub count: usize,
+    pub conflicts: Vec<SyncConflictSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncConflictDetailReport {
+    pub record: SyncConflictRecord,
+    pub resolution: SyncConflictResolutionState,
+}
+
+pub fn list_sync_conflicts(
+    paths: &vulcan_core::VaultPaths,
+) -> Result<SyncConflictListReport, AppError> {
+    let state_store = SyncStateStore::user_default()?;
+    list_sync_conflicts_with_state_store(paths, &state_store)
+}
+
+pub fn list_sync_conflicts_with_state_store(
+    paths: &vulcan_core::VaultPaths,
+    state_store: &SyncStateStore,
+) -> Result<SyncConflictListReport, AppError> {
+    let work_tree = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let repository_key = crate::sync_state::repository_state_key(&work_tree);
+    let records = SyncConflictStore::from_state_store(state_store).list(&repository_key)?;
+    let conflicts = records
+        .into_iter()
+        .map(|record| SyncConflictSummary {
+            id: record.id,
+            paths: record.paths.into_iter().map(|path| path.path).collect(),
+            base_revision: record.base_revision,
+            local_revision: record.local_revision,
+            remote_revision: record.remote_revision,
+            policy_version: record.policy_version,
+            resolution: SyncConflictResolutionState::Unresolved,
+        })
+        .collect::<Vec<_>>();
+    Ok(SyncConflictListReport {
+        vault: work_tree,
+        repository_key,
+        count: conflicts.len(),
+        conflicts,
+    })
+}
+
+pub fn get_sync_conflict(
+    paths: &vulcan_core::VaultPaths,
+    conflict_id: &str,
+) -> Result<SyncConflictDetailReport, AppError> {
+    let state_store = SyncStateStore::user_default()?;
+    get_sync_conflict_with_state_store(paths, conflict_id, &state_store)
+}
+
+pub fn get_sync_conflict_with_state_store(
+    paths: &vulcan_core::VaultPaths,
+    conflict_id: &str,
+    state_store: &SyncStateStore,
+) -> Result<SyncConflictDetailReport, AppError> {
+    let work_tree = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let repository_key = crate::sync_state::repository_state_key(&work_tree);
+    let record =
+        SyncConflictStore::from_state_store(state_store).get(&repository_key, conflict_id)?;
+    Ok(SyncConflictDetailReport {
+        record,
+        resolution: SyncConflictResolutionState::Unresolved,
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncConflictStore {
     root: PathBuf,

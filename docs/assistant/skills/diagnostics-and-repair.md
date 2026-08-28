@@ -1,7 +1,7 @@
 ---
 name: diagnostics-and-repair
 description: Diagnose vault health, broken links, parser diagnostics, suspicious state, synchronization pauses or conflicts, and repairable problems. Use when the user asks why something is broken, wants a health check, sees diagnostics, or needs safe repair steps before editing notes.
-version: 6
+version: 7
 tools:
   - doctor
   - cache_verify
@@ -39,6 +39,7 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 - For bulk repairs, inspect changed paths and commit separately from unrelated edits.
 - Do not clear staged state, rewrite Vulcan-owned refs, or pick a conflict side merely to make synchronization continue.
 - For a sync conflict, retain the immutable conflict ID and inspect its base/local/remote revisions and path records. The original commits remain Git-reachable and file artifacts live in device-local sync state, so cache repair and note cleanup must never delete them.
+- Start conflict investigation with `vulcan sync conflicts`, then use `vulcan sync conflicts <id>` to inspect per-side object IDs, modes, hashes, byte counts, and artifact locations. This read-only command is safe before deciding how to resolve the conflict.
 
 ## Example Moves
 

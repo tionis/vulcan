@@ -2236,6 +2236,37 @@ fn parses_sync_doctor_command() {
 }
 
 #[test]
+fn parses_sync_conflicts_commands() {
+    let list = Cli::try_parse_from(["vulcan", "sync", "conflicts", "--wiki", "personal"])
+        .expect("sync conflict list should parse");
+    assert_eq!(
+        list.command,
+        Command::Sync {
+            command: SyncCommand::Conflicts {
+                conflict_id: None,
+                wiki: Some("personal".to_string()),
+            },
+        }
+    );
+    let detail = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "conflicts",
+        "0123456789abcdef0123456789abcdef",
+    ])
+    .expect("sync conflict detail should parse");
+    assert!(matches!(
+        detail.command,
+        Command::Sync {
+            command: SyncCommand::Conflicts {
+                conflict_id: Some(_),
+                wiki: None,
+            }
+        }
+    ));
+}
+
+#[test]
 fn parses_vault_registry_commands() {
     let clone = Cli::try_parse_from([
         "vulcan",

@@ -570,6 +570,7 @@ Subcommands:
   run          perform one finite capture, reconcile, push, and apply cycle
   status       inspect local safety and remote live-ref state without mutating either
   doctor       diagnose Git, refs, filters, recovery state, and cache coherence
+  conflicts    list preserved conflicts or show one immutable record
   pause        disable future automatic sync for one registered wiki
   resume       enable future automatic sync for one registered wiki
 
@@ -588,6 +589,8 @@ Examples:
   vulcan sync run --dry-run
   vulcan sync status
   vulcan sync doctor
+  vulcan sync conflicts
+  vulcan sync conflicts <conflict-id>
   vulcan sync pause personal
   vulcan sync resume personal
   vulcan --vault ./wiki sync run --remote origin";
@@ -3920,6 +3923,13 @@ pub enum SyncCommand {
         selection: SyncSelectionArgs,
         #[command(flatten)]
         target: SyncTargetArgs,
+    },
+    #[command(about = "List preserved sync conflicts or show one record")]
+    Conflicts {
+        #[arg(help = "Immutable conflict ID; omit to list conflicts")]
+        conflict_id: Option<String>,
+        #[arg(long, help = "Optional registered wiki ID")]
+        wiki: Option<String>,
     },
     #[command(about = "Diagnose Git synchronization without changing it")]
     Doctor {

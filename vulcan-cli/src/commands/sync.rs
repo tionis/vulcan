@@ -7,6 +7,9 @@ use vulcan_app::sync::{
     doctor_git_vault, sync_git_vault, GitRefName, GitRemote, GitSyncAction, GitSyncOptions,
     SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
 };
+use vulcan_app::sync_conflicts::{
+    get_sync_conflict, list_sync_conflicts, SyncConflictDetailReport, SyncConflictListReport,
+};
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
@@ -27,6 +30,9 @@ pub(crate) fn handle_sync_command(
         }
         SyncCommand::Doctor { wiki, target } => {
             return run_sync_doctor(cli, paths, wiki.as_deref(), target);
+        }
+        SyncCommand::Conflicts { conflict_id, wiki } => {
+            return run_sync_conflicts(cli, paths, wiki.as_deref(), conflict_id.as_deref());
         }
         SyncCommand::Run { .. } | SyncCommand::Status { .. } => {}
     }
@@ -54,9 +60,10 @@ pub(crate) fn handle_sync_command(
             },
             registered_selection(selection)?,
         ),
-        SyncCommand::Doctor { .. } | SyncCommand::Pause { .. } | SyncCommand::Resume { .. } => {
-            unreachable!()
-        }
+        SyncCommand::Doctor { .. }
+        | SyncCommand::Conflicts { .. }
+        | SyncCommand::Pause { .. }
+        | SyncCommand::Resume { .. } => unreachable!(),
     };
     if let Some(selection) = selection {
         let registry = WikiRegistry::user_default().map_err(CliError::operation)?;
@@ -85,7 +92,23 @@ fn run_sync_doctor(
     wiki: Option<&str>,
     target: &crate::SyncTargetArgs,
 ) -> Result<(), CliError> {
-    let (paths, registration_profile) = if let Some(wiki) = wiki {
+    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let options = GitSyncOptions {
+        remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
+        live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
+        dry_run: true,
+        ..GitSyncOptions::default()
+    };
+    let report = doctor_git_vault(&paths, &options);
+    print_sync_doctor_report(cli.output, &report)
+}
+
+fn resolve_sync_paths(
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+) -> Result<(VaultPaths, Option<String>), CliError> {
+    let resolved = if let Some(wiki) = wiki {
         let id = WikiId::parse(wiki).map_err(CliError::operation)?;
         let status = WikiRegistry::user_default()
             .map_err(CliError::operation)?
@@ -113,22 +136,74 @@ fn run_sync_doctor(
     } else {
         (selected_paths.clone(), None)
     };
-    let profile = cli
-        .permissions
-        .as_deref()
-        .or(registration_profile.as_deref());
-    let selection = resolve_permission_profile(&paths, profile).map_err(CliError::operation)?;
-    ProfilePermissionGuard::new(&paths, selection)
+    Ok(resolved)
+}
+
+fn check_sync_permission(
+    cli: &Cli,
+    paths: &VaultPaths,
+    registration_profile: Option<&str>,
+) -> Result<(), CliError> {
+    let profile = cli.permissions.as_deref().or(registration_profile);
+    let selection = resolve_permission_profile(paths, profile).map_err(CliError::operation)?;
+    ProfilePermissionGuard::new(paths, selection)
         .check_git()
-        .map_err(CliError::operation)?;
-    let options = GitSyncOptions {
-        remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
-        live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
-        dry_run: true,
-        ..GitSyncOptions::default()
-    };
-    let report = doctor_git_vault(&paths, &options);
-    print_sync_doctor_report(cli.output, &report)
+        .map_err(CliError::operation)
+}
+
+fn run_sync_conflicts(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    conflict_id: Option<&str>,
+) -> Result<(), CliError> {
+    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    if let Some(conflict_id) = conflict_id {
+        let report = get_sync_conflict(&paths, conflict_id).map_err(CliError::operation)?;
+        print_sync_conflict_detail(cli.output, &report)
+    } else {
+        let report = list_sync_conflicts(&paths).map_err(CliError::operation)?;
+        print_sync_conflict_list(cli.output, &report)
+    }
+}
+
+fn print_sync_conflict_list(
+    output: OutputFormat,
+    report: &SyncConflictListReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!("Preserved sync conflicts: {}", report.count);
+    for conflict in &report.conflicts {
+        println!(
+            "{}\t{:?}\t{}",
+            conflict.id,
+            conflict.resolution,
+            conflict.paths.join(", ")
+        );
+    }
+    Ok(())
+}
+
+fn print_sync_conflict_detail(
+    output: OutputFormat,
+    report: &SyncConflictDetailReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!("Conflict {} ({:?})", report.record.id, report.resolution);
+    println!("Local:  {}", report.record.local_revision);
+    println!("Remote: {}", report.record.remote_revision);
+    if let Some(base) = &report.record.base_revision {
+        println!("Base:   {base}");
+    }
+    for path in &report.record.paths {
+        println!("Path:   {}", path.path);
+    }
+    Ok(())
 }
 
 fn print_sync_doctor_report(

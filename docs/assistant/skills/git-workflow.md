@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 9
+version: 10
 tools:
   - git_status
   - git_diff
@@ -30,6 +30,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Commit only after the note or refactor workflow is understood.
 - Run `vulcan sync status` before a sync when staged changes or an in-progress Git operation may be present.
 - Run `vulcan sync doctor [<wiki>]` for a read-only installation, layout, hidden-ref/object, remote, lock, recovery-journal, ignore, filter/LFS, and cache-coherence check. Warnings describe reviewable or offline state; `healthy: false` means at least one error-level invariant failed.
+- Use `vulcan sync conflicts` to list preserved conflicts for the selected vault, `vulcan sync conflicts <id>` for the immutable full record, or add `--wiki <id>` for a registered wiki. Artifact paths in detail output are device-local evidence, not vault-relative note paths.
 - Inspect JSON sync reports: `state.recovered_from` means Vulcan found an interruption-sensitive device-local transaction and recaptured before continuing; `state.retained` identifies the exact paused, conflicted, cancelled, or failed phase and any captured object IDs available for follow-up.
 - Use `vulcan sync run --dry-run` to inspect the selected remote and live ref without creating objects, refs, or files; use `vulcan sync run` for one finite direct-mode cycle.
 - Use `vulcan sync run <wiki>`, `--group <name>`, or `--all` for registered selections. Group/all results are independent per-wiki transactions with aggregate counts, never one atomic cross-repository operation.

@@ -4679,6 +4679,110 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     assert_eq!(all_status_json["total"], 2);
 }
 
+fn setup_cli_sync_conflict() -> (TempDir, std::path::PathBuf, std::path::PathBuf, String) {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let state_home = temporary.path().join("state");
+    let remote = temporary.path().join("remote.git");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    let writer = temporary.path().join("writer");
+    fs::create_dir(&writer).expect("writer directory");
+    init_git_repo(&writer);
+    run_git_ok(
+        &writer,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    fs::write(writer.join("Home.md"), "base\n").expect("base note");
+    commit_all(&writer, "Base");
+    let run_sync = |vault: &std::path::Path| {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .env("XDG_STATE_HOME", &state_home)
+            .args([
+                "--vault",
+                vault.to_str().expect("vault path"),
+                "--output",
+                "json",
+                "sync",
+                "run",
+            ])
+            .assert()
+            .success()
+    };
+    run_sync(&writer);
+    let reader = temporary.path().join("reader");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "clone",
+            "--quiet",
+            writer.to_str().expect("writer path"),
+            reader.to_str().expect("reader path"),
+        ],
+    );
+    run_git_ok(
+        &reader,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    run_sync(&reader);
+    fs::write(writer.join("Home.md"), "writer\n").expect("writer edit");
+    fs::write(reader.join("Home.md"), "reader\n").expect("reader edit");
+    run_sync(&writer);
+    let conflict = run_sync(&reader);
+    let conflict = parse_stdout_json(&conflict);
+    let id = conflict["conflict_record"]["id"]
+        .as_str()
+        .expect("conflict ID")
+        .to_string();
+    (temporary, state_home, reader, id)
+}
+
+#[test]
+fn sync_conflicts_cli_lists_and_shows_immutable_records() {
+    let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
+    let command = |arguments: &[&str]| {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .env("XDG_STATE_HOME", &state_home)
+            .arg("--vault")
+            .arg(&reader)
+            .args(["--output", "json", "sync", "conflicts"])
+            .args(arguments)
+            .assert()
+            .success()
+    };
+    let list = parse_stdout_json(&command(&[]));
+    assert_eq!(list["count"], 1);
+    assert_eq!(list["conflicts"][0]["id"], id);
+    assert_eq!(list["conflicts"][0]["resolution"], "unresolved");
+
+    let detail = parse_stdout_json(&command(&[&id]));
+    assert_eq!(detail["record"]["id"], id);
+    assert_eq!(detail["record"]["paths"][0]["path"], "Home.md");
+    assert_eq!(detail["resolution"], "unresolved");
+    assert_eq!(
+        fs::read_to_string(reader.join("Home.md")).expect("reader note"),
+        "reader\n"
+    );
+}
+
 #[test]
 fn vault_registry_cli_round_trips_without_touching_wiki_files() {
     let temporary = TempDir::new().expect("temp dir should be created");
@@ -11131,6 +11235,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("state.recovered_from"));
     assert!(git_skill.contains("remote/network failure after capture"));
     assert!(git_skill.contains("conflict_record"));
+    assert!(git_skill.contains("vulcan sync conflicts <id>"));
     assert!(git_skill.contains("vulcan vault clone <remote> <path> --dry-run"));
     assert!(git_skill.contains("clone that succeeds before registration fails"));
     assert!(git_skill.contains("--platform android-shared"));
@@ -11151,6 +11256,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("state.recovered_from"));
     assert!(diagnostics_skill.contains("vulcan sync doctor [<wiki>]"));
     assert!(diagnostics_skill.contains("immutable conflict ID"));
+    assert!(diagnostics_skill.contains("vulcan sync conflicts <id>"));
     assert!(diagnostics_skill.contains("offline/cancelled cycle"));
     assert!(diagnostics_skill.contains("outside `.vulcan/cache.db`"));
     assert!(json["support_files"].as_array().is_some_and(|items| items
