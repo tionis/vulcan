@@ -79,6 +79,7 @@ pub(crate) fn handle_sync_command(
                 live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
                 max_retries: *max_retries,
                 dry_run: *dry_run,
+                ..GitSyncOptions::default()
             },
             registered_selection(selection)?,
         ),

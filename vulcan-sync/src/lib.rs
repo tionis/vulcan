@@ -31,7 +31,7 @@ pub use git::{
 };
 pub use sync::{
     sync_git_once, sync_git_once_with_control, GitConflictRefs, GitSyncAction, GitSyncBackend,
-    GitSyncConflict, GitSyncError, GitSyncObserver, GitSyncObserverError, GitSyncOptions,
-    GitSyncOutcome, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
+    GitSyncConflict, GitSyncDeviceId, GitSyncError, GitSyncObserver, GitSyncObserverError,
+    GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
     IgnoreGitSyncProgress, SyncCancellationToken,
 };

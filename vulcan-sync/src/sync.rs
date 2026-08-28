@@ -20,12 +20,46 @@ const MERGE_POLICY_VERSION: u32 = 1;
 const MERGE_POLICY_ID: &str = "vulcan-git-three-way-v1";
 const DEFAULT_LIVE_REF: &str = "refs/heads/__vulcan-sync/live";
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(transparent)]
+pub struct GitSyncDeviceId(String);
+
+impl GitSyncDeviceId {
+    pub fn parse(value: impl Into<String>) -> Result<Self, GitSyncError> {
+        let value = value.into().to_ascii_lowercase();
+        let valid = value.len() == 26
+            && value.bytes().all(|byte| {
+                byte.is_ascii_digit()
+                    || matches!(byte, b'a'..=b'h' | b'j'..=b'k' | b'm'..=b'n' | b'p'..=b't' | b'v'..=b'z')
+            });
+        if valid {
+            Ok(Self(value))
+        } else {
+            Err(GitSyncError::Git(GitEngineError::UnsupportedRepository {
+                detail: "sync device identity must be a 26-character Crockford Base32 ULID"
+                    .to_string(),
+            }))
+        }
+    }
+
+    #[must_use]
+    pub fn anonymous() -> Self {
+        Self("00000000000000000000000000".to_string())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitSyncOptions {
     pub remote: GitRemote,
     pub live_ref: GitRefName,
     pub max_retries: usize,
     pub dry_run: bool,
+    pub device_id: GitSyncDeviceId,
 }
 
 impl Default for GitSyncOptions {
@@ -35,6 +69,7 @@ impl Default for GitSyncOptions {
             live_ref: GitRefName::parse(DEFAULT_LIVE_REF).expect("the default live ref is valid"),
             max_retries: 4,
             dry_run: false,
+            device_id: GitSyncDeviceId::anonymous(),
         }
     }
 }
@@ -657,9 +692,9 @@ fn run_attempt(
     let capture = engine.capture_worktree(
         &report.repository,
         &GitCaptureRequest {
-            base,
+            base: base.clone(),
             target_ref: report.refs.local.clone(),
-            message: snapshot_message(&report.refs),
+            message: snapshot_message(&report.refs, &options.device_id, base.as_ref()),
         },
     )?;
     report.local_snapshot = Some(capture.commit.clone());
@@ -692,7 +727,7 @@ fn run_attempt(
         &GitCaptureRequest {
             base: Some(capture.commit.clone()),
             target_ref: report.refs.local.clone(),
-            message: snapshot_message(&report.refs),
+            message: snapshot_message(&report.refs, &options.device_id, Some(&capture.commit)),
         },
     )?;
     if verification.commit != capture.commit {
@@ -828,7 +863,7 @@ fn merge_divergence(
         &report.repository,
         &tree,
         &[remote.clone(), capture.commit.clone()],
-        &merge_message(&report.refs),
+        &merge_message(&report.refs, &options.device_id, &remote, &capture.commit),
     )?;
     engine.update_ref(&report.repository, &report.refs.pending, &merged)?;
     control.check()?;
@@ -899,20 +934,34 @@ fn preserve_conflict_refs(
     })
 }
 
-fn snapshot_message(refs: &GitSyncRefs) -> String {
+fn snapshot_message(
+    refs: &GitSyncRefs,
+    device_id: &GitSyncDeviceId,
+    source: Option<&GitOid>,
+) -> String {
     format!(
-        "vulcan live snapshot\n\nVulcan-Sync-Version: {SYNC_PROTOCOL_VERSION}\nVulcan-Sync-Profile: {}\n",
-        refs.local
-            .as_str()
-            .split('/')
-            .nth(3)
-            .unwrap_or("unknown")
+        "vulcan live snapshot\n\n{}",
+        sync_trailers(refs, device_id, source.map_or("unborn", GitOid::as_str))
     )
 }
 
-fn merge_message(refs: &GitSyncRefs) -> String {
+fn merge_message(
+    refs: &GitSyncRefs,
+    device_id: &GitSyncDeviceId,
+    remote: &GitOid,
+    local: &GitOid,
+) -> String {
     format!(
-        "vulcan live merge\n\nVulcan-Sync-Version: {SYNC_PROTOCOL_VERSION}\nVulcan-Sync-Profile: {}\n",
+        "vulcan live merge\n\n{}",
+        sync_trailers(refs, device_id, &format!("{remote}+{local}"))
+    )
+}
+
+fn sync_trailers(refs: &GitSyncRefs, device_id: &GitSyncDeviceId, source: &str) -> String {
+    let policy_hash = blake3::hash(MERGE_POLICY_ID.as_bytes()).to_hex();
+    format!(
+        "Vulcan-Sync-Version: {SYNC_PROTOCOL_VERSION}\nVulcan-Sync-Device: {}\nVulcan-Sync-Profile: {}\nVulcan-Sync-Policy: {MERGE_POLICY_VERSION}:{policy_hash}\nVulcan-Sync-Source: {source}\nVulcan-Sync-Semantic: false\n",
+        device_id.as_str(),
         refs.local
             .as_str()
             .split('/')
@@ -1008,6 +1057,19 @@ mod tests {
         assert!(status.success(), "Git failed: {arguments:?}");
     }
 
+    fn git_stdout(path: &Path, arguments: &[&str]) -> String {
+        let output = Command::new("git")
+            .current_dir(path)
+            .args(arguments)
+            .output()
+            .expect("Git should launch");
+        assert!(output.status.success(), "Git failed: {arguments:?}");
+        String::from_utf8(output.stdout)
+            .expect("Git output should be UTF-8")
+            .trim()
+            .to_string()
+    }
+
     fn init_repo(path: &Path) {
         run_git(path, &["-c", "init.defaultBranch=main", "init", "--quiet"]);
         run_git(path, &["config", "user.name", "Vulcan Test"]);
@@ -1088,6 +1150,30 @@ mod tests {
         assert!(report.actions.contains(&GitSyncAction::Pushed));
         assert!(!report.actions.contains(&GitSyncAction::WorktreeApplied));
         assert_eq!(report.accepted, report.local_snapshot);
+    }
+
+    #[test]
+    fn live_snapshot_commits_record_versioned_machine_readable_provenance() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        fs::write(writer.join("Home.md"), "changed before sync\n").expect("local edit");
+        let device_id = GitSyncDeviceId::parse("01arz3ndektsv4rrffq69g5fav").expect("device ID");
+        let options = GitSyncOptions {
+            device_id: device_id.clone(),
+            ..GitSyncOptions::default()
+        };
+
+        let report = sync_git_once(&GitCliEngine::default(), &writer, &options)
+            .expect("snapshot sync should succeed");
+        let snapshot = report.local_snapshot.expect("snapshot commit");
+        let message = git_stdout(&writer, &["show", "-s", "--format=%B", snapshot.as_str()]);
+
+        assert!(message.starts_with("vulcan live snapshot\n\n"));
+        assert!(message.contains("Vulcan-Sync-Version: 1"));
+        assert!(message.contains(&format!("Vulcan-Sync-Device: {}", device_id.as_str())));
+        assert!(message.contains("Vulcan-Sync-Profile:"));
+        assert!(message.contains("Vulcan-Sync-Policy: 1:"));
+        assert!(message.contains("Vulcan-Sync-Source:"));
+        assert!(message.contains("Vulcan-Sync-Semantic: false"));
     }
 
     #[test]

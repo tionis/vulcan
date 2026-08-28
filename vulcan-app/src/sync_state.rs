@@ -11,9 +11,17 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 use ulid::Ulid;
+use vulcan_sync::GitSyncDeviceId;
 
 pub const SYNC_JOURNAL_VERSION: u32 = 1;
 const MAX_SYNC_JOURNAL_BYTES: u64 = 1024 * 1024;
+const SYNC_DEVICE_IDENTITY_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SyncDeviceIdentity {
+    version: u32,
+    device_id: String,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -119,6 +127,44 @@ impl SyncStateStore {
         &self.root
     }
 
+    pub fn load_or_create_device_id(
+        &self,
+        create: bool,
+    ) -> Result<Option<GitSyncDeviceId>, AppError> {
+        let path = self.root.join("_device.json");
+        match fs::read(&path) {
+            Ok(source) => return parse_device_identity(&path, &source).map(Some),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => {
+                return Ok(None);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(AppError::operation(error)),
+        }
+        fs::create_dir_all(&self.root).map_err(AppError::operation)?;
+        let identity = SyncDeviceIdentity {
+            version: SYNC_DEVICE_IDENTITY_VERSION,
+            device_id: Ulid::new().to_string().to_ascii_lowercase(),
+        };
+        let bytes = serde_json::to_vec_pretty(&identity).map_err(AppError::operation)?;
+        let mut temporary = NamedTempFile::new_in(&self.root).map_err(AppError::operation)?;
+        temporary.write_all(&bytes).map_err(AppError::operation)?;
+        temporary.write_all(b"\n").map_err(AppError::operation)?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(AppError::operation)?;
+        match temporary.persist_noclobber(&path) {
+            Ok(_) => GitSyncDeviceId::parse(identity.device_id)
+                .map(Some)
+                .map_err(AppError::operation),
+            Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+                parse_device_identity(&path, &fs::read(&path).map_err(AppError::operation)?)
+                    .map(Some)
+            }
+            Err(error) => Err(AppError::operation(error.error)),
+        }
+    }
+
     pub fn journal_path(&self, repository_key: &str) -> Result<PathBuf, AppError> {
         validate_repository_key(repository_key)?;
         Ok(self.root.join(repository_key).join("transaction.json"))
@@ -196,6 +242,26 @@ impl SyncStateStore {
             Err(error) => Err(AppError::operation(error)),
         }
     }
+}
+
+fn parse_device_identity(path: &Path, source: &[u8]) -> Result<GitSyncDeviceId, AppError> {
+    if source.len() as u64 > MAX_SYNC_JOURNAL_BYTES {
+        return Err(AppError::operation(format!(
+            "sync device identity at {} exceeds the {} byte limit",
+            path.display(),
+            MAX_SYNC_JOURNAL_BYTES
+        )));
+    }
+    let identity: SyncDeviceIdentity =
+        serde_json::from_slice(source).map_err(AppError::operation)?;
+    if identity.version != SYNC_DEVICE_IDENTITY_VERSION {
+        return Err(AppError::operation(format!(
+            "unsupported sync device identity version {} at {}",
+            identity.version,
+            path.display()
+        )));
+    }
+    GitSyncDeviceId::parse(identity.device_id).map_err(AppError::operation)
 }
 
 #[must_use]
@@ -280,5 +346,32 @@ mod tests {
         assert!(SyncJournalPhase::Error.requires_recovery());
         assert!(!SyncJournalPhase::Paused.requires_recovery());
         assert!(!SyncJournalPhase::Conflicted.requires_recovery());
+    }
+
+    #[test]
+    fn device_identity_is_state_free_on_read_and_stable_after_creation() {
+        let temporary = tempdir().expect("temporary directory");
+        let root = temporary.path().join("state");
+        let store = SyncStateStore::at(root.clone());
+
+        assert_eq!(
+            store
+                .load_or_create_device_id(false)
+                .expect("read-only identity lookup"),
+            None
+        );
+        assert!(!root.exists());
+
+        let created = store
+            .load_or_create_device_id(true)
+            .expect("create identity")
+            .expect("created identity");
+        let loaded = store
+            .load_or_create_device_id(false)
+            .expect("load identity")
+            .expect("stored identity");
+        assert_eq!(loaded, created);
+        assert_eq!(created.as_str().len(), 26);
+        assert!(root.join("_device.json").is_file());
     }
 }

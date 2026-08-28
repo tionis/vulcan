@@ -12,8 +12,9 @@ use vulcan_sync::{GitEngine, GitSyncObserver};
 pub use vulcan_sync::{
     GitCloneRequest, GitInstallation, GitObjectFormat, GitPlatformPolicy, GitPlatformProfile,
     GitRefName, GitRemote, GitRepository, GitRepositoryLayout, GitRepositoryRequirements,
-    GitSyncAction, GitSyncConflict, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
-    GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport, SyncCancellationToken,
+    GitSyncAction, GitSyncConflict, GitSyncDeviceId, GitSyncObserverError, GitSyncOptions,
+    GitSyncOutcome, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
+    SyncCancellationToken,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -82,6 +83,8 @@ pub struct SyncDoctorReport {
     pub remote: GitRemote,
     pub live_ref: GitRefName,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub device_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub installation: Option<GitInstallation>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub repository: Option<GitRepository>,
@@ -116,19 +119,8 @@ fn doctor_git_vault_with_optional_state(
     state_store: Option<&SyncStateStore>,
 ) -> SyncDoctorReport {
     let engine = vulcan_sync::GitCliEngine::default();
-    let mut report = SyncDoctorReport {
-        version: SYNC_DOCTOR_VERSION,
-        healthy: true,
-        vault: paths.vault_root().to_path_buf(),
-        remote: options.remote.clone(),
-        live_ref: options.live_ref.clone(),
-        installation: None,
-        repository: None,
-        remote_revision: None,
-        requirements: None,
-        journal: None,
-        checks: Vec::new(),
-    };
+    let mut report = initial_doctor_report(paths, options);
+    doctor_device_identity(state_store, &mut report);
 
     match engine.installation() {
         Ok(installation) => {
@@ -220,6 +212,61 @@ fn doctor_git_vault_with_optional_state(
     doctor_journal(paths, state_store, &mut report);
     doctor_cache(paths, &mut report);
     finish_doctor_report(report)
+}
+
+fn initial_doctor_report(paths: &VaultPaths, options: &GitSyncOptions) -> SyncDoctorReport {
+    SyncDoctorReport {
+        version: SYNC_DOCTOR_VERSION,
+        healthy: true,
+        vault: paths.vault_root().to_path_buf(),
+        remote: options.remote.clone(),
+        live_ref: options.live_ref.clone(),
+        device_id: None,
+        installation: None,
+        repository: None,
+        remote_revision: None,
+        requirements: None,
+        journal: None,
+        checks: Vec::new(),
+    }
+}
+
+fn doctor_device_identity(state_store: Option<&SyncStateStore>, report: &mut SyncDoctorReport) {
+    let Some(state_store) = state_store else {
+        doctor_check(
+            report,
+            "sync.device-identity",
+            SyncDoctorSeverity::Info,
+            "device-local sync state is unavailable; no identity was created",
+        );
+        return;
+    };
+    match state_store.load_or_create_device_id(false) {
+        Ok(Some(device_id)) => {
+            report.device_id = Some(device_id.as_str().to_string());
+            doctor_check(
+                report,
+                "sync.device-identity",
+                SyncDoctorSeverity::Pass,
+                format!(
+                    "stable device identity `{}` is available",
+                    device_id.as_str()
+                ),
+            );
+        }
+        Ok(None) => doctor_check(
+            report,
+            "sync.device-identity",
+            SyncDoctorSeverity::Info,
+            "device identity will be created by the first mutating sync; doctor made no changes",
+        ),
+        Err(error) => doctor_check(
+            report,
+            "sync.device-identity",
+            SyncDoctorSeverity::Error,
+            error.to_string(),
+        ),
+    }
 }
 
 fn finish_doctor_without_repository(
@@ -653,6 +700,10 @@ pub fn sync_git_vault_with_control(
         .filter(|journal| journal.phase.requires_recovery())
         .cloned();
     let engine = vulcan_sync::GitCliEngine::default();
+    let mut effective_options = options.clone();
+    effective_options.device_id = state_store
+        .load_or_create_device_id(!options.dry_run)?
+        .unwrap_or_else(GitSyncDeviceId::anonymous);
     if !options.dry_run {
         state_store.save(&journal)?;
     }
@@ -664,7 +715,7 @@ pub fn sync_git_vault_with_control(
     let sync = match vulcan_sync::sync_git_once_with_control(
         &engine,
         paths.vault_root(),
-        options,
+        &effective_options,
         cancellation,
         &mut observer,
     ) {
@@ -814,6 +865,19 @@ mod tests {
             .status()
             .expect("Git should launch");
         assert!(status.success(), "Git failed: {arguments:?}");
+    }
+
+    fn git_stdout(path: &Path, arguments: &[&str]) -> String {
+        let output = Command::new("git")
+            .current_dir(path)
+            .args(arguments)
+            .output()
+            .expect("Git should launch");
+        assert!(output.status.success(), "Git failed: {arguments:?}");
+        String::from_utf8(output.stdout)
+            .expect("Git output should be UTF-8")
+            .trim()
+            .to_string()
     }
 
     fn assert_conflict_read_workflows(
@@ -979,6 +1043,9 @@ mod tests {
                 .expect("load unchanged journal"),
             Some(interrupted.clone())
         );
+        assert!(!store.root().join("_device.json").exists());
+
+        fs::write(writer.join("Home.md"), "changed before recovery\n").expect("changed note");
 
         let report = sync_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store)
             .expect("recovering sync");
@@ -997,6 +1064,14 @@ mod tests {
                 .expect("load cleared journal"),
             None
         );
+        assert!(store.root().join("_device.json").is_file());
+        let device_id = store
+            .load_or_create_device_id(false)
+            .expect("load device identity")
+            .expect("device identity");
+        let snapshot = report.sync.local_snapshot.as_ref().expect("local snapshot");
+        let message = git_stdout(&writer, &["show", "-s", "--format=%B", snapshot.as_str()]);
+        assert!(message.contains(&format!("Vulcan-Sync-Device: {}", device_id.as_str())));
     }
 
     #[test]
@@ -1122,6 +1197,9 @@ mod tests {
             .checks
             .iter()
             .any(|check| check.code == "git.remote" && check.severity == SyncDoctorSeverity::Info));
+        assert!(report.checks.iter().any(|check| {
+            check.code == "sync.device-identity" && check.severity == SyncDoctorSeverity::Info
+        }));
         assert!(report.checks.iter().any(|check| {
             check.code == "cache.coherence" && check.severity == SyncDoctorSeverity::Info
         }));

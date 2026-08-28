@@ -301,12 +301,21 @@ pub fn resolve_sync_conflict_with_state_store(
         ));
     }
 
-    resolve_sync_conflict_locked(paths, options, &store, &record, &repository, &context)
+    resolve_sync_conflict_locked(
+        paths,
+        options,
+        state_store,
+        &store,
+        &record,
+        &repository,
+        &context,
+    )
 }
 
 fn resolve_sync_conflict_locked(
     paths: &VaultPaths,
     options: &ResolveSyncConflictOptions,
+    state_store: &SyncStateStore,
     store: &SyncConflictStore,
     record: &SyncConflictRecord,
     repository: &GitRepository,
@@ -314,6 +323,9 @@ fn resolve_sync_conflict_locked(
 ) -> Result<ResolveSyncConflictReport, AppError> {
     let _lock = ConflictResolutionLock::acquire(repository)?;
     let engine = vulcan_sync::GitCliEngine::default();
+    let device_id = state_store
+        .load_or_create_device_id(true)?
+        .expect("mutating device identity creation returns an identity");
     verify_preserved_conflict_refs(&engine, repository, record)?;
     let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
     let recovery_ref = GitRefName::parse(format!(
@@ -328,8 +340,10 @@ fn resolve_sync_conflict_locked(
                 base: Some(local.clone()),
                 target_ref: recovery_ref,
                 message: format!(
-                    "vulcan conflict recovery snapshot\n\nVulcan-Conflict: {}\n",
-                    context.conflict_id
+                    "vulcan conflict recovery snapshot\n\nVulcan-Conflict: {}\nVulcan-Sync-Version: 1\nVulcan-Sync-Device: {}\nVulcan-Sync-Source: {}\nVulcan-Sync-Semantic: false\n",
+                    context.conflict_id,
+                    device_id.as_str(),
+                    local
                 ),
             },
         )
@@ -352,7 +366,7 @@ fn resolve_sync_conflict_locked(
     let resolution = if let Some(existing) = existing {
         resume_resolution(&engine, repository, record, &capture, options, existing)?
     } else {
-        prepare_resolution(&engine, repository, record, &capture, options)?
+        prepare_resolution(&engine, repository, record, &capture, options, &device_id)?
     };
     store.save_resolution(&context.repository_key, &resolution)?;
     publish_and_apply_resolution(
@@ -583,6 +597,7 @@ fn prepare_resolution(
     record: &SyncConflictRecord,
     capture: &vulcan_sync::GitCapture,
     options: &ResolveSyncConflictOptions,
+    device_id: &vulcan_sync::GitSyncDeviceId,
 ) -> Result<SyncConflictResolutionRecord, AppError> {
     let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
     if capture.tree
@@ -622,8 +637,14 @@ fn prepare_resolution(
             &tree,
             &[remote.clone(), local.clone()],
             &format!(
-                "vulcan conflict resolution\n\nVulcan-Conflict: {}\nVulcan-Resolution-Side: {:?}\nVulcan-Merge-Policy: {}:{}\n",
-                record.id, options.side, record.policy_version, record.policy_hash
+                "vulcan conflict resolution\n\nVulcan-Conflict: {}\nVulcan-Resolution-Side: {}\nVulcan-Sync-Version: 1\nVulcan-Sync-Device: {}\nVulcan-Sync-Policy: {}:{}\nVulcan-Sync-Source: {}+{}\nVulcan-Sync-Semantic: false\n",
+                record.id,
+                resolution_side_name(options.side),
+                device_id.as_str(),
+                record.policy_version,
+                record.policy_hash,
+                remote,
+                local
             ),
         )
         .map_err(AppError::operation)?;
@@ -645,6 +666,14 @@ fn prepare_resolution(
         published: false,
         applied: false,
     })
+}
+
+const fn resolution_side_name(side: SyncConflictResolutionSide) -> &'static str {
+    match side {
+        SyncConflictResolutionSide::Base => "base",
+        SyncConflictResolutionSide::Local => "local",
+        SyncConflictResolutionSide::Remote => "remote",
+    }
 }
 
 fn resume_resolution(
