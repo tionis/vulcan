@@ -1,7 +1,7 @@
 ---
 name: diagnostics-and-repair
 description: Diagnose vault health, broken links, parser diagnostics, suspicious state, synchronization pauses or conflicts, and repairable problems. Use when the user asks why something is broken, wants a health check, sees diagnostics, or needs safe repair steps before editing notes.
-version: 9
+version: 10
 tools:
   - doctor
   - cache_verify
@@ -31,6 +31,7 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 5. For Git-backed device sync, run `vulcan sync doctor [<wiki>]` before mutation, then `vulcan sync status` for the proposed finite cycle. Doctor distinguishes unavailable Git, unsupported layout, unreadable or divergent refs, offline remotes, active locks, retained journals, missing ignore rules, filter/LFS requirements, and cache drift. A paused status identifies staged or in-progress Git state; a conflicted result preserves both candidate commits and local bytes for review.
 6. Inspect `state.recovered_from` and `state.retained` in JSON sync output. The retained phase and captured object IDs distinguish an offline/cancelled cycle from an uncaptured failure. Recovery journals are authoritative device-local operational state outside `.vulcan/cache.db`; do not remove them as a cache repair.
 7. `vulcan sync doctor` reports whether a stable device identity already exists but never creates one. Missing identity before the first mutating sync is informational; malformed or unsupported identity state is an error requiring preservation and review.
+8. Treat `state.apply-marker` as an interrupted worktree application, not cache damage. Preserve the private-Git-directory marker and device-local journal, avoid manual ref cleanup, and rerun sync so current bytes are recaptured and the accepted revision is verified before the marker is cleared.
 
 ## Guardrails
 
@@ -39,6 +40,7 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 - Cache/index repair should not edit notes.
 - For bulk repairs, inspect changed paths and commit separately from unrelated edits.
 - Do not clear staged state, rewrite Vulcan-owned refs, or pick a conflict side merely to make synchronization continue.
+- Do not remove `vulcan-sync/apply.json` as a repair shortcut. It is durable evidence that mutation began and verification may not have completed.
 - For a sync conflict, retain the immutable conflict ID and inspect its base/local/remote revisions and path records. The original commits remain Git-reachable and file artifacts live in device-local sync state, so cache repair and note cleanup must never delete them.
 - Start conflict investigation with `vulcan sync conflicts`, then use `vulcan sync conflicts <id>` to inspect per-side object IDs, modes, hashes, byte counts, and artifact locations. This read-only command is safe before deciding how to resolve the conflict.
 - If the user explicitly selects `base`, `local`, or `remote`, run `vulcan sync resolve <id> --side <side> --dry-run` first. A stale worktree, changed preserved ref, active Git operation, or moved remote is a safety stop—not a reason to reset files or refs. The mutating form is appropriate only after reviewing the lossy path-level choice.

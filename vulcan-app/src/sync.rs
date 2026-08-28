@@ -1,7 +1,7 @@
 //! Complete direct-mode vault synchronization workflows.
 
 use crate::sync_conflicts::{SyncConflictRecord, SyncConflictStore};
-use crate::sync_state::{SyncJournal, SyncJournalPhase, SyncStateStore};
+use crate::sync_state::{SyncApplyMarker, SyncJournal, SyncJournalPhase, SyncStateStore};
 use crate::{scan::refresh_cache_incrementally, AppError};
 use fs2::FileExt;
 use serde::Serialize;
@@ -94,6 +94,8 @@ pub struct SyncDoctorReport {
     pub requirements: Option<GitRepositoryRequirements>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub journal: Option<SyncJournal>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub apply_marker: Option<SyncApplyMarker>,
     pub checks: Vec<SyncDoctorCheck>,
 }
 
@@ -210,6 +212,7 @@ fn doctor_git_vault_with_optional_state(
     doctor_refs(&engine, &repository, options, &mut report);
     doctor_repository_lock(&repository, &mut report);
     doctor_journal(paths, state_store, &mut report);
+    doctor_apply_marker(state_store, &repository, &mut report);
     doctor_cache(paths, &mut report);
     finish_doctor_report(report)
 }
@@ -227,6 +230,7 @@ fn initial_doctor_report(paths: &VaultPaths, options: &GitSyncOptions) -> SyncDo
         remote_revision: None,
         requirements: None,
         journal: None,
+        apply_marker: None,
         checks: Vec::new(),
     }
 }
@@ -587,6 +591,42 @@ fn doctor_journal(
     }
 }
 
+fn doctor_apply_marker(
+    state_store: Option<&SyncStateStore>,
+    repository: &GitRepository,
+    report: &mut SyncDoctorReport,
+) {
+    let Some(store) = state_store else {
+        return;
+    };
+    match store.load_apply_marker(&repository.git_dir) {
+        Ok(Some(marker)) => {
+            doctor_check(
+                report,
+                "state.apply-marker",
+                SyncDoctorSeverity::Error,
+                format!(
+                    "transaction {} may have been interrupted while applying {} over {}; rerun sync to recapture and verify the worktree",
+                    marker.transaction_id, marker.accepted, marker.expected_revision
+                ),
+            );
+            report.apply_marker = Some(marker);
+        }
+        Ok(None) => doctor_check(
+            report,
+            "state.apply-marker",
+            SyncDoctorSeverity::Pass,
+            "no interrupted worktree application marker is present",
+        ),
+        Err(error) => doctor_check(
+            report,
+            "state.apply-marker",
+            SyncDoctorSeverity::Error,
+            error.to_string(),
+        ),
+    }
+}
+
 fn doctor_cache(paths: &VaultPaths, report: &mut SyncDoctorReport) {
     if !paths.cache_db().exists() {
         doctor_check(
@@ -844,6 +884,17 @@ impl GitSyncObserver for JournalSyncObserver<'_> {
             self.state_store
                 .save(self.journal)
                 .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
+            if progress.phase == GitSyncPhase::Applying {
+                let marker = SyncApplyMarker::from_journal(self.journal)
+                    .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
+                self.state_store
+                    .save_apply_marker(&progress.repository.git_dir, &marker)
+                    .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
+            } else if progress.phase == GitSyncPhase::Completed {
+                self.state_store
+                    .clear_apply_marker(&progress.repository.git_dir)
+                    .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
+            }
         }
         Ok(())
     }
@@ -974,6 +1025,12 @@ mod tests {
             report.sync.outcome,
             GitSyncOutcome::Pulled | GitSyncOutcome::Merged
         ));
+        assert_eq!(
+            state_store
+                .load_apply_marker(&report.sync.repository.git_dir)
+                .expect("cleared apply marker"),
+            None
+        );
         assert!(report.cache_refresh.is_some());
         assert!(load_note_index(&reader_paths)
             .expect("reader index")
@@ -1290,13 +1347,28 @@ mod tests {
         )
         .expect("journal");
         journal.phase = SyncJournalPhase::Applying;
+        let head = git_stdout(&vault, &["rev-parse", "HEAD"]);
+        journal.local_snapshot = Some(head.clone());
+        journal.accepted = Some(head);
         store.save(&journal).expect("save journal");
+        let repository = vulcan_sync::GitCliEngine::default()
+            .discover_repository(&vault)
+            .expect("repository");
+        let marker = SyncApplyMarker::from_journal(&journal).expect("apply marker");
+        store
+            .save_apply_marker(&repository.git_dir, &marker)
+            .expect("save apply marker");
 
         let report = doctor_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store);
 
         assert_eq!(report.journal, Some(journal));
+        assert_eq!(report.apply_marker, Some(marker));
+        assert!(!report.healthy);
         assert!(report.checks.iter().any(|check| {
             check.code == "state.journal" && check.severity == SyncDoctorSeverity::Warning
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.code == "state.apply-marker" && check.severity == SyncDoctorSeverity::Error
         }));
     }
 

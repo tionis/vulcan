@@ -16,6 +16,7 @@ use vulcan_sync::GitSyncDeviceId;
 pub const SYNC_JOURNAL_VERSION: u32 = 1;
 const MAX_SYNC_JOURNAL_BYTES: u64 = 1024 * 1024;
 const SYNC_DEVICE_IDENTITY_VERSION: u32 = 1;
+pub const SYNC_APPLY_MARKER_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct SyncDeviceIdentity {
@@ -76,6 +77,35 @@ pub struct SyncJournal {
     pub accepted: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncApplyMarker {
+    pub version: u32,
+    pub transaction_id: Ulid,
+    pub repository_key: String,
+    pub expected_revision: String,
+    pub accepted: String,
+}
+
+impl SyncApplyMarker {
+    pub fn from_journal(journal: &SyncJournal) -> Result<Self, AppError> {
+        let expected_revision = journal
+            .local_snapshot
+            .clone()
+            .ok_or_else(|| AppError::operation("applying journal has no local snapshot"))?;
+        let accepted = journal
+            .accepted
+            .clone()
+            .ok_or_else(|| AppError::operation("applying journal has no accepted revision"))?;
+        Ok(Self {
+            version: SYNC_APPLY_MARKER_VERSION,
+            transaction_id: journal.transaction_id,
+            repository_key: journal.repository_key.clone(),
+            expected_revision,
+            accepted,
+        })
+    }
 }
 
 impl SyncJournal {
@@ -242,6 +272,97 @@ impl SyncStateStore {
             Err(error) => Err(AppError::operation(error)),
         }
     }
+
+    pub fn load_apply_marker(&self, git_dir: &Path) -> Result<Option<SyncApplyMarker>, AppError> {
+        let path = apply_marker_path(git_dir, false)?;
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(AppError::operation(error)),
+        };
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(AppError::operation(format!(
+                "sync apply marker at {} is not a regular file",
+                path.display()
+            )));
+        }
+        if metadata.len() > MAX_SYNC_JOURNAL_BYTES {
+            return Err(AppError::operation(format!(
+                "sync apply marker at {} exceeds the {} byte limit",
+                path.display(),
+                MAX_SYNC_JOURNAL_BYTES
+            )));
+        }
+        let marker: SyncApplyMarker =
+            serde_json::from_slice(&fs::read(&path).map_err(AppError::operation)?)
+                .map_err(AppError::operation)?;
+        validate_apply_marker(&path, &marker)?;
+        Ok(Some(marker))
+    }
+
+    pub fn save_apply_marker(
+        &self,
+        git_dir: &Path,
+        marker: &SyncApplyMarker,
+    ) -> Result<(), AppError> {
+        validate_apply_marker(Path::new("sync apply marker"), marker)?;
+        let path = apply_marker_path(git_dir, true)?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| AppError::operation("sync apply marker path has no parent"))?;
+        let bytes = serde_json::to_vec_pretty(marker).map_err(AppError::operation)?;
+        let mut temporary = NamedTempFile::new_in(parent).map_err(AppError::operation)?;
+        temporary.write_all(&bytes).map_err(AppError::operation)?;
+        temporary.write_all(b"\n").map_err(AppError::operation)?;
+        temporary
+            .as_file()
+            .sync_all()
+            .map_err(AppError::operation)?;
+        temporary
+            .persist(path)
+            .map_err(|error| AppError::operation(error.error))?;
+        Ok(())
+    }
+
+    pub fn clear_apply_marker(&self, git_dir: &Path) -> Result<(), AppError> {
+        let path = apply_marker_path(git_dir, false)?;
+        match fs::remove_file(path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(AppError::operation(error)),
+        }
+    }
+}
+
+fn apply_marker_path(git_dir: &Path, create: bool) -> Result<PathBuf, AppError> {
+    let git_dir = fs::canonicalize(git_dir).map_err(AppError::operation)?;
+    let directory = git_dir.join("vulcan-sync");
+    if create {
+        fs::create_dir_all(&directory).map_err(AppError::operation)?;
+    }
+    if directory.exists() {
+        let canonical = fs::canonicalize(&directory).map_err(AppError::operation)?;
+        if !canonical.starts_with(&git_dir) || canonical == git_dir {
+            return Err(AppError::operation(
+                "sync marker directory escapes the canonical Git directory",
+            ));
+        }
+    }
+    Ok(directory.join("apply.json"))
+}
+
+fn validate_apply_marker(path: &Path, marker: &SyncApplyMarker) -> Result<(), AppError> {
+    if marker.version != SYNC_APPLY_MARKER_VERSION {
+        return Err(AppError::operation(format!(
+            "unsupported sync apply marker version {} at {}",
+            marker.version,
+            path.display()
+        )));
+    }
+    validate_repository_key(&marker.repository_key)?;
+    vulcan_sync::GitOid::parse(marker.expected_revision.clone()).map_err(AppError::operation)?;
+    vulcan_sync::GitOid::parse(marker.accepted.clone()).map_err(AppError::operation)?;
+    Ok(())
 }
 
 fn parse_device_identity(path: &Path, source: &[u8]) -> Result<GitSyncDeviceId, AppError> {
@@ -346,6 +467,50 @@ mod tests {
         assert!(SyncJournalPhase::Error.requires_recovery());
         assert!(!SyncJournalPhase::Paused.requires_recovery());
         assert!(!SyncJournalPhase::Conflicted.requires_recovery());
+    }
+
+    #[test]
+    fn apply_marker_round_trips_in_git_state_and_rejects_symlinked_directory() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        let git_dir = vault.join(".git");
+        fs::create_dir_all(&git_dir).expect("Git directory");
+        let store = SyncStateStore::at(temporary.path().join("state"));
+        let mut journal =
+            SyncJournal::preparing(&vault, "origin", "refs/heads/live").expect("journal");
+        journal.repository_key =
+            repository_state_key(&fs::canonicalize(&vault).expect("canonical vault"));
+        journal.local_snapshot = Some("a".repeat(40));
+        journal.accepted = Some("b".repeat(40));
+        let marker = SyncApplyMarker::from_journal(&journal).expect("apply marker");
+
+        store
+            .save_apply_marker(&git_dir, &marker)
+            .expect("save marker");
+        assert_eq!(
+            store.load_apply_marker(&git_dir).expect("load marker"),
+            Some(marker)
+        );
+        store.clear_apply_marker(&git_dir).expect("clear marker");
+        assert_eq!(
+            store.load_apply_marker(&git_dir).expect("load cleared"),
+            None
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::symlink;
+            let outside = temporary.path().join("outside");
+            fs::create_dir(&outside).expect("outside directory");
+            fs::remove_dir(git_dir.join("vulcan-sync")).expect("remove empty marker directory");
+            symlink(&outside, git_dir.join("vulcan-sync")).expect("marker symlink");
+            assert!(store
+                .save_apply_marker(
+                    &git_dir,
+                    &SyncApplyMarker::from_journal(&journal).expect("marker")
+                )
+                .is_err());
+        }
     }
 
     #[test]

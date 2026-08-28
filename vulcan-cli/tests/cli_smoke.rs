@@ -11570,6 +11570,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .expect("Git workflow skill should be readable");
     assert!(git_skill.contains("vulcan sync status"));
     assert!(git_skill.contains("vulcan sync doctor [<wiki>]"));
+    assert!(git_skill.contains("state.apply-marker"));
+    assert!(git_skill.contains("vulcan-sync/apply.json"));
     assert!(git_skill.contains("vulcan sync run --dry-run"));
     assert!(git_skill.contains("vulcan sync run --max-retries <n>"));
     assert!(git_skill.contains("Vulcan-Sync-*` trailers"));
@@ -11610,6 +11612,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("offline/cancelled cycle"));
     assert!(diagnostics_skill.contains("outside `.vulcan/cache.db`"));
     assert!(diagnostics_skill.contains("stable device identity"));
+    assert!(diagnostics_skill.contains("state.apply-marker"));
+    assert!(diagnostics_skill.contains("vulcan-sync/apply.json"));
     assert!(json["support_files"].as_array().is_some_and(|items| items
         .iter()
         .any(|item| item["path"] == "AGENTS.md")

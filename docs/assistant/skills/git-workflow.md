@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 16
+version: 17
 tools:
   - git_status
   - git_diff
@@ -31,6 +31,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Run `vulcan sync status` before a sync when staged changes or an in-progress Git operation may be present.
 - If a finite cycle reports `paused`, inspect `pause.reason`: `staged_changes`, `operation_in_progress`, or `head_moved`. Vulcan has already captured current bytes and fetched an existing remote tip, but it has not reconciled or applied while that state is unsafe. Resolve the normal Git state yourself, then rerun sync; do not delete the retained journal or Vulcan refs.
 - Run `vulcan sync doctor [<wiki>]` for a read-only installation, layout, hidden-ref/object, remote, lock, recovery-journal, ignore, filter/LFS, and cache-coherence check. Warnings describe reviewable or offline state; `healthy: false` means at least one error-level invariant failed.
+- If doctor reports `state.apply-marker`, a worktree application may have been interrupted. Preserve the marker and transaction journal, avoid editing Vulcan-owned refs, and rerun a finite sync so Vulcan can recapture current bytes and verify the accepted tree. The marker lives in the private Git directory and is cleared only after successful verification.
 - Use `vulcan sync conflicts` to list unresolved preserved conflicts for the selected vault, `vulcan sync conflicts <id>` for the immutable full record and current resolution state, or add `--wiki <id>` for a registered wiki. Artifact paths in detail output are device-local evidence, not vault-relative note paths.
 - Only after the user explicitly chooses a preserved side, preview it with `vulcan sync resolve <id> --side base|local|remote --dry-run`, then rerun without `--dry-run` on approval. The choice applies only to conflicted paths while retaining clean merge results; Vulcan captures current bytes first, rejects stale inputs, publishes with compare-and-swap, and retains the original conflict refs and record.
 - Inspect JSON sync reports: `state.recovered_from` means Vulcan found an interruption-sensitive device-local transaction and recaptured before continuing; `state.retained` identifies the exact paused, conflicted, cancelled, or failed phase and any captured object IDs available for follow-up.
@@ -55,6 +56,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Treat the Android shared-storage policy as a real capability constraint: executable bits are not representable, symlinks become link files, and case-only renames require an intermediate path. Do not silently substitute it for native Linux policy.
 - Pausing affects future automatic jobs only. Manual `sync status`, `sync run --dry-run`, and explicit `sync run` remain available and must not silently toggle the saved state.
 - Do not delete a reported transaction journal to hide recovery state. It lives outside the vault and rebuildable cache; let a successful sync clear it or use a future explicit repair command.
+- Do not delete or edit `vulcan-sync/apply.json` to hide an interrupted application. Its transaction and revision identities let Vulcan distinguish and safely recover a partially applied worktree.
 - Treat semantic plan patches and messages as proposals for human review. Do not edit proposal refs or device-local plan JSON, and do not apply a plan after changing its source branch or accepted live target; create a new plan instead.
 - A remote/network failure after capture is not a lost sync: the local candidate remains reachable and its journal phase identifies where the finite cycle stopped. Do not replace it with a fresh clone as an error-recovery shortcut.
 
