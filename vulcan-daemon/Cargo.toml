@@ -1,0 +1,17 @@
+[package]
+name = "vulcan-daemon"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+fs2.workspace = true
+serde.workspace = true
+tempfile.workspace = true
+toml.workspace = true
+ulid.workspace = true
+vulcan-core = { path = "../vulcan-core", version = "0.1.0", default-features = false }
+
+[lints]
+workspace = true

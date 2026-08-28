@@ -4356,6 +4356,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "vulcan-daemon"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "serde",
+ "tempfile",
+ "toml",
+ "ulid",
+ "vulcan-core",
+]
+
+[[package]]
 name = "vulcan-embed"
 version = "0.1.0"
 dependencies = [
