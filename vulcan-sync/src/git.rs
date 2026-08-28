@@ -9,6 +9,7 @@ use std::process::{Command, Output, Stdio};
 
 const MAX_ERROR_BYTES: usize = 16 * 1024;
 const MAX_DIAGNOSTIC_PATH_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CONFLICT_BLOB_BYTES: usize = 64 * 1024 * 1024;
 const REPOSITORY_ENVIRONMENT_OVERRIDES: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -49,6 +50,13 @@ pub trait GitEngine: Send + Sync {
         repository: &GitRepository,
         commit: &GitOid,
     ) -> Result<GitOid, GitEngineError>;
+
+    fn path_object(
+        &self,
+        repository: &GitRepository,
+        commit: &GitOid,
+        path: &str,
+    ) -> Result<Option<GitPathObject>, GitEngineError>;
 
     fn capture_worktree(
         &self,
@@ -530,9 +538,20 @@ pub struct GitCapture {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitPathObject {
+    pub oid: GitOid,
+    pub mode: String,
+    pub kind: String,
+    #[serde(skip)]
+    pub data: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitMerge {
     pub clean: bool,
     pub tree: Option<GitOid>,
+    pub base: Option<GitOid>,
+    pub conflict_paths: Vec<String>,
     pub diagnostics: String,
 }
 
@@ -1006,6 +1025,96 @@ impl GitEngine for GitCliEngine {
         GitOid::parse(stdout.trim())
     }
 
+    fn path_object(
+        &self,
+        repository: &GitRepository,
+        commit: &GitOid,
+        path: &str,
+    ) -> Result<Option<GitPathObject>, GitEngineError> {
+        if path.is_empty() || path.starts_with('/') || path.split('/').any(|part| part == "..") {
+            return Err(GitEngineError::UnsupportedRepository {
+                detail: format!("unsafe conflict path `{path}` returned by Git"),
+            });
+        }
+        let mut command = self.repository_command(repository);
+        command
+            .args(["ls-tree", "-z"])
+            .arg(commit.as_str())
+            .args(["--", path]);
+        let output = self.execute(command)?;
+        let output = ensure_success("inspect a conflicted path object", output)?;
+        if output.stdout.is_empty() {
+            return Ok(None);
+        }
+        if output.stdout.last() != Some(&0) {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect a conflicted path object",
+                detail: "expected a NUL-terminated ls-tree record".to_string(),
+            });
+        }
+        let record =
+            std::str::from_utf8(&output.stdout[..output.stdout.len() - 1]).map_err(|error| {
+                GitEngineError::InvalidOutput {
+                    operation: "inspect a conflicted path object",
+                    detail: error.to_string(),
+                }
+            })?;
+        if record.contains('\0') {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect a conflicted path object",
+                detail: "the exact path query returned multiple objects".to_string(),
+            });
+        }
+        let (metadata, found_path) =
+            record
+                .split_once('\t')
+                .ok_or_else(|| GitEngineError::InvalidOutput {
+                    operation: "inspect a conflicted path object",
+                    detail: "expected `<mode> <type> <oid>\\t<path>`".to_string(),
+                })?;
+        if found_path != path {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect a conflicted path object",
+                detail: format!("expected path `{path}`, received `{found_path}`"),
+            });
+        }
+        let mut metadata = metadata.split_whitespace();
+        let mode = metadata.next().unwrap_or_default();
+        let kind = metadata.next().unwrap_or_default();
+        let oid = metadata.next().unwrap_or_default();
+        if mode.is_empty() || kind.is_empty() || oid.is_empty() || metadata.next().is_some() {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect a conflicted path object",
+                detail: "invalid ls-tree object metadata".to_string(),
+            });
+        }
+        let oid = GitOid::parse(oid)?;
+        let data = if kind == "blob" {
+            let output = self.repository_output(
+                repository,
+                "read a conflicted blob",
+                ["cat-file", "blob", oid.as_str()],
+            )?;
+            if output.stdout.len() > MAX_CONFLICT_BLOB_BYTES {
+                return Err(GitEngineError::InvalidOutput {
+                    operation: "read a conflicted blob",
+                    detail: format!(
+                        "blob `{oid}` exceeds the {MAX_CONFLICT_BLOB_BYTES} byte preservation limit"
+                    ),
+                });
+            }
+            Some(output.stdout)
+        } else {
+            None
+        };
+        Ok(Some(GitPathObject {
+            oid,
+            mode: mode.to_string(),
+            kind: kind.to_string(),
+            data,
+        }))
+    }
+
     fn capture_worktree(
         &self,
         repository: &GitRepository,
@@ -1191,7 +1300,7 @@ impl GitEngine for GitCliEngine {
     ) -> Result<GitMerge, GitEngineError> {
         let mut command = self.repository_command(repository);
         command
-            .args(["merge-tree", "--write-tree"])
+            .args(["merge-tree", "--write-tree", "--name-only", "-z"])
             .arg(accepted_remote.as_str())
             .arg(local_candidate.as_str());
         let output = self.execute(command)?;
@@ -1199,12 +1308,8 @@ impl GitEngine for GitCliEngine {
         if !clean && output.status.code() != Some(1) {
             return Err(command_failed("merge live sync commits", &output));
         }
-        let stdout = decode_stdout("merge live sync commits", output.stdout)?;
-        let mut lines = stdout.lines();
-        let tree = lines
-            .next()
-            .and_then(|line| GitOid::parse(line.trim()).ok());
-        let mut diagnostics = lines.collect::<Vec<_>>().join("\n");
+        let (tree, conflict_paths, mut diagnostics) =
+            parse_merge_tree_output(&output.stdout, clean)?;
         let stderr = bounded_lossy(&output.stderr);
         if !stderr.is_empty() {
             if !diagnostics.is_empty() {
@@ -1212,15 +1317,12 @@ impl GitEngine for GitCliEngine {
             }
             diagnostics.push_str(&stderr);
         }
-        if clean && tree.is_none() {
-            return Err(GitEngineError::InvalidOutput {
-                operation: "merge live sync commits",
-                detail: "a clean merge did not return a tree object ID".to_string(),
-            });
-        }
+        let base = self.merge_base(repository, accepted_remote, local_candidate)?;
         Ok(GitMerge {
             clean,
             tree,
+            base,
+            conflict_paths,
             diagnostics,
         })
     }
@@ -1485,6 +1587,38 @@ impl GitEngine for GitCliEngine {
     }
 }
 
+impl GitCliEngine {
+    fn merge_base(
+        &self,
+        repository: &GitRepository,
+        left: &GitOid,
+        right: &GitOid,
+    ) -> Result<Option<GitOid>, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command
+            .args(["merge-base", "--all"])
+            .arg(left.as_str())
+            .arg(right.as_str());
+        let output = self.execute(command)?;
+        match output.status.code() {
+            Some(0) => {
+                let stdout = decode_stdout("find the merge base", output.stdout)?;
+                let mut bases = stdout.lines().filter(|line| !line.trim().is_empty());
+                let base = bases.next().map(GitOid::parse).transpose()?;
+                if bases.next().is_some() {
+                    return Err(GitEngineError::UnsupportedRepository {
+                        detail: "sync conflict identity does not yet support multiple merge bases"
+                            .to_string(),
+                    });
+                }
+                Ok(base)
+            }
+            Some(1) => Ok(None),
+            _ => Err(command_failed("find the merge base", &output)),
+        }
+    }
+}
+
 fn ensure_success(operation: &'static str, output: Output) -> Result<Output, GitEngineError> {
     if output.status.success() {
         Ok(output)
@@ -1515,6 +1649,63 @@ fn decode_stdout(operation: &'static str, stdout: Vec<u8>) -> Result<String, Git
         operation,
         detail: error.to_string(),
     })
+}
+
+fn parse_merge_tree_output(
+    stdout: &[u8],
+    clean: bool,
+) -> Result<(Option<GitOid>, Vec<String>, String), GitEngineError> {
+    if stdout.last() != Some(&0) {
+        return Err(GitEngineError::InvalidOutput {
+            operation: "merge live sync commits",
+            detail: "expected NUL-delimited merge-tree output".to_string(),
+        });
+    }
+    let fields = stdout
+        .split(|byte| *byte == 0)
+        .map(|field| {
+            std::str::from_utf8(field).map_err(|error| GitEngineError::InvalidOutput {
+                operation: "merge live sync commits",
+                detail: error.to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let tree = fields
+        .first()
+        .filter(|value| !value.is_empty())
+        .map(|value| GitOid::parse(*value))
+        .transpose()?;
+    if tree.is_none() {
+        return Err(GitEngineError::InvalidOutput {
+            operation: "merge live sync commits",
+            detail: "merge-tree did not return a tree object ID".to_string(),
+        });
+    }
+    if clean {
+        return Ok((tree, Vec::new(), String::new()));
+    }
+    let separator = fields
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, value)| value.is_empty())
+        .map(|(index, _)| index)
+        .ok_or_else(|| GitEngineError::InvalidOutput {
+            operation: "merge live sync commits",
+            detail: "conflicted merge-tree output omitted its path separator".to_string(),
+        })?;
+    let mut conflict_paths = fields[1..separator]
+        .iter()
+        .map(|path| (*path).to_string())
+        .collect::<Vec<_>>();
+    conflict_paths.sort();
+    conflict_paths.dedup();
+    let details = fields[separator + 1..]
+        .chunks_exact(4)
+        .filter_map(|record| (!record[3].is_empty()).then_some(record[3].trim()))
+        .collect::<Vec<_>>();
+    let diagnostics = details.join("\n");
+    Ok((tree, conflict_paths, diagnostics))
 }
 
 fn nul_fields<'a>(

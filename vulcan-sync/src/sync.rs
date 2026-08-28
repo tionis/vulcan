@@ -15,6 +15,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 const SYNC_PROTOCOL_VERSION: u32 = 1;
+const MERGE_POLICY_VERSION: u32 = 1;
+const MERGE_POLICY_ID: &str = "vulcan-git-three-way-v1";
 const DEFAULT_LIVE_REF: &str = "refs/heads/__vulcan-sync/live";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -165,9 +167,24 @@ impl GitSyncRefs {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitConflictRefs {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<GitRefName>,
+    pub local: GitRefName,
+    pub remote: GitRefName,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitSyncConflict {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base: Option<GitOid>,
     pub remote: GitOid,
     pub local: GitOid,
+    pub paths: Vec<String>,
+    pub policy_version: u32,
+    pub policy_hash: String,
+    pub preserved_refs: GitConflictRefs,
     pub merge_tree: Option<GitOid>,
     pub diagnostics: String,
 }
@@ -306,6 +323,7 @@ impl SyncBackend for GitSyncBackend<'_> {
                 SyncCapability::Progress,
                 SyncCapability::RemoteRevision,
                 SyncCapability::OfflineRecovery,
+                SyncCapability::ConflictPreservation,
                 SyncCapability::DetachedGitDirectory,
             ],
         }
@@ -386,22 +404,20 @@ fn sync_state_from_phase(phase: GitSyncPhase) -> SyncState {
 }
 
 fn git_report_to_backend_report(report: GitSyncReport) -> SyncReport {
-    let conflict = report.conflict.as_ref().map(|conflict| {
-        let id_source = format!(
-            "1\0{}\0{}\0{}",
-            conflict.local, conflict.remote, conflict.diagnostics
-        );
-        SyncConflict {
-            id: blake3::hash(id_source.as_bytes()).to_hex()[..32].to_string(),
-            paths: Vec::new(),
-            base_revision: None,
-            local_revision: conflict.local.to_string(),
-            remote_revision: conflict.remote.to_string(),
-            policy_version: 1,
-            resolution: SyncResolutionState::Unresolved,
-            preserved: false,
-            detail: Some(conflict.diagnostics.clone()),
-        }
+    let conflict = report.conflict.as_ref().map(|conflict| SyncConflict {
+        id: conflict.id.clone(),
+        paths: conflict
+            .paths
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect(),
+        base_revision: conflict.base.as_ref().map(ToString::to_string),
+        local_revision: conflict.local.to_string(),
+        remote_revision: conflict.remote.to_string(),
+        policy_version: conflict.policy_version,
+        resolution: SyncResolutionState::Unresolved,
+        preserved: true,
+        detail: Some(conflict.diagnostics.clone()),
     });
     let state = match report.outcome {
         GitSyncOutcome::Paused => SyncState::Paused,
@@ -759,10 +775,30 @@ fn merge_divergence(
     control.emit(GitSyncPhase::Merging, report, None)?;
     let merge = engine.merge_commits(&report.repository, &remote, &capture.commit)?;
     if !merge.clean {
+        let (id, policy_hash) = conflict_identity(
+            merge.base.as_ref(),
+            &capture.commit,
+            &remote,
+            &merge.conflict_paths,
+        );
+        let preserved_refs = preserve_conflict_refs(
+            engine,
+            &report.repository,
+            &id,
+            merge.base.as_ref(),
+            &capture.commit,
+            &remote,
+        )?;
         report.outcome = GitSyncOutcome::Conflicted;
         report.conflict = Some(GitSyncConflict {
+            id,
+            base: merge.base,
             remote,
             local: capture.commit.clone(),
+            paths: merge.conflict_paths,
+            policy_version: MERGE_POLICY_VERSION,
+            policy_hash,
+            preserved_refs,
             merge_tree: merge.tree,
             diagnostics: merge.diagnostics,
         });
@@ -796,6 +832,58 @@ fn merge_divergence(
             GitPushResult::Rejected => None,
         },
     )
+}
+
+fn conflict_identity(
+    base: Option<&GitOid>,
+    local: &GitOid,
+    remote: &GitOid,
+    paths: &[String],
+) -> (String, String) {
+    let policy_hash = blake3::hash(MERGE_POLICY_ID.as_bytes())
+        .to_hex()
+        .to_string();
+    let mut candidates = [local.as_str(), remote.as_str()];
+    candidates.sort_unstable();
+    let mut canonical_paths = paths.to_vec();
+    canonical_paths.sort();
+    canonical_paths.dedup();
+    let identity = format!(
+        "{MERGE_POLICY_VERSION}\0{policy_hash}\0{}\0{}\0{}\0{}",
+        base.map_or("-", GitOid::as_str),
+        candidates[0],
+        candidates[1],
+        canonical_paths.join("\0")
+    );
+    (
+        blake3::hash(identity.as_bytes()).to_hex()[..32].to_string(),
+        policy_hash,
+    )
+}
+
+fn preserve_conflict_refs(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    id: &str,
+    base: Option<&GitOid>,
+    local: &GitOid,
+    remote: &GitOid,
+) -> Result<GitConflictRefs, GitSyncError> {
+    let base_ref = base
+        .map(|_| GitRefName::parse(format!("refs/vulcan/conflicts/{id}/base")))
+        .transpose()?;
+    let local_ref = GitRefName::parse(format!("refs/vulcan/conflicts/{id}/local"))?;
+    let remote_ref = GitRefName::parse(format!("refs/vulcan/conflicts/{id}/remote"))?;
+    if let (Some(base), Some(reference)) = (base, base_ref.as_ref()) {
+        engine.update_ref(repository, reference, base)?;
+    }
+    engine.update_ref(repository, &local_ref, local)?;
+    engine.update_ref(repository, &remote_ref, remote)?;
+    Ok(GitConflictRefs {
+        base: base_ref,
+        local: local_ref,
+        remote: remote_ref,
+    })
 }
 
 fn snapshot_message(refs: &GitSyncRefs) -> String {
@@ -1015,7 +1103,7 @@ mod tests {
             [SyncOperationMode::Finite]
         );
         assert!(plan.capabilities.supports(SyncCapability::SafeCancel));
-        assert!(!plan
+        assert!(plan
             .capabilities
             .supports(SyncCapability::ConflictPreservation));
 
@@ -1228,7 +1316,29 @@ mod tests {
             sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("conflict report");
 
         assert_eq!(report.outcome, GitSyncOutcome::Conflicted);
-        assert!(report.conflict.is_some());
+        let conflict = report.conflict.as_ref().expect("conflict details");
+        assert_eq!(conflict.paths, ["Home.md"]);
+        assert!(conflict.base.is_some());
+        assert_eq!(conflict.id.len(), 32);
+        assert_eq!(conflict.policy_version, MERGE_POLICY_VERSION);
+        assert_eq!(
+            engine
+                .read_ref(&report.repository, &conflict.preserved_refs.local)
+                .expect("conflict local ref"),
+            Some(conflict.local.clone())
+        );
+        assert_eq!(
+            engine
+                .read_ref(&report.repository, &conflict.preserved_refs.remote)
+                .expect("conflict remote ref"),
+            Some(conflict.remote.clone())
+        );
+        assert_eq!(
+            conflict.preserved_refs.base.as_ref().map(|reference| engine
+                .read_ref(&report.repository, reference)
+                .expect("base ref")),
+            Some(conflict.base.clone())
+        );
         assert_eq!(
             fs::read_to_string(reader.join("Home.md")).expect("preserved reader note"),
             "reader version\n"
@@ -1238,6 +1348,13 @@ mod tests {
                 .read_ref(&report.repository, &report.refs.local)
                 .expect("preserved local ref"),
             report.local_snapshot
+        );
+
+        let repeated = sync_git_once(&engine, &reader, &GitSyncOptions::default())
+            .expect("repeat conflict report");
+        assert_eq!(
+            repeated.conflict.as_ref().map(|item| &item.id),
+            Some(&conflict.id)
         );
     }
 }

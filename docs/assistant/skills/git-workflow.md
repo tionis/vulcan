@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 8
+version: 9
 tools:
   - git_status
   - git_diff
@@ -42,7 +42,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Treat unrelated dirty worktree state as a coordination issue, not something to silently overwrite.
 - Prefer explicit commits over assuming auto-commit covers every workflow.
 - Do not reset or discard staged state to make synchronization proceed. Vulcan pauses worktree sync until that state is resolved by the user.
-- Treat a `conflicted` sync outcome as preserved work requiring review. Do not choose a side or edit Vulcan-owned refs without explicit direction.
+- Treat a `conflicted` sync outcome as preserved work requiring review. Its immutable `conflict.id`, base/local/remote revisions, path list, policy identity, and `preserved_refs` are stable; `conflict_record` points to device-local byte-preserving artifacts outside the vault. Do not choose a side, delete the record, or edit Vulcan-owned refs without explicit direction.
 - Sync defaults to remote `origin` and `refs/heads/__vulcan-sync/live`; pass `--remote` or `--live-ref` only when the repository uses a different agreed profile.
 - A clone that succeeds before registration fails is deliberately preserved. Report the partial state and register or remove it only with explicit user direction.
 - Treat the Android shared-storage policy as a real capability constraint: executable bits are not representable, symlinks become link files, and case-only renames require an intermediate path. Do not silently substitute it for native Linux policy.

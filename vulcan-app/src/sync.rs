@@ -1,5 +1,6 @@
 //! Complete direct-mode vault synchronization workflows.
 
+use crate::sync_conflicts::{SyncConflictRecord, SyncConflictStore};
 use crate::sync_state::{SyncJournal, SyncJournalPhase, SyncStateStore};
 use crate::{scan::refresh_cache_incrementally, AppError};
 use fs2::FileExt;
@@ -40,6 +41,8 @@ pub struct VaultSyncReport {
     pub sync: GitSyncReport,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_refresh: Option<ScanSummary>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflict_record: Option<SyncConflictRecord>,
     pub state: VaultSyncStateReport,
 }
 
@@ -678,6 +681,8 @@ pub fn sync_git_vault_with_control(
             return Err(AppError::operation(error));
         }
     };
+    let conflict_record =
+        persist_sync_conflict(&engine, &sync, &mut journal, state_store, !options.dry_run)?;
     journal.git_dir = Some(sync.repository.git_dir.clone());
     journal.local_snapshot = sync.local_snapshot.as_ref().map(ToString::to_string);
     journal.accepted = sync.accepted.as_ref().map(ToString::to_string);
@@ -718,6 +723,7 @@ pub fn sync_git_vault_with_control(
     Ok(VaultSyncReport {
         sync,
         cache_refresh,
+        conflict_record,
         state: VaultSyncStateReport {
             repository_key,
             journal_path,
@@ -725,6 +731,37 @@ pub fn sync_git_vault_with_control(
             retained,
         },
     })
+}
+
+fn persist_sync_conflict(
+    engine: &dyn GitEngine,
+    sync: &GitSyncReport,
+    journal: &mut SyncJournal,
+    state_store: &SyncStateStore,
+    persist_journal: bool,
+) -> Result<Option<SyncConflictRecord>, AppError> {
+    let result = sync
+        .conflict
+        .as_ref()
+        .map(|conflict| {
+            SyncConflictStore::from_state_store(state_store).persist(
+                engine,
+                &sync.repository,
+                &journal.repository_key,
+                conflict,
+            )
+        })
+        .transpose();
+    match result {
+        Ok(record) => Ok(record),
+        Err(error) => {
+            journal.error = Some(error.to_string());
+            if persist_journal {
+                state_store.save(journal)?;
+            }
+            Err(error)
+        }
+    }
 }
 
 struct JournalSyncObserver<'a> {
@@ -1104,5 +1141,111 @@ mod tests {
         assert!(report.checks.iter().any(|check| {
             check.code == "state.journal" && check.severity == SyncDoctorSeverity::Warning
         }));
+    }
+
+    #[test]
+    fn conflicted_sync_persists_immutable_records_and_all_file_sides() {
+        let temporary = tempdir().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        let writer = temporary.path().join("writer");
+        fs::create_dir(&writer).expect("writer directory");
+        git(
+            &writer,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&writer, &["config", "user.name", "Vulcan Test"]);
+        git(&writer, &["config", "user.email", "vulcan@example.invalid"]);
+        git(
+            &writer,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        fs::write(writer.join("Home.md"), "base\n").expect("base note");
+        git(&writer, &["add", "Home.md"]);
+        git(&writer, &["commit", "--quiet", "-m", "base"]);
+        let store = SyncStateStore::at(temporary.path().join("state"));
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&writer),
+            &GitSyncOptions::default(),
+            &store,
+        )
+        .expect("bootstrap");
+
+        let reader = temporary.path().join("reader");
+        git(
+            temporary.path(),
+            &[
+                "clone",
+                "--quiet",
+                writer.to_str().expect("writer path"),
+                reader.to_str().expect("reader path"),
+            ],
+        );
+        git(
+            &reader,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&reader),
+            &GitSyncOptions::default(),
+            &store,
+        )
+        .expect("reader baseline");
+        fs::write(writer.join("Home.md"), "writer\n").expect("writer edit");
+        fs::write(reader.join("Home.md"), "reader\n").expect("reader edit");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&writer),
+            &GitSyncOptions::default(),
+            &store,
+        )
+        .expect("writer sync");
+
+        let report = sync_git_vault_with_state_store(
+            &VaultPaths::new(&reader),
+            &GitSyncOptions::default(),
+            &store,
+        )
+        .expect("conflict report");
+        let record = report.conflict_record.expect("durable conflict record");
+        assert_eq!(record.paths.len(), 1);
+        assert_eq!(record.paths[0].path, "Home.md");
+        let conflict_root = store
+            .root()
+            .join(&record.repository_key)
+            .join("conflicts")
+            .join(&record.id);
+        let read_artifact = |artifact: &Option<std::path::PathBuf>| {
+            fs::read(conflict_root.join(artifact.as_ref().expect("artifact path")))
+                .expect("artifact bytes")
+        };
+        assert_eq!(read_artifact(&record.paths[0].base.artifact), b"base\n");
+        assert_eq!(read_artifact(&record.paths[0].local.artifact), b"reader\n");
+        assert_eq!(read_artifact(&record.paths[0].remote.artifact), b"writer\n");
+        let records = SyncConflictStore::from_state_store(&store)
+            .list(&record.repository_key)
+            .expect("list conflict records");
+        assert_eq!(records, [record]);
+        assert_eq!(
+            fs::read_to_string(reader.join("Home.md")).expect("reader bytes"),
+            "reader\n"
+        );
     }
 }
