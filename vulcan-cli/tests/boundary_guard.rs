@@ -269,6 +269,63 @@ fn core_production_code_avoids_daemon_runtime_crates() {
 }
 
 #[test]
+fn sync_crate_stays_synchronous_and_transport_independent() {
+    let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("cli crate should have workspace parent");
+    let sync_root = workspace_root.join("vulcan-sync");
+    let manifest =
+        fs::read_to_string(sync_root.join("Cargo.toml")).expect("sync manifest should be readable");
+
+    for dependency in [
+        "axum",
+        "crossterm",
+        "ratatui",
+        "reqwest",
+        "rusqlite",
+        "tokio",
+        "vulcan-daemon",
+    ] {
+        assert!(
+            !manifest
+                .lines()
+                .any(|line| { line.trim_start().starts_with(&format!("{dependency} =")) }),
+            "{dependency} does not belong in the synchronous sync-engine crate"
+        );
+    }
+
+    let banned_patterns = [
+        ("axum::", "HTTP routing belongs in vulcan-daemon"),
+        ("tokio::", "async scheduling belongs in vulcan-daemon"),
+        ("reqwest::", "transport clients belong behind sync backends"),
+        ("rusqlite::", "the rebuildable cache is not sync state"),
+        ("ratatui::", "presentation belongs in vulcan-cli"),
+        ("crossterm::", "terminal control belongs in vulcan-cli"),
+    ];
+    let mut violations = Vec::new();
+    visit_rs_files(&sync_root.join("src"), &mut |path| {
+        let source = fs::read_to_string(path).expect("source file should read");
+        let production = production_source(&source);
+        for (pattern, reason) in banned_patterns {
+            if production.contains(pattern) {
+                violations.push(format!(
+                    "{} contains `{pattern}` ({reason})",
+                    path.strip_prefix(workspace_root)
+                        .expect("path should be inside workspace")
+                        .display()
+                ));
+            }
+        }
+    });
+
+    assert!(
+        violations.is_empty(),
+        "sync boundary violations found:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
 fn js_runtime_usage_stays_in_js_gated_modules() {
     let workspace_root = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()

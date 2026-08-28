@@ -115,6 +115,7 @@ The workspace boundary contract for the current and upcoming phases is:
 - `vulcan-app` owns reusable synchronous workflow orchestration that composes `vulcan-core` with filesystem mutation, plugin dispatch, scan refresh, config-file mutation, packaging, and other non-UI application services.
 - `vulcan-cli` owns `clap` parsing, terminal I/O, TUI state, editor/browser launching, shell completions, and human/JSON rendering. It should call shared services rather than becoming the primary home of business logic.
 - `vulcan-daemon` owns long-lived transports, async boundaries, background scheduling, HTTP/WebSocket endpoints, and adapter/runtime state that should not live in the CLI or rebuildable cache.
+- `vulcan-sync` owns synchronous device/file-tree backend contracts and typed repository-engine operations. Its initial `GitCliEngine` uses fixed Git CLI operations and reports installation plus colocated, detached, and bare repository layouts; daemon scheduling and complete vault transactions stay outside this crate.
 - The planned Phase 17 `vulcan-auth` library owns typed authorization-object parsing, reserved-namespace mutation workflows, attenuation and lineage validation, credential/session secret handling, and audit attribution. It resolves canonical wiki objects plus a transport-authenticated subject into `vulcan-core`'s identity-neutral `PermissionGrant`; cache/query code must not depend on token formats or treat authorization projections as authoritative.
 
 Current migration inventory for the Phase 9.22 cleanup:

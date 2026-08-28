@@ -5245,7 +5245,8 @@ semantic checkpoints continue to use the normal branch.
 
 ### 12.1 Layering, direct mode, and backend contract
 
-- [ ] Add a `vulcan-sync` crate for backend capabilities, finite synchronization cycles, Git snapshot/ref/application mechanics, backend reports, and cancellation. It may depend on reusable `vulcan-core` Git and merge primitives, but not on `vulcan-daemon`, SQLite availability, HTTP, TUI state, or a notification broker.
+- [x] Add `vulcan-sync` as a dependency-light synchronous workspace crate, initially containing the typed Git-engine boundary and CLI installation/repository discovery needed by later sync work. It does not depend on `vulcan-daemon`, SQLite, HTTP, TUI state, or a notification broker.
+- [ ] Extend `vulcan-sync` with backend capabilities, finite synchronization cycles, Git snapshot/ref/application mechanics, backend reports, and cancellation as the corresponding slices are implemented; it may depend on reusable `vulcan-core` Git and merge primitives.
 - [ ] Put a typed internal `GitEngine` boundary beneath the Git sync backend. It owns repository discovery, object/ref/index operations, fetch/push, merge preparation, and safe worktree application without exposing arbitrary command arguments; synchronization policy, conflict records, retries, validation, and report schemas remain engine-independent.
 - [ ] Implement `GitCliEngine` first and make it the only supported engine for the initial release. One selected engine owns every mutating operation in a repository cycle; do not interleave CLI and embedded-library writers against the same repository transaction.
 - [ ] Persist only standard Git objects, commits, trees, indexes, configuration, and refs plus Vulcan's backend-neutral journals. A repository created by one conforming engine must remain inspectable by ordinary Git and eligible for another engine without migration of canonical history.
