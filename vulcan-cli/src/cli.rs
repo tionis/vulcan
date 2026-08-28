@@ -572,6 +572,7 @@ Subcommands:
   doctor       diagnose Git, refs, filters, recovery state, and cache coherence
   conflicts    list preserved conflicts or show one immutable record
   resolve      resolve preserved conflict paths with one explicitly selected side
+  checkpoint   retain the currently accepted live commit under a durable local ref
   pause        disable future automatic sync for one registered wiki
   resume       enable future automatic sync for one registered wiki
 
@@ -593,6 +594,7 @@ Examples:
   vulcan sync conflicts
   vulcan sync conflicts <conflict-id>
   vulcan sync resolve <conflict-id> --side local --dry-run
+  vulcan sync checkpoint personal --kind recovery
   vulcan sync pause personal
   vulcan sync resume personal
   vulcan --vault ./wiki sync run --remote origin";
@@ -3906,6 +3908,12 @@ pub enum SyncConflictSideArg {
     Remote,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SyncCheckpointKindArg {
+    Recovery,
+    Semantic,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SyncCommand {
     #[command(about = "Run one finite Git synchronization cycle")]
@@ -3954,6 +3962,22 @@ pub enum SyncCommand {
             long,
             help = "Validate and report without creating objects, refs, or files"
         )]
+        dry_run: bool,
+    },
+    #[command(about = "Retain the accepted live commit under a durable local ref")]
+    Checkpoint {
+        #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
+        wiki: Option<String>,
+        #[arg(
+            long,
+            value_enum,
+            default_value = "recovery",
+            help = "Checkpoint retention class"
+        )]
+        kind: SyncCheckpointKindArg,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+        #[arg(long, help = "Validate and report without creating a ref")]
         dry_run: bool,
     },
     #[command(about = "Diagnose Git synchronization without changing it")]

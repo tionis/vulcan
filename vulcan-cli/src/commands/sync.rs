@@ -1,12 +1,15 @@
 use crate::output::print_json;
 use crate::{
-    selected_permission_guard, Cli, CliError, OutputFormat, SyncCommand, SyncConflictSideArg,
-    SyncSelectionArgs,
+    selected_permission_guard, Cli, CliError, OutputFormat, SyncCheckpointKindArg, SyncCommand,
+    SyncConflictSideArg, SyncSelectionArgs,
 };
 use serde::Serialize;
 use vulcan_app::sync::{
     doctor_git_vault, sync_git_vault, GitRefName, GitRemote, GitSyncAction, GitSyncOptions,
     SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
+};
+use vulcan_app::sync_checkpoints::{
+    create_sync_checkpoint, SyncCheckpointKind, SyncCheckpointOptions, SyncCheckpointReport,
 };
 use vulcan_app::sync_conflicts::{
     get_sync_conflict, list_sync_conflicts, resolve_sync_conflict, ResolveSyncConflictOptions,
@@ -54,6 +57,14 @@ pub(crate) fn handle_sync_command(
                 *dry_run,
             );
         }
+        SyncCommand::Checkpoint {
+            wiki,
+            kind,
+            target,
+            dry_run,
+        } => {
+            return run_sync_checkpoint(cli, paths, wiki.as_deref(), *kind, target, *dry_run);
+        }
         SyncCommand::Run { .. } | SyncCommand::Status { .. } => {}
     }
     let (options, selection) = match command {
@@ -83,6 +94,7 @@ pub(crate) fn handle_sync_command(
         SyncCommand::Doctor { .. }
         | SyncCommand::Conflicts { .. }
         | SyncCommand::Resolve { .. }
+        | SyncCommand::Checkpoint { .. }
         | SyncCommand::Pause { .. }
         | SyncCommand::Resume { .. } => unreachable!(),
     };
@@ -105,6 +117,46 @@ pub(crate) fn handle_sync_command(
         .map_err(CliError::operation)?;
     let report = sync_git_vault(paths, &options).map_err(CliError::operation)?;
     print_sync_report(cli.output, &report)
+}
+
+fn run_sync_checkpoint(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    kind: SyncCheckpointKindArg,
+    target: &crate::SyncTargetArgs,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let report = create_sync_checkpoint(
+        &paths,
+        &SyncCheckpointOptions {
+            kind: match kind {
+                SyncCheckpointKindArg::Recovery => SyncCheckpointKind::Recovery,
+                SyncCheckpointKindArg::Semantic => SyncCheckpointKind::Semantic,
+            },
+            remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
+            live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
+            dry_run,
+        },
+    )
+    .map_err(CliError::operation)?;
+    print_sync_checkpoint(cli.output, &report)
+}
+
+fn print_sync_checkpoint(
+    output: OutputFormat,
+    report: &SyncCheckpointReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Sync checkpoint: {} -> {} ({:?})",
+        report.checkpoint_ref, report.revision, report.kind
+    );
+    Ok(())
 }
 
 fn run_sync_resolve(

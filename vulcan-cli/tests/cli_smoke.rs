@@ -4756,6 +4756,109 @@ fn setup_cli_sync_conflict() -> (TempDir, std::path::PathBuf, std::path::PathBuf
 }
 
 #[test]
+fn sync_checkpoint_cli_retains_the_accepted_commit_without_new_objects() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let state_home = temporary.path().join("state");
+    let remote = temporary.path().join("remote.git");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    let vault = temporary.path().join("wiki");
+    fs::create_dir(&vault).expect("vault directory");
+    init_git_repo(&vault);
+    run_git_ok(
+        &vault,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    fs::write(vault.join("Home.md"), "accepted\n").expect("accepted note");
+    commit_all(&vault, "Base");
+    let run = |arguments: &[&str]| {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .env("XDG_STATE_HOME", &state_home)
+            .arg("--vault")
+            .arg(&vault)
+            .args(["--output", "json", "sync"])
+            .args(arguments)
+            .assert()
+            .success()
+    };
+    run(&["run"]);
+    let object_state_before = run_git_stdout(&vault, &["count-objects", "-v"]);
+
+    let dry_run = parse_stdout_json(&run(&["checkpoint", "--kind", "semantic", "--dry-run"]));
+    assert_eq!(dry_run["dry_run"], true);
+    assert_eq!(dry_run["kind"], "semantic");
+    assert!(run_git_stdout(
+        &vault,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/vulcan/checkpoints/",
+        ],
+    )
+    .is_empty());
+
+    let checkpoint = parse_stdout_json(&run(&["checkpoint", "--kind", "semantic"]));
+    let checkpoint_ref = checkpoint["checkpoint_ref"]
+        .as_str()
+        .expect("checkpoint ref");
+    let revision = checkpoint["revision"].as_str().expect("revision");
+    assert!(checkpoint_ref.starts_with("refs/vulcan/checkpoints/semantic/"));
+    assert_eq!(
+        run_git_stdout(&vault, &["rev-parse", "--verify", checkpoint_ref]),
+        revision
+    );
+    assert_eq!(
+        run_git_stdout(
+            &vault,
+            &["ls-remote", "origin", "refs/heads/__vulcan-sync/live"]
+        )
+        .split_whitespace()
+        .next(),
+        Some(revision)
+    );
+    assert_eq!(
+        run_git_stdout(&vault, &["count-objects", "-v"]),
+        object_state_before
+    );
+
+    let config_home = temporary.path().join("config");
+    fs::create_dir(&config_home).expect("config home");
+    let config_home = config_home.to_str().expect("config path");
+    cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "vault",
+            "add",
+            "personal",
+            vault.to_str().expect("vault path"),
+        ])
+        .assert()
+        .success();
+    let registered = cargo_vulcan_with_xdg_config(config_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .args(["--output", "json", "sync", "checkpoint", "personal"])
+        .assert()
+        .success();
+    let registered = parse_stdout_json(&registered);
+    assert_eq!(registered["kind"], "recovery");
+    assert!(registered["checkpoint_ref"]
+        .as_str()
+        .is_some_and(|reference| reference.starts_with("refs/vulcan/checkpoints/recovery/")));
+}
+
+#[test]
 fn sync_conflicts_cli_lists_and_shows_immutable_records() {
     let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
     let command = |arguments: &[&str]| {
@@ -11353,6 +11456,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("conflict_record"));
     assert!(git_skill.contains("vulcan sync conflicts <id>"));
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
+    assert!(git_skill.contains("vulcan sync checkpoint [<wiki>] --dry-run"));
     assert!(git_skill.contains("vulcan vault clone <remote> <path> --dry-run"));
     assert!(git_skill.contains("clone that succeeds before registration fails"));
     assert!(git_skill.contains("--platform android-shared"));

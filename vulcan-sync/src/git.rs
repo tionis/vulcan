@@ -45,6 +45,13 @@ pub trait GitEngine: Send + Sync {
         target: &GitOid,
     ) -> Result<(), GitEngineError>;
 
+    fn create_ref(
+        &self,
+        repository: &GitRepository,
+        reference: &GitRefName,
+        target: &GitOid,
+    ) -> Result<GitRefCreateResult, GitEngineError>;
+
     fn tree_oid(
         &self,
         repository: &GitRepository,
@@ -585,6 +592,13 @@ pub enum GitPushResult {
     Rejected,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitRefCreateResult {
+    Created,
+    Exists,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitSafetyState {
     pub staged_changes: bool,
@@ -1032,6 +1046,30 @@ impl GitEngine for GitCliEngine {
             ["update-ref", reference.as_str(), target.as_str()],
         )?;
         Ok(())
+    }
+
+    fn create_ref(
+        &self,
+        repository: &GitRepository,
+        reference: &GitRefName,
+        target: &GitOid,
+    ) -> Result<GitRefCreateResult, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command.args(["update-ref", reference.as_str(), target.as_str(), ""]);
+        let output = self.execute(command)?;
+        if output.status.success() {
+            return Ok(GitRefCreateResult::Created);
+        }
+        let detail = format!(
+            "{}\n{}",
+            bounded_lossy(&output.stdout),
+            bounded_lossy(&output.stderr)
+        );
+        if detail.contains("cannot lock ref") && detail.contains("reference already exists") {
+            Ok(GitRefCreateResult::Exists)
+        } else {
+            Err(command_failed("create a local Git ref", &output))
+        }
     }
 
     fn tree_oid(
@@ -2366,6 +2404,41 @@ mod tests {
                 .fetch_ref(&repository, &remote, &live, &fetched)
                 .expect("fetch"),
             head
+        );
+    }
+
+    #[test]
+    fn create_ref_never_replaces_an_existing_checkpoint() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Home.md"), "initial\n").expect("initial note");
+        let initial = commit_all(temporary.path(), "initial");
+        fs::write(temporary.path().join("Home.md"), "changed\n").expect("changed note");
+        let changed = commit_all(temporary.path(), "changed");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let checkpoint =
+            GitRefName::parse("refs/vulcan/checkpoints/recovery/test").expect("checkpoint ref");
+
+        assert_eq!(
+            engine
+                .create_ref(&repository, &checkpoint, &initial)
+                .expect("checkpoint creation"),
+            GitRefCreateResult::Created
+        );
+        assert_eq!(
+            engine
+                .create_ref(&repository, &checkpoint, &changed)
+                .expect("checkpoint collision"),
+            GitRefCreateResult::Exists
+        );
+        assert_eq!(
+            engine
+                .read_ref(&repository, &checkpoint)
+                .expect("checkpoint read"),
+            Some(initial)
         );
     }
 

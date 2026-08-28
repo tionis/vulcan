@@ -2298,6 +2298,34 @@ fn parses_sync_resolve_command() {
 }
 
 #[test]
+fn parses_sync_checkpoint_command() {
+    let checkpoint = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "checkpoint",
+        "personal",
+        "--kind",
+        "semantic",
+        "--dry-run",
+    ])
+    .expect("sync checkpoint should parse");
+    assert_eq!(
+        checkpoint.command,
+        Command::Sync {
+            command: SyncCommand::Checkpoint {
+                wiki: Some("personal".to_string()),
+                kind: SyncCheckpointKindArg::Semantic,
+                target: SyncTargetArgs {
+                    remote: "origin".to_string(),
+                    live_ref: "refs/heads/__vulcan-sync/live".to_string(),
+                },
+                dry_run: true,
+            },
+        }
+    );
+}
+
+#[test]
 fn parses_vault_registry_commands() {
     let clone = Cli::try_parse_from([
         "vulcan",

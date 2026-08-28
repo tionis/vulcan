@@ -46,6 +46,7 @@ pub mod scan;
 pub mod serve;
 pub mod site;
 pub mod sync;
+pub mod sync_checkpoints;
 pub mod sync_conflicts;
 pub mod sync_state;
 pub mod tasks;
