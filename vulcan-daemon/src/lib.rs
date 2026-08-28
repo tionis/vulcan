@@ -8,6 +8,7 @@
 
 pub mod clone;
 pub mod registry;
+pub mod runtime;
 pub mod supervisor;
 pub mod sync;
 pub mod watch;
