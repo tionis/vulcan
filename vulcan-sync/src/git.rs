@@ -31,6 +31,8 @@ pub trait GitEngine: Send + Sync {
         reference: &GitRefName,
     ) -> Result<Option<GitOid>, GitEngineError>;
 
+    fn head_commit(&self, repository: &GitRepository) -> Result<Option<GitOid>, GitEngineError>;
+
     fn update_ref(
         &self,
         repository: &GitRepository,
@@ -723,6 +725,19 @@ impl GitEngine for GitCliEngine {
             return Ok(None);
         }
         Err(command_failed("read a Git ref", &output))
+    }
+
+    fn head_commit(&self, repository: &GitRepository) -> Result<Option<GitOid>, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command.args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
+        let output = self.execute(command)?;
+        if output.status.success() {
+            return GitOid::parse(decode_stdout("read HEAD", output.stdout)?.trim()).map(Some);
+        }
+        if output.status.code() == Some(1) && output.stdout.is_empty() && output.stderr.is_empty() {
+            return Ok(None);
+        }
+        Err(command_failed("read HEAD", &output))
     }
 
     fn update_ref(

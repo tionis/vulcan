@@ -4370,6 +4370,8 @@ dependencies = [
 name = "vulcan-sync"
 version = "0.1.0"
 dependencies = [
+ "blake3",
+ "fs2",
  "serde",
  "serde_json",
  "tempfile",
