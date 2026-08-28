@@ -5250,7 +5250,7 @@ semantic checkpoints continue to use the normal branch.
 ### 12.1 Layering, direct mode, and backend contract
 
 - [x] Add `vulcan-sync` as a dependency-light synchronous workspace crate, initially containing the typed Git-engine boundary and CLI installation/repository discovery needed by later sync work. It does not depend on `vulcan-daemon`, SQLite, HTTP, TUI state, or a notification broker.
-- [ ] Extend `vulcan-sync` with backend capabilities, finite synchronization cycles, Git snapshot/ref/application mechanics, backend reports, and cancellation as the corresponding slices are implemented; it may depend on reusable `vulcan-core` Git and merge primitives.
+- [x] Extend `vulcan-sync` with backend capabilities, finite synchronization cycles, Git snapshot/ref/application mechanics, backend reports, and cancellation as the corresponding slices are implemented; it may depend on reusable `vulcan-core` Git and merge primitives.
   - [x] Add a cloneable synchronous cancellation token plus typed serializable progress events and a fallible observer boundary. Finite Git cycles report preparing, capture, fetch, merge, push, verify, apply, pause, conflict, and completion phases; cancellation is checked only at safe boundaries and preserves every already-captured ref.
 - [x] Put a typed internal `GitEngine` boundary beneath the Git sync backend. Its initial fixed CLI operations cover repository discovery, object/ref/index access, stable alternate-index capture, exact-ref fetch, lease-protected push, ancestry checks, merge-tree preparation, commit creation, safety-state inspection, and verified alternate-index worktree application without exposing arbitrary command arguments. Synchronization policy, conflict records, retries, validation, and report schemas remain engine-independent.
 - [x] Implement `GitCliEngine` first and make it the only supported engine for the initial release. One selected engine owns every mutating operation in a repository cycle; do not interleave CLI and embedded-library writers against the same repository transaction.
@@ -5259,7 +5259,7 @@ semantic checkpoints continue to use the normal branch.
 - [ ] Keep scheduling, retained job/status state, trigger coalescing, watcher ownership, suspend/resume handling, and local HTTP/WebSocket transport in `vulcan-daemon`.
 - [x] Make `vulcan sync run` call the same `vulcan-app` workflow directly when the daemon is absent or not requested. It must not start a daemon implicitly and must work for a path that has never been registered as a managed wiki.
 - [ ] Keep all pre-existing commands daemon-free and sync-free by default: no Git discovery, repository initialization, registration write, network request, background process, or LLM provider may occur merely because a user runs a normal local-vault command.
-- [ ] Refine the initial backend trait around a finite `sync_once` operation and explicit capabilities rather than putting `start`, `stop`, scheduling, and mutable retained status on every backend:
+- [x] Refine the initial backend trait around a finite `sync_once` operation and explicit capabilities rather than putting `start`, `stop`, scheduling, and mutable retained status on every backend:
 
 ```rust
 trait SyncBackend: Send + Sync {
@@ -5268,13 +5268,13 @@ trait SyncBackend: Send + Sync {
     fn sync_once(
         &self,
         context: &SyncContext<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<BackendSyncReport, SyncError>;
+        cancellation: &SyncCancellationToken,
+    ) -> Result<SyncReport, SyncError>;
 }
 ```
 
-- [ ] Model capabilities such as finite versus continuous operation, fetch/push, safe pause/cancel, progress, remote revision, offline recovery, conflict preservation, and detached-Git-directory support; introduce lifecycle hooks only for backends that actually supervise a continuous external process.
-- [ ] Define serializable `SyncPlan`, `SyncReport`, `SyncStatus`, `SyncConflict`, `SyncJob`, and error-category contracts shared by direct CLI, daemon REST, companion clients, tests, and `--output json`.
+- [x] Model capabilities such as finite versus continuous operation, fetch/push, safe pause/cancel, progress, remote revision, offline recovery, conflict preservation, and detached-Git-directory support; introduce lifecycle hooks only for backends that actually supervise a continuous external process.
+- [x] Define versioned serializable `SyncPlan`, `SyncReport`, `SyncStatus`, `SyncConflict`, `SyncJob`, progress, and error-category contracts shared by direct CLI, daemon REST, companion clients, tests, and `--output json`. The Git adapter declares only its currently implemented capabilities, translates finite-cycle progress and reports into the shared schema, and leaves daemon job retention outside the backend.
 
 ### 12.2 Repository layout and cross-platform storage
 

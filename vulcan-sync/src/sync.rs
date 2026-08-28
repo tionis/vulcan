@@ -1,6 +1,9 @@
 use crate::{
     GitCaptureRequest, GitEngine, GitEngineError, GitInstallation, GitOid, GitPushResult,
-    GitRefName, GitRemote, GitRepository, GitSafetyState,
+    GitRefName, GitRemote, GitRepository, GitSafetyState, SyncAction, SyncBackend,
+    SyncCapabilities, SyncCapability, SyncConflict, SyncContext, SyncError, SyncErrorCategory,
+    SyncOperation, SyncOperationMode, SyncOutcome, SyncPlan, SyncProgress, SyncReport,
+    SyncResolutionState, SyncState, SyncStatus, SYNC_CONTRACT_VERSION,
 };
 use fs2::FileExt;
 use serde::Serialize;
@@ -273,6 +276,225 @@ impl From<GitSyncObserverError> for GitSyncError {
     fn from(error: GitSyncObserverError) -> Self {
         Self::Observer(error)
     }
+}
+
+pub struct GitSyncBackend<'a> {
+    engine: &'a dyn GitEngine,
+    options: GitSyncOptions,
+}
+
+impl<'a> GitSyncBackend<'a> {
+    #[must_use]
+    pub fn new(engine: &'a dyn GitEngine, options: GitSyncOptions) -> Self {
+        Self { engine, options }
+    }
+}
+
+impl SyncBackend for GitSyncBackend<'_> {
+    fn name(&self) -> &'static str {
+        "git"
+    }
+
+    fn capabilities(&self) -> SyncCapabilities {
+        SyncCapabilities {
+            operation_modes: vec![SyncOperationMode::Finite],
+            features: vec![
+                SyncCapability::Fetch,
+                SyncCapability::Push,
+                SyncCapability::SafePause,
+                SyncCapability::SafeCancel,
+                SyncCapability::Progress,
+                SyncCapability::RemoteRevision,
+                SyncCapability::OfflineRecovery,
+                SyncCapability::DetachedGitDirectory,
+            ],
+        }
+    }
+
+    fn plan(&self, context: &SyncContext<'_>) -> Result<SyncPlan, SyncError> {
+        Ok(SyncPlan {
+            version: SYNC_CONTRACT_VERSION,
+            backend: self.name().to_string(),
+            vault: context.vault_path.to_path_buf(),
+            dry_run: context.dry_run,
+            capabilities: self.capabilities(),
+            operations: vec![
+                SyncOperation::Capture,
+                SyncOperation::Fetch,
+                SyncOperation::Merge,
+                SyncOperation::Push,
+                SyncOperation::Apply,
+                SyncOperation::Verify,
+            ],
+        })
+    }
+
+    fn sync_once(
+        &self,
+        context: &SyncContext<'_>,
+        cancellation: &SyncCancellationToken,
+    ) -> Result<SyncReport, SyncError> {
+        let mut options = self.options.clone();
+        options.dry_run = context.dry_run;
+        let mut observer = BackendObserver {
+            vault: context.vault_path,
+            observer: context.observer,
+        };
+        sync_git_once_with_control(
+            self.engine,
+            context.vault_path,
+            &options,
+            cancellation,
+            &mut observer,
+        )
+        .map(git_report_to_backend_report)
+        .map_err(|error| sync_error_from_git(&error))
+    }
+}
+
+struct BackendObserver<'a> {
+    vault: &'a Path,
+    observer: &'a dyn crate::SyncObserver,
+}
+
+impl GitSyncObserver for BackendObserver<'_> {
+    fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
+        self.observer
+            .progress(&SyncProgress {
+                backend: "git".to_string(),
+                vault: self.vault.to_path_buf(),
+                state: sync_state_from_phase(progress.phase),
+                attempt: progress.attempt,
+                local_revision: progress.local_snapshot.as_ref().map(ToString::to_string),
+                accepted_revision: progress.accepted.as_ref().map(ToString::to_string),
+            })
+            .map_err(|error| GitSyncObserverError::new(error.to_string()))
+    }
+}
+
+fn sync_state_from_phase(phase: GitSyncPhase) -> SyncState {
+    match phase {
+        GitSyncPhase::Preparing | GitSyncPhase::Capturing => SyncState::CapturePending,
+        GitSyncPhase::Captured | GitSyncPhase::Pushing => SyncState::CapturedUnpushed,
+        GitSyncPhase::Fetching => SyncState::Fetching,
+        GitSyncPhase::Merging => SyncState::Merging,
+        GitSyncPhase::Applying | GitSyncPhase::Verifying => SyncState::Applying,
+        GitSyncPhase::Paused => SyncState::Paused,
+        GitSyncPhase::Conflicted => SyncState::Conflicted,
+        GitSyncPhase::Completed => SyncState::Clean,
+    }
+}
+
+fn git_report_to_backend_report(report: GitSyncReport) -> SyncReport {
+    let conflict = report.conflict.as_ref().map(|conflict| {
+        let id_source = format!(
+            "1\0{}\0{}\0{}",
+            conflict.local, conflict.remote, conflict.diagnostics
+        );
+        SyncConflict {
+            id: blake3::hash(id_source.as_bytes()).to_hex()[..32].to_string(),
+            paths: Vec::new(),
+            base_revision: None,
+            local_revision: conflict.local.to_string(),
+            remote_revision: conflict.remote.to_string(),
+            policy_version: 1,
+            resolution: SyncResolutionState::Unresolved,
+            preserved: false,
+            detail: Some(conflict.diagnostics.clone()),
+        }
+    });
+    let state = match report.outcome {
+        GitSyncOutcome::Paused => SyncState::Paused,
+        GitSyncOutcome::Conflicted => SyncState::Conflicted,
+        GitSyncOutcome::Planned
+            if report.safety.staged_changes || report.safety.operation.is_some() =>
+        {
+            SyncState::Dirty
+        }
+        _ => SyncState::Clean,
+    };
+    let status = SyncStatus {
+        state,
+        backend: "git".to_string(),
+        vault: report
+            .repository
+            .work_tree
+            .clone()
+            .unwrap_or_else(|| report.repository.git_dir.clone()),
+        local_revision: report.local_snapshot.as_ref().map(ToString::to_string),
+        remote_revision: report.remote_before.as_ref().map(ToString::to_string),
+        accepted_revision: report.accepted.as_ref().map(ToString::to_string),
+        unresolved_conflicts: usize::from(conflict.is_some()),
+        detail: None,
+    };
+    SyncReport {
+        version: SYNC_CONTRACT_VERSION,
+        backend: "git".to_string(),
+        dry_run: report.dry_run,
+        outcome: match report.outcome {
+            GitSyncOutcome::Planned => SyncOutcome::Planned,
+            GitSyncOutcome::Paused => SyncOutcome::Paused,
+            GitSyncOutcome::UpToDate => SyncOutcome::UpToDate,
+            GitSyncOutcome::Bootstrapped => SyncOutcome::Bootstrapped,
+            GitSyncOutcome::Pushed => SyncOutcome::Pushed,
+            GitSyncOutcome::Pulled => SyncOutcome::Pulled,
+            GitSyncOutcome::Merged => SyncOutcome::Merged,
+            GitSyncOutcome::Conflicted => SyncOutcome::Conflicted,
+        },
+        status,
+        actions: report
+            .actions
+            .into_iter()
+            .map(|action| match action {
+                GitSyncAction::SnapshotCreated => SyncAction::SnapshotCreated,
+                GitSyncAction::Pushed => SyncAction::Pushed,
+                GitSyncAction::WorktreeApplied => SyncAction::WorktreeApplied,
+            })
+            .collect(),
+        attempts: if report.dry_run {
+            0
+        } else {
+            report.retries + 1
+        },
+        conflicts: conflict.into_iter().collect(),
+    }
+}
+
+fn sync_error_from_git(error: &GitSyncError) -> SyncError {
+    let (category, retryable) = match error {
+        GitSyncError::Locked | GitSyncError::Git(GitEngineError::WorktreeChanged) => {
+            (SyncErrorCategory::Busy, true)
+        }
+        GitSyncError::Cancelled => (SyncErrorCategory::Cancelled, false),
+        GitSyncError::Observer(_) => (SyncErrorCategory::Observer, false),
+        GitSyncError::RetryLimit { .. } => (SyncErrorCategory::Network, true),
+        GitSyncError::Io(_) | GitSyncError::Git(GitEngineError::Io(_)) => {
+            (SyncErrorCategory::Io, true)
+        }
+        GitSyncError::Git(
+            GitEngineError::ExecutableUnavailable { .. } | GitEngineError::InvalidRemote(_),
+        ) => (SyncErrorCategory::Configuration, false),
+        GitSyncError::Git(GitEngineError::CommandFailed { operation, .. })
+            if operation.contains("remote")
+                || operation.contains("fetch")
+                || operation.contains("push")
+                || operation.contains("clone") =>
+        {
+            (SyncErrorCategory::Network, true)
+        }
+        GitSyncError::Git(GitEngineError::UnsupportedRepository { .. }) => {
+            (SyncErrorCategory::Unsupported, false)
+        }
+        GitSyncError::Git(
+            GitEngineError::InvalidOutput { .. }
+            | GitEngineError::InvalidObjectId(_)
+            | GitEngineError::InvalidRefName(_),
+        ) => (SyncErrorCategory::Invariant, false),
+        GitSyncError::Git(GitEngineError::CommandFailed { .. }) => {
+            (SyncErrorCategory::Repository, false)
+        }
+    };
+    SyncError::new(category, error.to_string(), retryable)
 }
 
 pub fn sync_git_once(
@@ -775,6 +997,59 @@ mod tests {
                 GitSyncPhase::Completed,
             ]
         );
+    }
+
+    #[test]
+    fn git_backend_exposes_capabilities_and_runs_the_shared_contract() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let backend = GitSyncBackend::new(&engine, GitSyncOptions::default());
+        let observer = crate::IgnoreSyncProgress;
+        let context = SyncContext::new(&writer, false, &observer);
+
+        let plan = backend.plan(&context).expect("backend plan");
+        assert_eq!(plan.backend, "git");
+        assert_eq!(plan.operations[0], SyncOperation::Capture);
+        assert_eq!(
+            plan.capabilities.operation_modes,
+            [SyncOperationMode::Finite]
+        );
+        assert!(plan.capabilities.supports(SyncCapability::SafeCancel));
+        assert!(!plan
+            .capabilities
+            .supports(SyncCapability::ConflictPreservation));
+
+        let report = backend
+            .sync_once(&context, &SyncCancellationToken::default())
+            .expect("backend cycle");
+        assert_eq!(report.version, SYNC_CONTRACT_VERSION);
+        assert_eq!(report.outcome, SyncOutcome::Bootstrapped);
+        assert_eq!(report.status.state, SyncState::Clean);
+        assert_eq!(report.attempts, 1);
+        assert!(report.status.accepted_revision.is_some());
+    }
+
+    #[test]
+    fn backend_errors_expose_stable_categories_and_retry_guidance() {
+        let cancelled = sync_error_from_git(&GitSyncError::Cancelled);
+        assert_eq!(cancelled.category, SyncErrorCategory::Cancelled);
+        assert!(!cancelled.retryable);
+
+        let unavailable =
+            sync_error_from_git(&GitSyncError::Git(GitEngineError::ExecutableUnavailable {
+                executable: PathBuf::from("git"),
+                source: std::io::Error::new(std::io::ErrorKind::NotFound, "missing"),
+            }));
+        assert_eq!(unavailable.category, SyncErrorCategory::Configuration);
+        assert!(!unavailable.retryable);
+
+        let remote = sync_error_from_git(&GitSyncError::Git(GitEngineError::CommandFailed {
+            operation: "fetch the live sync ref",
+            exit_code: Some(128),
+            stderr: "offline".to_string(),
+        }));
+        assert_eq!(remote.category, SyncErrorCategory::Network);
+        assert!(remote.retryable);
     }
 
     #[test]

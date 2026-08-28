@@ -9,8 +9,16 @@
 //! API exposes typed operations rather than arbitrary Git arguments so a later
 //! embedded engine can implement the same contract and conformance suite.
 
+mod contracts;
 mod git;
 mod sync;
+
+pub use contracts::{
+    IgnoreSyncProgress, SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncConflict,
+    SyncContext, SyncError, SyncErrorCategory, SyncJob, SyncJobState, SyncJobTrigger, SyncObserver,
+    SyncOperation, SyncOperationMode, SyncOutcome, SyncPlan, SyncProgress, SyncReport,
+    SyncResolutionState, SyncState, SyncStatus, SYNC_CONTRACT_VERSION,
+};
 
 pub use git::{
     GitCapture, GitCaptureRequest, GitCaseRenamePolicy, GitCliEngine, GitCloneRequest, GitEngine,
@@ -20,7 +28,8 @@ pub use git::{
     GitReservedNamesPolicy, GitSafetyState, GitSymlinkPolicy, GitTimestampPolicy, GitVersion,
 };
 pub use sync::{
-    sync_git_once, sync_git_once_with_control, GitSyncAction, GitSyncConflict, GitSyncError,
-    GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPhase,
-    GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
+    sync_git_once, sync_git_once_with_control, GitSyncAction, GitSyncBackend, GitSyncConflict,
+    GitSyncError, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
+    GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress,
+    SyncCancellationToken,
 };
