@@ -569,11 +569,12 @@ const SYNC_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   run          perform one finite capture, reconcile, push, and apply cycle
   status       inspect local safety and remote live-ref state without mutating either
+  doctor       diagnose Git, refs, filters, recovery state, and cache coherence
   pause        disable future automatic sync for one registered wiki
   resume       enable future automatic sync for one registered wiki
 
 Notes:
-  Run/status work directly against the selected vault path and do not require a daemon or wiki registration.
+  Run/status/doctor work directly against the selected vault path and do not require a daemon or wiki registration.
   The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.
   Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.
   Staged changes and in-progress Git operations pause worktree synchronization.
@@ -586,6 +587,7 @@ Examples:
   vulcan sync status --all
   vulcan sync run --dry-run
   vulcan sync status
+  vulcan sync doctor
   vulcan sync pause personal
   vulcan sync resume personal
   vulcan --vault ./wiki sync run --remote origin";
@@ -3916,6 +3918,13 @@ pub enum SyncCommand {
     Status {
         #[command(flatten)]
         selection: SyncSelectionArgs,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+    },
+    #[command(about = "Diagnose Git synchronization without changing it")]
+    Doctor {
+        #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
+        wiki: Option<String>,
         #[command(flatten)]
         target: SyncTargetArgs,
     },

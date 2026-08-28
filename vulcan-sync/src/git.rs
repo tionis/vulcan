@@ -1,4 +1,5 @@
 use serde::Serialize;
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter};
@@ -7,6 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
 const MAX_ERROR_BYTES: usize = 16 * 1024;
+const MAX_DIAGNOSTIC_PATH_BYTES: usize = 16 * 1024 * 1024;
 const REPOSITORY_ENVIRONMENT_OVERRIDES: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -108,6 +110,11 @@ pub trait GitEngine: Send + Sync {
     ) -> Result<(), GitEngineError>;
 
     fn safety_state(&self, repository: &GitRepository) -> Result<GitSafetyState, GitEngineError>;
+
+    fn repository_requirements(
+        &self,
+        repository: &GitRepository,
+    ) -> Result<GitRepositoryRequirements, GitEngineError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -540,6 +547,21 @@ pub enum GitPushResult {
 pub struct GitSafetyState {
     pub staged_changes: bool,
     pub operation: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitFilterRequirement {
+    pub name: String,
+    pub path_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitRepositoryRequirements {
+    pub tracked_paths: usize,
+    pub ignored_internal_paths: Vec<String>,
+    pub required_filters: Vec<GitFilterRequirement>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub git_lfs_available: Option<bool>,
 }
 
 #[derive(Debug)]
@@ -1365,6 +1387,102 @@ impl GitEngine for GitCliEngine {
             operation,
         })
     }
+
+    fn repository_requirements(
+        &self,
+        repository: &GitRepository,
+    ) -> Result<GitRepositoryRequirements, GitEngineError> {
+        repository.require_work_tree()?;
+        let tracked = self.repository_output(
+            repository,
+            "list tracked paths for sync diagnostics",
+            ["ls-files", "-z"],
+        )?;
+        if tracked.stdout.len() > MAX_DIAGNOSTIC_PATH_BYTES {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "list tracked paths for sync diagnostics",
+                detail: format!(
+                    "tracked path list exceeds the {MAX_DIAGNOSTIC_PATH_BYTES} byte diagnostic limit"
+                ),
+            });
+        }
+        let tracked_paths = nul_fields("list tracked paths for sync diagnostics", &tracked.stdout)?;
+
+        let mut command = self.repository_command(repository);
+        command
+            .args(["check-attr", "-z", "--stdin", "filter"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(GitEngineError::Io)?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| GitEngineError::InvalidOutput {
+                operation: "inspect configured Git filters",
+                detail: "Git diagnostic command did not expose stdin".to_string(),
+            })?
+            .write_all(&tracked.stdout)?;
+        let attributes = child.wait_with_output()?;
+        let attributes = ensure_success("inspect configured Git filters", attributes)?;
+        if attributes.stdout.len() > MAX_DIAGNOSTIC_PATH_BYTES.saturating_mul(4) {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect configured Git filters",
+                detail: "Git filter diagnostic output exceeds the bounded response limit"
+                    .to_string(),
+            });
+        }
+        let fields = nul_fields("inspect configured Git filters", &attributes.stdout)?;
+        if fields.len() % 3 != 0 {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect configured Git filters",
+                detail: "expected NUL-delimited path/attribute/value triples".to_string(),
+            });
+        }
+        let mut filters = BTreeMap::<String, usize>::new();
+        for triple in fields.chunks_exact(3) {
+            let value = triple[2];
+            if !matches!(value, "unspecified" | "unset" | "set" | "") {
+                *filters.entry(value.to_string()).or_default() += 1;
+            }
+        }
+        let required_filters = filters
+            .into_iter()
+            .map(|(name, path_count)| GitFilterRequirement { name, path_count })
+            .collect::<Vec<_>>();
+        let git_lfs_available = required_filters
+            .iter()
+            .any(|filter| filter.name == "lfs")
+            .then(|| {
+                let mut command = self.repository_command(repository);
+                command.args(["lfs", "version"]);
+                self.execute(command)
+                    .is_ok_and(|output| output.status.success())
+            });
+
+        let mut ignored_internal_paths = Vec::new();
+        for path in [
+            ".vulcan/cache.db",
+            ".vulcan/cache.db-wal",
+            ".vulcan/cache.db-shm",
+        ] {
+            let mut command = self.repository_command(repository);
+            command.args(["check-ignore", "--quiet", "--", path]);
+            let output = self.execute(command)?;
+            match output.status.code() {
+                Some(0) => ignored_internal_paths.push(path.to_string()),
+                Some(1) => {}
+                _ => return Err(command_failed("inspect ignored Vulcan state", &output)),
+            }
+        }
+
+        Ok(GitRepositoryRequirements {
+            tracked_paths: tracked_paths.len(),
+            ignored_internal_paths,
+            required_filters,
+            git_lfs_available,
+        })
+    }
 }
 
 fn ensure_success(operation: &'static str, output: Output) -> Result<Output, GitEngineError> {
@@ -1397,6 +1515,30 @@ fn decode_stdout(operation: &'static str, stdout: Vec<u8>) -> Result<String, Git
         operation,
         detail: error.to_string(),
     })
+}
+
+fn nul_fields<'a>(
+    operation: &'static str,
+    bytes: &'a [u8],
+) -> Result<Vec<&'a str>, GitEngineError> {
+    let mut fields = bytes
+        .split(|byte| *byte == 0)
+        .filter(|field| !field.is_empty())
+        .map(|field| {
+            std::str::from_utf8(field).map_err(|error| GitEngineError::InvalidOutput {
+                operation,
+                detail: error.to_string(),
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if bytes.last().is_some_and(|byte| *byte != 0) {
+        return Err(GitEngineError::InvalidOutput {
+            operation,
+            detail: "expected a trailing NUL delimiter".to_string(),
+        });
+    }
+    fields.shrink_to_fit();
+    Ok(fields)
 }
 
 fn remove_file_if_present(path: &Path) -> Result<(), GitEngineError> {
@@ -2007,5 +2149,46 @@ mod tests {
                 .expect("state")
                 .staged_changes
         );
+    }
+
+    #[test]
+    fn repository_requirements_report_ignored_state_and_filters() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join(".gitignore"), ".vulcan/cache.db*\n")
+            .expect("ignore rules");
+        fs::write(
+            temporary.path().join(".gitattributes"),
+            "*.bin filter=lfs\n",
+        )
+        .expect("attributes");
+        fs::write(temporary.path().join("asset.bin"), "pointer\n").expect("asset");
+        commit_all(temporary.path(), "requirements");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+
+        let requirements = engine
+            .repository_requirements(&repository)
+            .expect("requirements");
+
+        assert_eq!(requirements.tracked_paths, 3);
+        assert_eq!(
+            requirements.ignored_internal_paths,
+            [
+                ".vulcan/cache.db",
+                ".vulcan/cache.db-wal",
+                ".vulcan/cache.db-shm"
+            ]
+        );
+        assert_eq!(
+            requirements.required_filters,
+            [GitFilterRequirement {
+                name: "lfs".to_string(),
+                path_count: 1,
+            }]
+        );
+        assert!(requirements.git_lfs_available.is_some());
     }
 }

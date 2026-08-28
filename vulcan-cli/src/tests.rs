@@ -2217,6 +2217,25 @@ fn parses_sync_commands() {
 }
 
 #[test]
+fn parses_sync_doctor_command() {
+    let doctor =
+        Cli::try_parse_from(["vulcan", "sync", "doctor", "personal", "--remote", "backup"])
+            .expect("sync doctor should parse");
+    assert_eq!(
+        doctor.command,
+        Command::Sync {
+            command: SyncCommand::Doctor {
+                wiki: Some("personal".to_string()),
+                target: SyncTargetArgs {
+                    remote: "backup".to_string(),
+                    live_ref: "refs/heads/__vulcan-sync/live".to_string(),
+                },
+            },
+        }
+    );
+}
+
+#[test]
 fn parses_vault_registry_commands() {
     let clone = Cli::try_parse_from([
         "vulcan",

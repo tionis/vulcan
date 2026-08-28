@@ -2,15 +2,17 @@
 
 use crate::sync_state::{SyncJournal, SyncJournalPhase, SyncStateStore};
 use crate::{scan::refresh_cache_incrementally, AppError};
+use fs2::FileExt;
 use serde::Serialize;
+use std::fs::OpenOptions;
 use vulcan_core::{ScanSummary, VaultPaths};
 use vulcan_sync::{GitEngine, GitSyncObserver};
 
 pub use vulcan_sync::{
-    GitCloneRequest, GitInstallation, GitPlatformPolicy, GitPlatformProfile, GitRefName, GitRemote,
-    GitRepository, GitRepositoryLayout, GitSyncAction, GitSyncConflict, GitSyncObserverError,
-    GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
-    SyncCancellationToken,
+    GitCloneRequest, GitInstallation, GitObjectFormat, GitPlatformPolicy, GitPlatformProfile,
+    GitRefName, GitRemote, GitRepository, GitRepositoryLayout, GitRepositoryRequirements,
+    GitSyncAction, GitSyncConflict, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
+    GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport, SyncCancellationToken,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -49,6 +51,550 @@ pub struct VaultSyncStateReport {
     pub recovered_from: Option<SyncJournal>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retained: Option<SyncJournal>,
+}
+
+pub const SYNC_DOCTOR_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SyncDoctorSeverity {
+    Pass,
+    Info,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncDoctorCheck {
+    pub code: String,
+    pub severity: SyncDoctorSeverity,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncDoctorReport {
+    pub version: u32,
+    pub healthy: bool,
+    pub vault: std::path::PathBuf,
+    pub remote: GitRemote,
+    pub live_ref: GitRefName,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub installation: Option<GitInstallation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repository: Option<GitRepository>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requirements: Option<GitRepositoryRequirements>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub journal: Option<SyncJournal>,
+    pub checks: Vec<SyncDoctorCheck>,
+}
+
+/// Inspects a Git-backed vault and its device-local recovery state without mutation.
+#[must_use]
+pub fn doctor_git_vault(paths: &VaultPaths, options: &GitSyncOptions) -> SyncDoctorReport {
+    let state_store = SyncStateStore::user_default().ok();
+    doctor_git_vault_with_optional_state(paths, options, state_store.as_ref())
+}
+
+#[must_use]
+pub fn doctor_git_vault_with_state_store(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    state_store: &SyncStateStore,
+) -> SyncDoctorReport {
+    doctor_git_vault_with_optional_state(paths, options, Some(state_store))
+}
+
+fn doctor_git_vault_with_optional_state(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    state_store: Option<&SyncStateStore>,
+) -> SyncDoctorReport {
+    let engine = vulcan_sync::GitCliEngine::default();
+    let mut report = SyncDoctorReport {
+        version: SYNC_DOCTOR_VERSION,
+        healthy: true,
+        vault: paths.vault_root().to_path_buf(),
+        remote: options.remote.clone(),
+        live_ref: options.live_ref.clone(),
+        installation: None,
+        repository: None,
+        remote_revision: None,
+        requirements: None,
+        journal: None,
+        checks: Vec::new(),
+    };
+
+    match engine.installation() {
+        Ok(installation) => {
+            doctor_check(
+                &mut report,
+                "git.installation",
+                SyncDoctorSeverity::Pass,
+                format!(
+                    "using {} version {}",
+                    installation.executable.display(),
+                    installation.version.raw
+                ),
+            );
+            report.installation = Some(installation);
+        }
+        Err(error) => {
+            doctor_check(
+                &mut report,
+                "git.installation",
+                SyncDoctorSeverity::Error,
+                format!(
+                    "{error}; install Git with the Linux system package manager, Git for Windows, or `pkg install git` in Termux, then ensure it is available on PATH"
+                ),
+            );
+            return finish_doctor_without_repository(paths, state_store, report);
+        }
+    }
+
+    let repository = match engine.discover_repository(paths.vault_root()) {
+        Ok(repository) => repository,
+        Err(error) => {
+            doctor_check(
+                &mut report,
+                "git.repository",
+                SyncDoctorSeverity::Error,
+                error.to_string(),
+            );
+            return finish_doctor_without_repository(paths, state_store, report);
+        }
+    };
+    doctor_repository_layout(&mut report, &repository);
+    report.repository = Some(repository.clone());
+
+    match engine.safety_state(&repository) {
+        Ok(safety) if safety.staged_changes => doctor_check(
+            &mut report,
+            "git.safety",
+            SyncDoctorSeverity::Warning,
+            "the normal Git index has staged changes; worktree application will pause",
+        ),
+        Ok(safety) if safety.operation.is_some() => doctor_check(
+            &mut report,
+            "git.safety",
+            SyncDoctorSeverity::Warning,
+            format!(
+                "a Git {} operation is in progress; worktree application will pause",
+                safety.operation.as_deref().unwrap_or("unknown")
+            ),
+        ),
+        Ok(_) => doctor_check(
+            &mut report,
+            "git.safety",
+            SyncDoctorSeverity::Pass,
+            "the normal index and repository operation state permit synchronization",
+        ),
+        Err(error) => doctor_check(
+            &mut report,
+            "git.safety",
+            SyncDoctorSeverity::Error,
+            error.to_string(),
+        ),
+    }
+
+    match engine.repository_requirements(&repository) {
+        Ok(requirements) => {
+            doctor_repository_requirements(&mut report, &requirements);
+            report.requirements = Some(requirements);
+        }
+        Err(error) => doctor_check(
+            &mut report,
+            "git.requirements",
+            SyncDoctorSeverity::Error,
+            error.to_string(),
+        ),
+    }
+
+    doctor_refs(&engine, &repository, options, &mut report);
+    doctor_repository_lock(&repository, &mut report);
+    doctor_journal(paths, state_store, &mut report);
+    doctor_cache(paths, &mut report);
+    finish_doctor_report(report)
+}
+
+fn finish_doctor_without_repository(
+    paths: &VaultPaths,
+    state_store: Option<&SyncStateStore>,
+    mut report: SyncDoctorReport,
+) -> SyncDoctorReport {
+    doctor_journal(paths, state_store, &mut report);
+    doctor_cache(paths, &mut report);
+    finish_doctor_report(report)
+}
+
+fn doctor_repository_layout(report: &mut SyncDoctorReport, repository: &GitRepository) {
+    let (severity, message) = match repository.layout {
+        GitRepositoryLayout::Colocated => (
+            SyncDoctorSeverity::Pass,
+            format!(
+                "colocated Git directory at {}",
+                repository.git_dir.display()
+            ),
+        ),
+        GitRepositoryLayout::Detached => (
+            SyncDoctorSeverity::Pass,
+            format!("detached Git directory at {}", repository.git_dir.display()),
+        ),
+        GitRepositoryLayout::Bare => (
+            SyncDoctorSeverity::Error,
+            "bare repositories cannot materialize a synchronized vault worktree".to_string(),
+        ),
+        _ => (
+            SyncDoctorSeverity::Error,
+            "the repository layout is not supported by this Vulcan version".to_string(),
+        ),
+    };
+    doctor_check(report, "git.layout", severity, message);
+    let (severity, message) = match &repository.object_format {
+        GitObjectFormat::Sha1 => (SyncDoctorSeverity::Pass, "SHA-1 object format".to_string()),
+        GitObjectFormat::Sha256 => (
+            SyncDoctorSeverity::Pass,
+            "SHA-256 object format".to_string(),
+        ),
+        GitObjectFormat::Other(format) => (
+            SyncDoctorSeverity::Warning,
+            format!("unrecognized Git object format `{format}`"),
+        ),
+        _ => (
+            SyncDoctorSeverity::Warning,
+            "unrecognized Git object format".to_string(),
+        ),
+    };
+    doctor_check(report, "git.object-format", severity, message);
+}
+
+fn doctor_repository_requirements(
+    report: &mut SyncDoctorReport,
+    requirements: &GitRepositoryRequirements,
+) {
+    let required_ignores = 3;
+    if requirements.ignored_internal_paths.len() == required_ignores {
+        doctor_check(
+            report,
+            "git.internal-ignore",
+            SyncDoctorSeverity::Pass,
+            "rebuildable cache database files are ignored by Git",
+        );
+    } else {
+        doctor_check(
+            report,
+            "git.internal-ignore",
+            SyncDoctorSeverity::Warning,
+            "add .vulcan/cache.db* to an applicable .gitignore before synchronizing",
+        );
+    }
+    if requirements.required_filters.is_empty() {
+        doctor_check(
+            report,
+            "git.filters",
+            SyncDoctorSeverity::Pass,
+            "tracked paths do not require Git clean/smudge filters",
+        );
+    } else {
+        let filters = requirements
+            .required_filters
+            .iter()
+            .map(|filter| format!("{} ({})", filter.name, filter.path_count))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let severity = if requirements.git_lfs_available == Some(false) {
+            SyncDoctorSeverity::Error
+        } else {
+            SyncDoctorSeverity::Info
+        };
+        doctor_check(
+            report,
+            "git.filters",
+            severity,
+            format!("required Git filters: {filters}"),
+        );
+    }
+}
+
+fn doctor_refs(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    options: &GitSyncOptions,
+    report: &mut SyncDoctorReport,
+) {
+    let refs = match GitSyncRefs::for_options(options) {
+        Ok(refs) => refs,
+        Err(error) => {
+            doctor_check(
+                report,
+                "git.refs",
+                SyncDoctorSeverity::Error,
+                error.to_string(),
+            );
+            return;
+        }
+    };
+    let mut revisions = Vec::new();
+    for (name, reference) in [
+        ("local", &refs.local),
+        ("fetched", &refs.fetched),
+        ("pending", &refs.pending),
+    ] {
+        match engine.read_ref(repository, reference) {
+            Ok(Some(revision)) => match engine.tree_oid(repository, &revision) {
+                Ok(_) => revisions.push((name, revision)),
+                Err(error) => doctor_check(
+                    report,
+                    "git.objects",
+                    SyncDoctorSeverity::Error,
+                    format!("{name} ref points to an unreadable object: {error}"),
+                ),
+            },
+            Ok(None) => {}
+            Err(error) => doctor_check(
+                report,
+                "git.refs",
+                SyncDoctorSeverity::Error,
+                format!("cannot read {name} ref: {error}"),
+            ),
+        }
+    }
+    if revisions.is_empty() {
+        doctor_check(
+            report,
+            "git.refs",
+            SyncDoctorSeverity::Info,
+            "no local Vulcan sync refs exist yet",
+        );
+    } else if revisions.len() == 3 && revisions.windows(2).all(|pair| pair[0].1 == pair[1].1) {
+        doctor_check(
+            report,
+            "git.refs",
+            SyncDoctorSeverity::Pass,
+            format!("{} readable local sync ref(s) agree", revisions.len()),
+        );
+    } else {
+        doctor_check(
+            report,
+            "git.refs",
+            SyncDoctorSeverity::Warning,
+            "local, fetched, and pending sync refs do not yet agree",
+        );
+    }
+
+    let local_revision = revisions
+        .iter()
+        .find(|(name, _)| *name == "local")
+        .map(|(_, revision)| revision.clone());
+    match engine.remote_ref(repository, &options.remote, &refs.live) {
+        Ok(Some(revision)) => {
+            report.remote_revision = Some(revision.to_string());
+            if local_revision
+                .as_ref()
+                .is_some_and(|local| local != &revision)
+            {
+                doctor_check(
+                    report,
+                    "git.remote",
+                    SyncDoctorSeverity::Warning,
+                    format!("remote live ref {revision} differs from the local candidate"),
+                );
+            } else {
+                doctor_check(
+                    report,
+                    "git.remote",
+                    SyncDoctorSeverity::Pass,
+                    format!("remote live ref resolves to {revision}"),
+                );
+            }
+        }
+        Ok(None) => doctor_check(
+            report,
+            "git.remote",
+            SyncDoctorSeverity::Info,
+            "remote live ref does not exist yet; the first sync can bootstrap it",
+        ),
+        Err(error) => doctor_check(
+            report,
+            "git.remote",
+            SyncDoctorSeverity::Warning,
+            format!("remote could not be inspected: {error}"),
+        ),
+    }
+}
+
+fn doctor_repository_lock(repository: &GitRepository, report: &mut SyncDoctorReport) {
+    let path = repository.git_dir.join("vulcan-sync/sync.lock");
+    let file = match OpenOptions::new().read(true).write(true).open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            doctor_check(
+                report,
+                "git.lock",
+                SyncDoctorSeverity::Pass,
+                "no sync cycle currently holds the repository lock",
+            );
+            return;
+        }
+        Err(error) => {
+            doctor_check(
+                report,
+                "git.lock",
+                SyncDoctorSeverity::Warning,
+                format!("cannot inspect {}: {error}", path.display()),
+            );
+            return;
+        }
+    };
+    match file.try_lock_exclusive() {
+        Ok(()) => doctor_check(
+            report,
+            "git.lock",
+            SyncDoctorSeverity::Pass,
+            "the persistent lock file is currently unlocked",
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => doctor_check(
+            report,
+            "git.lock",
+            SyncDoctorSeverity::Info,
+            "a sync cycle currently holds the repository lock",
+        ),
+        Err(error) => doctor_check(
+            report,
+            "git.lock",
+            SyncDoctorSeverity::Warning,
+            format!("cannot test the repository lock: {error}"),
+        ),
+    }
+}
+
+fn doctor_journal(
+    paths: &VaultPaths,
+    state_store: Option<&SyncStateStore>,
+    report: &mut SyncDoctorReport,
+) {
+    let work_tree = match std::fs::canonicalize(paths.vault_root()) {
+        Ok(path) => path,
+        Err(error) => {
+            doctor_check(
+                report,
+                "state.journal",
+                SyncDoctorSeverity::Error,
+                error.to_string(),
+            );
+            return;
+        }
+    };
+    let key = crate::sync_state::repository_state_key(&work_tree);
+    let Some(store) = state_store else {
+        doctor_check(
+            report,
+            "state.journal",
+            SyncDoctorSeverity::Warning,
+            "cannot determine the user-state directory; set XDG_STATE_HOME or HOME",
+        );
+        return;
+    };
+    match store.load(&key) {
+        Ok(Some(journal)) => {
+            let severity = if journal.phase.requires_recovery()
+                || journal.phase == SyncJournalPhase::Conflicted
+            {
+                SyncDoctorSeverity::Warning
+            } else {
+                SyncDoctorSeverity::Info
+            };
+            doctor_check(
+                report,
+                "state.journal",
+                severity,
+                format!(
+                    "retained transaction {} is in {:?} phase at {}",
+                    journal.transaction_id,
+                    journal.phase,
+                    store.journal_path(&key).map_or_else(
+                        |_| "<invalid path>".to_string(),
+                        |path| path.display().to_string()
+                    )
+                ),
+            );
+            report.journal = Some(journal);
+        }
+        Ok(None) => doctor_check(
+            report,
+            "state.journal",
+            SyncDoctorSeverity::Pass,
+            "no retained transaction journal requires review",
+        ),
+        Err(error) => doctor_check(
+            report,
+            "state.journal",
+            SyncDoctorSeverity::Error,
+            error.to_string(),
+        ),
+    }
+}
+
+fn doctor_cache(paths: &VaultPaths, report: &mut SyncDoctorReport) {
+    if !paths.cache_db().exists() {
+        doctor_check(
+            report,
+            "cache.coherence",
+            SyncDoctorSeverity::Info,
+            "the optional rebuildable cache is not initialized",
+        );
+        return;
+    }
+    match vulcan_core::doctor_vault(paths) {
+        Ok(cache)
+            if cache.summary.stale_index_rows == 0 && cache.summary.missing_index_rows == 0 =>
+        {
+            doctor_check(
+                report,
+                "cache.coherence",
+                SyncDoctorSeverity::Pass,
+                "the cache file inventory agrees with the materialized vault",
+            );
+        }
+        Ok(cache) => doctor_check(
+            report,
+            "cache.coherence",
+            SyncDoctorSeverity::Warning,
+            format!(
+                "cache inventory has {} stale and {} missing path(s); run vulcan scan",
+                cache.summary.stale_index_rows, cache.summary.missing_index_rows
+            ),
+        ),
+        Err(error) => doctor_check(
+            report,
+            "cache.coherence",
+            SyncDoctorSeverity::Error,
+            error.to_string(),
+        ),
+    }
+}
+
+fn doctor_check(
+    report: &mut SyncDoctorReport,
+    code: &str,
+    severity: SyncDoctorSeverity,
+    message: impl Into<String>,
+) {
+    report.checks.push(SyncDoctorCheck {
+        code: code.to_string(),
+        severity,
+        message: message.into(),
+    });
+}
+
+fn finish_doctor_report(mut report: SyncDoctorReport) -> SyncDoctorReport {
+    report.healthy = report
+        .checks
+        .iter()
+        .all(|check| check.severity != SyncDoctorSeverity::Error);
+    report
 }
 
 /// Runs one finite Git synchronization cycle directly against a vault path.
@@ -464,5 +1010,99 @@ mod tests {
         assert!(journal.local_snapshot.is_some());
         assert!(journal.git_dir.is_some());
         assert!(journal.error.is_some());
+    }
+
+    #[test]
+    fn sync_doctor_reports_clean_layout_refs_ignores_and_optional_cache() {
+        let temporary = tempdir().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        git(
+            &vault,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&vault, &["config", "user.name", "Vulcan Test"]);
+        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        git(
+            &vault,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        fs::write(vault.join(".gitignore"), ".vulcan/cache.db*\n").expect("ignore file");
+        fs::write(vault.join("Home.md"), "home\n").expect("home note");
+        git(&vault, &["add", ".gitignore", "Home.md"]);
+        git(&vault, &["commit", "--quiet", "-m", "initial"]);
+        let paths = VaultPaths::new(&vault);
+        let store = SyncStateStore::at(temporary.path().join("state"));
+
+        let report = doctor_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store);
+
+        assert!(report.healthy);
+        assert_eq!(report.version, SYNC_DOCTOR_VERSION);
+        assert!(report.installation.is_some());
+        assert_eq!(
+            report.repository.as_ref().map(|item| item.layout),
+            Some(GitRepositoryLayout::Colocated)
+        );
+        assert!(report
+            .requirements
+            .as_ref()
+            .is_some_and(|requirements| { requirements.ignored_internal_paths.len() == 3 }));
+        assert!(report
+            .checks
+            .iter()
+            .any(|check| check.code == "git.remote" && check.severity == SyncDoctorSeverity::Info));
+        assert!(report.checks.iter().any(|check| {
+            check.code == "cache.coherence" && check.severity == SyncDoctorSeverity::Info
+        }));
+        assert!(!store.root().exists());
+    }
+
+    #[test]
+    fn sync_doctor_surfaces_recovery_journals() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        git(
+            &vault,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&vault, &["config", "user.name", "Vulcan Test"]);
+        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        fs::write(vault.join(".gitignore"), ".vulcan/cache.db*\n").expect("ignore file");
+        fs::write(vault.join("Home.md"), "home\n").expect("home note");
+        git(&vault, &["add", ".gitignore", "Home.md"]);
+        git(&vault, &["commit", "--quiet", "-m", "initial"]);
+        let paths = VaultPaths::new(&vault);
+        let store = SyncStateStore::at(temporary.path().join("state"));
+        let mut journal = SyncJournal::preparing(
+            paths.vault_root(),
+            "origin",
+            "refs/heads/__vulcan-sync/live",
+        )
+        .expect("journal");
+        journal.phase = SyncJournalPhase::Applying;
+        store.save(&journal).expect("save journal");
+
+        let report = doctor_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store);
+
+        assert_eq!(report.journal, Some(journal));
+        assert!(report.checks.iter().any(|check| {
+            check.code == "state.journal" && check.severity == SyncDoctorSeverity::Warning
+        }));
     }
 }

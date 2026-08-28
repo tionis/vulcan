@@ -4616,6 +4616,28 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     assert_eq!(status_json["actions"], serde_json::json!([]));
     assert!(status_json["state"].get("recovered_from").is_none());
 
+    let doctor = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
+        .args([
+            "--vault",
+            reader.to_str().expect("reader path should be utf-8"),
+            "--output",
+            "json",
+            "sync",
+            "doctor",
+        ])
+        .assert()
+        .success();
+    let doctor_json = parse_stdout_json(&doctor);
+    assert_eq!(doctor_json["version"], 1);
+    assert_eq!(doctor_json["healthy"], true);
+    assert_eq!(doctor_json["repository"]["layout"], "colocated");
+    assert!(doctor_json["installation"]["version"]["raw"].is_string());
+    assert!(doctor_json["checks"].as_array().is_some_and(|checks| checks
+        .iter()
+        .any(|check| { check["code"] == "git.remote" && check["severity"] == "pass" })));
+
     let config_home = temporary.path().join("config");
     fs::create_dir(&config_home).expect("config home should be created");
     let config_home = config_home.to_str().expect("config path should be utf-8");
@@ -11102,6 +11124,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     let git_skill = fs::read_to_string(vault_root.join(".agents/skills/git-workflow/SKILL.md"))
         .expect("Git workflow skill should be readable");
     assert!(git_skill.contains("vulcan sync status"));
+    assert!(git_skill.contains("vulcan sync doctor [<wiki>]"));
     assert!(git_skill.contains("vulcan sync run --dry-run"));
     assert!(git_skill.contains("vulcan sync run <wiki>"));
     assert!(git_skill.contains("vulcan sync pause [<wiki>]"));
@@ -11125,6 +11148,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         fs::read_to_string(vault_root.join(".agents/skills/diagnostics-and-repair/SKILL.md"))
             .expect("diagnostics skill should be readable");
     assert!(diagnostics_skill.contains("state.recovered_from"));
+    assert!(diagnostics_skill.contains("vulcan sync doctor [<wiki>]"));
     assert!(diagnostics_skill.contains("offline/cancelled cycle"));
     assert!(diagnostics_skill.contains("outside `.vulcan/cache.db`"));
     assert!(json["support_files"].as_array().is_some_and(|items| items

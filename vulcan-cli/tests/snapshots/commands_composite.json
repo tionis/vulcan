@@ -8450,7 +8450,7 @@
       },
       {
         "about": "Synchronize a vault through a hidden Git live ref",
-        "after_help": "Subcommands:\n  run          perform one finite capture, reconcile, push, and apply cycle\n  status       inspect local safety and remote live-ref state without mutating either\n  pause        disable future automatic sync for one registered wiki\n  resume       enable future automatic sync for one registered wiki\n\nNotes:\n  Run/status work directly against the selected vault path and do not require a daemon or wiki registration.\n  The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.\n  Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.\n  Staged changes and in-progress Git operations pause worktree synchronization.\n  Pause/resume updates device-local automatic behavior only; manual run and status remain available.\n\nExamples:\n  vulcan sync run\n  vulcan sync run personal\n  vulcan sync run --group daily\n  vulcan sync status --all\n  vulcan sync run --dry-run\n  vulcan sync status\n  vulcan sync pause personal\n  vulcan sync resume personal\n  vulcan --vault ./wiki sync run --remote origin",
+        "after_help": "Subcommands:\n  run          perform one finite capture, reconcile, push, and apply cycle\n  status       inspect local safety and remote live-ref state without mutating either\n  doctor       diagnose Git, refs, filters, recovery state, and cache coherence\n  pause        disable future automatic sync for one registered wiki\n  resume       enable future automatic sync for one registered wiki\n\nNotes:\n  Run/status/doctor work directly against the selected vault path and do not require a daemon or wiki registration.\n  The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.\n  Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.\n  Staged changes and in-progress Git operations pause worktree synchronization.\n  Pause/resume updates device-local automatic behavior only; manual run and status remain available.\n\nExamples:\n  vulcan sync run\n  vulcan sync run personal\n  vulcan sync run --group daily\n  vulcan sync status --all\n  vulcan sync run --dry-run\n  vulcan sync status\n  vulcan sync doctor\n  vulcan sync pause personal\n  vulcan sync resume personal\n  vulcan --vault ./wiki sync run --remote origin",
         "name": "sync",
         "options": [],
         "subcommands": [
@@ -8582,6 +8582,46 @@
                 "short": null,
                 "value_names": [
                   "GROUP"
+                ]
+              },
+              {
+                "help": "Git remote carrying the live ref",
+                "id": "remote",
+                "long": "remote",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOTE"
+                ]
+              },
+              {
+                "help": "Fully qualified remote live ref",
+                "id": "live_ref",
+                "long": "live-ref",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LIVE_REF"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Diagnose Git synchronization without changing it",
+            "name": "doctor",
+            "options": [
+              {
+                "help": "Optional registered wiki ID; omit to use the selected vault path",
+                "id": "wiki",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WIKI"
                 ]
               },
               {

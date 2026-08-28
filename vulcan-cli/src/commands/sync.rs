@@ -4,9 +4,12 @@ use crate::{
 };
 use serde::Serialize;
 use vulcan_app::sync::{
-    sync_git_vault, GitRefName, GitRemote, GitSyncAction, GitSyncOptions, VaultSyncReport,
+    doctor_git_vault, sync_git_vault, GitRefName, GitRemote, GitSyncAction, GitSyncOptions,
+    SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
 };
-use vulcan_core::{PermissionGuard, VaultPaths};
+use vulcan_core::{
+    resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
+};
 use vulcan_daemon::registry::{UpdateWikiRequest, WikiId, WikiRegistration, WikiRegistry};
 use vulcan_daemon::sync::{sync_registered_wikis, RegisteredSyncReport, RegisteredSyncSelection};
 
@@ -21,6 +24,9 @@ pub(crate) fn handle_sync_command(
         }
         SyncCommand::Resume { wiki, dry_run } => {
             return set_automatic_sync(cli.output, paths, wiki.as_deref(), false, *dry_run);
+        }
+        SyncCommand::Doctor { wiki, target } => {
+            return run_sync_doctor(cli, paths, wiki.as_deref(), target);
         }
         SyncCommand::Run { .. } | SyncCommand::Status { .. } => {}
     }
@@ -48,7 +54,9 @@ pub(crate) fn handle_sync_command(
             },
             registered_selection(selection)?,
         ),
-        SyncCommand::Pause { .. } | SyncCommand::Resume { .. } => unreachable!(),
+        SyncCommand::Doctor { .. } | SyncCommand::Pause { .. } | SyncCommand::Resume { .. } => {
+            unreachable!()
+        }
     };
     if let Some(selection) = selection {
         let registry = WikiRegistry::user_default().map_err(CliError::operation)?;
@@ -69,6 +77,86 @@ pub(crate) fn handle_sync_command(
         .map_err(CliError::operation)?;
     let report = sync_git_vault(paths, &options).map_err(CliError::operation)?;
     print_sync_report(cli.output, &report)
+}
+
+fn run_sync_doctor(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    target: &crate::SyncTargetArgs,
+) -> Result<(), CliError> {
+    let (paths, registration_profile) = if let Some(wiki) = wiki {
+        let id = WikiId::parse(wiki).map_err(CliError::operation)?;
+        let status = WikiRegistry::user_default()
+            .map_err(CliError::operation)?
+            .show(&id)
+            .map_err(CliError::operation)?;
+        if status
+            .registration
+            .sync_backend
+            .as_deref()
+            .is_some_and(|backend| backend != "git")
+        {
+            return Err(CliError::operation(format!(
+                "wiki `{id}` uses unsupported sync backend `{}`",
+                status
+                    .registration
+                    .sync_backend
+                    .as_deref()
+                    .unwrap_or_default()
+            )));
+        }
+        (
+            VaultPaths::new(status.registration.path),
+            status.registration.permissions_profile,
+        )
+    } else {
+        (selected_paths.clone(), None)
+    };
+    let profile = cli
+        .permissions
+        .as_deref()
+        .or(registration_profile.as_deref());
+    let selection = resolve_permission_profile(&paths, profile).map_err(CliError::operation)?;
+    ProfilePermissionGuard::new(&paths, selection)
+        .check_git()
+        .map_err(CliError::operation)?;
+    let options = GitSyncOptions {
+        remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
+        live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
+        dry_run: true,
+        ..GitSyncOptions::default()
+    };
+    let report = doctor_git_vault(&paths, &options);
+    print_sync_doctor_report(cli.output, &report)
+}
+
+fn print_sync_doctor_report(
+    output: OutputFormat,
+    report: &SyncDoctorReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Sync doctor: {} ({})",
+        report.vault.display(),
+        if report.healthy {
+            "no errors"
+        } else {
+            "errors found"
+        }
+    );
+    for check in &report.checks {
+        let severity = match check.severity {
+            SyncDoctorSeverity::Pass => "pass",
+            SyncDoctorSeverity::Info => "info",
+            SyncDoctorSeverity::Warning => "warning",
+            SyncDoctorSeverity::Error => "error",
+        };
+        println!("{severity}\t{}\t{}", check.code, check.message);
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -151,7 +151,7 @@ pub struct GitSyncRefs {
 }
 
 impl GitSyncRefs {
-    fn for_options(options: &GitSyncOptions) -> Result<Self, GitSyncError> {
+    pub fn for_options(options: &GitSyncOptions) -> Result<Self, GitSyncError> {
         let profile =
             blake3::hash(format!("{}\0{}", options.remote, options.live_ref).as_bytes()).to_hex();
         let profile = &profile[..16];
