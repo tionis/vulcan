@@ -258,6 +258,29 @@ impl SyncSupervisor {
         Ok(completed)
     }
 
+    pub fn update_running_status(
+        &self,
+        id: &str,
+        status: SyncStatus,
+    ) -> Result<SupervisedSyncJob, SupervisorError> {
+        let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let job = inner
+            .state
+            .jobs
+            .iter_mut()
+            .find(|candidate| candidate.job.id == id)
+            .ok_or_else(|| SupervisorError::UnknownJob(id.to_string()))?;
+        if job.job.state != SyncJobState::Running {
+            return Err(SupervisorError::InvalidState(format!(
+                "synchronization job `{id}` is not running"
+            )));
+        }
+        job.job.status = Some(status);
+        let updated = job.clone();
+        persist_state(&self.state_path, &inner.state)?;
+        Ok(updated)
+    }
+
     pub fn cancel(&self, id: &str) -> Result<SupervisedSyncJob, SupervisorError> {
         let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
         let index = inner

@@ -723,6 +723,19 @@ pub fn sync_git_vault_with_control(
     state_store: &SyncStateStore,
     cancellation: &SyncCancellationToken,
 ) -> Result<VaultSyncReport, AppError> {
+    let mut observer = vulcan_sync::IgnoreGitSyncProgress;
+    sync_git_vault_with_observer(paths, options, state_store, cancellation, &mut observer)
+}
+
+/// Runs one finite Git synchronization cycle while forwarding durable progress
+/// to a caller-owned observer after each journal transition is persisted.
+pub fn sync_git_vault_with_observer(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    state_store: &SyncStateStore,
+    cancellation: &SyncCancellationToken,
+    delegate: &mut dyn GitSyncObserver,
+) -> Result<VaultSyncReport, AppError> {
     if cancellation.is_cancelled() {
         return Err(AppError::operation(
             "synchronization was cancelled before the transaction started",
@@ -751,6 +764,7 @@ pub fn sync_git_vault_with_control(
         state_store,
         journal: &mut journal,
         persist: !options.dry_run,
+        delegate,
     };
     let sync = match vulcan_sync::sync_git_once_with_control(
         &engine,
@@ -859,6 +873,7 @@ struct JournalSyncObserver<'a> {
     state_store: &'a SyncStateStore,
     journal: &'a mut SyncJournal,
     persist: bool,
+    delegate: &'a mut dyn GitSyncObserver,
 }
 
 impl GitSyncObserver for JournalSyncObserver<'_> {
@@ -896,7 +911,7 @@ impl GitSyncObserver for JournalSyncObserver<'_> {
                     .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
             }
         }
-        Ok(())
+        self.delegate.progress(progress)
     }
 }
 
