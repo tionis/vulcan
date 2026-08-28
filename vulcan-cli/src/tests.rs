@@ -2123,7 +2123,7 @@ fn parses_git_blame_command() {
 }
 
 #[test]
-fn parses_sync_run_and_status_commands() {
+fn parses_sync_commands() {
     let run = Cli::try_parse_from([
         "vulcan",
         "sync",
@@ -2191,6 +2191,29 @@ fn parses_sync_run_and_status_commands() {
         } if wiki == "personal"
     ));
     assert!(Cli::try_parse_from(["vulcan", "sync", "run", "personal", "--all"]).is_err());
+
+    let pause = Cli::try_parse_from(["vulcan", "sync", "pause", "personal", "--dry-run"])
+        .expect("sync pause should parse");
+    assert_eq!(
+        pause.command,
+        Command::Sync {
+            command: SyncCommand::Pause {
+                wiki: Some("personal".to_string()),
+                dry_run: true,
+            },
+        }
+    );
+    let resume =
+        Cli::try_parse_from(["vulcan", "sync", "resume"]).expect("sync resume should parse");
+    assert_eq!(
+        resume.command,
+        Command::Sync {
+            command: SyncCommand::Resume {
+                wiki: None,
+                dry_run: false,
+            },
+        }
+    );
 }
 
 #[test]

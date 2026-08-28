@@ -2,11 +2,12 @@ use crate::output::print_json;
 use crate::{
     selected_permission_guard, Cli, CliError, OutputFormat, SyncCommand, SyncSelectionArgs,
 };
+use serde::Serialize;
 use vulcan_app::sync::{
     sync_git_vault, GitRefName, GitRemote, GitSyncAction, GitSyncOptions, VaultSyncReport,
 };
 use vulcan_core::{PermissionGuard, VaultPaths};
-use vulcan_daemon::registry::{WikiId, WikiRegistry};
+use vulcan_daemon::registry::{UpdateWikiRequest, WikiId, WikiRegistration, WikiRegistry};
 use vulcan_daemon::sync::{sync_registered_wikis, RegisteredSyncReport, RegisteredSyncSelection};
 
 pub(crate) fn handle_sync_command(
@@ -14,6 +15,15 @@ pub(crate) fn handle_sync_command(
     paths: &VaultPaths,
     command: &SyncCommand,
 ) -> Result<(), CliError> {
+    match command {
+        SyncCommand::Pause { wiki, dry_run } => {
+            return set_automatic_sync(cli.output, paths, wiki.as_deref(), true, *dry_run);
+        }
+        SyncCommand::Resume { wiki, dry_run } => {
+            return set_automatic_sync(cli.output, paths, wiki.as_deref(), false, *dry_run);
+        }
+        SyncCommand::Run { .. } | SyncCommand::Status { .. } => {}
+    }
     let (options, selection) = match command {
         SyncCommand::Run {
             selection,
@@ -38,6 +48,7 @@ pub(crate) fn handle_sync_command(
             },
             registered_selection(selection)?,
         ),
+        SyncCommand::Pause { .. } | SyncCommand::Resume { .. } => unreachable!(),
     };
     if let Some(selection) = selection {
         let registry = WikiRegistry::user_default().map_err(CliError::operation)?;
@@ -58,6 +69,60 @@ pub(crate) fn handle_sync_command(
         .map_err(CliError::operation)?;
     let report = sync_git_vault(paths, &options).map_err(CliError::operation)?;
     print_sync_report(cli.output, &report)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+struct AutomaticSyncReport {
+    action: &'static str,
+    dry_run: bool,
+    wiki: WikiRegistration,
+}
+
+fn set_automatic_sync(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    wiki: Option<&str>,
+    paused: bool,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let registry = WikiRegistry::user_default().map_err(CliError::operation)?;
+    let id = match wiki {
+        Some(wiki) => WikiId::parse(wiki).map_err(CliError::operation)?,
+        None => {
+            registry
+                .find_by_path(paths.vault_root())
+                .map_err(CliError::operation)?
+                .id
+        }
+    };
+    let wiki = registry
+        .update(
+            &id,
+            &UpdateWikiRequest {
+                groups_to_add: Vec::new(),
+                groups_to_remove: Vec::new(),
+                permissions_profile: None,
+                sync_paused: Some(paused),
+            },
+            dry_run,
+        )
+        .map_err(CliError::operation)?;
+    let report = AutomaticSyncReport {
+        action: if paused { "pause" } else { "resume" },
+        dry_run,
+        wiki,
+    };
+    if output == OutputFormat::Json {
+        print_json(&report)
+    } else {
+        println!(
+            "Automatic sync {} for wiki `{}`{}.",
+            if paused { "paused" } else { "resumed" },
+            report.wiki.id,
+            if dry_run { " (dry run)" } else { "" }
+        );
+        Ok(())
+    }
 }
 
 fn registered_selection(

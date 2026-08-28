@@ -569,12 +569,15 @@ const SYNC_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   run          perform one finite capture, reconcile, push, and apply cycle
   status       inspect local safety and remote live-ref state without mutating either
+  pause        disable future automatic sync for one registered wiki
+  resume       enable future automatic sync for one registered wiki
 
 Notes:
-  Sync works directly against the selected vault path and does not require a daemon or wiki registration.
+  Run/status work directly against the selected vault path and do not require a daemon or wiki registration.
   The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.
   Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.
   Staged changes and in-progress Git operations pause worktree synchronization.
+  Pause/resume updates device-local automatic behavior only; manual run and status remain available.
 
 Examples:
   vulcan sync run
@@ -583,6 +586,8 @@ Examples:
   vulcan sync status --all
   vulcan sync run --dry-run
   vulcan sync status
+  vulcan sync pause personal
+  vulcan sync resume personal
   vulcan --vault ./wiki sync run --remote origin";
 
 const VAULT_COMMAND_AFTER_HELP: &str = "\
@@ -3913,6 +3918,20 @@ pub enum SyncCommand {
         selection: SyncSelectionArgs,
         #[command(flatten)]
         target: SyncTargetArgs,
+    },
+    #[command(about = "Pause automatic sync for a registered wiki")]
+    Pause {
+        #[arg(help = "Registered wiki ID; omit to use the selected registered vault path")]
+        wiki: Option<String>,
+        #[arg(long, help = "Validate and report without writing registry state")]
+        dry_run: bool,
+    },
+    #[command(about = "Resume automatic sync for a registered wiki")]
+    Resume {
+        #[arg(help = "Registered wiki ID; omit to use the selected registered vault path")]
+        wiki: Option<String>,
+        #[arg(long, help = "Validate and report without writing registry state")]
+        dry_run: bool,
     },
 }
 

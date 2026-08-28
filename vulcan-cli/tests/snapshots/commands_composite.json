@@ -8450,7 +8450,7 @@
       },
       {
         "about": "Synchronize a vault through a hidden Git live ref",
-        "after_help": "Subcommands:\n  run          perform one finite capture, reconcile, push, and apply cycle\n  status       inspect local safety and remote live-ref state without mutating either\n\nNotes:\n  Sync works directly against the selected vault path and does not require a daemon or wiki registration.\n  The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.\n  Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.\n  Staged changes and in-progress Git operations pause worktree synchronization.\n\nExamples:\n  vulcan sync run\n  vulcan sync run personal\n  vulcan sync run --group daily\n  vulcan sync status --all\n  vulcan sync run --dry-run\n  vulcan sync status\n  vulcan --vault ./wiki sync run --remote origin",
+        "after_help": "Subcommands:\n  run          perform one finite capture, reconcile, push, and apply cycle\n  status       inspect local safety and remote live-ref state without mutating either\n  pause        disable future automatic sync for one registered wiki\n  resume       enable future automatic sync for one registered wiki\n\nNotes:\n  Run/status work directly against the selected vault path and do not require a daemon or wiki registration.\n  The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.\n  Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.\n  Staged changes and in-progress Git operations pause worktree synchronization.\n  Pause/resume updates device-local automatic behavior only; manual run and status remain available.\n\nExamples:\n  vulcan sync run\n  vulcan sync run personal\n  vulcan sync run --group daily\n  vulcan sync status --all\n  vulcan sync run --dry-run\n  vulcan sync status\n  vulcan sync pause personal\n  vulcan sync resume personal\n  vulcan --vault ./wiki sync run --remote origin",
         "name": "sync",
         "options": [],
         "subcommands": [
@@ -8604,6 +8604,70 @@
                 "short": null,
                 "value_names": [
                   "LIVE_REF"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Pause automatic sync for a registered wiki",
+            "name": "pause",
+            "options": [
+              {
+                "help": "Registered wiki ID; omit to use the selected registered vault path",
+                "id": "wiki",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WIKI"
+                ]
+              },
+              {
+                "help": "Validate and report without writing registry state",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Resume automatic sync for a registered wiki",
+            "name": "resume",
+            "options": [
+              {
+                "help": "Registered wiki ID; omit to use the selected registered vault path",
+                "id": "wiki",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WIKI"
+                ]
+              },
+              {
+                "help": "Validate and report without writing registry state",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
                 ]
               }
             ],

@@ -4716,6 +4716,38 @@ fn vault_registry_cli_round_trips_without_touching_wiki_files() {
     assert_eq!(show_json["groups"], serde_json::json!(["mobile"]));
     assert_eq!(show_json["permissions_profile"], "readonly");
 
+    let pause_plan = cargo_vulcan_with_xdg_config(config_home)
+        .args(["--output", "json", "sync", "pause", "personal", "--dry-run"])
+        .assert()
+        .success();
+    let pause_plan_json = parse_stdout_json(&pause_plan);
+    assert_eq!(pause_plan_json["action"], "pause");
+    assert_eq!(pause_plan_json["dry_run"], true);
+    assert_eq!(pause_plan_json["wiki"]["sync_paused"], true);
+    let show_after_plan = cargo_vulcan_with_xdg_config(config_home)
+        .args(["--output", "json", "vault", "show", "personal"])
+        .assert()
+        .success();
+    assert!(parse_stdout_json(&show_after_plan)
+        .get("sync_paused")
+        .is_none());
+
+    let pause = cargo_vulcan_with_xdg_config(config_home)
+        .args(["--vault", wiki_path, "--output", "json", "sync", "pause"])
+        .assert()
+        .success();
+    let pause_json = parse_stdout_json(&pause);
+    assert_eq!(pause_json["wiki"]["id"], "personal");
+    assert_eq!(pause_json["wiki"]["sync_paused"], true);
+
+    let resume = cargo_vulcan_with_xdg_config(config_home)
+        .args(["--output", "json", "sync", "resume", "personal"])
+        .assert()
+        .success();
+    let resume_json = parse_stdout_json(&resume);
+    assert_eq!(resume_json["action"], "resume");
+    assert!(resume_json["wiki"].get("sync_paused").is_none());
+
     cargo_vulcan_with_xdg_config(config_home)
         .args(["vault", "remove", "personal", "--dry-run"])
         .assert()
@@ -11061,6 +11093,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync status"));
     assert!(git_skill.contains("vulcan sync run --dry-run"));
     assert!(git_skill.contains("vulcan sync run <wiki>"));
+    assert!(git_skill.contains("vulcan sync pause [<wiki>]"));
     assert!(git_skill.contains("vulcan vault clone <remote> <path> --dry-run"));
     assert!(git_skill.contains("clone that succeeds before registration fails"));
     assert!(git_skill.contains("--platform android-shared"));
@@ -11071,6 +11104,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     )
     .expect("configuration skill should be readable");
     assert!(configuration_skill.contains("vulcan vault clone/add/list/show/set/remove"));
+    assert!(configuration_skill.contains("vulcan sync pause/resume [<wiki>]"));
     assert!(configuration_skill.contains("Clone dry-run does not contact the remote"));
     assert!(configuration_skill.contains("--platform android-shared"));
     assert!(configuration_skill.contains("must never be treated as permission to delete"));

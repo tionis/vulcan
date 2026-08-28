@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 5
+version: 6
 tools:
   - config_show
   - config_get
@@ -31,6 +31,7 @@ permission profiles, or diagnoses permission and trust failures.
 5. Check trust separately from permissions when JS, plugins, or skill command tools fail to run.
 6. Use `vulcan config import folder-notes --preview` to inspect an Obsidian Folder Notes convention before applying it. Folder-note structure is shared repository state, so the importer rejects a local target.
 7. Use `vulcan vault clone/add/list/show/set/remove` for device-local wiki setup and registration. Registration is optional; `add`, `set`, and `remove` do not initialize, synchronize, or delete the materialized vault, while `clone` explicitly creates a new Git worktree before registering it.
+8. Use `vulcan sync pause/resume [<wiki>]` for the registration's device-local automatic-sync switch; omission resolves the currently selected registered vault.
 
 ## Guardrails
 
@@ -41,6 +42,7 @@ permission profiles, or diagnoses permission and trust failures.
 - Importing folder-note settings configures the convention; it does not auto-detect or move existing folder notes. Use `vulcan refactor folder-notes --dry-run` for a layout conversion.
 - `vulcan sync status` and `vulcan sync run` both inspect repository and remote state and therefore require the selected profile's Git permission; `--dry-run` prevents mutation but does not bypass that permission boundary.
 - Preview clone and registration mutations with `vulcan vault clone ... --dry-run`, `vault add ... --dry-run`, `vault set ... --dry-run`, or `vault remove ... --dry-run`. Clone dry-run does not contact the remote or create destinations. Removing a registration must never be treated as permission to delete its worktree or Git directory.
+- Preview automatic-sync changes with `vulcan sync pause/resume ... --dry-run`. This state is device-local and does not alter repository policy or prevent an explicit manual sync.
 
 ## Example Moves
 

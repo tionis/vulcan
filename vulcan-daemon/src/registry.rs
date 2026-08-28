@@ -146,6 +146,7 @@ pub enum RegistryError {
     DuplicateId(WikiId),
     DuplicatePath { id: WikiId, path: PathBuf },
     DuplicateGitDir { id: WikiId, path: PathBuf },
+    UnregisteredPath(PathBuf),
     UnknownWiki(WikiId),
     InvalidConfig { path: PathBuf, detail: String },
     Io(std::io::Error),
@@ -177,6 +178,11 @@ impl Display for RegistryError {
             Self::DuplicateGitDir { id, path } => write!(
                 formatter,
                 "Git directory {} is already registered for wiki `{id}`",
+                path.display()
+            ),
+            Self::UnregisteredPath(path) => write!(
+                formatter,
+                "vault path {} is not registered on this device",
                 path.display()
             ),
             Self::UnknownWiki(id) => write!(formatter, "unknown registered wiki `{id}`"),
@@ -249,6 +255,15 @@ impl WikiRegistry {
             .find(|wiki| &wiki.id == id)
             .map(WikiRegistrationStatus::from_registration)
             .ok_or_else(|| RegistryError::UnknownWiki(id.clone()))
+    }
+
+    pub fn find_by_path(&self, path: &Path) -> Result<WikiRegistration, RegistryError> {
+        let path = canonical_directory(path)?;
+        self.load()?
+            .vaults
+            .into_iter()
+            .find(|wiki| wiki.path == path)
+            .ok_or(RegistryError::UnregisteredPath(path))
     }
 
     pub fn add(
@@ -559,6 +574,28 @@ mod tests {
         assert!(matches!(
             registry.add(&second, false),
             Err(RegistryError::DuplicateGitDir { .. })
+        ));
+    }
+
+    #[test]
+    fn registrations_can_be_resolved_by_canonical_path() {
+        let temporary = tempdir().expect("temporary directory");
+        let wiki = temporary.path().join("wiki");
+        fs::create_dir(&wiki).expect("wiki directory");
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        let registered = registry
+            .add(&request("personal", &wiki), false)
+            .expect("register wiki");
+
+        assert_eq!(
+            registry
+                .find_by_path(&wiki.join("."))
+                .expect("resolve registered path"),
+            registered
+        );
+        assert!(matches!(
+            registry.find_by_path(temporary.path()),
+            Err(RegistryError::UnregisteredPath(_))
         ));
     }
 }
