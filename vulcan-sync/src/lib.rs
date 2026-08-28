@@ -12,6 +12,7 @@
 mod git;
 
 pub use git::{
-    GitCliEngine, GitEngine, GitEngineError, GitEngineKind, GitInstallation, GitObjectFormat,
-    GitRepository, GitRepositoryLayout, GitVersion,
+    GitCapture, GitCaptureRequest, GitCliEngine, GitEngine, GitEngineError, GitEngineKind,
+    GitInstallation, GitMerge, GitObjectFormat, GitOid, GitPushResult, GitRefName, GitRemote,
+    GitRepository, GitRepositoryLayout, GitSafetyState, GitVersion,
 };
