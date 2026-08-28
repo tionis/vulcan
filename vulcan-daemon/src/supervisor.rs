@@ -18,12 +18,35 @@ use vulcan_sync::{
 pub const SYNC_SUPERVISOR_STATE_VERSION: u32 = 1;
 const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_RETAINED_JOBS: usize = 256;
+const MAX_WATCH_PATHS: usize = 256;
+const MAX_WATCH_TRANSACTIONS: usize = 16;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncWatchMetadata {
+    pub event_count: usize,
+    pub untagged_events: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub self_generated_transactions: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub safety_rescan: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watcher_errors: Vec<String>,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SupervisedSyncJob {
     #[serde(flatten)]
     pub job: SyncJob,
     pub triggers: Vec<SyncJobTrigger>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<SyncWatchMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -144,14 +167,37 @@ impl SyncSupervisor {
         vault: impl Into<PathBuf>,
         trigger: SyncJobTrigger,
     ) -> Result<EnqueueSyncReport, SupervisorError> {
-        let wiki_id = wiki_id.into();
-        let vault = vault.into();
+        self.enqueue_inner(wiki_id.into(), vault.into(), trigger, None)
+    }
+
+    pub fn enqueue_watch(
+        &self,
+        wiki_id: impl Into<String>,
+        vault: impl Into<PathBuf>,
+        metadata: SyncWatchMetadata,
+    ) -> Result<EnqueueSyncReport, SupervisorError> {
+        let trigger = if metadata.safety_rescan {
+            SyncJobTrigger::Recovery
+        } else {
+            SyncJobTrigger::Watch
+        };
+        self.enqueue_inner(wiki_id.into(), vault.into(), trigger, Some(metadata))
+    }
+
+    fn enqueue_inner(
+        &self,
+        wiki_id: String,
+        vault: PathBuf,
+        trigger: SyncJobTrigger,
+        watch: Option<SyncWatchMetadata>,
+    ) -> Result<EnqueueSyncReport, SupervisorError> {
         let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
         if let Some(existing) = inner.state.jobs.iter_mut().find(|candidate| {
             candidate.job.wiki_id.as_deref() == Some(wiki_id.as_str())
                 && candidate.job.state == SyncJobState::Queued
         }) {
             push_trigger(&mut existing.triggers, trigger);
+            merge_watch_metadata(&mut existing.watch, watch);
             let report = EnqueueSyncReport {
                 job: existing.clone(),
                 coalesced: true,
@@ -174,6 +220,7 @@ impl SyncSupervisor {
         let supervised = SupervisedSyncJob {
             job,
             triggers: vec![trigger],
+            watch,
         };
         inner.state.jobs.push(supervised.clone());
         inner.queue.push_back(id.clone());
@@ -341,6 +388,39 @@ fn push_trigger(triggers: &mut Vec<SyncJobTrigger>, trigger: SyncJobTrigger) {
     }
 }
 
+fn merge_watch_metadata(
+    current: &mut Option<SyncWatchMetadata>,
+    incoming: Option<SyncWatchMetadata>,
+) {
+    let Some(incoming) = incoming else {
+        return;
+    };
+    let current = current.get_or_insert_with(SyncWatchMetadata::default);
+    current.event_count = current.event_count.saturating_add(incoming.event_count);
+    current.untagged_events = current
+        .untagged_events
+        .saturating_add(incoming.untagged_events);
+    current.safety_rescan |= incoming.safety_rescan;
+    merge_bounded(&mut current.paths, incoming.paths, MAX_WATCH_PATHS);
+    merge_bounded(
+        &mut current.self_generated_transactions,
+        incoming.self_generated_transactions,
+        MAX_WATCH_TRANSACTIONS,
+    );
+    merge_bounded(
+        &mut current.watcher_errors,
+        incoming.watcher_errors,
+        MAX_WATCH_TRANSACTIONS,
+    );
+}
+
+fn merge_bounded(current: &mut Vec<String>, incoming: Vec<String>, limit: usize) {
+    current.extend(incoming);
+    current.sort();
+    current.dedup();
+    current.truncate(limit);
+}
+
 fn trim_terminal_jobs(jobs: &mut Vec<SupervisedSyncJob>) {
     let mut terminal = jobs
         .iter()
@@ -505,6 +585,64 @@ mod tests {
             .expect("recovered job");
         assert_eq!(running.job.job.id, recovered.job.job.id);
         assert!(recovered.job.triggers.contains(&SyncJobTrigger::Recovery));
+    }
+
+    #[test]
+    fn watch_metadata_coalesces_bounded_and_survives_restart() {
+        let temporary = tempdir().expect("temporary directory");
+        let state_path = temporary.path().join("jobs.json");
+        let supervisor = SyncSupervisor::at(&state_path).expect("supervisor");
+        let first = supervisor
+            .enqueue_watch(
+                "alpha",
+                temporary.path(),
+                SyncWatchMetadata {
+                    event_count: 2,
+                    untagged_events: 1,
+                    paths: vec!["b.md".to_string(), "a.md".to_string()],
+                    self_generated_transactions: vec!["tx-b".to_string()],
+                    safety_rescan: false,
+                    watcher_errors: Vec::new(),
+                },
+            )
+            .expect("first watch batch");
+        assert!(!first.coalesced);
+        let second = supervisor
+            .enqueue_watch(
+                "alpha",
+                temporary.path(),
+                SyncWatchMetadata {
+                    event_count: 3,
+                    untagged_events: 2,
+                    paths: vec!["a.md".to_string(), "c.md".to_string()],
+                    self_generated_transactions: vec!["tx-a".to_string()],
+                    safety_rescan: true,
+                    watcher_errors: vec!["overflow".to_string()],
+                },
+            )
+            .expect("coalesced watch batch");
+        assert!(second.coalesced);
+        assert!(second.job.triggers.contains(&SyncJobTrigger::Watch));
+        assert!(second.job.triggers.contains(&SyncJobTrigger::Recovery));
+        let metadata = second.job.watch.expect("watch metadata");
+        assert_eq!(metadata.event_count, 5);
+        assert_eq!(metadata.untagged_events, 3);
+        assert_eq!(metadata.paths, vec!["a.md", "b.md", "c.md"]);
+        assert_eq!(metadata.self_generated_transactions, vec!["tx-a", "tx-b"]);
+        assert!(metadata.safety_rescan);
+        drop(supervisor);
+
+        let restarted = SyncSupervisor::at(&state_path).expect("restart");
+        assert_eq!(
+            restarted
+                .list()
+                .expect("jobs")
+                .into_iter()
+                .next()
+                .expect("job")
+                .watch,
+            Some(metadata)
+        );
     }
 
     #[test]
