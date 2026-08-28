@@ -5083,6 +5083,11 @@ The daemon extends the existing architecture rather than replacing it:
 
 ### 10.2 Vault registry
 
+The daemon registry is also the user-facing wiki registry. A **registered vault** is called a
+**wiki** in sync and companion-application UI, but it remains the same canonical materialized
+vault used by every existing command. Registration is optional: pointing ordinary CLI commands at
+an unregistered local directory must continue to work without a daemon, account, or Git repository.
+
 ```toml
 # ~/.config/vulcan/daemon.toml
 bind = "127.0.0.1:3210"
@@ -5101,12 +5106,19 @@ permissions_profile = "readonly"  # clamp all API requests for this vault to a n
 
 - [ ] Vault registry config at `~/.config/vulcan/daemon.toml` (XDG_CONFIG_HOME respected)
 - [ ] Each vault entry: `id` (short name, URL-safe), `path`, `token` (argon2 hashed), optional `permissions_profile` (defaults to `unrestricted`, can point at any named profile from Phase 9.19.13)
-- [ ] `vulcan daemon config add <id> <path>` — register a vault, generate and display a token
-- [ ] `vulcan daemon config remove <id>` — unregister a vault
-- [ ] `vulcan daemon config list` — show registered vaults (paths, IDs, status)
+- [ ] Add the top-level `vulcan vault` group as the canonical human and automation surface for managed wikis; keep daemon process configuration under `vulcan daemon config` rather than mixing lifecycle and wiki-management commands
+- [ ] `vulcan vault add <id> <path>` — register an existing materialized vault without changing its files; support `--group <name>`, optional device-local Git-directory metadata, token generation, JSON output, and `--dry-run`
+- [ ] `vulcan vault list [--group <name>]` — list registered wikis with IDs, paths, availability, daemon/index state, and configured sync backend
+- [ ] `vulcan vault show <id>` — report shared identity/policy separately from device-local paths, credentials, and runtime state
+- [ ] `vulcan vault set <id> [--group <name>] [--remove-group <name>] [--permissions-profile <profile>]` — update device-local registration metadata with `--dry-run` and without modifying vault content
+- [ ] `vulcan vault remove <id>` — unregister only, with `--dry-run`; never delete the worktree, Git objects, or remote repository as an implicit side effect
+- [ ] Allow named local groups so `vulcan sync run --group <name>` and `--all` can schedule several independent wiki jobs; explicitly make this an aggregate operation rather than an atomic cross-repository transaction
+- [ ] Give every local installation a stable device ULID and every registration a stable local ULID; define a later migration path to an optional shared wiki identity without making shared identity a prerequisite for ordinary local usage
 - [ ] Auth tokens stored outside vault content — avoids coupling auth to the data it protects
 - [ ] Token-authenticated daemon requests resolve to a vault plus a named permission profile; all endpoint authorization and result filtering reuse the existing `PermissionGuard` / `PermissionFilter` layer instead of adding daemon-specific policy logic
 - [ ] Vault auto-discovery: optionally scan a directory for vaults (e.g., `scan_dir = "/home/user/vaults"`)
+- [ ] Keep a future remote/catalog discovery adapter separate from the local registry. Prefer listing eligible Forgejo repositories or reading a small catalog of descriptors; do not make a metadata monorepo, Git submodules, credentials, local paths, pending operations, or wiki contents part of the initial registry contract
+- [ ] Add JSON output and `describe` coverage for the complete `vault` group, including stable identifiers and explicit fields that distinguish missing, unindexed, paused, conflicted, and healthy registrations
 - **Forward reference:** Phase 17 replaces the per-vault token as the sole authority source with identities, groups, rooted delegable capability grants, and limited credentials for users, agents, automation, services, and shares. Phase 10's token infrastructure (argon2 hashing, Bearer auth middleware) and Phase 9.19.13 permission plumbing are reused. The initial per-vault profile becomes an explicit root-issued compatibility grant rather than a parallel authorization model.
 
 ### 10.3 REST API
@@ -5143,6 +5155,7 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - [ ] `POST /{id}/vectors/index` — trigger embedding indexing
 
 **Daemon management:**
+- [ ] `GET /capabilities` — protocol version, supported command/report schema versions, optional sync/agent features, and transport capabilities for CLI and companion-client negotiation
 - [ ] `GET /health` — daemon health, vault statuses
 - [ ] `GET /vaults` — list registered vaults with status
 - [ ] Auth: standard HTTP `Authorization: Bearer <token>` authentication for daemon clients; validate the token against the stored argon2 hash and resolve it to the vault's configured permission profile
@@ -5182,6 +5195,11 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 
 ### 11.1 Daemon-level git integration
 
+This phase manages ordinary human-facing repository history. Phase 12 adds a separate hidden live
+snapshot history for synchronization. When that backend is enabled, frequent working-tree capture
+must move to the hidden ref rather than creating `main` commits through both systems; deliberate
+semantic checkpoints continue to use the normal branch.
+
 - [ ] On vault registration: detect if vault is a git repo, optionally `git init` if configured
 - [ ] Configurable commit strategy per vault in `daemon.toml`:
   ```toml
@@ -5197,6 +5215,7 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - [ ] `per-write`: commit immediately after each mutation (same as Phase 9.3)
 - [ ] `batched`: accumulate changes, commit every N seconds (daemon timer thread)
 - [ ] `manual`: no auto-commit, but history endpoints still work if vault has git
+- [ ] Define the handoff to Phase 12 explicitly: one configured component owns automatic capture, enabling hidden-ref sync disables overlapping per-write/batched commits on the semantic branch, and manual ordinary Git commits remain supported and preserved
 
 ### 11.2 History API endpoints
 
@@ -5216,88 +5235,156 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 
 ## Phase 12: Device and file-tree synchronization
 
-**Goal:** Keep one canonical materialized vault current across devices and storage providers. This phase replicates the working tree; it is deliberately separate from Phase 15 content routes, which exchange selected logical documents with external knowledge systems.
+**Goal:** Keep canonical materialized wikis current across Linux, Windows, Android, and other devices through an opt-in synchronization subsystem that remains usable as a direct one-shot CLI workflow without the daemon. Git is the first active backend and provides hidden, lossless working-tree snapshots; the daemon adds multi-wiki scheduling, watching, status, and a local companion protocol over the same reusable engine.
 
 **Depends on:** Phase 10 (daemon), Phase 11 (git versioning for conflict-aware sync).
 
-**Boundary:** A sync backend answers "how does this vault directory reach another device or storage service?" It may replicate Markdown, attachments, and intentional shared configuration, but it does not translate documents, select a publication subset, bind one note to an external object, or run cross-wiki workflows. Those are connector/route responsibilities in Phase 15. Every backend must materialize a coherent local working tree before Vulcan scans it, and `.vulcan/cache.db` remains disposable local state.
+**Design reference:** `references/Near-Realtime Git Working-Tree Synchronization with Forgejo.md`, especially its alternate-index capture, hidden-ref, capture-before-apply, compare-and-swap, semantic-history, retention, and failure-recovery requirements. The future notification broker is not a prerequisite for this phase: manual triggers and polling use the same engine.
 
-### 12.1 Sync backend trait
+**Boundary:** A sync backend answers "how does this vault directory reach another device or storage service?" It may replicate Markdown, attachments, intentional shared configuration, and explicitly managed sync artifacts, but it does not translate documents, select a publication subset, bind one note to an external object, or relay one remote wiki into another. Those are connector/route responsibilities in Phase 15. Every backend must materialize a coherent local working tree before Vulcan scans it, and `.vulcan/cache.db` remains disposable local state.
+
+### 12.1 Layering, direct mode, and backend contract
+
+- [ ] Add a `vulcan-sync` crate for backend capabilities, finite synchronization cycles, Git snapshot/ref/application mechanics, backend reports, and cancellation. It may depend on reusable `vulcan-core` Git and merge primitives, but not on `vulcan-daemon`, SQLite availability, HTTP, TUI state, or a notification broker.
+- [ ] Put the complete reusable vault transaction in `vulcan-app`: acquire the vault/repository lock, capture local state, invoke the backend, apply deletion guards, perform deterministic resolution, validate the resulting tree, refresh the cache when present, and return one structured report.
+- [ ] Keep scheduling, retained job/status state, trigger coalescing, watcher ownership, suspend/resume handling, and local HTTP/WebSocket transport in `vulcan-daemon`.
+- [ ] Make `vulcan sync run` call the same `vulcan-app` workflow directly when the daemon is absent or not requested. It must not start a daemon implicitly and must work for a path that has never been registered as a managed wiki.
+- [ ] Keep all pre-existing commands daemon-free and sync-free by default: no Git discovery, repository initialization, registration write, network request, background process, or LLM provider may occur merely because a user runs a normal local-vault command.
+- [ ] Refine the initial backend trait around a finite `sync_once` operation and explicit capabilities rather than putting `start`, `stop`, scheduling, and mutable retained status on every backend:
 
 ```rust
 trait SyncBackend: Send + Sync {
-    fn start(&mut self, vault_path: &Path) -> Result<()>;
-    fn stop(&mut self) -> Result<()>;
-    fn status(&self) -> SyncStatus;  // Idle, Syncing, Error(String)
-    fn trigger(&mut self) -> Result<()>;  // Force a sync cycle
+    fn name(&self) -> &'static str;
+    fn capabilities(&self) -> SyncCapabilities;
+    fn sync_once(
+        &self,
+        context: &SyncContext<'_>,
+        cancellation: &CancellationToken,
+    ) -> Result<BackendSyncReport, SyncError>;
 }
 ```
 
-- [ ] Define the trait in a new `vulcan-sync` crate (or module in `vulcan-daemon`)
-- [ ] `SyncStatus` enum: `Idle`, `Syncing { progress: Option<f32> }`, `Error(String)`, `Disabled`
+- [ ] Model capabilities such as finite versus continuous operation, fetch/push, safe pause/cancel, progress, remote revision, offline recovery, conflict preservation, and detached-Git-directory support; introduce lifecycle hooks only for backends that actually supervise a continuous external process.
+- [ ] Define serializable `SyncPlan`, `SyncReport`, `SyncStatus`, `SyncConflict`, `SyncJob`, and error-category contracts shared by direct CLI, daemon REST, companion clients, tests, and `--output json`.
 
-### 12.2 Obsidian headless sync backend
+### 12.2 Repository layout and cross-platform storage
 
-- [ ] Spawn and manage the `obsidian-headless` process as a subprocess
-- [ ] Config in `daemon.toml`:
-  ```toml
-  [[vault]]
-  id = "personal"
-  [vault.sync]
-  backend = "obsidian-headless"
-  binary = "/usr/local/bin/obsidian-headless"  # path to binary
-  # Additional obsidian-headless-specific config
-  ```
-- [ ] Monitor process health, restart on crash
-- [ ] Forward sync status to daemon health endpoint
+- [ ] Support one independent Git repository per wiki. Do not combine unrelated wiki histories into one bare repository or introduce cross-repository alternates whose garbage collection can invalidate another wiki.
+- [ ] Support both colocated `.git` repositories (default for ordinary Linux/Windows/local use) and detached Git directories with a materialized worktree. Record the latter only in device-local registry/state.
+- [ ] Prototype `git clone --separate-git-dir` as the initial Android layout: Git objects, indexes, refs, locks, and temporary state live in Termux-private storage while the Obsidian-visible worktree lives in shared storage. Use a bare repository plus linked worktree only when a concrete multiple-worktree requirement justifies the additional bookkeeping.
+- [ ] Define platform profiles for Linux, Windows, and Android, including `core.fileMode=false` on Android shared storage, case-only rename handling, reserved Windows names, symlink policy, path-length behavior, filesystem timestamp precision, and filesystems that cannot faithfully materialize executable bits.
+- [ ] Keep sync job journals and other device-local operational state under the platform state directory, Git directories under the platform data directory, and credentials in Git/SSH credential facilities. Never store credentials or pending sync state in the rebuildable cache.
+- [ ] Make loss of the detached Git directory recoverable: preserve the materialized worktree, refuse destructive reattachment, capture it before applying a fresh clone, and report which unpushed hidden snapshots could have been lost. Document that uninstalling Termux may remove device-local Git objects.
+- [ ] Verify installed Git CLI behavior first rather than replacing it with a library, so SSH configuration, credential helpers, attributes, filters, object format, and transport behavior match the user's normal Git environment.
 
-### 12.3 Git remote sync backend
+### 12.3 CLI surface and wiki selection
 
-- [ ] Pull/push on schedule or on trigger
-- [ ] Config: `remote`, `branch`, `pull_interval_seconds`, `auto_push`
-- [ ] Merge strategy: fast-forward only by default, configurable
-- [ ] Conflict detection: if pull results in merge conflicts, surface as diagnostics (do not auto-resolve)
+All commands in this section support `--output json`; mutating commands support `--dry-run` or an explicit plan/apply split. A path/current working directory remains valid wherever a registered wiki ID is accepted.
 
-### 12.4 Passive sync backend
+- [ ] `vulcan sync run [<wiki>] [--all | --group <name>]` — perform one finite synchronization cycle directly or ask the daemon to enqueue independent per-wiki jobs; report partial group failure without claiming cross-repository atomicity
+- [ ] `vulcan vault clone <remote> <path> [--id <id>] [--git-dir <path>]` — clone and register one wiki, supporting a detached Git directory for constrained filesystems; `--dry-run` reports the worktree, Git directory, remote, platform policy, and proposed registration without mutation
+- [ ] `vulcan sync status [<wiki>] [--all | --group <name>]` — distinguish clean, dirty, capture-pending, captured-unpushed, fetching, merging, applying, conflicted, paused, offline, and error states
+- [ ] `vulcan sync pause [<wiki>]` / `vulcan sync resume [<wiki>]` — change device-local automatic behavior without modifying shared repository policy; direct manual planning remains available while paused
+- [ ] `vulcan sync conflicts [<conflict-id>]` — list unresolved conflicts or show one immutable conflict record with base/local/remote object IDs, paths, policy result, preserved artifacts, and resolution state
+- [ ] `vulcan sync resolve <conflict-id>` — accept a supplied resolution file/patch, an explicit preserved side, an interactive editor result, or `--agent` to create a proposal; agent mode is plan-only by default, applying a proposal is explicit, every mode supports `--dry-run`, and a lossy side selection is never an implicit default
+- [ ] `vulcan sync checkpoint [<wiki>]` — create a deliberate recovery or semantic checkpoint from the current accepted live tree without copying existing Git objects
+- [ ] `vulcan sync semantic-plan [<wiki>] --from <rev> --to <rev> [--agent]` — build a reviewable proposed semantic history without changing `main` or live refs
+- [ ] `vulcan sync semantic-apply <plan-id>` — validate and fast-forward the semantic branch to an accepted proposal; refuse if its source or target assumptions are stale
+- [ ] `vulcan sync doctor [<wiki>]` — diagnose Git layout, missing objects, ref invariants, stale locks/journals, platform incompatibilities, ignored internal files, filter/LFS requirements, and worktree/cache coherence without mutating by default
+- [ ] Extend `vulcan describe`, shell completions, permission profiles, MCP/tool projections, and JSON schemas for the `vault` and `sync` surfaces. Expose bounded plan/status/conflict operations to agents rather than an unrestricted generic Git shell.
 
-- [ ] For Syncthing, Dropbox, iCloud, etc. — the sync tool runs independently
-- [ ] The daemon just watches for file changes (already handled by the watcher)
-- [ ] Sync status is always "external" — daemon doesn't control it
-- [ ] Useful for users who already have sync set up and just want the daemon's API layer
+### 12.4 Hidden working-tree snapshot engine
 
-### 12.5 Seafile process backend
+- [ ] Reserve and version a Vulcan-owned ref namespace for the canonical remote live tip, fetched remote tip, local per-device candidate, archives/epochs, conflicts, and semantic proposals. Spike Forgejo custom-ref fetch/push, permission, webhook, maintenance, and Actions behavior; retain a hidden-looking branch fallback when custom refs cannot satisfy fast-forward safety.
+- [ ] Capture the working tree through an absolute alternate `GIT_INDEX_FILE`; never stage, reset, or rewrite the user's normal index or semantic branch as part of live capture.
+- [ ] Respect `.gitignore`, `.gitattributes`, filters, symlinks, executable-bit policy, and Git LFS declarations; detect unchanged trees and avoid empty snapshots.
+- [ ] Record protocol version, stable device identity, policy hash, and source state in machine-readable commit trailers while keeping snapshot messages concise and explicitly non-semantic.
+- [ ] Enforce the invariant that all current local bytes are reachable from a Git ref before applying a remote tree. Recheck file identity/size/mtime around reads and recapture when a file changes during capture or application.
+- [ ] Maintain separate fetched-remote and local-candidate refs so a fetch cannot obscure an unaccepted local snapshot.
+- [ ] Fetch the canonical live ref, merge divergent candidates in isolated Git object/index state, create a merge commit containing the expected accepted remote tip in its ancestry, and update the remote ref through fast-forward/force-with-lease compare-and-swap semantics. Never use an unconditional force push.
+- [ ] On rejected push, fetch, merge, and retry with bounded backoff. Coalesce triggers and allow only one mutating job per repository while permitting different repositories to progress independently.
+- [ ] Pause working-tree application during staged normal-index changes, merge/rebase/cherry-pick/bisect operations, or unexplained branch movement. Continue safe fetch/capture work and report the exact pause reason.
+- [ ] Apply accepted trees with temporary files and atomic replacement where possible, precondition-check deletes and overwrites, suppress/tag self-generated watcher events, journal interruption-sensitive steps, and verify the resulting tree before scanning.
+- [ ] Divide live history into retention epochs. Keep short-lived live snapshots, longer recovery checkpoints, and permanent semantic commits as separate policies; expire archive refs without rewriting active or semantic history.
 
-- [ ] Prefer supervising a maintained standalone Seafile sync client or a separately reusable engine extracted from Seafile Sync Improved; do not duplicate Seafile block-transfer, encryption, history, conflict, and recovery code inside `vulcan-core`.
-- [ ] Materialize a complete local vault directory before exposing it to Vulcan. The SQLite cache remains local and rebuildable, and remote Seafile objects never become cache rows without a coherent local filesystem snapshot.
-- [ ] Model backend capabilities explicitly: initialize/pull/push or continuous sync, progress, remote revision, conflict copies, authentication state, offline state, recovery/rebuild, and whether pause/cancel is safe.
-- [ ] Keep server/library identifiers and non-secret policy in daemon config; read account/repository tokens and encrypted-library passwords from environment variables or a device secret store. Never copy Obsidian SecretStorage values into shared Vulcan config.
-- [ ] Reuse standard `seafile-ignore.txt` and define precedence for Vulcan internal files, Obsidian settings categories, plugin data, and user rules. Exclude `.vulcan/cache.db` and transient lock/temp files by default while allowing intentional shared config and durable state.
-- [ ] Coordinate sync publication with Vulcan's write lock, watcher coalescing, scan refresh, mass-deletion guard, git checkpoint policy, and conflict diagnostics. Never run a scan over a partially materialized remote commit.
-- [ ] Test initialization, incremental and realtime/fallback sync, interruption, authentication failure, encrypted repositories, mass deletion, conflicts, ignored paths, stale remote state, client crashes/restarts, and cache rebuild using a mock/fake process boundary.
+### 12.5 Deterministic merge policy and conflict preservation
 
-### 12.6 Storage virtualization decision gate
+- [ ] Implement a versioned, shared merge-policy schema with ordered path/type rules and fixed built-in defaults. Device-local overrides may reduce automation or require review but must not make the same accepted inputs resolve to different trees silently.
+- [ ] Run ordinary Git three-way merge and configured attribute drivers first, followed by deterministic structured mergers for supported Markdown/frontmatter, JSON, Canvas, Bases, and selected Obsidian/plugin state formats.
+- [ ] Define explicit policies for clean text merges, overlapping text, binary changes, delete/modify, rename/rename, directory/file conflicts, case collisions, and device-local application state. Unsupported or ambiguous syntax produces diagnostics rather than being ignored.
+- [ ] Never use wall-clock time, arrival order, or an unverified model confidence score to choose a winner. Where a stable side ordering is required, derive it from versioned policy plus immutable actor/device and object identities, independently of first-parent ordering used for remote fast-forward safety.
+- [ ] Give every conflict an immutable ID derived from merge base, candidate tips, paths, and policy version/hash. Preserve base/local/remote objects and all conflicting file contents before publishing or applying a conflict-preserving result.
+- [ ] Materialize deterministic conflict copies when needed so non-conflicting paths can continue synchronizing, while marking affected paths unresolved. Define whether human-visible artifacts live beside notes or under a configurable managed directory and ensure Obsidian indexing behavior is explicit.
+- [ ] Record conflict creation and resolution provenance in Git-reachable metadata or commit trailers rather than `cache.db`; do not add frontmatter markers to user notes solely as an implementation shortcut.
+- [ ] Validate every automatic resolution with parsing, path safety, relevant schema checks, link analysis, worktree verification, and mass-deletion policy before it may update the canonical live ref.
 
-- [ ] Keep `Path`-backed local files as the default and initial daemon contract. Sync backends populate a real working tree rather than making every core call remote-aware.
-- [ ] Before introducing a `VaultStorage` trait, document at least one concrete embedded use case that cannot use a materialized temporary/persistent workspace and measure the affected `vulcan-core`/`vulcan-app` boundaries.
-- [ ] Require any storage abstraction to provide safe path normalization, deterministic enumeration, coherent read snapshots, atomic create/replace/rename, locking or compare-and-swap, metadata/identity, change notifications, crash recovery, and streaming attachment access.
-- [ ] Keep cache placement and lifecycle separate from canonical storage: SQLite and search indexes remain local derived artifacts that can be discarded and rebuilt from one coherent storage snapshot.
-- [ ] Prototype at the application boundary first. Do not weaken filesystem security checks, write serialization, git behavior, or source-of-truth guarantees merely to support an object-store-shaped backend.
+### 12.6 Optional agent-assisted conflict resolution
 
-### 12.7 Sync API endpoints
+- [ ] Treat an LLM/agent as an explicit escalation after deterministic merging, not as a merge driver whose output is assumed deterministic or correct.
+- [ ] Reuse named Vulcan permission profiles. Give the resolver base/local/remote inputs and focused read/query/search/link tools first; broader vault read access is opt-in, bounded to the registered vault, and never includes credentials or unrelated registered wikis.
+- [ ] Make the default agent operation produce a `ResolutionProposal` containing a patch/tree, explanation, referenced context, input conflict ID, model/provider identity, prompt/tool-contract version, and validation results. It must not write directly to the worktree or refs.
+- [ ] Add preview, explicit approval, stale-input detection, cancellation, redacted audit logging, and deterministic revalidation before applying a proposal. Automatic acceptance is a separate per-policy opt-in and still obeys all path, parse, link, deletion, and final-tree checks.
+- [ ] Initially allow one user-triggered resolver job per conflict. Do not let every device independently spend tokens and race incompatible model outputs; later server-side claiming/coordination requires its own protocol and threat review.
+- [ ] Preserve all original Git objects regardless of proposal acceptance, rejection, provider failure, timeout, malformed output, or agent crash.
 
-- [ ] `GET /{id}/sync/status` — current sync state
-- [ ] `POST /{id}/sync/trigger` — force a sync cycle
-- [ ] `GET /{id}/sync/conflicts` — list files with unresolved conflicts (if applicable)
+### 12.7 Semantic history proposals
 
-### 12.8 Optional full-Space SilverBullet synchronization
+- [ ] Keep live snapshot history immutable and separate from the human-facing semantic branch. Never squash or rewrite commits that active synchronization peers depend on.
+- [ ] Generate proposed histories under `refs/vulcan/proposals/semantic/<job-id>`, based on immutable source/target revisions and the accepted live tree.
+- [ ] Allow a deterministic rule-based grouper and an optional agent to propose file/hunk grouping, dependency order, rename interpretation, and commit messages. The model organizes existing changes; content invention or unrelated cleanup requires a separate reviewed mutation workflow.
+- [ ] Construct proposal commits with Git plumbing, validate every intermediate tree, and require the final tree to equal the selected accepted live snapshot exactly.
+- [ ] Present the proposed commits, messages, patches, validation results, and provenance for human review. Apply only through a safe semantic-branch fast-forward after confirming the source branch and live target have not moved unexpectedly.
+- [ ] Retain rejected proposals only according to explicit local retention policy and ensure proposal refs do not keep live snapshot epochs reachable indefinitely.
+
+### 12.8 Daemon supervisor and local companion protocol
+
+- [ ] Add an explicit per-repository daemon state machine covering clean, dirty, capture-pending, capturing, fetched, merging, pushing, applying, conflicted, paused, offline, and error states. Persist only the minimum interruption/recovery state outside `cache.db` and rebuild derived status on restart.
+- [ ] Watch registered worktrees, debounce editor save sequences, impose a maximum dirty age, perform safety rescans after watcher overflow, and reconcile remotes on startup/resume and periodically. The future notification/WebSocket layer only adds another idempotent trigger.
+- [ ] Run one scheduler/supervisor for all registered wikis, serialize mutations per repository, coalesce duplicate triggers, and expose aggregate group jobs with independent child results.
+- [ ] Define a small versioned loopback HTTP/JSON protocol, with an authenticated WebSocket event stream, as a projection over the same application reports used by CLI. Prefer this cross-platform transport over Unix-only IPC so an Obsidian WebView can use it on Linux, Windows, and Android.
+- [ ] Bind to loopback by default, use device-local scoped bearer/capability credentials, validate `Origin`/authorization consistently, support capability negotiation and idempotency keys, and return job IDs for asynchronous operations.
+- [ ] Provide companion operations for capabilities, wiki listing, sync/status/pause/resume, conflict list/detail/resolution proposals, semantic plans, job status/cancellation, and event subscription. Do not expose an unrestricted Git command endpoint.
+- [ ] Define the initial endpoint contract alongside the report schemas: `GET /capabilities`, `GET /vaults`, `GET /{id}/sync/status`, `POST /{id}/sync`, `POST /{id}/sync/pause`, `POST /{id}/sync/resume`, `GET /{id}/sync/conflicts`, `GET /{id}/sync/conflicts/{conflict}`, `POST /{id}/sync/conflicts/{conflict}/proposals`, `POST /{id}/sync/conflicts/{conflict}/resolve`, `POST /{id}/sync/semantic-plans`, `GET/DELETE /jobs/{job}`, and `GET /events` for WebSocket upgrade
+- [ ] Build a thin Obsidian companion that requests editor saves, triggers the daemon/direct bridge, displays state and conflicts, and opens reviewed resolutions. It must not run an independent Git state machine against a worktree managed by Vulcan.
+- [ ] On Android, support one-shot execution under Termux before requiring an always-running daemon or custom app. A later bridge may trigger the same engine; Android lifecycle/battery integration remains packaging rather than synchronization semantics.
+
+### 12.9 Passive and process-backed alternatives
+
+- [ ] Preserve a passive backend for Syncthing, Dropbox, iCloud, and externally managed native clients. The daemon watches and scans the resulting tree but reports status as external and does not claim coordinated conflict or snapshot guarantees.
+- [ ] Support supervising `obsidian-headless` as an optional continuous process backend, including lifecycle, health, restart, authentication status, and capability reporting without coupling its protocol into `vulcan-core`.
+- [ ] Prefer supervising a maintained standalone Seafile sync client or a separately reusable engine extracted from Seafile Sync Improved; do not duplicate Seafile block-transfer, encryption, history, conflict, and recovery code inside Vulcan.
+- [ ] Materialize a complete local tree before exposing process-backed changes to scanning; coordinate process publication with the Vulcan write lock, watcher coalescing, mass-deletion guard, checkpoint policy, conflict diagnostics, and cache rebuild rules.
+- [ ] Keep server/library identifiers and non-secret policy in device configuration; read tokens and encrypted-library passwords from environment variables or device secret stores. Reuse `seafile-ignore.txt`, exclude cache/locks/transient files by default, and test crashes, encrypted repositories, conflicts, stale remote state, and repair through fake process boundaries.
+
+### 12.10 Optional full-Space SilverBullet synchronization
 
 Use this subphase only when an entire SilverBullet Space should behave as a file-tree peer. Selective page import/publication and chaining SilverBullet content to Outline, HedgeDoc, or Git wikis use Phase 15 routes instead. The detailed protocol contract lives in connector appendix SB; completing Phase 12 does not require this optional backend.
 
 - [ ] Complete SB.1's exact upstream pin and conformance harness before advertising protocol compatibility.
 - [ ] Implement SB.4 when Vulcan must act as the file-protocol server behind an upstream SilverBullet client.
 - [ ] Implement SB.5 when Vulcan must mirror an existing SilverBullet server into a materialized local vault.
-- [ ] Advertise the server and client roles independently, with explicit authority/deletion policy, durable state outside `cache.db`, conflict preservation, version rejection, and mock plus pinned-upstream conformance tests.
+- [ ] Advertise server and client roles independently, with explicit authority/deletion policy, durable state outside `cache.db`, conflict preservation, version rejection, and mock plus pinned-upstream conformance tests.
 - [ ] Reuse the standard sync lifecycle, daemon status/conflict endpoints, write locking, watcher quiescence, mass-deletion guard, checkpoint policy, secret handling, and storage-virtualization decision gate rather than building a SilverBullet-specific parallel sync platform.
+
+### 12.11 Storage virtualization decision gate
+
+- [ ] Keep `Path`-backed local files as the default and initial daemon contract. Sync backends populate a real working tree rather than making every core call remote-aware.
+- [ ] Before introducing a `VaultStorage` trait, document at least one concrete embedded use case that cannot use a materialized temporary/persistent workspace and measure the affected `vulcan-core`/`vulcan-app` boundaries.
+- [ ] Require any storage abstraction to provide safe path normalization, deterministic enumeration, coherent read snapshots, atomic create/replace/rename, locking or compare-and-swap, metadata/identity, change notifications, crash recovery, and streaming attachment access.
+- [ ] Keep cache placement and lifecycle separate from canonical storage: SQLite and search indexes remain local derived artifacts that can be discarded and rebuilt from one coherent storage snapshot.
+- [ ] Prototype at the application boundary first. Do not weaken filesystem security checks, write serialization, Git behavior, or source-of-truth guarantees merely to support an object-store-shaped backend.
+
+### 12.12 Test strategy and acceptance criteria
+
+- [ ] Add unit tests for ref-name validation, policy ordering, conflict IDs/names, report/state transitions, capability negotiation, retention planning, semantic grouping validation, and every path/platform normalization rule.
+- [ ] Add fake Git transport/process boundaries and deterministic fixtures for single writer, two concurrent writers, rejected push/retry, offline divergence, delete/modify, rename, binary, structured-document, case-folding, and mass-deletion conflicts.
+- [ ] Test capture/apply interruption at every journal boundary, stale locks, process death, watcher overflow, suspend/resume, normal-index staging, merge/rebase/cherry-pick state, manual semantic branch movement, missing objects, detached Git-directory loss, and cache rebuild.
+- [ ] Run conformance tests against installed Git on Linux, Windows, and Android/Termux shared storage before advertising each platform profile. Include executable-bit, symlink, filter/LFS, Unicode normalization, reserved-name, case-only rename, and long-path fixtures.
+- [ ] Verify that ordinary unregistered local CLI workflows perform no sync initialization or network access and remain behaviorally unchanged with the daemon stopped or absent.
+- [ ] Add CLI JSON snapshots, `describe`/completion coverage, daemon/direct-mode equivalence tests, local-protocol contract tests, permission-profile tests, and companion-origin/authentication tests.
+- [ ] Review bundled agent guidance with each shipped slice: update `git-workflow`, `configuration-and-permissions`, and `diagnostics-and-repair` when their commands or guardrails change; add a managed sync-specific skill only once the distinct plan/status/conflict workflow exists, register it in `BUNDLED_SKILL_FILES`, and test installed discovery plus permission-bounded behavior.
+- [ ] Test deterministic resolutions repeatedly with reordered triggers and push winners. Agent tests use a fake provider and prove proposal isolation, stale-input rejection, permission bounds, validation, audit redaction, cancellation, and preservation of all original objects.
+- [ ] Require these safety invariants before multi-writer release: capture before apply; no unconditional force push; no silent content loss; no normal-index mutation; no scan of a partially applied tree; final semantic proposal tree equals its selected live tree; and every retry/recovery operation is idempotent.
 
 ---
 
