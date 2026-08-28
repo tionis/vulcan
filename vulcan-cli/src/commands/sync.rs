@@ -203,6 +203,20 @@ fn print_sync_report(output: OutputFormat, report: &VaultSyncReport) -> Result<(
                     refresh.added, refresh.updated, refresh.deleted
                 );
             }
+            if let Some(recovered) = &report.state.recovered_from {
+                println!(
+                    "Recovery: recaptured after interrupted transaction {} in {:?} state.",
+                    recovered.transaction_id, recovered.phase
+                );
+            }
+            if let Some(retained) = &report.state.retained {
+                println!(
+                    "Retained state: transaction {} is {:?} at {}.",
+                    retained.transaction_id,
+                    retained.phase,
+                    report.state.journal_path.display()
+                );
+            }
             Ok(())
         }
     }

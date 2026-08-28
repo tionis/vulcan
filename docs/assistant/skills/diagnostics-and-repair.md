@@ -1,7 +1,7 @@
 ---
 name: diagnostics-and-repair
 description: Diagnose vault health, broken links, parser diagnostics, suspicious state, synchronization pauses or conflicts, and repairable problems. Use when the user asks why something is broken, wants a health check, sees diagnostics, or needs safe repair steps before editing notes.
-version: 2
+version: 3
 tools:
   - doctor
   - cache_verify
@@ -29,6 +29,7 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 3. Use dry-run repair/fix modes when available.
 4. Only patch source notes after identifying the smallest concrete fix.
 5. For Git-backed device sync, run `vulcan sync status`. A paused result identifies staged or in-progress Git state; a conflicted result preserves both candidate commits and local bytes for review.
+6. Inspect `state.recovered_from` and `state.retained` in JSON sync output. Recovery journals are authoritative device-local operational state outside `.vulcan/cache.db`; do not remove them as a cache repair.
 
 ## Guardrails
 

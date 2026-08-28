@@ -612,7 +612,9 @@ fn read_http_status_and_headers(
 
 fn cargo_vulcan_with_xdg_config(config_home: &str) -> Command {
     let mut command = Command::cargo_bin("vulcan").expect("binary should build");
-    command.env("XDG_CONFIG_HOME", config_home);
+    command
+        .env("XDG_CONFIG_HOME", config_home)
+        .env("XDG_STATE_HOME", Path::new(config_home).join("state"));
     command
 }
 
@@ -4498,6 +4500,7 @@ fn git_help_documents_sandboxed_operations() {
 #[test]
 fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     let temporary = TempDir::new().expect("temp dir should be created");
+    let state_home = temporary.path().join("state");
     let remote = temporary.path().join("remote.git");
     run_git_ok(
         temporary.path(),
@@ -4525,6 +4528,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
 
     let bootstrap = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
         .args([
             "--vault",
             writer.to_str().expect("writer path should be utf-8"),
@@ -4538,6 +4542,9 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     let bootstrap_json = parse_stdout_json(&bootstrap);
     assert_eq!(bootstrap_json["outcome"], "bootstrapped");
     assert_eq!(bootstrap_json["actions"], serde_json::json!(["pushed"]));
+    assert!(bootstrap_json["state"]["repository_key"].is_string());
+    assert!(bootstrap_json["state"]["journal_path"].is_string());
+    assert!(bootstrap_json["state"].get("retained").is_none());
 
     let reader = temporary.path().join("reader");
     run_git_ok(
@@ -4562,6 +4569,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     fs::write(writer.join("Shared.md"), "from writer\n").expect("shared note should be written");
     Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
         .args([
             "--vault",
             writer.to_str().expect("writer path should be utf-8"),
@@ -4572,6 +4580,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
         .success();
     let pull = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
         .args([
             "--vault",
             reader.to_str().expect("reader path should be utf-8"),
@@ -4591,6 +4600,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
 
     let status = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
         .args([
             "--vault",
             reader.to_str().expect("reader path should be utf-8"),
@@ -4604,6 +4614,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     let status_json = parse_stdout_json(&status);
     assert_eq!(status_json["outcome"], "planned");
     assert_eq!(status_json["actions"], serde_json::json!([]));
+    assert!(status_json["state"].get("recovered_from").is_none());
 
     let config_home = temporary.path().join("config");
     fs::create_dir(&config_home).expect("config home should be created");
@@ -11094,6 +11105,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync run --dry-run"));
     assert!(git_skill.contains("vulcan sync run <wiki>"));
     assert!(git_skill.contains("vulcan sync pause [<wiki>]"));
+    assert!(git_skill.contains("state.recovered_from"));
     assert!(git_skill.contains("vulcan vault clone <remote> <path> --dry-run"));
     assert!(git_skill.contains("clone that succeeds before registration fails"));
     assert!(git_skill.contains("--platform android-shared"));
@@ -11108,6 +11120,11 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(configuration_skill.contains("Clone dry-run does not contact the remote"));
     assert!(configuration_skill.contains("--platform android-shared"));
     assert!(configuration_skill.contains("must never be treated as permission to delete"));
+    let diagnostics_skill =
+        fs::read_to_string(vault_root.join(".agents/skills/diagnostics-and-repair/SKILL.md"))
+            .expect("diagnostics skill should be readable");
+    assert!(diagnostics_skill.contains("state.recovered_from"));
+    assert!(diagnostics_skill.contains("outside `.vulcan/cache.db`"));
     assert!(json["support_files"].as_array().is_some_and(|items| items
         .iter()
         .any(|item| item["path"] == "AGENTS.md")
