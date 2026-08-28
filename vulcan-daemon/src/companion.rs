@@ -112,7 +112,8 @@ pub struct CompanionError {
 }
 
 impl CompanionError {
-    fn new(kind: CompanionErrorKind, detail: impl Into<String>) -> Self {
+    #[must_use]
+    pub fn new(kind: CompanionErrorKind, detail: impl Into<String>) -> Self {
         Self {
             version: COMPANION_PROTOCOL_VERSION,
             kind,

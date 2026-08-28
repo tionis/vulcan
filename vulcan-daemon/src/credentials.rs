@@ -178,11 +178,7 @@ fn validate_origins(origins: &[String]) -> Result<(), CredentialError> {
             origin.is_empty()
                 || origin.len() > 512
                 || origin.bytes().any(|byte| byte.is_ascii_control())
-                || !(origin.starts_with("app://")
-                    || origin.starts_with("capacitor://")
-                    || origin.starts_with("http://localhost")
-                    || origin.starts_with("http://127.0.0.1")
-                    || origin.starts_with("http://[::1]"))
+                || !is_safe_origin(origin)
         })
     {
         return Err(CredentialError::Invalid(
@@ -191,6 +187,37 @@ fn validate_origins(origins: &[String]) -> Result<(), CredentialError> {
         ));
     }
     Ok(())
+}
+
+fn is_safe_origin(origin: &str) -> bool {
+    for prefix in ["app://", "capacitor://"] {
+        if let Some(authority) = origin.strip_prefix(prefix) {
+            return valid_origin_authority(authority, false);
+        }
+    }
+    for prefix in ["http://localhost", "http://127.0.0.1", "http://[::1]"] {
+        if let Some(suffix) = origin.strip_prefix(prefix) {
+            return suffix.is_empty() || suffix.strip_prefix(':').is_some_and(valid_port);
+        }
+    }
+    false
+}
+
+fn valid_origin_authority(authority: &str, allow_empty: bool) -> bool {
+    (allow_empty || !authority.is_empty())
+        && !authority.contains(['/', '?', '#', '@'])
+        && authority
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_' | b':'))
+        && authority
+            .rsplit_once(':')
+            .is_none_or(|(_, port)| valid_port(port))
+}
+
+fn valid_port(port: &str) -> bool {
+    !port.is_empty()
+        && port.bytes().all(|byte| byte.is_ascii_digit())
+        && port.parse::<u16>().is_ok_and(|port| port > 0)
 }
 
 #[cfg(unix)]
@@ -307,6 +334,8 @@ mod tests {
     #[test]
     fn unsafe_origins_and_symlinked_stores_fail_closed() {
         assert!(CompanionCredential::generate(vec!["https://example.com".to_string()]).is_err());
+        assert!(CompanionCredential::generate(vec!["http://localhost.evil".to_string()]).is_err());
+        assert!(CompanionCredential::generate(vec!["app://obsidian.md/path".to_string()]).is_err());
         #[cfg(unix)]
         {
             use std::os::unix::fs::symlink;

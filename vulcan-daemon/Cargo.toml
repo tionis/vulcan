@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+axum.workspace = true
 fs2.workspace = true
 base64.workspace = true
 getrandom.workspace = true
@@ -15,7 +16,9 @@ serde_json.workspace = true
 sha2.workspace = true
 subtle.workspace = true
 tempfile.workspace = true
+tokio.workspace = true
 toml.workspace = true
+tower.workspace = true
 ulid.workspace = true
 vulcan-app = { path = "../vulcan-app", version = "0.1.0", default-features = false }
 vulcan-core = { path = "../vulcan-core", version = "0.1.0", default-features = false }

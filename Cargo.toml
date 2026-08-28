@@ -12,6 +12,7 @@ license = "MIT OR Apache-2.0"
 [workspace.dependencies]
 ammonia = "4.1.4"
 assert_cmd = "2.1.1"
+axum = { version = "0.8.9", features = ["json", "ws"] }
 base64 = "0.22.1"
 blake3 = "1.8.2"
 chrono = { version = "0.4.44", default-features = false, features = ["std"] }
@@ -47,7 +48,9 @@ sha2 = "0.10.9"
 subtle = "2.6.1"
 sqlite-vec = "0.1.7"
 tempfile = "3.23.0"
+tokio = { version = "1.50.0", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
 toml = "0.8.23"
+tower = { version = "0.5.3", features = ["util"] }
 ulid = { version = "1.2.1", features = ["serde"] }
 unicode-normalization = "0.1.24"
 zip = { version = "0.6.6", default-features = false, features = ["deflate"] }
