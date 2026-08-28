@@ -96,7 +96,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan render README.md                              Render markdown in the terminal\n  vulcan plugin list                                   Inspect registered JS plugins\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox, template\n  Query:       query, search, ls, backlinks, links\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, periodic\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, doctor\n  Index:       index, vectors, cache, repair\n  Interactive: browse, edit, open\n  Scripting:   run, web, render, plugin, tool, skill\n  AI/MCP:      mcp\n  Git/sync:    git, sync, changes\n  Automation:  saved, automation, export, integration, checkpoint\n  Setup:       init, agent, config, trust\n  Reference:   help, describe, completions, status\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
+    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan render README.md                              Render markdown in the terminal\n  vulcan plugin list                                   Inspect registered JS plugins\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox, template\n  Query:       query, search, ls, backlinks, links\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, periodic\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, doctor\n  Index:       index, vectors, cache, repair\n  Interactive: browse, edit, open\n  Scripting:   run, web, render, plugin, tool, skill\n  AI/MCP:      mcp\n  Git/sync:    git, sync, changes\n  Automation:  saved, automation, export, integration, checkpoint\n  Setup:       init, vault, agent, config, trust\n  Reference:   help, describe, completions, status\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
     "commands": [
       {
         "about": "Initialize, scan, rebuild, repair, watch, and serve index state",
@@ -8532,6 +8532,248 @@
                 "short": null,
                 "value_names": [
                   "LIVE_REF"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": "Manage device-local wiki registrations",
+        "after_help": "Subcommands:\n  add          register an existing local wiki without changing its files\n  list         list registered wikis, optionally filtered by group\n  show         inspect one registration and its local availability\n  set          update groups or the permission profile\n  remove       unregister a wiki without deleting its worktree or Git data\n\nNotes:\n  Registry state is device-local under the XDG Vulcan config directory.\n  Registration is optional: ordinary `--vault <path>` commands continue to work directly.\n\nExamples:\n  vulcan vault add personal ~/vaults/personal --group daily\n  vulcan vault list --group daily\n  vulcan vault show personal\n  vulcan vault set personal --group mobile --remove-group desktop\n  vulcan vault remove personal --dry-run",
+        "name": "vault",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Register an existing local wiki",
+            "name": "add",
+            "options": [
+              {
+                "help": "URL-safe device-local wiki ID",
+                "id": "id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "ID"
+                ]
+              },
+              {
+                "help": "Existing materialized vault path",
+                "id": "path",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "PATH"
+                ]
+              },
+              {
+                "help": "Add the wiki to a local group",
+                "id": "group",
+                "long": "group",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "GROUP"
+                ]
+              },
+              {
+                "help": "Optional detached Git directory for this device",
+                "id": "git_dir",
+                "long": "git-dir",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "GIT_DIR"
+                ]
+              },
+              {
+                "help": "Permission profile used by future daemon requests",
+                "id": "permissions_profile",
+                "long": "permissions-profile",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PERMISSIONS_PROFILE"
+                ]
+              },
+              {
+                "help": "Configured file-tree sync backend",
+                "id": "sync_backend",
+                "long": "sync-backend",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SYNC_BACKEND"
+                ]
+              },
+              {
+                "help": "Validate and report without writing registry state",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "List registered local wikis",
+            "name": "list",
+            "options": [
+              {
+                "help": "Only list wikis in this local group",
+                "id": "group",
+                "long": "group",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "GROUP"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Show one registered local wiki",
+            "name": "show",
+            "options": [
+              {
+                "help": "Registered wiki ID",
+                "id": "id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "ID"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Update device-local wiki metadata",
+            "name": "set",
+            "options": [
+              {
+                "help": "Registered wiki ID",
+                "id": "id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "ID"
+                ]
+              },
+              {
+                "help": "Add the wiki to a local group",
+                "id": "group",
+                "long": "group",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "GROUP"
+                ]
+              },
+              {
+                "help": "Remove the wiki from a local group",
+                "id": "remove_group",
+                "long": "remove-group",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOVE_GROUP"
+                ]
+              },
+              {
+                "help": "Set the daemon permission profile",
+                "id": "permissions_profile",
+                "long": "permissions-profile",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PERMISSIONS_PROFILE"
+                ]
+              },
+              {
+                "help": "Remove the daemon permission-profile override",
+                "id": "clear_permissions_profile",
+                "long": "clear-permissions-profile",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CLEAR_PERMISSIONS_PROFILE"
+                ]
+              },
+              {
+                "help": "Validate and report without writing registry state",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Unregister a wiki without deleting any files",
+            "name": "remove",
+            "options": [
+              {
+                "help": "Registered wiki ID",
+                "id": "id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "ID"
+                ]
+              },
+              {
+                "help": "Validate and report without writing registry state",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
                 ]
               }
             ],

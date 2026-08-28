@@ -4593,6 +4593,96 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
 }
 
 #[test]
+fn vault_registry_cli_round_trips_without_touching_wiki_files() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let config_home = temporary.path().join("config");
+    let wiki = temporary.path().join("personal");
+    fs::create_dir_all(&config_home).expect("config home should be created");
+    fs::create_dir(&wiki).expect("wiki should be created");
+    fs::write(wiki.join("Home.md"), "home\n").expect("home note should be written");
+    let config_home = config_home.to_str().expect("config path should be utf-8");
+    let wiki_path = wiki.to_str().expect("wiki path should be utf-8");
+
+    let dry_run = cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "--output",
+            "json",
+            "vault",
+            "add",
+            "personal",
+            wiki_path,
+            "--group",
+            "daily",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&dry_run)["dry_run"], true);
+    assert!(!temporary.path().join("config/vulcan/daemon.toml").exists());
+
+    let add = cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "--output", "json", "vault", "add", "personal", wiki_path, "--group", "daily",
+        ])
+        .assert()
+        .success();
+    let add_json = parse_stdout_json(&add);
+    assert_eq!(add_json["action"], "add");
+    assert_eq!(add_json["wiki"]["id"], "personal");
+    assert!(add_json["wiki"]["registration_id"].is_string());
+
+    let list = cargo_vulcan_with_xdg_config(config_home)
+        .args(["--output", "json", "vault", "list", "--group", "daily"])
+        .assert()
+        .success();
+    let list_json = parse_stdout_json(&list);
+    assert_eq!(list_json["wikis"][0]["id"], "personal");
+    assert_eq!(list_json["wikis"][0]["available"], true);
+    assert_eq!(list_json["wikis"][0]["indexed"], false);
+
+    cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "vault",
+            "set",
+            "personal",
+            "--group",
+            "mobile",
+            "--remove-group",
+            "daily",
+            "--permissions-profile",
+            "readonly",
+        ])
+        .assert()
+        .success();
+    let show = cargo_vulcan_with_xdg_config(config_home)
+        .args(["--output", "json", "vault", "show", "personal"])
+        .assert()
+        .success();
+    let show_json = parse_stdout_json(&show);
+    assert_eq!(show_json["groups"], serde_json::json!(["mobile"]));
+    assert_eq!(show_json["permissions_profile"], "readonly");
+
+    cargo_vulcan_with_xdg_config(config_home)
+        .args(["vault", "remove", "personal", "--dry-run"])
+        .assert()
+        .success();
+    cargo_vulcan_with_xdg_config(config_home)
+        .args(["vault", "show", "personal"])
+        .assert()
+        .success();
+    cargo_vulcan_with_xdg_config(config_home)
+        .args(["vault", "remove", "personal"])
+        .assert()
+        .success();
+    assert!(wiki.join("Home.md").is_file());
+    let empty = cargo_vulcan_with_xdg_config(config_home)
+        .args(["--output", "json", "vault", "list"])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&empty)["wikis"], serde_json::json!([]));
+}
+
+#[test]
 fn web_search_json_output_uses_configured_backend_and_env_key() {
     let server = MockWebServer::spawn();
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -10784,6 +10874,12 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .expect("Git workflow skill should be readable");
     assert!(git_skill.contains("vulcan sync status"));
     assert!(git_skill.contains("vulcan sync run --dry-run"));
+    let configuration_skill = fs::read_to_string(
+        vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),
+    )
+    .expect("configuration skill should be readable");
+    assert!(configuration_skill.contains("vulcan vault add/list/show/set/remove"));
+    assert!(configuration_skill.contains("must never be treated as permission to delete"));
     assert!(json["support_files"].as_array().is_some_and(|items| items
         .iter()
         .any(|item| item["path"] == "AGENTS.md")

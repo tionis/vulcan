@@ -106,6 +106,34 @@ pub struct UpdateWikiRequest {
     pub sync_paused: Option<bool>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WikiRegistrationStatus {
+    #[serde(flatten)]
+    pub registration: WikiRegistration,
+    pub available: bool,
+    pub indexed: bool,
+    pub git_repository: bool,
+}
+
+impl WikiRegistrationStatus {
+    #[must_use]
+    pub fn from_registration(registration: &WikiRegistration) -> Self {
+        let available = registration.path.is_dir();
+        let indexed = registration.path.join(".vulcan/cache.db").is_file();
+        let git_repository = registration
+            .git_dir
+            .as_ref()
+            .is_some_and(|path| path.is_dir())
+            || registration.path.join(".git").exists();
+        Self {
+            registration: registration.clone(),
+            available,
+            indexed,
+            git_repository,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum RegistryError {
     ConfigDirectoryUnavailable,
@@ -190,6 +218,28 @@ impl WikiRegistry {
 
     pub fn load(&self) -> Result<DaemonConfig, RegistryError> {
         load_config(&self.path)
+    }
+
+    pub fn list(&self, group: Option<&str>) -> Result<Vec<WikiRegistrationStatus>, RegistryError> {
+        if let Some(group) = group {
+            validate_groups(&[group.to_string()])?;
+        }
+        Ok(self
+            .load()?
+            .vaults
+            .iter()
+            .filter(|wiki| group.is_none_or(|group| wiki.groups.iter().any(|item| item == group)))
+            .map(WikiRegistrationStatus::from_registration)
+            .collect())
+    }
+
+    pub fn show(&self, id: &WikiId) -> Result<WikiRegistrationStatus, RegistryError> {
+        self.load()?
+            .vaults
+            .iter()
+            .find(|wiki| &wiki.id == id)
+            .map(WikiRegistrationStatus::from_registration)
+            .ok_or_else(|| RegistryError::UnknownWiki(id.clone()))
     }
 
     pub fn add(

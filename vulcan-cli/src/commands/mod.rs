@@ -28,6 +28,7 @@ pub(crate) mod template;
 pub(crate) mod textbundle;
 pub(crate) mod tool;
 pub(crate) mod tool_init;
+pub(crate) mod vault;
 #[cfg(feature = "vectors")]
 pub(crate) mod vectors;
 pub(crate) mod wiki_package;

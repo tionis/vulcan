@@ -2167,6 +2167,59 @@ fn parses_sync_run_and_status_commands() {
 }
 
 #[test]
+fn parses_vault_registry_commands() {
+    let add = Cli::try_parse_from([
+        "vulcan",
+        "vault",
+        "add",
+        "personal",
+        "/vaults/personal",
+        "--group",
+        "daily",
+        "--git-dir",
+        "/data/git/personal",
+        "--dry-run",
+    ])
+    .expect("vault add should parse");
+    assert_eq!(
+        add.command,
+        Command::Vault {
+            command: VaultCommand::Add {
+                id: "personal".to_string(),
+                path: PathBuf::from("/vaults/personal"),
+                group: vec!["daily".to_string()],
+                git_dir: Some(PathBuf::from("/data/git/personal")),
+                permissions_profile: None,
+                sync_backend: "git".to_string(),
+                dry_run: true,
+            },
+        }
+    );
+
+    let set = Cli::try_parse_from([
+        "vulcan",
+        "vault",
+        "set",
+        "personal",
+        "--group",
+        "mobile",
+        "--remove-group",
+        "desktop",
+        "--clear-permissions-profile",
+    ])
+    .expect("vault set should parse");
+    assert!(matches!(
+        set.command,
+        Command::Vault {
+            command: VaultCommand::Set {
+                clear_permissions_profile: true,
+                ..
+            }
+        }
+    ));
+}
+
+#[test]
 fn parses_web_search_command() {
     let cli = Cli::try_parse_from([
         "vulcan",

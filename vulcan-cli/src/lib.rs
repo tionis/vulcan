@@ -437,8 +437,8 @@ pub use cli::{
     SuggestLinkStatusArg, SyncCommand, SyncTargetArgs, TagSortArg, TasksCommand,
     TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
     TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TextBundleCommand,
-    ToolCommand, ToolInitTemplateArg, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand,
-    WebFetchMode, WikiPackageCommand,
+    ToolCommand, ToolInitTemplateArg, TrustCommand, VaultCommand, VectorQueueCommand,
+    VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -6494,6 +6494,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         ),
         Command::Git { ref command } => commands::runtime::handle_git_command(cli, &paths, command),
         Command::Sync { ref command } => commands::sync::handle_sync_command(cli, &paths, command),
+        Command::Vault { ref command } => commands::vault::handle_vault_command(cli, command),
         Command::Run {
             ref script,
             script_mode,

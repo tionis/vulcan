@@ -27,7 +27,7 @@ Command groups (run `vulcan help` for the full grouped reference):
   AI/MCP:      mcp
   Git/sync:    git, sync, changes
   Automation:  saved, automation, export, integration, checkpoint
-  Setup:       init, agent, config, trust
+  Setup:       init, vault, agent, config, trust
   Reference:   help, describe, completions, status
 
 Reference:
@@ -581,6 +581,25 @@ Examples:
   vulcan sync run --dry-run
   vulcan sync status
   vulcan --vault ./wiki sync run --remote origin";
+
+const VAULT_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  add          register an existing local wiki without changing its files
+  list         list registered wikis, optionally filtered by group
+  show         inspect one registration and its local availability
+  set          update groups or the permission profile
+  remove       unregister a wiki without deleting its worktree or Git data
+
+Notes:
+  Registry state is device-local under the XDG Vulcan config directory.
+  Registration is optional: ordinary `--vault <path>` commands continue to work directly.
+
+Examples:
+  vulcan vault add personal ~/vaults/personal --group daily
+  vulcan vault list --group daily
+  vulcan vault show personal
+  vulcan vault set personal --group mobile --remove-group desktop
+  vulcan vault remove personal --dry-run";
 
 const WEB_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
@@ -3875,6 +3894,71 @@ pub enum SyncCommand {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum VaultCommand {
+    #[command(about = "Register an existing local wiki")]
+    Add {
+        #[arg(help = "URL-safe device-local wiki ID")]
+        id: String,
+        #[arg(help = "Existing materialized vault path")]
+        path: PathBuf,
+        #[arg(long, action = ArgAction::Append, help = "Add the wiki to a local group")]
+        group: Vec<String>,
+        #[arg(long, help = "Optional detached Git directory for this device")]
+        git_dir: Option<PathBuf>,
+        #[arg(long, help = "Permission profile used by future daemon requests")]
+        permissions_profile: Option<String>,
+        #[arg(
+            long,
+            default_value = "git",
+            help = "Configured file-tree sync backend"
+        )]
+        sync_backend: String,
+        #[arg(long, help = "Validate and report without writing registry state")]
+        dry_run: bool,
+    },
+    #[command(about = "List registered local wikis")]
+    List {
+        #[arg(long, help = "Only list wikis in this local group")]
+        group: Option<String>,
+    },
+    #[command(about = "Show one registered local wiki")]
+    Show {
+        #[arg(help = "Registered wiki ID")]
+        id: String,
+    },
+    #[command(about = "Update device-local wiki metadata")]
+    Set {
+        #[arg(help = "Registered wiki ID")]
+        id: String,
+        #[arg(long, action = ArgAction::Append, help = "Add the wiki to a local group")]
+        group: Vec<String>,
+        #[arg(long, action = ArgAction::Append, help = "Remove the wiki from a local group")]
+        remove_group: Vec<String>,
+        #[arg(
+            long,
+            conflicts_with = "clear_permissions_profile",
+            help = "Set the daemon permission profile"
+        )]
+        permissions_profile: Option<String>,
+        #[arg(
+            long,
+            conflicts_with = "permissions_profile",
+            help = "Remove the daemon permission-profile override"
+        )]
+        clear_permissions_profile: bool,
+        #[arg(long, help = "Validate and report without writing registry state")]
+        dry_run: bool,
+    },
+    #[command(about = "Unregister a wiki without deleting any files")]
+    Remove {
+        #[arg(help = "Registered wiki ID")]
+        id: String,
+        #[arg(long, help = "Validate and report without writing registry state")]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum WebCommand {
     #[command(about = "Query the configured web search backend")]
     Search {
@@ -5747,6 +5831,14 @@ pub enum Command {
     Sync {
         #[command(subcommand)]
         command: SyncCommand,
+    },
+    #[command(
+        about = "Manage device-local wiki registrations",
+        after_help = VAULT_COMMAND_AFTER_HELP
+    )]
+    Vault {
+        #[command(subcommand)]
+        command: VaultCommand,
     },
     #[command(
         about = "Execute JavaScript inside the Vulcan runtime sandbox",

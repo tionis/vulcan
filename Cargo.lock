@@ -4313,6 +4313,7 @@ dependencies = [
  "ulid",
  "vulcan-app",
  "vulcan-core",
+ "vulcan-daemon",
  "zip",
 ]
 

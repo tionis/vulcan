@@ -5106,13 +5106,16 @@ permissions_profile = "readonly"  # clamp all API requests for this vault to a n
 
 - [x] Vault registry config at `~/.config/vulcan/daemon.toml` (XDG_CONFIG_HOME respected), with synchronous atomic/locked access usable before the daemon runtime exists
 - [ ] Each vault entry: `id` (short name, URL-safe), `path`, `token` (argon2 hashed), optional `permissions_profile` (defaults to `unrestricted`, can point at any named profile from Phase 9.19.13)
-- [ ] Add the top-level `vulcan vault` group as the canonical human and automation surface for managed wikis; keep daemon process configuration under `vulcan daemon config` rather than mixing lifecycle and wiki-management commands
-- [ ] `vulcan vault add <id> <path>` — register an existing materialized vault without changing its files; support `--group <name>`, optional device-local Git-directory metadata, token generation, JSON output, and `--dry-run`
-- [ ] `vulcan vault list [--group <name>]` — list registered wikis with IDs, paths, availability, daemon/index state, and configured sync backend
-- [ ] `vulcan vault show <id>` — report shared identity/policy separately from device-local paths, credentials, and runtime state
-- [ ] `vulcan vault set <id> [--group <name>] [--remove-group <name>] [--permissions-profile <profile>]` — update device-local registration metadata with `--dry-run` and without modifying vault content
-- [ ] `vulcan vault remove <id>` — unregister only, with `--dry-run`; never delete the worktree, Git objects, or remote repository as an implicit side effect
-- [ ] Allow named local groups so `vulcan sync run --group <name>` and `--all` can schedule several independent wiki jobs; explicitly make this an aggregate operation rather than an atomic cross-repository transaction
+- [x] Add the top-level `vulcan vault` group as the canonical human and automation surface for managed wikis; keep daemon process configuration under `vulcan daemon config` rather than mixing lifecycle and wiki-management commands
+- [x] `vulcan vault add <id> <path>` — register an existing materialized vault without changing its files; support repeatable `--group <name>`, optional device-local Git-directory metadata, configured sync backend, JSON output, and `--dry-run`
+- [ ] Add per-vault daemon bearer-token generation/hashing when authenticated daemon routes are implemented; token material is not required for local registration or direct sync
+- [x] `vulcan vault list [--group <name>]` — list registered wikis with IDs, paths, local availability, index presence, Git presence, and configured sync backend
+- [ ] Extend `vulcan vault list` with retained live daemon/job/conflict health once those runtime states exist
+- [x] `vulcan vault show <id>` — report stable registration identity and device-local path, group, permission-profile, sync, availability, index, and Git metadata
+- [x] `vulcan vault set <id> [--group <name>] [--remove-group <name>] [--permissions-profile <profile>]` — update device-local registration metadata with `--dry-run` and without modifying vault content
+- [x] `vulcan vault remove <id>` — unregister only, with `--dry-run`; never delete the worktree, Git objects, or remote repository as an implicit side effect
+- [x] Persist and filter named local groups in the registry
+- [ ] Let `vulcan sync run --group <name>` and `--all` schedule several independent wiki jobs; explicitly make this an aggregate operation rather than an atomic cross-repository transaction
 - [x] Give every local installation a stable device ULID and every registration a stable local ULID; define a later migration path to an optional shared wiki identity without making shared identity a prerequisite for ordinary local usage
 - [ ] Auth tokens stored outside vault content — avoids coupling auth to the data it protects
 - [ ] Token-authenticated daemon requests resolve to a vault plus a named permission profile; all endpoint authorization and result filtering reuse the existing `PermissionGuard` / `PermissionFilter` layer instead of adding daemon-specific policy logic
