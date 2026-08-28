@@ -3980,6 +3980,37 @@ pub enum SyncCommand {
         #[arg(long, help = "Validate and report without creating a ref")]
         dry_run: bool,
     },
+    #[command(about = "Build a reviewable semantic history proposal")]
+    SemanticPlan {
+        #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
+        wiki: Option<String>,
+        #[arg(long, help = "Semantic branch source revision")]
+        from: String,
+        #[arg(long, help = "Accepted live target revision")]
+        to: String,
+        #[arg(
+            long,
+            default_value = "refs/heads/main",
+            help = "Semantic branch ref that must identify --from"
+        )]
+        semantic_ref: String,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+        #[arg(long, help = "Request optional agent-assisted grouping")]
+        agent: bool,
+        #[arg(
+            long,
+            help = "Report deterministic grouping without creating objects or state"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Validate and fast-forward a semantic branch to an accepted proposal")]
+    SemanticApply {
+        #[arg(help = "Semantic plan ULID")]
+        plan_id: String,
+        #[arg(long, help = "Validate without advancing the semantic branch")]
+        dry_run: bool,
+    },
     #[command(about = "Diagnose Git synchronization without changing it")]
     Doctor {
         #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]

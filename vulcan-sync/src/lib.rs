@@ -25,9 +25,9 @@ pub use git::{
     GitConflictSide, GitEngine, GitEngineError, GitEngineKind, GitExecutableBitsPolicy,
     GitFilterRequirement, GitInstallation, GitMerge, GitMergeResolutionRequest, GitObjectFormat,
     GitOid, GitPathLengthPolicy, GitPathObject, GitPlatformPolicy, GitPlatformProfile,
-    GitPushResult, GitRefCreateResult, GitRefName, GitRemote, GitRepository, GitRepositoryLayout,
-    GitRepositoryRequirements, GitReservedNamesPolicy, GitSafetyState, GitSymlinkPolicy,
-    GitTimestampPolicy, GitVersion,
+    GitPushResult, GitRefCreateResult, GitRefName, GitRefUpdateResult, GitRemote, GitRepository,
+    GitRepositoryLayout, GitRepositoryRequirements, GitReservedNamesPolicy, GitSafetyState,
+    GitSymlinkPolicy, GitTimestampPolicy, GitVersion,
 };
 pub use sync::{
     sync_git_once, sync_git_once_with_control, GitConflictRefs, GitSyncAction, GitSyncBackend,

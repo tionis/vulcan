@@ -2326,6 +2326,54 @@ fn parses_sync_checkpoint_command() {
 }
 
 #[test]
+fn parses_sync_semantic_commands() {
+    let plan = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "semantic-plan",
+        "personal",
+        "--from",
+        "main",
+        "--to",
+        "refs/vulcan/sync/local/live",
+        "--agent",
+        "--dry-run",
+    ])
+    .expect("semantic plan should parse");
+    assert!(matches!(
+        plan.command,
+        Command::Sync {
+            command: SyncCommand::SemanticPlan {
+                wiki: Some(ref wiki),
+                ref from,
+                ref to,
+                agent: true,
+                dry_run: true,
+                ..
+            }
+        } if wiki == "personal" && from == "main" && to == "refs/vulcan/sync/local/live"
+    ));
+
+    let apply = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "semantic-apply",
+        "01arz3ndektsv4rrffq69g5fav",
+        "--dry-run",
+    ])
+    .expect("semantic apply should parse");
+    assert_eq!(
+        apply.command,
+        Command::Sync {
+            command: SyncCommand::SemanticApply {
+                plan_id: "01arz3ndektsv4rrffq69g5fav".to_string(),
+                dry_run: true,
+            }
+        }
+    );
+}
+
+#[test]
 fn parses_vault_registry_commands() {
     let clone = Cli::try_parse_from([
         "vulcan",

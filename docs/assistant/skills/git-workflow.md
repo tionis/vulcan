@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 14
+version: 15
 tools:
   - git_status
   - git_diff
@@ -39,6 +39,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Use `vulcan sync run <wiki>`, `--group <name>`, or `--all` for registered selections. Group/all results are independent per-wiki transactions with aggregate counts, never one atomic cross-repository operation.
 - Use `vulcan sync pause [<wiki>]` and `vulcan sync resume [<wiki>]` to change device-local automatic behavior. Omitting the ID resolves the selected vault's registration; add `--dry-run` to preview the registry mutation.
 - Use `vulcan sync checkpoint [<wiki>] --dry-run` before deliberately retaining the accepted live commit; add `--kind semantic` when the retention intent is human-facing semantic history rather than recovery. Checkpoints create unique local refs without copying objects or advancing the checked-out branch, and refuse when local accepted refs disagree with the remote.
+- Use `vulcan sync semantic-plan [<wiki>] --from <rev> --to <accepted-live-rev> --dry-run` to review deterministic commit grouping and patches without creating objects or state. Rerun without `--dry-run` to retain the proposal under `refs/vulcan/proposals/semantic/<plan-id>`, then use `vulcan sync semantic-apply <plan-id> --dry-run` before explicit acceptance. Apply refuses stale source, proposal, or live refs and advances only the semantic branch with compare-and-swap; it never rewrites live history. Agent grouping is not yet available and `--agent` fails explicitly.
 - Use `vulcan vault clone <remote> <path> --dry-run` to validate a new clone and registration. For Android shared storage accessed from Termux, add both `--git-dir <private-path>` and `--platform android-shared`; native policy remains the default elsewhere.
 
 ## Guardrails
@@ -53,6 +54,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Treat the Android shared-storage policy as a real capability constraint: executable bits are not representable, symlinks become link files, and case-only renames require an intermediate path. Do not silently substitute it for native Linux policy.
 - Pausing affects future automatic jobs only. Manual `sync status`, `sync run --dry-run`, and explicit `sync run` remain available and must not silently toggle the saved state.
 - Do not delete a reported transaction journal to hide recovery state. It lives outside the vault and rebuildable cache; let a successful sync clear it or use a future explicit repair command.
+- Treat semantic plan patches and messages as proposals for human review. Do not edit proposal refs or device-local plan JSON, and do not apply a plan after changing its source branch or accepted live target; create a new plan instead.
 - A remote/network failure after capture is not a lost sync: the local candidate remains reachable and its journal phase identifies where the finite cycle stopped. Do not replace it with a fresh clone as an error-recovery shortcut.
 
 ## Example Moves
@@ -63,4 +65,5 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Synchronize an unregistered vault directly with `vulcan --vault ./wiki sync run`.
 - Synchronize every wiki in a device-local group with `vulcan sync run --group daily`.
 - Pause future automatic sync from inside a registered vault with `vulcan sync pause --dry-run`, then apply it without `--dry-run` after review.
+- Turn accepted live snapshots into reviewable commits with `vulcan sync semantic-plan --from main --to <accepted-live-rev> --dry-run`, create the plan after review, and explicitly validate/apply its returned plan ID.
 - Preview a detached Android-style layout with `vulcan vault clone <remote> /storage/emulated/0/Documents/wiki --git-dir ~/.local/share/vulcan/git/wiki --platform android-shared --dry-run`.

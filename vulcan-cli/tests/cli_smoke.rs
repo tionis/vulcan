@@ -4859,6 +4859,128 @@ fn sync_checkpoint_cli_retains_the_accepted_commit_without_new_objects() {
 }
 
 #[test]
+fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let state_home = temporary.path().join("state");
+    let remote = temporary.path().join("remote.git");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    let vault = temporary.path().join("wiki");
+    fs::create_dir(&vault).expect("vault directory");
+    init_git_repo(&vault);
+    run_git_ok(
+        &vault,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    fs::write(vault.join("Root.md"), "initial\n").expect("root note");
+    commit_all(&vault, "Initial");
+    let source = run_git_stdout(&vault, &["rev-parse", "refs/heads/main"]);
+    let sync = |arguments: &[&str]| {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .env("XDG_STATE_HOME", &state_home)
+            .arg("--vault")
+            .arg(&vault)
+            .args(["--output", "json", "sync"])
+            .args(arguments)
+            .assert()
+    };
+    sync(&["run"]).success();
+    fs::create_dir(vault.join("Area")).expect("area directory");
+    fs::write(vault.join("Area/One.md"), "one\n").expect("area note");
+    fs::write(vault.join("Area/Two.md"), "two\n").expect("second area note");
+    fs::write(vault.join("Root.md"), "changed\n").expect("root change");
+    let accepted = parse_stdout_json(&sync(&["run"]).success());
+    let target = accepted["accepted"]
+        .as_str()
+        .expect("accepted revision")
+        .to_string();
+    assert_eq!(run_git_stdout(&vault, &["rev-parse", "main"]), source);
+
+    let dry = parse_stdout_json(
+        &sync(&[
+            "semantic-plan",
+            "--from",
+            &source,
+            "--to",
+            &target,
+            "--dry-run",
+        ])
+        .success(),
+    );
+    assert_eq!(dry["status"], "preview");
+    assert_eq!(dry["dry_run"], true);
+    assert_eq!(dry["validation"]["final_tree_matches_target"], true);
+    assert_eq!(dry["commits"].as_array().map(Vec::len), Some(2));
+    assert!(dry["commits"].as_array().is_some_and(|commits| commits
+        .iter()
+        .all(|commit| commit.get("revision").is_none())));
+    assert!(run_git_stdout(
+        &vault,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/vulcan/proposals/semantic/",
+        ],
+    )
+    .is_empty());
+
+    let plan =
+        parse_stdout_json(&sync(&["semantic-plan", "--from", &source, "--to", &target]).success());
+    assert_eq!(plan["status"], "ready");
+    assert_eq!(plan["validation"]["final_tree_matches_target"], true);
+    assert_eq!(plan["commits"][0]["group"], "Area");
+    assert_eq!(plan["commits"][1]["group"], "Root.md");
+    assert!(plan["commits"][0]["patch"]
+        .as_str()
+        .is_some_and(|patch| patch.contains("Area/One.md") && !patch.contains("Root.md")));
+    let plan_id = plan["plan_id"].as_str().expect("plan ID");
+    let proposal_ref = plan["proposal_ref"].as_str().expect("proposal ref");
+    let tip = plan["proposal_tip"].as_str().expect("proposal tip");
+    assert_eq!(run_git_stdout(&vault, &["rev-parse", proposal_ref]), tip);
+    assert_eq!(
+        run_git_stdout(&vault, &["rev-parse", &format!("{tip}^{{tree}}")]),
+        run_git_stdout(&vault, &["rev-parse", &format!("{target}^{{tree}}")])
+    );
+    assert_eq!(
+        run_git_stdout(
+            &vault,
+            &["rev-list", "--count", &format!("{source}..{tip}")]
+        ),
+        "2"
+    );
+    assert!(run_git_stdout(&vault, &["show", "-s", "--format=%B", tip])
+        .contains("Vulcan-Semantic-Version: 1"));
+
+    run_git_ok(&vault, &["update-ref", "refs/heads/main", &target, &source]);
+    sync(&["semantic-apply", plan_id, "--dry-run"])
+        .failure()
+        .stdout(predicate::str::contains("source branch moved"));
+    run_git_ok(&vault, &["update-ref", "refs/heads/main", &source, &target]);
+
+    let checked = parse_stdout_json(&sync(&["semantic-apply", plan_id, "--dry-run"]).success());
+    assert_eq!(checked["dry_run"], true);
+    assert_eq!(run_git_stdout(&vault, &["rev-parse", "main"]), source);
+    let applied = parse_stdout_json(&sync(&["semantic-apply", plan_id]).success());
+    assert_eq!(applied["applied_revision"], tip);
+    assert_eq!(run_git_stdout(&vault, &["rev-parse", "main"]), tip);
+    let repeated = parse_stdout_json(&sync(&["semantic-apply", plan_id]).success());
+    assert_eq!(repeated["applied_revision"], tip);
+}
+
+#[test]
 fn sync_conflicts_cli_lists_and_shows_immutable_records() {
     let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
     let command = |arguments: &[&str]| {
@@ -11451,6 +11573,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync run --dry-run"));
     assert!(git_skill.contains("vulcan sync run --max-retries <n>"));
     assert!(git_skill.contains("Vulcan-Sync-*` trailers"));
+    assert!(git_skill.contains("vulcan sync semantic-plan"));
+    assert!(git_skill.contains("semantic branch with compare-and-swap"));
     assert!(git_skill.contains("vulcan sync run <wiki>"));
     assert!(git_skill.contains("vulcan sync pause [<wiki>]"));
     assert!(git_skill.contains("state.recovered_from"));

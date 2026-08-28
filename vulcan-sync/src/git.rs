@@ -38,6 +38,12 @@ pub trait GitEngine: Send + Sync {
 
     fn head_commit(&self, repository: &GitRepository) -> Result<Option<GitOid>, GitEngineError>;
 
+    fn resolve_revision(
+        &self,
+        repository: &GitRepository,
+        revision: &str,
+    ) -> Result<GitOid, GitEngineError>;
+
     fn update_ref(
         &self,
         repository: &GitRepository,
@@ -52,6 +58,14 @@ pub trait GitEngine: Send + Sync {
         target: &GitOid,
     ) -> Result<GitRefCreateResult, GitEngineError>;
 
+    fn compare_and_swap_ref(
+        &self,
+        repository: &GitRepository,
+        reference: &GitRefName,
+        target: &GitOid,
+        expected: Option<&GitOid>,
+    ) -> Result<GitRefUpdateResult, GitEngineError>;
+
     fn tree_oid(
         &self,
         repository: &GitRepository,
@@ -64,6 +78,29 @@ pub trait GitEngine: Send + Sync {
         commit: &GitOid,
         path: &str,
     ) -> Result<Option<GitPathObject>, GitEngineError>;
+
+    fn changed_paths(
+        &self,
+        repository: &GitRepository,
+        from: &GitOid,
+        to: &GitOid,
+    ) -> Result<Vec<String>, GitEngineError>;
+
+    fn tree_with_paths(
+        &self,
+        repository: &GitRepository,
+        base: &GitOid,
+        target: &GitOid,
+        paths: &[String],
+    ) -> Result<GitOid, GitEngineError>;
+
+    fn diff_patch(
+        &self,
+        repository: &GitRepository,
+        from: &GitOid,
+        to: &GitOid,
+        paths: &[String],
+    ) -> Result<String, GitEngineError>;
 
     fn capture_worktree(
         &self,
@@ -599,6 +636,13 @@ pub enum GitRefCreateResult {
     Exists,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitRefUpdateResult {
+    Updated,
+    Stale,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitSafetyState {
     pub staged_changes: bool,
@@ -1034,6 +1078,20 @@ impl GitEngine for GitCliEngine {
         Err(command_failed("read HEAD", &output))
     }
 
+    fn resolve_revision(
+        &self,
+        repository: &GitRepository,
+        revision: &str,
+    ) -> Result<GitOid, GitEngineError> {
+        validate_revision(revision)?;
+        let mut command = self.repository_command(repository);
+        command.args(["rev-parse", "--verify", "--end-of-options"]);
+        command.arg(format!("{revision}^{{commit}}"));
+        let output = self.execute(command)?;
+        let output = ensure_success("resolve a Git revision", output)?;
+        GitOid::parse(decode_stdout("resolve a Git revision", output.stdout)?.trim())
+    }
+
     fn update_ref(
         &self,
         repository: &GitRepository,
@@ -1069,6 +1127,37 @@ impl GitEngine for GitCliEngine {
             Ok(GitRefCreateResult::Exists)
         } else {
             Err(command_failed("create a local Git ref", &output))
+        }
+    }
+
+    fn compare_and_swap_ref(
+        &self,
+        repository: &GitRepository,
+        reference: &GitRefName,
+        target: &GitOid,
+        expected: Option<&GitOid>,
+    ) -> Result<GitRefUpdateResult, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command
+            .args(["update-ref", reference.as_str(), target.as_str()])
+            .arg(expected.map_or("", GitOid::as_str));
+        let output = self.execute(command)?;
+        if output.status.success() {
+            return Ok(GitRefUpdateResult::Updated);
+        }
+        let detail = format!(
+            "{}\n{}",
+            bounded_lossy(&output.stdout),
+            bounded_lossy(&output.stderr)
+        );
+        if detail.contains("cannot lock ref")
+            && (detail.contains("is at")
+                || detail.contains("reference already exists")
+                || detail.contains("reference is missing"))
+        {
+            Ok(GitRefUpdateResult::Stale)
+        } else {
+            Err(command_failed("compare and swap a local Git ref", &output))
         }
     }
 
@@ -1170,6 +1259,113 @@ impl GitEngine for GitCliEngine {
             kind: kind.to_string(),
             data,
         }))
+    }
+
+    fn changed_paths(
+        &self,
+        repository: &GitRepository,
+        from: &GitOid,
+        to: &GitOid,
+    ) -> Result<Vec<String>, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command.args([
+            "diff-tree",
+            "--no-commit-id",
+            "--name-only",
+            "--no-renames",
+            "-r",
+            "-z",
+            from.as_str(),
+            to.as_str(),
+            "--",
+        ]);
+        let output = self.execute(command)?;
+        let output = ensure_success("list changed Git paths", output)?;
+        parse_nul_paths("list changed Git paths", &output.stdout)
+    }
+
+    fn tree_with_paths(
+        &self,
+        repository: &GitRepository,
+        base: &GitOid,
+        target: &GitOid,
+        paths: &[String],
+    ) -> Result<GitOid, GitEngineError> {
+        repository.require_work_tree()?;
+        let index_path = repository.sync_index();
+        let index_parent = index_path
+            .parent()
+            .expect("the sync index path always has a parent");
+        std::fs::create_dir_all(index_parent)?;
+        remove_file_if_present(&index_path)?;
+        self.index_output(
+            repository,
+            &index_path,
+            "seed a proposed tree",
+            ["read-tree", base.as_str()],
+        )?;
+        for path in paths {
+            validate_repository_path(path)?;
+            if let Some(object) = self.path_object(repository, target, path)? {
+                let mut command = self.index_command(repository, &index_path)?;
+                command
+                    .args(["update-index", "--add", "--cacheinfo"])
+                    .arg(&object.mode)
+                    .arg(object.oid.as_str())
+                    .arg(path);
+                ensure_success("add a path to a proposed tree", self.execute(command)?)?;
+            } else {
+                let mut command = self.index_command(repository, &index_path)?;
+                command
+                    .args(["update-index", "--force-remove", "--"])
+                    .arg(path);
+                ensure_success("remove a path from a proposed tree", self.execute(command)?)?;
+            }
+        }
+        GitOid::parse(
+            self.index_capture(
+                repository,
+                &index_path,
+                "write a proposed tree",
+                ["write-tree"],
+            )?
+            .trim(),
+        )
+    }
+
+    fn diff_patch(
+        &self,
+        repository: &GitRepository,
+        from: &GitOid,
+        to: &GitOid,
+        paths: &[String],
+    ) -> Result<String, GitEngineError> {
+        for path in paths {
+            validate_repository_path(path)?;
+        }
+        let mut command = self.repository_command(repository);
+        command.args([
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            from.as_str(),
+            to.as_str(),
+            "--",
+        ]);
+        command.args(paths);
+        let output = self.execute(command)?;
+        let output = ensure_success("render a proposed Git patch", output)?;
+        if output.stdout.len() > MAX_DIAGNOSTIC_PATH_BYTES {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "render a proposed Git patch",
+                detail: format!("patch exceeds the {MAX_DIAGNOSTIC_PATH_BYTES} byte report limit"),
+            });
+        }
+        String::from_utf8(output.stdout).map_err(|error| GitEngineError::InvalidOutput {
+            operation: "render a proposed Git patch",
+            detail: error.to_string(),
+        })
     }
 
     fn capture_worktree(
@@ -1863,10 +2059,42 @@ fn remove_file_if_present(path: &Path) -> Result<(), GitEngineError> {
     }
 }
 
+fn validate_revision(revision: &str) -> Result<(), GitEngineError> {
+    if revision.is_empty()
+        || revision.starts_with('-')
+        || revision.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(GitEngineError::UnsupportedRepository {
+            detail: "a Git revision must be non-empty, must not start with `-`, and must not contain control characters".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn parse_nul_paths(operation: &'static str, bytes: &[u8]) -> Result<Vec<String>, GitEngineError> {
+    if bytes.len() > MAX_DIAGNOSTIC_PATH_BYTES {
+        return Err(GitEngineError::InvalidOutput {
+            operation,
+            detail: format!("path output exceeds the {MAX_DIAGNOSTIC_PATH_BYTES} byte limit"),
+        });
+    }
+    bytes
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| {
+            String::from_utf8(path.to_vec()).map_err(|error| GitEngineError::InvalidOutput {
+                operation,
+                detail: error.to_string(),
+            })
+        })
+        .collect()
+}
+
 fn validate_repository_path(path: &str) -> Result<(), GitEngineError> {
     if path.is_empty()
         || path.starts_with('/')
         || path.contains('\0')
+        || path.chars().any(char::is_control)
         || path.split('/').any(|part| part.is_empty() || part == "..")
     {
         Err(GitEngineError::UnsupportedRepository {
@@ -2439,6 +2667,87 @@ mod tests {
                 .read_ref(&repository, &checkpoint)
                 .expect("checkpoint read"),
             Some(initial)
+        );
+    }
+
+    #[test]
+    fn semantic_plumbing_builds_exact_grouped_trees_and_updates_refs_with_cas() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::create_dir(temporary.path().join("Area")).expect("area directory");
+        fs::write(temporary.path().join("Area/One.md"), "one\n").expect("area note");
+        fs::write(temporary.path().join("Root.md"), "root\n").expect("root note");
+        fs::write(temporary.path().join("Old.md"), "old\n").expect("old note");
+        let from = commit_all(temporary.path(), "initial");
+
+        fs::write(temporary.path().join("Area/One.md"), "one changed\n").expect("area change");
+        fs::write(temporary.path().join("Area/Two.md"), "two\n").expect("new area note");
+        fs::write(temporary.path().join("Root.md"), "root changed\n").expect("root change");
+        fs::remove_file(temporary.path().join("Old.md")).expect("old note removal");
+        let to = commit_all(temporary.path(), "target");
+
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        assert_eq!(
+            engine
+                .resolve_revision(&repository, "HEAD~1")
+                .expect("resolved revision"),
+            from
+        );
+        let changed = engine
+            .changed_paths(&repository, &from, &to)
+            .expect("changed paths");
+        assert_eq!(
+            changed,
+            vec!["Area/One.md", "Area/Two.md", "Old.md", "Root.md"]
+        );
+
+        let area_paths = changed[..2].to_vec();
+        let area_tree = engine
+            .tree_with_paths(&repository, &from, &to, &area_paths)
+            .expect("area tree");
+        let area_commit = engine
+            .create_commit(
+                &repository,
+                &area_tree,
+                std::slice::from_ref(&from),
+                "Update Area\n",
+            )
+            .expect("area commit");
+        let root_tree = engine
+            .tree_with_paths(&repository, &area_commit, &to, &changed[2..])
+            .expect("root tree");
+        assert_eq!(
+            root_tree,
+            engine.tree_oid(&repository, &to).expect("target tree")
+        );
+        let patch = engine
+            .diff_patch(&repository, &from, &area_commit, &area_paths)
+            .expect("area patch");
+        assert!(patch.contains("Area/One.md"));
+        assert!(patch.contains("Area/Two.md"));
+        assert!(!patch.contains("Root.md"));
+
+        let proposal = GitRefName::parse("refs/vulcan/proposals/semantic/test").expect("ref");
+        assert_eq!(
+            engine
+                .compare_and_swap_ref(&repository, &proposal, &area_commit, None)
+                .expect("create proposal"),
+            GitRefUpdateResult::Updated
+        );
+        assert_eq!(
+            engine
+                .compare_and_swap_ref(&repository, &proposal, &to, None)
+                .expect("stale create"),
+            GitRefUpdateResult::Stale
+        );
+        assert_eq!(
+            engine
+                .compare_and_swap_ref(&repository, &proposal, &to, Some(&area_commit))
+                .expect("advance proposal"),
+            GitRefUpdateResult::Updated
         );
     }
 

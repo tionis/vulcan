@@ -8787,6 +8787,139 @@
             "subcommands": []
           },
           {
+            "about": "Build a reviewable semantic history proposal",
+            "name": "semantic-plan",
+            "options": [
+              {
+                "help": "Optional registered wiki ID; omit to use the selected vault path",
+                "id": "wiki",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WIKI"
+                ]
+              },
+              {
+                "help": "Semantic branch source revision",
+                "id": "from",
+                "long": "from",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "FROM"
+                ]
+              },
+              {
+                "help": "Accepted live target revision",
+                "id": "to",
+                "long": "to",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "TO"
+                ]
+              },
+              {
+                "help": "Semantic branch ref that must identify --from",
+                "id": "semantic_ref",
+                "long": "semantic-ref",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "SEMANTIC_REF"
+                ]
+              },
+              {
+                "help": "Git remote carrying the live ref",
+                "id": "remote",
+                "long": "remote",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOTE"
+                ]
+              },
+              {
+                "help": "Fully qualified remote live ref",
+                "id": "live_ref",
+                "long": "live-ref",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LIVE_REF"
+                ]
+              },
+              {
+                "help": "Request optional agent-assisted grouping",
+                "id": "agent",
+                "long": "agent",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "AGENT"
+                ]
+              },
+              {
+                "help": "Report deterministic grouping without creating objects or state",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Validate and fast-forward a semantic branch to an accepted proposal",
+            "name": "semantic-apply",
+            "options": [
+              {
+                "help": "Semantic plan ULID",
+                "id": "plan_id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "PLAN_ID"
+                ]
+              },
+              {
+                "help": "Validate without advancing the semantic branch",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "Diagnose Git synchronization without changing it",
             "name": "doctor",
             "options": [

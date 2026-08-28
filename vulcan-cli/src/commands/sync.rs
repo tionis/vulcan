@@ -16,6 +16,10 @@ use vulcan_app::sync_conflicts::{
     ResolveSyncConflictReport, SyncConflictDetailReport, SyncConflictListReport,
     SyncConflictResolutionSide,
 };
+use vulcan_app::sync_semantic::{
+    apply_semantic_plan, create_semantic_plan, load_semantic_plan, SemanticApplyReport,
+    SemanticPlanOptions, SemanticPlanReport,
+};
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
@@ -27,45 +31,8 @@ pub(crate) fn handle_sync_command(
     paths: &VaultPaths,
     command: &SyncCommand,
 ) -> Result<(), CliError> {
-    match command {
-        SyncCommand::Pause { wiki, dry_run } => {
-            return set_automatic_sync(cli.output, paths, wiki.as_deref(), true, *dry_run);
-        }
-        SyncCommand::Resume { wiki, dry_run } => {
-            return set_automatic_sync(cli.output, paths, wiki.as_deref(), false, *dry_run);
-        }
-        SyncCommand::Doctor { wiki, target } => {
-            return run_sync_doctor(cli, paths, wiki.as_deref(), target);
-        }
-        SyncCommand::Conflicts { conflict_id, wiki } => {
-            return run_sync_conflicts(cli, paths, wiki.as_deref(), conflict_id.as_deref());
-        }
-        SyncCommand::Resolve {
-            conflict_id,
-            side,
-            wiki,
-            target,
-            dry_run,
-        } => {
-            return run_sync_resolve(
-                cli,
-                paths,
-                wiki.as_deref(),
-                conflict_id,
-                *side,
-                target,
-                *dry_run,
-            );
-        }
-        SyncCommand::Checkpoint {
-            wiki,
-            kind,
-            target,
-            dry_run,
-        } => {
-            return run_sync_checkpoint(cli, paths, wiki.as_deref(), *kind, target, *dry_run);
-        }
-        SyncCommand::Run { .. } | SyncCommand::Status { .. } => {}
+    if let Some(result) = handle_non_cycle_sync_command(cli, paths, command) {
+        return result;
     }
     let (options, selection) = match command {
         SyncCommand::Run {
@@ -92,12 +59,7 @@ pub(crate) fn handle_sync_command(
             },
             registered_selection(selection)?,
         ),
-        SyncCommand::Doctor { .. }
-        | SyncCommand::Conflicts { .. }
-        | SyncCommand::Resolve { .. }
-        | SyncCommand::Checkpoint { .. }
-        | SyncCommand::Pause { .. }
-        | SyncCommand::Resume { .. } => unreachable!(),
+        _ => unreachable!(),
     };
     if let Some(selection) = selection {
         let registry = WikiRegistry::user_default().map_err(CliError::operation)?;
@@ -118,6 +80,150 @@ pub(crate) fn handle_sync_command(
         .map_err(CliError::operation)?;
     let report = sync_git_vault(paths, &options).map_err(CliError::operation)?;
     print_sync_report(cli.output, &report)
+}
+
+fn handle_non_cycle_sync_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &SyncCommand,
+) -> Option<Result<(), CliError>> {
+    let result = match command {
+        SyncCommand::Pause { wiki, dry_run } => {
+            set_automatic_sync(cli.output, paths, wiki.as_deref(), true, *dry_run)
+        }
+        SyncCommand::Resume { wiki, dry_run } => {
+            set_automatic_sync(cli.output, paths, wiki.as_deref(), false, *dry_run)
+        }
+        SyncCommand::Doctor { wiki, target } => {
+            run_sync_doctor(cli, paths, wiki.as_deref(), target)
+        }
+        SyncCommand::Conflicts { conflict_id, wiki } => {
+            run_sync_conflicts(cli, paths, wiki.as_deref(), conflict_id.as_deref())
+        }
+        SyncCommand::Resolve {
+            conflict_id,
+            side,
+            wiki,
+            target,
+            dry_run,
+        } => run_sync_resolve(
+            cli,
+            paths,
+            wiki.as_deref(),
+            conflict_id,
+            *side,
+            target,
+            *dry_run,
+        ),
+        SyncCommand::Checkpoint {
+            wiki,
+            kind,
+            target,
+            dry_run,
+        } => run_sync_checkpoint(cli, paths, wiki.as_deref(), *kind, target, *dry_run),
+        SyncCommand::SemanticPlan {
+            wiki,
+            from,
+            to,
+            semantic_ref,
+            target,
+            agent,
+            dry_run,
+        } => run_semantic_plan(
+            cli,
+            paths,
+            wiki.as_deref(),
+            from,
+            to,
+            semantic_ref,
+            target,
+            *agent,
+            *dry_run,
+        ),
+        SyncCommand::SemanticApply { plan_id, dry_run } => {
+            run_semantic_apply(cli, plan_id, *dry_run)
+        }
+        SyncCommand::Run { .. } | SyncCommand::Status { .. } => return None,
+    };
+    Some(result)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_semantic_plan(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    from: &str,
+    to: &str,
+    semantic_ref: &str,
+    target: &crate::SyncTargetArgs,
+    agent: bool,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let report = create_semantic_plan(
+        &paths,
+        &SemanticPlanOptions {
+            from: from.to_string(),
+            to: to.to_string(),
+            semantic_ref: GitRefName::parse(semantic_ref).map_err(CliError::operation)?,
+            remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
+            live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
+            agent,
+            dry_run,
+        },
+    )
+    .map_err(CliError::operation)?;
+    print_semantic_plan(cli.output, &report)
+}
+
+fn run_semantic_apply(cli: &Cli, plan_id: &str, dry_run: bool) -> Result<(), CliError> {
+    let plan = load_semantic_plan(plan_id).map_err(CliError::operation)?;
+    let paths = VaultPaths::new(&plan.vault);
+    selected_permission_guard(cli, &paths)?
+        .check_git()
+        .map_err(CliError::operation)?;
+    let report = apply_semantic_plan(plan_id, dry_run).map_err(CliError::operation)?;
+    print_semantic_apply(cli.output, &report)
+}
+
+fn print_semantic_plan(output: OutputFormat, report: &SemanticPlanReport) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Semantic plan {}: {:?} ({} commit(s))",
+        report.plan_id,
+        report.status,
+        report.commits.len()
+    );
+    for commit in &report.commits {
+        println!(
+            "{}. {} [{} path(s)]",
+            commit.position,
+            commit.group,
+            commit.paths.len()
+        );
+    }
+    Ok(())
+}
+
+fn print_semantic_apply(
+    output: OutputFormat,
+    report: &SemanticApplyReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Semantic plan {}: {} -> {}{}",
+        report.plan_id,
+        report.previous_revision,
+        report.applied_revision,
+        if report.dry_run { " (dry run)" } else { "" }
+    );
+    Ok(())
 }
 
 fn run_sync_checkpoint(
