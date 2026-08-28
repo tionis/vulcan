@@ -11575,6 +11575,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("Vulcan-Sync-*` trailers"));
     assert!(git_skill.contains("vulcan sync semantic-plan"));
     assert!(git_skill.contains("semantic branch with compare-and-swap"));
+    assert!(git_skill.contains("pause.reason"));
+    assert!(git_skill.contains("head_moved"));
     assert!(git_skill.contains("vulcan sync run <wiki>"));
     assert!(git_skill.contains("vulcan sync pause [<wiki>]"));
     assert!(git_skill.contains("state.recovered_from"));

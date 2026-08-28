@@ -589,6 +589,29 @@ fn print_sync_report(output: OutputFormat, report: &VaultSyncReport) -> Result<(
                     println!("{}", conflict.diagnostics);
                 }
             }
+            if let Some(pause) = &report.sync.pause {
+                let detail = match pause.reason {
+                    vulcan_app::sync::GitSyncPauseReason::HeadMoved => format!(
+                        "HEAD moved from {} to {}",
+                        pause
+                            .expected_head
+                            .as_ref()
+                            .map_or("unborn", |oid| oid.as_str()),
+                        pause
+                            .actual_head
+                            .as_ref()
+                            .map_or("unborn", |oid| oid.as_str())
+                    ),
+                    vulcan_app::sync::GitSyncPauseReason::OperationInProgress => format!(
+                        "Git {} operation is in progress",
+                        pause.operation.as_deref().unwrap_or("unknown")
+                    ),
+                    vulcan_app::sync::GitSyncPauseReason::StagedChanges => {
+                        "the normal Git index contains staged changes".to_string()
+                    }
+                };
+                println!("Paused: {detail}. Captured work remains reachable.");
+            }
             if let Some(refresh) = &report.cache_refresh {
                 println!(
                     "Cache refreshed: {} added, {} updated, {} deleted",

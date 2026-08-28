@@ -225,6 +225,29 @@ pub struct GitSyncConflict {
     pub diagnostics: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitSyncPauseReason {
+    HeadMoved,
+    OperationInProgress,
+    StagedChanges,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitSyncPause {
+    pub reason: GitSyncPauseReason,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_head: Option<GitOid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_head: Option<GitOid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected_head_ref: Option<GitRefName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_head_ref: Option<GitRefName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitSyncReport {
     pub dry_run: bool,
@@ -234,6 +257,10 @@ pub struct GitSyncReport {
     pub remote: GitRemote,
     pub refs: GitSyncRefs,
     pub safety: GitSafetyState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_before: Option<GitOid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head_ref_before: Option<GitRefName>,
     pub remote_before: Option<GitOid>,
     pub local_before: Option<GitOid>,
     pub local_snapshot: Option<GitOid>,
@@ -241,6 +268,8 @@ pub struct GitSyncReport {
     pub actions: Vec<GitSyncAction>,
     pub retries: usize,
     pub conflict: Option<GitSyncConflict>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pause: Option<GitSyncPause>,
 }
 
 impl GitSyncReport {
@@ -250,8 +279,8 @@ impl GitSyncReport {
         repository: GitRepository,
         refs: GitSyncRefs,
         safety: GitSafetyState,
-        remote_before: Option<GitOid>,
-        local_before: Option<GitOid>,
+        head_before: (Option<GitOid>, Option<GitRefName>),
+        observed: (Option<GitOid>, Option<GitOid>),
     ) -> Self {
         Self {
             dry_run: options.dry_run,
@@ -261,13 +290,16 @@ impl GitSyncReport {
             remote: options.remote.clone(),
             refs,
             safety,
-            remote_before,
-            local_before,
+            head_before: head_before.0,
+            head_ref_before: head_before.1,
+            remote_before: observed.0,
+            local_before: observed.1,
             local_snapshot: None,
             accepted: None,
             actions: Vec::new(),
             retries: 0,
             conflict: None,
+            pause: None,
         }
     }
 }
@@ -477,7 +509,23 @@ fn git_report_to_backend_report(report: GitSyncReport) -> SyncReport {
         remote_revision: report.remote_before.as_ref().map(ToString::to_string),
         accepted_revision: report.accepted.as_ref().map(ToString::to_string),
         unresolved_conflicts: usize::from(conflict.is_some()),
-        detail: None,
+        detail: report.pause.as_ref().map(|pause| match pause.reason {
+            GitSyncPauseReason::HeadMoved => format!(
+                "HEAD moved from {} to {} during synchronization",
+                pause
+                    .expected_head
+                    .as_ref()
+                    .map_or("unborn", GitOid::as_str),
+                pause.actual_head.as_ref().map_or("unborn", GitOid::as_str)
+            ),
+            GitSyncPauseReason::OperationInProgress => format!(
+                "Git {} operation is in progress",
+                pause.operation.as_deref().unwrap_or("unknown")
+            ),
+            GitSyncPauseReason::StagedChanges => {
+                "the normal Git index contains staged changes".to_string()
+            }
+        }),
     };
     SyncReport {
         version: SYNC_CONTRACT_VERSION,
@@ -575,6 +623,8 @@ pub fn sync_git_once_with_control(
     let repository = engine.discover_repository(vault_path)?;
     let refs = GitSyncRefs::for_options(options)?;
     let safety = engine.safety_state(&repository)?;
+    let head_before = engine.head_commit(&repository)?;
+    let head_ref_before = engine.head_reference(&repository)?;
     let local_before = engine.read_ref(&repository, &refs.local)?;
     let remote_before = if options.dry_run {
         engine.remote_ref(&repository, &options.remote, &refs.live)?
@@ -587,20 +637,14 @@ pub fn sync_git_once_with_control(
         repository,
         refs,
         safety,
-        remote_before,
-        local_before,
+        (head_before, head_ref_before),
+        (remote_before, local_before),
     );
     emit_progress(observer, GitSyncPhase::Preparing, 0, &report, None)?;
     if options.dry_run {
         emit_progress(observer, GitSyncPhase::Completed, 0, &report, None)?;
         return Ok(report);
     }
-    if report.safety.staged_changes || report.safety.operation.is_some() {
-        report.outcome = GitSyncOutcome::Paused;
-        emit_progress(observer, GitSyncPhase::Paused, 0, &report, None)?;
-        return Ok(report);
-    }
-
     let _lock = RepositoryLock::acquire(&report.repository)?;
     let attempts = options.max_retries.max(1);
     for attempt in 0..attempts {
@@ -710,6 +754,20 @@ fn run_attempt(
         report.remote_before.clone_from(&remote_tip);
     }
     let has_remote = remote_tip.is_some();
+    if let Some(pause) = sync_pause(engine, report)? {
+        if has_remote {
+            engine.fetch_ref(
+                &report.repository,
+                &options.remote,
+                &report.refs.live,
+                &report.refs.fetched,
+            )?;
+        }
+        report.pause = Some(pause);
+        report.outcome = GitSyncOutcome::Paused;
+        control.emit(GitSyncPhase::Paused, report, None)?;
+        return Ok(AttemptResult::Finished);
+    }
     let Some((accepted, outcome, pushed)) =
         reconcile(engine, options, report, &capture, has_remote, control)?
     else {
@@ -738,6 +796,13 @@ fn run_attempt(
     }
     report.accepted = Some(accepted.clone());
     if verification.tree != engine.tree_oid(&report.repository, &accepted)? {
+        if let Some(pause) = sync_pause(engine, report)? {
+            engine.update_ref(&report.repository, &report.refs.pending, &accepted)?;
+            report.pause = Some(pause);
+            report.outcome = GitSyncOutcome::Paused;
+            control.emit(GitSyncPhase::Paused, report, None)?;
+            return Ok(AttemptResult::Finished);
+        }
         control.check()?;
         control.emit(GitSyncPhase::Applying, report, None)?;
         engine.apply_tree(&report.repository, &verification.commit, &accepted)?;
@@ -750,6 +815,46 @@ fn run_attempt(
     report.accepted = Some(accepted);
     control.emit(GitSyncPhase::Completed, report, None)?;
     Ok(AttemptResult::Finished)
+}
+
+fn sync_pause(
+    engine: &dyn GitEngine,
+    report: &GitSyncReport,
+) -> Result<Option<GitSyncPause>, GitSyncError> {
+    let actual_head = engine.head_commit(&report.repository)?;
+    let actual_head_ref = engine.head_reference(&report.repository)?;
+    if actual_head != report.head_before || actual_head_ref != report.head_ref_before {
+        return Ok(Some(GitSyncPause {
+            reason: GitSyncPauseReason::HeadMoved,
+            expected_head: report.head_before.clone(),
+            actual_head,
+            expected_head_ref: report.head_ref_before.clone(),
+            actual_head_ref,
+            operation: None,
+        }));
+    }
+    let safety = engine.safety_state(&report.repository)?;
+    if let Some(operation) = safety.operation {
+        return Ok(Some(GitSyncPause {
+            reason: GitSyncPauseReason::OperationInProgress,
+            expected_head: report.head_before.clone(),
+            actual_head,
+            expected_head_ref: report.head_ref_before.clone(),
+            actual_head_ref,
+            operation: Some(operation),
+        }));
+    }
+    if safety.staged_changes {
+        return Ok(Some(GitSyncPause {
+            reason: GitSyncPauseReason::StagedChanges,
+            expected_head: report.head_before.clone(),
+            actual_head,
+            expected_head_ref: report.head_ref_before.clone(),
+            actual_head_ref,
+            operation: None,
+        }));
+    }
+    Ok(None)
 }
 
 fn reconcile(
@@ -1028,6 +1133,43 @@ mod tests {
     struct RejectFirstPushObserver {
         repository: PathBuf,
         fired: bool,
+    }
+
+    struct MoveHeadObserver {
+        repository: PathBuf,
+        target: String,
+        fired: bool,
+    }
+
+    impl GitSyncObserver for MoveHeadObserver {
+        fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
+            if progress.phase == GitSyncPhase::Fetching && !self.fired {
+                self.fired = true;
+                run_git(
+                    &self.repository,
+                    &["update-ref", "refs/heads/main", &self.target],
+                );
+            }
+            Ok(())
+        }
+    }
+
+    struct SwitchHeadObserver {
+        repository: PathBuf,
+        fired: bool,
+    }
+
+    impl GitSyncObserver for SwitchHeadObserver {
+        fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
+            if progress.phase == GitSyncPhase::Fetching && !self.fired {
+                self.fired = true;
+                run_git(
+                    &self.repository,
+                    &["symbolic-ref", "HEAD", "refs/heads/other"],
+                );
+            }
+            Ok(())
+        }
     }
 
     impl GitSyncObserver for RejectFirstPushObserver {
@@ -1396,8 +1538,8 @@ mod tests {
     }
 
     #[test]
-    fn staged_changes_pause_before_any_snapshot_or_push() {
-        let (_temporary, _remote, writer) = setup_remote_and_writer();
+    fn staged_changes_are_captured_before_reconciliation_pauses() {
+        let (_temporary, remote, writer) = setup_remote_and_writer();
         fs::write(writer.join("Home.md"), "staged\n").expect("staged note");
         run_git(&writer, &["add", "Home.md"]);
 
@@ -1410,7 +1552,173 @@ mod tests {
 
         assert_eq!(report.outcome, GitSyncOutcome::Paused);
         assert!(report.safety.staged_changes);
-        assert_eq!(report.local_snapshot, None);
+        assert!(report.local_snapshot.is_some());
+        assert_eq!(
+            report.pause.as_ref().map(|pause| pause.reason),
+            Some(GitSyncPauseReason::StagedChanges)
+        );
+        assert_eq!(
+            GitCliEngine::default()
+                .remote_ref(
+                    &report.repository,
+                    &GitRemote::parse(remote.to_string_lossy()).expect("remote"),
+                    &report.refs.live,
+                )
+                .expect("remote query"),
+            None
+        );
+    }
+
+    #[test]
+    fn staged_changes_still_fetch_the_remote_before_pausing() {
+        let (temporary, remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
+        let reader = clone_reader(&temporary, &remote, &writer);
+        fs::write(writer.join("Remote.md"), "remote\n").expect("remote note");
+        let pushed =
+            sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("remote update");
+        let remote_tip = pushed.accepted.expect("accepted remote update");
+        fs::write(reader.join("Home.md"), "staged locally\n").expect("local staged edit");
+        run_git(&reader, &["add", "Home.md"]);
+
+        let report = sync_git_once(&engine, &reader, &GitSyncOptions::default())
+            .expect("paused sync should report normally");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Paused);
+        assert!(report.local_snapshot.is_some());
+        assert_eq!(
+            report.pause.as_ref().map(|pause| pause.reason),
+            Some(GitSyncPauseReason::StagedChanges)
+        );
+        assert_eq!(
+            engine
+                .read_ref(&report.repository, &report.refs.fetched)
+                .expect("fetched ref"),
+            Some(remote_tip)
+        );
+        assert!(!reader.join("Remote.md").exists());
+    }
+
+    #[test]
+    fn in_progress_git_operation_is_captured_before_pausing() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let head = engine
+            .head_commit(&repository)
+            .expect("head query")
+            .expect("head");
+        fs::write(repository.git_dir.join("MERGE_HEAD"), format!("{head}\n")).expect("merge state");
+
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("paused sync should report normally");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Paused);
+        assert!(report.local_snapshot.is_some());
+        assert_eq!(
+            report.pause.as_ref().map(|pause| pause.reason),
+            Some(GitSyncPauseReason::OperationInProgress)
+        );
+        assert_eq!(
+            report.pause.and_then(|pause| pause.operation),
+            Some("merge".to_string())
+        );
+    }
+
+    #[test]
+    fn unexplained_head_movement_pauses_after_capture() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let expected_head = engine
+            .head_commit(&repository)
+            .expect("head query")
+            .expect("initial head");
+        fs::write(writer.join("Moved.md"), "moved head\n").expect("moved note");
+        commit_all(&writer, "alternate head");
+        let moved_head = engine
+            .head_commit(&repository)
+            .expect("head query")
+            .expect("moved head");
+        run_git(&writer, &["reset", "--hard", expected_head.as_str()]);
+        let cancellation = SyncCancellationToken::default();
+        let mut observer = MoveHeadObserver {
+            repository: writer.clone(),
+            target: moved_head.to_string(),
+            fired: false,
+        };
+
+        let report = sync_git_once_with_control(
+            &engine,
+            &writer,
+            &GitSyncOptions::default(),
+            &cancellation,
+            &mut observer,
+        )
+        .expect("head movement should produce a paused report");
+
+        assert!(observer.fired);
+        assert_eq!(report.outcome, GitSyncOutcome::Paused);
+        assert!(report.local_snapshot.is_some());
+        assert_eq!(
+            report.pause,
+            Some(GitSyncPause {
+                reason: GitSyncPauseReason::HeadMoved,
+                expected_head: Some(expected_head),
+                actual_head: Some(moved_head),
+                expected_head_ref: Some(GitRefName::parse("refs/heads/main").expect("main ref"),),
+                actual_head_ref: Some(GitRefName::parse("refs/heads/main").expect("main ref")),
+                operation: None,
+            })
+        );
+    }
+
+    #[test]
+    fn switching_branches_at_the_same_commit_pauses_after_capture() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let head = engine
+            .head_commit(&repository)
+            .expect("head query")
+            .expect("initial head");
+        engine
+            .create_ref(
+                &repository,
+                &GitRefName::parse("refs/heads/other").expect("other ref"),
+                &head,
+            )
+            .expect("other branch");
+        let cancellation = SyncCancellationToken::default();
+        let mut observer = SwitchHeadObserver {
+            repository: writer.clone(),
+            fired: false,
+        };
+
+        let report = sync_git_once_with_control(
+            &engine,
+            &writer,
+            &GitSyncOptions::default(),
+            &cancellation,
+            &mut observer,
+        )
+        .expect("branch movement should produce a paused report");
+
+        let pause = report.pause.expect("pause detail");
+        assert!(observer.fired);
+        assert_eq!(report.outcome, GitSyncOutcome::Paused);
+        assert_eq!(pause.reason, GitSyncPauseReason::HeadMoved);
+        assert_eq!(pause.expected_head, Some(head.clone()));
+        assert_eq!(pause.actual_head, Some(head));
+        assert_eq!(
+            pause.expected_head_ref.as_ref().map(GitRefName::as_str),
+            Some("refs/heads/main")
+        );
+        assert_eq!(
+            pause.actual_head_ref.as_ref().map(GitRefName::as_str),
+            Some("refs/heads/other")
+        );
     }
 
     #[test]

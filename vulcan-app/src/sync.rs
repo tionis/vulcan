@@ -13,8 +13,8 @@ pub use vulcan_sync::{
     GitCloneRequest, GitInstallation, GitObjectFormat, GitPlatformPolicy, GitPlatformProfile,
     GitRefName, GitRemote, GitRepository, GitRepositoryLayout, GitRepositoryRequirements,
     GitSyncAction, GitSyncConflict, GitSyncDeviceId, GitSyncObserverError, GitSyncOptions,
-    GitSyncOutcome, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
-    SyncCancellationToken,
+    GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs,
+    GitSyncReport, SyncCancellationToken,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1094,6 +1094,66 @@ mod tests {
             .expect("retained error journal");
         assert_eq!(journal.phase, SyncJournalPhase::Preparing);
         assert!(journal.error.is_some());
+    }
+
+    #[test]
+    fn staged_sync_retains_a_paused_journal_after_capture() {
+        let temporary = tempdir().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        git(
+            &vault,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&vault, &["config", "user.name", "Vulcan Test"]);
+        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        git(
+            &vault,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        fs::write(vault.join("Home.md"), "initial\n").expect("initial note");
+        git(&vault, &["add", "Home.md"]);
+        git(&vault, &["commit", "--quiet", "-m", "initial"]);
+        fs::write(vault.join("Home.md"), "staged\n").expect("staged note");
+        git(&vault, &["add", "Home.md"]);
+        let paths = VaultPaths::new(&vault);
+        let store = SyncStateStore::at(temporary.path().join("state"));
+
+        let report = sync_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store)
+            .expect("paused sync");
+
+        assert_eq!(report.sync.outcome, GitSyncOutcome::Paused);
+        assert_eq!(
+            report.sync.pause.as_ref().map(|pause| pause.reason),
+            Some(GitSyncPauseReason::StagedChanges)
+        );
+        let journal = report.state.retained.expect("retained paused journal");
+        assert_eq!(journal.phase, SyncJournalPhase::Paused);
+        assert_eq!(
+            journal.local_snapshot,
+            report.sync.local_snapshot.as_ref().map(ToString::to_string)
+        );
+        assert_eq!(
+            store
+                .load(&report.state.repository_key)
+                .expect("stored journal"),
+            Some(journal)
+        );
     }
 
     #[test]

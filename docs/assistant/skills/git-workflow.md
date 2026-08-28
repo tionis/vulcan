@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 15
+version: 16
 tools:
   - git_status
   - git_diff
@@ -29,6 +29,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Use `git log` or `git blame` when provenance matters.
 - Commit only after the note or refactor workflow is understood.
 - Run `vulcan sync status` before a sync when staged changes or an in-progress Git operation may be present.
+- If a finite cycle reports `paused`, inspect `pause.reason`: `staged_changes`, `operation_in_progress`, or `head_moved`. Vulcan has already captured current bytes and fetched an existing remote tip, but it has not reconciled or applied while that state is unsafe. Resolve the normal Git state yourself, then rerun sync; do not delete the retained journal or Vulcan refs.
 - Run `vulcan sync doctor [<wiki>]` for a read-only installation, layout, hidden-ref/object, remote, lock, recovery-journal, ignore, filter/LFS, and cache-coherence check. Warnings describe reviewable or offline state; `healthy: false` means at least one error-level invariant failed.
 - Use `vulcan sync conflicts` to list unresolved preserved conflicts for the selected vault, `vulcan sync conflicts <id>` for the immutable full record and current resolution state, or add `--wiki <id>` for a registered wiki. Artifact paths in detail output are device-local evidence, not vault-relative note paths.
 - Only after the user explicitly chooses a preserved side, preview it with `vulcan sync resolve <id> --side base|local|remote --dry-run`, then rerun without `--dry-run` on approval. The choice applies only to conflicted paths while retaining clean merge results; Vulcan captures current bytes first, rejects stale inputs, publishes with compare-and-swap, and retains the original conflict refs and record.
@@ -47,7 +48,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Do not write a commit message before inspecting what actually changed.
 - Treat unrelated dirty worktree state as a coordination issue, not something to silently overwrite.
 - Prefer explicit commits over assuming auto-commit covers every workflow.
-- Do not reset or discard staged state to make synchronization proceed. Vulcan pauses worktree sync until that state is resolved by the user.
+- Do not reset or discard staged state to make synchronization proceed. Vulcan preserves and reports it, captures the worktree, fetches safely, and pauses before reconciliation/application until the user resolves that state.
 - Treat a `conflicted` sync outcome as preserved work requiring review. Its immutable `conflict.id`, base/local/remote revisions, path list, policy identity, and `preserved_refs` are stable; `conflict_record` points to device-local byte-preserving artifacts outside the vault. Do not choose a side, run mutating resolution, delete the record, or edit Vulcan-owned refs without explicit user direction.
 - Sync defaults to remote `origin` and `refs/heads/__vulcan-sync/live`; pass `--remote` or `--live-ref` only when the repository uses a different agreed profile.
 - A clone that succeeds before registration fails is deliberately preserved. Report the partial state and register or remove it only with explicit user direction.

@@ -38,6 +38,11 @@ pub trait GitEngine: Send + Sync {
 
     fn head_commit(&self, repository: &GitRepository) -> Result<Option<GitOid>, GitEngineError>;
 
+    fn head_reference(
+        &self,
+        repository: &GitRepository,
+    ) -> Result<Option<GitRefName>, GitEngineError>;
+
     fn resolve_revision(
         &self,
         repository: &GitRepository,
@@ -1076,6 +1081,23 @@ impl GitEngine for GitCliEngine {
             return Ok(None);
         }
         Err(command_failed("read HEAD", &output))
+    }
+
+    fn head_reference(
+        &self,
+        repository: &GitRepository,
+    ) -> Result<Option<GitRefName>, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command.args(["symbolic-ref", "--quiet", "HEAD"]);
+        let output = self.execute(command)?;
+        if output.status.success() {
+            return GitRefName::parse(decode_stdout("read the HEAD ref", output.stdout)?.trim())
+                .map(Some);
+        }
+        if output.status.code() == Some(1) && output.stdout.is_empty() && output.stderr.is_empty() {
+            return Ok(None);
+        }
+        Err(command_failed("read the HEAD ref", &output))
     }
 
     fn resolve_revision(
