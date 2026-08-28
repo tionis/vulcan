@@ -25,6 +25,8 @@ pub trait GitEngine: Send + Sync {
 
     fn discover_repository(&self, path: &Path) -> Result<GitRepository, GitEngineError>;
 
+    fn clone_repository(&self, request: &GitCloneRequest) -> Result<GitRepository, GitEngineError>;
+
     fn read_ref(
         &self,
         repository: &GitRepository,
@@ -120,6 +122,45 @@ pub struct GitInstallation {
     pub engine: GitEngineKind,
     pub executable: PathBuf,
     pub version: GitVersion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitCloneRequest {
+    pub source: String,
+    pub work_tree: PathBuf,
+    pub git_dir: Option<PathBuf>,
+}
+
+impl GitCloneRequest {
+    pub fn validate(&self) -> Result<(), GitEngineError> {
+        if self.source.is_empty()
+            || self.source.starts_with('-')
+            || self.source.chars().any(char::is_control)
+        {
+            return Err(GitEngineError::UnsupportedRepository {
+                detail: "Git clone source must be non-empty, must not start with `-`, and must not contain control characters".to_string(),
+            });
+        }
+        if self.work_tree.exists() {
+            return Err(GitEngineError::UnsupportedRepository {
+                detail: format!(
+                    "clone worktree destination already exists: {}",
+                    self.work_tree.display()
+                ),
+            });
+        }
+        if let Some(git_dir) = &self.git_dir {
+            if git_dir.exists() {
+                return Err(GitEngineError::UnsupportedRepository {
+                    detail: format!(
+                        "detached Git directory destination already exists: {}",
+                        git_dir.display()
+                    ),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -708,6 +749,27 @@ impl GitEngine for GitCliEngine {
         })
     }
 
+    fn clone_repository(&self, request: &GitCloneRequest) -> Result<GitRepository, GitEngineError> {
+        request.validate()?;
+        let mut command = self.command();
+        command.arg("clone");
+        if let Some(git_dir) = &request.git_dir {
+            command.arg("--separate-git-dir").arg(git_dir);
+        }
+        command
+            .arg("--")
+            .arg(&request.source)
+            .arg(&request.work_tree);
+        let output = self.execute(command)?;
+        if !output.status.success() {
+            return Err(redact_clone_source(
+                command_failed("clone Git repository", &output),
+                &request.source,
+            ));
+        }
+        self.discover_repository(&request.work_tree)
+    }
+
     fn read_ref(
         &self,
         repository: &GitRepository,
@@ -1169,6 +1231,13 @@ fn command_failed(operation: &'static str, output: &Output) -> GitEngineError {
     }
 }
 
+fn redact_clone_source(mut error: GitEngineError, source: &str) -> GitEngineError {
+    if let GitEngineError::CommandFailed { stderr, .. } = &mut error {
+        *stderr = stderr.replace(source, "<redacted clone source>");
+    }
+    error
+}
+
 fn decode_stdout(operation: &'static str, stdout: Vec<u8>) -> Result<String, GitEngineError> {
     String::from_utf8(stdout).map_err(|error| GitEngineError::InvalidOutput {
         operation,
@@ -1400,6 +1469,78 @@ mod tests {
             repository.git_dir,
             git_dir.canonicalize().expect("canonical Git directory")
         );
+    }
+
+    #[test]
+    fn clones_colocated_and_detached_worktrees() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let source = temporary.path().join("source");
+        fs::create_dir(&source).expect("source directory");
+        init_repo(&source);
+        fs::write(source.join("Home.md"), "# Home\n").expect("source note");
+        commit_all(&source, "initial");
+        let engine = GitCliEngine::default();
+
+        let colocated = temporary.path().join("colocated");
+        let repository = engine
+            .clone_repository(&GitCloneRequest {
+                source: source.display().to_string(),
+                work_tree: colocated.clone(),
+                git_dir: None,
+            })
+            .expect("colocated clone");
+        assert_eq!(repository.layout, GitRepositoryLayout::Colocated);
+        assert!(colocated.join("Home.md").is_file());
+
+        let detached = temporary.path().join("detached");
+        let detached_git = temporary.path().join("detached.git");
+        let repository = engine
+            .clone_repository(&GitCloneRequest {
+                source: source.display().to_string(),
+                work_tree: detached.clone(),
+                git_dir: Some(detached_git.clone()),
+            })
+            .expect("detached clone");
+        assert_eq!(repository.layout, GitRepositoryLayout::Detached);
+        assert!(detached.join(".git").is_file());
+        assert!(detached_git.join("HEAD").is_file());
+        assert!(detached.join("Home.md").is_file());
+    }
+
+    #[test]
+    fn clone_request_rejects_ambiguous_or_existing_destinations() {
+        let temporary = TempDir::new().expect("temporary directory");
+        assert!(GitCloneRequest {
+            source: "--upload-pack=malicious".to_string(),
+            work_tree: temporary.path().join("new"),
+            git_dir: None,
+        }
+        .validate()
+        .is_err());
+        assert!(GitCloneRequest {
+            source: "source".to_string(),
+            work_tree: temporary.path().to_path_buf(),
+            git_dir: None,
+        }
+        .validate()
+        .is_err());
+    }
+
+    #[test]
+    fn clone_errors_do_not_expose_the_supplied_source() {
+        let source = "https://secret@example.invalid/missing.git?token=secret";
+        let error = redact_clone_source(
+            GitEngineError::CommandFailed {
+                operation: "clone Git repository",
+                exit_code: Some(128),
+                stderr: format!("fatal: repository '{source}' not found"),
+            },
+            source,
+        );
+        let rendered = error.to_string();
+        assert!(!rendered.contains("secret@example"));
+        assert!(!rendered.contains("token=secret"));
+        assert!(rendered.contains("<redacted clone source>"));
     }
 
     #[test]

@@ -2195,6 +2195,36 @@ fn parses_sync_run_and_status_commands() {
 
 #[test]
 fn parses_vault_registry_commands() {
+    let clone = Cli::try_parse_from([
+        "vulcan",
+        "vault",
+        "clone",
+        "ssh://git@example.invalid/wiki.git",
+        "/storage/wiki",
+        "--id",
+        "personal",
+        "--group",
+        "mobile",
+        "--git-dir",
+        "/data/git/wiki",
+        "--dry-run",
+    ])
+    .expect("vault clone should parse");
+    assert_eq!(
+        clone.command,
+        Command::Vault {
+            command: VaultCommand::Clone {
+                remote: "ssh://git@example.invalid/wiki.git".to_string(),
+                path: PathBuf::from("/storage/wiki"),
+                id: Some("personal".to_string()),
+                group: vec!["mobile".to_string()],
+                git_dir: Some(PathBuf::from("/data/git/wiki")),
+                permissions_profile: None,
+                dry_run: true,
+            },
+        }
+    );
+
     let add = Cli::try_parse_from([
         "vulcan",
         "vault",

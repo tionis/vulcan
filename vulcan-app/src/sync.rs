@@ -3,11 +3,31 @@
 use crate::{scan::refresh_cache_incrementally, AppError};
 use serde::Serialize;
 use vulcan_core::{ScanSummary, VaultPaths};
+use vulcan_sync::GitEngine;
 
 pub use vulcan_sync::{
-    GitRefName, GitRemote, GitSyncAction, GitSyncConflict, GitSyncOptions, GitSyncOutcome,
-    GitSyncRefs, GitSyncReport,
+    GitCloneRequest, GitInstallation, GitRefName, GitRemote, GitRepository, GitRepositoryLayout,
+    GitSyncAction, GitSyncConflict, GitSyncOptions, GitSyncOutcome, GitSyncRefs, GitSyncReport,
 };
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitCloneReport {
+    pub installation: GitInstallation,
+    pub repository: GitRepository,
+}
+
+/// Clones a Git-backed vault without requiring registration or a daemon.
+pub fn clone_git_vault(request: &GitCloneRequest) -> Result<GitCloneReport, AppError> {
+    let engine = vulcan_sync::GitCliEngine::default();
+    let installation = engine.installation().map_err(AppError::operation)?;
+    let repository = engine
+        .clone_repository(request)
+        .map_err(AppError::operation)?;
+    Ok(GitCloneReport {
+        installation,
+        repository,
+    })
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct VaultSyncReport {

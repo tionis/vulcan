@@ -4723,6 +4723,113 @@ fn vault_registry_cli_round_trips_without_touching_wiki_files() {
 }
 
 #[test]
+fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let config_home = temporary.path().join("config");
+    let source = temporary.path().join("source");
+    let colocated = temporary.path().join("colocated");
+    let detached = temporary.path().join("detached");
+    let detached_git = temporary.path().join("git/detached.git");
+    fs::create_dir_all(&config_home).expect("config home should be created");
+    fs::create_dir(&source).expect("source should be created");
+    fs::create_dir(temporary.path().join("git")).expect("Git parent should be created");
+    init_git_repo(&source);
+    fs::write(source.join("Home.md"), "# Home\n").expect("source note should be written");
+    commit_all(&source, "initial");
+    let config_home = config_home.to_str().expect("config path should be utf-8");
+    let source_path = source.to_str().expect("source path should be utf-8");
+    let colocated_path = colocated.to_str().expect("clone path should be utf-8");
+
+    let dry_run = cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "--output",
+            "json",
+            "vault",
+            "clone",
+            source_path,
+            colocated_path,
+            "--id",
+            "planned",
+            "--group",
+            "mobile",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let dry_run_json = parse_stdout_json(&dry_run);
+    assert_eq!(dry_run_json["dry_run"], true);
+    assert_eq!(dry_run_json["platform_policy"], "standard");
+    assert_eq!(dry_run_json["proposed_registration"]["id"], "planned");
+    assert!(dry_run_json.get("clone").is_none());
+    assert!(!colocated.exists());
+    assert!(!temporary.path().join("config/vulcan/daemon.toml").exists());
+
+    let ordinary = cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "--output",
+            "json",
+            "vault",
+            "clone",
+            source_path,
+            colocated_path,
+        ])
+        .assert()
+        .success();
+    let ordinary_json = parse_stdout_json(&ordinary);
+    assert_eq!(ordinary_json["clone"]["repository"]["layout"], "colocated");
+    assert_eq!(ordinary_json["wiki"]["id"], "colocated");
+    assert!(colocated.join(".git").is_dir());
+    assert!(colocated.join("Home.md").is_file());
+
+    let detached_assert = cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "--output",
+            "json",
+            "vault",
+            "clone",
+            source_path,
+            detached.to_str().expect("detached path should be utf-8"),
+            "--id",
+            "detached",
+            "--git-dir",
+            detached_git
+                .to_str()
+                .expect("detached Git path should be utf-8"),
+        ])
+        .assert()
+        .success();
+    let detached_json = parse_stdout_json(&detached_assert);
+    assert_eq!(detached_json["platform_policy"], "detached_git_directory");
+    assert_eq!(detached_json["clone"]["repository"]["layout"], "detached");
+    assert_eq!(detached_json["wiki"]["sync_backend"], "git");
+    assert!(detached.join(".git").is_file());
+    assert!(detached_git.join("HEAD").is_file());
+
+    let sync = cargo_vulcan_with_xdg_config(config_home)
+        .args(["--output", "json", "sync", "run", "detached"])
+        .assert()
+        .success();
+    assert_eq!(
+        parse_stdout_json(&sync)["items"][0]["report"]["outcome"],
+        "bootstrapped"
+    );
+
+    cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "vault",
+            "clone",
+            source_path,
+            colocated_path,
+            "--id",
+            "duplicate",
+            "--dry-run",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("destination already exists"));
+}
+
+#[test]
 fn web_search_json_output_uses_configured_backend_and_env_key() {
     let server = MockWebServer::spawn();
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -10915,12 +11022,15 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync status"));
     assert!(git_skill.contains("vulcan sync run --dry-run"));
     assert!(git_skill.contains("vulcan sync run <wiki>"));
+    assert!(git_skill.contains("vulcan vault clone <remote> <path> --dry-run"));
+    assert!(git_skill.contains("clone that succeeds before registration fails"));
     assert!(git_skill.contains("never one atomic cross-repository operation"));
     let configuration_skill = fs::read_to_string(
         vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),
     )
     .expect("configuration skill should be readable");
-    assert!(configuration_skill.contains("vulcan vault add/list/show/set/remove"));
+    assert!(configuration_skill.contains("vulcan vault clone/add/list/show/set/remove"));
+    assert!(configuration_skill.contains("Clone dry-run does not contact the remote"));
     assert!(configuration_skill.contains("must never be treated as permission to delete"));
     assert!(json["support_files"].as_array().is_some_and(|items| items
         .iter()

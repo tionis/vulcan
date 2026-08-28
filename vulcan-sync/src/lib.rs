@@ -13,9 +13,9 @@ mod git;
 mod sync;
 
 pub use git::{
-    GitCapture, GitCaptureRequest, GitCliEngine, GitEngine, GitEngineError, GitEngineKind,
-    GitInstallation, GitMerge, GitObjectFormat, GitOid, GitPushResult, GitRefName, GitRemote,
-    GitRepository, GitRepositoryLayout, GitSafetyState, GitVersion,
+    GitCapture, GitCaptureRequest, GitCliEngine, GitCloneRequest, GitEngine, GitEngineError,
+    GitEngineKind, GitInstallation, GitMerge, GitObjectFormat, GitOid, GitPushResult, GitRefName,
+    GitRemote, GitRepository, GitRepositoryLayout, GitSafetyState, GitVersion,
 };
 pub use sync::{
     sync_git_once, GitSyncAction, GitSyncConflict, GitSyncError, GitSyncOptions, GitSyncOutcome,

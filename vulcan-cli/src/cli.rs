@@ -587,6 +587,7 @@ Examples:
 
 const VAULT_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
+  clone        clone and register a Git-backed wiki
   add          register an existing local wiki without changing its files
   list         list registered wikis, optionally filtered by group
   show         inspect one registration and its local availability
@@ -598,6 +599,8 @@ Notes:
   Registration is optional: ordinary `--vault <path>` commands continue to work directly.
 
 Examples:
+  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --id personal
+  vulcan vault clone ssh://git@example/wiki.git /storage/wiki --git-dir ~/.local/share/vulcan/git/wiki
   vulcan vault add personal ~/vaults/personal --group daily
   vulcan vault list --group daily
   vulcan vault show personal
@@ -3915,6 +3918,23 @@ pub enum SyncCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum VaultCommand {
+    #[command(about = "Clone and register a Git-backed wiki")]
+    Clone {
+        #[arg(help = "Git remote URL or local repository path")]
+        remote: String,
+        #[arg(help = "New worktree directory to create")]
+        path: PathBuf,
+        #[arg(long, help = "Device-local wiki ID; defaults to the destination name")]
+        id: Option<String>,
+        #[arg(long, action = ArgAction::Append, help = "Add the wiki to a local group")]
+        group: Vec<String>,
+        #[arg(long, help = "Create Git metadata in this separate directory")]
+        git_dir: Option<PathBuf>,
+        #[arg(long, help = "Permission profile used by future daemon requests")]
+        permissions_profile: Option<String>,
+        #[arg(long, help = "Validate and report without cloning or registering")]
+        dry_run: bool,
+    },
     #[command(about = "Register an existing local wiki")]
     Add {
         #[arg(help = "URL-safe device-local wiki ID")]

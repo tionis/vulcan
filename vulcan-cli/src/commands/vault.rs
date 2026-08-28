@@ -2,6 +2,7 @@ use crate::output::print_json;
 use crate::{Cli, CliError, OutputFormat, VaultCommand};
 use serde::Serialize;
 use std::path::Path;
+use vulcan_daemon::clone::{clone_registered_wiki, CloneWikiReport, CloneWikiRequest};
 use vulcan_daemon::registry::{
     AddWikiRequest, UpdateWikiRequest, WikiId, WikiRegistration, WikiRegistrationStatus,
     WikiRegistry,
@@ -25,6 +26,7 @@ struct VaultListReport<'a> {
 pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<(), CliError> {
     let registry = WikiRegistry::user_default().map_err(CliError::operation)?;
     match command {
+        VaultCommand::Clone { .. } => handle_clone(cli, &registry, command),
         VaultCommand::Add {
             id,
             path,
@@ -91,6 +93,70 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
             print_mutation(cli.output, "remove", *dry_run, &registry, &wiki)
         }
     }
+}
+
+fn handle_clone(
+    cli: &Cli,
+    registry: &WikiRegistry,
+    command: &VaultCommand,
+) -> Result<(), CliError> {
+    let VaultCommand::Clone {
+        remote,
+        path,
+        id,
+        group,
+        git_dir,
+        permissions_profile,
+        dry_run,
+    } = command
+    else {
+        unreachable!("clone handler requires a clone command")
+    };
+    let id = id.as_deref().map_or_else(
+        || {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(|| {
+                    CliError::operation("cannot derive a wiki ID from the destination; pass --id")
+                })
+                .and_then(parse_id)
+        },
+        parse_id,
+    )?;
+    let report = clone_registered_wiki(
+        registry,
+        &CloneWikiRequest {
+            id,
+            source: remote.clone(),
+            work_tree: path.clone(),
+            git_dir: git_dir.clone(),
+            groups: group.clone(),
+            permissions_profile: permissions_profile.clone(),
+        },
+        *dry_run,
+    )
+    .map_err(CliError::operation)?;
+    print_clone(cli.output, &report)
+}
+
+fn print_clone(output: OutputFormat, report: &CloneWikiReport) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    let verb = if report.dry_run {
+        "Would clone and register"
+    } else {
+        "Cloned and registered"
+    };
+    println!(
+        "{verb} wiki `{}` at {}",
+        report.proposed_registration.id,
+        report.proposed_registration.path.display()
+    );
+    if let Some(git_dir) = &report.proposed_registration.git_dir {
+        println!("Git directory: {}", git_dir.display());
+    }
+    Ok(())
 }
 
 fn print_list(
