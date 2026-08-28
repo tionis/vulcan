@@ -1,9 +1,10 @@
 use crate::{
     GitCaptureRequest, GitEngine, GitEngineError, GitInstallation, GitOid, GitPushResult,
-    GitRefName, GitRemote, GitRepository, GitSafetyState, GitTreeApplyPlan, SyncAction,
-    SyncBackend, SyncCapabilities, SyncCapability, SyncConflict, SyncContext, SyncError,
-    SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome, SyncPlan, SyncProgress,
-    SyncReport, SyncResolutionState, SyncState, SyncStatus, SYNC_CONTRACT_VERSION,
+    GitRefName, GitRemote, GitRepository, GitSafetyState, GitTreeApplyPlan, MergeAutomation,
+    MergePolicy, SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncConflict,
+    SyncContext, SyncError, SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome,
+    SyncPlan, SyncProgress, SyncReport, SyncResolutionState, SyncState, SyncStatus,
+    SYNC_CONTRACT_VERSION,
 };
 use fs2::FileExt;
 use serde::Serialize;
@@ -16,8 +17,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const SYNC_PROTOCOL_VERSION: u32 = 1;
-const MERGE_POLICY_VERSION: u32 = 1;
-const MERGE_POLICY_ID: &str = "vulcan-git-three-way-v1";
 const DEFAULT_LIVE_REF: &str = "refs/heads/__vulcan-sync/live";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -60,6 +59,8 @@ pub struct GitSyncOptions {
     pub max_retries: usize,
     pub dry_run: bool,
     pub device_id: GitSyncDeviceId,
+    pub merge_policy: MergePolicy,
+    pub merge_automation: MergeAutomation,
 }
 
 impl Default for GitSyncOptions {
@@ -70,6 +71,8 @@ impl Default for GitSyncOptions {
             max_retries: 4,
             dry_run: false,
             device_id: GitSyncDeviceId::anonymous(),
+            merge_policy: MergePolicy::default(),
+            merge_automation: MergeAutomation::default(),
         }
     }
 }
@@ -626,6 +629,11 @@ pub fn sync_git_once_with_control(
     observer: &mut dyn GitSyncObserver,
 ) -> Result<GitSyncReport, GitSyncError> {
     cancellation.check()?;
+    options.merge_policy.validate().map_err(|error| {
+        GitSyncError::Git(GitEngineError::UnsupportedRepository {
+            detail: error.to_string(),
+        })
+    })?;
     let installation = engine.installation()?;
     let repository = engine.discover_repository(vault_path)?;
     let refs = GitSyncRefs::for_options(options)?;
@@ -745,7 +753,7 @@ fn run_attempt(
         &GitCaptureRequest {
             base: base.clone(),
             target_ref: report.refs.local.clone(),
-            message: snapshot_message(&report.refs, &options.device_id, base.as_ref()),
+            message: snapshot_message(&report.refs, options, base.as_ref()),
         },
     )?;
     report.local_snapshot = Some(capture.commit.clone());
@@ -793,7 +801,7 @@ fn run_attempt(
         &GitCaptureRequest {
             base: Some(capture.commit.clone()),
             target_ref: report.refs.local.clone(),
-            message: snapshot_message(&report.refs, &options.device_id, Some(&capture.commit)),
+            message: snapshot_message(&report.refs, options, Some(&capture.commit)),
         },
     )?;
     if verification.commit != capture.commit {
@@ -939,11 +947,12 @@ fn merge_divergence(
     let merge = engine.merge_commits(&report.repository, &remote, &capture.commit)?;
     if !merge.clean {
         let (id, policy_hash) = conflict_identity(
+            &options.merge_policy,
             merge.base.as_ref(),
             &capture.commit,
             &remote,
             &merge.conflict_paths,
-        );
+        )?;
         let preserved_refs = preserve_conflict_refs(
             engine,
             &report.repository,
@@ -959,7 +968,7 @@ fn merge_divergence(
             remote,
             local: capture.commit.clone(),
             paths: merge.conflict_paths,
-            policy_version: MERGE_POLICY_VERSION,
+            policy_version: options.merge_policy.version,
             policy_hash,
             preserved_refs,
             merge_tree: merge.tree,
@@ -978,7 +987,7 @@ fn merge_divergence(
         &report.repository,
         &tree,
         &[remote.clone(), capture.commit.clone()],
-        &merge_message(&report.refs, &options.device_id, &remote, &capture.commit),
+        &merge_message(&report.refs, options, &remote, &capture.commit),
     )?;
     engine.update_ref(&report.repository, &report.refs.pending, &merged)?;
     control.check()?;
@@ -998,30 +1007,34 @@ fn merge_divergence(
 }
 
 fn conflict_identity(
+    policy: &MergePolicy,
     base: Option<&GitOid>,
     local: &GitOid,
     remote: &GitOid,
     paths: &[String],
-) -> (String, String) {
-    let policy_hash = blake3::hash(MERGE_POLICY_ID.as_bytes())
-        .to_hex()
-        .to_string();
+) -> Result<(String, String), GitSyncError> {
+    let policy_hash = policy.policy_hash().map_err(|error| {
+        GitSyncError::Git(GitEngineError::UnsupportedRepository {
+            detail: error.to_string(),
+        })
+    })?;
     let mut candidates = [local.as_str(), remote.as_str()];
     candidates.sort_unstable();
     let mut canonical_paths = paths.to_vec();
     canonical_paths.sort();
     canonical_paths.dedup();
     let identity = format!(
-        "{MERGE_POLICY_VERSION}\0{policy_hash}\0{}\0{}\0{}\0{}",
+        "{}\0{policy_hash}\0{}\0{}\0{}\0{}",
+        policy.version,
         base.map_or("-", GitOid::as_str),
         candidates[0],
         candidates[1],
         canonical_paths.join("\0")
     );
-    (
+    Ok((
         blake3::hash(identity.as_bytes()).to_hex()[..32].to_string(),
         policy_hash,
-    )
+    ))
 }
 
 fn preserve_conflict_refs(
@@ -1051,37 +1064,41 @@ fn preserve_conflict_refs(
 
 fn snapshot_message(
     refs: &GitSyncRefs,
-    device_id: &GitSyncDeviceId,
+    options: &GitSyncOptions,
     source: Option<&GitOid>,
 ) -> String {
     format!(
         "vulcan live snapshot\n\n{}",
-        sync_trailers(refs, device_id, source.map_or("unborn", GitOid::as_str))
+        sync_trailers(refs, options, source.map_or("unborn", GitOid::as_str))
     )
 }
 
 fn merge_message(
     refs: &GitSyncRefs,
-    device_id: &GitSyncDeviceId,
+    options: &GitSyncOptions,
     remote: &GitOid,
     local: &GitOid,
 ) -> String {
     format!(
         "vulcan live merge\n\n{}",
-        sync_trailers(refs, device_id, &format!("{remote}+{local}"))
+        sync_trailers(refs, options, &format!("{remote}+{local}"))
     )
 }
 
-fn sync_trailers(refs: &GitSyncRefs, device_id: &GitSyncDeviceId, source: &str) -> String {
-    let policy_hash = blake3::hash(MERGE_POLICY_ID.as_bytes()).to_hex();
+fn sync_trailers(refs: &GitSyncRefs, options: &GitSyncOptions, source: &str) -> String {
+    let policy_hash = options
+        .merge_policy
+        .policy_hash()
+        .expect("sync policy is validated before creating commits");
     format!(
-        "Vulcan-Sync-Version: {SYNC_PROTOCOL_VERSION}\nVulcan-Sync-Device: {}\nVulcan-Sync-Profile: {}\nVulcan-Sync-Policy: {MERGE_POLICY_VERSION}:{policy_hash}\nVulcan-Sync-Source: {source}\nVulcan-Sync-Semantic: false\n",
-        device_id.as_str(),
+        "Vulcan-Sync-Version: {SYNC_PROTOCOL_VERSION}\nVulcan-Sync-Device: {}\nVulcan-Sync-Profile: {}\nVulcan-Sync-Policy: {}:{policy_hash}\nVulcan-Sync-Source: {source}\nVulcan-Sync-Semantic: false\n",
+        options.device_id.as_str(),
         refs.local
             .as_str()
             .split('/')
             .nth(3)
-            .unwrap_or("unknown")
+            .unwrap_or("unknown"),
+        options.merge_policy.version,
     )
 }
 
@@ -1798,7 +1815,7 @@ mod tests {
         assert_eq!(conflict.paths, ["Home.md"]);
         assert!(conflict.base.is_some());
         assert_eq!(conflict.id.len(), 32);
-        assert_eq!(conflict.policy_version, MERGE_POLICY_VERSION);
+        assert_eq!(conflict.policy_version, MergePolicy::default().version);
         assert_eq!(
             engine
                 .read_ref(&report.repository, &conflict.preserved_refs.local)

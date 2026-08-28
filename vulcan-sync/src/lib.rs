@@ -11,6 +11,7 @@
 
 mod contracts;
 mod git;
+mod merge_policy;
 mod sync;
 
 pub use contracts::{
@@ -29,6 +30,10 @@ pub use git::{
     GitRepositoryLayout, GitRepositoryRequirements, GitReservedNamesPolicy, GitSafetyState,
     GitSymlinkPolicy, GitTimestampPolicy, GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan,
     GitVersion,
+};
+pub use merge_policy::{
+    MergeAutomation, MergeFileKind, MergePathSelector, MergePolicy, MergePolicyError,
+    MergePolicyRule, MergeResolution, MERGE_POLICY_SCHEMA_VERSION,
 };
 pub use sync::{
     sync_git_once, sync_git_once_with_control, GitConflictRefs, GitSyncAction, GitSyncBackend,
