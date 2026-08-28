@@ -129,6 +129,7 @@ pub struct GitCloneRequest {
     pub source: String,
     pub work_tree: PathBuf,
     pub git_dir: Option<PathBuf>,
+    pub platform: GitPlatformProfile,
 }
 
 impl GitCloneRequest {
@@ -161,6 +162,153 @@ impl GitCloneRequest {
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitPlatformProfile {
+    LinuxNative,
+    WindowsNative,
+    AndroidShared,
+    OtherNative,
+}
+
+impl GitPlatformProfile {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::LinuxNative => "linux_native",
+            Self::WindowsNative => "windows_native",
+            Self::AndroidShared => "android_shared",
+            Self::OtherNative => "other_native",
+        }
+    }
+
+    #[must_use]
+    pub const fn native() -> Self {
+        if cfg!(target_os = "linux") {
+            Self::LinuxNative
+        } else if cfg!(target_os = "windows") {
+            Self::WindowsNative
+        } else {
+            Self::OtherNative
+        }
+    }
+
+    #[must_use]
+    pub fn policy(self) -> GitPlatformPolicy {
+        match self {
+            Self::AndroidShared => GitPlatformPolicy {
+                profile: self,
+                executable_bits: GitExecutableBitsPolicy::NotRepresentable,
+                symlinks: GitSymlinkPolicy::LinkFiles,
+                case_only_renames: GitCaseRenamePolicy::IntermediatePath,
+                reserved_names: GitReservedNamesPolicy::WindowsPortable,
+                path_length: GitPathLengthPolicy::FilesystemDependent,
+                timestamp_precision: GitTimestampPolicy::ContentVerified,
+                clone_config: vec![
+                    GitCloneConfig {
+                        key: "core.fileMode",
+                        value: "false",
+                    },
+                    GitCloneConfig {
+                        key: "core.symlinks",
+                        value: "false",
+                    },
+                ],
+            },
+            Self::WindowsNative => GitPlatformPolicy {
+                profile: self,
+                executable_bits: GitExecutableBitsPolicy::GitProbed,
+                symlinks: GitSymlinkPolicy::GitProbed,
+                case_only_renames: GitCaseRenamePolicy::IntermediatePath,
+                reserved_names: GitReservedNamesPolicy::WindowsRestricted,
+                path_length: GitPathLengthPolicy::FilesystemDependent,
+                timestamp_precision: GitTimestampPolicy::ContentVerified,
+                clone_config: Vec::new(),
+            },
+            Self::LinuxNative => GitPlatformPolicy {
+                profile: self,
+                executable_bits: GitExecutableBitsPolicy::GitProbed,
+                symlinks: GitSymlinkPolicy::GitProbed,
+                case_only_renames: GitCaseRenamePolicy::Native,
+                reserved_names: GitReservedNamesPolicy::Native,
+                path_length: GitPathLengthPolicy::FilesystemDependent,
+                timestamp_precision: GitTimestampPolicy::ContentVerified,
+                clone_config: Vec::new(),
+            },
+            Self::OtherNative => GitPlatformPolicy {
+                profile: self,
+                executable_bits: GitExecutableBitsPolicy::GitProbed,
+                symlinks: GitSymlinkPolicy::GitProbed,
+                case_only_renames: GitCaseRenamePolicy::IntermediatePath,
+                reserved_names: GitReservedNamesPolicy::Native,
+                path_length: GitPathLengthPolicy::FilesystemDependent,
+                timestamp_precision: GitTimestampPolicy::ContentVerified,
+                clone_config: Vec::new(),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitExecutableBitsPolicy {
+    GitProbed,
+    NotRepresentable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitSymlinkPolicy {
+    GitProbed,
+    LinkFiles,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitCaseRenamePolicy {
+    Native,
+    IntermediatePath,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitReservedNamesPolicy {
+    Native,
+    WindowsRestricted,
+    WindowsPortable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitPathLengthPolicy {
+    FilesystemDependent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitTimestampPolicy {
+    ContentVerified,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitPlatformPolicy {
+    pub profile: GitPlatformProfile,
+    pub executable_bits: GitExecutableBitsPolicy,
+    pub symlinks: GitSymlinkPolicy,
+    pub case_only_renames: GitCaseRenamePolicy,
+    pub reserved_names: GitReservedNamesPolicy,
+    pub path_length: GitPathLengthPolicy,
+    pub timestamp_precision: GitTimestampPolicy,
+    #[serde(skip)]
+    clone_config: Vec<GitCloneConfig>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct GitCloneConfig {
+    key: &'static str,
+    value: &'static str,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -753,6 +901,12 @@ impl GitEngine for GitCliEngine {
         request.validate()?;
         let mut command = self.command();
         command.arg("clone");
+        let policy = request.platform.policy();
+        for setting in &policy.clone_config {
+            command
+                .arg("--config")
+                .arg(format!("{}={}", setting.key, setting.value));
+        }
         if let Some(git_dir) = &request.git_dir {
             command.arg("--separate-git-dir").arg(git_dir);
         }
@@ -1478,6 +1632,8 @@ mod tests {
         fs::create_dir(&source).expect("source directory");
         init_repo(&source);
         fs::write(source.join("Home.md"), "# Home\n").expect("source note");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("Home.md", source.join("Shortcut.md")).expect("source symlink");
         commit_all(&source, "initial");
         let engine = GitCliEngine::default();
 
@@ -1487,10 +1643,18 @@ mod tests {
                 source: source.display().to_string(),
                 work_tree: colocated.clone(),
                 git_dir: None,
+                platform: GitPlatformProfile::LinuxNative,
             })
             .expect("colocated clone");
         assert_eq!(repository.layout, GitRepositoryLayout::Colocated);
         assert!(colocated.join("Home.md").is_file());
+        #[cfg(unix)]
+        assert!(colocated
+            .join("Shortcut.md")
+            .symlink_metadata()
+            .expect("native symlink metadata")
+            .file_type()
+            .is_symlink());
 
         let detached = temporary.path().join("detached");
         let detached_git = temporary.path().join("detached.git");
@@ -1499,12 +1663,57 @@ mod tests {
                 source: source.display().to_string(),
                 work_tree: detached.clone(),
                 git_dir: Some(detached_git.clone()),
+                platform: GitPlatformProfile::AndroidShared,
             })
             .expect("detached clone");
         assert_eq!(repository.layout, GitRepositoryLayout::Detached);
         assert!(detached.join(".git").is_file());
         assert!(detached_git.join("HEAD").is_file());
         assert!(detached.join("Home.md").is_file());
+        #[cfg(unix)]
+        assert_eq!(
+            fs::read_to_string(detached.join("Shortcut.md")).expect("link file contents"),
+            "Home.md"
+        );
+        assert_eq!(
+            run_git_capture(&detached, &["config", "--bool", "core.fileMode"]),
+            "false"
+        );
+        assert_eq!(
+            run_git_capture(&detached, &["config", "--bool", "core.symlinks"]),
+            "false"
+        );
+    }
+
+    #[test]
+    fn platform_policies_are_explicit_and_serializable() {
+        let native = GitPlatformProfile::LinuxNative.policy();
+        assert_eq!(native.executable_bits, GitExecutableBitsPolicy::GitProbed);
+        assert!(native.clone_config.is_empty());
+
+        let android = GitPlatformProfile::AndroidShared.policy();
+        assert_eq!(
+            android.executable_bits,
+            GitExecutableBitsPolicy::NotRepresentable
+        );
+        assert_eq!(android.symlinks, GitSymlinkPolicy::LinkFiles);
+        assert_eq!(
+            android.case_only_renames,
+            GitCaseRenamePolicy::IntermediatePath
+        );
+        assert_eq!(android.clone_config.len(), 2);
+        assert_eq!(
+            serde_json::to_value(android).expect("policy should serialize"),
+            serde_json::json!({
+                "profile": "android_shared",
+                "executable_bits": "not_representable",
+                "symlinks": "link_files",
+                "case_only_renames": "intermediate_path",
+                "reserved_names": "windows_portable",
+                "path_length": "filesystem_dependent",
+                "timestamp_precision": "content_verified"
+            })
+        );
     }
 
     #[test]
@@ -1514,6 +1723,7 @@ mod tests {
             source: "--upload-pack=malicious".to_string(),
             work_tree: temporary.path().join("new"),
             git_dir: None,
+            platform: GitPlatformProfile::native(),
         }
         .validate()
         .is_err());
@@ -1521,6 +1731,7 @@ mod tests {
             source: "source".to_string(),
             work_tree: temporary.path().to_path_buf(),
             git_dir: None,
+            platform: GitPlatformProfile::native(),
         }
         .validate()
         .is_err());

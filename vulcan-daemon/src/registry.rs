@@ -56,6 +56,8 @@ pub struct WikiRegistration {
     pub permissions_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sync_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform_profile: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub sync_paused: bool,
 }
@@ -96,6 +98,7 @@ pub struct AddWikiRequest {
     pub git_dir: Option<PathBuf>,
     pub permissions_profile: Option<String>,
     pub sync_backend: Option<String>,
+    pub platform_profile: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +145,7 @@ pub enum RegistryError {
     MissingDirectory(PathBuf),
     DuplicateId(WikiId),
     DuplicatePath { id: WikiId, path: PathBuf },
+    DuplicateGitDir { id: WikiId, path: PathBuf },
     UnknownWiki(WikiId),
     InvalidConfig { path: PathBuf, detail: String },
     Io(std::io::Error),
@@ -168,6 +172,11 @@ impl Display for RegistryError {
             Self::DuplicatePath { id, path } => write!(
                 formatter,
                 "{} is already registered as wiki `{id}`",
+                path.display()
+            ),
+            Self::DuplicateGitDir { id, path } => write!(
+                formatter,
+                "Git directory {} is already registered for wiki `{id}`",
                 path.display()
             ),
             Self::UnknownWiki(id) => write!(formatter, "unknown registered wiki `{id}`"),
@@ -264,6 +273,18 @@ impl WikiRegistry {
                     path,
                 });
             }
+            if let Some((existing, git_dir)) = git_dir.as_ref().and_then(|git_dir| {
+                config
+                    .vaults
+                    .iter()
+                    .find(|wiki| wiki.git_dir.as_ref() == Some(git_dir))
+                    .map(|wiki| (wiki, git_dir))
+            }) {
+                return Err(RegistryError::DuplicateGitDir {
+                    id: existing.id.clone(),
+                    path: git_dir.clone(),
+                });
+            }
             let mut groups = request.groups.clone();
             groups.sort();
             groups.dedup();
@@ -275,6 +296,7 @@ impl WikiRegistry {
                 git_dir,
                 permissions_profile: request.permissions_profile.clone(),
                 sync_backend: request.sync_backend.clone(),
+                platform_profile: request.platform_profile.clone(),
                 sync_paused: false,
             };
             config.vaults.push(registration.clone());
@@ -429,6 +451,7 @@ mod tests {
             git_dir: None,
             permissions_profile: None,
             sync_backend: Some("git".to_string()),
+            platform_profile: None,
         }
     }
 
@@ -520,6 +543,22 @@ mod tests {
         assert!(matches!(
             registry.add(&request("other", &wiki), false),
             Err(RegistryError::DuplicatePath { .. })
+        ));
+
+        let detached_git = temporary.path().join("git");
+        let first_worktree = temporary.path().join("first-worktree");
+        let second_worktree = temporary.path().join("second-worktree");
+        fs::create_dir(&detached_git).expect("Git directory");
+        fs::create_dir(&first_worktree).expect("first worktree");
+        fs::create_dir(&second_worktree).expect("second worktree");
+        let mut first = request("first", &first_worktree);
+        first.git_dir = Some(detached_git.clone());
+        registry.add(&first, false).expect("first detached wiki");
+        let mut second = request("second", &second_worktree);
+        second.git_dir = Some(detached_git);
+        assert!(matches!(
+            registry.add(&second, false),
+            Err(RegistryError::DuplicateGitDir { .. })
         ));
     }
 }

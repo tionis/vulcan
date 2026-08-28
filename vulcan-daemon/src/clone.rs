@@ -6,7 +6,9 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
-use vulcan_app::sync::{clone_git_vault, GitCloneReport, GitCloneRequest};
+use vulcan_app::sync::{
+    clone_git_vault, GitCloneReport, GitCloneRequest, GitPlatformPolicy, GitPlatformProfile,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloneWikiRequest {
@@ -14,15 +16,9 @@ pub struct CloneWikiRequest {
     pub source: String,
     pub work_tree: PathBuf,
     pub git_dir: Option<PathBuf>,
+    pub platform: GitPlatformProfile,
     pub groups: Vec<String>,
     pub permissions_profile: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ClonePlatformPolicy {
-    Standard,
-    DetachedGitDirectory,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -36,6 +32,7 @@ pub struct CloneRegistrationPlan {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub permissions_profile: Option<String>,
     pub sync_backend: String,
+    pub platform_profile: GitPlatformProfile,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -43,7 +40,7 @@ pub struct CloneWikiReport {
     pub action: &'static str,
     pub dry_run: bool,
     pub source: String,
-    pub platform_policy: ClonePlatformPolicy,
+    pub platform_policy: GitPlatformPolicy,
     pub proposed_registration: CloneRegistrationPlan,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub clone: Option<GitCloneReport>,
@@ -119,7 +116,7 @@ pub fn clone_registered_wiki(
     validate_groups(&groups)?;
     groups.sort();
     groups.dedup();
-    preflight_registry(registry, &request.id, &work_tree)?;
+    preflight_registry(registry, &request.id, &work_tree, git_dir.as_deref())?;
 
     let proposed_registration = CloneRegistrationPlan {
         id: request.id.clone(),
@@ -128,17 +125,15 @@ pub fn clone_registered_wiki(
         git_dir: git_dir.clone(),
         permissions_profile: request.permissions_profile.clone(),
         sync_backend: "git".to_string(),
+        platform_profile: request.platform,
     };
-    let platform_policy = if git_dir.is_some() {
-        ClonePlatformPolicy::DetachedGitDirectory
-    } else {
-        ClonePlatformPolicy::Standard
-    };
+    let platform_policy = request.platform.policy();
     let source = redact_source(&request.source);
     let clone_request = GitCloneRequest {
         source: request.source.clone(),
         work_tree: work_tree.clone(),
         git_dir: git_dir.clone(),
+        platform: request.platform,
     };
     clone_request
         .validate()
@@ -166,6 +161,7 @@ pub fn clone_registered_wiki(
                 git_dir,
                 permissions_profile: request.permissions_profile.clone(),
                 sync_backend: Some("git".to_string()),
+                platform_profile: Some(request.platform.as_str().to_string()),
             },
             false,
         )
@@ -226,6 +222,7 @@ fn preflight_registry(
     registry: &WikiRegistry,
     id: &WikiId,
     path: &Path,
+    git_dir: Option<&Path>,
 ) -> Result<(), CloneWikiError> {
     let config = registry.load()?;
     if config.vaults.iter().any(|wiki| &wiki.id == id) {
@@ -235,6 +232,19 @@ fn preflight_registry(
         return Err(RegistryError::DuplicatePath {
             id: existing.id.clone(),
             path: path.to_path_buf(),
+        }
+        .into());
+    }
+    if let Some((existing, git_dir)) = git_dir.and_then(|git_dir| {
+        config
+            .vaults
+            .iter()
+            .find(|wiki| wiki.git_dir.as_deref() == Some(git_dir))
+            .map(|wiki| (wiki, git_dir))
+    }) {
+        return Err(RegistryError::DuplicateGitDir {
+            id: existing.id.clone(),
+            path: git_dir.to_path_buf(),
         }
         .into());
     }
@@ -272,6 +282,7 @@ mod tests {
             source: "https://token@example.invalid/wiki.git?secret=yes".to_string(),
             work_tree: root.join("wiki"),
             git_dir: Some(root.join("git/wiki.git")),
+            platform: GitPlatformProfile::AndroidShared,
             groups: vec!["mobile".to_string(), "mobile".to_string()],
             permissions_profile: None,
         }
@@ -291,8 +302,8 @@ mod tests {
         assert_eq!(report.source, "https://***@example.invalid/wiki.git");
         assert_eq!(report.proposed_registration.groups, ["mobile"]);
         assert_eq!(
-            report.platform_policy,
-            ClonePlatformPolicy::DetachedGitDirectory
+            report.platform_policy.profile,
+            GitPlatformProfile::AndroidShared
         );
         assert!(!temporary.path().join("wiki").exists());
         assert!(!registry_path.exists());
@@ -330,6 +341,7 @@ mod tests {
                     git_dir: None,
                     permissions_profile: None,
                     sync_backend: Some("git".to_string()),
+                    platform_profile: None,
                 },
                 false,
             )

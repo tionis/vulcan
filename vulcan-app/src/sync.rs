@@ -6,8 +6,9 @@ use vulcan_core::{ScanSummary, VaultPaths};
 use vulcan_sync::GitEngine;
 
 pub use vulcan_sync::{
-    GitCloneRequest, GitInstallation, GitRefName, GitRemote, GitRepository, GitRepositoryLayout,
-    GitSyncAction, GitSyncConflict, GitSyncOptions, GitSyncOutcome, GitSyncRefs, GitSyncReport,
+    GitCloneRequest, GitInstallation, GitPlatformPolicy, GitPlatformProfile, GitRefName, GitRemote,
+    GitRepository, GitRepositoryLayout, GitSyncAction, GitSyncConflict, GitSyncOptions,
+    GitSyncOutcome, GitSyncRefs, GitSyncReport,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -208,6 +208,7 @@ mod tests {
                         git_dir: None,
                         permissions_profile: None,
                         sync_backend: Some("git".to_string()),
+                        platform_profile: None,
                     },
                     false,
                 )

@@ -1,7 +1,8 @@
 use crate::output::print_json;
-use crate::{Cli, CliError, OutputFormat, VaultCommand};
+use crate::{Cli, CliError, ClonePlatformArg, OutputFormat, VaultCommand};
 use serde::Serialize;
 use std::path::Path;
+use vulcan_app::sync::GitPlatformProfile;
 use vulcan_daemon::clone::{clone_registered_wiki, CloneWikiReport, CloneWikiRequest};
 use vulcan_daemon::registry::{
     AddWikiRequest, UpdateWikiRequest, WikiId, WikiRegistration, WikiRegistrationStatus,
@@ -43,6 +44,7 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
                 git_dir: git_dir.clone(),
                 permissions_profile: permissions_profile.clone(),
                 sync_backend: Some(sync_backend.clone()),
+                platform_profile: None,
             };
             let wiki = registry
                 .add(&request, *dry_run)
@@ -106,6 +108,7 @@ fn handle_clone(
         id,
         group,
         git_dir,
+        platform,
         permissions_profile,
         dry_run,
     } = command
@@ -130,6 +133,10 @@ fn handle_clone(
             source: remote.clone(),
             work_tree: path.clone(),
             git_dir: git_dir.clone(),
+            platform: match platform {
+                ClonePlatformArg::Native => GitPlatformProfile::native(),
+                ClonePlatformArg::AndroidShared => GitPlatformProfile::AndroidShared,
+            },
             groups: group.clone(),
             permissions_profile: permissions_profile.clone(),
         },

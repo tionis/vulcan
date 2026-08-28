@@ -35,6 +35,20 @@ fn run_git_ok(vault_root: &Path, args: &[&str]) {
     assert!(status.success(), "git command failed: {args:?}");
 }
 
+fn run_git_stdout(vault_root: &Path, args: &[&str]) -> String {
+    let output = ProcessCommand::new("git")
+        .arg("-C")
+        .arg(vault_root)
+        .args(args)
+        .output()
+        .expect("git should launch");
+    assert!(output.status.success(), "git command failed: {args:?}");
+    String::from_utf8(output.stdout)
+        .expect("git output should be UTF-8")
+        .trim()
+        .to_string()
+}
+
 fn init_git_repo(vault_root: &Path) {
     run_git_ok(vault_root, &["-c", "init.defaultBranch=main", "init"]);
     run_git_ok(vault_root, &["config", "user.name", "Vulcan Test"]);
@@ -4758,7 +4772,13 @@ fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
         .success();
     let dry_run_json = parse_stdout_json(&dry_run);
     assert_eq!(dry_run_json["dry_run"], true);
-    assert_eq!(dry_run_json["platform_policy"], "standard");
+    assert!(dry_run_json["platform_policy"]["profile"]
+        .as_str()
+        .is_some_and(|profile| profile.ends_with("_native")));
+    assert_eq!(
+        dry_run_json["platform_policy"]["executable_bits"],
+        "git_probed"
+    );
     assert_eq!(dry_run_json["proposed_registration"]["id"], "planned");
     assert!(dry_run_json.get("clone").is_none());
     assert!(!colocated.exists());
@@ -4795,15 +4815,34 @@ fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
             detached_git
                 .to_str()
                 .expect("detached Git path should be utf-8"),
+            "--platform",
+            "android-shared",
         ])
         .assert()
         .success();
     let detached_json = parse_stdout_json(&detached_assert);
-    assert_eq!(detached_json["platform_policy"], "detached_git_directory");
+    assert_eq!(
+        detached_json["platform_policy"]["profile"],
+        "android_shared"
+    );
+    assert_eq!(
+        detached_json["platform_policy"]["executable_bits"],
+        "not_representable"
+    );
+    assert_eq!(detached_json["platform_policy"]["symlinks"], "link_files");
     assert_eq!(detached_json["clone"]["repository"]["layout"], "detached");
     assert_eq!(detached_json["wiki"]["sync_backend"], "git");
+    assert_eq!(detached_json["wiki"]["platform_profile"], "android_shared");
     assert!(detached.join(".git").is_file());
     assert!(detached_git.join("HEAD").is_file());
+    assert_eq!(
+        run_git_stdout(&detached, &["config", "--bool", "core.fileMode"]),
+        "false"
+    );
+    assert_eq!(
+        run_git_stdout(&detached, &["config", "--bool", "core.symlinks"]),
+        "false"
+    );
 
     let sync = cargo_vulcan_with_xdg_config(config_home)
         .args(["--output", "json", "sync", "run", "detached"])
@@ -11024,6 +11063,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync run <wiki>"));
     assert!(git_skill.contains("vulcan vault clone <remote> <path> --dry-run"));
     assert!(git_skill.contains("clone that succeeds before registration fails"));
+    assert!(git_skill.contains("--platform android-shared"));
+    assert!(git_skill.contains("case-only renames require an intermediate path"));
     assert!(git_skill.contains("never one atomic cross-repository operation"));
     let configuration_skill = fs::read_to_string(
         vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),
@@ -11031,6 +11072,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     .expect("configuration skill should be readable");
     assert!(configuration_skill.contains("vulcan vault clone/add/list/show/set/remove"));
     assert!(configuration_skill.contains("Clone dry-run does not contact the remote"));
+    assert!(configuration_skill.contains("--platform android-shared"));
     assert!(configuration_skill.contains("must never be treated as permission to delete"));
     assert!(json["support_files"].as_array().is_some_and(|items| items
         .iter()

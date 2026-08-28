@@ -600,7 +600,7 @@ Notes:
 
 Examples:
   vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --id personal
-  vulcan vault clone ssh://git@example/wiki.git /storage/wiki --git-dir ~/.local/share/vulcan/git/wiki
+  vulcan vault clone ssh://git@example/wiki.git /storage/wiki --git-dir ~/.local/share/vulcan/git/wiki --platform android-shared
   vulcan vault add personal ~/vaults/personal --group daily
   vulcan vault list --group daily
   vulcan vault show personal
@@ -3916,6 +3916,12 @@ pub enum SyncCommand {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum ClonePlatformArg {
+    Native,
+    AndroidShared,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum VaultCommand {
     #[command(about = "Clone and register a Git-backed wiki")]
@@ -3930,6 +3936,13 @@ pub enum VaultCommand {
         group: Vec<String>,
         #[arg(long, help = "Create Git metadata in this separate directory")]
         git_dir: Option<PathBuf>,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t = ClonePlatformArg::Native,
+            help = "Filesystem policy: native or android-shared"
+        )]
+        platform: ClonePlatformArg,
         #[arg(long, help = "Permission profile used by future daemon requests")]
         permissions_profile: Option<String>,
         #[arg(long, help = "Validate and report without cloning or registering")]

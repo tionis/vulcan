@@ -2207,6 +2207,8 @@ fn parses_vault_registry_commands() {
         "mobile",
         "--git-dir",
         "/data/git/wiki",
+        "--platform",
+        "android-shared",
         "--dry-run",
     ])
     .expect("vault clone should parse");
@@ -2219,6 +2221,7 @@ fn parses_vault_registry_commands() {
                 id: Some("personal".to_string()),
                 group: vec!["mobile".to_string()],
                 git_dir: Some(PathBuf::from("/data/git/wiki")),
+                platform: ClonePlatformArg::AndroidShared,
                 permissions_profile: None,
                 dry_run: true,
             },

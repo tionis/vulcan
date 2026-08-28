@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 4
+version: 5
 tools:
   - config_show
   - config_get
@@ -49,4 +49,4 @@ permission profiles, or diagnoses permission and trust failures.
 - Preview and import a shared folder-note convention, then separately plan any required layout conversion.
 - Create a profile for a daily wiki agent with notes/tasks/search access but no shell or git mutation.
 - Register personal and work wikis in separate local groups, then inspect their availability with `vulcan vault list`.
-- Clone an Obsidian-visible Android worktree with a Termux-private `--git-dir`, then confirm the recorded paths with `vulcan vault show <id>`.
+- Clone an Obsidian-visible Android worktree with a Termux-private `--git-dir` and `--platform android-shared`, then confirm the recorded paths with `vulcan vault show <id>`.
