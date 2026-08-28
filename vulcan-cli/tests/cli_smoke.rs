@@ -11106,6 +11106,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync run <wiki>"));
     assert!(git_skill.contains("vulcan sync pause [<wiki>]"));
     assert!(git_skill.contains("state.recovered_from"));
+    assert!(git_skill.contains("remote/network failure after capture"));
     assert!(git_skill.contains("vulcan vault clone <remote> <path> --dry-run"));
     assert!(git_skill.contains("clone that succeeds before registration fails"));
     assert!(git_skill.contains("--platform android-shared"));
@@ -11124,6 +11125,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         fs::read_to_string(vault_root.join(".agents/skills/diagnostics-and-repair/SKILL.md"))
             .expect("diagnostics skill should be readable");
     assert!(diagnostics_skill.contains("state.recovered_from"));
+    assert!(diagnostics_skill.contains("offline/cancelled cycle"));
     assert!(diagnostics_skill.contains("outside `.vulcan/cache.db`"));
     assert!(json["support_files"].as_array().is_some_and(|items| items
         .iter()

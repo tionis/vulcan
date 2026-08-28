@@ -20,6 +20,7 @@ pub use git::{
     GitReservedNamesPolicy, GitSafetyState, GitSymlinkPolicy, GitTimestampPolicy, GitVersion,
 };
 pub use sync::{
-    sync_git_once, GitSyncAction, GitSyncConflict, GitSyncError, GitSyncOptions, GitSyncOutcome,
-    GitSyncRefs, GitSyncReport,
+    sync_git_once, sync_git_once_with_control, GitSyncAction, GitSyncConflict, GitSyncError,
+    GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPhase,
+    GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
 };

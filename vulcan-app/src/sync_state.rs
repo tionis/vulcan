@@ -20,6 +20,7 @@ const MAX_SYNC_JOURNAL_BYTES: u64 = 1024 * 1024;
 pub enum SyncJournalPhase {
     Preparing,
     Capturing,
+    Captured,
     Fetching,
     Merging,
     Pushing,
@@ -37,6 +38,7 @@ impl SyncJournalPhase {
             self,
             Self::Preparing
                 | Self::Capturing
+                | Self::Captured
                 | Self::Fetching
                 | Self::Merging
                 | Self::Pushing

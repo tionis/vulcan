@@ -8,6 +8,8 @@ use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs::{self, File, OpenOptions};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 const SYNC_PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_LIVE_REF: &str = "refs/heads/__vulcan-sync/live";
@@ -50,6 +52,91 @@ pub enum GitSyncAction {
     SnapshotCreated,
     Pushed,
     WorktreeApplied,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitSyncPhase {
+    Preparing,
+    Capturing,
+    Captured,
+    Fetching,
+    Merging,
+    Pushing,
+    Applying,
+    Verifying,
+    Paused,
+    Conflicted,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitSyncProgress {
+    pub phase: GitSyncPhase,
+    pub attempt: usize,
+    pub repository: GitRepository,
+    pub local_snapshot: Option<GitOid>,
+    pub local_tree: Option<GitOid>,
+    pub accepted: Option<GitOid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitSyncObserverError {
+    detail: String,
+}
+
+impl GitSyncObserverError {
+    #[must_use]
+    pub fn new(detail: impl Into<String>) -> Self {
+        Self {
+            detail: detail.into(),
+        }
+    }
+}
+
+impl Display for GitSyncObserverError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.detail)
+    }
+}
+
+impl Error for GitSyncObserverError {}
+
+pub trait GitSyncObserver {
+    fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError>;
+}
+
+#[derive(Debug, Default)]
+pub struct IgnoreGitSyncProgress;
+
+impl GitSyncObserver for IgnoreGitSyncProgress {
+    fn progress(&mut self, _progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SyncCancellationToken {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl SyncCancellationToken {
+    pub fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    #[must_use]
+    pub fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+    }
+
+    fn check(&self) -> Result<(), GitSyncError> {
+        if self.is_cancelled() {
+            Err(GitSyncError::Cancelled)
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -133,6 +220,8 @@ impl GitSyncReport {
 pub enum GitSyncError {
     Git(GitEngineError),
     Locked,
+    Cancelled,
+    Observer(GitSyncObserverError),
     RetryLimit { attempts: usize },
     Io(std::io::Error),
 }
@@ -144,6 +233,10 @@ impl Display for GitSyncError {
             Self::Locked => formatter.write_str(
                 "another Vulcan synchronization cycle already holds the repository lock",
             ),
+            Self::Cancelled => formatter.write_str(
+                "synchronization was cancelled; captured refs and recovery state remain preserved",
+            ),
+            Self::Observer(error) => write!(formatter, "sync progress observer failed: {error}"),
             Self::RetryLimit { attempts } => write!(
                 formatter,
                 "synchronization did not converge after {attempts} attempts; local snapshots remain preserved"
@@ -157,8 +250,9 @@ impl Error for GitSyncError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Git(error) => Some(error),
+            Self::Observer(error) => Some(error),
             Self::Io(error) => Some(error),
-            Self::Locked | Self::RetryLimit { .. } => None,
+            Self::Locked | Self::Cancelled | Self::RetryLimit { .. } => None,
         }
     }
 }
@@ -175,17 +269,44 @@ impl From<std::io::Error> for GitSyncError {
     }
 }
 
+impl From<GitSyncObserverError> for GitSyncError {
+    fn from(error: GitSyncObserverError) -> Self {
+        Self::Observer(error)
+    }
+}
+
 pub fn sync_git_once(
     engine: &dyn GitEngine,
     vault_path: &Path,
     options: &GitSyncOptions,
 ) -> Result<GitSyncReport, GitSyncError> {
+    sync_git_once_with_control(
+        engine,
+        vault_path,
+        options,
+        &SyncCancellationToken::default(),
+        &mut IgnoreGitSyncProgress,
+    )
+}
+
+pub fn sync_git_once_with_control(
+    engine: &dyn GitEngine,
+    vault_path: &Path,
+    options: &GitSyncOptions,
+    cancellation: &SyncCancellationToken,
+    observer: &mut dyn GitSyncObserver,
+) -> Result<GitSyncReport, GitSyncError> {
+    cancellation.check()?;
     let installation = engine.installation()?;
     let repository = engine.discover_repository(vault_path)?;
     let refs = GitSyncRefs::for_options(options)?;
     let safety = engine.safety_state(&repository)?;
     let local_before = engine.read_ref(&repository, &refs.local)?;
-    let remote_before = engine.remote_ref(&repository, &options.remote, &refs.live)?;
+    let remote_before = if options.dry_run {
+        engine.remote_ref(&repository, &options.remote, &refs.live)?
+    } else {
+        None
+    };
     let mut report = GitSyncReport::initial(
         options,
         installation,
@@ -195,18 +316,27 @@ pub fn sync_git_once(
         remote_before,
         local_before,
     );
+    emit_progress(observer, GitSyncPhase::Preparing, 0, &report, None)?;
     if options.dry_run {
+        emit_progress(observer, GitSyncPhase::Completed, 0, &report, None)?;
         return Ok(report);
     }
     if report.safety.staged_changes || report.safety.operation.is_some() {
         report.outcome = GitSyncOutcome::Paused;
+        emit_progress(observer, GitSyncPhase::Paused, 0, &report, None)?;
         return Ok(report);
     }
 
     let _lock = RepositoryLock::acquire(&report.repository)?;
     for attempt in 0..options.max_retries.max(1) {
+        cancellation.check()?;
         report.retries = attempt;
-        if run_attempt(engine, options, &mut report)? == AttemptResult::Finished {
+        let mut control = AttemptControl {
+            attempt,
+            cancellation,
+            observer,
+        };
+        if run_attempt(engine, options, &mut report, &mut control)? == AttemptResult::Finished {
             return Ok(report);
         }
     }
@@ -216,17 +346,60 @@ pub fn sync_git_once(
     })
 }
 
+fn emit_progress(
+    observer: &mut dyn GitSyncObserver,
+    phase: GitSyncPhase,
+    attempt: usize,
+    report: &GitSyncReport,
+    local_tree: Option<GitOid>,
+) -> Result<(), GitSyncError> {
+    observer
+        .progress(&GitSyncProgress {
+            phase,
+            attempt,
+            repository: report.repository.clone(),
+            local_snapshot: report.local_snapshot.clone(),
+            local_tree,
+            accepted: report.accepted.clone(),
+        })
+        .map_err(GitSyncError::from)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AttemptResult {
     Retry,
     Finished,
 }
 
+struct AttemptControl<'a> {
+    attempt: usize,
+    cancellation: &'a SyncCancellationToken,
+    observer: &'a mut dyn GitSyncObserver,
+}
+
+impl AttemptControl<'_> {
+    fn check(&self) -> Result<(), GitSyncError> {
+        self.cancellation.check()
+    }
+
+    fn emit(
+        &mut self,
+        phase: GitSyncPhase,
+        report: &GitSyncReport,
+        local_tree: Option<GitOid>,
+    ) -> Result<(), GitSyncError> {
+        emit_progress(self.observer, phase, self.attempt, report, local_tree)
+    }
+}
+
 fn run_attempt(
     engine: &dyn GitEngine,
     options: &GitSyncOptions,
     report: &mut GitSyncReport,
+    control: &mut AttemptControl<'_>,
 ) -> Result<AttemptResult, GitSyncError> {
+    control.check()?;
+    control.emit(GitSyncPhase::Capturing, report, None)?;
     let base = engine
         .read_ref(&report.repository, &report.refs.local)?
         .or(engine.head_commit(&report.repository)?);
@@ -242,12 +415,17 @@ fn run_attempt(
     if capture.created {
         report.actions.push(GitSyncAction::SnapshotCreated);
     }
+    control.emit(GitSyncPhase::Captured, report, Some(capture.tree.clone()))?;
 
-    let has_remote = engine
-        .remote_ref(&report.repository, &options.remote, &report.refs.live)?
-        .is_some();
+    control.check()?;
+    control.emit(GitSyncPhase::Fetching, report, None)?;
+    let remote_tip = engine.remote_ref(&report.repository, &options.remote, &report.refs.live)?;
+    if control.attempt == 0 {
+        report.remote_before.clone_from(&remote_tip);
+    }
+    let has_remote = remote_tip.is_some();
     let Some((accepted, outcome, pushed)) =
-        reconcile(engine, options, report, &capture, has_remote)?
+        reconcile(engine, options, report, &capture, has_remote, control)?
     else {
         return Ok(if report.outcome == GitSyncOutcome::Conflicted {
             AttemptResult::Finished
@@ -256,6 +434,8 @@ fn run_attempt(
         });
     };
 
+    control.check()?;
+    control.emit(GitSyncPhase::Verifying, report, None)?;
     let verification = engine.capture_worktree(
         &report.repository,
         &GitCaptureRequest {
@@ -270,7 +450,10 @@ fn run_attempt(
     if pushed {
         report.actions.push(GitSyncAction::Pushed);
     }
+    report.accepted = Some(accepted.clone());
     if verification.tree != engine.tree_oid(&report.repository, &accepted)? {
+        control.check()?;
+        control.emit(GitSyncPhase::Applying, report, None)?;
         engine.apply_tree(&report.repository, &verification.commit, &accepted)?;
         report.actions.push(GitSyncAction::WorktreeApplied);
     }
@@ -279,6 +462,7 @@ fn run_attempt(
     engine.update_ref(&report.repository, &report.refs.pending, &accepted)?;
     report.outcome = outcome;
     report.accepted = Some(accepted);
+    control.emit(GitSyncPhase::Completed, report, None)?;
     Ok(AttemptResult::Finished)
 }
 
@@ -288,8 +472,11 @@ fn reconcile(
     report: &mut GitSyncReport,
     capture: &crate::GitCapture,
     has_remote: bool,
+    control: &mut AttemptControl<'_>,
 ) -> Result<Option<(GitOid, GitSyncOutcome, bool)>, GitSyncError> {
     if !has_remote {
+        control.check()?;
+        control.emit(GitSyncPhase::Pushing, report, None)?;
         return Ok(
             match engine.push_ref(
                 &report.repository,
@@ -315,6 +502,8 @@ fn reconcile(
         return Ok(Some((remote, GitSyncOutcome::UpToDate, false)));
     }
     if engine.is_ancestor(&report.repository, &remote, &capture.commit)? {
+        control.check()?;
+        control.emit(GitSyncPhase::Pushing, report, None)?;
         return Ok(
             match engine.push_ref(
                 &report.repository,
@@ -333,7 +522,7 @@ fn reconcile(
     if engine.is_ancestor(&report.repository, &capture.commit, &remote)? {
         return Ok(Some((remote, GitSyncOutcome::Pulled, false)));
     }
-    merge_divergence(engine, options, report, capture, remote)
+    merge_divergence(engine, options, report, capture, remote, control)
 }
 
 fn merge_divergence(
@@ -342,7 +531,10 @@ fn merge_divergence(
     report: &mut GitSyncReport,
     capture: &crate::GitCapture,
     remote: GitOid,
+    control: &mut AttemptControl<'_>,
 ) -> Result<Option<(GitOid, GitSyncOutcome, bool)>, GitSyncError> {
+    control.check()?;
+    control.emit(GitSyncPhase::Merging, report, None)?;
     let merge = engine.merge_commits(&report.repository, &remote, &capture.commit)?;
     if !merge.clean {
         report.outcome = GitSyncOutcome::Conflicted;
@@ -352,6 +544,7 @@ fn merge_divergence(
             merge_tree: merge.tree,
             diagnostics: merge.diagnostics,
         });
+        control.emit(GitSyncPhase::Conflicted, report, None)?;
         return Ok(None);
     }
     let tree = merge.tree.ok_or_else(|| {
@@ -367,6 +560,8 @@ fn merge_divergence(
         &merge_message(&report.refs),
     )?;
     engine.update_ref(&report.repository, &report.refs.pending, &merged)?;
+    control.check()?;
+    control.emit(GitSyncPhase::Pushing, report, None)?;
     Ok(
         match engine.push_ref(
             &report.repository,
@@ -440,6 +635,23 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
     use tempfile::TempDir;
+
+    #[derive(Default)]
+    struct RecordingObserver {
+        phases: Vec<GitSyncPhase>,
+        cancel_on: Option<GitSyncPhase>,
+        cancellation: SyncCancellationToken,
+    }
+
+    impl GitSyncObserver for RecordingObserver {
+        fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
+            self.phases.push(progress.phase);
+            if self.cancel_on == Some(progress.phase) {
+                self.cancellation.cancel();
+            }
+            Ok(())
+        }
+    }
 
     fn run_git(path: &Path, arguments: &[&str]) {
         let status = Command::new("git")
@@ -530,6 +742,107 @@ mod tests {
         assert!(report.actions.contains(&GitSyncAction::Pushed));
         assert!(!report.actions.contains(&GitSyncAction::WorktreeApplied));
         assert_eq!(report.accepted, report.local_snapshot);
+    }
+
+    #[test]
+    fn progress_reports_ordered_finite_cycle_phases() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let cancellation = SyncCancellationToken::default();
+        let mut observer = RecordingObserver {
+            cancellation: cancellation.clone(),
+            ..RecordingObserver::default()
+        };
+
+        let report = sync_git_once_with_control(
+            &GitCliEngine::default(),
+            &writer,
+            &GitSyncOptions::default(),
+            &cancellation,
+            &mut observer,
+        )
+        .expect("sync with progress");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Bootstrapped);
+        assert_eq!(
+            observer.phases,
+            [
+                GitSyncPhase::Preparing,
+                GitSyncPhase::Capturing,
+                GitSyncPhase::Captured,
+                GitSyncPhase::Fetching,
+                GitSyncPhase::Pushing,
+                GitSyncPhase::Verifying,
+                GitSyncPhase::Completed,
+            ]
+        );
+    }
+
+    #[test]
+    fn cancellation_after_capture_preserves_the_local_snapshot_ref() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let options = GitSyncOptions::default();
+        let cancellation = SyncCancellationToken::default();
+        let mut observer = RecordingObserver {
+            cancel_on: Some(GitSyncPhase::Captured),
+            cancellation: cancellation.clone(),
+            ..RecordingObserver::default()
+        };
+
+        assert!(matches!(
+            sync_git_once_with_control(&engine, &writer, &options, &cancellation, &mut observer,),
+            Err(GitSyncError::Cancelled)
+        ));
+
+        let repository = engine
+            .discover_repository(&writer)
+            .expect("repository after cancellation");
+        let refs = GitSyncRefs::for_options(&options).expect("sync refs");
+        assert!(engine
+            .read_ref(&repository, &refs.local)
+            .expect("local ref")
+            .is_some());
+        assert_eq!(
+            engine
+                .remote_ref(&repository, &options.remote, &options.live_ref)
+                .expect("remote ref"),
+            None
+        );
+    }
+
+    #[test]
+    fn unavailable_remote_does_not_prevent_local_capture() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let writer = temporary.path().join("writer");
+        fs::create_dir(&writer).expect("writer directory");
+        init_repo(&writer);
+        run_git(
+            &writer,
+            &[
+                "remote",
+                "add",
+                "origin",
+                temporary
+                    .path()
+                    .join("missing.git")
+                    .to_str()
+                    .expect("remote path"),
+            ],
+        );
+        fs::write(writer.join("Home.md"), "offline work\n").expect("offline note");
+        let engine = GitCliEngine::default();
+        let options = GitSyncOptions::default();
+
+        assert!(sync_git_once(&engine, &writer, &options).is_err());
+
+        let repository = engine
+            .discover_repository(&writer)
+            .expect("repository after failed remote access");
+        let refs = GitSyncRefs::for_options(&options).expect("sync refs");
+        assert!(engine
+            .read_ref(&repository, &refs.local)
+            .expect("local candidate")
+            .is_some());
     }
 
     #[test]

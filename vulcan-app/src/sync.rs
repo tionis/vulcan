@@ -4,12 +4,13 @@ use crate::sync_state::{SyncJournal, SyncJournalPhase, SyncStateStore};
 use crate::{scan::refresh_cache_incrementally, AppError};
 use serde::Serialize;
 use vulcan_core::{ScanSummary, VaultPaths};
-use vulcan_sync::GitEngine;
+use vulcan_sync::{GitEngine, GitSyncObserver};
 
 pub use vulcan_sync::{
     GitCloneRequest, GitInstallation, GitPlatformPolicy, GitPlatformProfile, GitRefName, GitRemote,
-    GitRepository, GitRepositoryLayout, GitSyncAction, GitSyncConflict, GitSyncOptions,
-    GitSyncOutcome, GitSyncRefs, GitSyncReport,
+    GitRepository, GitRepositoryLayout, GitSyncAction, GitSyncConflict, GitSyncObserverError,
+    GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
+    SyncCancellationToken,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -72,6 +73,25 @@ pub fn sync_git_vault_with_state_store(
     options: &GitSyncOptions,
     state_store: &SyncStateStore,
 ) -> Result<VaultSyncReport, AppError> {
+    sync_git_vault_with_control(
+        paths,
+        options,
+        state_store,
+        &SyncCancellationToken::default(),
+    )
+}
+
+pub fn sync_git_vault_with_control(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    state_store: &SyncStateStore,
+    cancellation: &SyncCancellationToken,
+) -> Result<VaultSyncReport, AppError> {
+    if cancellation.is_cancelled() {
+        return Err(AppError::operation(
+            "synchronization was cancelled before the transaction started",
+        ));
+    }
     let mut journal = SyncJournal::preparing(
         paths.vault_root(),
         options.remote.to_string(),
@@ -87,11 +107,21 @@ pub fn sync_git_vault_with_state_store(
     if !options.dry_run {
         state_store.save(&journal)?;
     }
-    let sync = match vulcan_sync::sync_git_once(&engine, paths.vault_root(), options) {
+    let mut observer = JournalSyncObserver {
+        state_store,
+        journal: &mut journal,
+        persist: !options.dry_run,
+    };
+    let sync = match vulcan_sync::sync_git_once_with_control(
+        &engine,
+        paths.vault_root(),
+        options,
+        cancellation,
+        &mut observer,
+    ) {
         Ok(sync) => sync,
         Err(error) => {
             if !options.dry_run {
-                journal.phase = SyncJournalPhase::Error;
                 journal.error = Some(error.to_string());
                 if let Err(state_error) = state_store.save(&journal) {
                     return Err(AppError::operation(format!(
@@ -122,7 +152,6 @@ pub fn sync_git_vault_with_state_store(
     {
         Ok(report) => report,
         Err(error) => {
-            journal.phase = SyncJournalPhase::Error;
             journal.error = Some(error.to_string());
             state_store.save(&journal)?;
             return Err(error);
@@ -150,6 +179,40 @@ pub fn sync_git_vault_with_state_store(
             retained,
         },
     })
+}
+
+struct JournalSyncObserver<'a> {
+    state_store: &'a SyncStateStore,
+    journal: &'a mut SyncJournal,
+    persist: bool,
+}
+
+impl GitSyncObserver for JournalSyncObserver<'_> {
+    fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
+        self.journal.phase = match progress.phase {
+            GitSyncPhase::Preparing => SyncJournalPhase::Preparing,
+            GitSyncPhase::Capturing => SyncJournalPhase::Capturing,
+            GitSyncPhase::Captured => SyncJournalPhase::Captured,
+            GitSyncPhase::Fetching => SyncJournalPhase::Fetching,
+            GitSyncPhase::Merging => SyncJournalPhase::Merging,
+            GitSyncPhase::Pushing => SyncJournalPhase::Pushing,
+            GitSyncPhase::Applying => SyncJournalPhase::Applying,
+            GitSyncPhase::Verifying | GitSyncPhase::Completed => SyncJournalPhase::Verifying,
+            GitSyncPhase::Paused => SyncJournalPhase::Paused,
+            GitSyncPhase::Conflicted => SyncJournalPhase::Conflicted,
+        };
+        self.journal.git_dir = Some(progress.repository.git_dir.clone());
+        self.journal.local_snapshot = progress.local_snapshot.as_ref().map(ToString::to_string);
+        self.journal.expected_worktree_tree = progress.local_tree.as_ref().map(ToString::to_string);
+        self.journal.accepted = progress.accepted.as_ref().map(ToString::to_string);
+        self.journal.error = None;
+        if self.persist {
+            self.state_store
+                .save(self.journal)
+                .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -352,7 +415,54 @@ mod tests {
             .load(&key)
             .expect("load journal")
             .expect("retained error journal");
-        assert_eq!(journal.phase, SyncJournalPhase::Error);
+        assert_eq!(journal.phase, SyncJournalPhase::Preparing);
+        assert!(journal.error.is_some());
+    }
+
+    #[test]
+    fn progress_journal_retains_the_precise_failed_phase_and_snapshot() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        git(
+            &vault,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&vault, &["config", "user.name", "Vulcan Test"]);
+        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        git(
+            &vault,
+            &[
+                "remote",
+                "add",
+                "origin",
+                temporary
+                    .path()
+                    .join("missing.git")
+                    .to_str()
+                    .expect("remote path"),
+            ],
+        );
+        fs::write(vault.join("Home.md"), "initial\n").expect("initial note");
+        git(&vault, &["add", "Home.md"]);
+        git(&vault, &["commit", "--quiet", "-m", "initial"]);
+        let paths = VaultPaths::new(&vault);
+        let store = SyncStateStore::at(temporary.path().join("state"));
+
+        assert!(
+            sync_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store).is_err()
+        );
+
+        let key = crate::sync_state::repository_state_key(
+            &fs::canonicalize(&vault).expect("canonical vault"),
+        );
+        let journal = store
+            .load(&key)
+            .expect("load journal")
+            .expect("retained fetch journal");
+        assert_eq!(journal.phase, SyncJournalPhase::Fetching);
+        assert!(journal.local_snapshot.is_some());
+        assert!(journal.git_dir.is_some());
         assert!(journal.error.is_some());
     }
 }
