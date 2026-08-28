@@ -434,10 +434,11 @@ pub use cli::{
     PropertySortArg, PublishCommand, PullCommand, QueryEngineArg, QueryFormatArg, RefactorCommand,
     RefreshMode, RenderArgs, RenderMode, RepairCommand, SavedCommand, SavedCreateCommand,
     SearchBackendArg, SearchMode, SearchSortArg, SiteCommand, SkillCommand, SuggestCommand,
-    SuggestLinkStatusArg, TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand,
-    TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg,
-    TemplateRenderArgs, TemplateSubcommand, TextBundleCommand, ToolCommand, ToolInitTemplateArg,
-    TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
+    SuggestLinkStatusArg, SyncCommand, SyncTargetArgs, TagSortArg, TasksCommand,
+    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
+    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TextBundleCommand,
+    ToolCommand, ToolInitTemplateArg, TrustCommand, VectorQueueCommand, VectorsCommand, WebCommand,
+    WebFetchMode, WikiPackageCommand,
 };
 
 use crate::commit::AutoCommitPolicy;
@@ -6492,6 +6493,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
             interactive_note_selection,
         ),
         Command::Git { ref command } => commands::runtime::handle_git_command(cli, &paths, command),
+        Command::Sync { ref command } => commands::sync::handle_sync_command(cli, &paths, command),
         Command::Run {
             ref script,
             script_mode,

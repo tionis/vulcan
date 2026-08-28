@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 1
+version: 2
 tools:
   - config_show
   - config_get
@@ -38,6 +38,7 @@ permission profiles, or diagnoses permission and trust failures.
 - A skill command can narrow authority with `permission_profile`; it cannot widen the caller's profile.
 - Trust is an execution gate, not a permission profile. A trusted vault can still be denied by a profile.
 - Importing folder-note settings configures the convention; it does not auto-detect or move existing folder notes. Use `vulcan refactor folder-notes --dry-run` for a layout conversion.
+- `vulcan sync status` and `vulcan sync run` both inspect repository and remote state and therefore require the selected profile's Git permission; `--dry-run` prevents mutation but does not bypass that permission boundary.
 
 ## Example Moves
 

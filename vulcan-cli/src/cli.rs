@@ -25,7 +25,7 @@ Command groups (run `vulcan help` for the full grouped reference):
   Interactive: browse, edit, open
   Scripting:   run, web, render, plugin, tool, skill
   AI/MCP:      mcp
-  Git:         git, changes
+  Git/sync:    git, sync, changes
   Automation:  saved, automation, export, integration, checkpoint
   Setup:       init, agent, config, trust
   Reference:   help, describe, completions, status
@@ -564,6 +564,23 @@ Examples:
   vulcan git diff Home.md
   vulcan git commit -m \"Update daily notes\"
   vulcan git blame Projects/Alpha.md";
+
+const SYNC_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  run          perform one finite capture, reconcile, push, and apply cycle
+  status       inspect local safety and remote live-ref state without mutating either
+
+Notes:
+  Sync works directly against the selected vault path and does not require a daemon or wiki registration.
+  The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.
+  Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.
+  Staged changes and in-progress Git operations pause worktree synchronization.
+
+Examples:
+  vulcan sync run
+  vulcan sync run --dry-run
+  vulcan sync status
+  vulcan --vault ./wiki sync run --remote origin";
 
 const WEB_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
@@ -3816,6 +3833,47 @@ pub enum GitCommand {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct SyncTargetArgs {
+    #[arg(
+        long,
+        default_value = "origin",
+        help = "Git remote carrying the live ref"
+    )]
+    pub(crate) remote: String,
+    #[arg(
+        long,
+        default_value = "refs/heads/__vulcan-sync/live",
+        help = "Fully qualified remote live ref"
+    )]
+    pub(crate) live_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum SyncCommand {
+    #[command(about = "Run one finite Git synchronization cycle")]
+    Run {
+        #[command(flatten)]
+        target: SyncTargetArgs,
+        #[arg(
+            long,
+            default_value_t = 4,
+            help = "Maximum compare-and-swap reconciliation attempts"
+        )]
+        max_retries: usize,
+        #[arg(
+            long,
+            help = "Inspect and plan without creating refs, objects, or files"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Inspect synchronization state without changing it")]
+    Status {
+        #[command(flatten)]
+        target: SyncTargetArgs,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum WebCommand {
     #[command(about = "Query the configured web search backend")]
@@ -5681,6 +5739,14 @@ pub enum Command {
     Git {
         #[command(subcommand)]
         command: GitCommand,
+    },
+    #[command(
+        about = "Synchronize a vault through a hidden Git live ref",
+        after_help = SYNC_COMMAND_AFTER_HELP
+    )]
+    Sync {
+        #[command(subcommand)]
+        command: SyncCommand,
     },
     #[command(
         about = "Execute JavaScript inside the Vulcan runtime sandbox",

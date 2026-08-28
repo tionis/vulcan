@@ -5252,7 +5252,7 @@ semantic checkpoints continue to use the normal branch.
 - [x] Persist only standard Git objects, commits, trees, indexes, configuration, and refs plus Vulcan's backend-neutral journals. A repository created by one conforming engine must remain inspectable by ordinary Git and eligible for another engine without migration of canonical history.
 - [ ] Put the complete reusable vault transaction in `vulcan-app`: acquire the vault/repository lock, capture local state, invoke the backend, apply deletion guards, perform deterministic resolution, validate the resulting tree, refresh the cache when present, and return one structured report.
 - [ ] Keep scheduling, retained job/status state, trigger coalescing, watcher ownership, suspend/resume handling, and local HTTP/WebSocket transport in `vulcan-daemon`.
-- [ ] Make `vulcan sync run` call the same `vulcan-app` workflow directly when the daemon is absent or not requested. It must not start a daemon implicitly and must work for a path that has never been registered as a managed wiki.
+- [x] Make `vulcan sync run` call the same `vulcan-app` workflow directly when the daemon is absent or not requested. It must not start a daemon implicitly and must work for a path that has never been registered as a managed wiki.
 - [ ] Keep all pre-existing commands daemon-free and sync-free by default: no Git discovery, repository initialization, registration write, network request, background process, or LLM provider may occur merely because a user runs a normal local-vault command.
 - [ ] Refine the initial backend trait around a finite `sync_once` operation and explicit capabilities rather than putting `start`, `stop`, scheduling, and mutable retained status on every backend:
 
@@ -5288,9 +5288,11 @@ trait SyncBackend: Send + Sync {
 
 All commands in this section support `--output json`; mutating commands support `--dry-run` or an explicit plan/apply split. A path/current working directory remains valid wherever a registered wiki ID is accepted.
 
-- [ ] `vulcan sync run [<wiki>] [--all | --group <name>]` — perform one finite synchronization cycle directly or ask the daemon to enqueue independent per-wiki jobs; report partial group failure without claiming cross-repository atomicity
+- [x] `vulcan sync run` — perform one finite synchronization cycle directly for the selected path, with JSON output, dry-run, remote/live-ref selection, bounded retries, and no registration or daemon requirement
+- [ ] Extend `vulcan sync run [<wiki>] [--all | --group <name>]` to registered wiki selection and daemon-enqueued independent per-wiki jobs; report partial group failure without claiming cross-repository atomicity
 - [ ] `vulcan vault clone <remote> <path> [--id <id>] [--git-dir <path>]` — clone and register one wiki, supporting a detached Git directory for constrained filesystems; `--dry-run` reports the worktree, Git directory, remote, platform policy, and proposed registration without mutation
-- [ ] `vulcan sync status [<wiki>] [--all | --group <name>]` — distinguish clean, dirty, capture-pending, captured-unpushed, fetching, merging, applying, conflicted, paused, offline, and error states
+- [x] `vulcan sync status` — inspect the selected path's repository layout, safety state, local candidate, and exact remote live ref without mutation
+- [ ] Extend `vulcan sync status [<wiki>] [--all | --group <name>]` with retained daemon state that distinguishes clean, dirty, capture-pending, captured-unpushed, fetching, merging, applying, conflicted, paused, offline, and error states
 - [ ] `vulcan sync pause [<wiki>]` / `vulcan sync resume [<wiki>]` — change device-local automatic behavior without modifying shared repository policy; direct manual planning remains available while paused
 - [ ] `vulcan sync conflicts [<conflict-id>]` — list unresolved conflicts or show one immutable conflict record with base/local/remote object IDs, paths, policy result, preserved artifacts, and resolution state
 - [ ] `vulcan sync resolve <conflict-id>` — accept a supplied resolution file/patch, an explicit preserved side, an interactive editor result, or `--agent` to create a proposal; agent mode is plan-only by default, applying a proposal is explicit, every mode supports `--dry-run`, and a lossy side selection is never an implicit default

@@ -96,7 +96,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan render README.md                              Render markdown in the terminal\n  vulcan plugin list                                   Inspect registered JS plugins\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox, template\n  Query:       query, search, ls, backlinks, links\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, periodic\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, doctor\n  Index:       index, vectors, cache, repair\n  Interactive: browse, edit, open\n  Scripting:   run, web, render, plugin, tool, skill\n  AI/MCP:      mcp\n  Git:         git, changes\n  Automation:  saved, automation, export, integration, checkpoint\n  Setup:       init, agent, config, trust\n  Reference:   help, describe, completions, status\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
+    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan render README.md                              Render markdown in the terminal\n  vulcan plugin list                                   Inspect registered JS plugins\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox, template\n  Query:       query, search, ls, backlinks, links\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, periodic\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, doctor\n  Index:       index, vectors, cache, repair\n  Interactive: browse, edit, open\n  Scripting:   run, web, render, plugin, tool, skill\n  AI/MCP:      mcp\n  Git/sync:    git, sync, changes\n  Automation:  saved, automation, export, integration, checkpoint\n  Setup:       init, agent, config, trust\n  Reference:   help, describe, completions, status\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
     "commands": [
       {
         "about": "Initialize, scan, rebuild, repair, watch, and serve index state",
@@ -8441,6 +8441,97 @@
                 "short": null,
                 "value_names": [
                   "PATH"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": "Synchronize a vault through a hidden Git live ref",
+        "after_help": "Subcommands:\n  run          perform one finite capture, reconcile, push, and apply cycle\n  status       inspect local safety and remote live-ref state without mutating either\n\nNotes:\n  Sync works directly against the selected vault path and does not require a daemon or wiki registration.\n  The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.\n  Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.\n  Staged changes and in-progress Git operations pause worktree synchronization.\n\nExamples:\n  vulcan sync run\n  vulcan sync run --dry-run\n  vulcan sync status\n  vulcan --vault ./wiki sync run --remote origin",
+        "name": "sync",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Run one finite Git synchronization cycle",
+            "name": "run",
+            "options": [
+              {
+                "help": "Git remote carrying the live ref",
+                "id": "remote",
+                "long": "remote",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOTE"
+                ]
+              },
+              {
+                "help": "Fully qualified remote live ref",
+                "id": "live_ref",
+                "long": "live-ref",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LIVE_REF"
+                ]
+              },
+              {
+                "help": "Maximum compare-and-swap reconciliation attempts",
+                "id": "max_retries",
+                "long": "max-retries",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "MAX_RETRIES"
+                ]
+              },
+              {
+                "help": "Inspect and plan without creating refs, objects, or files",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Inspect synchronization state without changing it",
+            "name": "status",
+            "options": [
+              {
+                "help": "Git remote carrying the live ref",
+                "id": "remote",
+                "long": "remote",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOTE"
+                ]
+              },
+              {
+                "help": "Fully qualified remote live ref",
+                "id": "live_ref",
+                "long": "live-ref",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LIVE_REF"
                 ]
               }
             ],

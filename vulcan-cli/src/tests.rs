@@ -2123,6 +2123,50 @@ fn parses_git_blame_command() {
 }
 
 #[test]
+fn parses_sync_run_and_status_commands() {
+    let run = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "run",
+        "--remote",
+        "backup",
+        "--live-ref",
+        "refs/heads/live",
+        "--max-retries",
+        "7",
+        "--dry-run",
+    ])
+    .expect("sync run should parse");
+    assert_eq!(
+        run.command,
+        Command::Sync {
+            command: SyncCommand::Run {
+                target: SyncTargetArgs {
+                    remote: "backup".to_string(),
+                    live_ref: "refs/heads/live".to_string(),
+                },
+                max_retries: 7,
+                dry_run: true,
+            },
+        }
+    );
+
+    let status =
+        Cli::try_parse_from(["vulcan", "sync", "status"]).expect("sync status should parse");
+    assert_eq!(
+        status.command,
+        Command::Sync {
+            command: SyncCommand::Status {
+                target: SyncTargetArgs {
+                    remote: "origin".to_string(),
+                    live_ref: "refs/heads/__vulcan-sync/live".to_string(),
+                },
+            },
+        }
+    );
+}
+
+#[test]
 fn parses_web_search_command() {
     let cli = Cli::try_parse_from([
         "vulcan",

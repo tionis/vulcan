@@ -4482,6 +4482,117 @@ fn git_help_documents_sandboxed_operations() {
 }
 
 #[test]
+fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let remote = temporary.path().join("remote.git");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            remote.to_str().expect("remote path should be utf-8"),
+        ],
+    );
+    let writer = temporary.path().join("writer");
+    fs::create_dir(&writer).expect("writer should be created");
+    init_git_repo(&writer);
+    run_git_ok(
+        &writer,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path should be utf-8"),
+        ],
+    );
+    fs::write(writer.join("Home.md"), "initial\n").expect("home note should be written");
+    commit_all(&writer, "Initial");
+
+    let bootstrap = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            writer.to_str().expect("writer path should be utf-8"),
+            "--output",
+            "json",
+            "sync",
+            "run",
+        ])
+        .assert()
+        .success();
+    let bootstrap_json = parse_stdout_json(&bootstrap);
+    assert_eq!(bootstrap_json["outcome"], "bootstrapped");
+    assert_eq!(bootstrap_json["actions"], serde_json::json!(["pushed"]));
+
+    let reader = temporary.path().join("reader");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "clone",
+            "--quiet",
+            writer.to_str().expect("writer path should be utf-8"),
+            reader.to_str().expect("reader path should be utf-8"),
+        ],
+    );
+    run_git_ok(
+        &reader,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            remote.to_str().expect("remote path should be utf-8"),
+        ],
+    );
+
+    fs::write(writer.join("Shared.md"), "from writer\n").expect("shared note should be written");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            writer.to_str().expect("writer path should be utf-8"),
+            "sync",
+            "run",
+        ])
+        .assert()
+        .success();
+    let pull = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            reader.to_str().expect("reader path should be utf-8"),
+            "--output",
+            "json",
+            "sync",
+            "run",
+        ])
+        .assert()
+        .success();
+    let pull_json = parse_stdout_json(&pull);
+    assert_eq!(pull_json["outcome"], "pulled");
+    assert_eq!(
+        fs::read_to_string(reader.join("Shared.md")).expect("shared note should be pulled"),
+        "from writer\n"
+    );
+
+    let status = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            reader.to_str().expect("reader path should be utf-8"),
+            "--output",
+            "json",
+            "sync",
+            "status",
+        ])
+        .assert()
+        .success();
+    let status_json = parse_stdout_json(&status);
+    assert_eq!(status_json["outcome"], "planned");
+    assert_eq!(status_json["actions"], serde_json::json!([]));
+}
+
+#[test]
 fn web_search_json_output_uses_configured_backend_and_env_key() {
     let server = MockWebServer::spawn();
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -10669,6 +10780,10 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
             .expect("bundled skill should be readable")
             .contains("managed: true")
     );
+    let git_skill = fs::read_to_string(vault_root.join(".agents/skills/git-workflow/SKILL.md"))
+        .expect("Git workflow skill should be readable");
+    assert!(git_skill.contains("vulcan sync status"));
+    assert!(git_skill.contains("vulcan sync run --dry-run"));
     assert!(json["support_files"].as_array().is_some_and(|items| items
         .iter()
         .any(|item| item["path"] == "AGENTS.md")
