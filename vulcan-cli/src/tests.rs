@@ -2141,6 +2141,11 @@ fn parses_sync_run_and_status_commands() {
         run.command,
         Command::Sync {
             command: SyncCommand::Run {
+                selection: SyncSelectionArgs {
+                    wiki: None,
+                    all: false,
+                    group: None,
+                },
                 target: SyncTargetArgs {
                     remote: "backup".to_string(),
                     live_ref: "refs/heads/live".to_string(),
@@ -2157,6 +2162,11 @@ fn parses_sync_run_and_status_commands() {
         status.command,
         Command::Sync {
             command: SyncCommand::Status {
+                selection: SyncSelectionArgs {
+                    wiki: None,
+                    all: false,
+                    group: None,
+                },
                 target: SyncTargetArgs {
                     remote: "origin".to_string(),
                     live_ref: "refs/heads/__vulcan-sync/live".to_string(),
@@ -2164,6 +2174,23 @@ fn parses_sync_run_and_status_commands() {
             },
         }
     );
+
+    let registered = Cli::try_parse_from(["vulcan", "sync", "run", "personal"])
+        .expect("registered sync should parse");
+    assert!(matches!(
+        registered.command,
+        Command::Sync {
+            command: SyncCommand::Run {
+                selection: SyncSelectionArgs {
+                    wiki: Some(ref wiki),
+                    all: false,
+                    group: None,
+                },
+                ..
+            }
+        } if wiki == "personal"
+    ));
+    assert!(Cli::try_parse_from(["vulcan", "sync", "run", "personal", "--all"]).is_err());
 }
 
 #[test]

@@ -7,3 +7,4 @@
 //! registry depend on a running daemon.
 
 pub mod registry;
+pub mod sync;

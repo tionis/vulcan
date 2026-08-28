@@ -578,6 +578,9 @@ Notes:
 
 Examples:
   vulcan sync run
+  vulcan sync run personal
+  vulcan sync run --group daily
+  vulcan sync status --all
   vulcan sync run --dry-run
   vulcan sync status
   vulcan --vault ./wiki sync run --remote origin";
@@ -3868,10 +3871,25 @@ pub struct SyncTargetArgs {
     pub(crate) live_ref: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct SyncSelectionArgs {
+    #[arg(
+        help = "Optional registered wiki ID; omit to use the selected vault path",
+        conflicts_with_all = ["all", "group"]
+    )]
+    pub(crate) wiki: Option<String>,
+    #[arg(long, conflicts_with = "group", help = "Select every registered wiki")]
+    pub(crate) all: bool,
+    #[arg(long, conflicts_with = "all", help = "Select a registered wiki group")]
+    pub(crate) group: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SyncCommand {
     #[command(about = "Run one finite Git synchronization cycle")]
     Run {
+        #[command(flatten)]
+        selection: SyncSelectionArgs,
         #[command(flatten)]
         target: SyncTargetArgs,
         #[arg(
@@ -3888,6 +3906,8 @@ pub enum SyncCommand {
     },
     #[command(about = "Inspect synchronization state without changing it")]
     Status {
+        #[command(flatten)]
+        selection: SyncSelectionArgs,
         #[command(flatten)]
         target: SyncTargetArgs,
     },

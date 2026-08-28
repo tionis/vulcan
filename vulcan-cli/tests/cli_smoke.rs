@@ -4590,6 +4590,46 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     let status_json = parse_stdout_json(&status);
     assert_eq!(status_json["outcome"], "planned");
     assert_eq!(status_json["actions"], serde_json::json!([]));
+
+    let config_home = temporary.path().join("config");
+    fs::create_dir(&config_home).expect("config home should be created");
+    let config_home = config_home.to_str().expect("config path should be utf-8");
+    for (id, path) in [("a-writer", &writer), ("z-reader", &reader)] {
+        cargo_vulcan_with_xdg_config(config_home)
+            .args([
+                "vault",
+                "add",
+                id,
+                path.to_str().expect("wiki path should be utf-8"),
+                "--group",
+                "pair",
+            ])
+            .assert()
+            .success();
+    }
+    fs::write(writer.join("Grouped.md"), "group sync\n").expect("grouped note should be written");
+    let grouped = cargo_vulcan_with_xdg_config(config_home)
+        .args(["--output", "json", "sync", "run", "--group", "pair"])
+        .assert()
+        .success();
+    let grouped_json = parse_stdout_json(&grouped);
+    assert_eq!(grouped_json["selection"], "group:pair");
+    assert_eq!(grouped_json["total"], 2);
+    assert_eq!(grouped_json["succeeded"], 2);
+    assert_eq!(grouped_json["failed"], 0);
+    assert_eq!(
+        fs::read_to_string(reader.join("Grouped.md")).expect("grouped note should be pulled"),
+        "group sync\n"
+    );
+
+    let all_status = cargo_vulcan_with_xdg_config(config_home)
+        .args(["--output", "json", "sync", "status", "--all"])
+        .assert()
+        .success();
+    let all_status_json = parse_stdout_json(&all_status);
+    assert_eq!(all_status_json["selection"], "all");
+    assert_eq!(all_status_json["dry_run"], true);
+    assert_eq!(all_status_json["total"], 2);
 }
 
 #[test]
@@ -10874,6 +10914,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
         .expect("Git workflow skill should be readable");
     assert!(git_skill.contains("vulcan sync status"));
     assert!(git_skill.contains("vulcan sync run --dry-run"));
+    assert!(git_skill.contains("vulcan sync run <wiki>"));
+    assert!(git_skill.contains("never one atomic cross-repository operation"));
     let configuration_skill = fs::read_to_string(
         vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),
     )

@@ -5115,7 +5115,8 @@ permissions_profile = "readonly"  # clamp all API requests for this vault to a n
 - [x] `vulcan vault set <id> [--group <name>] [--remove-group <name>] [--permissions-profile <profile>]` — update device-local registration metadata with `--dry-run` and without modifying vault content
 - [x] `vulcan vault remove <id>` — unregister only, with `--dry-run`; never delete the worktree, Git objects, or remote repository as an implicit side effect
 - [x] Persist and filter named local groups in the registry
-- [ ] Let `vulcan sync run --group <name>` and `--all` schedule several independent wiki jobs; explicitly make this an aggregate operation rather than an atomic cross-repository transaction
+- [x] Let direct `vulcan sync run --group <name>` and `--all` execute several independent wiki cycles with per-wiki results and explicit aggregate success/conflict/failure counts; never claim cross-repository atomicity
+- [ ] Let the daemon enqueue the same selected wiki/group/all operation as independent retained jobs once scheduling exists
 - [x] Give every local installation a stable device ULID and every registration a stable local ULID; define a later migration path to an optional shared wiki identity without making shared identity a prerequisite for ordinary local usage
 - [ ] Auth tokens stored outside vault content — avoids coupling auth to the data it protects
 - [ ] Token-authenticated daemon requests resolve to a vault plus a named permission profile; all endpoint authorization and result filtering reuse the existing `PermissionGuard` / `PermissionFilter` layer instead of adding daemon-specific policy logic
@@ -5292,10 +5293,12 @@ trait SyncBackend: Send + Sync {
 All commands in this section support `--output json`; mutating commands support `--dry-run` or an explicit plan/apply split. A path/current working directory remains valid wherever a registered wiki ID is accepted.
 
 - [x] `vulcan sync run` — perform one finite synchronization cycle directly for the selected path, with JSON output, dry-run, remote/live-ref selection, bounded retries, and no registration or daemon requirement
-- [ ] Extend `vulcan sync run [<wiki>] [--all | --group <name>]` to registered wiki selection and daemon-enqueued independent per-wiki jobs; report partial group failure without claiming cross-repository atomicity
+- [x] Extend direct `vulcan sync run [<wiki>] [--all | --group <name>]` to registered wiki selection and independent per-wiki cycles; report partial aggregate failure without claiming cross-repository atomicity
+- [ ] Add daemon-enqueued execution for the same wiki/group/all selection once the job supervisor exists
 - [ ] `vulcan vault clone <remote> <path> [--id <id>] [--git-dir <path>]` — clone and register one wiki, supporting a detached Git directory for constrained filesystems; `--dry-run` reports the worktree, Git directory, remote, platform policy, and proposed registration without mutation
 - [x] `vulcan sync status` — inspect the selected path's repository layout, safety state, local candidate, and exact remote live ref without mutation
-- [ ] Extend `vulcan sync status [<wiki>] [--all | --group <name>]` with retained daemon state that distinguishes clean, dirty, capture-pending, captured-unpushed, fetching, merging, applying, conflicted, paused, offline, and error states
+- [x] Extend direct `vulcan sync status [<wiki>] [--all | --group <name>]` with registered selection and independent aggregate reports
+- [ ] Add retained daemon status that distinguishes clean, dirty, capture-pending, captured-unpushed, fetching, merging, applying, conflicted, paused, offline, and error states
 - [ ] `vulcan sync pause [<wiki>]` / `vulcan sync resume [<wiki>]` — change device-local automatic behavior without modifying shared repository policy; direct manual planning remains available while paused
 - [ ] `vulcan sync conflicts [<conflict-id>]` — list unresolved conflicts or show one immutable conflict record with base/local/remote object IDs, paths, policy result, preserved artifacts, and resolution state
 - [ ] `vulcan sync resolve <conflict-id>` — accept a supplied resolution file/patch, an explicit preserved side, an interactive editor result, or `--agent` to create a proposal; agent mode is plan-only by default, applying a proposal is explicit, every mode supports `--dry-run`, and a lossy side selection is never an implicit default

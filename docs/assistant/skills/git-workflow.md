@@ -30,6 +30,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Commit only after the note or refactor workflow is understood.
 - Run `vulcan sync status` before a sync when staged changes or an in-progress Git operation may be present.
 - Use `vulcan sync run --dry-run` to inspect the selected remote and live ref without creating objects, refs, or files; use `vulcan sync run` for one finite direct-mode cycle.
+- Use `vulcan sync run <wiki>`, `--group <name>`, or `--all` for registered selections. Group/all results are independent per-wiki transactions with aggregate counts, never one atomic cross-repository operation.
 
 ## Guardrails
 
@@ -46,3 +47,4 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Use `git blame` to explain why one task line changed.
 - Check note-scoped history before editing a long-lived project note.
 - Synchronize an unregistered vault directly with `vulcan --vault ./wiki sync run`.
+- Synchronize every wiki in a device-local group with `vulcan sync run --group daily`.
