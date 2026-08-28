@@ -165,12 +165,19 @@ pub trait GitEngine: Send + Sync {
         expected: Option<&GitOid>,
     ) -> Result<GitPushResult, GitEngineError>;
 
+    fn plan_tree_application(
+        &self,
+        repository: &GitRepository,
+        expected_worktree: &GitOid,
+        target: &GitOid,
+    ) -> Result<GitTreeApplyPlan, GitEngineError>;
+
     fn apply_tree(
         &self,
         repository: &GitRepository,
         expected_worktree: &GitOid,
         target: &GitOid,
-    ) -> Result<(), GitEngineError>;
+    ) -> Result<GitTreeApplyPlan, GitEngineError>;
 
     fn safety_state(&self, repository: &GitRepository) -> Result<GitSafetyState, GitEngineError>;
 
@@ -601,6 +608,36 @@ pub struct GitPathObject {
     pub data: Option<Vec<u8>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitTreeApplyAction {
+    Add,
+    Update,
+    Delete,
+    TypeChange,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitTreeApplyPath {
+    pub path: String,
+    pub action: GitTreeApplyAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expected: Option<GitPathObject>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<GitPathObject>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitTreeApplyPlan {
+    pub expected_revision: GitOid,
+    pub target_revision: GitOid,
+    pub additions: usize,
+    pub updates: usize,
+    pub deletions: usize,
+    pub type_changes: usize,
+    pub paths: Vec<GitTreeApplyPath>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitMerge {
     pub clean: bool,
@@ -880,6 +917,97 @@ impl GitCliEngine {
     ) -> Result<String, GitEngineError> {
         let output = self.index_output(repository, index_path, operation, arguments)?;
         decode_stdout(operation, output.stdout)
+    }
+
+    fn path_object_metadata(
+        &self,
+        repository: &GitRepository,
+        commit: &GitOid,
+        path: &str,
+    ) -> Result<Option<GitPathObject>, GitEngineError> {
+        validate_repository_path(path)?;
+        let mut command = self.repository_command(repository);
+        command
+            .args(["ls-tree", "-z"])
+            .arg(commit.as_str())
+            .args(["--", path]);
+        let output = self.execute(command)?;
+        let output = ensure_success("inspect a Git path object", output)?;
+        if output.stdout.is_empty() {
+            return Ok(None);
+        }
+        if output.stdout.last() != Some(&0) {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect a Git path object",
+                detail: "expected a NUL-terminated ls-tree record".to_string(),
+            });
+        }
+        let record =
+            std::str::from_utf8(&output.stdout[..output.stdout.len() - 1]).map_err(|error| {
+                GitEngineError::InvalidOutput {
+                    operation: "inspect a Git path object",
+                    detail: error.to_string(),
+                }
+            })?;
+        if record.contains('\0') {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect a Git path object",
+                detail: "the exact path query returned multiple objects".to_string(),
+            });
+        }
+        let (metadata, found_path) =
+            record
+                .split_once('\t')
+                .ok_or_else(|| GitEngineError::InvalidOutput {
+                    operation: "inspect a Git path object",
+                    detail: "expected `<mode> <type> <oid>\\t<path>`".to_string(),
+                })?;
+        if found_path != path {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect a Git path object",
+                detail: format!("expected path `{path}`, received `{found_path}`"),
+            });
+        }
+        let mut metadata = metadata.split_whitespace();
+        let mode = metadata.next().unwrap_or_default();
+        let kind = metadata.next().unwrap_or_default();
+        let oid = metadata.next().unwrap_or_default();
+        if mode.is_empty() || kind.is_empty() || oid.is_empty() || metadata.next().is_some() {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect a Git path object",
+                detail: "invalid ls-tree object metadata".to_string(),
+            });
+        }
+        Ok(Some(GitPathObject {
+            oid: GitOid::parse(oid)?,
+            mode: mode.to_string(),
+            kind: kind.to_string(),
+            data: None,
+        }))
+    }
+
+    fn tree_application_paths(
+        &self,
+        repository: &GitRepository,
+        expected_worktree: &GitOid,
+        target: &GitOid,
+    ) -> Result<Vec<GitTreeApplyPath>, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command.args([
+            "diff-tree",
+            "--no-commit-id",
+            "--raw",
+            "--no-abbrev",
+            "--no-renames",
+            "-r",
+            "-z",
+            expected_worktree.as_str(),
+            target.as_str(),
+            "--",
+        ]);
+        let output = self.execute(command)?;
+        let output = ensure_success("plan worktree application", output)?;
+        parse_tree_application_paths(&output.stdout)
     }
 
     fn commit_tree(
@@ -1203,71 +1331,21 @@ impl GitEngine for GitCliEngine {
         commit: &GitOid,
         path: &str,
     ) -> Result<Option<GitPathObject>, GitEngineError> {
-        validate_repository_path(path)?;
-        let mut command = self.repository_command(repository);
-        command
-            .args(["ls-tree", "-z"])
-            .arg(commit.as_str())
-            .args(["--", path]);
-        let output = self.execute(command)?;
-        let output = ensure_success("inspect a conflicted path object", output)?;
-        if output.stdout.is_empty() {
+        let Some(mut object) = self.path_object_metadata(repository, commit, path)? else {
             return Ok(None);
-        }
-        if output.stdout.last() != Some(&0) {
-            return Err(GitEngineError::InvalidOutput {
-                operation: "inspect a conflicted path object",
-                detail: "expected a NUL-terminated ls-tree record".to_string(),
-            });
-        }
-        let record =
-            std::str::from_utf8(&output.stdout[..output.stdout.len() - 1]).map_err(|error| {
-                GitEngineError::InvalidOutput {
-                    operation: "inspect a conflicted path object",
-                    detail: error.to_string(),
-                }
-            })?;
-        if record.contains('\0') {
-            return Err(GitEngineError::InvalidOutput {
-                operation: "inspect a conflicted path object",
-                detail: "the exact path query returned multiple objects".to_string(),
-            });
-        }
-        let (metadata, found_path) =
-            record
-                .split_once('\t')
-                .ok_or_else(|| GitEngineError::InvalidOutput {
-                    operation: "inspect a conflicted path object",
-                    detail: "expected `<mode> <type> <oid>\\t<path>`".to_string(),
-                })?;
-        if found_path != path {
-            return Err(GitEngineError::InvalidOutput {
-                operation: "inspect a conflicted path object",
-                detail: format!("expected path `{path}`, received `{found_path}`"),
-            });
-        }
-        let mut metadata = metadata.split_whitespace();
-        let mode = metadata.next().unwrap_or_default();
-        let kind = metadata.next().unwrap_or_default();
-        let oid = metadata.next().unwrap_or_default();
-        if mode.is_empty() || kind.is_empty() || oid.is_empty() || metadata.next().is_some() {
-            return Err(GitEngineError::InvalidOutput {
-                operation: "inspect a conflicted path object",
-                detail: "invalid ls-tree object metadata".to_string(),
-            });
-        }
-        let oid = GitOid::parse(oid)?;
-        let data = if kind == "blob" {
+        };
+        object.data = if object.kind == "blob" {
             let output = self.repository_output(
                 repository,
                 "read a conflicted blob",
-                ["cat-file", "blob", oid.as_str()],
+                ["cat-file", "blob", object.oid.as_str()],
             )?;
             if output.stdout.len() > MAX_CONFLICT_BLOB_BYTES {
                 return Err(GitEngineError::InvalidOutput {
                     operation: "read a conflicted blob",
                     detail: format!(
-                        "blob `{oid}` exceeds the {MAX_CONFLICT_BLOB_BYTES} byte preservation limit"
+                        "blob `{}` exceeds the {MAX_CONFLICT_BLOB_BYTES} byte preservation limit",
+                        object.oid
                     ),
                 });
             }
@@ -1275,12 +1353,7 @@ impl GitEngine for GitCliEngine {
         } else {
             None
         };
-        Ok(Some(GitPathObject {
-            oid,
-            mode: mode.to_string(),
-            kind: kind.to_string(),
-            data,
-        }))
+        Ok(Some(object))
     }
 
     fn changed_paths(
@@ -1722,13 +1795,45 @@ impl GitEngine for GitCliEngine {
         Err(command_failed("push the live sync ref", &output))
     }
 
+    fn plan_tree_application(
+        &self,
+        repository: &GitRepository,
+        expected_worktree: &GitOid,
+        target: &GitOid,
+    ) -> Result<GitTreeApplyPlan, GitEngineError> {
+        repository.require_work_tree()?;
+        let paths = self.tree_application_paths(repository, expected_worktree, target)?;
+        let mut additions = 0;
+        let mut updates = 0;
+        let mut deletions = 0;
+        let mut type_changes = 0;
+        for path in &paths {
+            match path.action {
+                GitTreeApplyAction::Add => additions += 1,
+                GitTreeApplyAction::Update => updates += 1,
+                GitTreeApplyAction::Delete => deletions += 1,
+                GitTreeApplyAction::TypeChange => type_changes += 1,
+            }
+        }
+        Ok(GitTreeApplyPlan {
+            expected_revision: expected_worktree.clone(),
+            target_revision: target.clone(),
+            additions,
+            updates,
+            deletions,
+            type_changes,
+            paths,
+        })
+    }
+
     fn apply_tree(
         &self,
         repository: &GitRepository,
         expected_worktree: &GitOid,
         target: &GitOid,
-    ) -> Result<(), GitEngineError> {
+    ) -> Result<GitTreeApplyPlan, GitEngineError> {
         repository.require_work_tree()?;
+        let plan = self.plan_tree_application(repository, expected_worktree, target)?;
         let index_path = repository.sync_index();
         std::fs::create_dir_all(
             index_path
@@ -1798,7 +1903,7 @@ impl GitEngine for GitCliEngine {
                 ),
             });
         }
-        Ok(())
+        Ok(plan)
     }
 
     fn safety_state(&self, repository: &GitRepository) -> Result<GitSafetyState, GitEngineError> {
@@ -2110,6 +2215,104 @@ fn parse_nul_paths(operation: &'static str, bytes: &[u8]) -> Result<Vec<String>,
             })
         })
         .collect()
+}
+
+fn parse_tree_application_paths(bytes: &[u8]) -> Result<Vec<GitTreeApplyPath>, GitEngineError> {
+    const OPERATION: &str = "plan worktree application";
+    if bytes.len() > MAX_DIAGNOSTIC_PATH_BYTES {
+        return Err(GitEngineError::InvalidOutput {
+            operation: OPERATION,
+            detail: format!("path output exceeds the {MAX_DIAGNOSTIC_PATH_BYTES} byte limit"),
+        });
+    }
+    let fields = nul_fields(OPERATION, bytes)?;
+    let mut chunks = fields.chunks_exact(2);
+    let mut paths = Vec::with_capacity(chunks.len());
+    for chunk in &mut chunks {
+        let header = chunk[0]
+            .strip_prefix(':')
+            .ok_or_else(|| GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: "raw diff metadata does not start with `:`".to_string(),
+            })?;
+        let metadata = header.split_whitespace().collect::<Vec<_>>();
+        if metadata.len() != 5 {
+            return Err(GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: "expected `<old-mode> <new-mode> <old-oid> <new-oid> <status>`".to_string(),
+            });
+        }
+        let path = chunk[1].to_string();
+        validate_repository_path(&path)?;
+        let expected = raw_diff_object(metadata[0], metadata[2])?;
+        let target = raw_diff_object(metadata[1], metadata[3])?;
+        let action = match (&expected, &target) {
+            (None, Some(_)) if metadata[4] == "A" => GitTreeApplyAction::Add,
+            (Some(_), None) if metadata[4] == "D" => GitTreeApplyAction::Delete,
+            (Some(expected), Some(target)) if matches!(metadata[4], "M" | "T") => {
+                if expected.mode != target.mode || expected.kind != target.kind {
+                    GitTreeApplyAction::TypeChange
+                } else {
+                    GitTreeApplyAction::Update
+                }
+            }
+            _ => {
+                return Err(GitEngineError::InvalidOutput {
+                    operation: OPERATION,
+                    detail: format!(
+                        "unsupported raw diff status `{}` for path `{path}`",
+                        metadata[4]
+                    ),
+                });
+            }
+        };
+        paths.push(GitTreeApplyPath {
+            path,
+            action,
+            expected,
+            target,
+        });
+    }
+    if !chunks.remainder().is_empty() {
+        return Err(GitEngineError::InvalidOutput {
+            operation: OPERATION,
+            detail: "raw diff metadata is missing its path".to_string(),
+        });
+    }
+    Ok(paths)
+}
+
+fn raw_diff_object(mode: &str, oid: &str) -> Result<Option<GitPathObject>, GitEngineError> {
+    const OPERATION: &str = "plan worktree application";
+    let valid_mode = mode.len() == 6 && mode.bytes().all(|byte| matches!(byte, b'0'..=b'7'));
+    if !valid_mode {
+        return Err(GitEngineError::InvalidOutput {
+            operation: OPERATION,
+            detail: format!("invalid raw diff mode `{mode}`"),
+        });
+    }
+    let missing_mode = mode == "000000";
+    let missing_oid = !oid.is_empty() && oid.bytes().all(|byte| byte == b'0');
+    if missing_mode != missing_oid {
+        return Err(GitEngineError::InvalidOutput {
+            operation: OPERATION,
+            detail: "raw diff mode and object absence disagree".to_string(),
+        });
+    }
+    if missing_mode {
+        return Ok(None);
+    }
+    let kind = match mode {
+        "040000" => "tree",
+        "160000" => "commit",
+        _ => "blob",
+    };
+    Ok(Some(GitPathObject {
+        oid: GitOid::parse(oid)?,
+        mode: mode.to_string(),
+        kind: kind.to_string(),
+        data: None,
+    }))
 }
 
 fn validate_repository_path(path: &str) -> Result<(), GitEngineError> {
@@ -2778,10 +2981,12 @@ mod tests {
         let temporary = TempDir::new().expect("temporary directory");
         init_repo(temporary.path());
         fs::write(temporary.path().join("Home.md"), "initial\n").expect("initial note");
+        fs::write(temporary.path().join("Removed.md"), "remove me\n").expect("removed note");
         let head = commit_all(temporary.path(), "initial");
         let normal_index = run_git_capture(temporary.path(), &["write-tree"]);
         fs::write(temporary.path().join("Home.md"), "accepted\n").expect("accepted note");
         fs::write(temporary.path().join("New.md"), "new\n").expect("new note");
+        fs::remove_file(temporary.path().join("Removed.md")).expect("delete removed note");
         let engine = GitCliEngine::default();
         let repository = engine
             .discover_repository(temporary.path())
@@ -2799,10 +3004,28 @@ mod tests {
             .expect("capture");
         fs::write(temporary.path().join("Home.md"), "initial\n").expect("restore note");
         fs::remove_file(temporary.path().join("New.md")).expect("remove new note");
+        fs::write(temporary.path().join("Removed.md"), "remove me\n")
+            .expect("restore removed note");
 
-        engine
+        let plan = engine
             .apply_tree(&repository, &head, &accepted.commit)
             .expect("tree should apply");
+
+        assert_eq!(plan.additions, 1);
+        assert_eq!(plan.updates, 1);
+        assert_eq!(plan.deletions, 1);
+        assert_eq!(plan.type_changes, 0);
+        assert_eq!(
+            plan.paths
+                .iter()
+                .map(|path| (path.path.as_str(), path.action))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Home.md", GitTreeApplyAction::Update),
+                ("New.md", GitTreeApplyAction::Add),
+                ("Removed.md", GitTreeApplyAction::Delete),
+            ]
+        );
 
         assert_eq!(
             fs::read_to_string(temporary.path().join("Home.md")).expect("home"),
@@ -2812,9 +3035,88 @@ mod tests {
             fs::read_to_string(temporary.path().join("New.md")).expect("new"),
             "new\n"
         );
+        assert!(!temporary.path().join("Removed.md").exists());
         assert_eq!(
             run_git_capture(temporary.path(), &["write-tree"]),
             normal_index
+        );
+    }
+
+    #[test]
+    fn applying_a_tree_rejects_drift_before_overwrites_and_deletes() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Home.md"), "initial\n").expect("initial note");
+        fs::write(temporary.path().join("Removed.md"), "remove me\n").expect("removed note");
+        let head = commit_all(temporary.path(), "initial");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        fs::write(temporary.path().join("Home.md"), "accepted\n").expect("accepted note");
+        fs::remove_file(temporary.path().join("Removed.md")).expect("delete removed note");
+        let accepted = engine
+            .capture_worktree(
+                &repository,
+                &GitCaptureRequest {
+                    base: Some(head.clone()),
+                    target_ref: GitRefName::parse("refs/vulcan/sync/local/live").expect("ref"),
+                    message: "accepted\n".to_string(),
+                },
+            )
+            .expect("capture");
+        fs::write(temporary.path().join("Home.md"), "concurrent edit\n").expect("drift note");
+        fs::write(temporary.path().join("Removed.md"), "remove me\n").expect("restore note");
+
+        assert!(matches!(
+            engine.apply_tree(&repository, &head, &accepted.commit),
+            Err(GitEngineError::WorktreeChanged)
+        ));
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("Home.md")).expect("home"),
+            "concurrent edit\n"
+        );
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("Removed.md")).expect("removed"),
+            "remove me\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tree_application_plan_classifies_mode_changes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        let script = temporary.path().join("script.sh");
+        fs::write(&script, "#!/bin/sh\n").expect("script");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o644)).expect("initial mode");
+        let head = commit_all(temporary.path(), "initial");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("executable mode");
+        let target = commit_all(temporary.path(), "executable");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+
+        let plan = engine
+            .plan_tree_application(&repository, &head, &target)
+            .expect("application plan");
+
+        assert_eq!(plan.type_changes, 1);
+        assert_eq!(plan.paths[0].action, GitTreeApplyAction::TypeChange);
+        assert_eq!(
+            plan.paths[0]
+                .expected
+                .as_ref()
+                .expect("expected object")
+                .mode,
+            "100644"
+        );
+        assert_eq!(
+            plan.paths[0].target.as_ref().expect("target object").mode,
+            "100755"
         );
     }
 

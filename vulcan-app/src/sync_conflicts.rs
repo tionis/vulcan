@@ -420,7 +420,7 @@ fn publish_and_apply_resolution(
 
     let resolved_tree = GitOid::parse(&resolution.resolved_tree).map_err(AppError::operation)?;
     if capture.tree != resolved_tree {
-        engine
+        let _application = engine
             .apply_tree(repository, &capture.commit, &resolution_commit)
             .map_err(AppError::operation)?;
     }

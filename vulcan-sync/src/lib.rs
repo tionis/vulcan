@@ -27,7 +27,8 @@ pub use git::{
     GitOid, GitPathLengthPolicy, GitPathObject, GitPlatformPolicy, GitPlatformProfile,
     GitPushResult, GitRefCreateResult, GitRefName, GitRefUpdateResult, GitRemote, GitRepository,
     GitRepositoryLayout, GitRepositoryRequirements, GitReservedNamesPolicy, GitSafetyState,
-    GitSymlinkPolicy, GitTimestampPolicy, GitVersion,
+    GitSymlinkPolicy, GitTimestampPolicy, GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan,
+    GitVersion,
 };
 pub use sync::{
     sync_git_once, sync_git_once_with_control, GitConflictRefs, GitSyncAction, GitSyncBackend,

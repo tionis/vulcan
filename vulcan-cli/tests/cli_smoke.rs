@@ -4593,6 +4593,13 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
         .success();
     let pull_json = parse_stdout_json(&pull);
     assert_eq!(pull_json["outcome"], "pulled");
+    assert_eq!(pull_json["application"]["additions"], 1);
+    assert_eq!(pull_json["application"]["updates"], 0);
+    assert_eq!(pull_json["application"]["deletions"], 0);
+    assert_eq!(pull_json["application"]["type_changes"], 0);
+    assert_eq!(pull_json["application"]["paths"][0]["path"], "Shared.md");
+    assert_eq!(pull_json["application"]["paths"][0]["action"], "add");
+    assert!(pull_json["application"]["paths"][0]["target"]["oid"].is_string());
     assert_eq!(
         fs::read_to_string(reader.join("Shared.md")).expect("shared note should be pulled"),
         "from writer\n"
@@ -11582,6 +11589,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync run <wiki>"));
     assert!(git_skill.contains("vulcan sync pause [<wiki>]"));
     assert!(git_skill.contains("state.recovered_from"));
+    assert!(git_skill.contains("application.additions"));
+    assert!(git_skill.contains("worktree_changed"));
     assert!(git_skill.contains("remote/network failure after capture"));
     assert!(git_skill.contains("conflict_record"));
     assert!(git_skill.contains("vulcan sync conflicts <id>"));

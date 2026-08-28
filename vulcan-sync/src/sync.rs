@@ -1,9 +1,9 @@
 use crate::{
     GitCaptureRequest, GitEngine, GitEngineError, GitInstallation, GitOid, GitPushResult,
-    GitRefName, GitRemote, GitRepository, GitSafetyState, SyncAction, SyncBackend,
-    SyncCapabilities, SyncCapability, SyncConflict, SyncContext, SyncError, SyncErrorCategory,
-    SyncOperation, SyncOperationMode, SyncOutcome, SyncPlan, SyncProgress, SyncReport,
-    SyncResolutionState, SyncState, SyncStatus, SYNC_CONTRACT_VERSION,
+    GitRefName, GitRemote, GitRepository, GitSafetyState, GitTreeApplyPlan, SyncAction,
+    SyncBackend, SyncCapabilities, SyncCapability, SyncConflict, SyncContext, SyncError,
+    SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome, SyncPlan, SyncProgress,
+    SyncReport, SyncResolutionState, SyncState, SyncStatus, SYNC_CONTRACT_VERSION,
 };
 use fs2::FileExt;
 use serde::Serialize;
@@ -270,6 +270,8 @@ pub struct GitSyncReport {
     pub conflict: Option<GitSyncConflict>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pause: Option<GitSyncPause>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub application: Option<GitTreeApplyPlan>,
 }
 
 impl GitSyncReport {
@@ -300,6 +302,7 @@ impl GitSyncReport {
             retries: 0,
             conflict: None,
             pause: None,
+            application: None,
         }
     }
 }
@@ -805,7 +808,8 @@ fn run_attempt(
         }
         control.check()?;
         control.emit(GitSyncPhase::Applying, report, None)?;
-        engine.apply_tree(&report.repository, &verification.commit, &accepted)?;
+        report.application =
+            Some(engine.apply_tree(&report.repository, &verification.commit, &accepted)?);
         report.actions.push(GitSyncAction::WorktreeApplied);
     }
     engine.update_ref(&report.repository, &report.refs.local, &accepted)?;

@@ -1025,6 +1025,16 @@ mod tests {
             report.sync.outcome,
             GitSyncOutcome::Pulled | GitSyncOutcome::Merged
         ));
+        let application = report
+            .sync
+            .application
+            .as_ref()
+            .expect("accepted tree application plan");
+        assert_eq!(application.additions, 1);
+        assert_eq!(application.updates, 0);
+        assert_eq!(application.deletions, 0);
+        assert_eq!(application.type_changes, 0);
+        assert_eq!(application.paths[0].path, "Remote.md");
         assert_eq!(
             state_store
                 .load_apply_marker(&report.sync.repository.git_dir)
