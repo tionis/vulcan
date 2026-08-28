@@ -206,10 +206,13 @@ struct SupervisorProgressObserver<'a> {
 impl GitSyncObserver for SupervisorProgressObserver<'_> {
     fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
         let state = match progress.phase {
-            GitSyncPhase::Preparing | GitSyncPhase::Capturing => SyncState::CapturePending,
-            GitSyncPhase::Captured | GitSyncPhase::Pushing => SyncState::CapturedUnpushed,
+            GitSyncPhase::Preparing => SyncState::CapturePending,
+            GitSyncPhase::Capturing => SyncState::Capturing,
+            GitSyncPhase::Captured => SyncState::CapturedUnpushed,
             GitSyncPhase::Fetching => SyncState::Fetching,
+            GitSyncPhase::Fetched => SyncState::Fetched,
             GitSyncPhase::Merging => SyncState::Merging,
+            GitSyncPhase::Pushing => SyncState::Pushing,
             GitSyncPhase::Applying | GitSyncPhase::Verifying => SyncState::Applying,
             GitSyncPhase::Paused => SyncState::Paused,
             GitSyncPhase::Conflicted => SyncState::Conflicted,

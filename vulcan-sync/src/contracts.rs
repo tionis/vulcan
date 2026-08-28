@@ -69,9 +69,12 @@ pub enum SyncState {
     Clean,
     Dirty,
     CapturePending,
+    Capturing,
     CapturedUnpushed,
     Fetching,
+    Fetched,
     Merging,
+    Pushing,
     Applying,
     Conflicted,
     Paused,
@@ -306,6 +309,13 @@ mod tests {
         assert_eq!(value["state"], "captured_unpushed");
         assert_eq!(value["backend"], "git");
         assert!(value.get("remote_revision").is_none());
+        assert_eq!(
+            [SyncState::Capturing, SyncState::Fetched, SyncState::Pushing,]
+                .into_iter()
+                .map(|state| serde_json::to_value(state).expect("serialize state"))
+                .collect::<Vec<_>>(),
+            ["capturing", "fetched", "pushing"]
+        );
 
         let error = SyncError::new(SyncErrorCategory::Network, "offline", true);
         let value = serde_json::to_value(error).expect("serialize error");

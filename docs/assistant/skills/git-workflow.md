@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 18
+version: 19
 tools:
   - git_status
   - git_diff
@@ -29,6 +29,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Use `git log` or `git blame` when provenance matters.
 - Commit only after the note or refactor workflow is understood.
 - Run `vulcan sync status` before a sync when staged changes or an in-progress Git operation may be present.
+- Daemon and companion status use explicit states: `dirty` means watcher work is queued; `capture_pending`, `capturing`, `captured_unpushed`, `fetching`, `fetched`, `merging`, `pushing`, and `applying` describe an active or recoverable transaction; `conflicted`, `paused`, `offline`, and `error` require the indicated review or retry. Durable journal/apply evidence takes precedence over stale terminal job state after restart.
 - If a finite cycle reports `paused`, inspect `pause.reason`: `staged_changes`, `operation_in_progress`, or `head_moved`. Vulcan has already captured current bytes and fetched an existing remote tip, but it has not reconciled or applied while that state is unsafe. Resolve the normal Git state yourself, then rerun sync; do not delete the retained journal or Vulcan refs.
 - Run `vulcan sync doctor [<wiki>]` for a read-only installation, layout, hidden-ref/object, remote, lock, recovery-journal, ignore, filter/LFS, and cache-coherence check. Warnings describe reviewable or offline state; `healthy: false` means at least one error-level invariant failed.
 - If doctor reports `state.apply-marker`, a worktree application may have been interrupted. Preserve the marker and transaction journal, avoid editing Vulcan-owned refs, and rerun a finite sync so Vulcan can recapture current bytes and verify the accepted tree. The marker lives in the private Git directory and is cleared only after successful verification.

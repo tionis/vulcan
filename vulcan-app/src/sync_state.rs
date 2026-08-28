@@ -31,6 +31,7 @@ pub enum SyncJournalPhase {
     Capturing,
     Captured,
     Fetching,
+    Fetched,
     Merging,
     Pushing,
     Applying,
@@ -49,6 +50,7 @@ impl SyncJournalPhase {
                 | Self::Capturing
                 | Self::Captured
                 | Self::Fetching
+                | Self::Fetched
                 | Self::Merging
                 | Self::Pushing
                 | Self::Applying

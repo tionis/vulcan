@@ -20,6 +20,8 @@ const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_RETAINED_JOBS: usize = 256;
 const MAX_WATCH_PATHS: usize = 256;
 const MAX_WATCH_TRANSACTIONS: usize = 16;
+const MAX_IDEMPOTENCY_RECORDS: usize = 256;
+const MAX_IDEMPOTENCY_COMPONENT_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncWatchMetadata {
@@ -53,6 +55,8 @@ pub struct SupervisedSyncJob {
 struct PersistedSupervisorState {
     version: u32,
     jobs: Vec<SupervisedSyncJob>,
+    #[serde(default)]
+    idempotency: Vec<SyncIdempotencyRecord>,
 }
 
 impl Default for PersistedSupervisorState {
@@ -60,8 +64,19 @@ impl Default for PersistedSupervisorState {
         Self {
             version: SYNC_SUPERVISOR_STATE_VERSION,
             jobs: Vec::new(),
+            idempotency: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct SyncIdempotencyRecord {
+    scope: String,
+    key: String,
+    wiki_id: String,
+    vault: PathBuf,
+    trigger: SyncJobTrigger,
+    job_id: String,
 }
 
 #[derive(Debug)]
@@ -81,6 +96,13 @@ pub struct SyncSupervisor {
 pub struct EnqueueSyncReport {
     pub job: SupervisedSyncJob,
     pub coalesced: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IdempotentEnqueueSyncReport {
+    #[serde(flatten)]
+    pub enqueue: EnqueueSyncReport,
+    pub replay: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -184,6 +206,67 @@ impl SyncSupervisor {
         self.enqueue_inner(wiki_id.into(), vault.into(), trigger, Some(metadata))
     }
 
+    pub fn enqueue_idempotent(
+        &self,
+        scope: &str,
+        key: &str,
+        wiki_id: impl Into<String>,
+        vault: impl Into<PathBuf>,
+        trigger: SyncJobTrigger,
+    ) -> Result<IdempotentEnqueueSyncReport, SupervisorError> {
+        validate_idempotency_component("scope", scope)?;
+        validate_idempotency_component("key", key)?;
+        let wiki_id = wiki_id.into();
+        let vault = vault.into();
+        let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        if let Some(record) = inner
+            .state
+            .idempotency
+            .iter()
+            .find(|record| record.scope == scope && record.key == key)
+        {
+            if record.wiki_id != wiki_id || record.vault != vault || record.trigger != trigger {
+                return Err(SupervisorError::InvalidState(format!(
+                    "idempotency key `{key}` was already used for a different synchronization request"
+                )));
+            }
+            if let Some(job) = inner
+                .state
+                .jobs
+                .iter()
+                .find(|job| job.job.id == record.job_id)
+                .cloned()
+            {
+                return Ok(IdempotentEnqueueSyncReport {
+                    enqueue: EnqueueSyncReport {
+                        job,
+                        coalesced: true,
+                    },
+                    replay: true,
+                });
+            }
+        }
+        inner
+            .state
+            .idempotency
+            .retain(|record| !(record.scope == scope && record.key == key));
+        let enqueue = enqueue_locked(&mut inner, wiki_id.clone(), vault.clone(), trigger, None);
+        inner.state.idempotency.push(SyncIdempotencyRecord {
+            scope: scope.to_string(),
+            key: key.to_string(),
+            wiki_id,
+            vault,
+            trigger,
+            job_id: enqueue.job.job.id.clone(),
+        });
+        trim_supervisor_state(&mut inner.state);
+        persist_state(&self.state_path, &inner.state)?;
+        Ok(IdempotentEnqueueSyncReport {
+            enqueue,
+            replay: false,
+        })
+    }
+
     fn enqueue_inner(
         &self,
         wiki_id: String,
@@ -192,47 +275,10 @@ impl SyncSupervisor {
         watch: Option<SyncWatchMetadata>,
     ) -> Result<EnqueueSyncReport, SupervisorError> {
         let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
-        if let Some(existing) = inner.state.jobs.iter_mut().find(|candidate| {
-            candidate.job.wiki_id.as_deref() == Some(wiki_id.as_str())
-                && candidate.job.state == SyncJobState::Queued
-        }) {
-            push_trigger(&mut existing.triggers, trigger);
-            merge_watch_metadata(&mut existing.watch, watch);
-            let report = EnqueueSyncReport {
-                job: existing.clone(),
-                coalesced: true,
-            };
-            persist_state(&self.state_path, &inner.state)?;
-            return Ok(report);
-        }
-        let id = Ulid::new().to_string().to_ascii_lowercase();
-        let job = SyncJob {
-            version: SYNC_CONTRACT_VERSION,
-            id: id.clone(),
-            wiki_id: Some(wiki_id),
-            backend: "git".to_string(),
-            vault,
-            trigger,
-            state: SyncJobState::Queued,
-            status: None,
-            error: None,
-        };
-        let supervised = SupervisedSyncJob {
-            job,
-            triggers: vec![trigger],
-            watch,
-        };
-        inner.state.jobs.push(supervised.clone());
-        inner.queue.push_back(id.clone());
-        inner
-            .cancellations
-            .insert(id, SyncCancellationToken::default());
-        trim_terminal_jobs(&mut inner.state.jobs);
+        let report = enqueue_locked(&mut inner, wiki_id, vault, trigger, watch);
+        trim_supervisor_state(&mut inner.state);
         persist_state(&self.state_path, &inner.state)?;
-        Ok(EnqueueSyncReport {
-            job: supervised,
-            coalesced: false,
-        })
+        Ok(report)
     }
 
     pub fn claim_next(&self) -> Result<Option<ClaimedSyncJob>, SupervisorError> {
@@ -419,6 +465,76 @@ fn merge_bounded(current: &mut Vec<String>, incoming: Vec<String>, limit: usize)
     current.sort();
     current.dedup();
     current.truncate(limit);
+}
+
+fn enqueue_locked(
+    inner: &mut SupervisorInner,
+    wiki_id: String,
+    vault: PathBuf,
+    trigger: SyncJobTrigger,
+    watch: Option<SyncWatchMetadata>,
+) -> EnqueueSyncReport {
+    if let Some(existing) = inner.state.jobs.iter_mut().find(|candidate| {
+        candidate.job.wiki_id.as_deref() == Some(wiki_id.as_str())
+            && candidate.job.state == SyncJobState::Queued
+    }) {
+        push_trigger(&mut existing.triggers, trigger);
+        merge_watch_metadata(&mut existing.watch, watch);
+        return EnqueueSyncReport {
+            job: existing.clone(),
+            coalesced: true,
+        };
+    }
+    let id = Ulid::new().to_string().to_ascii_lowercase();
+    let job = SyncJob {
+        version: SYNC_CONTRACT_VERSION,
+        id: id.clone(),
+        wiki_id: Some(wiki_id),
+        backend: "git".to_string(),
+        vault,
+        trigger,
+        state: SyncJobState::Queued,
+        status: None,
+        error: None,
+    };
+    let supervised = SupervisedSyncJob {
+        job,
+        triggers: vec![trigger],
+        watch,
+    };
+    inner.state.jobs.push(supervised.clone());
+    inner.queue.push_back(id.clone());
+    inner
+        .cancellations
+        .insert(id, SyncCancellationToken::default());
+    EnqueueSyncReport {
+        job: supervised,
+        coalesced: false,
+    }
+}
+
+fn validate_idempotency_component(label: &str, value: &str) -> Result<(), SupervisorError> {
+    if value.is_empty()
+        || value.len() > MAX_IDEMPOTENCY_COMPONENT_BYTES
+        || value.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(SupervisorError::InvalidState(format!(
+            "idempotency {label} must contain 1-{MAX_IDEMPOTENCY_COMPONENT_BYTES} non-control bytes"
+        )));
+    }
+    Ok(())
+}
+
+fn trim_supervisor_state(state: &mut PersistedSupervisorState) {
+    trim_terminal_jobs(&mut state.jobs);
+    state
+        .idempotency
+        .retain(|record| state.jobs.iter().any(|job| job.job.id == record.job_id));
+    if state.idempotency.len() > MAX_IDEMPOTENCY_RECORDS {
+        state
+            .idempotency
+            .drain(..state.idempotency.len() - MAX_IDEMPOTENCY_RECORDS);
+    }
 }
 
 fn trim_terminal_jobs(jobs: &mut Vec<SupervisedSyncJob>) {
@@ -643,6 +759,94 @@ mod tests {
                 .watch,
             Some(metadata)
         );
+    }
+
+    #[test]
+    fn idempotent_enqueue_replays_across_restart_and_rejects_key_reuse() {
+        let temporary = tempdir().expect("temporary directory");
+        let state_path = temporary.path().join("jobs.json");
+        let supervisor = SyncSupervisor::at(&state_path).expect("supervisor");
+        let first = supervisor
+            .enqueue_idempotent(
+                "credential-a",
+                "request-1",
+                "alpha",
+                temporary.path().join("alpha"),
+                SyncJobTrigger::Manual,
+            )
+            .expect("initial enqueue");
+        assert!(!first.replay);
+        let replay = supervisor
+            .enqueue_idempotent(
+                "credential-a",
+                "request-1",
+                "alpha",
+                temporary.path().join("alpha"),
+                SyncJobTrigger::Manual,
+            )
+            .expect("in-process replay");
+        assert!(replay.replay);
+        assert_eq!(first.enqueue.job.job.id, replay.enqueue.job.job.id);
+        assert!(supervisor
+            .enqueue_idempotent(
+                "credential-a",
+                "request-1",
+                "beta",
+                temporary.path().join("beta"),
+                SyncJobTrigger::Manual,
+            )
+            .is_err());
+        drop(supervisor);
+
+        let restarted = SyncSupervisor::at(&state_path).expect("restart");
+        let replay = restarted
+            .enqueue_idempotent(
+                "credential-a",
+                "request-1",
+                "alpha",
+                temporary.path().join("alpha"),
+                SyncJobTrigger::Manual,
+            )
+            .expect("durable replay");
+        assert!(replay.replay);
+        assert_eq!(first.enqueue.job.job.id, replay.enqueue.job.job.id);
+    }
+
+    #[test]
+    fn idempotency_components_are_bounded_and_scoped() {
+        let temporary = tempdir().expect("temporary directory");
+        let supervisor = supervisor(temporary.path());
+        assert!(supervisor
+            .enqueue_idempotent(
+                "",
+                "request",
+                "alpha",
+                temporary.path(),
+                SyncJobTrigger::Manual,
+            )
+            .is_err());
+        let first = supervisor
+            .enqueue_idempotent(
+                "credential-a",
+                "same-key",
+                "alpha",
+                temporary.path(),
+                SyncJobTrigger::Manual,
+            )
+            .expect("first scope");
+        let second = supervisor
+            .enqueue_idempotent(
+                "credential-b",
+                "same-key",
+                "alpha",
+                temporary.path(),
+                SyncJobTrigger::Manual,
+            )
+            .expect("second scope");
+        assert!(!first.replay);
+        assert!(!second.replay);
+        assert_eq!(first.enqueue.job.job.id, second.enqueue.job.job.id);
+        assert!(second.enqueue.coalesced);
     }
 
     #[test]

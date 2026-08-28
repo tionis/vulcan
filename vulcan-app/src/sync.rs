@@ -883,6 +883,7 @@ impl GitSyncObserver for JournalSyncObserver<'_> {
             GitSyncPhase::Capturing => SyncJournalPhase::Capturing,
             GitSyncPhase::Captured => SyncJournalPhase::Captured,
             GitSyncPhase::Fetching => SyncJournalPhase::Fetching,
+            GitSyncPhase::Fetched => SyncJournalPhase::Fetched,
             GitSyncPhase::Merging => SyncJournalPhase::Merging,
             GitSyncPhase::Pushing => SyncJournalPhase::Pushing,
             GitSyncPhase::Applying => SyncJournalPhase::Applying,

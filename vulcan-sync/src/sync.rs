@@ -102,6 +102,7 @@ pub enum GitSyncPhase {
     Capturing,
     Captured,
     Fetching,
+    Fetched,
     Merging,
     Pushing,
     Applying,
@@ -463,10 +464,13 @@ impl GitSyncObserver for BackendObserver<'_> {
 
 fn sync_state_from_phase(phase: GitSyncPhase) -> SyncState {
     match phase {
-        GitSyncPhase::Preparing | GitSyncPhase::Capturing => SyncState::CapturePending,
-        GitSyncPhase::Captured | GitSyncPhase::Pushing => SyncState::CapturedUnpushed,
+        GitSyncPhase::Preparing => SyncState::CapturePending,
+        GitSyncPhase::Capturing => SyncState::Capturing,
+        GitSyncPhase::Captured => SyncState::CapturedUnpushed,
         GitSyncPhase::Fetching => SyncState::Fetching,
+        GitSyncPhase::Fetched => SyncState::Fetched,
         GitSyncPhase::Merging => SyncState::Merging,
+        GitSyncPhase::Pushing => SyncState::Pushing,
         GitSyncPhase::Applying | GitSyncPhase::Verifying => SyncState::Applying,
         GitSyncPhase::Paused => SyncState::Paused,
         GitSyncPhase::Conflicted => SyncState::Conflicted,
@@ -765,6 +769,7 @@ fn run_attempt(
                 &report.refs.live,
                 &report.refs.fetched,
             )?;
+            control.emit(GitSyncPhase::Fetched, report, None)?;
         }
         report.pause = Some(pause);
         report.outcome = GitSyncOutcome::Paused;
@@ -893,6 +898,7 @@ fn reconcile(
         &report.refs.live,
         &report.refs.fetched,
     )?;
+    control.emit(GitSyncPhase::Fetched, report, None)?;
     if capture.commit == remote {
         return Ok(Some((remote, GitSyncOutcome::UpToDate, false)));
     }
