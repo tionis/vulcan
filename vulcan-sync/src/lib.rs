@@ -12,6 +12,7 @@
 mod contracts;
 mod git;
 mod merge_policy;
+mod structured_merge;
 mod sync;
 
 pub use contracts::{
@@ -23,21 +24,22 @@ pub use contracts::{
 
 pub use git::{
     GitCapture, GitCaptureRequest, GitCaseRenamePolicy, GitCliEngine, GitCloneRequest,
-    GitConflictSide, GitEngine, GitEngineError, GitEngineKind, GitExecutableBitsPolicy,
-    GitFilterRequirement, GitInstallation, GitMerge, GitMergeResolutionRequest, GitObjectFormat,
-    GitOid, GitPathLengthPolicy, GitPathObject, GitPlatformPolicy, GitPlatformProfile,
-    GitPushResult, GitRefCreateResult, GitRefName, GitRefUpdateResult, GitRemote, GitRepository,
-    GitRepositoryLayout, GitRepositoryRequirements, GitReservedNamesPolicy, GitSafetyState,
-    GitSymlinkPolicy, GitTimestampPolicy, GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan,
-    GitVersion,
+    GitConflictSide, GitContentMergeResolutionRequest, GitEngine, GitEngineError, GitEngineKind,
+    GitExecutableBitsPolicy, GitFilterRequirement, GitInstallation, GitMerge,
+    GitMergeResolutionRequest, GitObjectFormat, GitOid, GitPathLengthPolicy, GitPathObject,
+    GitPlatformPolicy, GitPlatformProfile, GitPushResult, GitRefCreateResult, GitRefName,
+    GitRefUpdateResult, GitRemote, GitRepository, GitRepositoryLayout, GitRepositoryRequirements,
+    GitReservedNamesPolicy, GitResolvedPath, GitSafetyState, GitSymlinkPolicy, GitTimestampPolicy,
+    GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan, GitVersion,
 };
 pub use merge_policy::{
-    MergeAutomation, MergeFileKind, MergePathSelector, MergePolicy, MergePolicyError,
-    MergePolicyRule, MergeResolution, MERGE_POLICY_SCHEMA_VERSION,
+    MergeAutomation, MergeFileKind, MergePathSelector, MergePolicy, MergePolicyDecision,
+    MergePolicyError, MergePolicyRule, MergeResolution, MERGE_POLICY_SCHEMA_VERSION,
 };
 pub use sync::{
-    sync_git_once, sync_git_once_with_control, GitConflictRefs, GitSyncAction, GitSyncBackend,
-    GitSyncConflict, GitSyncDeviceId, GitSyncError, GitSyncObserver, GitSyncObserverError,
-    GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase,
-    GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
+    sync_git_once, sync_git_once_with_control, GitAutomaticResolution, GitConflictRefs,
+    GitSyncAction, GitSyncBackend, GitSyncConflict, GitSyncDeviceId, GitSyncError, GitSyncObserver,
+    GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason,
+    GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress,
+    SyncCancellationToken,
 };

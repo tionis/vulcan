@@ -11592,6 +11592,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("application.additions"));
     assert!(git_skill.contains("worktree_changed"));
     assert!(git_skill.contains("remote/network failure after capture"));
+    assert!(git_skill.contains("automatic_resolutions"));
+    assert!(git_skill.contains("device-local automation ceiling"));
     assert!(git_skill.contains("conflict_record"));
     assert!(git_skill.contains("vulcan sync conflicts <id>"));
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));

@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 19
+version: 20
 tools:
   - git_status
   - git_diff
@@ -40,6 +40,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Vulcan-created sync commits carry `Vulcan-Sync-*` trailers with the stable device ID, protocol/profile, policy, immutable sources, and `Semantic: false`. Use these trailers for provenance; do not infer an author's semantic intent from live snapshot subjects.
 - Use `vulcan sync run --dry-run` to inspect the selected remote and live ref without creating objects, refs, or files; use `vulcan sync run` for one finite direct-mode cycle.
 - `vulcan sync run --max-retries <n>` bounds rejected compare-and-swap reconciliation attempts. Retries recapture and re-fetch with capped exponential backoff and remain cancellable; do not replace them with unconditional force pushes.
+- When a divergent sync reports `automatic_resolutions`, Vulcan first ran ordinary Git merge and then resolved every remaining listed path under the shared deterministic policy. Review each path's `kind` and `rule_id`; an empty list means no structured fallback was used. Markdown body overlaps, malformed structured content, binary/device state, delete-modify cases, and any path requiring review remain preserved conflicts rather than receiving an implicit winner.
 - Use `vulcan sync run <wiki>`, `--group <name>`, or `--all` for registered selections. Group/all results are independent per-wiki transactions with aggregate counts, never one atomic cross-repository operation.
 - Use `vulcan sync pause [<wiki>]` and `vulcan sync resume [<wiki>]` to change device-local automatic behavior. Omitting the ID resolves the selected vault's registration; add `--dry-run` to preview the registry mutation.
 - Use `vulcan sync checkpoint [<wiki>] --dry-run` before deliberately retaining the accepted live commit; add `--kind semantic` when the retention intent is human-facing semantic history rather than recovery. Checkpoints create unique local refs without copying objects or advancing the checked-out branch, and refuse when local accepted refs disagree with the remote.
@@ -53,6 +54,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Prefer explicit commits over assuming auto-commit covers every workflow.
 - Do not reset or discard staged state to make synchronization proceed. Vulcan preserves and reports it, captures the worktree, fetches safely, and pauses before reconciliation/application until the user resolves that state.
 - Treat a `conflicted` sync outcome as preserved work requiring review. Its immutable `conflict.id`, base/local/remote revisions, path list, policy identity, and `preserved_refs` are stable; `conflict_record` points to device-local byte-preserving artifacts outside the vault. Do not choose a side, run mutating resolution, delete the record, or edit Vulcan-owned refs without explicit user direction.
+- A device-local automation ceiling may turn an otherwise deterministic structured resolution into a preserved conflict, but it must never produce a different accepted tree. Do not infer that two devices disagree merely because one requires additional review.
 - Sync defaults to remote `origin` and `refs/heads/__vulcan-sync/live`; pass `--remote` or `--live-ref` only when the repository uses a different agreed profile.
 - A clone that succeeds before registration fails is deliberately preserved. Report the partial state and register or remove it only with explicit user direction.
 - Treat the Android shared-storage policy as a real capability constraint: executable bits are not representable, symlinks become link files, and case-only renames require an intermediate path. Do not silently substitute it for native Linux policy.

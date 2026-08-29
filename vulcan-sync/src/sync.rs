@@ -1,7 +1,8 @@
 use crate::{
-    GitCaptureRequest, GitEngine, GitEngineError, GitInstallation, GitOid, GitPushResult,
-    GitRefName, GitRemote, GitRepository, GitSafetyState, GitTreeApplyPlan, MergeAutomation,
-    MergePolicy, SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncConflict,
+    GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine, GitEngineError,
+    GitInstallation, GitOid, GitPathObject, GitPushResult, GitRefName, GitRemote, GitRepository,
+    GitResolvedPath, GitSafetyState, GitTreeApplyPlan, MergeAutomation, MergeFileKind, MergePolicy,
+    MergeResolution, SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncConflict,
     SyncContext, SyncError, SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome,
     SyncPlan, SyncProgress, SyncReport, SyncResolutionState, SyncState, SyncStatus,
     SYNC_CONTRACT_VERSION,
@@ -9,7 +10,7 @@ use crate::{
 use fs2::FileExt;
 use serde::Serialize;
 use std::error::Error;
-use std::fmt::{Display, Formatter};
+use std::fmt::{Display, Formatter, Write as _};
 use std::fs::{self, File, OpenOptions};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -229,6 +230,13 @@ pub struct GitSyncConflict {
     pub diagnostics: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitAutomaticResolution {
+    pub path: String,
+    pub kind: MergeFileKind,
+    pub rule_id: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GitSyncPauseReason {
@@ -270,6 +278,8 @@ pub struct GitSyncReport {
     pub local_snapshot: Option<GitOid>,
     pub accepted: Option<GitOid>,
     pub actions: Vec<GitSyncAction>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub automatic_resolutions: Vec<GitAutomaticResolution>,
     pub retries: usize,
     pub conflict: Option<GitSyncConflict>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -303,6 +313,7 @@ impl GitSyncReport {
             local_snapshot: None,
             accepted: None,
             actions: Vec::new(),
+            automatic_resolutions: Vec::new(),
             retries: 0,
             conflict: None,
             pause: None,
@@ -944,8 +955,38 @@ fn merge_divergence(
 ) -> Result<Option<(GitOid, GitSyncOutcome, bool)>, GitSyncError> {
     control.check()?;
     control.emit(GitSyncPhase::Merging, report, None)?;
-    let merge = engine.merge_commits(&report.repository, &remote, &capture.commit)?;
-    if !merge.clean {
+    let mut merge = engine.merge_commits(&report.repository, &remote, &capture.commit)?;
+    let tree = if merge.clean {
+        merge.tree.clone()
+    } else {
+        match try_structured_merge(
+            engine,
+            options,
+            &report.repository,
+            merge.base.as_ref(),
+            &capture.commit,
+            &remote,
+            &merge.conflict_paths,
+        ) {
+            Ok(Some((tree, resolutions))) => {
+                report.automatic_resolutions = resolutions;
+                Some(tree)
+            }
+            Ok(None) => None,
+            Err(detail) => {
+                let separator = if merge.diagnostics.is_empty() {
+                    ""
+                } else {
+                    "\n"
+                };
+                merge.diagnostics.push_str(separator);
+                write!(merge.diagnostics, "Vulcan structured merge: {detail}")
+                    .expect("writing to a String cannot fail");
+                None
+            }
+        }
+    };
+    if tree.is_none() {
         let (id, policy_hash) = conflict_identity(
             &options.merge_policy,
             merge.base.as_ref(),
@@ -977,7 +1018,7 @@ fn merge_divergence(
         control.emit(GitSyncPhase::Conflicted, report, None)?;
         return Ok(None);
     }
-    let tree = merge.tree.ok_or_else(|| {
+    let tree = tree.ok_or_else(|| {
         GitSyncError::Git(GitEngineError::InvalidOutput {
             operation: "merge live sync commits",
             detail: "the clean merge report omitted its tree".to_string(),
@@ -1004,6 +1045,127 @@ fn merge_divergence(
             GitPushResult::Rejected => None,
         },
     )
+}
+
+fn try_structured_merge(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    repository: &GitRepository,
+    base: Option<&GitOid>,
+    local: &GitOid,
+    remote: &GitOid,
+    paths: &[String],
+) -> Result<Option<(GitOid, Vec<GitAutomaticResolution>)>, String> {
+    let Some(base) = base else {
+        return Ok(None);
+    };
+    if paths.is_empty() {
+        return Ok(None);
+    }
+    let mut resolved_paths = Vec::with_capacity(paths.len());
+    let mut resolutions = Vec::with_capacity(paths.len());
+    for path in paths {
+        let base_object = engine
+            .path_object(repository, base, path)
+            .map_err(|error| error.to_string())?;
+        let local_object = engine
+            .path_object(repository, local, path)
+            .map_err(|error| error.to_string())?;
+        let remote_object = engine
+            .path_object(repository, remote, path)
+            .map_err(|error| error.to_string())?;
+        if [&base_object, &local_object, &remote_object]
+            .into_iter()
+            .flatten()
+            .any(|object| object.kind != "blob")
+        {
+            return Ok(None);
+        }
+        let kind = MergeFileKind::classify(
+            path,
+            &[
+                object_data(base_object.as_ref()),
+                object_data(local_object.as_ref()),
+                object_data(remote_object.as_ref()),
+            ],
+        );
+        let decision = options
+            .merge_policy
+            .decision_for(path, kind, options.merge_automation)
+            .map_err(|error| error.to_string())?;
+        if decision.resolution != MergeResolution::Structured {
+            return Ok(None);
+        }
+        let crate::structured_merge::StructuredMergeOutcome::Resolved(data) =
+            crate::structured_merge::merge_structured_path(
+                kind,
+                object_data(base_object.as_ref()),
+                object_data(local_object.as_ref()),
+                object_data(remote_object.as_ref()),
+                local.as_str(),
+                remote.as_str(),
+            )?
+        else {
+            return Ok(None);
+        };
+        let MergedObjectMode::Resolved(mode) = merge_object_mode(
+            base_object.as_ref(),
+            local_object.as_ref(),
+            remote_object.as_ref(),
+        ) else {
+            return Ok(None);
+        };
+        resolved_paths.push(GitResolvedPath {
+            path: path.clone(),
+            mode,
+            data,
+        });
+        resolutions.push(GitAutomaticResolution {
+            path: path.clone(),
+            kind,
+            rule_id: decision.rule_id,
+        });
+    }
+    let tree = engine
+        .resolve_merge_tree_with_paths(
+            repository,
+            &GitContentMergeResolutionRequest {
+                base: base.clone(),
+                accepted_remote: remote.clone(),
+                local_candidate: local.clone(),
+                paths: resolved_paths,
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(Some((tree, resolutions)))
+}
+
+fn object_data(object: Option<&GitPathObject>) -> Option<&[u8]> {
+    object.and_then(|object| object.data.as_deref())
+}
+
+enum MergedObjectMode {
+    Resolved(Option<String>),
+    Unresolved,
+}
+
+fn merge_object_mode(
+    base: Option<&GitPathObject>,
+    local: Option<&GitPathObject>,
+    remote: Option<&GitPathObject>,
+) -> MergedObjectMode {
+    let base = base.map(|object| object.mode.as_str());
+    let local = local.map(|object| object.mode.as_str());
+    let remote = remote.map(|object| object.mode.as_str());
+    if local == remote {
+        MergedObjectMode::Resolved(local.map(str::to_string))
+    } else if local == base {
+        MergedObjectMode::Resolved(remote.map(str::to_string))
+    } else if remote == base {
+        MergedObjectMode::Resolved(local.map(str::to_string))
+    } else {
+        MergedObjectMode::Unresolved
+    }
 }
 
 fn conflict_identity(
@@ -1850,6 +2012,71 @@ mod tests {
         assert_eq!(
             repeated.conflict.as_ref().map(|item| &item.id),
             Some(&conflict.id)
+        );
+    }
+
+    #[test]
+    fn structured_json_conflicts_are_resolved_and_reported_deterministically() {
+        let (temporary, remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        fs::write(writer.join("data.json"), "{\"base\":true}\n").expect("base JSON");
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
+        let reader = clone_reader(&temporary, &remote, &writer);
+        sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader baseline");
+
+        fs::write(writer.join("data.json"), "{\"base\":true,\"writer\":1}\n").expect("writer JSON");
+        fs::write(reader.join("data.json"), "{\"base\":true,\"reader\":2}\n").expect("reader JSON");
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
+        let report =
+            sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("structured merge");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Merged);
+        assert!(report.conflict.is_none());
+        assert_eq!(
+            report.automatic_resolutions,
+            [GitAutomaticResolution {
+                path: "data.json".to_string(),
+                kind: MergeFileKind::Json,
+                rule_id: "json-structured".to_string(),
+            }]
+        );
+        let merged: serde_json::Value =
+            serde_json::from_slice(&fs::read(reader.join("data.json")).expect("merged JSON bytes"))
+                .expect("merged JSON");
+        assert_eq!(
+            merged,
+            serde_json::json!({"base": true, "reader": 2, "writer": 1})
+        );
+    }
+
+    #[test]
+    fn device_review_ceiling_preserves_otherwise_resolvable_conflicts() {
+        let (temporary, remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let policy = MergePolicy::default();
+        fs::write(writer.join("data.json"), "{\"base\":true}\n").expect("base JSON");
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
+        let reader = clone_reader(&temporary, &remote, &writer);
+        sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("reader baseline");
+        fs::write(writer.join("data.json"), "{\"base\":true,\"writer\":1}\n").expect("writer JSON");
+        fs::write(reader.join("data.json"), "{\"base\":true,\"reader\":2}\n").expect("reader JSON");
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
+
+        let report = sync_git_once(
+            &engine,
+            &reader,
+            &GitSyncOptions {
+                merge_automation: MergeAutomation::RequireReview,
+                ..GitSyncOptions::default()
+            },
+        )
+        .expect("review conflict");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Conflicted);
+        assert!(report.automatic_resolutions.is_empty());
+        assert_eq!(
+            report.conflict.expect("conflict").policy_hash,
+            policy.policy_hash().expect("policy hash")
         );
     }
 }

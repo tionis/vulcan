@@ -148,6 +148,12 @@ pub trait GitEngine: Send + Sync {
         request: &GitMergeResolutionRequest,
     ) -> Result<GitOid, GitEngineError>;
 
+    fn resolve_merge_tree_with_paths(
+        &self,
+        repository: &GitRepository,
+        request: &GitContentMergeResolutionRequest,
+    ) -> Result<GitOid, GitEngineError>;
+
     fn create_commit(
         &self,
         repository: &GitRepository,
@@ -664,6 +670,21 @@ pub struct GitMergeResolutionRequest {
     pub side: GitConflictSide,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitResolvedPath {
+    pub path: String,
+    pub mode: Option<String>,
+    pub data: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitContentMergeResolutionRequest {
+    pub base: GitOid,
+    pub accepted_remote: GitOid,
+    pub local_candidate: GitOid,
+    pub paths: Vec<GitResolvedPath>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GitPushResult {
@@ -1051,6 +1072,35 @@ impl GitCliEngine {
         let output = child.wait_with_output()?;
         let output = ensure_success("create a commit", output)?;
         GitOid::parse(decode_stdout("create a commit", output.stdout)?.trim())
+    }
+
+    fn hash_blob(&self, repository: &GitRepository, data: &[u8]) -> Result<GitOid, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command
+            .args(["hash-object", "-w", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(|source| {
+            if source.kind() == std::io::ErrorKind::NotFound {
+                GitEngineError::ExecutableUnavailable {
+                    executable: self.executable.clone(),
+                    source,
+                }
+            } else {
+                GitEngineError::Io(source)
+            }
+        })?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| GitEngineError::InvalidOutput {
+                operation: "write a structured merge blob",
+                detail: "Git stdin was unavailable".to_string(),
+            })?
+            .write_all(data)?;
+        let output = ensure_success("write a structured merge blob", child.wait_with_output()?)?;
+        GitOid::parse(decode_stdout("write a structured merge blob", output.stdout)?.trim())
     }
 
     fn capture(
@@ -1741,6 +1791,82 @@ impl GitEngine for GitCliEngine {
         )
     }
 
+    fn resolve_merge_tree_with_paths(
+        &self,
+        repository: &GitRepository,
+        request: &GitContentMergeResolutionRequest,
+    ) -> Result<GitOid, GitEngineError> {
+        repository.require_work_tree()?;
+        if request.paths.is_empty() {
+            return Err(GitEngineError::UnsupportedRepository {
+                detail: "a content merge resolution must name at least one conflicted path"
+                    .to_string(),
+            });
+        }
+        let index_path = repository.sync_index();
+        std::fs::create_dir_all(
+            index_path
+                .parent()
+                .expect("the sync index path always has a parent"),
+        )?;
+        remove_file_if_present(&index_path)?;
+        self.index_output(
+            repository,
+            &index_path,
+            "prepare a structured merge resolution",
+            [
+                "read-tree",
+                "-m",
+                request.base.as_str(),
+                request.accepted_remote.as_str(),
+                request.local_candidate.as_str(),
+            ],
+        )?;
+        for resolved in &request.paths {
+            validate_repository_path(&resolved.path)?;
+            match (&resolved.mode, &resolved.data) {
+                (Some(mode), Some(data)) => {
+                    validate_resolved_blob(mode, data)?;
+                    let oid = self.hash_blob(repository, data)?;
+                    let mut command = self.index_command(repository, &index_path)?;
+                    command
+                        .args(["update-index", "--add", "--cacheinfo"])
+                        .arg(mode)
+                        .arg(oid.as_str())
+                        .arg(&resolved.path);
+                    ensure_success("install a structured merge result", self.execute(command)?)?;
+                }
+                (None, None) => {
+                    let mut command = self.index_command(repository, &index_path)?;
+                    command
+                        .args(["update-index", "--force-remove", "--"])
+                        .arg(&resolved.path);
+                    ensure_success(
+                        "install a structured merge deletion",
+                        self.execute(command)?,
+                    )?;
+                }
+                _ => {
+                    return Err(GitEngineError::UnsupportedRepository {
+                        detail: format!(
+                            "structured merge path `{}` must provide both mode and data or neither",
+                            resolved.path
+                        ),
+                    });
+                }
+            }
+        }
+        GitOid::parse(
+            self.index_capture(
+                repository,
+                &index_path,
+                "write the structured merge tree",
+                ["write-tree"],
+            )?
+            .trim(),
+        )
+    }
+
     fn create_commit(
         &self,
         repository: &GitRepository,
@@ -2330,6 +2456,22 @@ fn validate_repository_path(path: &str) -> Result<(), GitEngineError> {
     }
 }
 
+fn validate_resolved_blob(mode: &str, data: &[u8]) -> Result<(), GitEngineError> {
+    if !matches!(mode, "100644" | "100755" | "120000") {
+        return Err(GitEngineError::UnsupportedRepository {
+            detail: format!("unsupported structured merge blob mode `{mode}`"),
+        });
+    }
+    if data.len() > MAX_CONFLICT_BLOB_BYTES {
+        return Err(GitEngineError::UnsupportedRepository {
+            detail: format!(
+                "structured merge blob exceeds the {MAX_CONFLICT_BLOB_BYTES} byte limit"
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn parse_version_component(
     value: Option<&str>,
     name: &str,
@@ -2799,6 +2941,63 @@ mod tests {
             .expect("unchanged capture should succeed");
         assert!(!second.created);
         assert_eq!(second.commit, capture.commit);
+    }
+
+    #[test]
+    fn structured_merge_plumbing_writes_exact_blobs_without_touching_the_normal_index() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("data.json"), "{\"value\":0}\n").expect("base");
+        let base = commit_all(temporary.path(), "base");
+        run_git(temporary.path(), &["checkout", "--quiet", "-b", "remote"]);
+        fs::write(temporary.path().join("data.json"), "{\"value\":1}\n").expect("remote");
+        let remote = commit_all(temporary.path(), "remote");
+        run_git(
+            temporary.path(),
+            &["checkout", "--quiet", "-b", "local", base.as_str()],
+        );
+        fs::write(temporary.path().join("data.json"), "{\"value\":2}\n").expect("local");
+        let local = commit_all(temporary.path(), "local");
+        let normal_index = run_git_capture(temporary.path(), &["write-tree"]);
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let merge = engine
+            .merge_commits(&repository, &remote, &local)
+            .expect("conflicted merge");
+        assert!(!merge.clean);
+
+        let tree = engine
+            .resolve_merge_tree_with_paths(
+                &repository,
+                &GitContentMergeResolutionRequest {
+                    base,
+                    accepted_remote: remote.clone(),
+                    local_candidate: local.clone(),
+                    paths: vec![GitResolvedPath {
+                        path: "data.json".to_string(),
+                        mode: Some("100644".to_string()),
+                        data: Some(b"{\"local\":2,\"remote\":1}\n".to_vec()),
+                    }],
+                },
+            )
+            .expect("structured tree");
+        let commit = engine
+            .create_commit(&repository, &tree, &[remote, local], "structured\n")
+            .expect("structured commit");
+        assert_eq!(
+            engine
+                .path_object(&repository, &commit, "data.json")
+                .expect("path")
+                .expect("object")
+                .data,
+            Some(b"{\"local\":2,\"remote\":1}\n".to_vec())
+        );
+        assert_eq!(
+            run_git_capture(temporary.path(), &["write-tree"]),
+            normal_index
+        );
     }
 
     #[test]

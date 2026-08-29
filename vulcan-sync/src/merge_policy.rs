@@ -107,6 +107,12 @@ pub struct MergePolicyRule {
     pub resolution: MergeResolution,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MergePolicyDecision {
+    pub rule_id: String,
+    pub resolution: MergeResolution,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MergePolicy {
     pub version: u32,
@@ -188,13 +194,26 @@ impl MergePolicy {
         kind: MergeFileKind,
         automation: MergeAutomation,
     ) -> Result<MergeResolution, MergePolicyError> {
+        Ok(self.decision_for(path, kind, automation)?.resolution)
+    }
+
+    pub fn decision_for(
+        &self,
+        path: &str,
+        kind: MergeFileKind,
+        automation: MergeAutomation,
+    ) -> Result<MergePolicyDecision, MergePolicyError> {
         self.validate()?;
-        if automation == MergeAutomation::RequireReview {
-            return Ok(MergeResolution::RequireReview);
-        }
         for rule in &self.rules {
             if rule.selector.matches(path, kind)? {
-                return Ok(rule.resolution);
+                return Ok(MergePolicyDecision {
+                    rule_id: rule.id.clone(),
+                    resolution: if automation == MergeAutomation::RequireReview {
+                        MergeResolution::RequireReview
+                    } else {
+                        rule.resolution
+                    },
+                });
             }
         }
         Err(MergePolicyError::InvalidRule(format!(
