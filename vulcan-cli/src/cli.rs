@@ -607,6 +607,7 @@ Examples:
 const VAULT_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   clone        clone and register a Git-backed wiki
+  recover-git  recreate a registered missing detached Git directory safely
   add          register an existing local wiki without changing its files
   list         list registered wikis, optionally filtered by group
   show         inspect one registration and its local availability
@@ -620,6 +621,7 @@ Notes:
 Examples:
   vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --id personal
   vulcan vault clone ssh://git@example/wiki.git /storage/wiki --git-dir ~/.local/share/vulcan/git/wiki --platform android-shared
+  vulcan vault recover-git personal ssh://git@example/wiki.git --dry-run
   vulcan vault add personal ~/vaults/personal --group daily
   vulcan vault list --group daily
   vulcan vault show personal
@@ -4174,6 +4176,18 @@ pub enum VaultCommand {
         #[arg(long, help = "Permission profile used by future daemon requests")]
         permissions_profile: Option<String>,
         #[arg(long, help = "Validate and report without cloning or registering")]
+        dry_run: bool,
+    },
+    #[command(about = "Safely recreate a registered missing detached Git directory")]
+    RecoverGit {
+        #[arg(help = "Registered wiki ID")]
+        id: String,
+        #[arg(help = "Git remote URL or local repository path used to repopulate remote refs")]
+        remote: String,
+        #[arg(
+            long,
+            help = "Validate the stale pointer and report recovery risk without mutation"
+        )]
         dry_run: bool,
     },
     #[command(about = "Register an existing local wiki")]

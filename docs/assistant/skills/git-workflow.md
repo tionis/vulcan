@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 38
+version: 39
 tools:
   - git_status
   - git_diff
@@ -54,6 +54,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Use `vulcan sync semantic-plan [<wiki>] --from <rev> --to <accepted-live-rev> --group-by top-level --dry-run` to review deterministic commit grouping and patches without creating objects or state. Choose `--group-by file` for one commit per changed path or `--group-by all` for one commit containing the complete selected change; `top-level` is the default. Rerun without `--dry-run` to retain the proposal under `refs/vulcan/proposals/semantic/<plan-id>`, then use `vulcan sync semantic-apply <plan-id> --dry-run` before explicit acceptance. Apply refuses stale source, proposal, or live refs, advances only the semantic branch with compare-and-swap, and releases the redundant proposal ref after durable success; it never rewrites live history. Agent grouping is not yet available and `--agent` fails explicitly.
 - If a semantic plan is declined, preview `vulcan sync semantic-reject <plan-id> --dry-run`, then rerun without `--dry-run` after confirmation. Rejection uses an exact-object lease to delete only the proposal ref, retains the bounded device-local plan record as rejected audit state, is idempotent, and never advances the semantic branch or any live synchronization ref.
 - Use `vulcan vault clone <remote> <path> --dry-run` to validate a new clone and registration. For Android shared storage accessed from Termux, add both `--git-dir <private-path>` and `--platform android-shared`; native policy remains the default elsewhere.
+- If a registered detached Git directory was lost but its materialized vault remains, preview `vulcan vault recover-git <wiki> <remote> --dry-run`, then rerun only after verifying the registered path, missing Git directory, stale-pointer target, redacted remote, and loss warning. Recovery snapshots the untouched vault under the returned `refs/vulcan/recovery/detached-git-loss/<ulid>` ref before fetching and never checks remote content out over it. Hidden local, pending, conflict, checkpoint, proposal, or semantic refs that existed only in the lost directory cannot be reconstructed.
 
 ## Guardrails
 
@@ -66,6 +67,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Sync defaults to remote `origin` and `refs/heads/__vulcan-sync/live`; pass `--remote` or `--live-ref` only when the repository uses a different agreed profile.
 - A clone that succeeds before registration fails is deliberately preserved. Report the partial state and register or remove it only with explicit user direction.
 - Treat the Android shared-storage policy as a real capability constraint: executable bits are not representable, symlinks become link files, and case-only renames require an intermediate path. Do not silently substitute it for native Linux policy.
+- Never replace or reinterpret a mismatched `.git` pointer during detached recovery. Do not claim that preserving materialized files also recovers unpushed hidden refs or objects from a deleted Termux-private Git directory.
 - Pausing affects future automatic jobs only. Manual `sync status`, `sync run --dry-run`, and explicit `sync run` remain available and must not silently toggle the saved state.
 - Do not delete a reported transaction journal to hide recovery state. It lives outside the vault and rebuildable cache; let a successful sync clear it or use a future explicit repair command.
 - Do not delete or edit `vulcan-sync/apply.json` to hide an interrupted application. Its transaction and revision identities let Vulcan distinguish and safely recover a partially applied worktree.
@@ -86,3 +88,4 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Pause future automatic sync from inside a registered vault with `vulcan sync pause --dry-run`, then apply it without `--dry-run` after review.
 - Turn accepted live snapshots into reviewable commits with `vulcan sync semantic-plan --from main --to <accepted-live-rev> --dry-run`, create the plan after review, and explicitly validate/apply its returned plan ID.
 - Preview a detached Android-style layout with `vulcan vault clone <remote> /storage/emulated/0/Documents/wiki --git-dir ~/.local/share/vulcan/git/wiki --platform android-shared --dry-run`.
+- Recover that registered layout after private Git-data loss with `vulcan vault recover-git <wiki> <remote> --dry-run`, inspect the warning, then apply without `--dry-run`.

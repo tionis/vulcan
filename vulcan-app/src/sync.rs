@@ -15,17 +15,28 @@ use vulcan_core::{
 use vulcan_sync::{GitAutomaticMergeValidation, GitEngine, GitSyncObserver};
 
 pub use vulcan_sync::{
-    GitCloneRequest, GitInstallation, GitObjectFormat, GitPlatformPolicy, GitPlatformProfile,
-    GitRefName, GitRemote, GitRepository, GitRepositoryLayout, GitRepositoryRequirements,
-    GitSyncAction, GitSyncConflict, GitSyncDeviceId, GitSyncObserverError, GitSyncOptions,
-    GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs,
-    GitSyncReport, SyncCancellationToken,
+    GitCloneRequest, GitDetachedRecoveryReport, GitDetachedRecoveryRequest, GitInstallation,
+    GitObjectFormat, GitPlatformPolicy, GitPlatformProfile, GitRefName, GitRemote, GitRepository,
+    GitRepositoryLayout, GitRepositoryRequirements, GitSyncAction, GitSyncConflict,
+    GitSyncDeviceId, GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPause,
+    GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
+    SyncCancellationToken,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitCloneReport {
     pub installation: GitInstallation,
     pub repository: GitRepository,
+}
+
+/// Recreates a lost detached Git directory after anchoring the untouched
+/// materialized worktree in the replacement object database.
+pub fn recover_detached_git_vault(
+    request: &GitDetachedRecoveryRequest,
+) -> Result<GitDetachedRecoveryReport, AppError> {
+    vulcan_sync::GitCliEngine::default()
+        .recover_detached_repository(request)
+        .map_err(AppError::operation)
 }
 
 /// Clones a Git-backed vault without requiring registration or a daemon.

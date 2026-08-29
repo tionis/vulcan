@@ -2593,6 +2593,26 @@ fn parses_vault_registry_commands() {
         }
     );
 
+    let recover = Cli::try_parse_from([
+        "vulcan",
+        "vault",
+        "recover-git",
+        "personal",
+        "ssh://git@example.invalid/wiki.git",
+        "--dry-run",
+    ])
+    .expect("vault Git recovery should parse");
+    assert_eq!(
+        recover.command,
+        Command::Vault {
+            command: VaultCommand::RecoverGit {
+                id: "personal".to_string(),
+                remote: "ssh://git@example.invalid/wiki.git".to_string(),
+                dry_run: true,
+            },
+        }
+    );
+
     let add = Cli::try_parse_from([
         "vulcan",
         "vault",

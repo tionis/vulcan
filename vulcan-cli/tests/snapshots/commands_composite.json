@@ -9298,7 +9298,7 @@
       },
       {
         "about": "Manage device-local wiki registrations",
-        "after_help": "Subcommands:\n  clone        clone and register a Git-backed wiki\n  add          register an existing local wiki without changing its files\n  list         list registered wikis, optionally filtered by group\n  show         inspect one registration and its local availability\n  set          update groups or the permission profile\n  remove       unregister a wiki without deleting its worktree or Git data\n\nNotes:\n  Registry state is device-local under the XDG Vulcan config directory.\n  Registration is optional: ordinary `--vault <path>` commands continue to work directly.\n\nExamples:\n  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --id personal\n  vulcan vault clone ssh://git@example/wiki.git /storage/wiki --git-dir ~/.local/share/vulcan/git/wiki --platform android-shared\n  vulcan vault add personal ~/vaults/personal --group daily\n  vulcan vault list --group daily\n  vulcan vault show personal\n  vulcan vault set personal --group mobile --remove-group desktop\n  vulcan vault remove personal --dry-run",
+        "after_help": "Subcommands:\n  clone        clone and register a Git-backed wiki\n  recover-git  recreate a registered missing detached Git directory safely\n  add          register an existing local wiki without changing its files\n  list         list registered wikis, optionally filtered by group\n  show         inspect one registration and its local availability\n  set          update groups or the permission profile\n  remove       unregister a wiki without deleting its worktree or Git data\n\nNotes:\n  Registry state is device-local under the XDG Vulcan config directory.\n  Registration is optional: ordinary `--vault <path>` commands continue to work directly.\n\nExamples:\n  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --id personal\n  vulcan vault clone ssh://git@example/wiki.git /storage/wiki --git-dir ~/.local/share/vulcan/git/wiki --platform android-shared\n  vulcan vault recover-git personal ssh://git@example/wiki.git --dry-run\n  vulcan vault add personal ~/vaults/personal --group daily\n  vulcan vault list --group daily\n  vulcan vault show personal\n  vulcan vault set personal --group mobile --remove-group desktop\n  vulcan vault remove personal --dry-run",
         "name": "vault",
         "options": [],
         "subcommands": [
@@ -9388,6 +9388,49 @@
               },
               {
                 "help": "Validate and report without cloning or registering",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Safely recreate a registered missing detached Git directory",
+            "name": "recover-git",
+            "options": [
+              {
+                "help": "Registered wiki ID",
+                "id": "id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "ID"
+                ]
+              },
+              {
+                "help": "Git remote URL or local repository path used to repopulate remote refs",
+                "id": "remote",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "REMOTE"
+                ]
+              },
+              {
+                "help": "Validate the stale pointer and report recovery risk without mutation",
                 "id": "dry_run",
                 "long": "dry-run",
                 "possible_values": [

@@ -6,7 +6,8 @@ use std::fmt::{Display, Formatter};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use tempfile::TempDir;
+use tempfile::{NamedTempFile, TempDir};
+use ulid::Ulid;
 
 const MAX_ERROR_BYTES: usize = 16 * 1024;
 const MAX_DIAGNOSTIC_PATH_BYTES: usize = 16 * 1024 * 1024;
@@ -281,16 +282,34 @@ pub struct GitCloneRequest {
     pub platform: GitPlatformProfile,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitDetachedRecoveryRequest {
+    pub source: String,
+    pub work_tree: PathBuf,
+    pub git_dir: PathBuf,
+    pub platform: GitPlatformProfile,
+}
+
+impl GitDetachedRecoveryRequest {
+    pub fn validate(&self) -> Result<(), GitEngineError> {
+        validate_detached_recovery_request(self)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitDetachedRecoveryReport {
+    pub installation: GitInstallation,
+    pub repository: GitRepository,
+    pub recovery_ref: GitRefName,
+    pub recovery_commit: GitOid,
+    pub recovery_tree: GitOid,
+    pub fetched_remote: GitRemote,
+    pub possibly_lost_hidden_ref_namespaces: Vec<String>,
+}
+
 impl GitCloneRequest {
     pub fn validate(&self) -> Result<(), GitEngineError> {
-        if self.source.is_empty()
-            || self.source.starts_with('-')
-            || self.source.chars().any(char::is_control)
-        {
-            return Err(GitEngineError::UnsupportedRepository {
-                detail: "Git clone source must be non-empty, must not start with `-`, and must not contain control characters".to_string(),
-            });
-        }
+        validate_git_source(&self.source)?;
         if self.work_tree.exists() {
             return Err(GitEngineError::UnsupportedRepository {
                 detail: format!(
@@ -535,10 +554,6 @@ pub struct GitRepository {
 }
 
 impl GitRepository {
-    fn command_path(&self) -> &Path {
-        self.work_tree.as_deref().unwrap_or(&self.git_dir)
-    }
-
     fn require_work_tree(&self) -> Result<&Path, GitEngineError> {
         self.work_tree
             .as_deref()
@@ -911,6 +926,122 @@ impl GitCliEngine {
         &self.executable
     }
 
+    /// Recreates a registered detached Git directory without checking remote
+    /// content out over the materialized worktree.
+    ///
+    /// The existing `.git` file must point at the requested, currently absent
+    /// Git directory. The complete worktree is captured under a fresh hidden
+    /// recovery ref before the remote is configured or fetched.
+    pub fn recover_detached_repository(
+        &self,
+        request: &GitDetachedRecoveryRequest,
+    ) -> Result<GitDetachedRecoveryReport, GitEngineError> {
+        request.validate()?;
+        std::fs::create_dir_all(request.git_dir.parent().ok_or_else(|| {
+            GitEngineError::UnsupportedRepository {
+                detail: "the detached Git directory must have a parent directory".to_string(),
+            }
+        })?)?;
+        let installation = self.installation()?;
+        let mut command = self.command();
+        command.args(["init", "--bare"]);
+        command.arg(&request.git_dir);
+        ensure_success(
+            "initialize the replacement detached Git directory",
+            self.execute(command)?,
+        )?;
+
+        self.configure_detached_repository(request)?;
+        write_gitdir_pointer(&request.work_tree, &request.git_dir)?;
+        let repository = self.discover_repository(&request.work_tree)?;
+        if repository.layout != GitRepositoryLayout::Detached
+            || repository.git_dir != prospective_absolute_path(&request.git_dir)?
+        {
+            return Err(GitEngineError::UnsupportedRepository {
+                detail: "the recreated repository did not resolve to the registered detached Git directory"
+                    .to_string(),
+            });
+        }
+
+        let recovery_ref = GitRefName::parse(format!(
+            "refs/vulcan/recovery/detached-git-loss/{}",
+            Ulid::new()
+        ))?;
+        let capture = self.capture_worktree(
+            &repository,
+            &GitCaptureRequest {
+                base: None,
+                target_ref: recovery_ref.clone(),
+                message: "vulcan sync recovery: capture materialized worktree after detached Git directory loss\n"
+                    .to_string(),
+            },
+        )?;
+
+        let remote = GitRemote::parse("origin")?;
+        let mut command = self.repository_command(&repository);
+        command.args(["remote", "add", remote.as_str(), &request.source]);
+        let output = self.execute(command)?;
+        if !output.status.success() {
+            return Err(redact_clone_source(
+                command_failed("configure the replacement repository remote", &output),
+                &request.source,
+            ));
+        }
+        let mut command = self.repository_command(&repository);
+        command.args(["fetch", "--prune", remote.as_str()]);
+        let output = self.execute(command)?;
+        if !output.status.success() {
+            return Err(redact_clone_source(
+                command_failed("fetch the replacement repository", &output),
+                &request.source,
+            ));
+        }
+
+        Ok(GitDetachedRecoveryReport {
+            installation,
+            repository,
+            recovery_ref,
+            recovery_commit: capture.commit,
+            recovery_tree: capture.tree,
+            fetched_remote: remote,
+            possibly_lost_hidden_ref_namespaces: lost_detached_ref_namespaces(),
+        })
+    }
+
+    fn configure_detached_repository(
+        &self,
+        request: &GitDetachedRecoveryRequest,
+    ) -> Result<(), GitEngineError> {
+        for (key, value) in [
+            ("core.bare", OsStr::new("false")),
+            ("core.worktree", request.work_tree.as_os_str()),
+        ] {
+            let mut command = self.command();
+            command
+                .arg("--git-dir")
+                .arg(&request.git_dir)
+                .args(["config", key])
+                .arg(value);
+            ensure_success(
+                "configure the replacement detached repository",
+                self.execute(command)?,
+            )?;
+        }
+        for setting in request.platform.policy().clone_config {
+            let mut command = self.command();
+            command.arg("--git-dir").arg(&request.git_dir).args([
+                "config",
+                setting.key,
+                setting.value,
+            ]);
+            ensure_success(
+                "configure the replacement detached repository platform policy",
+                self.execute(command)?,
+            )?;
+        }
+        Ok(())
+    }
+
     fn command(&self) -> Command {
         let mut command = Command::new(&self.executable);
         for variable in REPOSITORY_ENVIRONMENT_OVERRIDES {
@@ -953,7 +1084,10 @@ impl GitCliEngine {
 
     fn repository_command(&self, repository: &GitRepository) -> Command {
         let mut command = self.command();
-        command.arg("-C").arg(repository.command_path());
+        command.arg("--git-dir").arg(&repository.git_dir);
+        if let Some(work_tree) = &repository.work_tree {
+            command.arg("--work-tree").arg(work_tree);
+        }
         command
     }
 
@@ -2492,6 +2626,125 @@ impl GitCliEngine {
     }
 }
 
+fn validate_git_source(source: &str) -> Result<(), GitEngineError> {
+    if source.is_empty() || source.starts_with('-') || source.chars().any(char::is_control) {
+        return Err(GitEngineError::UnsupportedRepository {
+            detail: "Git source must be non-empty, must not start with `-`, and must not contain control characters"
+                .to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn validate_detached_recovery_request(
+    request: &GitDetachedRecoveryRequest,
+) -> Result<(), GitEngineError> {
+    validate_git_source(&request.source)?;
+    if !request.work_tree.is_dir() {
+        return Err(GitEngineError::UnsupportedRepository {
+            detail: format!(
+                "detached recovery requires the preserved worktree directory: {}",
+                request.work_tree.display()
+            ),
+        });
+    }
+    if request.git_dir.exists() {
+        return Err(GitEngineError::UnsupportedRepository {
+            detail: format!(
+                "refusing detached recovery because the registered Git directory exists: {}",
+                request.git_dir.display()
+            ),
+        });
+    }
+    let pointer = request.work_tree.join(".git");
+    let metadata = std::fs::symlink_metadata(&pointer).map_err(|error| {
+        GitEngineError::UnsupportedRepository {
+            detail: format!(
+                "detached recovery requires the existing stale Git pointer {}: {error}",
+                pointer.display()
+            ),
+        }
+    })?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        return Err(GitEngineError::UnsupportedRepository {
+            detail: format!(
+                "refusing to replace non-regular Git pointer {}",
+                pointer.display()
+            ),
+        });
+    }
+    let source = std::fs::read_to_string(&pointer)?;
+    let raw = source
+        .trim()
+        .strip_prefix("gitdir:")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| GitEngineError::UnsupportedRepository {
+            detail: format!("invalid stale Git pointer {}", pointer.display()),
+        })?;
+    let referenced = PathBuf::from(raw);
+    let referenced = if referenced.is_absolute() {
+        referenced
+    } else {
+        request.work_tree.join(referenced)
+    };
+    if referenced != request.git_dir {
+        return Err(GitEngineError::UnsupportedRepository {
+            detail: format!(
+                "refusing destructive reattachment: {} points to {}, not the registered missing Git directory {}",
+                pointer.display(),
+                referenced.display(),
+                request.git_dir.display()
+            ),
+        });
+    }
+    if request.git_dir.parent().is_none() {
+        return Err(GitEngineError::UnsupportedRepository {
+            detail: "the detached Git directory must have a parent directory".to_string(),
+        });
+    }
+    Ok(())
+}
+
+fn prospective_absolute_path(path: &Path) -> Result<PathBuf, GitEngineError> {
+    if path.is_absolute() {
+        Ok(path.to_path_buf())
+    } else {
+        Ok(std::env::current_dir()?.join(path))
+    }
+}
+
+fn write_gitdir_pointer(work_tree: &Path, git_dir: &Path) -> Result<(), GitEngineError> {
+    let git_dir = git_dir
+        .to_str()
+        .ok_or_else(|| GitEngineError::UnsupportedRepository {
+            detail: "the detached Git directory path must be valid UTF-8 for the Git pointer file"
+                .to_string(),
+        })?;
+    let pointer = work_tree.join(".git");
+    let mut temporary = NamedTempFile::new_in(work_tree)?;
+    writeln!(temporary, "gitdir: {git_dir}")?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(&pointer)
+        .map_err(|error| GitEngineError::Io(error.error))?;
+    Ok(())
+}
+
+fn lost_detached_ref_namespaces() -> Vec<String> {
+    [
+        "refs/vulcan/local/",
+        "refs/vulcan/pending/",
+        "refs/vulcan/conflicts/",
+        "refs/vulcan/checkpoints/",
+        "refs/vulcan/proposals/",
+        "refs/vulcan/semantic/",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
+}
+
 fn ensure_success(operation: &'static str, output: Output) -> Result<Output, GitEngineError> {
     if output.status.success() {
         Ok(output)
@@ -3115,6 +3368,104 @@ mod tests {
             run_git_capture(&detached, &["config", "--bool", "core.symlinks"]),
             "false"
         );
+    }
+
+    #[test]
+    fn detached_recovery_captures_materialized_bytes_before_fetching() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let source = temporary.path().join("source");
+        fs::create_dir(&source).expect("source directory");
+        init_repo(&source);
+        fs::write(source.join("Home.md"), "remote\n").expect("source note");
+        let source_head = commit_all(&source, "initial");
+        let work_tree = temporary.path().join("wiki");
+        let git_dir = temporary.path().join("private/wiki.git");
+        fs::create_dir(git_dir.parent().expect("Git parent")).expect("Git parent");
+        let engine = GitCliEngine::default();
+        engine
+            .clone_repository(&GitCloneRequest {
+                source: source.display().to_string(),
+                work_tree: work_tree.clone(),
+                git_dir: Some(git_dir.clone()),
+                platform: GitPlatformProfile::AndroidShared,
+            })
+            .expect("detached clone");
+        fs::write(work_tree.join("Home.md"), "device-only edit\n").expect("local edit");
+        fs::write(work_tree.join("Unpushed.md"), "only on device\n").expect("local note");
+        fs::remove_dir_all(&git_dir).expect("simulate lost private Git directory");
+
+        let report = engine
+            .recover_detached_repository(&GitDetachedRecoveryRequest {
+                source: source.display().to_string(),
+                work_tree: work_tree.clone(),
+                git_dir: git_dir.clone(),
+                platform: GitPlatformProfile::AndroidShared,
+            })
+            .expect("detached recovery");
+
+        assert_eq!(report.repository.layout, GitRepositoryLayout::Detached);
+        assert!(report
+            .recovery_ref
+            .as_str()
+            .starts_with("refs/vulcan/recovery/detached-git-loss/"));
+        assert_eq!(
+            engine
+                .path_object(&report.repository, &report.recovery_commit, "Home.md")
+                .expect("recovery Home")
+                .and_then(|object| object.data),
+            Some(b"device-only edit\n".to_vec())
+        );
+        assert_eq!(
+            engine
+                .path_object(&report.repository, &report.recovery_commit, "Unpushed.md")
+                .expect("recovery note")
+                .and_then(|object| object.data),
+            Some(b"only on device\n".to_vec())
+        );
+        assert_eq!(
+            fs::read_to_string(work_tree.join("Home.md")).unwrap(),
+            "device-only edit\n"
+        );
+        assert_eq!(
+            engine
+                .resolve_revision(&report.repository, "refs/remotes/origin/main")
+                .expect("fetched main"),
+            source_head
+        );
+        assert!(report
+            .possibly_lost_hidden_ref_namespaces
+            .contains(&"refs/vulcan/conflicts/".to_string()));
+        assert_eq!(
+            run_git_capture(&work_tree, &["config", "--bool", "core.fileMode"]),
+            "false"
+        );
+    }
+
+    #[test]
+    fn detached_recovery_refuses_a_mismatched_pointer_without_mutation() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let work_tree = temporary.path().join("wiki");
+        fs::create_dir(&work_tree).expect("worktree");
+        let git_dir = temporary.path().join("private/wiki.git");
+        fs::write(
+            work_tree.join(".git"),
+            format!("gitdir: {}\n", temporary.path().join("other.git").display()),
+        )
+        .expect("stale pointer");
+
+        let error = GitCliEngine::default()
+            .recover_detached_repository(&GitDetachedRecoveryRequest {
+                source: "https://example.invalid/wiki.git".to_string(),
+                work_tree,
+                git_dir: git_dir.clone(),
+                platform: GitPlatformProfile::AndroidShared,
+            })
+            .expect_err("mismatched pointer must fail");
+
+        assert!(error
+            .to_string()
+            .contains("refusing destructive reattachment"));
+        assert!(!git_dir.exists());
     }
 
     #[test]

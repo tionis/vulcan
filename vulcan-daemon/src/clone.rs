@@ -7,7 +7,8 @@ use std::fmt::{Display, Formatter};
 use std::fs;
 use std::path::{Path, PathBuf};
 use vulcan_app::sync::{
-    clone_git_vault, GitCloneReport, GitCloneRequest, GitPlatformPolicy, GitPlatformProfile,
+    clone_git_vault, recover_detached_git_vault, GitCloneReport, GitCloneRequest,
+    GitDetachedRecoveryReport, GitDetachedRecoveryRequest, GitPlatformPolicy, GitPlatformProfile,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,6 +49,24 @@ pub struct CloneWikiReport {
     pub wiki: Option<WikiRegistration>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoverWikiGitRequest {
+    pub id: WikiId,
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RecoverWikiGitReport {
+    pub action: &'static str,
+    pub dry_run: bool,
+    pub source: String,
+    pub wiki: WikiRegistration,
+    pub warning: String,
+    pub possibly_lost_hidden_ref_namespaces: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery: Option<GitDetachedRecoveryReport>,
+}
+
 #[derive(Debug)]
 pub enum CloneWikiError {
     Registry(RegistryError),
@@ -60,6 +79,39 @@ pub enum CloneWikiError {
         path: PathBuf,
         source: RegistryError,
     },
+}
+
+#[derive(Debug)]
+pub enum RecoverWikiGitError {
+    Registry(RegistryError),
+    Unsupported(String),
+    Git(vulcan_app::AppError),
+}
+
+impl Display for RecoverWikiGitError {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Registry(error) => Display::fmt(error, formatter),
+            Self::Unsupported(detail) => formatter.write_str(detail),
+            Self::Git(error) => Display::fmt(error, formatter),
+        }
+    }
+}
+
+impl Error for RecoverWikiGitError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Registry(error) => Some(error),
+            Self::Git(error) => Some(error),
+            Self::Unsupported(_) => None,
+        }
+    }
+}
+
+impl From<RegistryError> for RecoverWikiGitError {
+    fn from(error: RegistryError) -> Self {
+        Self::Registry(error)
+    }
 }
 
 impl Display for CloneWikiError {
@@ -178,6 +230,95 @@ pub fn clone_registered_wiki(
         clone: Some(clone),
         wiki: Some(wiki),
     })
+}
+
+/// Recreates the missing detached Git directory for one registered wiki.
+///
+/// The materialized worktree is never checked out or reset. Its exact bytes
+/// are captured in the replacement object database before the remote is
+/// configured or fetched.
+pub fn recover_registered_wiki_git(
+    registry: &WikiRegistry,
+    request: &RecoverWikiGitRequest,
+    dry_run: bool,
+) -> Result<RecoverWikiGitReport, RecoverWikiGitError> {
+    let status = registry.show(&request.id)?;
+    let wiki = status.registration;
+    if wiki.sync_backend.as_deref().unwrap_or("git") != "git" {
+        return Err(RecoverWikiGitError::Unsupported(format!(
+            "wiki `{}` does not use the Git sync backend",
+            wiki.id
+        )));
+    }
+    let git_dir = wiki.git_dir.clone().ok_or_else(|| {
+        RecoverWikiGitError::Unsupported(format!(
+            "wiki `{}` has no registered detached Git directory",
+            wiki.id
+        ))
+    })?;
+    let platform = match wiki.platform_profile.as_deref() {
+        Some("android_shared") => GitPlatformProfile::AndroidShared,
+        Some("linux_native") => GitPlatformProfile::LinuxNative,
+        Some("windows_native") => GitPlatformProfile::WindowsNative,
+        Some("other_native") => GitPlatformProfile::OtherNative,
+        None => GitPlatformProfile::native(),
+        Some(value) => {
+            return Err(RecoverWikiGitError::Unsupported(format!(
+                "wiki `{}` has unknown platform profile `{value}`",
+                wiki.id
+            )))
+        }
+    };
+    let recovery_request = GitDetachedRecoveryRequest {
+        source: request.source.clone(),
+        work_tree: wiki.path.clone(),
+        git_dir,
+        platform,
+    };
+    recovery_request
+        .validate()
+        .map_err(vulcan_app::AppError::operation)
+        .map_err(RecoverWikiGitError::Git)?;
+    let source = redact_source(&request.source);
+    let warning = "The missing detached Git directory may have contained unpushed Vulcan hidden refs. The materialized worktree can be preserved, but refs and objects that existed only in the lost directory cannot be reconstructed. On Android, uninstalling Termux can remove its private Git data while leaving the shared Obsidian vault behind."
+        .to_string();
+    let possibly_lost_hidden_ref_namespaces = detached_loss_namespaces();
+    if dry_run {
+        return Ok(RecoverWikiGitReport {
+            action: "recover_git",
+            dry_run: true,
+            source,
+            wiki,
+            warning,
+            possibly_lost_hidden_ref_namespaces,
+            recovery: None,
+        });
+    }
+    let recovery =
+        recover_detached_git_vault(&recovery_request).map_err(RecoverWikiGitError::Git)?;
+    Ok(RecoverWikiGitReport {
+        action: "recover_git",
+        dry_run: false,
+        source,
+        wiki,
+        warning,
+        possibly_lost_hidden_ref_namespaces,
+        recovery: Some(recovery),
+    })
+}
+
+fn detached_loss_namespaces() -> Vec<String> {
+    [
+        "refs/vulcan/local/",
+        "refs/vulcan/pending/",
+        "refs/vulcan/conflicts/",
+        "refs/vulcan/checkpoints/",
+        "refs/vulcan/proposals/",
+        "refs/vulcan/semantic/",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect()
 }
 
 fn prospective_directory(path: &Path) -> Result<PathBuf, CloneWikiError> {

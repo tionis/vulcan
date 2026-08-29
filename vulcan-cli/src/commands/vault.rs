@@ -3,7 +3,10 @@ use crate::{Cli, CliError, ClonePlatformArg, OutputFormat, VaultCommand};
 use serde::Serialize;
 use std::path::Path;
 use vulcan_app::sync::GitPlatformProfile;
-use vulcan_daemon::clone::{clone_registered_wiki, CloneWikiReport, CloneWikiRequest};
+use vulcan_daemon::clone::{
+    clone_registered_wiki, recover_registered_wiki_git, CloneWikiReport, CloneWikiRequest,
+    RecoverWikiGitReport, RecoverWikiGitRequest,
+};
 use vulcan_daemon::registry::{
     AddWikiRequest, UpdateWikiRequest, WikiId, WikiRegistration, WikiRegistrationStatus,
     WikiRegistry,
@@ -28,6 +31,22 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
     let registry = WikiRegistry::user_default().map_err(CliError::operation)?;
     match command {
         VaultCommand::Clone { .. } => handle_clone(cli, &registry, command),
+        VaultCommand::RecoverGit {
+            id,
+            remote,
+            dry_run,
+        } => {
+            let report = recover_registered_wiki_git(
+                &registry,
+                &RecoverWikiGitRequest {
+                    id: parse_id(id)?,
+                    source: remote.clone(),
+                },
+                *dry_run,
+            )
+            .map_err(CliError::operation)?;
+            print_recovery(cli.output, &report)
+        }
         VaultCommand::Add {
             id,
             path,
@@ -95,6 +114,26 @@ pub(crate) fn handle_vault_command(cli: &Cli, command: &VaultCommand) -> Result<
             print_mutation(cli.output, "remove", *dry_run, &registry, &wiki)
         }
     }
+}
+
+fn print_recovery(output: OutputFormat, report: &RecoverWikiGitReport) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    if report.dry_run {
+        println!(
+            "Would recreate the detached Git directory for wiki `{}` after preserving {}",
+            report.wiki.id,
+            report.wiki.path.display()
+        );
+    } else if let Some(recovery) = &report.recovery {
+        println!(
+            "Recovered wiki `{}`; preserved the materialized vault at {}",
+            report.wiki.id, recovery.recovery_ref
+        );
+    }
+    println!("Warning: {}", report.warning);
+    Ok(())
 }
 
 fn handle_clone(

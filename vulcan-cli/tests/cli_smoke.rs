@@ -5955,6 +5955,94 @@ fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
 }
 
 #[test]
+fn vault_recover_git_preserves_a_materialized_detached_worktree() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let config_home = temporary.path().join("config");
+    let source = temporary.path().join("source");
+    let work_tree = temporary.path().join("wiki");
+    let git_dir = temporary.path().join("private/wiki.git");
+    fs::create_dir_all(&config_home).expect("config home");
+    fs::create_dir(&source).expect("source");
+    fs::create_dir_all(git_dir.parent().expect("Git parent")).expect("Git parent");
+    init_git_repo(&source);
+    fs::write(source.join("Home.md"), "remote\n").expect("remote note");
+    commit_all(&source, "initial");
+    let config_home = config_home.to_str().expect("config path should be utf-8");
+    let source = source.to_str().expect("source path should be utf-8");
+
+    cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "vault",
+            "clone",
+            source,
+            work_tree.to_str().expect("worktree UTF-8"),
+            "--id",
+            "personal",
+            "--git-dir",
+            git_dir.to_str().expect("Git directory UTF-8"),
+            "--platform",
+            "android-shared",
+        ])
+        .assert()
+        .success();
+    fs::write(work_tree.join("Home.md"), "device edit\n").expect("device edit");
+    fs::write(work_tree.join("Only Here.md"), "unpublished\n").expect("device note");
+    fs::remove_dir_all(&git_dir).expect("simulate Termux-private data loss");
+
+    let dry_run = cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "--output",
+            "json",
+            "vault",
+            "recover-git",
+            "personal",
+            source,
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let dry_run = parse_stdout_json(&dry_run);
+    assert_eq!(dry_run["dry_run"], true);
+    assert!(dry_run.get("recovery").is_none());
+    assert!(dry_run["possibly_lost_hidden_ref_namespaces"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item == "refs/vulcan/local/")));
+    assert!(!git_dir.exists());
+
+    let recovery = cargo_vulcan_with_xdg_config(config_home)
+        .args([
+            "--output",
+            "json",
+            "vault",
+            "recover-git",
+            "personal",
+            source,
+        ])
+        .assert()
+        .success();
+    let recovery = parse_stdout_json(&recovery);
+    assert_eq!(recovery["action"], "recover_git");
+    assert!(recovery["warning"]
+        .as_str()
+        .is_some_and(|warning| warning.contains("uninstalling Termux")));
+    assert!(recovery["recovery"]["recovery_ref"]
+        .as_str()
+        .is_some_and(|reference| reference.starts_with("refs/vulcan/recovery/detached-git-loss/")));
+    assert!(recovery["recovery"]["possibly_lost_hidden_ref_namespaces"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item == "refs/vulcan/conflicts/")));
+    assert_eq!(
+        fs::read_to_string(work_tree.join("Home.md")).expect("preserved note"),
+        "device edit\n"
+    );
+    assert_eq!(
+        fs::read_to_string(work_tree.join("Only Here.md")).expect("preserved local note"),
+        "unpublished\n"
+    );
+    assert!(git_dir.join("objects").is_dir());
+}
+
+#[test]
 fn web_search_json_output_uses_configured_backend_and_env_key() {
     let server = MockWebServer::spawn();
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -12186,6 +12274,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync semantic-reject <plan-id> --dry-run"));
     assert!(git_skill.contains("exact-object lease"));
     assert!(git_skill.contains("vulcan vault clone <remote> <path> --dry-run"));
+    assert!(git_skill.contains("vulcan vault recover-git <wiki> <remote> --dry-run"));
     assert!(git_skill.contains("clone that succeeds before registration fails"));
     assert!(git_skill.contains("--platform android-shared"));
     assert!(git_skill.contains("case-only renames require an intermediate path"));
@@ -12195,6 +12284,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     )
     .expect("configuration skill should be readable");
     assert!(configuration_skill.contains("vulcan vault clone/add/list/show/set/remove"));
+    assert!(configuration_skill.contains("vulcan vault recover-git"));
     assert!(configuration_skill.contains("vulcan sync pause/resume [<wiki>]"));
     assert!(configuration_skill.contains("Clone dry-run does not contact the remote"));
     assert!(configuration_skill.contains("--platform android-shared"));
