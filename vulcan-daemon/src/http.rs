@@ -4,7 +4,7 @@ use crate::companion::{
     CompanionCapabilities, CompanionError, CompanionErrorKind, CompanionOperation,
     CompanionResolutionAgent, CompanionService, ConflictProposalApprovalRequest,
     ConflictProposalRejectionRequest, ConflictProposalRequest, ConflictResolveRequest,
-    SemanticPlanRequest, COMPANION_PROTOCOL_VERSION,
+    SemanticPlanRequest, SyncSelectionRequest, COMPANION_PROTOCOL_VERSION,
 };
 use crate::credentials::CompanionCredential;
 use crate::registry::{WikiId, WikiRegistry};
@@ -71,6 +71,7 @@ struct CompanionEventSnapshot {
     vaults: Vec<crate::registry::WikiRegistrationStatus>,
     statuses: Vec<crate::status::DaemonWikiSyncStatus>,
     jobs: Vec<crate::supervisor::SupervisedSyncJob>,
+    aggregates: Vec<crate::supervisor::AggregateSyncJob>,
 }
 
 #[derive(Debug)]
@@ -99,6 +100,7 @@ pub fn companion_router(state: CompanionHttpState) -> Router {
     Router::new()
         .route("/capabilities", get(capabilities))
         .route("/vaults", get(list_vaults))
+        .route("/sync", post(enqueue_sync_selection))
         .route("/{id}/sync/status", get(sync_status))
         .route("/{id}/sync", post(enqueue_sync))
         .route("/{id}/sync/pause", post(pause_sync))
@@ -123,6 +125,10 @@ pub fn companion_router(state: CompanionHttpState) -> Router {
         )
         .route("/{id}/sync/semantic-plans", post(create_semantic_plan))
         .route("/jobs/{job}", get(job_status).delete(cancel_job))
+        .route(
+            "/aggregate-jobs/{job}",
+            get(aggregate_job_status).delete(cancel_aggregate_job),
+        )
         .route("/events", get(events))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .layer(middleware::from_fn_with_state(
@@ -334,6 +340,26 @@ async fn enqueue_sync(
     ))
 }
 
+async fn enqueue_sync_selection(
+    State(state): State<CompanionHttpState>,
+    headers: HeaderMap,
+    request: Result<Json<SyncSelectionRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<Value>), ApiError> {
+    let key = idempotency_key(&headers)?.to_string();
+    let scope = state.credential.id.clone();
+    let Json(request) = request.map_err(request_rejection)?;
+    let result = blocking(move || {
+        state
+            .service()
+            .enqueue_sync_selection(&request, &scope, &key)
+    })
+    .await?;
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(serde_json::to_value(result).map_err(json_error)?),
+    ))
+}
+
 async fn pause_sync(
     State(state): State<CompanionHttpState>,
     Path(id): Path<String>,
@@ -463,6 +489,22 @@ async fn cancel_job(
     Ok(Json(serde_json::to_value(result).map_err(json_error)?))
 }
 
+async fn aggregate_job_status(
+    State(state): State<CompanionHttpState>,
+    Path(job): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let result = blocking(move || state.service().aggregate_job(&job)).await?;
+    Ok(Json(serde_json::to_value(result).map_err(json_error)?))
+}
+
+async fn cancel_aggregate_job(
+    State(state): State<CompanionHttpState>,
+    Path(job): Path<String>,
+) -> Result<Json<Value>, ApiError> {
+    let result = blocking(move || state.service().cancel_aggregate_job(&job)).await?;
+    Ok(Json(serde_json::to_value(result).map_err(json_error)?))
+}
+
 async fn events(
     State(state): State<CompanionHttpState>,
     headers: HeaderMap,
@@ -542,6 +584,9 @@ fn event_snapshot(state: &CompanionHttpState) -> Result<CompanionEventSnapshot, 
         vaults,
         statuses,
         jobs: state.supervisor.list().map_err(|error| {
+            CompanionError::new(CompanionErrorKind::Internal, error.to_string())
+        })?,
+        aggregates: state.supervisor.list_aggregates().map_err(|error| {
             CompanionError::new(CompanionErrorKind::Internal, error.to_string())
         })?,
     })
@@ -699,6 +744,42 @@ mod tests {
             .insert(IDEMPOTENCY_KEY_HEADER, HeaderValue::from_static("sync-1"));
         let replay = router.oneshot(replay).await.expect("response");
         assert_eq!(body_json(replay).await["replay"], json!(true));
+    }
+
+    #[tokio::test]
+    async fn selection_sync_returns_a_monitorable_aggregate_job() {
+        let (_temporary, state) = fixture();
+        let router = companion_router(state.clone());
+        let enqueue_request = HttpRequest::builder()
+            .method(Method::POST)
+            .uri("/sync")
+            .header(AUTHORIZATION, format!("Bearer {}", state.credential.token))
+            .header(PROTOCOL_VERSION_HEADER, "1")
+            .header(IDEMPOTENCY_KEY_HEADER, "group-1")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"group":"personal"}"#))
+            .expect("request");
+        let response = router
+            .clone()
+            .oneshot(enqueue_request)
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::ACCEPTED);
+        let value = body_json(response).await;
+        assert_eq!(value["aggregate"]["selection"], json!("group:personal"));
+        assert_eq!(value["aggregate"]["total"], json!(1));
+        let aggregate_id = value["aggregate"]["id"].as_str().expect("aggregate ID");
+
+        let response = router
+            .oneshot(request(
+                &state,
+                Method::GET,
+                &format!("/aggregate-jobs/{aggregate_id}"),
+            ))
+            .await
+            .expect("status response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(body_json(response).await["state"], json!("queued"));
     }
 
     #[tokio::test]

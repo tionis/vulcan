@@ -21,6 +21,9 @@ const MAX_RETAINED_JOBS: usize = 256;
 const MAX_WATCH_PATHS: usize = 256;
 const MAX_WATCH_TRANSACTIONS: usize = 16;
 const MAX_IDEMPOTENCY_RECORDS: usize = 256;
+const MAX_RETAINED_AGGREGATES: usize = 64;
+const MAX_AGGREGATE_CHILDREN: usize = 256;
+const MAX_RETAINED_AGGREGATE_CHILDREN: usize = 256;
 const MAX_IDEMPOTENCY_COMPONENT_BYTES: usize = 128;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +60,10 @@ struct PersistedSupervisorState {
     jobs: Vec<SupervisedSyncJob>,
     #[serde(default)]
     idempotency: Vec<SyncIdempotencyRecord>,
+    #[serde(default)]
+    aggregates: Vec<PersistedAggregateSyncJob>,
+    #[serde(default)]
+    aggregate_idempotency: Vec<AggregateSyncIdempotencyRecord>,
 }
 
 impl Default for PersistedSupervisorState {
@@ -65,6 +72,8 @@ impl Default for PersistedSupervisorState {
             version: SYNC_SUPERVISOR_STATE_VERSION,
             jobs: Vec::new(),
             idempotency: Vec::new(),
+            aggregates: Vec::new(),
+            aggregate_idempotency: Vec::new(),
         }
     }
 }
@@ -77,6 +86,24 @@ struct SyncIdempotencyRecord {
     vault: PathBuf,
     trigger: SyncJobTrigger,
     job_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct PersistedAggregateSyncJob {
+    version: u32,
+    id: String,
+    selection: String,
+    trigger: SyncJobTrigger,
+    #[serde(default)]
+    cancelled: bool,
+    children: Vec<AggregateSyncChild>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct AggregateSyncIdempotencyRecord {
+    scope: String,
+    key: String,
+    aggregate_id: String,
 }
 
 #[derive(Debug)]
@@ -102,6 +129,45 @@ pub struct EnqueueSyncReport {
 pub struct IdempotentEnqueueSyncReport {
     #[serde(flatten)]
     pub enqueue: EnqueueSyncReport,
+    pub replay: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AggregateSyncChild {
+    pub wiki_id: String,
+    pub vault: PathBuf,
+    pub job_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AggregateSyncJob {
+    pub version: u32,
+    pub id: String,
+    pub selection: String,
+    pub trigger: SyncJobTrigger,
+    pub state: SyncJobState,
+    pub cancellation_requested: bool,
+    pub total: usize,
+    pub queued: usize,
+    pub running: usize,
+    pub succeeded: usize,
+    pub conflicted: usize,
+    pub paused: usize,
+    pub cancelled: usize,
+    pub failed: usize,
+    pub children: Vec<AggregateSyncChildReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AggregateSyncChildReport {
+    pub wiki_id: String,
+    pub vault: PathBuf,
+    pub job: SupervisedSyncJob,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct IdempotentEnqueueAggregateSyncReport {
+    pub aggregate: AggregateSyncJob,
     pub replay: bool,
 }
 
@@ -219,6 +285,16 @@ impl SyncSupervisor {
         let wiki_id = wiki_id.into();
         let vault = vault.into();
         let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        if inner
+            .state
+            .aggregate_idempotency
+            .iter()
+            .any(|record| record.scope == scope && record.key == key)
+        {
+            return Err(SupervisorError::InvalidState(format!(
+                "idempotency key `{key}` was already used for an aggregate synchronization request"
+            )));
+        }
         if let Some(record) = inner
             .state
             .idempotency
@@ -263,6 +339,101 @@ impl SyncSupervisor {
         persist_state(&self.state_path, &inner.state)?;
         Ok(IdempotentEnqueueSyncReport {
             enqueue,
+            replay: false,
+        })
+    }
+
+    pub fn enqueue_aggregate_idempotent(
+        &self,
+        scope: &str,
+        key: &str,
+        selection: impl Into<String>,
+        children: Vec<(String, PathBuf)>,
+        trigger: SyncJobTrigger,
+    ) -> Result<IdempotentEnqueueAggregateSyncReport, SupervisorError> {
+        validate_idempotency_component("scope", scope)?;
+        validate_idempotency_component("key", key)?;
+        let selection = selection.into();
+        validate_idempotency_component("selection", &selection)?;
+        let children = normalize_aggregate_children(children)?;
+        let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        if inner
+            .state
+            .idempotency
+            .iter()
+            .any(|record| record.scope == scope && record.key == key)
+        {
+            return Err(SupervisorError::InvalidState(format!(
+                "idempotency key `{key}` was already used for a single-wiki synchronization request"
+            )));
+        }
+        if let Some(record) = inner
+            .state
+            .aggregate_idempotency
+            .iter()
+            .find(|record| record.scope == scope && record.key == key)
+        {
+            let persisted = inner
+                .state
+                .aggregates
+                .iter()
+                .find(|aggregate| aggregate.id == record.aggregate_id)
+                .ok_or_else(|| {
+                    SupervisorError::InvalidState(format!(
+                        "aggregate idempotency key `{key}` refers to a missing job"
+                    ))
+                })?;
+            if persisted.selection != selection
+                || persisted.trigger != trigger
+                || !aggregate_request_matches(persisted, &children)
+            {
+                return Err(SupervisorError::InvalidState(format!(
+                    "idempotency key `{key}` was already used for a different aggregate synchronization request"
+                )));
+            }
+            return Ok(IdempotentEnqueueAggregateSyncReport {
+                aggregate: aggregate_report(&inner, persisted)?,
+                replay: true,
+            });
+        }
+
+        let mut child_records = Vec::with_capacity(children.len());
+        for (wiki_id, vault) in children {
+            let enqueue = enqueue_locked(&mut inner, wiki_id.clone(), vault.clone(), trigger, None);
+            child_records.push(AggregateSyncChild {
+                wiki_id,
+                vault,
+                job_id: enqueue.job.job.id,
+            });
+        }
+        let id = Ulid::new().to_string().to_ascii_lowercase();
+        let persisted = PersistedAggregateSyncJob {
+            version: SYNC_CONTRACT_VERSION,
+            id: id.clone(),
+            selection,
+            trigger,
+            cancelled: false,
+            children: child_records,
+        };
+        inner.state.aggregates.push(persisted);
+        inner
+            .state
+            .aggregate_idempotency
+            .push(AggregateSyncIdempotencyRecord {
+                scope: scope.to_string(),
+                key: key.to_string(),
+                aggregate_id: id.clone(),
+            });
+        trim_supervisor_state(&mut inner.state);
+        persist_state(&self.state_path, &inner.state)?;
+        let persisted = inner
+            .state
+            .aggregates
+            .iter()
+            .find(|aggregate| aggregate.id == id)
+            .expect("new aggregate survives retention");
+        Ok(IdempotentEnqueueAggregateSyncReport {
+            aggregate: aggregate_report(&inner, persisted)?,
             replay: false,
         })
     }
@@ -376,25 +547,7 @@ impl SyncSupervisor {
 
     pub fn cancel(&self, id: &str) -> Result<SupervisedSyncJob, SupervisorError> {
         let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
-        let index = inner
-            .state
-            .jobs
-            .iter()
-            .position(|candidate| candidate.job.id == id)
-            .ok_or_else(|| SupervisorError::UnknownJob(id.to_string()))?;
-        match inner.state.jobs[index].job.state {
-            SyncJobState::Queued => {
-                inner.state.jobs[index].job.state = SyncJobState::Cancelled;
-                inner.cancellations.remove(id);
-            }
-            SyncJobState::Running => {
-                if let Some(cancellation) = inner.cancellations.get(id) {
-                    cancellation.cancel();
-                }
-            }
-            _ => {}
-        }
-        let job = inner.state.jobs[index].clone();
+        let job = cancel_locked(&mut inner, id)?;
         persist_state(&self.state_path, &inner.state)?;
         Ok(job)
     }
@@ -413,6 +566,193 @@ impl SyncSupervisor {
         let inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
         Ok(inner.state.jobs.clone())
     }
+
+    pub fn aggregate(&self, id: &str) -> Result<Option<AggregateSyncJob>, SupervisorError> {
+        let inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        inner
+            .state
+            .aggregates
+            .iter()
+            .find(|aggregate| aggregate.id == id)
+            .map(|aggregate| aggregate_report(&inner, aggregate))
+            .transpose()
+    }
+
+    pub fn list_aggregates(&self) -> Result<Vec<AggregateSyncJob>, SupervisorError> {
+        let inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        inner
+            .state
+            .aggregates
+            .iter()
+            .map(|aggregate| aggregate_report(&inner, aggregate))
+            .collect()
+    }
+
+    pub fn cancel_aggregate(&self, id: &str) -> Result<AggregateSyncJob, SupervisorError> {
+        let mut inner = self.inner.lock().map_err(|_| SupervisorError::Poisoned)?;
+        let index = inner
+            .state
+            .aggregates
+            .iter()
+            .position(|aggregate| aggregate.id == id)
+            .ok_or_else(|| SupervisorError::UnknownJob(id.to_string()))?;
+        inner.state.aggregates[index].cancelled = true;
+        let children = inner.state.aggregates[index].children.clone();
+        for child in children {
+            let requested_elsewhere = inner.state.aggregates.iter().any(|aggregate| {
+                aggregate.id != id
+                    && !aggregate.cancelled
+                    && aggregate
+                        .children
+                        .iter()
+                        .any(|candidate| candidate.job_id == child.job_id)
+            });
+            if !requested_elsewhere {
+                cancel_locked(&mut inner, &child.job_id)?;
+            }
+        }
+        persist_state(&self.state_path, &inner.state)?;
+        let aggregate = inner
+            .state
+            .aggregates
+            .iter()
+            .find(|aggregate| aggregate.id == id)
+            .expect("aggregate remains while locked");
+        aggregate_report(&inner, aggregate)
+    }
+}
+
+fn cancel_locked(
+    inner: &mut SupervisorInner,
+    id: &str,
+) -> Result<SupervisedSyncJob, SupervisorError> {
+    let index = inner
+        .state
+        .jobs
+        .iter()
+        .position(|candidate| candidate.job.id == id)
+        .ok_or_else(|| SupervisorError::UnknownJob(id.to_string()))?;
+    match inner.state.jobs[index].job.state {
+        SyncJobState::Queued => {
+            inner.state.jobs[index].job.state = SyncJobState::Cancelled;
+            inner.cancellations.remove(id);
+        }
+        SyncJobState::Running => {
+            if let Some(cancellation) = inner.cancellations.get(id) {
+                cancellation.cancel();
+            }
+        }
+        _ => {}
+    }
+    Ok(inner.state.jobs[index].clone())
+}
+
+fn normalize_aggregate_children(
+    mut children: Vec<(String, PathBuf)>,
+) -> Result<Vec<(String, PathBuf)>, SupervisorError> {
+    if children.is_empty() || children.len() > MAX_AGGREGATE_CHILDREN {
+        return Err(SupervisorError::InvalidState(format!(
+            "aggregate synchronization requires 1-{MAX_AGGREGATE_CHILDREN} child wikis"
+        )));
+    }
+    children.sort_by(|left, right| left.0.cmp(&right.0));
+    if children
+        .windows(2)
+        .any(|pair| pair[0].0.as_str() == pair[1].0.as_str())
+    {
+        return Err(SupervisorError::InvalidState(
+            "aggregate synchronization contains a duplicate wiki ID".to_string(),
+        ));
+    }
+    Ok(children)
+}
+
+fn aggregate_request_matches(
+    aggregate: &PersistedAggregateSyncJob,
+    requested: &[(String, PathBuf)],
+) -> bool {
+    aggregate.children.len() == requested.len()
+        && aggregate
+            .children
+            .iter()
+            .zip(requested)
+            .all(|(child, (wiki_id, vault))| &child.wiki_id == wiki_id && &child.vault == vault)
+}
+
+fn aggregate_report(
+    inner: &SupervisorInner,
+    aggregate: &PersistedAggregateSyncJob,
+) -> Result<AggregateSyncJob, SupervisorError> {
+    let children = aggregate
+        .children
+        .iter()
+        .map(|child| {
+            let job = inner
+                .state
+                .jobs
+                .iter()
+                .find(|job| job.job.id == child.job_id)
+                .cloned()
+                .ok_or_else(|| {
+                    SupervisorError::InvalidState(format!(
+                        "aggregate synchronization job `{}` refers to missing child `{}`",
+                        aggregate.id, child.job_id
+                    ))
+                })?;
+            Ok(AggregateSyncChildReport {
+                wiki_id: child.wiki_id.clone(),
+                vault: child.vault.clone(),
+                job,
+            })
+        })
+        .collect::<Result<Vec<_>, SupervisorError>>()?;
+    let count = |state| {
+        children
+            .iter()
+            .filter(|child| child.job.job.state == state)
+            .count()
+    };
+    let queued = count(SyncJobState::Queued);
+    let running = count(SyncJobState::Running);
+    let succeeded = count(SyncJobState::Succeeded);
+    let conflicted = count(SyncJobState::Conflicted);
+    let paused = count(SyncJobState::Paused);
+    let cancelled = count(SyncJobState::Cancelled);
+    let failed = count(SyncJobState::Failed);
+    let state = if aggregate.cancelled {
+        SyncJobState::Cancelled
+    } else if running > 0 {
+        SyncJobState::Running
+    } else if queued > 0 {
+        SyncJobState::Queued
+    } else if failed > 0 {
+        SyncJobState::Failed
+    } else if conflicted > 0 {
+        SyncJobState::Conflicted
+    } else if paused > 0 {
+        SyncJobState::Paused
+    } else if cancelled > 0 {
+        SyncJobState::Cancelled
+    } else {
+        SyncJobState::Succeeded
+    };
+    Ok(AggregateSyncJob {
+        version: aggregate.version,
+        id: aggregate.id.clone(),
+        selection: aggregate.selection.clone(),
+        trigger: aggregate.trigger,
+        state,
+        cancellation_requested: aggregate.cancelled,
+        total: children.len(),
+        queued,
+        running,
+        succeeded,
+        conflicted,
+        paused,
+        cancelled,
+        failed,
+        children,
+    })
 }
 
 fn status_for(job: &SyncJob, state: SyncState, detail: Option<String>) -> SyncStatus {
@@ -526,7 +866,13 @@ fn validate_idempotency_component(label: &str, value: &str) -> Result<(), Superv
 }
 
 fn trim_supervisor_state(state: &mut PersistedSupervisorState) {
-    trim_terminal_jobs(&mut state.jobs);
+    trim_terminal_aggregates(state);
+    let protected_children = state
+        .aggregates
+        .iter()
+        .flat_map(|aggregate| aggregate.children.iter().map(|child| child.job_id.clone()))
+        .collect::<std::collections::BTreeSet<_>>();
+    trim_terminal_jobs(&mut state.jobs, &protected_children);
     state
         .idempotency
         .retain(|record| state.jobs.iter().any(|job| job.job.id == record.job_id));
@@ -535,18 +881,76 @@ fn trim_supervisor_state(state: &mut PersistedSupervisorState) {
             .idempotency
             .drain(..state.idempotency.len() - MAX_IDEMPOTENCY_RECORDS);
     }
+    state.aggregate_idempotency.retain(|record| {
+        state
+            .aggregates
+            .iter()
+            .any(|aggregate| aggregate.id == record.aggregate_id)
+    });
+    if state.aggregate_idempotency.len() > MAX_IDEMPOTENCY_RECORDS {
+        state
+            .aggregate_idempotency
+            .drain(..state.aggregate_idempotency.len() - MAX_IDEMPOTENCY_RECORDS);
+    }
 }
 
-fn trim_terminal_jobs(jobs: &mut Vec<SupervisedSyncJob>) {
+fn trim_terminal_aggregates(state: &mut PersistedSupervisorState) {
+    let mut terminal = state
+        .aggregates
+        .iter()
+        .filter(|aggregate| {
+            aggregate.cancelled
+                || aggregate.children.iter().all(|child| {
+                    state.jobs.iter().any(|job| {
+                        job.job.id == child.job_id
+                            && !matches!(
+                                job.job.state,
+                                SyncJobState::Queued | SyncJobState::Running
+                            )
+                    })
+                })
+        })
+        .count();
+    let mut retained_children = state
+        .aggregates
+        .iter()
+        .map(|aggregate| aggregate.children.len())
+        .sum::<usize>();
+    while terminal > MAX_RETAINED_AGGREGATES || retained_children > MAX_RETAINED_AGGREGATE_CHILDREN
+    {
+        let Some(index) = state.aggregates.iter().position(|aggregate| {
+            aggregate.cancelled
+                || aggregate.children.iter().all(|child| {
+                    state.jobs.iter().any(|job| {
+                        job.job.id == child.job_id
+                            && !matches!(
+                                job.job.state,
+                                SyncJobState::Queued | SyncJobState::Running
+                            )
+                    })
+                })
+        }) else {
+            break;
+        };
+        retained_children -= state.aggregates[index].children.len();
+        state.aggregates.remove(index);
+        terminal -= 1;
+    }
+}
+
+fn trim_terminal_jobs(
+    jobs: &mut Vec<SupervisedSyncJob>,
+    protected: &std::collections::BTreeSet<String>,
+) {
     let mut terminal = jobs
         .iter()
         .filter(|job| !matches!(job.job.state, SyncJobState::Queued | SyncJobState::Running))
         .count();
     while terminal > MAX_RETAINED_JOBS {
-        let Some(index) = jobs
-            .iter()
-            .position(|job| !matches!(job.job.state, SyncJobState::Queued | SyncJobState::Running))
-        else {
+        let Some(index) = jobs.iter().position(|job| {
+            !matches!(job.job.state, SyncJobState::Queued | SyncJobState::Running)
+                && !protected.contains(&job.job.id)
+        }) else {
             break;
         };
         jobs.remove(index);
@@ -701,6 +1105,21 @@ mod tests {
             .expect("recovered job");
         assert_eq!(running.job.job.id, recovered.job.job.id);
         assert!(recovered.job.triggers.contains(&SyncJobTrigger::Recovery));
+    }
+
+    #[test]
+    fn version_one_ledgers_without_aggregate_fields_remain_readable() {
+        let temporary = tempdir().expect("temporary directory");
+        let state_path = temporary.path().join("jobs.json");
+        fs::write(&state_path, r#"{"version":1,"jobs":[],"idempotency":[]}"#)
+            .expect("legacy ledger");
+
+        let supervisor = SyncSupervisor::at(state_path).expect("load legacy ledger");
+        assert!(supervisor.list().expect("jobs").is_empty());
+        assert!(supervisor
+            .list_aggregates()
+            .expect("aggregate jobs")
+            .is_empty());
     }
 
     #[test]
@@ -881,5 +1300,186 @@ mod tests {
                 .state,
             SyncJobState::Running
         );
+    }
+
+    #[test]
+    fn aggregate_jobs_replay_and_derive_independent_child_results() {
+        let temporary = tempdir().expect("temporary directory");
+        let state_path = temporary.path().join("jobs.json");
+        let supervisor = SyncSupervisor::at(&state_path).expect("supervisor");
+        let children = vec![
+            ("beta".to_string(), temporary.path().join("beta")),
+            ("alpha".to_string(), temporary.path().join("alpha")),
+        ];
+        let first = supervisor
+            .enqueue_aggregate_idempotent(
+                "credential-a",
+                "group-1",
+                "group:team",
+                children.clone(),
+                SyncJobTrigger::Manual,
+            )
+            .expect("aggregate enqueue");
+        assert!(!first.replay);
+        assert_eq!(first.aggregate.state, SyncJobState::Queued);
+        assert_eq!(first.aggregate.total, 2);
+        assert_eq!(first.aggregate.children[0].wiki_id, "alpha");
+
+        let alpha = supervisor.claim_next().expect("claim").expect("alpha");
+        supervisor
+            .complete(&alpha.job.job.id, SyncJobState::Succeeded, None, None)
+            .expect("complete alpha");
+        let beta = supervisor.claim_next().expect("claim").expect("beta");
+        supervisor
+            .complete(&beta.job.job.id, SyncJobState::Conflicted, None, None)
+            .expect("complete beta");
+        let aggregate = supervisor
+            .aggregate(&first.aggregate.id)
+            .expect("aggregate")
+            .expect("retained");
+        assert_eq!(aggregate.state, SyncJobState::Conflicted);
+        assert_eq!(aggregate.succeeded, 1);
+        assert_eq!(aggregate.conflicted, 1);
+
+        drop(supervisor);
+        let restarted = SyncSupervisor::at(&state_path).expect("restart");
+        let replay = restarted
+            .enqueue_aggregate_idempotent(
+                "credential-a",
+                "group-1",
+                "group:team",
+                children,
+                SyncJobTrigger::Manual,
+            )
+            .expect("replay");
+        assert!(replay.replay);
+        assert_eq!(replay.aggregate.id, first.aggregate.id);
+        assert_eq!(replay.aggregate.state, SyncJobState::Conflicted);
+    }
+
+    #[test]
+    fn aggregate_cancellation_cascades_without_erasing_completed_children() {
+        let temporary = tempdir().expect("temporary directory");
+        let supervisor = supervisor(temporary.path());
+        let aggregate = supervisor
+            .enqueue_aggregate_idempotent(
+                "credential-a",
+                "all-1",
+                "all",
+                vec![
+                    ("alpha".to_string(), temporary.path().join("alpha")),
+                    ("beta".to_string(), temporary.path().join("beta")),
+                ],
+                SyncJobTrigger::Manual,
+            )
+            .expect("aggregate")
+            .aggregate;
+        let alpha = supervisor.claim_next().expect("claim").expect("alpha");
+        supervisor
+            .complete(&alpha.job.job.id, SyncJobState::Succeeded, None, None)
+            .expect("complete alpha");
+
+        let cancelled = supervisor
+            .cancel_aggregate(&aggregate.id)
+            .expect("cancel aggregate");
+        assert_eq!(cancelled.state, SyncJobState::Cancelled);
+        assert_eq!(cancelled.succeeded, 1);
+        assert_eq!(cancelled.cancelled, 1);
+        drop(supervisor);
+        let restarted = SyncSupervisor::at(temporary.path().join("jobs.json")).expect("restart");
+        let retained = restarted
+            .aggregate(&aggregate.id)
+            .expect("aggregate")
+            .expect("retained aggregate");
+        assert!(retained.cancellation_requested);
+        assert_eq!(retained.state, SyncJobState::Cancelled);
+    }
+
+    #[test]
+    fn cancelling_one_aggregate_preserves_children_shared_by_an_active_request() {
+        let temporary = tempdir().expect("temporary directory");
+        let supervisor = supervisor(temporary.path());
+        let children = vec![("alpha".to_string(), temporary.path().join("alpha"))];
+        let first = supervisor
+            .enqueue_aggregate_idempotent(
+                "scope",
+                "first",
+                "all",
+                children.clone(),
+                SyncJobTrigger::Manual,
+            )
+            .expect("first aggregate")
+            .aggregate;
+        let second = supervisor
+            .enqueue_aggregate_idempotent(
+                "scope",
+                "second",
+                "all",
+                children,
+                SyncJobTrigger::Manual,
+            )
+            .expect("second aggregate")
+            .aggregate;
+        assert_eq!(first.children[0].job.job.id, second.children[0].job.job.id);
+
+        let cancelled = supervisor
+            .cancel_aggregate(&first.id)
+            .expect("cancel first");
+        assert_eq!(cancelled.state, SyncJobState::Cancelled);
+        assert!(cancelled.cancellation_requested);
+        assert_eq!(
+            supervisor
+                .aggregate(&second.id)
+                .expect("second aggregate")
+                .expect("retained")
+                .state,
+            SyncJobState::Queued
+        );
+        assert!(supervisor.claim_next().expect("claim").is_some());
+    }
+
+    #[test]
+    fn aggregate_requests_reject_empty_duplicate_and_changed_replays() {
+        let temporary = tempdir().expect("temporary directory");
+        let supervisor = supervisor(temporary.path());
+        assert!(supervisor
+            .enqueue_aggregate_idempotent(
+                "scope",
+                "empty",
+                "all",
+                Vec::new(),
+                SyncJobTrigger::Manual,
+            )
+            .is_err());
+        assert!(supervisor
+            .enqueue_aggregate_idempotent(
+                "scope",
+                "duplicate",
+                "all",
+                vec![
+                    ("alpha".to_string(), temporary.path().join("a")),
+                    ("alpha".to_string(), temporary.path().join("b")),
+                ],
+                SyncJobTrigger::Manual,
+            )
+            .is_err());
+        supervisor
+            .enqueue_aggregate_idempotent(
+                "scope",
+                "changed",
+                "all",
+                vec![("alpha".to_string(), temporary.path().join("a"))],
+                SyncJobTrigger::Manual,
+            )
+            .expect("first request");
+        assert!(supervisor
+            .enqueue_aggregate_idempotent(
+                "scope",
+                "changed",
+                "all",
+                vec![("beta".to_string(), temporary.path().join("b"))],
+                SyncJobTrigger::Manual,
+            )
+            .is_err());
     }
 }

@@ -1,7 +1,10 @@
 //! Registry-aware finite synchronization orchestration.
 
 use crate::registry::{RegistryError, WikiId, WikiRegistration, WikiRegistry};
-use crate::supervisor::{ClaimedSyncJob, SupervisedSyncJob, SupervisorError, SyncSupervisor};
+use crate::supervisor::{
+    ClaimedSyncJob, IdempotentEnqueueAggregateSyncReport, SupervisedSyncJob, SupervisorError,
+    SyncSupervisor,
+};
 use serde::Serialize;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -300,6 +303,7 @@ pub struct RegisteredSyncReport {
 #[derive(Debug)]
 pub enum RegisteredSyncError {
     Registry(RegistryError),
+    Supervisor(SupervisorError),
     EmptyGroup(String),
 }
 
@@ -307,6 +311,7 @@ impl Display for RegisteredSyncError {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Registry(error) => Display::fmt(error, formatter),
+            Self::Supervisor(error) => Display::fmt(error, formatter),
             Self::EmptyGroup(group) => {
                 write!(formatter, "no registered wikis belong to group `{group}`")
             }
@@ -318,6 +323,7 @@ impl Error for RegisteredSyncError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Registry(error) => Some(error),
+            Self::Supervisor(error) => Some(error),
             Self::EmptyGroup(_) => None,
         }
     }
@@ -327,6 +333,34 @@ impl From<RegistryError> for RegisteredSyncError {
     fn from(error: RegistryError) -> Self {
         Self::Registry(error)
     }
+}
+
+impl From<SupervisorError> for RegisteredSyncError {
+    fn from(error: SupervisorError) -> Self {
+        Self::Supervisor(error)
+    }
+}
+
+pub fn enqueue_registered_wikis(
+    registry: &WikiRegistry,
+    supervisor: &SyncSupervisor,
+    selection: &RegisteredSyncSelection,
+    credential_scope: &str,
+    idempotency_key: &str,
+) -> Result<IdempotentEnqueueAggregateSyncReport, RegisteredSyncError> {
+    let wikis = select_wikis(registry, selection)?;
+    supervisor
+        .enqueue_aggregate_idempotent(
+            credential_scope,
+            idempotency_key,
+            selection_label(selection),
+            wikis
+                .into_iter()
+                .map(|wiki| (wiki.id.to_string(), wiki.path))
+                .collect(),
+            vulcan_sync::SyncJobTrigger::Manual,
+        )
+        .map_err(Into::into)
 }
 
 pub fn sync_registered_wikis(
@@ -505,6 +539,58 @@ mod tests {
             ),
             Err(RegisteredSyncError::EmptyGroup(_))
         ));
+    }
+
+    #[test]
+    fn registered_selection_enqueues_one_durable_aggregate_with_independent_children() {
+        let temporary = tempdir().expect("temporary directory");
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        for id in ["beta", "alpha"] {
+            let path = temporary.path().join(id);
+            fs::create_dir(&path).expect("wiki directory");
+            registry
+                .add(
+                    &AddWikiRequest {
+                        id: WikiId::parse(id).expect("wiki ID"),
+                        path,
+                        groups: vec!["team".to_string()],
+                        git_dir: None,
+                        permissions_profile: None,
+                        sync_backend: Some("git".to_string()),
+                        platform_profile: None,
+                    },
+                    false,
+                )
+                .expect("register wiki");
+        }
+        let jobs_path = temporary.path().join("jobs.json");
+        let supervisor = SyncSupervisor::at(&jobs_path).expect("supervisor");
+        let first = enqueue_registered_wikis(
+            &registry,
+            &supervisor,
+            &RegisteredSyncSelection::Group("team".to_string()),
+            "credential-a",
+            "request-1",
+        )
+        .expect("enqueue selection");
+        assert!(!first.replay);
+        assert_eq!(first.aggregate.selection, "group:team");
+        assert_eq!(first.aggregate.total, 2);
+        assert_eq!(first.aggregate.children[0].wiki_id, "alpha");
+        assert_eq!(supervisor.list().expect("child jobs").len(), 2);
+
+        drop(supervisor);
+        let restarted = SyncSupervisor::at(jobs_path).expect("restart");
+        let replay = enqueue_registered_wikis(
+            &registry,
+            &restarted,
+            &RegisteredSyncSelection::Group("team".to_string()),
+            "credential-a",
+            "request-1",
+        )
+        .expect("replay selection");
+        assert!(replay.replay);
+        assert_eq!(replay.aggregate.id, first.aggregate.id);
     }
 
     #[test]

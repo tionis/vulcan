@@ -9,7 +9,7 @@ arbitrary Git command.
 - The server accepts only listeners whose bound address is IPv4 or IPv6 loopback.
 - HTTP requests use `Authorization: Bearer <device-token>`.
 - Every HTTP operation except `GET /capabilities` uses `Vulcan-Protocol-Version: 1`.
-- `POST /{id}/sync` and `POST /{id}/sync/resume` additionally require a bounded
+- `POST /{id}/sync`, `POST /sync`, and `POST /{id}/sync/resume` additionally require a bounded
   `Idempotency-Key`. Keys are scoped to the non-secret device credential ID and survive daemon
   restart while the retained job exists.
 - If an `Origin` header is present, it must exactly match an origin in the device credential.
@@ -29,19 +29,30 @@ Clients should call `GET /capabilities` before relying on optional operations.
 | `GET` | `/vaults?group=<group>` | Registered wiki reports, optionally filtered by group |
 | `GET` | `/{id}/sync/status` | Reconstructed per-wiki sync status |
 | `POST` | `/{id}/sync` | HTTP 202 with an idempotent retained manual-sync job |
+| `POST` | `/sync` | HTTP 202 with an idempotent aggregate job for exactly one `wiki`, `group`, or `all` selection |
 | `POST` | `/{id}/sync/pause` | Updated paused registration |
 | `POST` | `/{id}/sync/resume` | HTTP 202 with an idempotent retained resume job |
 | `GET` | `/{id}/sync/conflicts` | Unresolved preserved conflicts |
 | `GET` | `/{id}/sync/conflicts/{conflict}` | Preserved conflict record and resolution state |
 | `POST` | `/{id}/sync/conflicts/{conflict}/resolve` | Deterministic reviewed resolution report |
+| `POST` | `/{id}/sync/conflicts/{conflict}/proposals` | Provider-backed resolution proposal when advertised |
+| `POST` | `/{id}/sync/conflicts/{conflict}/proposals/approve` | Explicit stale-checked proposal approval |
+| `POST` | `/{id}/sync/conflicts/{conflict}/proposals/reject` | Explicit proposal rejection |
 | `POST` | `/{id}/sync/semantic-plans` | Deterministic semantic-history plan report |
 | `GET` | `/jobs/{job}` | Retained job status |
 | `DELETE` | `/jobs/{job}` | Queued cancellation or cooperative running cancellation report |
+| `GET` | `/aggregate-jobs/{job}` | Aggregate selection status, independent child reports, and outcome counts |
+| `DELETE` | `/aggregate-jobs/{job}` | Cancel the parent and each child not shared by another active aggregate request |
 | `GET` | `/events` | WebSocket upgrade |
 
-Conflict proposal creation is intentionally absent from v1 capabilities and routing until the
-agent proposal workflow is implemented. The future route is
-`POST /{id}/sync/conflicts/{conflict}/proposals`.
+Conflict proposal creation and explicit approval/rejection are advertised only when the daemon has
+a server-configured resolution provider. Provider endpoints or credentials never come from a
+companion request.
+
+Aggregate selection JSON contains exactly one of `wiki` (a registered wiki ID), `group` (a
+registered group name), or `all: true`. The retained parent identifies every normalized child job;
+its counts and state are derived from those children. A failed or conflicted child does not roll
+back a successful child.
 
 Conflict resolution JSON contains `side` (`base`, `local`, or `remote`) and may contain `remote`,
 `live_ref`, and `dry_run`. Semantic-plan JSON contains `from`, `to`, and `semantic_ref`, and may
@@ -63,7 +74,7 @@ as the selected protocol. The same exact Origin allowlist applies to the upgrade
 
 The stream sends an initial `state_snapshot` JSON object and then sends another only when its
 serialized state changes. A snapshot contains `version`, registered `vaults`, reconstructed
-per-wiki `statuses`, and retained `jobs`. This polling projection deliberately reuses durable state
+per-wiki `statuses`, retained child `jobs`, and retained `aggregates`. This polling projection deliberately reuses durable state
 and avoids making an in-memory event bus authoritative.
 
 ## Execution boundary

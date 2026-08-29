@@ -9,8 +9,10 @@ use crate::registry::{
 };
 use crate::status::{wiki_sync_status, DaemonSyncStatusError, DaemonWikiSyncStatus};
 use crate::supervisor::{
-    IdempotentEnqueueSyncReport, SupervisedSyncJob, SupervisorError, SyncSupervisor,
+    AggregateSyncJob, IdempotentEnqueueAggregateSyncReport, IdempotentEnqueueSyncReport,
+    SupervisedSyncJob, SupervisorError, SyncSupervisor,
 };
+use crate::sync::{enqueue_registered_wikis, RegisteredSyncError, RegisteredSyncSelection};
 use serde::{Deserialize, Serialize};
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -43,6 +45,7 @@ pub enum CompanionOperation {
     Capabilities,
     WikiList,
     SyncEnqueue,
+    SyncSelectionEnqueue,
     SyncStatus,
     SyncPause,
     SyncResume,
@@ -55,6 +58,8 @@ pub enum CompanionOperation {
     SemanticPlanCreate,
     JobStatus,
     JobCancel,
+    AggregateJobStatus,
+    AggregateJobCancel,
     EventSubscribe,
 }
 
@@ -68,6 +73,39 @@ pub struct CompanionCapabilities {
     pub conflict_resolution_sides: Vec<SyncConflictResolutionSide>,
     pub agent_conflict_proposals: bool,
     pub agent_semantic_plans: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct SyncSelectionRequest {
+    #[serde(default)]
+    pub wiki: Option<String>,
+    #[serde(default)]
+    pub group: Option<String>,
+    #[serde(default)]
+    pub all: bool,
+}
+
+impl SyncSelectionRequest {
+    fn selection(&self) -> Result<RegisteredSyncSelection, CompanionError> {
+        let selected = usize::from(self.wiki.is_some())
+            + usize::from(self.group.is_some())
+            + usize::from(self.all);
+        if selected != 1 {
+            return Err(invalid_request(
+                "select exactly one of `wiki`, `group`, or `all`",
+            ));
+        }
+        if let Some(wiki) = &self.wiki {
+            return WikiId::parse(wiki.clone())
+                .map(RegisteredSyncSelection::Wiki)
+                .map_err(map_registry_error);
+        }
+        if let Some(group) = &self.group {
+            WikiId::parse(group.clone()).map_err(map_registry_error)?;
+            return Ok(RegisteredSyncSelection::Group(group.clone()));
+        }
+        Ok(RegisteredSyncSelection::All)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -233,6 +271,7 @@ impl<'a> CompanionService<'a> {
                     CompanionOperation::Capabilities,
                     CompanionOperation::WikiList,
                     CompanionOperation::SyncEnqueue,
+                    CompanionOperation::SyncSelectionEnqueue,
                     CompanionOperation::SyncStatus,
                     CompanionOperation::SyncPause,
                     CompanionOperation::SyncResume,
@@ -244,6 +283,8 @@ impl<'a> CompanionService<'a> {
                     CompanionOperation::SemanticPlanCreate,
                     CompanionOperation::JobStatus,
                     CompanionOperation::JobCancel,
+                    CompanionOperation::AggregateJobStatus,
+                    CompanionOperation::AggregateJobCancel,
                 ];
                 if self.resolution_agent.is_some() {
                     operations.extend([CompanionOperation::ConflictProposalCreate]);
@@ -290,6 +331,22 @@ impl<'a> CompanionService<'a> {
                 SyncJobTrigger::Manual,
             )
             .map_err(map_supervisor_error)
+    }
+
+    pub fn enqueue_sync_selection(
+        &self,
+        request: &SyncSelectionRequest,
+        credential_scope: &str,
+        idempotency_key: &str,
+    ) -> Result<IdempotentEnqueueAggregateSyncReport, CompanionError> {
+        enqueue_registered_wikis(
+            self.registry,
+            self.supervisor,
+            &request.selection()?,
+            credential_scope,
+            idempotency_key,
+        )
+        .map_err(map_registered_sync_error)
     }
 
     pub fn pause_sync(&self, wiki_id: &WikiId) -> Result<WikiRegistration, CompanionError> {
@@ -486,6 +543,24 @@ impl<'a> CompanionService<'a> {
         self.supervisor.cancel(job_id).map_err(map_supervisor_error)
     }
 
+    pub fn aggregate_job(&self, job_id: &str) -> Result<AggregateSyncJob, CompanionError> {
+        self.supervisor
+            .aggregate(job_id)
+            .map_err(map_supervisor_error)?
+            .ok_or_else(|| {
+                CompanionError::new(
+                    CompanionErrorKind::NotFound,
+                    format!("unknown aggregate synchronization job `{job_id}`"),
+                )
+            })
+    }
+
+    pub fn cancel_aggregate_job(&self, job_id: &str) -> Result<AggregateSyncJob, CompanionError> {
+        self.supervisor
+            .cancel_aggregate(job_id)
+            .map_err(map_supervisor_error)
+    }
+
     fn set_paused(
         &self,
         wiki_id: &WikiId,
@@ -569,6 +644,17 @@ fn map_supervisor_error(error: SupervisorError) -> CompanionError {
     let detail = error.to_string();
     drop(error);
     CompanionError::new(kind, detail)
+}
+
+fn map_registered_sync_error(error: RegisteredSyncError) -> CompanionError {
+    match error {
+        RegisteredSyncError::Registry(error) => map_registry_error(error),
+        RegisteredSyncError::Supervisor(error) => map_supervisor_error(error),
+        RegisteredSyncError::EmptyGroup(group) => CompanionError::new(
+            CompanionErrorKind::NotFound,
+            format!("no registered wikis belong to group `{group}`"),
+        ),
+    }
 }
 
 fn map_status_error(error: DaemonSyncStatusError) -> CompanionError {
@@ -843,10 +929,53 @@ mod tests {
             .as_array()
             .expect("operations")
             .contains(&json!("sync_enqueue")));
+        assert!(value["operations"]
+            .as_array()
+            .expect("operations")
+            .contains(&json!("sync_selection_enqueue")));
         assert!(!value["operations"]
             .as_array()
             .expect("operations")
             .contains(&json!("event_subscribe")));
+    }
+
+    #[test]
+    fn companion_enqueues_registered_selections_as_aggregate_jobs() {
+        let temporary = tempdir().expect("temporary directory");
+        let (registry, supervisor, state_store, _) = fixture(&temporary);
+        let service = CompanionService::new(&registry, &supervisor, &state_store);
+        let request = SyncSelectionRequest {
+            wiki: None,
+            group: Some("personal".to_string()),
+            all: false,
+        };
+        let first = service
+            .enqueue_sync_selection(&request, "credential-a", "selection-1")
+            .expect("enqueue selection");
+        assert!(!first.replay);
+        assert_eq!(first.aggregate.selection, "group:personal");
+        assert_eq!(first.aggregate.total, 1);
+        let replay = service
+            .enqueue_sync_selection(&request, "credential-a", "selection-1")
+            .expect("replay selection");
+        assert!(replay.replay);
+        assert_eq!(replay.aggregate.id, first.aggregate.id);
+        assert_eq!(
+            service
+                .aggregate_job(&first.aggregate.id)
+                .expect("aggregate status")
+                .state,
+            vulcan_sync::SyncJobState::Queued
+        );
+
+        let invalid = SyncSelectionRequest {
+            wiki: Some("notes".to_string()),
+            group: None,
+            all: true,
+        };
+        assert!(service
+            .enqueue_sync_selection(&invalid, "credential-a", "selection-2")
+            .is_err());
     }
 
     #[test]
