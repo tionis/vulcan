@@ -237,12 +237,49 @@ pub struct GitConfig {
     pub exclude: Vec<String>,
 }
 
+const fn default_sync_max_deleted_paths() -> usize {
+    100
+}
+
+const fn default_sync_max_deleted_percent() -> u8 {
+    25
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncTreeValidationConfig {
+    #[serde(default = "default_sync_max_deleted_paths")]
+    pub max_deleted_paths: usize,
+    #[serde(default = "default_sync_max_deleted_percent")]
+    pub max_deleted_percent: u8,
+}
+
+impl Default for SyncTreeValidationConfig {
+    fn default() -> Self {
+        Self {
+            max_deleted_paths: default_sync_max_deleted_paths(),
+            max_deleted_percent: default_sync_max_deleted_percent(),
+        }
+    }
+}
+
+impl SyncTreeValidationConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.max_deleted_percent > 100 {
+            Err("sync.tree_validation.max_deleted_percent must be between 0 and 100".to_string())
+        } else {
+            Ok(())
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct SyncConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merge_policy: Option<MergePolicy>,
     #[serde(default)]
     pub merge_automation: MergeAutomation,
+    #[serde(default)]
+    pub tree_validation: SyncTreeValidationConfig,
 }
 
 impl SyncConfig {
@@ -2579,6 +2616,15 @@ fn validate_partial_vulcan_config(config: &PartialVulcanConfig) -> Result<(), Co
             .validate()
             .map_err(|error| ConfigImportError::InvalidConfig(error.to_string()))?;
     }
+    if let Some(validation) = config
+        .sync
+        .as_ref()
+        .and_then(|sync| sync.tree_validation.as_ref())
+    {
+        validation
+            .validate()
+            .map_err(ConfigImportError::InvalidConfig)?;
+    }
     Ok(())
 }
 
@@ -2656,15 +2702,22 @@ fn remove_local_shared_sync_policy(
     path: &Path,
     diagnostics: &mut Vec<ConfigDiagnostic>,
 ) {
-    if config
-        .sync
-        .as_mut()
-        .and_then(|sync| sync.merge_policy.take())
-        .is_some()
-    {
+    let (policy, validation) = config.sync.as_mut().map_or((false, false), |sync| {
+        (
+            sync.merge_policy.take().is_some(),
+            sync.tree_validation.take().is_some(),
+        )
+    });
+    if policy {
         diagnostics.push(ConfigDiagnostic {
             path: path.to_path_buf(),
             message: "ignored local sync.merge_policy: merge policy is repository-level shared configuration".to_string(),
+        });
+    }
+    if validation {
+        diagnostics.push(ConfigDiagnostic {
+            path: path.to_path_buf(),
+            message: "ignored local sync.tree_validation: whole-tree validation policy is repository-level shared configuration".to_string(),
         });
     }
 }
@@ -4241,6 +4294,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(merge_automation) = sync.merge_automation {
             config.sync.merge_automation = merge_automation;
+        }
+        if let Some(tree_validation) = sync.tree_validation {
+            config.sync.tree_validation = tree_validation;
         }
     }
     if let Some(inbox) = overrides.inbox {

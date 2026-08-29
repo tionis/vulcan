@@ -4619,6 +4619,10 @@ merge_automation = "require_review"
 [sync.merge_policy]
 version = 1
 rules = [{ id = "shared-review", selector = { glob = "**", kinds = [] }, resolution = "require_review" }]
+
+[sync.tree_validation]
+max_deleted_paths = 7
+max_deleted_percent = 12
 "#,
     )
     .expect("shared config");
@@ -4630,6 +4634,10 @@ merge_automation = "require_review"
 [sync.merge_policy]
 version = 1
 rules = [{ id = "local-ignored", selector = { glob = "**", kinds = [] }, resolution = "structured" }]
+
+[sync.tree_validation]
+max_deleted_paths = 0
+max_deleted_percent = 0
 "#,
     )
     .expect("local config");
@@ -4650,12 +4658,17 @@ rules = [{ id = "local-ignored", selector = { glob = "**", kinds = [] }, resolut
         loaded.config.sync.merge_automation,
         MergeAutomation::RequireReview
     );
+    assert_eq!(loaded.config.sync.tree_validation.max_deleted_paths, 7);
+    assert_eq!(loaded.config.sync.tree_validation.max_deleted_percent, 12);
     assert!(loaded.diagnostics.iter().any(|diagnostic| diagnostic
         .message
         .contains("ignored shared sync.merge_automation")));
     assert!(loaded.diagnostics.iter().any(|diagnostic| diagnostic
         .message
         .contains("ignored local sync.merge_policy")));
+    assert!(loaded.diagnostics.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("ignored local sync.tree_validation")));
 }
 
 #[test]
@@ -4675,4 +4688,16 @@ rules = [{ id = "broken", selector = { glob = "[", kinds = [] }, resolution = "s
             "invalid merge policy should fail: {contents}"
         );
     }
+}
+
+#[test]
+fn sync_tree_validation_defaults_and_rejects_invalid_percentages() {
+    let defaults = SyncTreeValidationConfig::default();
+    assert_eq!(defaults.max_deleted_paths, 100);
+    assert_eq!(defaults.max_deleted_percent, 25);
+    assert!(defaults.validate().is_ok());
+    assert!(validate_vulcan_overrides_toml(
+        "[sync.tree_validation]\nmax_deleted_paths = 10\nmax_deleted_percent = 101\n"
+    )
+    .is_err());
 }

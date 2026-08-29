@@ -1398,7 +1398,7 @@ Static-site publication profiles, filters, route policies, and theme assets.
 
 ### Synchronization
 
-Shared deterministic merge policy and device-local automation ceiling.
+Shared deterministic merge and whole-tree validation policy, plus a device-local automation ceiling.
 
 - `sync.merge_automation` — type: `enum`; target: `local`; default: `allow_policy`; values: `allow_policy`, `require_review`
   Set the device-local ceiling to allow shared policy automation or require review for every Git conflict.
@@ -1410,3 +1410,9 @@ Shared deterministic merge policy and device-local automation ceiling.
 - `sync.merge_policy.version` — type: `integer`; target: `shared`; default: `1`
   Define the versioned shared ordered path/type rules used for deterministic Git conflict handling.
   Example: `vulcan config set sync.merge_policy.version <value>`
+- `sync.tree_validation.max_deleted_paths` — type: `integer`; target: `shared`; default: `100`
+  Define shared whole-tree safety ceilings checked before an automatically resolved Git merge is published.
+  Example: `vulcan config set sync.tree_validation.max_deleted_paths <value>`
+- `sync.tree_validation.max_deleted_percent` — type: `integer`; target: `shared`; default: `25`
+  Define shared whole-tree safety ceilings checked before an automatically resolved Git merge is published. A result is rejected only when it exceeds both the path-count and percentage ceilings.
+  Example: `vulcan config set sync.tree_validation.max_deleted_percent <value>`

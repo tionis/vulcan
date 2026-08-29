@@ -5,9 +5,14 @@ use crate::sync_state::{SyncApplyMarker, SyncJournal, SyncJournalPhase, SyncStat
 use crate::{scan::refresh_cache_incrementally, AppError};
 use fs2::FileExt;
 use serde::Serialize;
+use std::collections::BTreeSet;
 use std::fs::OpenOptions;
-use vulcan_core::{load_vault_config, ScanSummary, VaultPaths};
-use vulcan_sync::{GitEngine, GitSyncObserver};
+use std::path::Path;
+use vulcan_core::{
+    load_vault_config, parse_document, LinkResolutionProblem, ResolverDocument, ResolverIndex,
+    ResolverLink, ScanSummary, VaultConfig, VaultPaths,
+};
+use vulcan_sync::{GitAutomaticMergeValidation, GitEngine, GitSyncObserver};
 
 pub use vulcan_sync::{
     GitCloneRequest, GitInstallation, GitObjectFormat, GitPlatformPolicy, GitPlatformProfile,
@@ -786,11 +791,13 @@ pub fn sync_git_vault_with_observer(
     if !options.dry_run {
         state_store.save(&journal)?;
     }
+    let validation_config = load_vault_config(paths).config;
     let mut observer = JournalSyncObserver {
         state_store,
         journal: &mut journal,
         persist: !options.dry_run,
         delegate,
+        tree_validator: VaultTreeValidator::new(validation_config),
     };
     let sync = match vulcan_sync::sync_git_once_with_control(
         &engine,
@@ -898,6 +905,12 @@ pub fn configured_git_sync_options(
         )));
     }
     let mut effective = options.clone();
+    loaded
+        .config
+        .sync
+        .tree_validation
+        .validate()
+        .map_err(AppError::operation)?;
     if let Some(policy) = loaded.config.sync.merge_policy {
         effective.merge_policy = policy;
     }
@@ -949,6 +962,7 @@ struct JournalSyncObserver<'a> {
     journal: &'a mut SyncJournal,
     persist: bool,
     delegate: &'a mut dyn GitSyncObserver,
+    tree_validator: VaultTreeValidator,
 }
 
 impl GitSyncObserver for JournalSyncObserver<'_> {
@@ -989,6 +1003,219 @@ impl GitSyncObserver for JournalSyncObserver<'_> {
         }
         self.delegate.progress(progress)
     }
+
+    fn validate_automatic_merge(
+        &mut self,
+        engine: &dyn GitEngine,
+        request: &GitAutomaticMergeValidation<'_>,
+    ) -> Result<Vec<vulcan_sync::GitAutomaticValidationCheck>, GitSyncObserverError> {
+        self.tree_validator.validate(engine, request)?;
+        let mut checks = vec![
+            vulcan_sync::GitAutomaticValidationCheck::WholeTreeLinksValid,
+            vulcan_sync::GitAutomaticValidationCheck::MassDeletionPolicy,
+        ];
+        for check in self.delegate.validate_automatic_merge(engine, request)? {
+            if !checks.contains(&check) {
+                checks.push(check);
+            }
+        }
+        Ok(checks)
+    }
+}
+
+const MAX_VALIDATED_MARKDOWN_FILES: usize = 100_000;
+const MAX_VALIDATED_MARKDOWN_BYTES: usize = 512 * 1024 * 1024;
+
+struct VaultTreeValidator {
+    config: VaultConfig,
+}
+
+impl VaultTreeValidator {
+    fn new(config: VaultConfig) -> Self {
+        Self { config }
+    }
+
+    fn validate(
+        &self,
+        engine: &dyn GitEngine,
+        request: &GitAutomaticMergeValidation<'_>,
+    ) -> Result<(), GitSyncObserverError> {
+        self.config
+            .sync
+            .tree_validation
+            .validate()
+            .map_err(GitSyncObserverError::new)?;
+        let local = analyze_git_tree(
+            engine,
+            request.repository,
+            request.local_candidate,
+            &self.config,
+        )?;
+        let remote = analyze_git_tree(
+            engine,
+            request.repository,
+            request.accepted_remote,
+            &self.config,
+        )?;
+        let merged = analyze_git_tree(
+            engine,
+            request.repository,
+            request.merged_tree,
+            &self.config,
+        )?;
+
+        let candidate_paths = local
+            .paths
+            .union(&remote.paths)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let deleted = candidate_paths.difference(&merged.paths).count();
+        let limits = &self.config.sync.tree_validation;
+        let exceeds_percent = (deleted as u128) * 100
+            > (candidate_paths.len() as u128) * u128::from(limits.max_deleted_percent);
+        if deleted > limits.max_deleted_paths && exceeds_percent {
+            return Err(GitSyncObserverError::new(format!(
+                "automatic merge would delete {deleted} of {} candidate paths, exceeding the shared limits of {} paths and {} percent",
+                candidate_paths.len(), limits.max_deleted_paths, limits.max_deleted_percent
+            )));
+        }
+
+        let existing_problems = local
+            .link_problems
+            .union(&remote.link_problems)
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        if let Some(problem) = merged.link_problems.difference(&existing_problems).next() {
+            return Err(GitSyncObserverError::new(format!(
+                "automatic merge introduces a new {} {} link-resolution problem in `{}` for target `{}`",
+                problem.problem, problem.kind, problem.source_path, problem.target
+            )));
+        }
+        Ok(())
+    }
+}
+
+struct GitTreeAnalysis {
+    paths: BTreeSet<String>,
+    link_problems: BTreeSet<LinkProblemKey>,
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct LinkProblemKey {
+    source_path: String,
+    target: String,
+    kind: &'static str,
+    problem: &'static str,
+}
+
+fn analyze_git_tree(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    revision: &vulcan_sync::GitOid,
+    config: &VaultConfig,
+) -> Result<GitTreeAnalysis, GitSyncObserverError> {
+    let paths = engine
+        .tree_paths(repository, revision)
+        .map_err(|error| GitSyncObserverError::new(error.to_string()))?
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let markdown_paths = paths
+        .iter()
+        .filter(|path| markdown_path(path))
+        .cloned()
+        .collect::<Vec<_>>();
+    if markdown_paths.len() > MAX_VALIDATED_MARKDOWN_FILES {
+        return Err(GitSyncObserverError::new(format!(
+            "automatic merge tree exceeds the {MAX_VALIDATED_MARKDOWN_FILES} Markdown-file validation limit"
+        )));
+    }
+
+    let mut parsed_documents = Vec::with_capacity(markdown_paths.len());
+    let mut total_bytes = 0_usize;
+    for path in markdown_paths {
+        let object = engine
+            .path_object(repository, revision, &path)
+            .map_err(|error| GitSyncObserverError::new(error.to_string()))?
+            .ok_or_else(|| GitSyncObserverError::new(format!("tree omitted `{path}`")))?;
+        if object.kind != "blob" {
+            return Err(GitSyncObserverError::new(format!(
+                "Markdown path `{path}` is not a regular Git blob"
+            )));
+        }
+        let data = object
+            .data
+            .ok_or_else(|| GitSyncObserverError::new(format!("blob `{path}` has no data")))?;
+        total_bytes = total_bytes.saturating_add(data.len());
+        if total_bytes > MAX_VALIDATED_MARKDOWN_BYTES {
+            return Err(GitSyncObserverError::new(format!(
+                "automatic merge tree exceeds the {MAX_VALIDATED_MARKDOWN_BYTES}-byte Markdown validation limit"
+            )));
+        }
+        let source = std::str::from_utf8(&data).map_err(|_| {
+            GitSyncObserverError::new(format!("Markdown path `{path}` is not valid UTF-8"))
+        })?;
+        parsed_documents.push((path, parse_document(source, config)));
+    }
+
+    let resolver_documents = parsed_documents
+        .iter()
+        .map(|(path, parsed)| ResolverDocument {
+            id: path.clone(),
+            path: path.clone(),
+            filename: Path::new(path)
+                .file_stem()
+                .or_else(|| Path::new(path).file_name())
+                .and_then(|name| name.to_str())
+                .unwrap_or(path)
+                .to_string(),
+            aliases: parsed.aliases.clone(),
+        })
+        .collect::<Vec<_>>();
+    let resolver = ResolverIndex::build(&resolver_documents);
+    let mut link_problems = BTreeSet::new();
+    for (path, parsed) in &parsed_documents {
+        for link in &parsed.links {
+            let resolution = resolver.resolve(
+                &ResolverLink {
+                    source_document_id: path.clone(),
+                    source_path: path.clone(),
+                    target_path_candidate: link.target_path_candidate.clone(),
+                    link_kind: link.link_kind,
+                },
+                config.link_resolution,
+            );
+            let Some(problem) = resolution.problem else {
+                continue;
+            };
+            link_problems.insert(LinkProblemKey {
+                source_path: path.clone(),
+                target: link.target_path_candidate.clone().unwrap_or_default(),
+                kind: match link.link_kind {
+                    vulcan_core::LinkKind::Wikilink => "wikilink",
+                    vulcan_core::LinkKind::Markdown => "markdown",
+                    vulcan_core::LinkKind::Embed => "embed",
+                    vulcan_core::LinkKind::External => "external",
+                },
+                problem: match problem {
+                    LinkResolutionProblem::Unresolved => "unresolved",
+                    LinkResolutionProblem::Ambiguous(_) => "ambiguous",
+                },
+            });
+        }
+    }
+    Ok(GitTreeAnalysis {
+        paths,
+        link_problems,
+    })
+}
+
+fn markdown_path(path: &str) -> bool {
+    Path::new(path)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| {
+            matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
+        })
 }
 
 #[cfg(test)]
@@ -1000,6 +1227,13 @@ mod tests {
     use tempfile::tempdir;
     use vulcan_core::{initialize_vulcan_dir, properties::load_note_index, scan_vault, ScanMode};
     use vulcan_sync::{MergeAutomation, MergeResolution};
+
+    struct StructuredSyncFixture {
+        _temporary: tempfile::TempDir,
+        writer: std::path::PathBuf,
+        reader: std::path::PathBuf,
+        store: SyncStateStore,
+    }
 
     fn git(path: &Path, arguments: &[&str]) {
         let status = Command::new("git")
@@ -1021,6 +1255,85 @@ mod tests {
             .expect("Git output should be UTF-8")
             .trim()
             .to_string()
+    }
+
+    fn structured_sync_fixture(files: &[(&str, &str)]) -> StructuredSyncFixture {
+        let temporary = tempdir().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        let writer = temporary.path().join("writer");
+        fs::create_dir(&writer).expect("writer directory");
+        git(
+            &writer,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&writer, &["config", "user.name", "Vulcan Test"]);
+        git(&writer, &["config", "user.email", "vulcan@example.invalid"]);
+        git(
+            &writer,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        for (path, contents) in files {
+            let target = writer.join(path);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent).expect("fixture parent");
+            }
+            fs::write(target, contents).expect("fixture file");
+        }
+        git(&writer, &["add", "--all", "--", "."]);
+        git(&writer, &["commit", "--quiet", "-m", "base"]);
+        let store = SyncStateStore::at(temporary.path().join("state"));
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&writer),
+            &GitSyncOptions::default(),
+            &store,
+        )
+        .expect("bootstrap");
+
+        let reader = temporary.path().join("reader");
+        git(
+            temporary.path(),
+            &[
+                "clone",
+                "--quiet",
+                writer.to_str().expect("writer path"),
+                reader.to_str().expect("reader path"),
+            ],
+        );
+        git(
+            &reader,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&reader),
+            &GitSyncOptions::default(),
+            &store,
+        )
+        .expect("reader baseline");
+        StructuredSyncFixture {
+            _temporary: temporary,
+            writer,
+            reader,
+            store,
+        }
     }
 
     fn assert_conflict_read_workflows(
@@ -1138,6 +1451,155 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             &GitSyncOptions::default()
         )
         .is_err());
+
+        fs::remove_file(temporary.path().join(".vulcan/config.local.toml"))
+            .expect("remove malformed local config");
+        fs::write(
+            temporary.path().join(".vulcan/config.toml"),
+            "[sync.tree_validation]\nmax_deleted_percent = 101\n",
+        )
+        .expect("invalid validation config");
+        assert!(configured_git_sync_options(
+            &VaultPaths::new(temporary.path()),
+            &GitSyncOptions::default()
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn automatic_merge_with_new_link_ambiguity_is_preserved_as_a_conflict() {
+        let fixture = structured_sync_fixture(&[
+            ("Home.md", "[[Target]]\n"),
+            ("data.json", "{\"base\":true}\n"),
+        ]);
+        fs::create_dir(fixture.writer.join("Writer")).expect("writer folder");
+        fs::write(fixture.writer.join("Writer/Target.md"), "writer target\n")
+            .expect("writer target");
+        fs::write(
+            fixture.writer.join("data.json"),
+            "{\"base\":true,\"writer\":1}\n",
+        )
+        .expect("writer JSON");
+        fs::create_dir(fixture.reader.join("Reader")).expect("reader folder");
+        fs::write(fixture.reader.join("Reader/Target.md"), "reader target\n")
+            .expect("reader target");
+        fs::write(
+            fixture.reader.join("data.json"),
+            "{\"base\":true,\"reader\":2}\n",
+        )
+        .expect("reader JSON");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("writer push");
+
+        let report = sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("validation conflict");
+
+        assert_eq!(report.sync.outcome, GitSyncOutcome::Conflicted);
+        assert!(report.sync.automatic_resolutions.is_empty());
+        assert!(report
+            .sync
+            .conflict
+            .as_ref()
+            .expect("conflict")
+            .diagnostics
+            .contains("introduces a new ambiguous wikilink link-resolution problem"));
+        assert!(!fixture.reader.join("Writer/Target.md").exists());
+    }
+
+    #[test]
+    fn successful_automatic_merge_reports_whole_tree_validation_evidence() {
+        let fixture = structured_sync_fixture(&[("data.json", "{\"base\":true}\n")]);
+        fs::write(
+            fixture.writer.join("data.json"),
+            "{\"base\":true,\"writer\":1}\n",
+        )
+        .expect("writer JSON");
+        fs::write(
+            fixture.reader.join("data.json"),
+            "{\"base\":true,\"reader\":2}\n",
+        )
+        .expect("reader JSON");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.writer),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("writer push");
+
+        let report = sync_git_vault_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &GitSyncOptions::default(),
+            &fixture.store,
+        )
+        .expect("structured merge");
+
+        assert_eq!(report.sync.outcome, GitSyncOutcome::Merged);
+        let checks = &report.sync.automatic_resolutions[0].validation.checks;
+        assert!(checks.contains(&vulcan_sync::GitAutomaticValidationCheck::WholeTreeLinksValid));
+        assert!(checks.contains(&vulcan_sync::GitAutomaticValidationCheck::MassDeletionPolicy));
+    }
+
+    #[test]
+    fn whole_tree_validator_rejects_a_tree_over_the_shared_deletion_ceiling() {
+        let temporary = tempdir().expect("temporary directory");
+        git(
+            temporary.path(),
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(temporary.path(), &["config", "user.name", "Vulcan Test"]);
+        git(
+            temporary.path(),
+            &["config", "user.email", "vulcan@example.invalid"],
+        );
+        fs::write(temporary.path().join("Keep.md"), "keep\n").expect("kept note");
+        fs::write(temporary.path().join("Cleanup.md"), "remove\n").expect("removed note");
+        git(temporary.path(), &["add", "--all", "--", "."]);
+        git(temporary.path(), &["commit", "--quiet", "-m", "candidate"]);
+        let candidate =
+            vulcan_sync::GitOid::parse(git_stdout(temporary.path(), &["rev-parse", "HEAD"]))
+                .expect("candidate oid");
+        fs::remove_file(temporary.path().join("Cleanup.md")).expect("remove note");
+        git(temporary.path(), &["add", "--all", "--", "."]);
+        git(temporary.path(), &["commit", "--quiet", "-m", "merged"]);
+        let merged_commit =
+            vulcan_sync::GitOid::parse(git_stdout(temporary.path(), &["rev-parse", "HEAD"]))
+                .expect("merged commit oid");
+        let engine = vulcan_sync::GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let merged_tree = engine
+            .tree_oid(&repository, &merged_commit)
+            .expect("merged tree");
+        let mut config = VaultConfig::default();
+        config.sync.tree_validation.max_deleted_paths = 0;
+        config.sync.tree_validation.max_deleted_percent = 0;
+
+        let error = VaultTreeValidator::new(config)
+            .validate(
+                &engine,
+                &GitAutomaticMergeValidation {
+                    repository: &repository,
+                    base: &candidate,
+                    local_candidate: &candidate,
+                    accepted_remote: &candidate,
+                    merged_tree: &merged_tree,
+                    resolved_paths: &[],
+                },
+            )
+            .expect_err("deletion ceiling must reject the tree");
+
+        assert!(error
+            .to_string()
+            .contains("exceeding the shared limits of 0 paths and 0 percent"));
     }
 
     #[test]

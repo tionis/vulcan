@@ -37,7 +37,7 @@ pub use merge_policy::{
     MergePolicyError, MergePolicyRule, MergeResolution, MERGE_POLICY_SCHEMA_VERSION,
 };
 pub use sync::{
-    sync_git_once, sync_git_once_with_control, GitAutomaticResolution,
+    sync_git_once, sync_git_once_with_control, GitAutomaticMergeValidation, GitAutomaticResolution,
     GitAutomaticResolutionValidation, GitAutomaticValidationCheck, GitConflictClass,
     GitConflictClassification, GitConflictRefs, GitSyncAction, GitSyncBackend, GitSyncConflict,
     GitSyncDeviceId, GitSyncError, GitSyncObserver, GitSyncObserverError, GitSyncOptions,

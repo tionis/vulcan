@@ -91,6 +91,13 @@ pub trait GitEngine: Send + Sync {
         to: &GitOid,
     ) -> Result<Vec<String>, GitEngineError>;
 
+    /// Lists every path in a commit or tree without loading object contents.
+    fn tree_paths(
+        &self,
+        repository: &GitRepository,
+        revision: &GitOid,
+    ) -> Result<Vec<String>, GitEngineError>;
+
     fn tree_with_paths(
         &self,
         repository: &GitRepository,
@@ -1531,6 +1538,19 @@ impl GitEngine for GitCliEngine {
         let output = self.execute(command)?;
         let output = ensure_success("list changed Git paths", output)?;
         parse_nul_paths("list changed Git paths", &output.stdout)
+    }
+
+    fn tree_paths(
+        &self,
+        repository: &GitRepository,
+        revision: &GitOid,
+    ) -> Result<Vec<String>, GitEngineError> {
+        let output = self.repository_output(
+            repository,
+            "list Git tree paths",
+            ["ls-tree", "-r", "-z", "--name-only", revision.as_str()],
+        )?;
+        parse_nul_paths("list Git tree paths", &output.stdout)
     }
 
     fn tree_with_paths(
@@ -3256,6 +3276,10 @@ mod tests {
         assert_eq!(
             changed,
             vec!["Area/One.md", "Area/Two.md", "Old.md", "Root.md"]
+        );
+        assert_eq!(
+            engine.tree_paths(&repository, &to).expect("tree paths"),
+            vec!["Area/One.md", "Area/Two.md", "Root.md"]
         );
 
         let area_paths = changed[..2].to_vec();

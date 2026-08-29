@@ -937,6 +937,22 @@ fn dynamic_config_descriptors() -> Vec<ConfigDescriptor> {
         &[],
     );
     push(
+        "sync.tree_validation.max_deleted_paths",
+        ConfigValueKind::Integer,
+        ConfigTargetSupport::SharedOnly,
+        None,
+        Some(TomlValue::Integer(100)),
+        &[],
+    );
+    push(
+        "sync.tree_validation.max_deleted_percent",
+        ConfigValueKind::Integer,
+        ConfigTargetSupport::SharedOnly,
+        None,
+        Some(TomlValue::Integer(25)),
+        &[],
+    );
+    push(
         "aliases.<name>",
         ConfigValueKind::String,
         ConfigTargetSupport::SharedAndLocal,
@@ -1712,6 +1728,8 @@ fn config_target_support_for_key(key: &str) -> ConfigTargetSupport {
         ConfigTargetSupport::LocalOnly
     } else if key == "sync.merge_policy"
         || key.starts_with("sync.merge_policy.")
+        || key == "sync.tree_validation"
+        || key.starts_with("sync.tree_validation.")
         || key == "export"
         || key.starts_with("export.")
         || key == "folder_notes"
@@ -1883,7 +1901,8 @@ fn sync_category_descriptor() -> CategoryDescriptor {
     CategoryDescriptor {
         key: "sync",
         title: "Synchronization",
-        description: "Shared deterministic merge policy and device-local automation ceiling.",
+        description:
+            "Shared deterministic merge and whole-tree validation policy, plus a device-local automation ceiling.",
     }
 }
 
@@ -1907,6 +1926,12 @@ fn config_path_description(path: &str) -> String {
         "sync.merge_automation" => "Set the device-local ceiling to allow shared policy automation or require review for every Git conflict.".to_string(),
         _ if path.starts_with("sync.merge_policy") => {
             "Define the versioned shared ordered path/type rules used for deterministic Git conflict handling.".to_string()
+        }
+        "sync.tree_validation.max_deleted_percent" => {
+            "Define shared whole-tree safety ceilings checked before an automatically resolved Git merge is published. A result is rejected only when it exceeds both the path-count and percentage ceilings.".to_string()
+        }
+        _ if path.starts_with("sync.tree_validation") => {
+            "Define shared whole-tree safety ceilings checked before an automatically resolved Git merge is published.".to_string()
         }
         _ if path.starts_with("periodic.") => {
             "Periodic note folder, filename format, template, cadence, and schedule heading.".to_string()
@@ -2907,7 +2932,6 @@ read = { allow = ["folder:Projects/**"] }
             .expect("sync automation descriptor should exist");
         assert_eq!(automation.kind, ConfigValueKind::Enum);
         assert_eq!(automation.target_support, ConfigTargetSupport::LocalOnly);
-
         for descriptor in &catalog {
             assert!(
                 !descriptor.description.trim().is_empty(),
@@ -2919,6 +2943,23 @@ read = { allow = ["folder:Projects/**"] }
                 "descriptor `{}` should include at least one example",
                 descriptor.key
             );
+        }
+    }
+
+    #[test]
+    fn sync_tree_validation_descriptors_are_shared_integers() {
+        let catalog = config_descriptor_catalog();
+        for (key, default) in [
+            ("sync.tree_validation.max_deleted_paths", "100"),
+            ("sync.tree_validation.max_deleted_percent", "25"),
+        ] {
+            let descriptor = catalog
+                .iter()
+                .find(|descriptor| descriptor.key == key)
+                .expect("sync tree-validation descriptor should exist");
+            assert_eq!(descriptor.kind, ConfigValueKind::Integer);
+            assert_eq!(descriptor.target_support, ConfigTargetSupport::SharedOnly);
+            assert_eq!(descriptor.default_display.as_deref(), Some(default));
         }
     }
 

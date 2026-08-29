@@ -150,6 +150,14 @@ impl Error for GitSyncObserverError {}
 
 pub trait GitSyncObserver {
     fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError>;
+
+    fn validate_automatic_merge(
+        &mut self,
+        _engine: &dyn GitEngine,
+        _request: &GitAutomaticMergeValidation<'_>,
+    ) -> Result<Vec<GitAutomaticValidationCheck>, GitSyncObserverError> {
+        Ok(Vec::new())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -271,6 +279,15 @@ pub struct GitAutomaticResolutionValidation {
     pub checks: Vec<GitAutomaticValidationCheck>,
 }
 
+pub struct GitAutomaticMergeValidation<'a> {
+    pub repository: &'a GitRepository,
+    pub base: &'a GitOid,
+    pub local_candidate: &'a GitOid,
+    pub accepted_remote: &'a GitOid,
+    pub merged_tree: &'a GitOid,
+    pub resolved_paths: &'a [String],
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GitAutomaticValidationCheck {
@@ -280,6 +297,8 @@ pub enum GitAutomaticValidationCheck {
     MarkdownLinksPreserved,
     ExactTreeObject,
     NoFileDeletion,
+    WholeTreeLinksValid,
+    MassDeletionPolicy,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -791,6 +810,20 @@ impl AttemptControl<'_> {
     ) -> Result<(), GitSyncError> {
         emit_progress(self.observer, phase, self.attempt, report, local_tree)
     }
+
+    fn validate_automatic_merge(
+        &mut self,
+        engine: &dyn GitEngine,
+        request: &GitAutomaticMergeValidation<'_>,
+    ) -> Result<Vec<GitAutomaticValidationCheck>, String> {
+        self.check().map_err(|error| error.to_string())?;
+        let checks = self
+            .observer
+            .validate_automatic_merge(engine, request)
+            .map_err(|error| error.to_string())?;
+        self.check().map_err(|error| error.to_string())?;
+        Ok(checks)
+    }
 }
 
 fn run_attempt(
@@ -1006,6 +1039,7 @@ fn merge_divergence(
 ) -> Result<Option<(GitOid, GitSyncOutcome, bool)>, GitSyncError> {
     control.check()?;
     control.emit(GitSyncPhase::Merging, report, None)?;
+    report.automatic_resolutions.clear();
     let mut merge = engine.merge_commits(&report.repository, &remote, &capture.commit)?;
     let tree = if merge.clean {
         merge.tree.clone()
@@ -1019,20 +1053,39 @@ fn merge_divergence(
             &remote,
             &merge.conflict_paths,
         ) {
-            Ok(Some((tree, resolutions))) => {
-                report.automatic_resolutions = resolutions;
-                Some(tree)
+            Ok(Some((tree, mut resolutions))) => {
+                let validation = merge
+                    .base
+                    .as_ref()
+                    .ok_or_else(|| "structured merge validation requires a merge base".to_string())
+                    .and_then(|base| {
+                        validate_automatic_tree(
+                            control,
+                            engine,
+                            &AutomaticMergeCandidate {
+                                repository: &report.repository,
+                                base,
+                                local: &capture.commit,
+                                remote: &remote,
+                                tree: &tree,
+                            },
+                            &mut resolutions,
+                        )
+                    });
+                match validation {
+                    Ok(()) => {
+                        report.automatic_resolutions = resolutions;
+                        Some(tree)
+                    }
+                    Err(detail) => {
+                        append_structured_merge_failure(&mut merge, &detail);
+                        None
+                    }
+                }
             }
             Ok(None) => None,
             Err(detail) => {
-                let separator = if merge.diagnostics.is_empty() {
-                    ""
-                } else {
-                    "\n"
-                };
-                merge.diagnostics.push_str(separator);
-                write!(merge.diagnostics, "Vulcan structured merge: {detail}")
-                    .expect("writing to a String cannot fail");
+                append_structured_merge_failure(&mut merge, &detail);
                 None
             }
         }
@@ -1080,6 +1133,49 @@ fn merge_divergence(
             GitPushResult::Rejected => None,
         },
     )
+}
+
+struct AutomaticMergeCandidate<'a> {
+    repository: &'a GitRepository,
+    base: &'a GitOid,
+    local: &'a GitOid,
+    remote: &'a GitOid,
+    tree: &'a GitOid,
+}
+
+fn validate_automatic_tree(
+    control: &mut AttemptControl<'_>,
+    engine: &dyn GitEngine,
+    candidate: &AutomaticMergeCandidate<'_>,
+    resolutions: &mut [GitAutomaticResolution],
+) -> Result<(), String> {
+    let resolved_paths = resolutions
+        .iter()
+        .map(|resolution| resolution.path.clone())
+        .collect::<Vec<_>>();
+    let checks = control.validate_automatic_merge(
+        engine,
+        &GitAutomaticMergeValidation {
+            repository: candidate.repository,
+            base: candidate.base,
+            local_candidate: candidate.local,
+            accepted_remote: candidate.remote,
+            merged_tree: candidate.tree,
+            resolved_paths: &resolved_paths,
+        },
+    )?;
+    for resolution in resolutions {
+        resolution.validation.checks.extend(checks.iter().copied());
+    }
+    Ok(())
+}
+
+fn append_structured_merge_failure(merge: &mut crate::GitMerge, detail: &str) {
+    if !merge.diagnostics.is_empty() {
+        merge.diagnostics.push('\n');
+    }
+    write!(merge.diagnostics, "Vulcan structured merge: {detail}")
+        .expect("writing to a String cannot fail");
 }
 
 fn captured_worktree_is_current(
