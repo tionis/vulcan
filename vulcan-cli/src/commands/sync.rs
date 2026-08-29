@@ -26,8 +26,8 @@ use vulcan_app::sync_proposals::{
     ResolutionProposalOptions,
 };
 use vulcan_app::sync_semantic::{
-    apply_semantic_plan, create_semantic_plan, load_semantic_plan, SemanticApplyReport,
-    SemanticPlanOptions, SemanticPlanReport,
+    apply_semantic_plan, create_semantic_plan, load_semantic_plan, reject_semantic_plan,
+    SemanticApplyReport, SemanticPlanOptions, SemanticPlanReport, SemanticRejectReport,
 };
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
@@ -187,6 +187,9 @@ fn handle_non_cycle_sync_command(
         ),
         SyncCommand::SemanticApply { plan_id, dry_run } => {
             run_semantic_apply(cli, plan_id, *dry_run)
+        }
+        SyncCommand::SemanticReject { plan_id, dry_run } => {
+            run_semantic_reject(cli, plan_id, *dry_run)
         }
         SyncCommand::Run { .. } | SyncCommand::Status { .. } => return None,
     };
@@ -382,6 +385,30 @@ fn print_semantic_apply(
         report.previous_revision,
         report.applied_revision,
         if report.dry_run { " (dry run)" } else { "" }
+    );
+    Ok(())
+}
+
+fn run_semantic_reject(cli: &Cli, plan_id: &str, dry_run: bool) -> Result<(), CliError> {
+    let plan = load_semantic_plan(plan_id).map_err(CliError::operation)?;
+    let paths = VaultPaths::new(&plan.vault);
+    selected_permission_guard(cli, &paths)?
+        .check_git()
+        .map_err(CliError::operation)?;
+    let report = reject_semantic_plan(plan_id, dry_run).map_err(CliError::operation)?;
+    print_semantic_reject(cli.output, &report)
+}
+
+fn print_semantic_reject(
+    output: OutputFormat,
+    report: &SemanticRejectReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Semantic plan {}: {:?} (proposal ref {}).",
+        report.plan_id, report.outcome, report.proposal_ref
     );
     Ok(())
 }

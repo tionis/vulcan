@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 32
+version: 33
 tools:
   - git_status
   - git_diff
@@ -48,7 +48,8 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Use `vulcan sync run <wiki>`, `--group <name>`, or `--all` for registered selections. Group/all results are independent per-wiki transactions with aggregate counts, never one atomic cross-repository operation.
 - Use `vulcan sync pause [<wiki>]` and `vulcan sync resume [<wiki>]` to change device-local automatic behavior. Omitting the ID resolves the selected vault's registration; add `--dry-run` to preview the registry mutation.
 - Use `vulcan sync checkpoint [<wiki>] --dry-run` before deliberately retaining the accepted live commit; add `--kind semantic` when the retention intent is human-facing semantic history rather than recovery. Checkpoints create unique local refs without copying objects or advancing the checked-out branch, and refuse when local accepted refs disagree with the remote.
-- Use `vulcan sync semantic-plan [<wiki>] --from <rev> --to <accepted-live-rev> --dry-run` to review deterministic commit grouping and patches without creating objects or state. Rerun without `--dry-run` to retain the proposal under `refs/vulcan/proposals/semantic/<plan-id>`, then use `vulcan sync semantic-apply <plan-id> --dry-run` before explicit acceptance. Apply refuses stale source, proposal, or live refs and advances only the semantic branch with compare-and-swap; it never rewrites live history. Agent grouping is not yet available and `--agent` fails explicitly.
+- Use `vulcan sync semantic-plan [<wiki>] --from <rev> --to <accepted-live-rev> --dry-run` to review deterministic commit grouping and patches without creating objects or state. Rerun without `--dry-run` to retain the proposal under `refs/vulcan/proposals/semantic/<plan-id>`, then use `vulcan sync semantic-apply <plan-id> --dry-run` before explicit acceptance. Apply refuses stale source, proposal, or live refs, advances only the semantic branch with compare-and-swap, and releases the redundant proposal ref after durable success; it never rewrites live history. Agent grouping is not yet available and `--agent` fails explicitly.
+- If a semantic plan is declined, preview `vulcan sync semantic-reject <plan-id> --dry-run`, then rerun without `--dry-run` after confirmation. Rejection uses an exact-object lease to delete only the proposal ref, retains the bounded device-local plan record as rejected audit state, is idempotent, and never advances the semantic branch or any live synchronization ref.
 - Use `vulcan vault clone <remote> <path> --dry-run` to validate a new clone and registration. For Android shared storage accessed from Termux, add both `--git-dir <private-path>` and `--platform android-shared`; native policy remains the default elsewhere.
 
 ## Guardrails
@@ -66,6 +67,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Do not delete a reported transaction journal to hide recovery state. It lives outside the vault and rebuildable cache; let a successful sync clear it or use a future explicit repair command.
 - Do not delete or edit `vulcan-sync/apply.json` to hide an interrupted application. Its transaction and revision identities let Vulcan distinguish and safely recover a partially applied worktree.
 - Treat semantic plan patches and messages as proposals for human review. Do not edit proposal refs or device-local plan JSON, and do not apply a plan after changing its source branch or accepted live target; create a new plan instead.
+- Do not delete semantic proposal refs manually. Use `semantic-reject` so a stale or externally moved ref fails closed and an interrupted rejection can resume from its retained `rejecting` state.
 - Treat conflict proposal JSON and its unreferenced tree as immutable review state. Do not edit the file, manufacture an approval ID, or approve a proposal for a different conflict; use the exact IDs returned by `vulcan sync propose`.
 - Provider output is untrusted even when it is valid JSON. Review the returned explanation, patch, referenced context, path set, model identity, and validation checks before previewing approval. Ready proposals have already passed whole-tree link and shared mass-deletion validation, and approval reruns those checks against current shared config; neither fact makes generation an authorization to run `--approve-proposal`.
 - Treat `--allow-broad-context` as an explicit disclosure decision, not a convenience flag. The read tool remains permission-profile bounded and excludes `.vulcan/` and `.obsidian/`, but it can disclose any other permitted UTF-8 file in the selected vault to the provider.

@@ -27,10 +27,11 @@ pub use git::{
     GitConflictSide, GitContentMergeResolutionRequest, GitEngine, GitEngineError, GitEngineKind,
     GitExecutableBitsPolicy, GitFilterRequirement, GitInstallation, GitMerge,
     GitMergeResolutionRequest, GitObjectFormat, GitOid, GitPathLengthPolicy, GitPathObject,
-    GitPlatformPolicy, GitPlatformProfile, GitPushResult, GitRefCreateResult, GitRefName,
-    GitRefUpdateResult, GitRemote, GitRepository, GitRepositoryLayout, GitRepositoryRequirements,
-    GitReservedNamesPolicy, GitResolvedPath, GitSafetyState, GitSymlinkPolicy, GitTimestampPolicy,
-    GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan, GitVersion,
+    GitPlatformPolicy, GitPlatformProfile, GitPushResult, GitRefCreateResult, GitRefDeleteResult,
+    GitRefName, GitRefUpdateResult, GitRemote, GitRepository, GitRepositoryLayout,
+    GitRepositoryRequirements, GitReservedNamesPolicy, GitResolvedPath, GitSafetyState,
+    GitSymlinkPolicy, GitTimestampPolicy, GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan,
+    GitVersion,
 };
 pub use merge_policy::{
     MergeAutomation, MergeFileKind, MergePathSelector, MergePolicy, MergePolicyDecision,

@@ -4068,6 +4068,13 @@ pub enum SyncCommand {
         #[arg(long, help = "Validate without advancing the semantic branch")]
         dry_run: bool,
     },
+    #[command(about = "Reject a semantic history proposal and release its Git ref")]
+    SemanticReject {
+        #[arg(help = "Semantic plan ULID")]
+        plan_id: String,
+        #[arg(long, help = "Validate without deleting the proposal ref")]
+        dry_run: bool,
+    },
     #[command(about = "Diagnose Git synchronization without changing it")]
     Doctor {
         #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]

@@ -71,6 +71,13 @@ pub trait GitEngine: Send + Sync {
         expected: Option<&GitOid>,
     ) -> Result<GitRefUpdateResult, GitEngineError>;
 
+    fn delete_ref(
+        &self,
+        repository: &GitRepository,
+        reference: &GitRefName,
+        expected: &GitOid,
+    ) -> Result<GitRefDeleteResult, GitEngineError>;
+
     fn tree_oid(
         &self,
         repository: &GitRepository,
@@ -732,6 +739,14 @@ pub enum GitRefCreateResult {
 #[serde(rename_all = "snake_case")]
 pub enum GitRefUpdateResult {
     Updated,
+    Stale,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitRefDeleteResult {
+    Deleted,
+    Missing,
     Stale,
 }
 
@@ -1469,6 +1484,39 @@ impl GitEngine for GitCliEngine {
             Ok(GitRefUpdateResult::Stale)
         } else {
             Err(command_failed("compare and swap a local Git ref", &output))
+        }
+    }
+
+    fn delete_ref(
+        &self,
+        repository: &GitRepository,
+        reference: &GitRefName,
+        expected: &GitOid,
+    ) -> Result<GitRefDeleteResult, GitEngineError> {
+        match self.read_ref(repository, reference)? {
+            None => return Ok(GitRefDeleteResult::Missing),
+            Some(current) if current != *expected => return Ok(GitRefDeleteResult::Stale),
+            Some(_) => {}
+        }
+        let mut command = self.repository_command(repository);
+        command
+            .args(["update-ref", "-d", reference.as_str()])
+            .arg(expected.as_str());
+        let output = self.execute(command)?;
+        if output.status.success() {
+            return Ok(GitRefDeleteResult::Deleted);
+        }
+        let detail = format!(
+            "{}\n{}",
+            bounded_lossy(&output.stdout),
+            bounded_lossy(&output.stderr)
+        );
+        if detail.contains("cannot lock ref")
+            && (detail.contains("is at") || detail.contains("reference is missing"))
+        {
+            Ok(GitRefDeleteResult::Stale)
+        } else {
+            Err(command_failed("delete a local Git ref with lease", &output))
         }
     }
 
@@ -3241,6 +3289,48 @@ mod tests {
                 .read_ref(&repository, &checkpoint)
                 .expect("checkpoint read"),
             Some(initial)
+        );
+    }
+
+    #[test]
+    fn delete_ref_requires_the_exact_expected_object() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Home.md"), "initial\n").expect("initial note");
+        let initial = commit_all(temporary.path(), "initial");
+        fs::write(temporary.path().join("Home.md"), "changed\n").expect("changed note");
+        let changed = commit_all(temporary.path(), "changed");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let proposal =
+            GitRefName::parse("refs/vulcan/proposals/semantic/test").expect("proposal ref");
+        engine
+            .create_ref(&repository, &proposal, &initial)
+            .expect("proposal creation");
+
+        assert_eq!(
+            engine
+                .delete_ref(&repository, &proposal, &changed)
+                .expect("stale deletion"),
+            GitRefDeleteResult::Stale
+        );
+        assert_eq!(
+            engine.read_ref(&repository, &proposal).expect("read ref"),
+            Some(initial.clone())
+        );
+        assert_eq!(
+            engine
+                .delete_ref(&repository, &proposal, &initial)
+                .expect("leased deletion"),
+            GitRefDeleteResult::Deleted
+        );
+        assert_eq!(
+            engine
+                .delete_ref(&repository, &proposal, &initial)
+                .expect("missing deletion"),
+            GitRefDeleteResult::Missing
         );
     }
 

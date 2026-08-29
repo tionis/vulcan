@@ -9072,6 +9072,38 @@
             "subcommands": []
           },
           {
+            "about": "Reject a semantic history proposal and release its Git ref",
+            "name": "semantic-reject",
+            "options": [
+              {
+                "help": "Semantic plan ULID",
+                "id": "plan_id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "PLAN_ID"
+                ]
+              },
+              {
+                "help": "Validate without deleting the proposal ref",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "Diagnose Git synchronization without changing it",
             "name": "doctor",
             "options": [

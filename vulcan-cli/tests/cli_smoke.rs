@@ -4985,6 +4985,7 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
 
     let plan =
         parse_stdout_json(&sync(&["semantic-plan", "--from", &source, "--to", &target]).success());
+    assert_eq!(plan["version"], 2);
     assert_eq!(plan["status"], "ready");
     assert_eq!(plan["validation"]["final_tree_matches_target"], true);
     assert_eq!(plan["commits"][0]["group"], "Area");
@@ -5010,6 +5011,32 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
     assert!(run_git_stdout(&vault, &["show", "-s", "--format=%B", tip])
         .contains("Vulcan-Semantic-Version: 1"));
 
+    let rejected_plan =
+        parse_stdout_json(&sync(&["semantic-plan", "--from", &source, "--to", &target]).success());
+    let rejected_id = rejected_plan["plan_id"].as_str().expect("rejected plan ID");
+    let rejected_ref = rejected_plan["proposal_ref"]
+        .as_str()
+        .expect("rejected proposal ref");
+    let rejection_preview =
+        parse_stdout_json(&sync(&["semantic-reject", rejected_id, "--dry-run"]).success());
+    assert_eq!(rejection_preview["outcome"], "planned");
+    assert_eq!(
+        run_git_stdout(&vault, &["rev-parse", rejected_ref]).len(),
+        40
+    );
+    let rejection = parse_stdout_json(&sync(&["semantic-reject", rejected_id]).success());
+    assert_eq!(rejection["outcome"], "rejected");
+    assert_eq!(rejection["record_retained"], true);
+    assert!(!ProcessCommand::new("git")
+        .arg("-C")
+        .arg(&vault)
+        .args(["show-ref", "--verify", "--quiet", rejected_ref])
+        .status()
+        .expect("git should launch")
+        .success());
+    let repeated_rejection = parse_stdout_json(&sync(&["semantic-reject", rejected_id]).success());
+    assert_eq!(repeated_rejection["outcome"], "already_rejected");
+
     run_git_ok(&vault, &["update-ref", "refs/heads/main", &target, &source]);
     sync(&["semantic-apply", plan_id, "--dry-run"])
         .failure()
@@ -5021,9 +5048,18 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
     assert_eq!(run_git_stdout(&vault, &["rev-parse", "main"]), source);
     let applied = parse_stdout_json(&sync(&["semantic-apply", plan_id]).success());
     assert_eq!(applied["applied_revision"], tip);
+    assert_eq!(applied["proposal_ref_released"], true);
     assert_eq!(run_git_stdout(&vault, &["rev-parse", "main"]), tip);
+    assert!(!ProcessCommand::new("git")
+        .arg("-C")
+        .arg(&vault)
+        .args(["show-ref", "--verify", "--quiet", proposal_ref])
+        .status()
+        .expect("git should launch")
+        .success());
     let repeated = parse_stdout_json(&sync(&["semantic-apply", plan_id]).success());
     assert_eq!(repeated["applied_revision"], tip);
+    assert_eq!(repeated["proposal_ref_released"], true);
 }
 
 #[test]
@@ -11839,6 +11875,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("server-configured resolver"));
     assert!(git_skill.contains("never supply provider endpoints or credentials"));
     assert!(git_skill.contains("vulcan sync checkpoint [<wiki>] --dry-run"));
+    assert!(git_skill.contains("vulcan sync semantic-reject <plan-id> --dry-run"));
+    assert!(git_skill.contains("exact-object lease"));
     assert!(git_skill.contains("vulcan vault clone <remote> <path> --dry-run"));
     assert!(git_skill.contains("clone that succeeds before registration fails"));
     assert!(git_skill.contains("--platform android-shared"));

@@ -2449,6 +2449,24 @@ fn parses_sync_semantic_commands() {
             }
         }
     );
+
+    let reject = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "semantic-reject",
+        "01arz3ndektsv4rrffq69g5fav",
+        "--dry-run",
+    ])
+    .expect("semantic rejection should parse");
+    assert_eq!(
+        reject.command,
+        Command::Sync {
+            command: SyncCommand::SemanticReject {
+                plan_id: "01arz3ndektsv4rrffq69g5fav".to_string(),
+                dry_run: true,
+            }
+        }
+    );
 }
 
 #[test]

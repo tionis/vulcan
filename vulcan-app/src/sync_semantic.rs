@@ -12,11 +12,11 @@ use tempfile::NamedTempFile;
 use ulid::Ulid;
 use vulcan_core::VaultPaths;
 use vulcan_sync::{
-    GitCliEngine, GitEngine, GitOid, GitRefName, GitRefUpdateResult, GitRemote, GitRepository,
-    GitSyncOptions, GitSyncRefs,
+    GitCliEngine, GitEngine, GitOid, GitRefDeleteResult, GitRefName, GitRefUpdateResult, GitRemote,
+    GitRepository, GitSyncOptions, GitSyncRefs,
 };
 
-pub const SEMANTIC_PLAN_VERSION: u32 = 1;
+pub const SEMANTIC_PLAN_VERSION: u32 = 2;
 const MAX_SEMANTIC_PLAN_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +27,8 @@ pub enum SemanticPlanStatus {
     Ready,
     Applying,
     Applied,
+    Rejecting,
+    Rejected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -93,6 +95,26 @@ pub struct SemanticApplyReport {
     pub previous_revision: String,
     pub applied_revision: String,
     pub target_revision: String,
+    pub proposal_ref_released: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticRejectOutcome {
+    Planned,
+    Rejected,
+    AlreadyRejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SemanticRejectReport {
+    pub version: u32,
+    pub plan_id: String,
+    pub dry_run: bool,
+    pub outcome: SemanticRejectOutcome,
+    pub proposal_ref: String,
+    pub proposal_tip: String,
+    pub record_retained: bool,
 }
 
 pub fn create_semantic_plan(
@@ -184,7 +206,13 @@ pub fn load_semantic_plan_with_state_store(
 ) -> Result<SemanticPlanReport, AppError> {
     validate_plan_id(plan_id)?;
     let path = semantic_plan_path(store, plan_id);
-    let metadata = fs::metadata(&path).map_err(AppError::operation)?;
+    let metadata = fs::symlink_metadata(&path).map_err(AppError::operation)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(AppError::operation(format!(
+            "semantic plan at {} is not a regular file",
+            path.display()
+        )));
+    }
     if metadata.len() > MAX_SEMANTIC_PLAN_BYTES {
         return Err(AppError::operation(format!(
             "semantic plan at {} exceeds the {} byte limit",
@@ -202,6 +230,119 @@ pub fn load_semantic_plan_with_state_store(
 pub fn apply_semantic_plan(plan_id: &str, dry_run: bool) -> Result<SemanticApplyReport, AppError> {
     let store = SyncStateStore::user_default()?;
     apply_semantic_plan_with_state_store(plan_id, dry_run, &store)
+}
+
+pub fn reject_semantic_plan(
+    plan_id: &str,
+    dry_run: bool,
+) -> Result<SemanticRejectReport, AppError> {
+    let store = SyncStateStore::user_default()?;
+    reject_semantic_plan_with_state_store(plan_id, dry_run, &store)
+}
+
+pub fn reject_semantic_plan_with_state_store(
+    plan_id: &str,
+    dry_run: bool,
+    store: &SyncStateStore,
+) -> Result<SemanticRejectReport, AppError> {
+    let plan = load_semantic_plan_with_state_store(plan_id, store)?;
+    let engine = GitCliEngine::default();
+    let repository = engine
+        .discover_repository(&plan.vault)
+        .map_err(AppError::operation)?;
+    if repository_state_key(&plan.vault) != plan.repository_key {
+        return Err(AppError::operation(
+            "semantic plan vault identity no longer matches its repository key",
+        ));
+    }
+    let _lock = SemanticLock::acquire(&repository)?;
+    let mut plan = load_semantic_plan_with_state_store(plan_id, store)?;
+    if matches!(
+        plan.status,
+        SemanticPlanStatus::Applying | SemanticPlanStatus::Applied
+    ) {
+        return Err(AppError::operation(format!(
+            "semantic plan {plan_id} is already being applied or applied"
+        )));
+    }
+    if !matches!(
+        plan.status,
+        SemanticPlanStatus::Ready | SemanticPlanStatus::Rejecting | SemanticPlanStatus::Rejected
+    ) {
+        return Err(AppError::operation(format!(
+            "semantic plan {plan_id} is not ready for rejection"
+        )));
+    }
+    let tip = GitOid::parse(
+        plan.proposal_tip
+            .clone()
+            .ok_or_else(|| AppError::operation("semantic plan has no proposal tip"))?,
+    )
+    .map_err(AppError::operation)?;
+    let proposal_ref = GitRefName::parse(plan.proposal_ref.clone()).map_err(AppError::operation)?;
+    let current = engine
+        .read_ref(&repository, &proposal_ref)
+        .map_err(AppError::operation)?;
+    if plan.status == SemanticPlanStatus::Rejected {
+        if current.is_some() {
+            return Err(AppError::operation(
+                "rejected semantic plan unexpectedly retains its proposal ref",
+            ));
+        }
+        return Ok(semantic_reject_report(
+            &plan,
+            dry_run,
+            SemanticRejectOutcome::AlreadyRejected,
+            &tip,
+        ));
+    }
+    if current.as_ref().is_some_and(|current| current != &tip) {
+        return Err(AppError::operation(
+            "semantic proposal ref changed before rejection",
+        ));
+    }
+    if plan.status == SemanticPlanStatus::Ready && current.is_none() {
+        return Err(AppError::operation(
+            "semantic proposal ref is missing before rejection",
+        ));
+    }
+    let report = semantic_reject_report(&plan, dry_run, SemanticRejectOutcome::Planned, &tip);
+    if dry_run {
+        return Ok(report);
+    }
+    if plan.status == SemanticPlanStatus::Ready {
+        plan.version = SEMANTIC_PLAN_VERSION;
+        plan.status = SemanticPlanStatus::Rejecting;
+        save_plan(store, &plan, false)?;
+    }
+    if current.is_some()
+        && engine
+            .delete_ref(&repository, &proposal_ref, &tip)
+            .map_err(AppError::operation)?
+            != GitRefDeleteResult::Deleted
+    {
+        return Err(AppError::operation(
+            "semantic proposal ref changed while rejecting the plan",
+        ));
+    }
+    if engine
+        .read_ref(&repository, &proposal_ref)
+        .map_err(AppError::operation)?
+        .is_some()
+    {
+        return Err(AppError::operation(
+            "semantic proposal ref still exists after rejection",
+        ));
+    }
+    plan.status = SemanticPlanStatus::Rejected;
+    plan.version = SEMANTIC_PLAN_VERSION;
+    save_plan(store, &plan, false)?;
+    Ok(semantic_reject_report(
+        &plan,
+        false,
+        SemanticRejectOutcome::Rejected,
+        &tip,
+    ))
 }
 
 pub fn apply_semantic_plan_with_state_store(
@@ -240,6 +381,18 @@ pub fn apply_semantic_plan_with_state_store(
     let proposal_ref = GitRefName::parse(plan.proposal_ref.clone()).map_err(AppError::operation)?;
     let remote = GitRemote::parse(plan.remote.clone()).map_err(AppError::operation)?;
     let live_ref = GitRefName::parse(plan.live_ref.clone()).map_err(AppError::operation)?;
+    let runtime = SemanticApplyRuntime {
+        engine: &engine,
+        repository: &repository,
+        store,
+        source: &source,
+        target: &target,
+        tip: &tip,
+        semantic_ref: &semantic_ref,
+        proposal_ref: &proposal_ref,
+        remote: &remote,
+        live_ref: &live_ref,
+    };
     if matches!(
         plan.status,
         SemanticPlanStatus::Applying | SemanticPlanStatus::Applied
@@ -249,21 +402,7 @@ pub fn apply_semantic_plan_with_state_store(
         .as_ref()
         == Some(&tip)
     {
-        validate_applied_inputs(
-            &engine,
-            &repository,
-            &proposal_ref,
-            &remote,
-            &live_ref,
-            &target,
-            &tip,
-        )?;
-        let report = semantic_apply_report(plan_id, dry_run, &semantic_ref, &source, &tip, &target);
-        if !dry_run && plan.status != SemanticPlanStatus::Applied {
-            plan.status = SemanticPlanStatus::Applied;
-            save_plan(store, &plan, false)?;
-        }
-        return Ok(report);
+        return finish_existing_semantic_application(plan_id, dry_run, &mut plan, &runtime);
     }
     validate_apply_inputs(
         &engine,
@@ -276,11 +415,20 @@ pub fn apply_semantic_plan_with_state_store(
         &target,
         &tip,
     )?;
-    let report = semantic_apply_report(plan_id, dry_run, &semantic_ref, &source, &tip, &target);
+    let report = semantic_apply_report(
+        plan_id,
+        dry_run,
+        &semantic_ref,
+        &source,
+        &tip,
+        &target,
+        false,
+    );
     if dry_run {
         return Ok(report);
     }
     plan.status = SemanticPlanStatus::Applying;
+    plan.version = SEMANTIC_PLAN_VERSION;
     save_plan(store, &plan, false)?;
     if engine
         .compare_and_swap_ref(&repository, &semantic_ref, &tip, Some(&source))
@@ -293,7 +441,67 @@ pub fn apply_semantic_plan_with_state_store(
     }
     plan.status = SemanticPlanStatus::Applied;
     save_plan(store, &plan, false)?;
-    Ok(report)
+    release_semantic_proposal_ref(&engine, &repository, &proposal_ref, &tip)?;
+    Ok(SemanticApplyReport {
+        proposal_ref_released: true,
+        ..report
+    })
+}
+
+struct SemanticApplyRuntime<'a> {
+    engine: &'a dyn GitEngine,
+    repository: &'a GitRepository,
+    store: &'a SyncStateStore,
+    source: &'a GitOid,
+    target: &'a GitOid,
+    tip: &'a GitOid,
+    semantic_ref: &'a GitRefName,
+    proposal_ref: &'a GitRefName,
+    remote: &'a GitRemote,
+    live_ref: &'a GitRefName,
+}
+
+fn finish_existing_semantic_application(
+    plan_id: &str,
+    dry_run: bool,
+    plan: &mut SemanticPlanReport,
+    runtime: &SemanticApplyRuntime<'_>,
+) -> Result<SemanticApplyReport, AppError> {
+    let proposal_ref_present =
+        validate_applied_inputs(runtime, plan.status == SemanticPlanStatus::Applied)?;
+    if dry_run {
+        return Ok(semantic_apply_report(
+            plan_id,
+            true,
+            runtime.semantic_ref,
+            runtime.source,
+            runtime.tip,
+            runtime.target,
+            !proposal_ref_present,
+        ));
+    }
+    if plan.status != SemanticPlanStatus::Applied {
+        plan.version = SEMANTIC_PLAN_VERSION;
+        plan.status = SemanticPlanStatus::Applied;
+        save_plan(runtime.store, plan, false)?;
+    }
+    if proposal_ref_present {
+        release_semantic_proposal_ref(
+            runtime.engine,
+            runtime.repository,
+            runtime.proposal_ref,
+            runtime.tip,
+        )?;
+    }
+    Ok(semantic_apply_report(
+        plan_id,
+        false,
+        runtime.semantic_ref,
+        runtime.source,
+        runtime.tip,
+        runtime.target,
+        true,
+    ))
 }
 
 fn validate_plan_inputs(
@@ -436,36 +644,48 @@ fn validate_apply_inputs(
 }
 
 fn validate_applied_inputs(
-    engine: &dyn GitEngine,
-    repository: &GitRepository,
-    proposal_ref: &GitRefName,
-    remote: &GitRemote,
-    live_ref: &GitRefName,
-    target: &GitOid,
-    tip: &GitOid,
-) -> Result<(), AppError> {
-    if engine
-        .read_ref(repository, proposal_ref)
+    runtime: &SemanticApplyRuntime<'_>,
+    allow_missing_proposal_ref: bool,
+) -> Result<bool, AppError> {
+    let proposal_ref_present = match runtime
+        .engine
+        .read_ref(runtime.repository, runtime.proposal_ref)
         .map_err(AppError::operation)?
-        .as_ref()
-        != Some(tip)
     {
-        return Err(AppError::operation(
-            "semantic proposal ref no longer identifies the applied proposal tip",
-        ));
-    }
-    if engine
-        .tree_oid(repository, tip)
+        Some(current) if current == *runtime.tip => true,
+        None if allow_missing_proposal_ref => false,
+        None => {
+            return Err(AppError::operation(
+                "semantic proposal ref is missing while application is incomplete",
+            ));
+        }
+        Some(_) => {
+            return Err(AppError::operation(
+                "semantic proposal ref no longer identifies the applied proposal tip",
+            ));
+        }
+    };
+    if runtime
+        .engine
+        .tree_oid(runtime.repository, runtime.tip)
         .map_err(AppError::operation)?
-        != engine
-            .tree_oid(repository, target)
+        != runtime
+            .engine
+            .tree_oid(runtime.repository, runtime.target)
             .map_err(AppError::operation)?
     {
         return Err(AppError::operation(
             "applied semantic proposal no longer matches the selected live target tree",
         ));
     }
-    validate_accepted_target(engine, repository, remote, live_ref, target)
+    validate_accepted_target(
+        runtime.engine,
+        runtime.repository,
+        runtime.remote,
+        runtime.live_ref,
+        runtime.target,
+    )?;
+    Ok(proposal_ref_present)
 }
 
 fn semantic_apply_report(
@@ -475,6 +695,7 @@ fn semantic_apply_report(
     source: &GitOid,
     tip: &GitOid,
     target: &GitOid,
+    proposal_ref_released: bool,
 ) -> SemanticApplyReport {
     SemanticApplyReport {
         version: SEMANTIC_PLAN_VERSION,
@@ -484,6 +705,51 @@ fn semantic_apply_report(
         previous_revision: source.to_string(),
         applied_revision: tip.to_string(),
         target_revision: target.to_string(),
+        proposal_ref_released,
+    }
+}
+
+fn release_semantic_proposal_ref(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    proposal_ref: &GitRefName,
+    tip: &GitOid,
+) -> Result<(), AppError> {
+    if engine
+        .delete_ref(repository, proposal_ref, tip)
+        .map_err(AppError::operation)?
+        != GitRefDeleteResult::Deleted
+    {
+        return Err(AppError::operation(
+            "semantic proposal ref changed while releasing the applied plan",
+        ));
+    }
+    if engine
+        .read_ref(repository, proposal_ref)
+        .map_err(AppError::operation)?
+        .is_some()
+    {
+        return Err(AppError::operation(
+            "semantic proposal ref still exists after release",
+        ));
+    }
+    Ok(())
+}
+
+fn semantic_reject_report(
+    plan: &SemanticPlanReport,
+    dry_run: bool,
+    outcome: SemanticRejectOutcome,
+    tip: &GitOid,
+) -> SemanticRejectReport {
+    SemanticRejectReport {
+        version: SEMANTIC_PLAN_VERSION,
+        plan_id: plan.plan_id.clone(),
+        dry_run,
+        outcome,
+        proposal_ref: plan.proposal_ref.clone(),
+        proposal_tip: tip.to_string(),
+        record_retained: true,
     }
 }
 
@@ -699,7 +965,7 @@ fn validate_loaded_plan(
     path: &Path,
     plan: &SemanticPlanReport,
 ) -> Result<(), AppError> {
-    if plan.version != SEMANTIC_PLAN_VERSION {
+    if !(1..=SEMANTIC_PLAN_VERSION).contains(&plan.version) {
         return Err(AppError::operation(format!(
             "unsupported semantic plan version {} at {}",
             plan.version,
@@ -764,7 +1030,15 @@ impl SemanticLock {
 
 #[cfg(test)]
 mod tests {
-    use super::{group_changed_paths, semantic_proposal_ref, validate_plan_id};
+    use super::{
+        group_changed_paths, load_semantic_plan_with_state_store, semantic_plan_path,
+        semantic_proposal_ref, validate_loaded_plan, validate_plan_id, SemanticPlanReport,
+        SemanticPlanStatus, SemanticPlanValidation,
+    };
+    use crate::sync_state::SyncStateStore;
+    use std::fs;
+    use std::path::Path;
+    use tempfile::tempdir;
 
     #[test]
     fn deterministic_groups_are_top_level_and_sorted() {
@@ -791,5 +1065,54 @@ mod tests {
         );
         assert!(validate_plan_id("01ARZ3NDEKTSV4RRFFQ69G5FAV").is_err());
         assert!(validate_plan_id("../unsafe").is_err());
+    }
+
+    #[test]
+    fn version_one_semantic_plan_records_remain_readable() {
+        let id = "01arz3ndektsv4rrffq69g5fav";
+        let plan = SemanticPlanReport {
+            version: 1,
+            plan_id: id.to_string(),
+            status: SemanticPlanStatus::Ready,
+            dry_run: false,
+            agent: false,
+            vault: "/tmp/vault".into(),
+            repository_key: "repository".to_string(),
+            semantic_ref: "refs/heads/main".to_string(),
+            proposal_ref: semantic_proposal_ref(id).expect("proposal ref").to_string(),
+            remote: "origin".to_string(),
+            live_ref: "refs/heads/__vulcan-sync/live".to_string(),
+            source_revision: "0".repeat(40),
+            target_revision: "1".repeat(40),
+            proposal_tip: Some("2".repeat(40)),
+            commits: Vec::new(),
+            validation: SemanticPlanValidation {
+                source_ref_matches: true,
+                source_is_ancestor: true,
+                target_is_accepted_live: true,
+                final_tree_matches_target: true,
+            },
+        };
+
+        validate_loaded_plan(id, Path::new("legacy-plan.json"), &plan).expect("version-one plan");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn semantic_plan_loader_rejects_symlinked_records() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempdir().expect("temporary directory");
+        let store = SyncStateStore::at(temporary.path().join("state"));
+        let id = "01arz3ndektsv4rrffq69g5fav";
+        let path = semantic_plan_path(&store, id);
+        fs::create_dir_all(path.parent().expect("plan parent")).expect("plan parent");
+        let outside = temporary.path().join("outside.json");
+        fs::write(&outside, b"{}\n").expect("outside record");
+        symlink(&outside, &path).expect("plan symlink");
+
+        let error =
+            load_semantic_plan_with_state_store(id, &store).expect_err("symlinked plan must fail");
+        assert!(error.to_string().contains("is not a regular file"));
     }
 }
