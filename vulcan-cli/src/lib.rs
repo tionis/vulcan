@@ -434,12 +434,12 @@ pub use cli::{
     PluginCommand, PluginEventArg, PluginSandboxArg, PropertySortArg, PublishCommand, PullCommand,
     QueryEngineArg, QueryFormatArg, RefactorCommand, RefreshMode, RenderArgs, RenderMode,
     RepairCommand, SavedCommand, SavedCreateCommand, SearchBackendArg, SearchMode, SearchSortArg,
-    SiteCommand, SkillCommand, SuggestCommand, SuggestLinkStatusArg, SyncCheckpointKindArg,
-    SyncCommand, SyncConflictSideArg, SyncSelectionArgs, SyncTargetArgs, TagSortArg, TasksCommand,
-    TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg,
-    TasksViewCommand, TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TextBundleCommand,
-    ToolCommand, ToolInitTemplateArg, TrustCommand, VaultCommand, VectorQueueCommand,
-    VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
+    SemanticGroupingArg, SiteCommand, SkillCommand, SuggestCommand, SuggestLinkStatusArg,
+    SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncSelectionArgs, SyncTargetArgs,
+    TagSortArg, TasksCommand, TasksListSourceArg, TasksPomodoroCommand, TasksTrackCommand,
+    TasksTrackSummaryPeriodArg, TasksViewCommand, TemplateEngineArg, TemplateRenderArgs,
+    TemplateSubcommand, TextBundleCommand, ToolCommand, ToolInitTemplateArg, TrustCommand,
+    VaultCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
 };
 
 use crate::commit::AutoCommitPolicy;

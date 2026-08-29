@@ -2414,6 +2414,8 @@ fn parses_sync_semantic_commands() {
         "main",
         "--to",
         "refs/vulcan/sync/local/live",
+        "--group-by",
+        "file",
         "--agent",
         "--dry-run",
     ])
@@ -2425,6 +2427,7 @@ fn parses_sync_semantic_commands() {
                 wiki: Some(ref wiki),
                 ref from,
                 ref to,
+                group_by: SemanticGroupingArg::File,
                 agent: true,
                 dry_run: true,
                 ..

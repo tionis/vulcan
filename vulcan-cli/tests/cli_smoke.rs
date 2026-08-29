@@ -4968,6 +4968,7 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
     );
     assert_eq!(dry["status"], "preview");
     assert_eq!(dry["dry_run"], true);
+    assert_eq!(dry["grouping"], "top_level");
     assert_eq!(dry["validation"]["final_tree_matches_target"], true);
     assert_eq!(dry["commits"].as_array().map(Vec::len), Some(2));
     assert!(dry["commits"].as_array().is_some_and(|commits| commits
@@ -4983,9 +4984,46 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
     )
     .is_empty());
 
+    let by_file = parse_stdout_json(
+        &sync(&[
+            "semantic-plan",
+            "--from",
+            &source,
+            "--to",
+            &target,
+            "--group-by",
+            "file",
+            "--dry-run",
+        ])
+        .success(),
+    );
+    assert_eq!(by_file["grouping"], "file");
+    assert_eq!(by_file["commits"].as_array().map(Vec::len), Some(3));
+    assert_eq!(by_file["commits"][0]["group"], "Area/One.md");
+    assert_eq!(by_file["commits"][1]["group"], "Area/Two.md");
+    assert_eq!(by_file["commits"][2]["group"], "Root.md");
+
+    let grouped_all = parse_stdout_json(
+        &sync(&[
+            "semantic-plan",
+            "--from",
+            &source,
+            "--to",
+            &target,
+            "--group-by",
+            "all",
+            "--dry-run",
+        ])
+        .success(),
+    );
+    assert_eq!(grouped_all["grouping"], "all");
+    assert_eq!(grouped_all["commits"].as_array().map(Vec::len), Some(1));
+    assert_eq!(grouped_all["commits"][0]["group"], "all changes");
+
     let plan =
         parse_stdout_json(&sync(&["semantic-plan", "--from", &source, "--to", &target]).success());
-    assert_eq!(plan["version"], 2);
+    assert_eq!(plan["version"], 3);
+    assert_eq!(plan["grouping"], "top_level");
     assert_eq!(plan["status"], "ready");
     assert_eq!(plan["validation"]["final_tree_matches_target"], true);
     assert_eq!(plan["commits"][0]["group"], "Area");
@@ -11848,6 +11886,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync run --max-retries <n>"));
     assert!(git_skill.contains("Vulcan-Sync-*` trailers"));
     assert!(git_skill.contains("vulcan sync semantic-plan"));
+    assert!(git_skill.contains("--group-by file"));
     assert!(git_skill.contains("semantic branch with compare-and-swap"));
     assert!(git_skill.contains("pause.reason"));
     assert!(git_skill.contains("head_moved"));

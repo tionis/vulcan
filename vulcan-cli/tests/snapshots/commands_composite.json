@@ -9009,6 +9009,21 @@
                 ]
               },
               {
+                "help": "Deterministic commit grouping strategy",
+                "id": "group_by",
+                "long": "group-by",
+                "possible_values": [
+                  "top-level",
+                  "file",
+                  "all"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "GROUP_BY"
+                ]
+              },
+              {
                 "help": "Request optional agent-assisted grouping",
                 "id": "agent",
                 "long": "agent",

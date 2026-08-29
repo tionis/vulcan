@@ -26,7 +26,8 @@ use vulcan_app::sync_proposals::{
     ResolutionProposal, ResolutionProposalOptions,
 };
 use vulcan_app::sync_semantic::{
-    create_semantic_plan_with_state_store, SemanticPlanOptions, SemanticPlanReport,
+    create_semantic_plan_with_state_store, SemanticGrouping, SemanticPlanOptions,
+    SemanticPlanReport,
 };
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::{
@@ -142,6 +143,8 @@ pub struct SemanticPlanRequest {
     pub remote: String,
     #[serde(default = "default_live_ref")]
     pub live_ref: String,
+    #[serde(default)]
+    pub grouping: SemanticGrouping,
     #[serde(default)]
     pub agent: bool,
     #[serde(default)]
@@ -458,6 +461,7 @@ impl<'a> CompanionService<'a> {
                     .map_err(|error| invalid_request(error.to_string()))?,
                 live_ref: GitRefName::parse(&request.live_ref)
                     .map_err(|error| invalid_request(error.to_string()))?,
+                grouping: request.grouping,
                 agent: request.agent,
                 dry_run: request.dry_run,
             },
@@ -843,6 +847,26 @@ mod tests {
             .as_array()
             .expect("operations")
             .contains(&json!("event_subscribe")));
+    }
+
+    #[test]
+    fn semantic_plan_requests_default_and_parse_deterministic_grouping() {
+        let default: SemanticPlanRequest = serde_json::from_value(json!({
+            "from": "main",
+            "to": "refs/vulcan/sync/local/live",
+            "semantic_ref": "refs/heads/main"
+        }))
+        .expect("default semantic plan request");
+        assert_eq!(default.grouping, SemanticGrouping::TopLevel);
+
+        let by_file: SemanticPlanRequest = serde_json::from_value(json!({
+            "from": "main",
+            "to": "refs/vulcan/sync/local/live",
+            "semantic_ref": "refs/heads/main",
+            "grouping": "file"
+        }))
+        .expect("file-grouped semantic plan request");
+        assert_eq!(by_file.grouping, SemanticGrouping::File);
     }
 
     #[test]

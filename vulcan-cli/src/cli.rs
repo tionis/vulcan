@@ -3919,6 +3919,14 @@ pub enum SyncCheckpointKindArg {
     Semantic,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum SemanticGroupingArg {
+    #[default]
+    TopLevel,
+    File,
+    All,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum SyncCommand {
     #[command(about = "Run one finite Git synchronization cycle")]
@@ -4053,6 +4061,13 @@ pub enum SyncCommand {
         semantic_ref: String,
         #[command(flatten)]
         target: SyncTargetArgs,
+        #[arg(
+            long,
+            value_enum,
+            default_value_t,
+            help = "Deterministic commit grouping strategy"
+        )]
+        group_by: SemanticGroupingArg,
         #[arg(long, help = "Request optional agent-assisted grouping")]
         agent: bool,
         #[arg(

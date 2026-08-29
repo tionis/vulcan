@@ -16,7 +16,7 @@ use vulcan_sync::{
     GitRepository, GitSyncOptions, GitSyncRefs,
 };
 
-pub const SEMANTIC_PLAN_VERSION: u32 = 2;
+pub const SEMANTIC_PLAN_VERSION: u32 = 3;
 const MAX_SEMANTIC_PLAN_BYTES: u64 = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +31,15 @@ pub enum SemanticPlanStatus {
     Rejected,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SemanticGrouping {
+    #[default]
+    TopLevel,
+    File,
+    All,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SemanticPlanOptions {
     pub from: String,
@@ -38,6 +47,7 @@ pub struct SemanticPlanOptions {
     pub semantic_ref: GitRefName,
     pub remote: GitRemote,
     pub live_ref: GitRefName,
+    pub grouping: SemanticGrouping,
     pub agent: bool,
     pub dry_run: bool,
 }
@@ -72,6 +82,8 @@ pub struct SemanticPlanReport {
     pub status: SemanticPlanStatus,
     pub dry_run: bool,
     pub agent: bool,
+    #[serde(default)]
+    pub grouping: SemanticGrouping,
     pub vault: PathBuf,
     pub repository_key: String,
     pub semantic_ref: String,
@@ -153,6 +165,7 @@ pub fn create_semantic_plan_with_state_store(
         engine
             .changed_paths(&repository, &source, &target)
             .map_err(AppError::operation)?,
+        options.grouping,
     );
     let mut report =
         initial_plan_report(&vault, options, &source, &target, &plan_id, &proposal_ref);
@@ -862,12 +875,21 @@ fn preview_commits(
         .collect()
 }
 
-fn group_changed_paths(paths: Vec<String>) -> BTreeMap<String, Vec<String>> {
+fn group_changed_paths(
+    mut paths: Vec<String>,
+    grouping: SemanticGrouping,
+) -> BTreeMap<String, Vec<String>> {
+    paths.sort();
+    paths.dedup();
     let mut groups = BTreeMap::<String, Vec<String>>::new();
     for path in paths {
-        let group = path
-            .split_once('/')
-            .map_or_else(|| path.clone(), |(top, _)| top.to_string());
+        let group = match grouping {
+            SemanticGrouping::TopLevel => path
+                .split_once('/')
+                .map_or_else(|| path.clone(), |(top, _)| top.to_string()),
+            SemanticGrouping::File => path.clone(),
+            SemanticGrouping::All => "all changes".to_string(),
+        };
         groups.entry(group).or_default().push(path);
     }
     groups
@@ -893,6 +915,7 @@ fn initial_plan_report(
         status: SemanticPlanStatus::Preview,
         dry_run: options.dry_run,
         agent: options.agent,
+        grouping: options.grouping,
         vault: vault.to_path_buf(),
         repository_key: repository_state_key(vault),
         semantic_ref: options.semantic_ref.to_string(),
@@ -1032,8 +1055,8 @@ impl SemanticLock {
 mod tests {
     use super::{
         group_changed_paths, load_semantic_plan_with_state_store, semantic_plan_path,
-        semantic_proposal_ref, validate_loaded_plan, validate_plan_id, SemanticPlanReport,
-        SemanticPlanStatus, SemanticPlanValidation,
+        semantic_proposal_ref, validate_loaded_plan, validate_plan_id, SemanticGrouping,
+        SemanticPlanReport, SemanticPlanStatus, SemanticPlanValidation,
     };
     use crate::sync_state::SyncStateStore;
     use std::fs;
@@ -1042,17 +1065,33 @@ mod tests {
 
     #[test]
     fn deterministic_groups_are_top_level_and_sorted() {
-        let groups = group_changed_paths(vec![
-            "Z.md".to_string(),
-            "Area/Two.md".to_string(),
-            "Area/One.md".to_string(),
-            "A.md".to_string(),
-        ]);
+        let groups = group_changed_paths(
+            vec![
+                "Z.md".to_string(),
+                "Area/Two.md".to_string(),
+                "Area/One.md".to_string(),
+                "A.md".to_string(),
+            ],
+            SemanticGrouping::TopLevel,
+        );
         assert_eq!(
             groups.keys().cloned().collect::<Vec<_>>(),
             ["A.md", "Area", "Z.md"]
         );
-        assert_eq!(groups["Area"], ["Area/Two.md", "Area/One.md"]);
+        assert_eq!(groups["Area"], ["Area/One.md", "Area/Two.md"]);
+    }
+
+    #[test]
+    fn deterministic_grouping_supports_file_and_all_strategies() {
+        let paths = vec!["Area/Two.md".to_string(), "Area/One.md".to_string()];
+        let by_file = group_changed_paths(paths.clone(), SemanticGrouping::File);
+        assert_eq!(
+            by_file.keys().cloned().collect::<Vec<_>>(),
+            ["Area/One.md", "Area/Two.md"]
+        );
+        let all = group_changed_paths(paths, SemanticGrouping::All);
+        assert_eq!(all.keys().cloned().collect::<Vec<_>>(), ["all changes"]);
+        assert_eq!(all["all changes"], ["Area/One.md", "Area/Two.md"]);
     }
 
     #[test]
@@ -1076,6 +1115,7 @@ mod tests {
             status: SemanticPlanStatus::Ready,
             dry_run: false,
             agent: false,
+            grouping: SemanticGrouping::TopLevel,
             vault: "/tmp/vault".into(),
             repository_key: "repository".to_string(),
             semantic_ref: "refs/heads/main".to_string(),
@@ -1095,6 +1135,14 @@ mod tests {
         };
 
         validate_loaded_plan(id, Path::new("legacy-plan.json"), &plan).expect("version-one plan");
+        let mut legacy = serde_json::to_value(&plan).expect("serialize legacy fixture");
+        legacy
+            .as_object_mut()
+            .expect("plan object")
+            .remove("grouping");
+        let decoded: SemanticPlanReport =
+            serde_json::from_value(legacy).expect("decode plan without grouping field");
+        assert_eq!(decoded.grouping, SemanticGrouping::TopLevel);
     }
 
     #[cfg(unix)]

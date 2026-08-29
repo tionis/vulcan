@@ -1,7 +1,7 @@
 use crate::output::print_json;
 use crate::{
-    selected_permission_guard, Cli, CliError, OutputFormat, SyncCheckpointKindArg, SyncCommand,
-    SyncConflictSideArg, SyncSelectionArgs,
+    selected_permission_guard, Cli, CliError, OutputFormat, SemanticGroupingArg,
+    SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncSelectionArgs,
 };
 use serde::Serialize;
 use vulcan_app::sync::{
@@ -27,7 +27,8 @@ use vulcan_app::sync_proposals::{
 };
 use vulcan_app::sync_semantic::{
     apply_semantic_plan, create_semantic_plan, load_semantic_plan, reject_semantic_plan,
-    SemanticApplyReport, SemanticPlanOptions, SemanticPlanReport, SemanticRejectReport,
+    SemanticApplyReport, SemanticGrouping, SemanticPlanOptions, SemanticPlanReport,
+    SemanticRejectReport,
 };
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
@@ -172,6 +173,7 @@ fn handle_non_cycle_sync_command(
             to,
             semantic_ref,
             target,
+            group_by,
             agent,
             dry_run,
         } => run_semantic_plan(
@@ -182,6 +184,7 @@ fn handle_non_cycle_sync_command(
             to,
             semantic_ref,
             target,
+            *group_by,
             *agent,
             *dry_run,
         ),
@@ -320,6 +323,7 @@ fn run_semantic_plan(
     to: &str,
     semantic_ref: &str,
     target: &crate::SyncTargetArgs,
+    group_by: SemanticGroupingArg,
     agent: bool,
     dry_run: bool,
 ) -> Result<(), CliError> {
@@ -333,6 +337,11 @@ fn run_semantic_plan(
             semantic_ref: GitRefName::parse(semantic_ref).map_err(CliError::operation)?,
             remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
             live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
+            grouping: match group_by {
+                SemanticGroupingArg::TopLevel => SemanticGrouping::TopLevel,
+                SemanticGroupingArg::File => SemanticGrouping::File,
+                SemanticGroupingArg::All => SemanticGrouping::All,
+            },
             agent,
             dry_run,
         },
