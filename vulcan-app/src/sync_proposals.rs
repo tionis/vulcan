@@ -364,6 +364,7 @@ pub struct ApproveResolutionProposalOptions {
 #[serde(rename_all = "snake_case")]
 pub enum ResolutionProposalAuditAction {
     Approved,
+    Rejected,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -379,8 +380,28 @@ pub struct ResolutionProposalAuditRecord {
     pub prompt_contract_version: u32,
     pub tool_contract_version: u32,
     pub proposal_tree: String,
-    pub resolution_commit: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_commit: Option<String>,
     pub validation: Vec<ResolutionProposalValidationCheck>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RejectResolutionProposalOutcome {
+    Planned,
+    Rejected,
+    AlreadyRejected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct RejectResolutionProposalReport {
+    pub vault: PathBuf,
+    pub repository_key: String,
+    pub conflict_id: String,
+    pub proposal_id: String,
+    pub dry_run: bool,
+    pub outcome: RejectResolutionProposalOutcome,
+    pub event_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -570,6 +591,88 @@ pub fn load_resolution_proposal(
     Ok(proposal)
 }
 
+pub fn reject_resolution_proposal_with_state_store(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_id: &str,
+    dry_run: bool,
+    state_store: &SyncStateStore,
+) -> Result<RejectResolutionProposalReport, AppError> {
+    let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let repository_key = repository_state_key(&vault);
+    let conflict_store = SyncConflictStore::from_state_store(state_store);
+    let conflict = conflict_store.get(&repository_key, conflict_id)?;
+    if conflict.work_tree != vault {
+        return Err(AppError::operation(
+            "sync conflict record does not belong to the selected worktree",
+        ));
+    }
+    let proposal =
+        load_resolution_proposal(state_store, &repository_key, conflict_id, proposal_id)?;
+    validate_proposal_inputs(&conflict, &proposal)?;
+    let rejection = proposal_rejection_record(&proposal);
+    let existing_rejection = load_proposal_audit(state_store, &rejection)?;
+    ensure_proposal_has_no_resolution(&conflict_store, &repository_key, &proposal)?;
+    if existing_rejection.is_some() {
+        return Ok(rejection_report(
+            &vault,
+            &proposal,
+            dry_run,
+            RejectResolutionProposalOutcome::AlreadyRejected,
+            &rejection.event_id,
+        ));
+    }
+    if dry_run {
+        return Ok(rejection_report(
+            &vault,
+            &proposal,
+            true,
+            RejectResolutionProposalOutcome::Planned,
+            &rejection.event_id,
+        ));
+    }
+
+    let engine = vulcan_sync::GitCliEngine::default();
+    let repository = engine
+        .discover_repository(&vault)
+        .map_err(AppError::operation)?;
+    let _lock = ProposalLock::acquire(&repository)?;
+    ensure_proposal_has_no_resolution(&conflict_store, &repository_key, &proposal)?;
+    if load_proposal_audit(state_store, &rejection)?.is_some() {
+        return Ok(rejection_report(
+            &vault,
+            &proposal,
+            false,
+            RejectResolutionProposalOutcome::AlreadyRejected,
+            &rejection.event_id,
+        ));
+    }
+    save_proposal_audit(state_store, &rejection)?;
+    Ok(rejection_report(
+        &vault,
+        &proposal,
+        false,
+        RejectResolutionProposalOutcome::Rejected,
+        &rejection.event_id,
+    ))
+}
+
+pub fn reject_resolution_proposal(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_id: &str,
+    dry_run: bool,
+) -> Result<RejectResolutionProposalReport, AppError> {
+    let state_store = SyncStateStore::user_default()?;
+    reject_resolution_proposal_with_state_store(
+        paths,
+        conflict_id,
+        proposal_id,
+        dry_run,
+        &state_store,
+    )
+}
+
 pub fn approve_resolution_proposal_with_state_store(
     paths: &VaultPaths,
     conflict_id: &str,
@@ -591,6 +694,7 @@ pub fn approve_resolution_proposal_with_state_store(
     let proposal =
         load_resolution_proposal(state_store, &repository_key, conflict_id, proposal_id)?;
     validate_proposal_inputs(&record, &proposal)?;
+    ensure_proposal_not_rejected(state_store, &proposal)?;
     let engine = vulcan_sync::GitCliEngine::default();
     let repository = engine
         .discover_repository(&vault)
@@ -686,6 +790,7 @@ fn apply_approved_proposal(
 ) -> Result<ApproveResolutionProposalReport, AppError> {
     let _lock = ProposalLock::acquire(repository)?;
     cancellation_check(cancellation)?;
+    ensure_proposal_not_rejected(context.state_store, context.proposal)?;
     verify_preserved_conflict_refs(engine, repository, context.record)?;
     revalidate_proposal_tree(engine, repository, context.record, context.proposal, true)?;
     revalidate_proposal_whole_tree(context.paths, engine, repository, context.proposal)?;
@@ -1191,18 +1296,136 @@ fn save_approval_audit(
         prompt_contract_version: proposal.prompt_contract_version,
         tool_contract_version: proposal.tool_contract_version,
         proposal_tree: proposal.proposal_tree.clone(),
-        resolution_commit: resolution.resolution_commit.clone(),
+        resolution_commit: Some(resolution.resolution_commit.clone()),
         validation: proposal.validation.clone(),
     };
+    save_proposal_audit(store, &record)
+}
+
+fn proposal_rejection_record(proposal: &ResolutionProposal) -> ResolutionProposalAuditRecord {
+    let event_id = blake3::hash(
+        format!(
+            "rejected\0{}\0{}",
+            proposal.conflict_id, proposal.proposal_id
+        )
+        .as_bytes(),
+    )
+    .to_hex()[..32]
+        .to_string();
+    ResolutionProposalAuditRecord {
+        version: RESOLUTION_PROPOSAL_AUDIT_VERSION,
+        event_id,
+        repository_key: proposal.repository_key.clone(),
+        conflict_id: proposal.conflict_id.clone(),
+        proposal_id: proposal.proposal_id.clone(),
+        action: ResolutionProposalAuditAction::Rejected,
+        provider: proposal.provider.clone(),
+        model: proposal.model.clone(),
+        prompt_contract_version: proposal.prompt_contract_version,
+        tool_contract_version: proposal.tool_contract_version,
+        proposal_tree: proposal.proposal_tree.clone(),
+        resolution_commit: None,
+        validation: proposal.validation.clone(),
+    }
+}
+
+fn proposal_audit_path(store: &SyncStateStore, record: &ResolutionProposalAuditRecord) -> PathBuf {
+    store
+        .root()
+        .join(&record.repository_key)
+        .join("conflicts")
+        .join(&record.conflict_id)
+        .join("audit")
+        .join(format!("{}.json", record.event_id))
+}
+
+fn load_proposal_audit(
+    store: &SyncStateStore,
+    expected: &ResolutionProposalAuditRecord,
+) -> Result<Option<ResolutionProposalAuditRecord>, AppError> {
+    let path = proposal_audit_path(store, expected);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(AppError::operation(error)),
+    };
+    if bytes.len() > MAX_PROPOSAL_RECORD_BYTES {
+        return Err(AppError::operation(
+            "resolution proposal audit record exceeds its byte limit",
+        ));
+    }
+    let record: ResolutionProposalAuditRecord =
+        serde_json::from_slice(&bytes).map_err(AppError::operation)?;
+    if &record != expected {
+        return Err(AppError::operation(
+            "resolution proposal audit record identity mismatch",
+        ));
+    }
+    Ok(Some(record))
+}
+
+fn save_proposal_audit(
+    store: &SyncStateStore,
+    record: &ResolutionProposalAuditRecord,
+) -> Result<(), AppError> {
     let directory = store
         .root()
-        .join(&proposal.repository_key)
+        .join(&record.repository_key)
         .join("conflicts")
-        .join(&proposal.conflict_id)
+        .join(&record.conflict_id)
         .join("audit");
     fs::create_dir_all(&directory).map_err(AppError::operation)?;
     let path = directory.join(format!("{}.json", record.event_id));
-    write_json_noclobber(&directory, &path, &record)
+    write_json_noclobber(&directory, &path, record)
+}
+
+fn ensure_proposal_not_rejected(
+    store: &SyncStateStore,
+    proposal: &ResolutionProposal,
+) -> Result<(), AppError> {
+    if load_proposal_audit(store, &proposal_rejection_record(proposal))?.is_some() {
+        Err(AppError::operation(format!(
+            "resolution proposal `{}` was explicitly rejected",
+            proposal.proposal_id
+        )))
+    } else {
+        Ok(())
+    }
+}
+
+fn ensure_proposal_has_no_resolution(
+    store: &SyncConflictStore,
+    repository_key: &str,
+    proposal: &ResolutionProposal,
+) -> Result<(), AppError> {
+    if store
+        .get_resolution(repository_key, &proposal.conflict_id)?
+        .is_some()
+    {
+        Err(AppError::operation(
+            "the conflict already has a resolution in progress or applied",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn rejection_report(
+    vault: &Path,
+    proposal: &ResolutionProposal,
+    dry_run: bool,
+    outcome: RejectResolutionProposalOutcome,
+    event_id: &str,
+) -> RejectResolutionProposalReport {
+    RejectResolutionProposalReport {
+        vault: vault.to_path_buf(),
+        repository_key: proposal.repository_key.clone(),
+        conflict_id: proposal.conflict_id.clone(),
+        proposal_id: proposal.proposal_id.clone(),
+        dry_run,
+        outcome,
+        event_id: event_id.to_string(),
+    }
 }
 
 fn proposal_report(
@@ -2083,6 +2306,101 @@ mod tests {
         assert_eq!(
             fs::read_to_string(fixture.reader.join("Home.md")).expect("local note"),
             "reader\n"
+        );
+    }
+
+    #[test]
+    fn explicit_rejection_is_content_free_idempotent_and_blocks_approval() {
+        let fixture = conflict_fixture();
+        let proposal = create_resolution_proposal_with_provider(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &ResolutionProposalOptions {
+                permission_profile: "unrestricted".to_string(),
+                focused_context: Vec::new(),
+                allow_broad_context: false,
+            },
+            &FakeProvider { cancel: false },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect("proposal");
+        let refs_before = git_stdout(
+            &fixture.reader,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/vulcan",
+            ],
+        );
+        let rejection = proposal_rejection_record(&proposal);
+        let audit_path = proposal_audit_path(&fixture.store, &rejection);
+
+        let preview = reject_resolution_proposal_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &proposal.proposal_id,
+            true,
+            &fixture.store,
+        )
+        .expect("rejection preview");
+        assert_eq!(preview.outcome, RejectResolutionProposalOutcome::Planned);
+        assert!(!audit_path.exists());
+
+        let rejected = reject_resolution_proposal_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &proposal.proposal_id,
+            false,
+            &fixture.store,
+        )
+        .expect("rejection");
+        assert_eq!(rejected.outcome, RejectResolutionProposalOutcome::Rejected);
+        let audit = fs::read_to_string(&audit_path).expect("rejection audit");
+        assert!(audit.contains("\"action\": \"rejected\""));
+        assert!(!audit.contains(&proposal.explanation));
+        assert!(!audit.contains("agent resolution"));
+
+        let repeated = reject_resolution_proposal_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &proposal.proposal_id,
+            false,
+            &fixture.store,
+        )
+        .expect("idempotent rejection");
+        assert_eq!(
+            repeated.outcome,
+            RejectResolutionProposalOutcome::AlreadyRejected
+        );
+        let approval_error = approve_resolution_proposal_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &proposal.proposal_id,
+            &ApproveResolutionProposalOptions {
+                remote: GitRemote::parse("origin").expect("remote"),
+                live_ref: GitRefName::parse("refs/heads/__vulcan-sync/live").expect("live ref"),
+                dry_run: true,
+            },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect_err("rejected proposal cannot be approved");
+        assert!(approval_error.to_string().contains("explicitly rejected"));
+        assert_eq!(
+            fs::read_to_string(fixture.reader.join("Home.md")).expect("local note"),
+            "reader\n"
+        );
+        assert_eq!(
+            git_stdout(
+                &fixture.reader,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname)",
+                    "refs/vulcan"
+                ],
+            ),
+            refs_before
         );
     }
 

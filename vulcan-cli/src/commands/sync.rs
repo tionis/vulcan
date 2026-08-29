@@ -17,7 +17,8 @@ use vulcan_app::sync_conflicts::{
     SyncConflictResolutionSide,
 };
 use vulcan_app::sync_proposals::{
-    approve_resolution_proposal, ApproveResolutionProposalOptions, ApproveResolutionProposalReport,
+    approve_resolution_proposal, reject_resolution_proposal, ApproveResolutionProposalOptions,
+    ApproveResolutionProposalReport, RejectResolutionProposalReport,
 };
 #[cfg(feature = "web")]
 use vulcan_app::sync_proposals::{
@@ -125,6 +126,19 @@ fn handle_non_cycle_sync_command(
             api_key_env.as_deref(),
             context,
         ),
+        SyncCommand::Reject {
+            conflict_id,
+            proposal_id,
+            wiki,
+            dry_run,
+        } => run_sync_reject(
+            cli,
+            paths,
+            wiki.as_deref(),
+            conflict_id,
+            proposal_id,
+            *dry_run,
+        ),
         SyncCommand::Resolve {
             conflict_id,
             side,
@@ -175,6 +189,35 @@ fn handle_non_cycle_sync_command(
         SyncCommand::Run { .. } | SyncCommand::Status { .. } => return None,
     };
     Some(result)
+}
+
+fn run_sync_reject(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    conflict_id: &str,
+    proposal_id: &str,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let report = reject_resolution_proposal(&paths, conflict_id, proposal_id, dry_run)
+        .map_err(CliError::operation)?;
+    print_rejection_report(cli.output, &report)
+}
+
+fn print_rejection_report(
+    output: OutputFormat,
+    report: &RejectResolutionProposalReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Resolution proposal {}: {:?}",
+        report.proposal_id, report.outcome
+    );
+    Ok(())
 }
 
 #[cfg(feature = "web")]

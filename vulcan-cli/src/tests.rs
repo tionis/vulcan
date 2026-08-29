@@ -2346,6 +2346,34 @@ fn parses_sync_propose_command() {
 }
 
 #[test]
+fn parses_sync_reject_command() {
+    let command = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "reject",
+        "0123456789abcdef0123456789abcdef",
+        "fedcba9876543210fedcba9876543210",
+        "--wiki",
+        "personal",
+        "--dry-run",
+    ])
+    .expect("sync rejection should parse");
+    assert!(matches!(
+        command.command,
+        Command::Sync {
+            command: SyncCommand::Reject {
+                conflict_id,
+                proposal_id,
+                wiki: Some(wiki),
+                dry_run: true,
+            }
+        } if conflict_id == "0123456789abcdef0123456789abcdef"
+            && proposal_id == "fedcba9876543210fedcba9876543210"
+            && wiki == "personal"
+    ));
+}
+
+#[test]
 fn parses_sync_checkpoint_command() {
     let checkpoint = Cli::try_parse_from([
         "vulcan",

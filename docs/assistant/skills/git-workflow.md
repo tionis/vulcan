@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 28
+version: 29
 tools:
   - git_status
   - git_diff
@@ -35,6 +35,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - If doctor reports `state.apply-marker`, a worktree application may have been interrupted. Preserve the marker and transaction journal, avoid editing Vulcan-owned refs, and rerun a finite sync so Vulcan can recapture current bytes and verify the accepted tree. The marker lives in the private Git directory and is cleared only after successful verification.
 - Use `vulcan sync conflicts` to list unresolved preserved conflicts for the selected vault, `vulcan sync conflicts <id>` for the immutable full record and current resolution state, or add `--wiki <id>` for a registered wiki. Detail output gives each path a stable `classification` with its conflict class, content kind, matched policy rule, configured action, effective action, and diagnostic code. Artifact paths are device-local evidence, not vault-relative note paths.
 - Use `vulcan sync propose <conflict-id> --model <model> [--base-url <openai-compatible-base>]` only after the user requests model-assisted conflict resolution. Add `--api-key-env <name>` to read credentials from the environment, never from vault files or command arguments, and repeat `--context <vault-relative-path>` only for specifically relevant paths. Proposal generation sends bounded exact base/local/remote text, requires Git/read/network grants, retains an unreferenced review tree and JSON record, and does not update live refs or the worktree.
+- If the user declines a retained proposal, preview `vulcan sync reject <conflict-id> <proposal-id> --dry-run`, then rerun without `--dry-run` after confirmation. Rejection writes an immutable content-free audit decision, preserves the proposal and original conflict objects, is idempotent, and permanently prevents that proposal ID from being approved.
 - Only after the user explicitly chooses a preserved side, preview it with `vulcan sync resolve <id> --side base|local|remote --dry-run`, then rerun without `--dry-run` on approval. The choice applies only to conflicted paths while retaining clean merge results; Vulcan captures current bytes first, rejects stale inputs, publishes with compare-and-swap, and retains the original conflict refs and record.
 - When a reviewed agent workflow has already retained a proposal ID, preview that exact object with `vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run`. Applying it requires the same command without `--dry-run` and explicit user approval. Never substitute a proposal ID, bypass stale-input or parser failures, or treat model output as accepted merely because proposal generation succeeded; approval reconstructs and validates the tree, captures recovery state, uses a remote lease, and writes a content-free audit record.
 - Inspect JSON sync reports: `state.recovered_from` means Vulcan found an interruption-sensitive device-local transaction and recaptured before continuing; `state.retained` identifies the exact paused, conflicted, cancelled, or failed phase and any captured object IDs available for follow-up.

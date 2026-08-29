@@ -5178,6 +5178,67 @@ fn sync_resolve_cli_previews_and_explicitly_approves_a_retained_proposal() {
 }
 
 #[test]
+fn sync_reject_cli_previews_records_and_blocks_proposal_approval() {
+    let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
+    let store = SyncStateStore::at(state_home.join("vulcan/sync/repositories"));
+    let proposal = create_resolution_proposal_with_provider(
+        &VaultPaths::new(&reader),
+        &id,
+        &ResolutionProposalOptions {
+            permission_profile: "unrestricted".to_string(),
+            focused_context: Vec::new(),
+            allow_broad_context: false,
+        },
+        &CliResolutionProvider,
+        &SyncCancellationToken::default(),
+        &store,
+    )
+    .expect("retained proposal");
+    let run_reject = |dry_run: bool| {
+        let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+        command
+            .env("XDG_STATE_HOME", &state_home)
+            .arg("--vault")
+            .arg(&reader)
+            .args([
+                "--output",
+                "json",
+                "sync",
+                "reject",
+                &id,
+                &proposal.proposal_id,
+            ]);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        command.assert().success()
+    };
+
+    assert_eq!(parse_stdout_json(&run_reject(true))["outcome"], "planned");
+    assert_eq!(parse_stdout_json(&run_reject(false))["outcome"], "rejected");
+    assert_eq!(
+        parse_stdout_json(&run_reject(false))["outcome"],
+        "already_rejected"
+    );
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&reader)
+        .args([
+            "sync",
+            "resolve",
+            &id,
+            "--approve-proposal",
+            &proposal.proposal_id,
+            "--dry-run",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("explicitly rejected"));
+}
+
+#[test]
 fn sync_propose_cli_calls_an_openai_compatible_provider_without_applying_output() {
     let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
     let server = MockWebServer::spawn();
@@ -11768,6 +11829,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("`provenance_revision`"));
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
     assert!(git_skill.contains("vulcan sync propose <conflict-id> --model <model>"));
+    assert!(git_skill.contains("vulcan sync reject <conflict-id> <proposal-id> --dry-run"));
     assert!(git_skill
         .contains("vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run"));
     assert!(git_skill.contains("vulcan sync checkpoint [<wiki>] --dry-run"));

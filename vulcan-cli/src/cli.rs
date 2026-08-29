@@ -572,6 +572,7 @@ Subcommands:
   doctor       diagnose Git, refs, filters, recovery state, and cache coherence
   conflicts    list preserved conflicts or show one immutable record
   propose      ask an OpenAI-compatible provider for a review-only conflict proposal
+  reject       explicitly reject a retained conflict proposal
   resolve      resolve with one explicit preserved side or approved proposal
   checkpoint   retain the currently accepted live commit under a durable local ref
   pause        disable future automatic sync for one registered wiki
@@ -595,6 +596,7 @@ Examples:
   vulcan sync conflicts
   vulcan sync conflicts <conflict-id>
   vulcan sync propose <conflict-id> --model <model> --base-url <url>
+  vulcan sync reject <conflict-id> <proposal-id> --dry-run
   vulcan sync resolve <conflict-id> --side local --dry-run
   vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run
   vulcan sync checkpoint personal --kind recovery
@@ -3973,6 +3975,17 @@ pub enum SyncCommand {
             help = "Permit and identify one focused vault-relative context path"
         )]
         context: Vec<String>,
+    },
+    #[command(about = "Explicitly reject a retained conflict proposal")]
+    Reject {
+        #[arg(help = "Immutable conflict ID containing the proposal")]
+        conflict_id: String,
+        #[arg(help = "Immutable proposal ID to reject")]
+        proposal_id: String,
+        #[arg(long, help = "Optional registered wiki ID")]
+        wiki: Option<String>,
+        #[arg(long, help = "Validate and report without recording the rejection")]
+        dry_run: bool,
     },
     #[command(about = "Resolve a conflict with an explicit side or approved proposal")]
     Resolve {
