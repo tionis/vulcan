@@ -225,6 +225,7 @@ fn handle_retention_command(
             live_epoch_max_commits,
             recovery_checkpoints_keep,
             dry_run,
+            rollover,
         } => Some(run_sync_retention_apply(
             cli,
             paths,
@@ -233,6 +234,7 @@ fn handle_retention_command(
             *live_epoch_max_commits,
             *recovery_checkpoints_keep,
             *dry_run,
+            *rollover,
         )),
         _ => None,
     }
@@ -631,6 +633,7 @@ fn run_sync_retention_apply(
     live_epoch_max_commits: usize,
     recovery_checkpoints_keep: usize,
     dry_run: bool,
+    rollover: bool,
 ) -> Result<(), CliError> {
     let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
@@ -645,6 +648,7 @@ fn run_sync_retention_apply(
             },
         },
         dry_run,
+        rollover,
     )
     .map_err(CliError::operation)?;
     print_sync_retention_apply(cli.output, &report)
@@ -670,7 +674,12 @@ fn print_sync_retention_apply(
             "released"
         }
     );
-    if report.plan.active_epoch.rollover_required {
+    if let Some(rollover) = &report.epoch_rollover {
+        println!(
+            "Live epoch rolled over to {} with archive {}.",
+            rollover.root_revision, rollover.remote_archive_ref
+        );
+    } else if report.plan.active_epoch.rollover_required {
         println!("Live epoch rollover remains required and was not applied.");
     }
     Ok(())

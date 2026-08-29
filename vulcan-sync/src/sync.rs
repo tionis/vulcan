@@ -9,6 +9,7 @@ use crate::{
 };
 use fs2::FileExt;
 use serde::Serialize;
+use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter, Write as _};
 use std::fs::{self, File, OpenOptions};
@@ -19,6 +20,15 @@ use std::time::Duration;
 
 const SYNC_PROTOCOL_VERSION: u32 = 1;
 const DEFAULT_LIVE_REF: &str = "refs/heads/__vulcan-sync/live";
+
+#[must_use]
+pub fn git_live_epoch_id(profile: &str, previous: &GitOid) -> String {
+    blake3::hash(
+        format!("vulcan-sync-epoch-v{SYNC_PROTOCOL_VERSION}\0{profile}\0{previous}").as_bytes(),
+    )
+    .to_hex()[..32]
+        .to_string()
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(transparent)]
@@ -1026,7 +1036,263 @@ fn reconcile(
     if engine.is_ancestor(&report.repository, &capture.commit, &remote)? {
         return Ok(Some((remote, GitSyncOutcome::Pulled, false)));
     }
+    if let Some(epoch) = epoch_root(engine, &report.repository, &report.refs, &remote)? {
+        if engine.is_ancestor(&report.repository, &epoch.root, &capture.commit)? {
+            return merge_divergence(engine, options, report, capture, remote, control);
+        }
+        return reconcile_epoch_root(engine, options, report, capture, remote, &epoch, control);
+    }
     merge_divergence(engine, options, report, capture, remote, control)
+}
+
+const MAX_EPOCH_DISCOVERY_COMMITS: usize = 100_001;
+const MAX_MISSED_EPOCHS: usize = 1_024;
+
+#[derive(Debug, Clone)]
+struct EpochRoot {
+    root: GitOid,
+    id: String,
+    previous: GitOid,
+    remote_archive: GitRefName,
+    local_archive: GitRefName,
+}
+
+fn epoch_root(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    refs: &GitSyncRefs,
+    live: &GitOid,
+) -> Result<Option<EpochRoot>, GitSyncError> {
+    for commit in engine.first_parent_history(repository, live, MAX_EPOCH_DISCOVERY_COMMITS)? {
+        let metadata = engine.commit_metadata(repository, &commit)?;
+        let Some(id) = trailer(&metadata.message, "Vulcan-Sync-Epoch") else {
+            continue;
+        };
+        if metadata.parents.is_empty() {
+            let previous = trailer(&metadata.message, "Vulcan-Sync-Previous-Epoch")
+                .ok_or_else(|| invalid_epoch("epoch root has no previous-epoch trailer"))
+                .and_then(|value| GitOid::parse(value).map_err(GitSyncError::from))?;
+            let remote_archive = trailer(&metadata.message, "Vulcan-Sync-Epoch-Archive")
+                .ok_or_else(|| invalid_epoch("epoch root has no archive-ref trailer"))
+                .and_then(|value| GitRefName::parse(value).map_err(GitSyncError::from))?;
+            let profile = refs
+                .local
+                .as_str()
+                .split('/')
+                .nth(3)
+                .ok_or_else(|| invalid_epoch("local sync ref has no profile component"))?;
+            if trailer(&metadata.message, "Vulcan-Sync-Profile") != Some(profile) {
+                return Err(invalid_epoch(
+                    "epoch root profile does not match this sync target",
+                ));
+            }
+            let expected_archive_prefix = format!("refs/heads/__vulcan-sync/epochs/{profile}/");
+            if !remote_archive
+                .as_str()
+                .starts_with(&expected_archive_prefix)
+            {
+                return Err(invalid_epoch(
+                    "epoch archive ref is outside the target profile",
+                ));
+            }
+            if id.len() != 32 || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(invalid_epoch(
+                    "epoch ID is not a 32-character hexadecimal value",
+                ));
+            }
+            if id != git_live_epoch_id(profile, &previous) {
+                return Err(invalid_epoch(
+                    "epoch ID does not match its profile and previous tip",
+                ));
+            }
+            if remote_archive.as_str() != format!("refs/heads/__vulcan-sync/epochs/{profile}/{id}")
+            {
+                return Err(invalid_epoch(
+                    "epoch archive ref does not match the epoch ID",
+                ));
+            }
+            let local_archive =
+                GitRefName::parse(format!("refs/vulcan/epochs/live/{profile}/{id}"))?;
+            return Ok(Some(EpochRoot {
+                root: commit,
+                id: id.to_string(),
+                previous,
+                remote_archive,
+                local_archive,
+            }));
+        }
+        return Err(invalid_epoch("epoch trailer appears on a non-root commit"));
+    }
+    Ok(None)
+}
+
+fn trailer<'a>(message: &'a str, key: &str) -> Option<&'a str> {
+    let prefix = format!("{key}: ");
+    let mut values = message
+        .lines()
+        .filter_map(|line| line.strip_prefix(&prefix));
+    let value = values.next()?;
+    if value.is_empty() || values.next().is_some() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn invalid_epoch(detail: &str) -> GitSyncError {
+    GitSyncError::Git(GitEngineError::UnsupportedRepository {
+        detail: format!("invalid Vulcan live epoch root: {detail}"),
+    })
+}
+
+fn reconcile_epoch_root(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    capture: &crate::GitCapture,
+    remote_live: GitOid,
+    epoch: &EpochRoot,
+    control: &mut AttemptControl<'_>,
+) -> Result<Option<(GitOid, GitSyncOutcome, bool)>, GitSyncError> {
+    let bridge_parent = epoch_bridge_parent(
+        engine,
+        options,
+        &report.repository,
+        &report.refs,
+        &capture.commit,
+        epoch.clone(),
+    )?;
+    let remote_tree = engine.tree_oid(&report.repository, &remote_live)?;
+    if capture.tree == remote_tree {
+        return Ok(Some((remote_live, GitSyncOutcome::Pulled, false)));
+    }
+
+    control.check()?;
+    control.emit(GitSyncPhase::Merging, report, None)?;
+    report.automatic_resolutions.clear();
+    let bridge = engine.create_reproducible_commit(
+        &report.repository,
+        &remote_tree,
+        std::slice::from_ref(&bridge_parent),
+        &format!(
+            "vulcan epoch reconciliation bridge\n\nVulcan-Sync-Version: 1\nVulcan-Sync-Epoch: {}\nVulcan-Sync-Previous-Epoch: {}\nVulcan-Sync-Semantic: false\n",
+            epoch.id, bridge_parent
+        ),
+    )?;
+    let mut merge = engine.merge_commits(&report.repository, &bridge, &capture.commit)?;
+    let tree = resolve_merge_candidate_tree(
+        engine,
+        options,
+        report,
+        control,
+        &capture.commit,
+        &bridge,
+        &mut merge,
+    );
+    let Some(tree) = tree else {
+        report.outcome = GitSyncOutcome::Conflicted;
+        report.conflict = Some(build_sync_conflict(
+            engine,
+            options,
+            &report.repository,
+            capture,
+            remote_live,
+            merge,
+        )?);
+        control.emit(GitSyncPhase::Conflicted, report, None)?;
+        return Ok(None);
+    };
+    if tree == remote_tree {
+        return Ok(Some((remote_live, GitSyncOutcome::Pulled, false)));
+    }
+    let rebased = engine.create_commit(
+        &report.repository,
+        &tree,
+        std::slice::from_ref(&remote_live),
+        &format!(
+            "vulcan live epoch reconciliation\n\n{}Vulcan-Sync-Rebased-Epoch: {}\nVulcan-Sync-Rebased-From: {}\n",
+            sync_trailers(&report.refs, options, capture.commit.as_str()),
+            epoch.id,
+            bridge_parent
+        ),
+    )?;
+    engine.update_ref(&report.repository, &report.refs.pending, &rebased)?;
+    control.check()?;
+    control.emit(GitSyncPhase::Pushing, report, None)?;
+    if !captured_worktree_is_current(engine, &report.repository, capture)? {
+        return Ok(None);
+    }
+    Ok(
+        match engine.push_ref(
+            &report.repository,
+            &options.remote,
+            &rebased,
+            &report.refs.live,
+            Some(&remote_live),
+        )? {
+            GitPushResult::Updated => Some((rebased, GitSyncOutcome::Merged, true)),
+            GitPushResult::Rejected => None,
+        },
+    )
+}
+
+fn epoch_bridge_parent(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    repository: &GitRepository,
+    refs: &GitSyncRefs,
+    capture: &GitOid,
+    mut epoch: EpochRoot,
+) -> Result<GitOid, GitSyncError> {
+    let mut visited = HashSet::new();
+    for _ in 0..MAX_MISSED_EPOCHS {
+        if !visited.insert(epoch.root.to_string()) {
+            return Err(invalid_epoch("epoch archive chain contains a cycle"));
+        }
+        let archived = fetch_epoch_archive(engine, options, repository, &epoch)?;
+        if engine.merge_base(repository, &archived, capture)?.is_some() {
+            return Ok(archived);
+        }
+        epoch = epoch_root(engine, repository, refs, &archived)?.ok_or_else(|| {
+            invalid_epoch("offline candidate has no common ancestry with the epoch archive chain")
+        })?;
+    }
+    Err(invalid_epoch(
+        "offline candidate exceeds the supported missed-epoch bound",
+    ))
+}
+
+fn fetch_epoch_archive(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    repository: &GitRepository,
+    epoch: &EpochRoot,
+) -> Result<GitOid, GitSyncError> {
+    if let Some(local_archive) = engine.read_ref(repository, &epoch.local_archive)? {
+        if local_archive != epoch.previous {
+            return Err(invalid_epoch(
+                "existing local archive does not match previous-epoch trailer",
+            ));
+        }
+    }
+    let archived = engine.fetch_ref(
+        repository,
+        &options.remote,
+        &epoch.remote_archive,
+        &epoch.local_archive,
+    )?;
+    if archived != epoch.previous {
+        return Err(invalid_epoch(
+            "fetched archive does not match previous-epoch trailer",
+        ));
+    }
+    let root_tree = engine.tree_oid(repository, &epoch.root)?;
+    if engine.tree_oid(repository, &archived)? != root_tree {
+        return Err(invalid_epoch(
+            "epoch root tree differs from its archived predecessor",
+        ));
+    }
+    Ok(archived)
 }
 
 fn merge_divergence(
@@ -1041,55 +1307,15 @@ fn merge_divergence(
     control.emit(GitSyncPhase::Merging, report, None)?;
     report.automatic_resolutions.clear();
     let mut merge = engine.merge_commits(&report.repository, &remote, &capture.commit)?;
-    let tree = if merge.clean {
-        merge.tree.clone()
-    } else {
-        match try_structured_merge(
-            engine,
-            options,
-            &report.repository,
-            merge.base.as_ref(),
-            &capture.commit,
-            &remote,
-            &merge.conflict_paths,
-        ) {
-            Ok(Some((tree, mut resolutions))) => {
-                let validation = merge
-                    .base
-                    .as_ref()
-                    .ok_or_else(|| "structured merge validation requires a merge base".to_string())
-                    .and_then(|base| {
-                        validate_automatic_tree(
-                            control,
-                            engine,
-                            &AutomaticMergeCandidate {
-                                repository: &report.repository,
-                                base,
-                                local: &capture.commit,
-                                remote: &remote,
-                                tree: &tree,
-                            },
-                            &mut resolutions,
-                        )
-                    });
-                match validation {
-                    Ok(()) => {
-                        report.automatic_resolutions = resolutions;
-                        Some(tree)
-                    }
-                    Err(detail) => {
-                        append_structured_merge_failure(&mut merge, &detail);
-                        None
-                    }
-                }
-            }
-            Ok(None) => None,
-            Err(detail) => {
-                append_structured_merge_failure(&mut merge, &detail);
-                None
-            }
-        }
-    };
+    let tree = resolve_merge_candidate_tree(
+        engine,
+        options,
+        report,
+        control,
+        &capture.commit,
+        &remote,
+        &mut merge,
+    );
     if tree.is_none() {
         report.outcome = GitSyncOutcome::Conflicted;
         report.conflict = Some(build_sync_conflict(
@@ -1133,6 +1359,65 @@ fn merge_divergence(
             GitPushResult::Rejected => None,
         },
     )
+}
+
+fn resolve_merge_candidate_tree(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    control: &mut AttemptControl<'_>,
+    local: &GitOid,
+    remote: &GitOid,
+    merge: &mut crate::GitMerge,
+) -> Option<GitOid> {
+    if merge.clean {
+        return merge.tree.clone();
+    }
+    match try_structured_merge(
+        engine,
+        options,
+        &report.repository,
+        merge.base.as_ref(),
+        local,
+        remote,
+        &merge.conflict_paths,
+    ) {
+        Ok(Some((tree, mut resolutions))) => {
+            let validation = merge
+                .base
+                .as_ref()
+                .ok_or_else(|| "structured merge validation requires a merge base".to_string())
+                .and_then(|base| {
+                    validate_automatic_tree(
+                        control,
+                        engine,
+                        &AutomaticMergeCandidate {
+                            repository: &report.repository,
+                            base,
+                            local,
+                            remote,
+                            tree: &tree,
+                        },
+                        &mut resolutions,
+                    )
+                });
+            match validation {
+                Ok(()) => {
+                    report.automatic_resolutions = resolutions;
+                    Some(tree)
+                }
+                Err(detail) => {
+                    append_structured_merge_failure(merge, &detail);
+                    None
+                }
+            }
+        }
+        Ok(None) => None,
+        Err(detail) => {
+            append_structured_merge_failure(merge, &detail);
+            None
+        }
+    }
 }
 
 struct AutomaticMergeCandidate<'a> {

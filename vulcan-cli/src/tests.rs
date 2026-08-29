@@ -2447,6 +2447,7 @@ fn parses_sync_retention_plan_command() {
         "--recovery-checkpoints-keep",
         "8",
         "--dry-run",
+        "--rollover",
     ])
     .expect("sync retention apply should parse");
     assert!(matches!(
@@ -2456,6 +2457,7 @@ fn parses_sync_retention_plan_command() {
                 wiki: Some(ref wiki),
                 recovery_checkpoints_keep: 8,
                 dry_run: true,
+                rollover: true,
                 ..
             }
         } if wiki == "personal"

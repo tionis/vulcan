@@ -1,8 +1,8 @@
-//! Read-only planning for Git live-history retention epochs.
+//! Planning and explicitly leased application for Git live-history retention.
 //!
-//! Planning is deliberately separate from rollover and expiry application.
-//! A checkpoint ref can be classified as expirable, but no ref is deleted and
-//! no canonical live tip is rewritten by this module.
+//! Planning is mutation-free. Application can independently expire recovery
+//! checkpoint refs and, when explicitly requested, archive an over-limit live
+//! epoch before replacing it with a same-tree root commit.
 
 use crate::AppError;
 use fs2::FileExt;
@@ -11,8 +11,8 @@ use std::fs::{self, File, OpenOptions};
 use std::path::PathBuf;
 use vulcan_core::VaultPaths;
 use vulcan_sync::{
-    GitEngine, GitOid, GitRefDeleteResult, GitRefName, GitReference, GitRemote, GitSyncOptions,
-    GitSyncRefs,
+    git_live_epoch_id, GitEngine, GitOid, GitPushResult, GitRefCreateResult, GitRefDeleteResult,
+    GitRefName, GitReference, GitRemote, GitSyncOptions, GitSyncRefs,
 };
 
 pub const SYNC_RETENTION_PLAN_VERSION: u32 = 1;
@@ -99,7 +99,19 @@ pub struct SyncRetentionApplyReport {
     pub plan: SyncRetentionPlanReport,
     pub released_recovery_checkpoints: Vec<SyncRetentionRefPlan>,
     pub epoch_rollover_applied: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub epoch_rollover: Option<SyncEpochRolloverReport>,
     pub semantic_refs_changed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncEpochRolloverReport {
+    pub epoch_id: String,
+    pub previous_revision: String,
+    pub root_revision: String,
+    pub local_archive_ref: GitRefName,
+    pub remote_archive_ref: GitRefName,
+    pub tree_unchanged: bool,
 }
 
 /// Builds a bounded, mutation-free retention plan for one synchronized vault.
@@ -191,12 +203,14 @@ pub fn apply_sync_retention(
     paths: &VaultPaths,
     options: &SyncRetentionPlanOptions,
     dry_run: bool,
+    rollover: bool,
 ) -> Result<SyncRetentionApplyReport, AppError> {
     if dry_run {
         return Ok(retention_apply_report(
             true,
             plan_sync_retention(paths, options)?,
             Vec::new(),
+            None,
         ));
     }
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
@@ -206,6 +220,11 @@ pub fn apply_sync_retention(
         .map_err(AppError::operation)?;
     let _lock = RetentionLock::acquire(&repository)?;
     let plan = plan_sync_retention(paths, options)?;
+    let epoch_rollover = if rollover && plan.active_epoch.rollover_required {
+        Some(rollover_live_epoch(&engine, &repository, options, &plan)?)
+    } else {
+        None
+    };
     let mut deleted = Vec::new();
     for candidate in &plan.recovery_checkpoints.expirable {
         let expected = GitOid::parse(&candidate.revision).map_err(AppError::operation)?;
@@ -224,22 +243,194 @@ pub fn apply_sync_retention(
             }
         }
     }
-    Ok(retention_apply_report(false, plan, deleted))
+    Ok(retention_apply_report(false, plan, deleted, epoch_rollover))
 }
 
 fn retention_apply_report(
     dry_run: bool,
     plan: SyncRetentionPlanReport,
     released_recovery_checkpoints: Vec<SyncRetentionRefPlan>,
+    epoch_rollover: Option<SyncEpochRolloverReport>,
 ) -> SyncRetentionApplyReport {
     SyncRetentionApplyReport {
         version: SYNC_RETENTION_PLAN_VERSION,
         dry_run,
         plan,
         released_recovery_checkpoints,
-        epoch_rollover_applied: false,
+        epoch_rollover_applied: epoch_rollover.is_some(),
+        epoch_rollover,
         semantic_refs_changed: false,
     }
+}
+
+fn rollover_live_epoch(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    options: &SyncRetentionPlanOptions,
+    plan: &SyncRetentionPlanReport,
+) -> Result<SyncEpochRolloverReport, AppError> {
+    let previous = GitOid::parse(&plan.accepted_revision).map_err(AppError::operation)?;
+    let previous_tree = engine
+        .tree_oid(repository, &previous)
+        .map_err(AppError::operation)?;
+    if engine
+        .snapshot_worktree_tree(repository, Some(&previous))
+        .map_err(AppError::operation)?
+        != previous_tree
+    {
+        return Err(AppError::operation(
+            "the worktree differs from the accepted live tree; synchronize before rolling over the epoch",
+        ));
+    }
+    let safety = engine
+        .safety_state(repository)
+        .map_err(AppError::operation)?;
+    if safety.staged_changes || safety.operation.is_some() {
+        return Err(AppError::operation(
+            "cannot roll over a live epoch while staged changes or a Git operation are present",
+        ));
+    }
+    let refs = GitSyncRefs::for_options(&GitSyncOptions {
+        remote: options.remote.clone(),
+        live_ref: options.live_ref.clone(),
+        ..GitSyncOptions::default()
+    })
+    .map_err(AppError::operation)?;
+    let profile = refs
+        .local
+        .as_str()
+        .split('/')
+        .nth(3)
+        .ok_or_else(|| AppError::operation("sync profile ref has no profile component"))?;
+    let epoch_id = git_live_epoch_id(profile, &previous);
+    let local_archive_ref =
+        GitRefName::parse(format!("refs/vulcan/epochs/live/{profile}/{epoch_id}"))
+            .map_err(AppError::operation)?;
+    let remote_archive_ref = GitRefName::parse(format!(
+        "refs/heads/__vulcan-sync/epochs/{profile}/{epoch_id}"
+    ))
+    .map_err(AppError::operation)?;
+    ensure_epoch_archive(
+        engine,
+        repository,
+        &options.remote,
+        &previous,
+        &local_archive_ref,
+        &remote_archive_ref,
+    )?;
+    let root = engine
+        .create_reproducible_commit(
+            repository,
+            &previous_tree,
+            &[],
+            &format!(
+                "vulcan live epoch root\n\nVulcan-Sync-Version: 1\nVulcan-Sync-Epoch: {epoch_id}\nVulcan-Sync-Previous-Epoch: {previous}\nVulcan-Sync-Epoch-Archive: {remote_archive_ref}\nVulcan-Sync-Profile: {profile}\nVulcan-Sync-Semantic: false\n"
+            ),
+        )
+        .map_err(AppError::operation)?;
+    publish_epoch_root(engine, repository, options, &previous, &root)?;
+    engine
+        .update_ref(repository, &refs.local, &root)
+        .map_err(AppError::operation)?;
+    engine
+        .update_ref(repository, &refs.fetched, &root)
+        .map_err(AppError::operation)?;
+    engine
+        .update_ref(repository, &refs.pending, &root)
+        .map_err(AppError::operation)?;
+    Ok(SyncEpochRolloverReport {
+        epoch_id,
+        previous_revision: previous.to_string(),
+        root_revision: root.to_string(),
+        local_archive_ref,
+        remote_archive_ref,
+        tree_unchanged: true,
+    })
+}
+
+fn ensure_epoch_archive(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    remote: &GitRemote,
+    previous: &GitOid,
+    local_archive_ref: &GitRefName,
+    remote_archive_ref: &GitRefName,
+) -> Result<(), AppError> {
+    match engine
+        .create_ref(repository, local_archive_ref, previous)
+        .map_err(AppError::operation)?
+    {
+        GitRefCreateResult::Created => {}
+        GitRefCreateResult::Exists => {
+            if engine
+                .read_ref(repository, local_archive_ref)
+                .map_err(AppError::operation)?
+                .as_ref()
+                != Some(previous)
+            {
+                return Err(AppError::operation(format!(
+                    "epoch archive ref {local_archive_ref} does not identify the expected previous live tip"
+                )));
+            }
+        }
+    }
+    match engine
+        .remote_ref(repository, remote, remote_archive_ref)
+        .map_err(AppError::operation)?
+    {
+        Some(current) if current != *previous => {
+            return Err(AppError::operation(format!(
+                "remote epoch archive {remote_archive_ref} identifies an unexpected object"
+            )))
+        }
+        Some(_) => {}
+        None => {
+            if engine
+                .push_ref(repository, remote, previous, remote_archive_ref, None)
+                .map_err(AppError::operation)?
+                != GitPushResult::Updated
+            {
+                return Err(AppError::operation(
+                    "remote epoch archive creation was rejected; the live ref was not changed",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn publish_epoch_root(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    options: &SyncRetentionPlanOptions,
+    previous: &GitOid,
+    root: &GitOid,
+) -> Result<(), AppError> {
+    match engine
+        .push_ref(
+            repository,
+            &options.remote,
+            root,
+            &options.live_ref,
+            Some(previous),
+        )
+        .map_err(AppError::operation)?
+    {
+        GitPushResult::Updated => {}
+        GitPushResult::Rejected => {
+            if engine
+                .remote_ref(repository, &options.remote, &options.live_ref)
+                .map_err(AppError::operation)?
+                .as_ref()
+                != Some(root)
+            {
+                return Err(AppError::operation(
+                    "live ref changed while the epoch rollover lease was being applied",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn accepted_revision(

@@ -116,6 +116,12 @@ pub trait GitEngine: Send + Sync {
         commit: &GitOid,
     ) -> Result<GitOid, GitEngineError>;
 
+    fn commit_metadata(
+        &self,
+        repository: &GitRepository,
+        commit: &GitOid,
+    ) -> Result<GitCommitMetadata, GitEngineError>;
+
     fn path_object(
         &self,
         repository: &GitRepository,
@@ -210,6 +216,13 @@ pub trait GitEngine: Send + Sync {
         ancestor: &GitOid,
         descendant: &GitOid,
     ) -> Result<bool, GitEngineError>;
+
+    fn merge_base(
+        &self,
+        repository: &GitRepository,
+        left: &GitOid,
+        right: &GitOid,
+    ) -> Result<Option<GitOid>, GitEngineError>;
 
     fn merge_commits(
         &self,
@@ -662,6 +675,13 @@ impl Display for GitRefName {
 pub struct GitReference {
     pub name: GitRefName,
     pub target: GitOid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitCommitMetadata {
+    pub tree: GitOid,
+    pub parents: Vec<GitOid>,
+    pub message: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1803,6 +1823,19 @@ impl GitEngine for GitCliEngine {
         GitOid::parse(stdout.trim())
     }
 
+    fn commit_metadata(
+        &self,
+        repository: &GitRepository,
+        commit: &GitOid,
+    ) -> Result<GitCommitMetadata, GitEngineError> {
+        let output = self.repository_output(
+            repository,
+            "read Git commit metadata",
+            ["cat-file", "commit", commit.as_str()],
+        )?;
+        parse_commit_metadata(&output.stdout)
+    }
+
     fn path_object(
         &self,
         repository: &GitRepository,
@@ -2178,6 +2211,36 @@ impl GitEngine for GitCliEngine {
             Some(0) => Ok(true),
             Some(1) => Ok(false),
             _ => Err(command_failed("compare commit ancestry", &output)),
+        }
+    }
+
+    fn merge_base(
+        &self,
+        repository: &GitRepository,
+        left: &GitOid,
+        right: &GitOid,
+    ) -> Result<Option<GitOid>, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command
+            .args(["merge-base", "--all"])
+            .arg(left.as_str())
+            .arg(right.as_str());
+        let output = self.execute(command)?;
+        match output.status.code() {
+            Some(0) => {
+                let stdout = decode_stdout("find the merge base", output.stdout)?;
+                let mut bases = stdout.lines().filter(|line| !line.trim().is_empty());
+                let base = bases.next().map(GitOid::parse).transpose()?;
+                if bases.next().is_some() {
+                    return Err(GitEngineError::UnsupportedRepository {
+                        detail: "sync conflict identity does not yet support multiple merge bases"
+                            .to_string(),
+                    });
+                }
+                Ok(base)
+            }
+            Some(1) => Ok(None),
+            _ => Err(command_failed("find the merge base", &output)),
         }
     }
 
@@ -2654,38 +2717,6 @@ impl GitEngine for GitCliEngine {
     }
 }
 
-impl GitCliEngine {
-    fn merge_base(
-        &self,
-        repository: &GitRepository,
-        left: &GitOid,
-        right: &GitOid,
-    ) -> Result<Option<GitOid>, GitEngineError> {
-        let mut command = self.repository_command(repository);
-        command
-            .args(["merge-base", "--all"])
-            .arg(left.as_str())
-            .arg(right.as_str());
-        let output = self.execute(command)?;
-        match output.status.code() {
-            Some(0) => {
-                let stdout = decode_stdout("find the merge base", output.stdout)?;
-                let mut bases = stdout.lines().filter(|line| !line.trim().is_empty());
-                let base = bases.next().map(GitOid::parse).transpose()?;
-                if bases.next().is_some() {
-                    return Err(GitEngineError::UnsupportedRepository {
-                        detail: "sync conflict identity does not yet support multiple merge bases"
-                            .to_string(),
-                    });
-                }
-                Ok(base)
-            }
-            Some(1) => Ok(None),
-            _ => Err(command_failed("find the merge base", &output)),
-        }
-    }
-}
-
 fn validate_git_source(source: &str) -> Result<(), GitEngineError> {
     if source.is_empty() || source.starts_with('-') || source.chars().any(char::is_control) {
         return Err(GitEngineError::UnsupportedRepository {
@@ -2853,6 +2884,50 @@ fn parse_reference_list(stdout: &[u8]) -> Result<Vec<GitReference>, GitEngineErr
     }
     references.sort_by(|left, right| left.name.as_str().cmp(right.name.as_str()));
     Ok(references)
+}
+
+fn parse_commit_metadata(source: &[u8]) -> Result<GitCommitMetadata, GitEngineError> {
+    let separator = source
+        .windows(2)
+        .position(|window| window == b"\n\n")
+        .ok_or_else(|| GitEngineError::InvalidOutput {
+            operation: "read Git commit metadata",
+            detail: "commit object has no header/message separator".to_string(),
+        })?;
+    let headers = std::str::from_utf8(&source[..separator]).map_err(|error| {
+        GitEngineError::InvalidOutput {
+            operation: "read Git commit metadata",
+            detail: error.to_string(),
+        }
+    })?;
+    let message = String::from_utf8(source[separator + 2..].to_vec()).map_err(|error| {
+        GitEngineError::InvalidOutput {
+            operation: "read Git commit metadata",
+            detail: error.to_string(),
+        }
+    })?;
+    let mut tree = None;
+    let mut parents = Vec::new();
+    for header in headers.lines() {
+        if let Some(value) = header.strip_prefix("tree ") {
+            if tree.replace(GitOid::parse(value)?).is_some() {
+                return Err(GitEngineError::InvalidOutput {
+                    operation: "read Git commit metadata",
+                    detail: "commit object contains more than one tree header".to_string(),
+                });
+            }
+        } else if let Some(value) = header.strip_prefix("parent ") {
+            parents.push(GitOid::parse(value)?);
+        }
+    }
+    Ok(GitCommitMetadata {
+        tree: tree.ok_or_else(|| GitEngineError::InvalidOutput {
+            operation: "read Git commit metadata",
+            detail: "commit object has no tree header".to_string(),
+        })?,
+        parents,
+        message,
+    })
 }
 
 fn redact_clone_source(mut error: GitEngineError, source: &str) -> GitEngineError {
@@ -4459,5 +4534,28 @@ mod tests {
             }]
         );
         assert!(requirements.git_lfs_available.is_some());
+    }
+
+    #[test]
+    fn commit_metadata_preserves_tree_parents_and_message() {
+        let tree = "1111111111111111111111111111111111111111";
+        let first_parent = "2222222222222222222222222222222222222222";
+        let second_parent = "3333333333333333333333333333333333333333";
+        let source = format!(
+            "tree {tree}\nparent {first_parent}\nparent {second_parent}\nauthor Vulcan <vulcan@example.invalid> 0 +0000\ncommitter Vulcan <vulcan@example.invalid> 0 +0000\n\nsubject\n\nVulcan-Sync-Epoch: abcdef\n"
+        );
+
+        let metadata = parse_commit_metadata(source.as_bytes()).expect("valid commit metadata");
+
+        assert_eq!(metadata.tree.as_str(), tree);
+        assert_eq!(
+            metadata
+                .parents
+                .iter()
+                .map(GitOid::as_str)
+                .collect::<Vec<_>>(),
+            [first_parent, second_parent]
+        );
+        assert_eq!(metadata.message, "subject\n\nVulcan-Sync-Epoch: abcdef\n");
     }
 }

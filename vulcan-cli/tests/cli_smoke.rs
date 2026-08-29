@@ -4939,8 +4939,10 @@ fn sync_checkpoint_cli_retains_the_accepted_commit_without_new_objects() {
         "--recovery-checkpoints-keep",
         "2",
         "--dry-run",
+        "--rollover",
     ]));
     assert_eq!(retention_preview["dry_run"], true);
+    assert_eq!(retention_preview["epoch_rollover_applied"], false);
     assert_eq!(
         retention_preview["plan"]["recovery_checkpoints"]["expirable"]
             .as_array()
@@ -5037,6 +5039,244 @@ fn sync_checkpoint_cli_retains_the_accepted_commit_without_new_objects() {
     assert!(registered["checkpoint_ref"]
         .as_str()
         .is_some_and(|reference| reference.starts_with("refs/vulcan/checkpoints/recovery/")));
+}
+
+#[test]
+fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_ancestry() {
+    let temporary = TempDir::new().expect("temp dir");
+    let state_home = temporary.path().join("state");
+    let remote = temporary.path().join("remote.git");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            remote.to_str().expect("remote"),
+        ],
+    );
+    let writer = temporary.path().join("writer");
+    fs::create_dir(&writer).expect("writer");
+    init_git_repo(&writer);
+    run_git_ok(
+        &writer,
+        &["remote", "add", "origin", remote.to_str().expect("remote")],
+    );
+    fs::write(writer.join("Home.md"), "base\n").expect("base note");
+    commit_all(&writer, "Base");
+    let sync = |vault: &std::path::Path| {
+        Command::cargo_bin("vulcan")
+            .expect("binary")
+            .env("XDG_STATE_HOME", &state_home)
+            .arg("--vault")
+            .arg(vault)
+            .args(["--output", "json", "sync", "run"])
+            .assert()
+            .success()
+    };
+    sync(&writer);
+
+    let reader = temporary.path().join("reader");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "clone",
+            "--quiet",
+            writer.to_str().expect("writer"),
+            reader.to_str().expect("reader"),
+        ],
+    );
+    run_git_ok(
+        &reader,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            remote.to_str().expect("remote"),
+        ],
+    );
+    sync(&reader);
+    let second_reader = temporary.path().join("second-reader");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "clone",
+            "--quiet",
+            writer.to_str().expect("writer"),
+            second_reader.to_str().expect("second reader"),
+        ],
+    );
+    run_git_ok(
+        &second_reader,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            remote.to_str().expect("remote"),
+        ],
+    );
+    sync(&second_reader);
+    let long_offline = temporary.path().join("long-offline");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "clone",
+            "--quiet",
+            writer.to_str().expect("writer"),
+            long_offline.to_str().expect("long-offline reader"),
+        ],
+    );
+    run_git_ok(
+        &long_offline,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            remote.to_str().expect("remote"),
+        ],
+    );
+    sync(&long_offline);
+
+    fs::write(writer.join("Writer.md"), "writer change\n").expect("writer change");
+    sync(&writer);
+    let previous_live = run_git_stdout(&remote, &["rev-parse", "refs/heads/__vulcan-sync/live"]);
+    fs::write(reader.join("Reader.md"), "reader offline change\n").expect("reader change");
+    fs::write(
+        second_reader.join("Second Reader.md"),
+        "second reader offline change\n",
+    )
+    .expect("second reader change");
+    fs::write(
+        long_offline.join("Long Offline.md"),
+        "change across two rollovers\n",
+    )
+    .expect("long-offline change");
+
+    let rollover = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&writer)
+        .args([
+            "--output",
+            "json",
+            "sync",
+            "retention-apply",
+            "--live-epoch-max-commits",
+            "1",
+            "--rollover",
+        ])
+        .assert()
+        .success();
+    let rollover = parse_stdout_json(&rollover);
+    assert_eq!(rollover["epoch_rollover_applied"], true);
+    assert_eq!(
+        rollover["epoch_rollover"]["previous_revision"],
+        previous_live
+    );
+    assert_eq!(rollover["epoch_rollover"]["tree_unchanged"], true);
+    let epoch_root = rollover["epoch_rollover"]["root_revision"]
+        .as_str()
+        .expect("root revision");
+    let remote_archive = rollover["epoch_rollover"]["remote_archive_ref"]
+        .as_str()
+        .expect("remote archive");
+    assert_eq!(
+        run_git_stdout(&remote, &["rev-parse", remote_archive]),
+        previous_live
+    );
+    assert_eq!(
+        run_git_stdout(&remote, &["rev-list", "--parents", "-n", "1", epoch_root]),
+        epoch_root
+    );
+
+    let reconciled = parse_stdout_json(&sync(&reader));
+    assert_eq!(reconciled["outcome"], "merged");
+    assert_eq!(
+        fs::read_to_string(reader.join("Writer.md")).expect("writer note pulled"),
+        "writer change\n"
+    );
+    assert_eq!(
+        fs::read_to_string(reader.join("Reader.md")).expect("reader note retained"),
+        "reader offline change\n"
+    );
+    let second_reconciled = parse_stdout_json(&sync(&second_reader));
+    assert_eq!(second_reconciled["outcome"], "merged");
+    assert_eq!(
+        fs::read_to_string(second_reader.join("Writer.md")).expect("writer note pulled"),
+        "writer change\n"
+    );
+    assert_eq!(
+        fs::read_to_string(second_reader.join("Reader.md")).expect("first reader note pulled"),
+        "reader offline change\n"
+    );
+    assert_eq!(
+        fs::read_to_string(second_reader.join("Second Reader.md"))
+            .expect("second reader note retained"),
+        "second reader offline change\n"
+    );
+    let new_live = run_git_stdout(&remote, &["rev-parse", "refs/heads/__vulcan-sync/live"]);
+    assert_ne!(new_live, epoch_root);
+    let ancestry = std::process::Command::new("git")
+        .current_dir(&remote)
+        .args(["merge-base", "--is-ancestor", &previous_live, &new_live])
+        .status()
+        .expect("ancestry check");
+    assert_eq!(ancestry.code(), Some(1));
+    assert_eq!(
+        run_git_stdout(&remote, &["rev-parse", remote_archive]),
+        previous_live
+    );
+
+    let pulled = parse_stdout_json(&sync(&writer));
+    assert_eq!(pulled["outcome"], "pulled");
+    assert_eq!(
+        fs::read_to_string(writer.join("Reader.md")).expect("reader note reaches writer"),
+        "reader offline change\n"
+    );
+    assert_eq!(
+        fs::read_to_string(writer.join("Second Reader.md"))
+            .expect("second reader note reaches writer"),
+        "second reader offline change\n"
+    );
+
+    let second_rollover = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&writer)
+        .args([
+            "--output",
+            "json",
+            "sync",
+            "retention-apply",
+            "--live-epoch-max-commits",
+            "1",
+            "--rollover",
+        ])
+        .assert()
+        .success();
+    assert_eq!(
+        parse_stdout_json(&second_rollover)["epoch_rollover_applied"],
+        true
+    );
+    let long_reconciled = parse_stdout_json(&sync(&long_offline));
+    assert_eq!(long_reconciled["outcome"], "merged");
+    assert_eq!(
+        fs::read_to_string(long_offline.join("Reader.md"))
+            .expect("first reader note crosses second rollover"),
+        "reader offline change\n"
+    );
+    assert_eq!(
+        fs::read_to_string(long_offline.join("Second Reader.md"))
+            .expect("second reader note crosses second rollover"),
+        "second reader offline change\n"
+    );
+    assert_eq!(
+        fs::read_to_string(long_offline.join("Long Offline.md"))
+            .expect("long-offline note retained"),
+        "change across two rollovers\n"
+    );
 }
 
 #[test]
@@ -12377,6 +12617,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync semantic-plan"));
     assert!(git_skill.contains("vulcan sync retention-plan [<wiki>]"));
     assert!(git_skill.contains("vulcan sync retention-apply [<wiki>] --dry-run"));
+    assert!(git_skill.contains("Add `--rollover` only when the user has explicitly chosen"));
+    assert!(git_skill.contains("Offline devices reconcile through that durable archive"));
     assert!(git_skill.contains("--group-by file"));
     assert!(git_skill.contains("semantic branch with compare-and-swap"));
     assert!(git_skill.contains("pause.reason"));

@@ -576,7 +576,7 @@ Subcommands:
   resolve      resolve with one explicit preserved side or approved proposal
   checkpoint   retain the currently accepted live commit under a durable local ref
   retention-plan inspect live-epoch and checkpoint retention without mutation
-  retention-apply release leased expirable recovery checkpoint refs
+  retention-apply release checkpoints and optionally roll over a live epoch
   pause        disable future automatic sync for one registered wiki
   resume       enable future automatic sync for one registered wiki
 
@@ -604,6 +604,7 @@ Examples:
   vulcan sync checkpoint personal --kind recovery
   vulcan sync retention-plan personal
   vulcan sync retention-apply personal --dry-run
+  vulcan sync retention-apply personal --rollover
   vulcan sync pause personal
   vulcan sync resume personal
   vulcan --vault ./wiki sync run --remote origin";
@@ -4121,6 +4122,11 @@ pub enum SyncCommand {
         recovery_checkpoints_keep: usize,
         #[arg(long, help = "Recompute and preview without deleting any refs")]
         dry_run: bool,
+        #[arg(
+            long,
+            help = "When required, archive the old remote tip and roll live to a same-tree epoch root"
+        )]
+        rollover: bool,
     },
     #[command(about = "Build a reviewable semantic history proposal")]
     SemanticPlan {
