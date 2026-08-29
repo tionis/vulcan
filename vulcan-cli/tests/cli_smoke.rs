@@ -5009,6 +5009,18 @@ fn sync_conflicts_cli_lists_and_shows_immutable_records() {
     let detail = parse_stdout_json(&command(&[&id]));
     assert_eq!(detail["record"]["id"], id);
     assert_eq!(detail["record"]["paths"][0]["path"], "Home.md");
+    assert_eq!(
+        detail["record"]["paths"][0]["classification"]["class"],
+        "overlapping_text"
+    );
+    assert_eq!(
+        detail["record"]["paths"][0]["classification"]["effective_resolution"],
+        "require_review"
+    );
+    assert_eq!(
+        detail["record"]["paths"][0]["classification"]["diagnostic_code"],
+        "sync.conflict.overlapping-text"
+    );
     assert_eq!(detail["resolution"], "unresolved");
     assert_eq!(
         fs::read_to_string(reader.join("Home.md")).expect("reader note"),
@@ -11596,6 +11608,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("device-local automation ceiling"));
     assert!(git_skill.contains("conflict_record"));
     assert!(git_skill.contains("vulcan sync conflicts <id>"));
+    assert!(git_skill.contains("stable `classification`"));
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
     assert!(git_skill.contains("vulcan sync checkpoint [<wiki>] --dry-run"));
     assert!(git_skill.contains("vulcan vault clone <remote> <path> --dry-run"));

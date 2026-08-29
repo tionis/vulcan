@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 use vulcan_core::{ScanSummary, VaultPaths};
 use vulcan_sync::{
-    GitCaptureRequest, GitConflictSide, GitEngine, GitMergeResolutionRequest, GitOid,
-    GitPushResult, GitRefName, GitRemote, GitRepository, GitSyncConflict, GitSyncOptions,
-    GitSyncRefs,
+    GitCaptureRequest, GitConflictClassification, GitConflictSide, GitEngine,
+    GitMergeResolutionRequest, GitOid, GitPushResult, GitRefName, GitRemote, GitRepository,
+    GitSyncConflict, GitSyncOptions, GitSyncRefs,
 };
 
 pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 1;
@@ -42,6 +42,8 @@ pub struct SyncConflictRecord {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncConflictPathRecord {
     pub path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub classification: Option<GitConflictClassification>,
     pub base: SyncConflictSideRecord,
     pub local: SyncConflictSideRecord,
     pub remote: SyncConflictSideRecord,
@@ -783,6 +785,11 @@ impl SyncConflictStore {
         for (index, path) in conflict.paths.iter().enumerate() {
             paths.push(SyncConflictPathRecord {
                 path: path.clone(),
+                classification: conflict
+                    .classifications
+                    .iter()
+                    .find(|classification| classification.path == *path)
+                    .cloned(),
                 base: preserve_side(
                     engine,
                     repository,
@@ -1105,6 +1112,15 @@ fn verify_record_inputs(
             .iter()
             .map(|path| &path.path)
             .ne(conflict.paths.iter())
+        || (record
+            .paths
+            .iter()
+            .any(|path| path.classification.is_some())
+            && record
+                .paths
+                .iter()
+                .filter_map(|path| path.classification.as_ref())
+                .ne(conflict.classifications.iter()))
     {
         return Err(AppError::operation(format!(
             "immutable conflict record `{}` does not match the current conflict inputs",

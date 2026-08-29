@@ -1042,6 +1042,25 @@ mod tests {
         assert_eq!(records, [record.clone()]);
     }
 
+    fn assert_overlapping_text_classification(record: &SyncConflictRecord) {
+        let classification = record.paths[0]
+            .classification
+            .as_ref()
+            .expect("structured conflict classification");
+        assert_eq!(
+            classification.class,
+            vulcan_sync::GitConflictClass::OverlappingText
+        );
+        assert_eq!(
+            classification.diagnostic_code,
+            "sync.conflict.overlapping-text"
+        );
+        assert_eq!(
+            classification.effective_resolution,
+            vulcan_sync::MergeResolution::RequireReview
+        );
+    }
+
     #[test]
     fn configured_sync_options_load_policy_and_only_reduce_automation() {
         let temporary = tempdir().expect("temporary directory");
@@ -1637,6 +1656,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         let record = report.conflict_record.expect("durable conflict record");
         assert_eq!(record.paths.len(), 1);
         assert_eq!(record.paths[0].path, "Home.md");
+        assert_overlapping_text_classification(&record);
         let conflict_root = store
             .root()
             .join(&record.repository_key)

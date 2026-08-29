@@ -223,11 +223,37 @@ pub struct GitSyncConflict {
     pub remote: GitOid,
     pub local: GitOid,
     pub paths: Vec<String>,
+    pub classifications: Vec<GitConflictClassification>,
     pub policy_version: u32,
     pub policy_hash: String,
     pub preserved_refs: GitConflictRefs,
     pub merge_tree: Option<GitOid>,
     pub diagnostics: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitConflictClass {
+    OverlappingText,
+    OverlappingBinary,
+    DeleteModify,
+    RenameRename,
+    DirectoryFile,
+    CaseCollision,
+    DeviceLocalState,
+    UnsupportedObject,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
+pub struct GitConflictClassification {
+    pub path: String,
+    pub class: GitConflictClass,
+    pub file_kind: MergeFileKind,
+    pub rule_id: String,
+    pub configured_resolution: MergeResolution,
+    pub effective_resolution: MergeResolution,
+    pub diagnostic_code: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -987,34 +1013,15 @@ fn merge_divergence(
         }
     };
     if tree.is_none() {
-        let (id, policy_hash) = conflict_identity(
-            &options.merge_policy,
-            merge.base.as_ref(),
-            &capture.commit,
-            &remote,
-            &merge.conflict_paths,
-        )?;
-        let preserved_refs = preserve_conflict_refs(
-            engine,
-            &report.repository,
-            &id,
-            merge.base.as_ref(),
-            &capture.commit,
-            &remote,
-        )?;
         report.outcome = GitSyncOutcome::Conflicted;
-        report.conflict = Some(GitSyncConflict {
-            id,
-            base: merge.base,
+        report.conflict = Some(build_sync_conflict(
+            engine,
+            options,
+            &report.repository,
+            capture,
             remote,
-            local: capture.commit.clone(),
-            paths: merge.conflict_paths,
-            policy_version: options.merge_policy.version,
-            policy_hash,
-            preserved_refs,
-            merge_tree: merge.tree,
-            diagnostics: merge.diagnostics,
-        });
+            merge,
+        )?);
         control.emit(GitSyncPhase::Conflicted, report, None)?;
         return Ok(None);
     }
@@ -1045,6 +1052,173 @@ fn merge_divergence(
             GitPushResult::Rejected => None,
         },
     )
+}
+
+fn build_sync_conflict(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    repository: &GitRepository,
+    capture: &crate::GitCapture,
+    remote: GitOid,
+    merge: crate::GitMerge,
+) -> Result<GitSyncConflict, GitSyncError> {
+    let classifications = classify_conflicts(
+        engine,
+        options,
+        repository,
+        merge.base.as_ref(),
+        &capture.commit,
+        &remote,
+        &merge.conflict_paths,
+        &merge.diagnostics,
+    )?;
+    let (id, policy_hash) = conflict_identity(
+        &options.merge_policy,
+        merge.base.as_ref(),
+        &capture.commit,
+        &remote,
+        &merge.conflict_paths,
+    )?;
+    let preserved_refs = preserve_conflict_refs(
+        engine,
+        repository,
+        &id,
+        merge.base.as_ref(),
+        &capture.commit,
+        &remote,
+    )?;
+    Ok(GitSyncConflict {
+        id,
+        base: merge.base,
+        remote,
+        local: capture.commit.clone(),
+        paths: merge.conflict_paths,
+        classifications,
+        policy_version: options.merge_policy.version,
+        policy_hash,
+        preserved_refs,
+        merge_tree: merge.tree,
+        diagnostics: merge.diagnostics,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn classify_conflicts(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    repository: &GitRepository,
+    base: Option<&GitOid>,
+    local: &GitOid,
+    remote: &GitOid,
+    paths: &[String],
+    diagnostics: &str,
+) -> Result<Vec<GitConflictClassification>, GitSyncError> {
+    paths
+        .iter()
+        .map(|path| {
+            let base_object = base
+                .map(|base| engine.path_object(repository, base, path))
+                .transpose()?
+                .flatten();
+            let local_object = engine.path_object(repository, local, path)?;
+            let remote_object = engine.path_object(repository, remote, path)?;
+            let file_kind = MergeFileKind::classify(
+                path,
+                &[
+                    object_data(base_object.as_ref()),
+                    object_data(local_object.as_ref()),
+                    object_data(remote_object.as_ref()),
+                ],
+            );
+            let decision = options
+                .merge_policy
+                .decision_for(path, file_kind, MergeAutomation::AllowPolicy)
+                .map_err(|error| {
+                    GitSyncError::Git(GitEngineError::InvalidOutput {
+                        operation: "classify a sync conflict",
+                        detail: error.to_string(),
+                    })
+                })?;
+            let class = conflict_class(
+                path,
+                paths,
+                diagnostics,
+                base_object.as_ref(),
+                local_object.as_ref(),
+                remote_object.as_ref(),
+                file_kind,
+            );
+            Ok(GitConflictClassification {
+                path: path.clone(),
+                class,
+                file_kind,
+                rule_id: decision.rule_id,
+                configured_resolution: decision.resolution,
+                effective_resolution: MergeResolution::RequireReview,
+                diagnostic_code: conflict_diagnostic_code(class).to_string(),
+            })
+        })
+        .collect()
+}
+
+fn conflict_class(
+    path: &str,
+    paths: &[String],
+    diagnostics: &str,
+    base: Option<&crate::GitPathObject>,
+    local: Option<&crate::GitPathObject>,
+    remote: Option<&crate::GitPathObject>,
+    file_kind: MergeFileKind,
+) -> GitConflictClass {
+    let path_key = path.to_lowercase();
+    if paths
+        .iter()
+        .any(|candidate| candidate != path && candidate.to_lowercase() == path_key)
+    {
+        return GitConflictClass::CaseCollision;
+    }
+    let diagnostic = diagnostics.to_ascii_lowercase();
+    if paths.len() == 1 || diagnostic.contains(&path.to_ascii_lowercase()) {
+        if diagnostic.contains("rename/rename") {
+            return GitConflictClass::RenameRename;
+        }
+        if diagnostic.contains("directory/file") {
+            return GitConflictClass::DirectoryFile;
+        }
+    }
+    if [base, local, remote]
+        .into_iter()
+        .flatten()
+        .any(|object| object.kind != "blob")
+    {
+        return GitConflictClass::UnsupportedObject;
+    }
+    if base.is_some() && (local.is_none() != remote.is_none()) {
+        return GitConflictClass::DeleteModify;
+    }
+    match file_kind {
+        MergeFileKind::ObsidianState => GitConflictClass::DeviceLocalState,
+        MergeFileKind::Binary => GitConflictClass::OverlappingBinary,
+        MergeFileKind::Missing => GitConflictClass::Ambiguous,
+        _ if base.is_some() && local.is_some() && remote.is_some() => {
+            GitConflictClass::OverlappingText
+        }
+        _ => GitConflictClass::Ambiguous,
+    }
+}
+
+const fn conflict_diagnostic_code(class: GitConflictClass) -> &'static str {
+    match class {
+        GitConflictClass::OverlappingText => "sync.conflict.overlapping-text",
+        GitConflictClass::OverlappingBinary => "sync.conflict.overlapping-binary",
+        GitConflictClass::DeleteModify => "sync.conflict.delete-modify",
+        GitConflictClass::RenameRename => "sync.conflict.rename-rename",
+        GitConflictClass::DirectoryFile => "sync.conflict.directory-file",
+        GitConflictClass::CaseCollision => "sync.conflict.case-collision",
+        GitConflictClass::DeviceLocalState => "sync.conflict.device-local-state",
+        GitConflictClass::UnsupportedObject => "sync.conflict.unsupported-object",
+        GitConflictClass::Ambiguous => "sync.conflict.ambiguous",
+    }
 }
 
 fn try_structured_merge(
@@ -1301,6 +1475,106 @@ mod tests {
     use std::path::PathBuf;
     use std::process::Command;
     use tempfile::TempDir;
+
+    fn conflict_blob(data: &[u8]) -> GitPathObject {
+        GitPathObject {
+            mode: "100644".to_string(),
+            kind: "blob".to_string(),
+            oid: GitOid::parse("1111111111111111111111111111111111111111").expect("object ID"),
+            data: Some(data.to_vec()),
+        }
+    }
+
+    #[test]
+    fn conflict_classes_cover_structural_content_and_portability_failures() {
+        let text = conflict_blob(b"text\n");
+        let binary = conflict_blob(b"\0binary");
+        let paths = vec!["Note.md".to_string()];
+        assert_eq!(
+            conflict_class(
+                "Note.md",
+                &paths,
+                "CONFLICT (content)",
+                Some(&text),
+                Some(&text),
+                Some(&text),
+                MergeFileKind::Markdown,
+            ),
+            GitConflictClass::OverlappingText
+        );
+        assert_eq!(
+            conflict_class(
+                "asset.bin",
+                &["asset.bin".to_string()],
+                "CONFLICT (content)",
+                Some(&binary),
+                Some(&binary),
+                Some(&binary),
+                MergeFileKind::Binary,
+            ),
+            GitConflictClass::OverlappingBinary
+        );
+        assert_eq!(
+            conflict_class(
+                "Note.md",
+                &paths,
+                "CONFLICT (modify/delete)",
+                Some(&text),
+                Some(&text),
+                None,
+                MergeFileKind::Markdown,
+            ),
+            GitConflictClass::DeleteModify
+        );
+        assert_eq!(
+            conflict_class(
+                "renamed.md",
+                &["renamed.md".to_string()],
+                "CONFLICT (rename/rename)",
+                Some(&text),
+                Some(&text),
+                Some(&text),
+                MergeFileKind::Markdown,
+            ),
+            GitConflictClass::RenameRename
+        );
+        assert_eq!(
+            conflict_class(
+                "Notes",
+                &["Notes".to_string()],
+                "CONFLICT (directory/file)",
+                Some(&text),
+                Some(&text),
+                Some(&text),
+                MergeFileKind::Text,
+            ),
+            GitConflictClass::DirectoryFile
+        );
+        assert_eq!(
+            conflict_class(
+                "Note.md",
+                &["Note.md".to_string(), "note.md".to_string()],
+                "",
+                Some(&text),
+                Some(&text),
+                Some(&text),
+                MergeFileKind::Markdown,
+            ),
+            GitConflictClass::CaseCollision
+        );
+        assert_eq!(
+            conflict_class(
+                ".obsidian/workspace.json",
+                &[".obsidian/workspace.json".to_string()],
+                "CONFLICT (content)",
+                Some(&text),
+                Some(&text),
+                Some(&text),
+                MergeFileKind::ObsidianState,
+            ),
+            GitConflictClass::DeviceLocalState
+        );
+    }
 
     #[derive(Default)]
     struct RecordingObserver {
@@ -1975,6 +2249,19 @@ mod tests {
         assert_eq!(report.outcome, GitSyncOutcome::Conflicted);
         let conflict = report.conflict.as_ref().expect("conflict details");
         assert_eq!(conflict.paths, ["Home.md"]);
+        assert_eq!(conflict.classifications.len(), 1);
+        assert_eq!(
+            conflict.classifications[0].class,
+            GitConflictClass::OverlappingText
+        );
+        assert_eq!(
+            conflict.classifications[0].configured_resolution,
+            MergeResolution::Structured
+        );
+        assert_eq!(
+            conflict.classifications[0].effective_resolution,
+            MergeResolution::RequireReview
+        );
         assert!(conflict.base.is_some());
         assert_eq!(conflict.id.len(), 32);
         assert_eq!(conflict.policy_version, MergePolicy::default().version);
