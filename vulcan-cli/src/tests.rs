@@ -2321,6 +2321,31 @@ fn parses_sync_resolve_command() {
 }
 
 #[test]
+fn parses_sync_propose_command() {
+    let command = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "propose",
+        "0123456789abcdef0123456789abcdef",
+        "--model",
+        "resolver-v1",
+        "--context",
+        "Projects/Alpha.md",
+    ])
+    .expect("sync proposal should parse");
+    assert!(matches!(
+        command.command,
+        Command::Sync {
+            command: SyncCommand::Propose {
+                model,
+                context,
+                ..
+            }
+        } if model == "resolver-v1" && context == ["Projects/Alpha.md"]
+    ));
+}
+
+#[test]
 fn parses_sync_checkpoint_command() {
     let checkpoint = Cli::try_parse_from([
         "vulcan",

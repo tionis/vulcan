@@ -11,6 +11,8 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
+#[cfg(feature = "web")]
+use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
@@ -30,6 +32,8 @@ const MAX_AGENT_TOTAL_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PROPOSAL_RECORD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_CONTEXT_PATHS: usize = 64;
+#[cfg(feature = "web")]
+const MAX_AGENT_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolutionAgentIdentity {
@@ -85,6 +89,203 @@ pub trait ResolutionAgentProvider {
         request: &ResolutionAgentRequest,
         cancellation: &SyncCancellationToken,
     ) -> Result<ResolutionAgentOutput, AppError>;
+}
+
+#[cfg(feature = "web")]
+pub struct OpenAiCompatibleResolutionProvider {
+    client: reqwest::blocking::Client,
+    endpoint: reqwest::Url,
+    model: String,
+    api_key: Option<String>,
+}
+
+#[cfg(feature = "web")]
+impl OpenAiCompatibleResolutionProvider {
+    pub fn new(
+        base_url: &str,
+        model: impl Into<String>,
+        api_key: Option<String>,
+    ) -> Result<Self, AppError> {
+        let mut endpoint = reqwest::Url::parse(base_url).map_err(AppError::operation)?;
+        if !matches!(endpoint.scheme(), "http" | "https")
+            || endpoint.host_str().is_none()
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            return Err(AppError::operation(
+                "agent base URL must be an absolute HTTP(S) URL without credentials, query, or fragment",
+            ));
+        }
+        let path = endpoint.path().trim_end_matches('/');
+        endpoint.set_path(&format!("{path}/chat/completions"));
+        let model = model.into();
+        validate_text("agent model", &model)?;
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .build()
+            .map_err(AppError::operation)?;
+        Ok(Self {
+            client,
+            endpoint,
+            model,
+            api_key,
+        })
+    }
+}
+
+#[cfg(feature = "web")]
+impl ResolutionAgentProvider for OpenAiCompatibleResolutionProvider {
+    fn identity(&self) -> ResolutionAgentIdentity {
+        ResolutionAgentIdentity {
+            provider: "openai-compatible".to_string(),
+            model: self.model.clone(),
+            prompt_contract_version: 1,
+        }
+    }
+
+    fn propose(
+        &self,
+        request: &ResolutionAgentRequest,
+        cancellation: &SyncCancellationToken,
+    ) -> Result<ResolutionAgentOutput, AppError> {
+        cancellation_check(cancellation)?;
+        let body = openai_resolution_request(&self.model, request)?;
+        let mut builder = self.client.post(self.endpoint.clone()).json(&body);
+        if let Some(api_key) = self.api_key.as_deref() {
+            builder = builder.bearer_auth(api_key);
+        }
+        let mut response = builder.send().map_err(AppError::operation)?;
+        let status = response.status();
+        let mut bytes = Vec::new();
+        response
+            .by_ref()
+            .take((MAX_AGENT_RESPONSE_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(AppError::operation)?;
+        if bytes.len() > MAX_AGENT_RESPONSE_BYTES {
+            return Err(AppError::operation("agent response exceeds its byte limit"));
+        }
+        if !status.is_success() {
+            return Err(AppError::operation(format!(
+                "agent provider returned HTTP {status}"
+            )));
+        }
+        cancellation_check(cancellation)?;
+        parse_openai_resolution_response(&bytes)
+    }
+}
+
+#[cfg(feature = "web")]
+fn openai_resolution_request(
+    model: &str,
+    request: &ResolutionAgentRequest,
+) -> Result<serde_json::Value, AppError> {
+    let files = request
+        .files
+        .iter()
+        .map(|file| {
+            Ok(serde_json::json!({
+                "path": file.path,
+                "base": agent_side_json(&file.base)?,
+                "local": agent_side_json(&file.local)?,
+                "remote": agent_side_json(&file.remote)?,
+            }))
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+    let input = serde_json::json!({
+        "conflict_id": request.conflict_id,
+        "policy_version": request.policy_version,
+        "policy_hash": request.policy_hash,
+        "focused_context_paths": request.focused_context,
+        "broad_context_allowed": request.broad_context_allowed,
+        "files": files,
+    });
+    Ok(serde_json::json!({
+        "model": model,
+        "temperature": 0,
+        "response_format": { "type": "json_object" },
+        "messages": [
+            {
+                "role": "system",
+                "content": "Resolve only the supplied conflicted files. Return one JSON object with explanation (string), referenced_context (array of vault-relative path strings), and paths (array of objects with path and complete UTF-8 content strings). Include every supplied path exactly once, invent no extra paths, delete no files, and emit no Markdown fence or commentary outside the JSON object. Preserve valid file syntax and use context only to understand intent."
+            },
+            {
+                "role": "user",
+                "content": serde_json::to_string(&input).map_err(AppError::operation)?
+            }
+        ]
+    }))
+}
+
+#[cfg(feature = "web")]
+fn agent_side_json(side: &ResolutionAgentSide) -> Result<serde_json::Value, AppError> {
+    let content = side
+        .content
+        .as_deref()
+        .map(std::str::from_utf8)
+        .transpose()
+        .map_err(|_| AppError::operation("agent provider inputs must be valid UTF-8"))?;
+    Ok(serde_json::json!({
+        "revision": side.revision,
+        "mode": side.mode,
+        "content": content,
+    }))
+}
+
+#[cfg(feature = "web")]
+fn parse_openai_resolution_response(bytes: &[u8]) -> Result<ResolutionAgentOutput, AppError> {
+    #[derive(Deserialize)]
+    struct Response {
+        choices: Vec<Choice>,
+    }
+    #[derive(Deserialize)]
+    struct Choice {
+        message: Message,
+    }
+    #[derive(Deserialize)]
+    struct Message {
+        content: String,
+    }
+    #[derive(Deserialize)]
+    struct Output {
+        explanation: String,
+        #[serde(default)]
+        referenced_context: Vec<String>,
+        paths: Vec<OutputPath>,
+    }
+    #[derive(Deserialize)]
+    struct OutputPath {
+        path: String,
+        content: String,
+    }
+
+    let response: Response = serde_json::from_slice(bytes).map_err(AppError::operation)?;
+    let content = response
+        .choices
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::operation("agent response contained no choices"))?
+        .message
+        .content;
+    let output: Output = serde_json::from_str(&content).map_err(|error| {
+        AppError::operation(format!(
+            "agent response content was not exact JSON: {error}"
+        ))
+    })?;
+    Ok(ResolutionAgentOutput {
+        explanation: output.explanation,
+        referenced_context: output.referenced_context,
+        paths: output
+            .paths
+            .into_iter()
+            .map(|path| ResolutionAgentPathOutput {
+                path: path.path,
+                content: path.content.into_bytes(),
+            })
+            .collect(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -299,6 +500,24 @@ pub fn create_resolution_proposal_with_provider(
     )?;
     save_proposal(state_store, &proposal)?;
     Ok(proposal)
+}
+
+pub fn create_resolution_proposal(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    options: &ResolutionProposalOptions,
+    provider: &dyn ResolutionAgentProvider,
+    cancellation: &SyncCancellationToken,
+) -> Result<ResolutionProposal, AppError> {
+    let state_store = SyncStateStore::user_default()?;
+    create_resolution_proposal_with_provider(
+        paths,
+        conflict_id,
+        options,
+        provider,
+        cancellation,
+        &state_store,
+    )
 }
 
 pub fn load_resolution_proposal(
@@ -1870,6 +2089,100 @@ mod tests {
             .join(&fixture.record.id)
             .join("proposals")
             .exists());
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn openai_compatible_provider_sends_bounded_exact_inputs_and_parses_json_output() {
+        use std::io::{BufRead, BufReader, Read as _, Write as _};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("listener address");
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("request");
+            let mut reader = BufReader::new(stream);
+            let mut headers = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("header");
+                if line == "\r\n" {
+                    break;
+                }
+                headers.push_str(&line);
+            }
+            assert!(headers.contains("authorization: Bearer secret"));
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .map(str::to_string)
+                })
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .expect("content length");
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).expect("request body");
+            let body: serde_json::Value = serde_json::from_slice(&body).expect("request JSON");
+            assert_eq!(body["model"], "fixture-model");
+            assert!(body["messages"][1]["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("local text")));
+            let response_content = serde_json::json!({
+                "explanation": "combined",
+                "referenced_context": [],
+                "paths": [{"path": "Home.md", "content": "resolved\n"}]
+            })
+            .to_string();
+            let response = serde_json::json!({
+                "choices": [{"message": {"content": response_content}}]
+            })
+            .to_string();
+            write!(
+                reader.get_mut(),
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            )
+            .expect("response");
+        });
+        let provider = OpenAiCompatibleResolutionProvider::new(
+            &format!("http://{address}/v1"),
+            "fixture-model",
+            Some("secret".to_string()),
+        )
+        .expect("provider");
+        let output = provider
+            .propose(
+                &provider_request_fixture(),
+                &SyncCancellationToken::default(),
+            )
+            .expect("provider output");
+        assert_eq!(output.explanation, "combined");
+        assert_eq!(output.paths[0].content, b"resolved\n");
+        server.join().expect("server thread");
+    }
+
+    #[cfg(feature = "web")]
+    fn provider_request_fixture() -> ResolutionAgentRequest {
+        let side = |content: &str| ResolutionAgentSide {
+            revision: Some("a".repeat(40)),
+            mode: Some("100644".to_string()),
+            content: Some(content.as_bytes().to_vec()),
+        };
+        ResolutionAgentRequest {
+            conflict_id: "b".repeat(32),
+            policy_version: 1,
+            policy_hash: "c".repeat(64),
+            files: vec![ResolutionAgentFile {
+                path: "Home.md".to_string(),
+                base: side("base text"),
+                local: side("local text"),
+                remote: side("remote text"),
+            }],
+            focused_context: Vec::new(),
+            broad_context_allowed: false,
+            tool_contract_version: 1,
+        }
     }
 
     fn path(path: &Path) -> &str {

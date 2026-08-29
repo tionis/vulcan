@@ -19,6 +19,11 @@ use vulcan_app::sync_conflicts::{
 use vulcan_app::sync_proposals::{
     approve_resolution_proposal, ApproveResolutionProposalOptions, ApproveResolutionProposalReport,
 };
+#[cfg(feature = "web")]
+use vulcan_app::sync_proposals::{
+    create_resolution_proposal, OpenAiCompatibleResolutionProvider, ResolutionProposal,
+    ResolutionProposalOptions,
+};
 use vulcan_app::sync_semantic::{
     apply_semantic_plan, create_semantic_plan, load_semantic_plan, SemanticApplyReport,
     SemanticPlanOptions, SemanticPlanReport,
@@ -103,6 +108,23 @@ fn handle_non_cycle_sync_command(
         SyncCommand::Conflicts { conflict_id, wiki } => {
             run_sync_conflicts(cli, paths, wiki.as_deref(), conflict_id.as_deref())
         }
+        SyncCommand::Propose {
+            conflict_id,
+            wiki,
+            base_url,
+            model,
+            api_key_env,
+            context,
+        } => run_sync_propose(
+            cli,
+            paths,
+            wiki.as_deref(),
+            conflict_id,
+            base_url,
+            model,
+            api_key_env.as_deref(),
+            context,
+        ),
         SyncCommand::Resolve {
             conflict_id,
             side,
@@ -153,6 +175,90 @@ fn handle_non_cycle_sync_command(
         SyncCommand::Run { .. } | SyncCommand::Status { .. } => return None,
     };
     Some(result)
+}
+
+#[cfg(feature = "web")]
+#[allow(clippy::too_many_arguments)]
+fn run_sync_propose(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    conflict_id: &str,
+    base_url: &str,
+    model: &str,
+    api_key_env: Option<&str>,
+    context: &[String],
+) -> Result<(), CliError> {
+    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    let profile = cli
+        .permissions
+        .as_deref()
+        .or(registration_profile.as_deref())
+        .unwrap_or("unrestricted");
+    let selection =
+        resolve_permission_profile(&paths, Some(profile)).map_err(CliError::operation)?;
+    ProfilePermissionGuard::new(&paths, selection)
+        .check_network(base_url)
+        .map_err(CliError::operation)?;
+    let api_key = api_key_env
+        .map(|name| {
+            std::env::var(name)
+                .map_err(|_| CliError::operation(format!("agent API key env `{name}` is not set")))
+        })
+        .transpose()?;
+    let provider = OpenAiCompatibleResolutionProvider::new(base_url, model, api_key)
+        .map_err(CliError::operation)?;
+    let proposal = create_resolution_proposal(
+        &paths,
+        conflict_id,
+        &ResolutionProposalOptions {
+            permission_profile: profile.to_string(),
+            focused_context: context.to_vec(),
+            allow_broad_context: false,
+        },
+        &provider,
+        &vulcan_app::sync::SyncCancellationToken::default(),
+    )
+    .map_err(CliError::operation)?;
+    print_resolution_proposal(cli.output, &proposal)
+}
+
+#[cfg(not(feature = "web"))]
+#[allow(clippy::too_many_arguments)]
+fn run_sync_propose(
+    _cli: &Cli,
+    _selected_paths: &VaultPaths,
+    _wiki: Option<&str>,
+    _conflict_id: &str,
+    _base_url: &str,
+    _model: &str,
+    _api_key_env: Option<&str>,
+    _context: &[String],
+) -> Result<(), CliError> {
+    Err(CliError::operation(
+        "sync proposal generation requires the `web` feature",
+    ))
+}
+
+#[cfg(feature = "web")]
+fn print_resolution_proposal(
+    output: OutputFormat,
+    proposal: &ResolutionProposal,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(proposal);
+    }
+    println!(
+        "Resolution proposal {} is ready for conflict {} ({} path(s)).",
+        proposal.proposal_id,
+        proposal.conflict_id,
+        proposal.paths.len()
+    );
+    println!(
+        "Preview approval with: vulcan sync resolve {} --approve-proposal {} --dry-run",
+        proposal.conflict_id, proposal.proposal_id
+    );
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -571,6 +571,7 @@ Subcommands:
   status       inspect local safety and remote live-ref state without mutating either
   doctor       diagnose Git, refs, filters, recovery state, and cache coherence
   conflicts    list preserved conflicts or show one immutable record
+  propose      ask an OpenAI-compatible provider for a review-only conflict proposal
   resolve      resolve with one explicit preserved side or approved proposal
   checkpoint   retain the currently accepted live commit under a durable local ref
   pause        disable future automatic sync for one registered wiki
@@ -593,6 +594,7 @@ Examples:
   vulcan sync doctor
   vulcan sync conflicts
   vulcan sync conflicts <conflict-id>
+  vulcan sync propose <conflict-id> --model <model> --base-url <url>
   vulcan sync resolve <conflict-id> --side local --dry-run
   vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run
   vulcan sync checkpoint personal --kind recovery
@@ -3948,6 +3950,29 @@ pub enum SyncCommand {
         conflict_id: Option<String>,
         #[arg(long, help = "Optional registered wiki ID")]
         wiki: Option<String>,
+    },
+    #[command(about = "Create a review-only conflict proposal with an LLM provider")]
+    Propose {
+        #[arg(help = "Immutable conflict ID to propose a resolution for")]
+        conflict_id: String,
+        #[arg(long, help = "Optional registered wiki ID")]
+        wiki: Option<String>,
+        #[arg(
+            long,
+            default_value = "http://localhost:11434/v1",
+            help = "OpenAI-compatible API base URL"
+        )]
+        base_url: String,
+        #[arg(long, help = "Provider model identifier")]
+        model: String,
+        #[arg(long, help = "Environment variable containing the provider API key")]
+        api_key_env: Option<String>,
+        #[arg(
+            long,
+            action = ArgAction::Append,
+            help = "Permit and identify one focused vault-relative context path"
+        )]
+        context: Vec<String>,
     },
     #[command(about = "Resolve a conflict with an explicit side or approved proposal")]
     Resolve {

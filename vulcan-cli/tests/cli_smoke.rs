@@ -5178,6 +5178,56 @@ fn sync_resolve_cli_previews_and_explicitly_approves_a_retained_proposal() {
 }
 
 #[test]
+fn sync_propose_cli_calls_an_openai_compatible_provider_without_applying_output() {
+    let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
+    let server = MockWebServer::spawn();
+    let proposal = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&reader)
+        .args([
+            "--output",
+            "json",
+            "sync",
+            "propose",
+            &id,
+            "--base-url",
+            &server.url("/v1"),
+            "--model",
+            "fixture-model",
+        ])
+        .assert()
+        .success();
+    let proposal = parse_stdout_json(&proposal);
+    assert_eq!(proposal["conflict_id"], id);
+    assert_eq!(proposal["provider"], "openai-compatible");
+    assert_eq!(proposal["model"], "fixture-model");
+    assert_eq!(proposal["status"], "ready");
+    assert!(proposal["patch"]
+        .as_str()
+        .is_some_and(|patch| patch.contains("provider proposal")));
+    assert_eq!(
+        fs::read_to_string(reader.join("Home.md")).expect("unchanged local note"),
+        "reader\n"
+    );
+    assert_eq!(
+        run_git_stdout(
+            &reader,
+            &["ls-remote", "origin", "refs/heads/__vulcan-sync/live"]
+        )
+        .split_whitespace()
+        .next(),
+        Some(
+            proposal["remote_revision"]
+                .as_str()
+                .expect("remote revision")
+        )
+    );
+    server.shutdown();
+}
+
+#[test]
 fn sync_resolve_cli_preserves_and_rejects_a_changed_worktree() {
     let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
     fs::write(reader.join("Home.md"), "edited after conflict\n").expect("later local edit");
@@ -11717,6 +11767,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("stable `classification`"));
     assert!(git_skill.contains("`provenance_revision`"));
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
+    assert!(git_skill.contains("vulcan sync propose <conflict-id> --model <model>"));
     assert!(git_skill
         .contains("vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run"));
     assert!(git_skill.contains("vulcan sync checkpoint [<wiki>] --dry-run"));
@@ -23480,7 +23531,24 @@ impl MockWebServer {
                         .set_nonblocking(false)
                         .expect("stream should support blocking mode");
                     let request = read_header_request(&mut stream);
-                    if request.path.starts_with("/api/v0/search") {
+                    if request.path.starts_with("/v1/chat/completions") {
+                        let content = serde_json::json!({
+                            "explanation": "Combined the intended edits.",
+                            "referenced_context": [],
+                            "paths": [{"path": "Home.md", "content": "provider proposal\n"}]
+                        })
+                        .to_string();
+                        let body = serde_json::json!({
+                            "choices": [{"message": {"content": content}}]
+                        })
+                        .to_string();
+                        write_http_response(
+                            &mut stream,
+                            "HTTP/1.1 200 OK",
+                            "application/json",
+                            body.as_bytes(),
+                        );
+                    } else if request.path.starts_with("/api/v0/search") {
                         let auth = request
                             .headers
                             .get("authorization")
