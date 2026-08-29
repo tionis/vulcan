@@ -53,7 +53,7 @@ pub(crate) fn merge_structured_path(
         return Ok(StructuredMergeOutcome::Unresolved);
     };
     let merged = match kind {
-        MergeFileKind::Json | MergeFileKind::Canvas => {
+        MergeFileKind::Json | MergeFileKind::Canvas | MergeFileKind::ObsidianState => {
             merge_json_bytes(base, local, remote, local_identity, remote_identity)?
         }
         MergeFileKind::Bases => {
@@ -521,5 +521,25 @@ mod tests {
         );
         assert_eq!(value["nodes"][1]["id"], "n2");
         assert_eq!(value["nodes"][2]["id"], "n3");
+    }
+
+    #[test]
+    fn explicitly_selected_obsidian_state_uses_the_bounded_json_merger() {
+        let outcome = merge_structured_path(
+            MergeFileKind::ObsidianState,
+            Some(br#"{"base":true}"#),
+            Some(br#"{"base":true,"local":1}"#),
+            Some(br#"{"base":true,"remote":2}"#),
+            "1111",
+            "2222",
+        )
+        .expect("Obsidian state merge");
+        let StructuredMergeOutcome::Resolved(Some(data)) = outcome else {
+            panic!("selected Obsidian JSON should resolve");
+        };
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&data).expect("merged JSON"),
+            serde_json::json!({"base": true, "local": 1, "remote": 2})
+        );
     }
 }

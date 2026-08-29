@@ -2337,6 +2337,61 @@ mod tests {
     }
 
     #[test]
+    fn shared_policy_can_narrowly_merge_selected_obsidian_plugin_json() {
+        let (temporary, remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let relative = ".obsidian/plugins/example/data.json";
+        fs::create_dir_all(writer.join(".obsidian/plugins/example")).expect("plugin directory");
+        fs::write(writer.join(relative), "{\"base\":true}\n").expect("base plugin state");
+        let policy = MergePolicy {
+            version: crate::MERGE_POLICY_SCHEMA_VERSION,
+            rules: vec![
+                crate::MergePolicyRule {
+                    id: "selected-plugin-state".to_string(),
+                    selector: crate::MergePathSelector {
+                        glob: relative.to_string(),
+                        kinds: vec![MergeFileKind::ObsidianState],
+                    },
+                    resolution: MergeResolution::Structured,
+                },
+                crate::MergePolicyRule {
+                    id: "fallback-review".to_string(),
+                    selector: crate::MergePathSelector {
+                        glob: "**".to_string(),
+                        kinds: Vec::new(),
+                    },
+                    resolution: MergeResolution::RequireReview,
+                },
+            ],
+        };
+        let options = GitSyncOptions {
+            merge_policy: policy,
+            ..GitSyncOptions::default()
+        };
+        sync_git_once(&engine, &writer, &options).expect("bootstrap sync");
+        let reader = clone_reader(&temporary, &remote, &writer);
+        sync_git_once(&engine, &reader, &options).expect("reader baseline");
+
+        fs::write(writer.join(relative), "{\"base\":true,\"writer\":1}\n")
+            .expect("writer plugin state");
+        fs::write(reader.join(relative), "{\"base\":true,\"reader\":2}\n")
+            .expect("reader plugin state");
+        sync_git_once(&engine, &writer, &options).expect("writer push");
+        let report = sync_git_once(&engine, &reader, &options).expect("selected state merge");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Merged);
+        assert_eq!(report.automatic_resolutions[0].path, relative);
+        assert_eq!(
+            report.automatic_resolutions[0].kind,
+            MergeFileKind::ObsidianState
+        );
+        assert_eq!(
+            report.automatic_resolutions[0].rule_id,
+            "selected-plugin-state"
+        );
+    }
+
+    #[test]
     fn device_review_ceiling_preserves_otherwise_resolvable_conflicts() {
         let (temporary, remote, writer) = setup_remote_and_writer();
         let engine = GitCliEngine::default();

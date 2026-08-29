@@ -306,6 +306,28 @@ mod tests {
                 .expect("resolution"),
             MergeResolution::RequireReview
         );
+        let selected_state_policy = MergePolicy {
+            version: MERGE_POLICY_SCHEMA_VERSION,
+            rules: vec![
+                rule(
+                    "selected-plugin-state",
+                    ".obsidian/plugins/example/data.json",
+                    &[MergeFileKind::ObsidianState],
+                    MergeResolution::Structured,
+                ),
+                rule("fallback-review", "**", &[], MergeResolution::RequireReview),
+            ],
+        };
+        assert_eq!(
+            selected_state_policy
+                .resolution_for(
+                    ".obsidian/plugins/example/data.json",
+                    MergeFileKind::ObsidianState,
+                    MergeAutomation::AllowPolicy,
+                )
+                .expect("selected plugin-state policy"),
+            MergeResolution::Structured
+        );
         assert_eq!(
             policy
                 .resolution_for(
