@@ -5353,11 +5353,17 @@ All commands in this section support `--output json`; mutating commands support 
 ### 12.6 Optional agent-assisted conflict resolution
 
 - [ ] Treat an LLM/agent as an explicit escalation after deterministic merging, not as a merge driver whose output is assumed deterministic or correct.
+  - [x] Add a provider-neutral synchronous application contract that can only start from an already-preserved conflict record. It is not called by the Git merge engine and cannot turn provider output into an accepted live result.
 - [ ] Reuse named Vulcan permission profiles. Give the resolver base/local/remote inputs and focused read/query/search/link tools first; broader vault read access is opt-in, bounded to the registered vault, and never includes credentials or unrelated registered wikis.
+  - [x] Resolve and enforce a named permission profile's Git and per-conflict/per-context read grants before provider invocation. Bound the exact base/local/remote byte set, reject internal Obsidian/Vulcan state plus binary/missing inputs, and expose broader context only as an explicit capability request; focused query/search/link tool adapters remain.
 - [ ] Make the default agent operation produce a `ResolutionProposal` containing a patch/tree, explanation, referenced context, input conflict ID, model/provider identity, prompt/tool-contract version, and validation results. It must not write directly to the worktree or refs.
+  - [x] Define and persist the versioned proposal contract with those fields, exact resolved path hashes/modes, immutable inputs, and validation evidence. Proposal generation uses a tree-only worktree snapshot plus alternate-index Git plumbing; tests prove the normal index, worktree, and every Vulcan ref remain unchanged.
 - [ ] Add preview, explicit approval, stale-input detection, cancellation, redacted audit logging, and deterministic revalidation before applying a proposal. Automatic acceptance is a separate per-policy opt-in and still obeys all path, parse, link, deletion, and final-tree checks.
+  - [x] Check cooperative cancellation before and after provider execution, verify preserved refs and worktree identity around generation, bound and exactly match provider output paths, reject file deletion, reread exact proposal tree objects, and persist atomically outside the vault/cache. Preview/application, redacted audit, and final revalidation remain.
 - [ ] Initially allow one user-triggered resolver job per conflict. Do not let every device independently spend tokens and race incompatible model outputs; later server-side claiming/coordination requires its own protocol and threat review.
+  - [x] Serialize proposal generation with the shared repository mutation lock and reject a second retained proposal for the same conflict. Daemon job claiming and a user-facing trigger remain.
 - [ ] Preserve all original Git objects regardless of proposal acceptance, rejection, provider failure, timeout, malformed output, or agent crash.
+  - [x] Proposal generation never edits preservation refs; cancellation and malformed/provider failures leave the immutable conflict record and original base/local/remote/provenance refs intact.
 
 ### 12.7 Semantic history proposals
 

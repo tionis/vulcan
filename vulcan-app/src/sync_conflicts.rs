@@ -486,7 +486,7 @@ impl ResolutionContext {
     }
 }
 
-fn verify_preserved_conflict_refs(
+pub(crate) fn verify_preserved_conflict_refs(
     engine: &dyn GitEngine,
     repository: &GitRepository,
     record: &SyncConflictRecord,

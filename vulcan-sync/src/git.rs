@@ -113,6 +113,13 @@ pub trait GitEngine: Send + Sync {
         request: &GitCaptureRequest,
     ) -> Result<GitCapture, GitEngineError>;
 
+    /// Hashes a stable worktree snapshot into a tree without creating a commit or ref.
+    fn snapshot_worktree_tree(
+        &self,
+        repository: &GitRepository,
+        base: Option<&GitOid>,
+    ) -> Result<GitOid, GitEngineError>;
+
     fn remote_ref(
         &self,
         repository: &GitRepository,
@@ -1049,6 +1056,72 @@ impl GitCliEngine {
         self.commit_tree_with_reproducible_identity(repository, tree, parents, message, false)
     }
 
+    fn snapshot_worktree_tree_inner(
+        &self,
+        repository: &GitRepository,
+        base: Option<&GitOid>,
+    ) -> Result<GitOid, GitEngineError> {
+        repository.require_work_tree()?;
+        let index_path = repository.sync_index();
+        std::fs::create_dir_all(
+            index_path
+                .parent()
+                .expect("the sync index path always has a parent"),
+        )?;
+        remove_file_if_present(&index_path)?;
+        if let Some(base) = base {
+            self.index_output(
+                repository,
+                &index_path,
+                "seed the sync index",
+                ["read-tree", base.as_str()],
+            )?;
+        } else {
+            self.index_output(
+                repository,
+                &index_path,
+                "initialize the sync index",
+                ["read-tree", "--empty"],
+            )?;
+        }
+        for _ in 0..3 {
+            self.index_output(
+                repository,
+                &index_path,
+                "capture the working tree",
+                ["add", "-A", "--", "."],
+            )?;
+            let first = GitOid::parse(
+                self.index_capture(
+                    repository,
+                    &index_path,
+                    "write the captured tree",
+                    ["write-tree"],
+                )?
+                .trim(),
+            )?;
+            self.index_output(
+                repository,
+                &index_path,
+                "verify the working-tree capture",
+                ["add", "-A", "--", "."],
+            )?;
+            let second = GitOid::parse(
+                self.index_capture(
+                    repository,
+                    &index_path,
+                    "verify the captured tree",
+                    ["write-tree"],
+                )?
+                .trim(),
+            )?;
+            if first == second {
+                return Ok(second);
+            }
+        }
+        Err(GitEngineError::WorktreeChanged)
+    }
+
     fn commit_tree_with_reproducible_identity(
         &self,
         repository: &GitRepository,
@@ -1542,71 +1615,7 @@ impl GitEngine for GitCliEngine {
         repository: &GitRepository,
         request: &GitCaptureRequest,
     ) -> Result<GitCapture, GitEngineError> {
-        repository.require_work_tree()?;
-        let index_path = repository.sync_index();
-        let index_parent = index_path
-            .parent()
-            .expect("the sync index path always has a parent");
-        std::fs::create_dir_all(index_parent)?;
-        remove_file_if_present(&index_path)?;
-
-        match &request.base {
-            Some(base) => {
-                self.index_output(
-                    repository,
-                    &index_path,
-                    "seed the sync index",
-                    ["read-tree", base.as_str()],
-                )?;
-            }
-            None => {
-                self.index_output(
-                    repository,
-                    &index_path,
-                    "initialize the sync index",
-                    ["read-tree", "--empty"],
-                )?;
-            }
-        }
-
-        let mut stable_tree = None;
-        for _ in 0..3 {
-            self.index_output(
-                repository,
-                &index_path,
-                "capture the working tree",
-                ["add", "-A", "--", "."],
-            )?;
-            let first = GitOid::parse(
-                self.index_capture(
-                    repository,
-                    &index_path,
-                    "write the captured tree",
-                    ["write-tree"],
-                )?
-                .trim(),
-            )?;
-            self.index_output(
-                repository,
-                &index_path,
-                "verify the working-tree capture",
-                ["add", "-A", "--", "."],
-            )?;
-            let second = GitOid::parse(
-                self.index_capture(
-                    repository,
-                    &index_path,
-                    "verify the captured tree",
-                    ["write-tree"],
-                )?
-                .trim(),
-            )?;
-            if first == second {
-                stable_tree = Some(second);
-                break;
-            }
-        }
-        let tree = stable_tree.ok_or(GitEngineError::WorktreeChanged)?;
+        let tree = self.snapshot_worktree_tree_inner(repository, request.base.as_ref())?;
 
         if let Some(base) = &request.base {
             if self.tree_oid(repository, base)? == tree {
@@ -1627,6 +1636,14 @@ impl GitEngine for GitCliEngine {
             tree,
             created: true,
         })
+    }
+
+    fn snapshot_worktree_tree(
+        &self,
+        repository: &GitRepository,
+        base: Option<&GitOid>,
+    ) -> Result<GitOid, GitEngineError> {
+        self.snapshot_worktree_tree_inner(repository, base)
     }
 
     fn remote_ref(
@@ -2942,6 +2959,28 @@ mod tests {
             .discover_repository(temporary.path())
             .expect("repository");
         let local_ref = GitRefName::parse("refs/vulcan/sync/local/live").expect("ref");
+        let refs_before = run_git_capture(
+            temporary.path(),
+            &["for-each-ref", "--format=%(refname) %(objectname)"],
+        );
+        let snapshot_tree = engine
+            .snapshot_worktree_tree(&repository, Some(&head))
+            .expect("tree-only snapshot");
+        assert_ne!(
+            snapshot_tree,
+            engine.tree_oid(&repository, &head).expect("head tree")
+        );
+        assert_eq!(
+            run_git_capture(
+                temporary.path(),
+                &["for-each-ref", "--format=%(refname) %(objectname)"],
+            ),
+            refs_before
+        );
+        assert_eq!(
+            run_git_capture(temporary.path(), &["write-tree"]),
+            normal_index_before
+        );
 
         let capture = engine
             .capture_worktree(
