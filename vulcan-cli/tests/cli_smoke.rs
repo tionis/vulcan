@@ -25182,6 +25182,48 @@ fn commands_exit_cleanly_when_stdout_pipe_closes_early() {
 
 // ── Phase 9.19.6: Missing commands ──────────────────────────────────────────
 
+#[cfg(unix)]
+#[test]
+fn ordinary_local_note_read_never_initializes_or_invokes_sync() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temporary = TempDir::new().expect("temporary directory");
+    let vault = temporary.path().join("vault");
+    copy_fixture_vault("basic", &vault);
+    run_scan(&vault);
+    let poison_bin = temporary.path().join("poison-bin");
+    fs::create_dir(&poison_bin).expect("poison bin");
+    let marker = temporary.path().join("git-was-invoked");
+    let poison_git = poison_bin.join("git");
+    fs::write(
+        &poison_git,
+        format!(
+            "#!/bin/sh\nprintf invoked > '{}'\nexit 97\n",
+            marker.display()
+        ),
+    )
+    .expect("poison git");
+    fs::set_permissions(&poison_git, fs::Permissions::from_mode(0o755))
+        .expect("executable poison git");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .env("PATH", &poison_bin)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&vault)
+        .args(["--output", "json", "note", "get", "Home.md"])
+        .assert()
+        .success();
+
+    assert!(!marker.exists());
+    assert!(!config_home.exists());
+    assert!(!state_home.exists());
+}
+
 #[test]
 fn status_json_output_reports_vault_root_and_note_count() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
