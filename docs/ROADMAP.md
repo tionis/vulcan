@@ -5348,6 +5348,7 @@ All commands in this section support `--output json`; mutating commands support 
 - [x] Record conflict creation and resolution provenance in Git-reachable metadata or commit trailers rather than `cache.db`; do not add frontmatter markers to user notes solely as an implementation shortcut.
   - [x] Anchor a reproducible two-parent conflict-record commit under `refs/vulcan/conflicts/<id>/record` with conflict, base, policy, profile, device, and source trailers. Preservation refs are create-only and fail closed if any existing ref names a different commit. Explicit resolution commits retain the conflict ID, selected side, immutable sources, policy, and device trailers.
 - [ ] Validate every automatic resolution with parsing, path safety, relevant schema checks, link analysis, worktree verification, and mass-deletion policy before it may update the canonical live ref.
+  - [x] Before constructing a live merge commit, require safe repository paths, successful structured parsing, Canvas/Bases root and stable-ID schema shapes, unchanged Markdown bodies (and therefore unchanged Markdown link surfaces), no conflicted-file deletion, and exact resolved blob bytes/modes in the produced tree. Emit the passed validation checks with every automatic-resolution report. Broader final-tree link analysis and configurable whole-tree mass-deletion limits remain to be added.
 
 ### 12.6 Optional agent-assisted conflict resolution
 

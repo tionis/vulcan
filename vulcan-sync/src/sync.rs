@@ -263,6 +263,23 @@ pub struct GitAutomaticResolution {
     pub path: String,
     pub kind: MergeFileKind,
     pub rule_id: String,
+    pub validation: GitAutomaticResolutionValidation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitAutomaticResolutionValidation {
+    pub checks: Vec<GitAutomaticValidationCheck>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitAutomaticValidationCheck {
+    PathSafe,
+    SyntaxValid,
+    SchemaValid,
+    MarkdownLinksPreserved,
+    ExactTreeObject,
+    NoFileDeletion,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1297,6 +1314,9 @@ fn try_structured_merge(
         ) else {
             return Ok(None);
         };
+        if data.is_none() {
+            return Ok(None);
+        }
         resolved_paths.push(GitResolvedPath {
             path: path.clone(),
             mode,
@@ -1306,20 +1326,73 @@ fn try_structured_merge(
             path: path.clone(),
             kind,
             rule_id: decision.rule_id,
+            validation: automatic_validation(kind),
         });
     }
+    let request = GitContentMergeResolutionRequest {
+        base: base.clone(),
+        accepted_remote: remote.clone(),
+        local_candidate: local.clone(),
+        paths: resolved_paths,
+    };
     let tree = engine
-        .resolve_merge_tree_with_paths(
-            repository,
-            &GitContentMergeResolutionRequest {
-                base: base.clone(),
-                accepted_remote: remote.clone(),
-                local_candidate: local.clone(),
-                paths: resolved_paths,
-            },
-        )
+        .resolve_merge_tree_with_paths(repository, &request)
         .map_err(|error| error.to_string())?;
+    validate_resolved_tree(engine, repository, &tree, &request.paths)?;
+    for resolution in &mut resolutions {
+        resolution
+            .validation
+            .checks
+            .push(GitAutomaticValidationCheck::ExactTreeObject);
+    }
     Ok(Some((tree, resolutions)))
+}
+
+fn automatic_validation(kind: MergeFileKind) -> GitAutomaticResolutionValidation {
+    GitAutomaticResolutionValidation {
+        checks: [
+            GitAutomaticValidationCheck::PathSafe,
+            GitAutomaticValidationCheck::SyntaxValid,
+            GitAutomaticValidationCheck::SchemaValid,
+            GitAutomaticValidationCheck::NoFileDeletion,
+        ]
+        .into_iter()
+        .chain(
+            (kind == MergeFileKind::Markdown)
+                .then_some(GitAutomaticValidationCheck::MarkdownLinksPreserved),
+        )
+        .collect(),
+    }
+}
+
+fn validate_resolved_tree(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    tree: &GitOid,
+    resolved_paths: &[GitResolvedPath],
+) -> Result<(), String> {
+    for resolved in resolved_paths {
+        let Some(expected_data) = resolved.data.as_ref() else {
+            return Err(format!(
+                "automatic resolution may not delete conflicted path `{}`",
+                resolved.path
+            ));
+        };
+        let actual = engine
+            .path_object(repository, tree, &resolved.path)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| format!("resolved tree omitted `{}`", resolved.path))?;
+        if actual.kind != "blob"
+            || actual.mode.as_str() != resolved.mode.as_deref().unwrap_or_default()
+            || actual.data.as_deref() != Some(expected_data.as_slice())
+        {
+            return Err(format!(
+                "resolved tree object for `{}` differs from the validated result",
+                resolved.path
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn object_data(object: Option<&GitPathObject>) -> Option<&[u8]> {
@@ -2419,13 +2492,22 @@ mod tests {
 
         assert_eq!(report.outcome, GitSyncOutcome::Merged);
         assert!(report.conflict.is_none());
+        assert_eq!(report.automatic_resolutions.len(), 1);
+        let resolution = &report.automatic_resolutions[0];
+        assert_eq!(resolution.path, "data.json");
+        assert_eq!(resolution.kind, MergeFileKind::Json);
+        assert_eq!(resolution.rule_id, "json-structured");
         assert_eq!(
-            report.automatic_resolutions,
-            [GitAutomaticResolution {
-                path: "data.json".to_string(),
-                kind: MergeFileKind::Json,
-                rule_id: "json-structured".to_string(),
-            }]
+            resolution.validation,
+            GitAutomaticResolutionValidation {
+                checks: vec![
+                    GitAutomaticValidationCheck::PathSafe,
+                    GitAutomaticValidationCheck::SyntaxValid,
+                    GitAutomaticValidationCheck::SchemaValid,
+                    GitAutomaticValidationCheck::NoFileDeletion,
+                    GitAutomaticValidationCheck::ExactTreeObject,
+                ],
+            }
         );
         let merged: serde_json::Value =
             serde_json::from_slice(&fs::read(reader.join("data.json")).expect("merged JSON bytes"))

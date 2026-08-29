@@ -64,9 +64,48 @@ pub(crate) fn merge_structured_path(
         }
         _ => return Ok(StructuredMergeOutcome::Unresolved),
     };
-    Ok(merged.map_or(StructuredMergeOutcome::Unresolved, |data| {
-        StructuredMergeOutcome::Resolved(Some(data))
-    }))
+    let Some(data) = merged else {
+        return Ok(StructuredMergeOutcome::Unresolved);
+    };
+    validate_merged_shape(kind, &data)?;
+    Ok(StructuredMergeOutcome::Resolved(Some(data)))
+}
+
+fn validate_merged_shape(kind: MergeFileKind, data: &[u8]) -> Result<(), String> {
+    match kind {
+        MergeFileKind::Canvas => {
+            let value: Value = serde_json::from_slice(data).map_err(|error| error.to_string())?;
+            let root = value
+                .as_object()
+                .ok_or_else(|| "JSON Canvas root must be an object".to_string())?;
+            for field in ["nodes", "edges"] {
+                let entries = root
+                    .get(field)
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| format!("JSON Canvas `{field}` must be an array"))?;
+                if entries.iter().any(|entry| {
+                    entry
+                        .as_object()
+                        .and_then(|entry| entry.get("id"))
+                        .and_then(Value::as_str)
+                        .is_none_or(str::is_empty)
+                }) {
+                    return Err(format!(
+                        "JSON Canvas `{field}` entries must have non-empty string IDs"
+                    ));
+                }
+            }
+        }
+        MergeFileKind::Bases => {
+            let value: serde_yaml::Value =
+                serde_yaml::from_slice(data).map_err(|error| error.to_string())?;
+            if !value.is_mapping() {
+                return Err("Bases document root must be a mapping".to_string());
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn merge_json_bytes(
@@ -507,9 +546,9 @@ mod tests {
     fn canvas_arrays_merge_objects_by_stable_id() {
         let merged = resolved(merge_structured_path(
             MergeFileKind::Canvas,
-            Some(br#"{"nodes":[{"id":"n1","x":0,"y":0}]}"#),
-            Some(br#"{"nodes":[{"id":"n1","x":1,"y":0},{"id":"n2","x":0}]}"#),
-            Some(br#"{"nodes":[{"id":"n1","x":0,"y":2},{"id":"n3","x":0}]}"#),
+            Some(br#"{"nodes":[{"id":"n1","x":0,"y":0}],"edges":[]}"#),
+            Some(br#"{"nodes":[{"id":"n1","x":1,"y":0},{"id":"n2","x":0}],"edges":[]}"#),
+            Some(br#"{"nodes":[{"id":"n1","x":0,"y":2},{"id":"n3","x":0}],"edges":[]}"#),
             "a",
             "b",
         ))
@@ -521,6 +560,28 @@ mod tests {
         );
         assert_eq!(value["nodes"][1]["id"], "n2");
         assert_eq!(value["nodes"][2]["id"], "n3");
+    }
+
+    #[test]
+    fn canvas_and_bases_schema_shapes_fail_closed() {
+        assert!(merge_structured_path(
+            MergeFileKind::Canvas,
+            Some(br#"{"nodes":[],"edges":[]}"#),
+            Some(br#"{"nodes":[{"x":1}],"edges":[]}"#),
+            Some(br#"{"nodes":[],"edges":[{"id":"e1"}]}"#),
+            "a",
+            "b",
+        )
+        .is_err());
+        assert!(merge_structured_path(
+            MergeFileKind::Bases,
+            Some(b"[]\n"),
+            Some(b"- local\n"),
+            Some(b"- remote\n"),
+            "a",
+            "b",
+        )
+        .is_err());
     }
 
     #[test]
