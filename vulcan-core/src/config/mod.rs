@@ -279,6 +279,8 @@ pub struct SyncConfig {
     #[serde(default)]
     pub merge_automation: MergeAutomation,
     #[serde(default)]
+    pub agent_auto_accept: bool,
+    #[serde(default)]
     pub tree_validation: SyncTreeValidationConfig,
 }
 
@@ -2684,15 +2686,19 @@ fn remove_shared_local_sync_ceiling(
     path: &Path,
     diagnostics: &mut Vec<ConfigDiagnostic>,
 ) {
-    if config
-        .sync
-        .as_mut()
-        .and_then(|sync| sync.merge_automation.take())
-        .is_some()
-    {
+    let Some(sync) = config.sync.as_mut() else {
+        return;
+    };
+    if sync.merge_automation.take().is_some() {
         diagnostics.push(ConfigDiagnostic {
             path: path.to_path_buf(),
             message: "ignored shared sync.merge_automation: the automation ceiling is device-local configuration".to_string(),
+        });
+    }
+    if sync.agent_auto_accept.take().is_some() {
+        diagnostics.push(ConfigDiagnostic {
+            path: path.to_path_buf(),
+            message: "ignored shared sync.agent_auto_accept: agent acceptance is device-local configuration".to_string(),
         });
     }
 }
@@ -4294,6 +4300,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(merge_automation) = sync.merge_automation {
             config.sync.merge_automation = merge_automation;
+        }
+        if let Some(agent_auto_accept) = sync.agent_auto_accept {
+            config.sync.agent_auto_accept = agent_auto_accept;
         }
         if let Some(tree_validation) = sync.tree_validation {
             config.sync.tree_validation = tree_validation;

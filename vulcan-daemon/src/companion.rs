@@ -477,6 +477,7 @@ impl<'a> CompanionService<'a> {
                 live_ref: GitRefName::parse(&request.live_ref)
                     .map_err(|error| invalid_request(error.to_string()))?,
                 dry_run: request.dry_run,
+                automatic: false,
             },
             &vulcan_app::sync::SyncCancellationToken::default(),
             self.state_store,

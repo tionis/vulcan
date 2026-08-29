@@ -117,6 +117,7 @@ pub(super) struct PartialGitConfig {
 pub(super) struct PartialSyncConfig {
     pub(super) merge_policy: Option<MergePolicy>,
     pub(super) merge_automation: Option<MergeAutomation>,
+    pub(super) agent_auto_accept: Option<bool>,
     pub(super) tree_validation: Option<SyncTreeValidationConfig>,
 }
 

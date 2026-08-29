@@ -818,12 +818,14 @@ pub struct ApproveResolutionProposalOptions {
     pub remote: GitRemote,
     pub live_ref: GitRefName,
     pub dry_run: bool,
+    pub automatic: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResolutionProposalAuditAction {
     Approved,
+    AutoAccepted,
     Rejected,
 }
 
@@ -887,6 +889,12 @@ pub struct ApproveResolutionProposalReport {
     pub resolution_commit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_refresh: Option<ScanSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct AutoAcceptResolutionProposalReport {
+    pub proposal: ResolutionProposal,
+    pub approval: ApproveResolutionProposalReport,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1575,6 +1583,71 @@ pub fn create_resolution_proposal(
     )
 }
 
+pub fn create_and_auto_accept_resolution_proposal(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    provider: &dyn ResolutionAgentProvider,
+    cancellation: &SyncCancellationToken,
+) -> Result<AutoAcceptResolutionProposalReport, AppError> {
+    let state_store = SyncStateStore::user_default()?;
+    create_and_auto_accept_resolution_proposal_with_state_store(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        provider,
+        cancellation,
+        &state_store,
+    )
+}
+
+pub fn create_and_auto_accept_resolution_proposal_with_state_store(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    provider: &dyn ResolutionAgentProvider,
+    cancellation: &SyncCancellationToken,
+    state_store: &SyncStateStore,
+) -> Result<AutoAcceptResolutionProposalReport, AppError> {
+    if approval_options.dry_run || !approval_options.automatic {
+        return Err(AppError::operation(
+            "agent auto-accept requires a mutating automatic approval request",
+        ));
+    }
+    let loaded = vulcan_core::load_vault_config(paths);
+    if !loaded.config.sync.agent_auto_accept {
+        return Err(AppError::operation(
+            "agent auto-accept is disabled; set sync.agent_auto_accept=true in device-local config and request it explicitly",
+        ));
+    }
+    let proposal = create_resolution_proposal_with_provider(
+        paths,
+        conflict_id,
+        proposal_options,
+        provider,
+        cancellation,
+        state_store,
+    )?;
+    let approval = approve_resolution_proposal_with_state_store(
+        paths,
+        conflict_id,
+        &proposal.proposal_id,
+        approval_options,
+        cancellation,
+        state_store,
+    )
+    .map_err(|error| {
+        AppError::operation(format!(
+            "auto-accept failed after retaining proposal {}; it remains ready for explicit review: {error}",
+            proposal.proposal_id
+        ))
+    })?;
+    Ok(AutoAcceptResolutionProposalReport { proposal, approval })
+}
+
 pub fn load_resolution_proposal(
     state_store: &SyncStateStore,
     repository_key: &str,
@@ -1901,7 +1974,7 @@ fn apply_approved_proposal(
     } else {
         None
     };
-    save_approval_audit(context.state_store, context.proposal, &resolution)?;
+    save_approval_execution_audit(context, &resolution)?;
     resolution.applied = true;
     context
         .store
@@ -1914,6 +1987,18 @@ fn apply_approved_proposal(
         Some(&resolution),
         cache_refresh,
     ))
+}
+
+fn save_approval_execution_audit(
+    context: &ApprovalExecution<'_>,
+    resolution: &SyncConflictResolutionRecord,
+) -> Result<(), AppError> {
+    save_approval_audit(
+        context.state_store,
+        context.proposal,
+        resolution,
+        context.options,
+    )
 }
 
 fn validate_proposal_inputs(
@@ -2300,11 +2385,25 @@ fn save_approval_audit(
     store: &SyncStateStore,
     proposal: &ResolutionProposal,
     resolution: &SyncConflictResolutionRecord,
+    options: &ApproveResolutionProposalOptions,
 ) -> Result<(), AppError> {
+    let automatic = options.automatic;
+    let action = if automatic {
+        ResolutionProposalAuditAction::AutoAccepted
+    } else {
+        ResolutionProposalAuditAction::Approved
+    };
     let event_id = blake3::hash(
         format!(
-            "approved\0{}\0{}\0{}",
-            proposal.conflict_id, proposal.proposal_id, resolution.resolution_commit
+            "{}\0{}\0{}\0{}",
+            if automatic {
+                "auto_accepted"
+            } else {
+                "approved"
+            },
+            proposal.conflict_id,
+            proposal.proposal_id,
+            resolution.resolution_commit
         )
         .as_bytes(),
     )
@@ -2316,7 +2415,7 @@ fn save_approval_audit(
         repository_key: proposal.repository_key.clone(),
         conflict_id: proposal.conflict_id.clone(),
         proposal_id: proposal.proposal_id.clone(),
-        action: ResolutionProposalAuditAction::Approved,
+        action,
         provider: proposal.provider.clone(),
         model: proposal.model.clone(),
         prompt_contract_version: proposal.prompt_contract_version,
@@ -3836,6 +3935,7 @@ mod tests {
                 remote: GitRemote::parse("origin").expect("remote"),
                 live_ref: GitRefName::parse("refs/heads/__vulcan-sync/live").expect("live ref"),
                 dry_run: true,
+                automatic: false,
             },
             &SyncCancellationToken::default(),
             &fixture.store,
@@ -3859,6 +3959,75 @@ mod tests {
         );
     }
 
+    #[test]
+    fn agent_auto_accept_requires_local_policy_and_reuses_approval_validation() {
+        let fixture = conflict_fixture();
+        let paths = VaultPaths::new(&fixture.reader);
+        let proposal_options = ResolutionProposalOptions {
+            permission_profile: "unrestricted".to_string(),
+            focused_context: Vec::new(),
+            allow_broad_context: false,
+        };
+        let approval_options = ApproveResolutionProposalOptions {
+            remote: GitRemote::parse("origin").expect("remote"),
+            live_ref: GitRefName::parse("refs/heads/__vulcan-sync/live").expect("live ref"),
+            dry_run: false,
+            automatic: true,
+        };
+        let disabled = create_and_auto_accept_resolution_proposal_with_state_store(
+            &paths,
+            &fixture.record.id,
+            &proposal_options,
+            &approval_options,
+            &FakeProvider { cancel: false },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect_err("auto-accept defaults off");
+        assert!(disabled.to_string().contains("disabled"));
+
+        fs::create_dir_all(paths.vulcan_dir()).expect("Vulcan directory");
+        fs::write(
+            paths.local_config_file(),
+            "[sync]\nagent_auto_accept = true\n",
+        )
+        .expect("local auto-accept policy");
+        let report = create_and_auto_accept_resolution_proposal_with_state_store(
+            &paths,
+            &fixture.record.id,
+            &proposal_options,
+            &approval_options,
+            &FakeProvider { cancel: false },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect("auto-accepted proposal");
+        assert_eq!(
+            report.approval.outcome,
+            ApproveResolutionProposalOutcome::Applied
+        );
+        assert_eq!(
+            fs::read_to_string(fixture.reader.join("Home.md")).expect("resolved note"),
+            "agent resolution\n"
+        );
+        let audit_directory = fixture
+            .store
+            .root()
+            .join(&fixture.record.repository_key)
+            .join("conflicts")
+            .join(&fixture.record.id)
+            .join("audit");
+        let audit_path = fs::read_dir(audit_directory)
+            .expect("audit directory")
+            .next()
+            .expect("audit event")
+            .expect("audit entry")
+            .path();
+        let audit = fs::read_to_string(audit_path).expect("audit record");
+        assert!(audit.contains("\"action\": \"auto_accepted\""));
+        assert!(!audit.contains(&report.proposal.explanation));
+    }
+
     fn assert_approval_lifecycle(
         fixture: &ConflictFixture,
         proposal: &ResolutionProposal,
@@ -3874,6 +4043,7 @@ mod tests {
                 remote: sync_options.remote.clone(),
                 live_ref: sync_options.live_ref.clone(),
                 dry_run: true,
+                automatic: false,
             },
             &SyncCancellationToken::default(),
             &fixture.store,
@@ -3889,6 +4059,7 @@ mod tests {
                 remote: sync_options.remote.clone(),
                 live_ref: sync_options.live_ref.clone(),
                 dry_run: true,
+                automatic: false,
             },
             &SyncCancellationToken::default(),
             &fixture.store,
@@ -3919,6 +4090,7 @@ mod tests {
                 remote: sync_options.remote.clone(),
                 live_ref: sync_options.live_ref.clone(),
                 dry_run: false,
+                automatic: false,
             },
             &SyncCancellationToken::default(),
             &fixture.store,
@@ -3972,6 +4144,7 @@ mod tests {
                 remote: sync_options.remote,
                 live_ref: sync_options.live_ref,
                 dry_run: false,
+                automatic: false,
             },
             &SyncCancellationToken::default(),
             &fixture.store,

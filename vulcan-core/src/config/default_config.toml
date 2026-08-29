@@ -88,6 +88,7 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # Device-local only; set this in config.local.toml, not this shared file.
 # [sync]
 # merge_automation = "allow_policy" # allow_policy | require_review
+# agent_auto_accept = false # local-only; still requires an explicit auto-accept request
 #
 # Shared merge policy example. Rules are evaluated in order and must include a fallback.
 # [sync.merge_policy]

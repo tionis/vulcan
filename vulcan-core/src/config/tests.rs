@@ -4615,6 +4615,7 @@ fn sync_policy_is_shared_while_the_automation_ceiling_is_device_local() {
         vault_root.join(".vulcan/config.toml"),
         r#"[sync]
 merge_automation = "require_review"
+agent_auto_accept = true
 
 [sync.merge_policy]
 version = 1
@@ -4630,6 +4631,7 @@ max_deleted_percent = 12
         vault_root.join(".vulcan/config.local.toml"),
         r#"[sync]
 merge_automation = "require_review"
+agent_auto_accept = true
 
 [sync.merge_policy]
 version = 1
@@ -4660,15 +4662,38 @@ max_deleted_percent = 0
     );
     assert_eq!(loaded.config.sync.tree_validation.max_deleted_paths, 7);
     assert_eq!(loaded.config.sync.tree_validation.max_deleted_percent, 12);
+    assert!(loaded.config.sync.agent_auto_accept);
     assert!(loaded.diagnostics.iter().any(|diagnostic| diagnostic
         .message
         .contains("ignored shared sync.merge_automation")));
+    assert!(loaded.diagnostics.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("ignored shared sync.agent_auto_accept")));
     assert!(loaded.diagnostics.iter().any(|diagnostic| diagnostic
         .message
         .contains("ignored local sync.merge_policy")));
     assert!(loaded.diagnostics.iter().any(|diagnostic| diagnostic
         .message
         .contains("ignored local sync.tree_validation")));
+}
+
+#[test]
+fn agent_auto_accept_defaults_off_and_only_local_config_can_enable_it() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let paths = VaultPaths::new(temporary.path());
+    fs::create_dir(paths.vulcan_dir()).expect("Vulcan directory");
+    assert!(!load_vault_config(&paths).config.sync.agent_auto_accept);
+
+    fs::write(paths.config_file(), "[sync]\nagent_auto_accept = true\n").expect("shared config");
+    let shared = load_vault_config(&paths);
+    assert!(!shared.config.sync.agent_auto_accept);
+
+    fs::write(
+        paths.local_config_file(),
+        "[sync]\nagent_auto_accept = true\n",
+    )
+    .expect("local config");
+    assert!(load_vault_config(&paths).config.sync.agent_auto_accept);
 }
 
 #[test]

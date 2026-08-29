@@ -1400,6 +1400,9 @@ Static-site publication profiles, filters, route policies, and theme assets.
 
 Shared deterministic merge and whole-tree validation policy, plus a device-local automation ceiling.
 
+- `sync.agent_auto_accept` — type: `boolean`; target: `local`; default: `false`
+  Allow an explicitly requested agent proposal to enter the normal approval transaction automatically on this device. The default is false.
+  Example: `vulcan config set sync.agent_auto_accept <value>`
 - `sync.merge_automation` — type: `enum`; target: `local`; default: `allow_policy`; values: `allow_policy`, `require_review`
   Set the device-local ceiling to allow shared policy automation or require review for every Git conflict.
   Example: `vulcan config set sync.merge_automation <value>`

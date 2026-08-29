@@ -26,7 +26,10 @@ use vulcan_app::sync_proposals::{
     SuppliedResolutionProvider,
 };
 #[cfg(feature = "web")]
-use vulcan_app::sync_proposals::{OpenAiCompatibleResolutionProvider, ResolutionProposal};
+use vulcan_app::sync_proposals::{
+    create_and_auto_accept_resolution_proposal, AutoAcceptResolutionProposalReport,
+    OpenAiCompatibleResolutionProvider, ResolutionProposal,
+};
 use vulcan_app::sync_semantic::{
     apply_semantic_plan, create_semantic_plan, load_semantic_plan, reject_semantic_plan,
     SemanticApplyReport, SemanticGrouping, SemanticPlanOptions, SemanticPlanReport,
@@ -115,11 +118,13 @@ fn handle_non_cycle_sync_command(
         SyncCommand::Propose {
             conflict_id,
             wiki,
+            target,
             base_url,
             model,
             api_key_env,
             context,
             allow_broad_context,
+            auto_accept,
         } => run_sync_propose(
             cli,
             paths,
@@ -130,6 +135,8 @@ fn handle_non_cycle_sync_command(
             api_key_env.as_deref(),
             context,
             *allow_broad_context,
+            *auto_accept,
+            target,
         ),
         SyncCommand::Reject {
             conflict_id,
@@ -260,6 +267,8 @@ fn run_sync_propose(
     api_key_env: Option<&str>,
     context: &[String],
     allow_broad_context: bool,
+    auto_accept: bool,
+    target: &crate::SyncTargetArgs,
 ) -> Result<(), CliError> {
     let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
     let profile = cli
@@ -280,19 +289,36 @@ fn run_sync_propose(
         .transpose()?;
     let provider = OpenAiCompatibleResolutionProvider::new(base_url, model, api_key)
         .map_err(CliError::operation)?;
-    let proposal = create_resolution_proposal(
-        &paths,
-        conflict_id,
-        &ResolutionProposalOptions {
-            permission_profile: profile.to_string(),
-            focused_context: context.to_vec(),
-            allow_broad_context,
-        },
-        &provider,
-        &vulcan_app::sync::SyncCancellationToken::default(),
-    )
-    .map_err(CliError::operation)?;
-    print_resolution_proposal(cli.output, &proposal)
+    let proposal_options = ResolutionProposalOptions {
+        permission_profile: profile.to_string(),
+        focused_context: context.to_vec(),
+        allow_broad_context,
+    };
+    let cancellation = vulcan_app::sync::SyncCancellationToken::default();
+    if auto_accept {
+        let mut approval_options = approval_options(target, false)?;
+        approval_options.automatic = true;
+        let report = create_and_auto_accept_resolution_proposal(
+            &paths,
+            conflict_id,
+            &proposal_options,
+            &approval_options,
+            &provider,
+            &cancellation,
+        )
+        .map_err(CliError::operation)?;
+        print_auto_accept_resolution_proposal(cli.output, &report)
+    } else {
+        let proposal = create_resolution_proposal(
+            &paths,
+            conflict_id,
+            &proposal_options,
+            &provider,
+            &cancellation,
+        )
+        .map_err(CliError::operation)?;
+        print_resolution_proposal(cli.output, &proposal)
+    }
 }
 
 #[cfg(not(feature = "web"))]
@@ -307,10 +333,27 @@ fn run_sync_propose(
     _api_key_env: Option<&str>,
     _context: &[String],
     _allow_broad_context: bool,
+    _auto_accept: bool,
+    _target: &crate::SyncTargetArgs,
 ) -> Result<(), CliError> {
     Err(CliError::operation(
         "sync proposal generation requires the `web` feature",
     ))
+}
+
+#[cfg(feature = "web")]
+fn print_auto_accept_resolution_proposal(
+    output: OutputFormat,
+    report: &AutoAcceptResolutionProposalReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Resolution proposal {} was auto-accepted and {:?} for conflict {}.",
+        report.proposal.proposal_id, report.approval.outcome, report.proposal.conflict_id
+    );
+    Ok(())
 }
 
 #[cfg(feature = "web")]
@@ -781,6 +824,7 @@ fn approval_options(
         remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
         live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
         dry_run,
+        automatic: false,
     })
 }
 

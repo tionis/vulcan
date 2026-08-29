@@ -8665,6 +8665,28 @@
                 ]
               },
               {
+                "help": "Git remote carrying the live ref",
+                "id": "remote",
+                "long": "remote",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOTE"
+                ]
+              },
+              {
+                "help": "Fully qualified remote live ref",
+                "id": "live_ref",
+                "long": "live-ref",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "LIVE_REF"
+                ]
+              },
+              {
                 "help": "OpenAI-compatible API base URL",
                 "id": "base_url",
                 "long": "base-url",
@@ -8720,6 +8742,20 @@
                 "short": null,
                 "value_names": [
                   "ALLOW_BROAD_CONTEXT"
+                ]
+              },
+              {
+                "help": "Immediately enter the normal approval transaction when device-local policy permits",
+                "id": "auto_accept",
+                "long": "auto-accept",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "AUTO_ACCEPT"
                 ]
               }
             ],

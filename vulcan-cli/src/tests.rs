@@ -2335,6 +2335,9 @@ fn parses_sync_propose_command() {
         "--context",
         "Projects/Alpha.md",
         "--allow-broad-context",
+        "--auto-accept",
+        "--remote",
+        "backup",
     ])
     .expect("sync proposal should parse");
     assert!(matches!(
@@ -2344,9 +2347,11 @@ fn parses_sync_propose_command() {
                 model,
                 context,
                 allow_broad_context: true,
+                auto_accept: true,
+                target,
                 ..
             }
-        } if model == "resolver-v1" && context == ["Projects/Alpha.md"]
+        } if model == "resolver-v1" && context == ["Projects/Alpha.md"] && target.remote == "backup"
     ));
 }
 

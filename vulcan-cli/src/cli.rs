@@ -3967,6 +3967,8 @@ pub enum SyncCommand {
         conflict_id: String,
         #[arg(long, help = "Optional registered wiki ID")]
         wiki: Option<String>,
+        #[command(flatten)]
+        target: SyncTargetArgs,
         #[arg(
             long,
             default_value = "http://localhost:11434/v1",
@@ -3988,6 +3990,11 @@ pub enum SyncCommand {
             help = "Permit the resolver's bounded read tool beyond explicit context paths"
         )]
         allow_broad_context: bool,
+        #[arg(
+            long,
+            help = "Immediately enter the normal approval transaction when device-local policy permits"
+        )]
+        auto_accept: bool,
     },
     #[command(about = "Explicitly reject a retained conflict proposal")]
     Reject {

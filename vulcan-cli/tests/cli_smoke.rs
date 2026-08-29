@@ -5570,6 +5570,66 @@ fn sync_propose_cli_calls_an_openai_compatible_provider_without_applying_output(
 }
 
 #[test]
+fn sync_propose_cli_auto_accepts_only_with_device_local_opt_in() {
+    let (_disabled_temporary, disabled_state_home, disabled_reader, disabled_id) =
+        setup_cli_sync_conflict();
+    let server = MockWebServer::spawn();
+    let mut disabled = Command::cargo_bin("vulcan").expect("binary should build");
+    disabled
+        .env("XDG_STATE_HOME", &disabled_state_home)
+        .arg("--vault")
+        .arg(&disabled_reader)
+        .args([
+            "sync",
+            "propose",
+            &disabled_id,
+            "--base-url",
+            &server.url("/v1"),
+            "--model",
+            "fixture-model",
+            "--auto-accept",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("agent auto-accept is disabled"));
+
+    let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
+    fs::create_dir_all(reader.join(".vulcan")).expect("Vulcan directory");
+    fs::write(
+        reader.join(".vulcan/config.local.toml"),
+        "[sync]\nagent_auto_accept = true\n",
+    )
+    .expect("local policy");
+    let accepted = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&reader)
+        .args([
+            "--output",
+            "json",
+            "sync",
+            "propose",
+            &id,
+            "--base-url",
+            &server.url("/v1"),
+            "--model",
+            "fixture-model",
+            "--auto-accept",
+        ])
+        .assert()
+        .success();
+    let accepted = parse_stdout_json(&accepted);
+    assert_eq!(accepted["proposal"]["conflict_id"], id);
+    assert_eq!(accepted["approval"]["outcome"], "applied");
+    assert_eq!(
+        fs::read_to_string(reader.join("Home.md")).expect("auto-accepted note"),
+        "provider proposal\n"
+    );
+    server.shutdown();
+}
+
+#[test]
 fn sync_resolve_cli_preserves_and_rejects_a_changed_worktree() {
     let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
     fs::write(reader.join("Home.md"), "edited after conflict\n").expect("later local edit");

@@ -11,6 +11,19 @@ use tempfile::TempDir;
 const MAX_ERROR_BYTES: usize = 16 * 1024;
 const MAX_DIAGNOSTIC_PATH_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONFLICT_BLOB_BYTES: usize = 64 * 1024 * 1024;
+const DEVICE_LOCAL_VULCAN_PATHS: [&str; 4] = [
+    ".vulcan/config.local.toml",
+    ".vulcan/cache.db",
+    ".vulcan/cache.db-wal",
+    ".vulcan/cache.db-shm",
+];
+const WORKTREE_CAPTURE_PATHS: [&str; 5] = [
+    ".",
+    ":(exclude).vulcan/config.local.toml",
+    ":(exclude).vulcan/cache.db",
+    ":(exclude).vulcan/cache.db-wal",
+    ":(exclude).vulcan/cache.db-shm",
+];
 const REPOSITORY_ENVIRONMENT_OVERRIDES: &[&str] = &[
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -1001,6 +1014,26 @@ impl GitCliEngine {
         decode_stdout(operation, output.stdout)
     }
 
+    fn add_worktree_to_index(
+        &self,
+        repository: &GitRepository,
+        index_path: &Path,
+        operation: &'static str,
+    ) -> Result<(), GitEngineError> {
+        let mut command = self.index_command(repository, index_path)?;
+        // Add the complete worktree first, then remove device-local state from
+        // the alternate index below. Passing ignored files as negative
+        // pathspecs makes some Git versions treat them as explicitly requested
+        // ignored additions and fail the capture.
+        command.args(["add", "-A", "--", "."]);
+        ensure_success(operation, self.execute(command)?)?;
+        let mut command = self.index_command(repository, index_path)?;
+        command.args(["update-index", "--force-remove", "--"]);
+        command.args(DEVICE_LOCAL_VULCAN_PATHS);
+        ensure_success(operation, self.execute(command)?)?;
+        Ok(())
+    }
+
     fn patch_command(
         &self,
         repository: &GitRepository,
@@ -1166,12 +1199,7 @@ impl GitCliEngine {
             )?;
         }
         for _ in 0..3 {
-            self.index_output(
-                repository,
-                &index_path,
-                "capture the working tree",
-                ["add", "-A", "--", "."],
-            )?;
+            self.add_worktree_to_index(repository, &index_path, "capture the working tree")?;
             let first = GitOid::parse(
                 self.index_capture(
                     repository,
@@ -1181,12 +1209,7 @@ impl GitCliEngine {
                 )?
                 .trim(),
             )?;
-            self.index_output(
-                repository,
-                &index_path,
-                "verify the working-tree capture",
-                ["add", "-A", "--", "."],
-            )?;
+            self.add_worktree_to_index(repository, &index_path, "verify the working-tree capture")?;
             let second = GitOid::parse(
                 self.index_capture(
                     repository,
@@ -1859,7 +1882,8 @@ impl GitEngine for GitCliEngine {
     ) -> Result<bool, GitEngineError> {
         repository.require_work_tree()?;
         let mut command = self.repository_command(repository);
-        command.args(["diff", "--quiet", expected.as_str(), "--", "."]);
+        command.args(["diff", "--quiet", expected.as_str(), "--"]);
+        command.args(WORKTREE_CAPTURE_PATHS);
         let tracked = self.execute(command)?;
         if !tracked.status.success() {
             if tracked.status.code() == Some(1) {
@@ -1867,14 +1891,15 @@ impl GitEngine for GitCliEngine {
             }
             return Err(command_failed("compare the working tree", &tracked));
         }
-        Ok(self
-            .repository_capture(
-                repository,
-                "list untracked worktree paths",
-                ["ls-files", "--others", "--exclude-standard", "--", "."],
-            )?
-            .trim()
-            .is_empty())
+        let mut command = self.repository_command(repository);
+        command.args(["ls-files", "--others", "--exclude-standard", "--"]);
+        command.args(WORKTREE_CAPTURE_PATHS);
+        let output = ensure_success("list untracked worktree paths", self.execute(command)?)?;
+        Ok(
+            decode_stdout("list untracked worktree paths", output.stdout)?
+                .trim()
+                .is_empty(),
+        )
     }
 
     fn remote_ref(
@@ -2255,11 +2280,10 @@ impl GitEngine for GitCliEngine {
             "seed the worktree application index",
             ["read-tree", expected_worktree.as_str()],
         )?;
-        self.index_output(
+        self.add_worktree_to_index(
             repository,
             &index_path,
             "verify the worktree before applying sync",
-            ["add", "-A", "--", "."],
         )?;
         let actual_tree = GitOid::parse(
             self.index_capture(
@@ -2286,12 +2310,7 @@ impl GitEngine for GitCliEngine {
             "apply the accepted sync tree",
             ["read-tree", "--reset", "-u", target.as_str()],
         )?;
-        self.index_output(
-            repository,
-            &index_path,
-            "verify the applied sync tree",
-            ["add", "-A", "--", "."],
-        )?;
+        self.add_worktree_to_index(repository, &index_path, "verify the applied sync tree")?;
         let applied_tree = GitOid::parse(
             self.index_capture(
                 repository,
@@ -3311,6 +3330,76 @@ mod tests {
             .expect("unchanged capture should succeed");
         assert!(!second.created);
         assert_eq!(second.commit, capture.commit);
+    }
+
+    #[test]
+    fn snapshots_and_worktree_checks_exclude_device_local_vulcan_files() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Home.md"), "initial\n").expect("note");
+        fs::write(temporary.path().join(".gitignore"), ".vulcan/cache.db*\n").expect("gitignore");
+        let head = commit_all(temporary.path(), "initial");
+        fs::create_dir(temporary.path().join(".vulcan")).expect("Vulcan directory");
+        for (path, contents) in [
+            (
+                "config.local.toml",
+                b"[sync]\nagent_auto_accept = true\n".as_slice(),
+            ),
+            ("cache.db", b"derived cache".as_slice()),
+            ("cache.db-wal", b"derived WAL".as_slice()),
+            ("cache.db-shm", b"derived shared memory".as_slice()),
+        ] {
+            fs::write(temporary.path().join(".vulcan").join(path), contents)
+                .expect("device-local file");
+        }
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+
+        let snapshot = engine
+            .snapshot_worktree_tree(&repository, Some(&head))
+            .expect("snapshot");
+        assert_eq!(
+            snapshot,
+            engine.tree_oid(&repository, &head).expect("head tree")
+        );
+        assert!(engine
+            .worktree_matches_tree(&repository, &head)
+            .expect("worktree match"));
+        for path in [
+            ".vulcan/config.local.toml",
+            ".vulcan/cache.db",
+            ".vulcan/cache.db-wal",
+            ".vulcan/cache.db-shm",
+        ] {
+            assert!(engine
+                .path_object(&repository, &snapshot, path)
+                .expect("path lookup")
+                .is_none());
+        }
+
+        run_git(
+            temporary.path(),
+            &[
+                "add",
+                "-f",
+                ".vulcan/config.local.toml",
+                ".vulcan/cache.db",
+                ".vulcan/cache.db-wal",
+                ".vulcan/cache.db-shm",
+            ],
+        );
+        let tracked_internal = commit_all(temporary.path(), "track internal state");
+        let cleaned = engine
+            .snapshot_worktree_tree(&repository, Some(&tracked_internal))
+            .expect("clean tracked internal paths");
+        assert_eq!(cleaned, snapshot);
+
+        fs::write(temporary.path().join("Home.md"), "changed\n").expect("changed note");
+        assert!(!engine
+            .worktree_matches_tree(&repository, &head)
+            .expect("changed worktree"));
     }
 
     #[test]

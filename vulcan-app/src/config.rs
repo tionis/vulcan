@@ -1724,7 +1724,7 @@ fn resolve_config_descriptor(key: &str) -> Result<ConfigDescriptorMatch, AppErro
 }
 
 fn config_target_support_for_key(key: &str) -> ConfigTargetSupport {
-    if key == "sync.merge_automation" {
+    if matches!(key, "sync.merge_automation" | "sync.agent_auto_accept") {
         ConfigTargetSupport::LocalOnly
     } else if key == "sync.merge_policy"
         || key.starts_with("sync.merge_policy.")
@@ -1924,6 +1924,7 @@ fn config_path_description(path: &str) -> String {
         "folder_notes.placement" => "Choose whether a folder note lives inside its folder or beside it in the parent folder.".to_string(),
         "folder_notes.name" => "Set the exact folder-note stem/template; `{{folder_name}}` expands to the folder's basename.".to_string(),
         "sync.merge_automation" => "Set the device-local ceiling to allow shared policy automation or require review for every Git conflict.".to_string(),
+        "sync.agent_auto_accept" => "Allow an explicitly requested agent proposal to enter the normal approval transaction automatically on this device. The default is false.".to_string(),
         _ if path.starts_with("sync.merge_policy") => {
             "Define the versioned shared ordered path/type rules used for deterministic Git conflict handling.".to_string()
         }
@@ -2944,6 +2945,17 @@ read = { allow = ["folder:Projects/**"] }
                 descriptor.key
             );
         }
+    }
+
+    #[test]
+    fn sync_agent_auto_accept_descriptor_is_local_boolean() {
+        let catalog = config_descriptor_catalog();
+        let descriptor = catalog
+            .iter()
+            .find(|descriptor| descriptor.key == "sync.agent_auto_accept")
+            .expect("agent auto-accept descriptor should exist");
+        assert_eq!(descriptor.kind, ConfigValueKind::Boolean);
+        assert_eq!(descriptor.target_support, ConfigTargetSupport::LocalOnly);
     }
 
     #[test]
