@@ -213,6 +213,7 @@ pub struct GitConflictRefs {
     pub base: Option<GitRefName>,
     pub local: GitRefName,
     pub remote: GitRefName,
+    pub record: GitRefName,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -227,6 +228,7 @@ pub struct GitSyncConflict {
     pub policy_version: u32,
     pub policy_hash: String,
     pub preserved_refs: GitConflictRefs,
+    pub provenance_revision: GitOid,
     pub merge_tree: Option<GitOid>,
     pub diagnostics: String,
 }
@@ -1079,13 +1081,18 @@ fn build_sync_conflict(
         &remote,
         &merge.conflict_paths,
     )?;
-    let preserved_refs = preserve_conflict_refs(
+    let (preserved_refs, provenance_revision) = preserve_conflict_refs(
         engine,
         repository,
-        &id,
-        merge.base.as_ref(),
-        &capture.commit,
-        &remote,
+        &ConflictPreservationRequest {
+            options,
+            id: &id,
+            policy_hash: &policy_hash,
+            base: merge.base.as_ref(),
+            local: &capture.commit,
+            remote: &remote,
+            merge_tree: merge.tree.as_ref(),
+        },
     )?;
     Ok(GitSyncConflict {
         id,
@@ -1097,6 +1104,7 @@ fn build_sync_conflict(
         policy_version: options.merge_policy.version,
         policy_hash,
         preserved_refs,
+        provenance_revision,
         merge_tree: merge.tree,
         diagnostics: merge.diagnostics,
     })
@@ -1373,29 +1381,92 @@ fn conflict_identity(
     ))
 }
 
+struct ConflictPreservationRequest<'a> {
+    options: &'a GitSyncOptions,
+    id: &'a str,
+    policy_hash: &'a str,
+    base: Option<&'a GitOid>,
+    local: &'a GitOid,
+    remote: &'a GitOid,
+    merge_tree: Option<&'a GitOid>,
+}
+
 fn preserve_conflict_refs(
     engine: &dyn GitEngine,
     repository: &GitRepository,
-    id: &str,
-    base: Option<&GitOid>,
-    local: &GitOid,
-    remote: &GitOid,
-) -> Result<GitConflictRefs, GitSyncError> {
+    request: &ConflictPreservationRequest<'_>,
+) -> Result<(GitConflictRefs, GitOid), GitSyncError> {
+    let options = request.options;
+    let id = request.id;
+    let policy_hash = request.policy_hash;
+    let base = request.base;
+    let local = request.local;
+    let remote = request.remote;
+    let merge_tree = request.merge_tree;
     let base_ref = base
         .map(|_| GitRefName::parse(format!("refs/vulcan/conflicts/{id}/base")))
         .transpose()?;
     let local_ref = GitRefName::parse(format!("refs/vulcan/conflicts/{id}/local"))?;
     let remote_ref = GitRefName::parse(format!("refs/vulcan/conflicts/{id}/remote"))?;
+    let record_ref = GitRefName::parse(format!("refs/vulcan/conflicts/{id}/record"))?;
     if let (Some(base), Some(reference)) = (base, base_ref.as_ref()) {
-        engine.update_ref(repository, reference, base)?;
+        preserve_exact_ref(engine, repository, reference, base)?;
     }
-    engine.update_ref(repository, &local_ref, local)?;
-    engine.update_ref(repository, &remote_ref, remote)?;
-    Ok(GitConflictRefs {
-        base: base_ref,
-        local: local_ref,
-        remote: remote_ref,
-    })
+    preserve_exact_ref(engine, repository, &local_ref, local)?;
+    preserve_exact_ref(engine, repository, &remote_ref, remote)?;
+    let tree = merge_tree
+        .cloned()
+        .map_or_else(|| engine.tree_oid(repository, local), Ok)?;
+    let refs = GitSyncRefs::for_options(options)?;
+    let base_trailer = base.map_or_else(
+        || "Vulcan-Conflict-Base: none\n".to_string(),
+        |base| format!("Vulcan-Conflict-Base: {base}\n"),
+    );
+    let provenance_revision = engine.create_reproducible_commit(
+        repository,
+        &tree,
+        &[remote.clone(), local.clone()],
+        &format!(
+            "vulcan preserved conflict\n\nVulcan-Conflict: {id}\n{base_trailer}{}",
+            sync_trailers(
+                &refs,
+                options,
+                &format!("{remote}+{local};policy={policy_hash}"),
+            )
+        ),
+    )?;
+    preserve_exact_ref(engine, repository, &record_ref, &provenance_revision)?;
+    Ok((
+        GitConflictRefs {
+            base: base_ref,
+            local: local_ref,
+            remote: remote_ref,
+            record: record_ref,
+        },
+        provenance_revision,
+    ))
+}
+
+fn preserve_exact_ref(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    reference: &GitRefName,
+    target: &GitOid,
+) -> Result<(), GitSyncError> {
+    if engine.read_ref(repository, reference)?.as_ref() == Some(target) {
+        return Ok(());
+    }
+    if engine.create_ref(repository, reference, target)? == crate::GitRefCreateResult::Created
+        || engine.read_ref(repository, reference)?.as_ref() == Some(target)
+    {
+        return Ok(());
+    }
+    Err(GitEngineError::UnsupportedRepository {
+        detail: format!(
+            "preserved conflict ref `{reference}` already identifies a different commit"
+        ),
+    }
+    .into())
 }
 
 fn snapshot_message(
@@ -2284,6 +2355,23 @@ mod tests {
             Some(conflict.base.clone())
         );
         assert_eq!(
+            engine
+                .read_ref(&report.repository, &conflict.preserved_refs.record)
+                .expect("provenance ref"),
+            Some(conflict.provenance_revision.clone())
+        );
+        let provenance_message = git_stdout(
+            reader.as_path(),
+            &[
+                "show",
+                "-s",
+                "--format=%B",
+                conflict.provenance_revision.as_str(),
+            ],
+        );
+        assert!(provenance_message.contains(&format!("Vulcan-Conflict: {}", conflict.id)));
+        assert!(provenance_message.contains("Vulcan-Sync-Semantic: false"));
+        assert_eq!(
             fs::read_to_string(reader.join("Home.md")).expect("preserved reader note"),
             "reader version\n"
         );
@@ -2300,6 +2388,18 @@ mod tests {
             repeated.conflict.as_ref().map(|item| &item.id),
             Some(&conflict.id)
         );
+        engine
+            .update_ref(
+                &report.repository,
+                &conflict.preserved_refs.record,
+                &conflict.local,
+            )
+            .expect("simulate provenance ref tampering");
+        let error = sync_git_once(&engine, &reader, &GitSyncOptions::default())
+            .expect_err("a changed preservation ref must fail closed");
+        assert!(error
+            .to_string()
+            .contains("already identifies a different commit"));
     }
 
     #[test]

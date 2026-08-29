@@ -35,6 +35,10 @@ pub struct SyncConflictRecord {
     pub preserved_base_ref: Option<String>,
     pub preserved_local_ref: String,
     pub preserved_remote_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preserved_record_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provenance_revision: Option<String>,
     pub paths: Vec<SyncConflictPathRecord>,
     pub diagnostics: String,
 }
@@ -507,6 +511,13 @@ fn verify_preserved_conflict_refs(
         Some(&record.preserved_remote_ref),
         Some(&record.remote_revision),
         "remote",
+    )?;
+    verify_preserved_ref(
+        engine,
+        repository,
+        record.preserved_record_ref.as_deref(),
+        record.provenance_revision.as_deref(),
+        "provenance",
     )
 }
 
@@ -836,6 +847,8 @@ impl SyncConflictStore {
                 .map(ToString::to_string),
             preserved_local_ref: conflict.preserved_refs.local.to_string(),
             preserved_remote_ref: conflict.preserved_refs.remote.to_string(),
+            preserved_record_ref: Some(conflict.preserved_refs.record.to_string()),
+            provenance_revision: Some(conflict.provenance_revision.to_string()),
             paths,
             diagnostics: conflict.diagnostics.clone(),
         };
@@ -1107,6 +1120,14 @@ fn verify_record_inputs(
         || record.remote_revision != conflict.remote.as_str()
         || record.policy_version != conflict.policy_version
         || record.policy_hash != conflict.policy_hash
+        || record
+            .provenance_revision
+            .as_deref()
+            .is_some_and(|revision| revision != conflict.provenance_revision.as_str())
+        || record
+            .preserved_record_ref
+            .as_deref()
+            .is_some_and(|reference| reference != conflict.preserved_refs.record.as_str())
         || record
             .paths
             .iter()

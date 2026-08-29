@@ -162,6 +162,14 @@ pub trait GitEngine: Send + Sync {
         message: &str,
     ) -> Result<GitOid, GitEngineError>;
 
+    fn create_reproducible_commit(
+        &self,
+        repository: &GitRepository,
+        tree: &GitOid,
+        parents: &[GitOid],
+        message: &str,
+    ) -> Result<GitOid, GitEngineError>;
+
     fn push_ref(
         &self,
         repository: &GitRepository,
@@ -1038,6 +1046,17 @@ impl GitCliEngine {
         parents: &[GitOid],
         message: &str,
     ) -> Result<GitOid, GitEngineError> {
+        self.commit_tree_with_reproducible_identity(repository, tree, parents, message, false)
+    }
+
+    fn commit_tree_with_reproducible_identity(
+        &self,
+        repository: &GitRepository,
+        tree: &GitOid,
+        parents: &[GitOid],
+        message: &str,
+        reproducible: bool,
+    ) -> Result<GitOid, GitEngineError> {
         let mut command = self.repository_command(repository);
         command.arg("commit-tree").arg(tree.as_str());
         for parent in parents {
@@ -1051,6 +1070,11 @@ impl GitCliEngine {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        if reproducible {
+            command
+                .env("GIT_AUTHOR_DATE", "@0 +0000")
+                .env("GIT_COMMITTER_DATE", "@0 +0000");
+        }
         let mut child = command.spawn().map_err(|source| {
             if source.kind() == std::io::ErrorKind::NotFound {
                 GitEngineError::ExecutableUnavailable {
@@ -1875,6 +1899,16 @@ impl GitEngine for GitCliEngine {
         message: &str,
     ) -> Result<GitOid, GitEngineError> {
         self.commit_tree(repository, tree, parents, message)
+    }
+
+    fn create_reproducible_commit(
+        &self,
+        repository: &GitRepository,
+        tree: &GitOid,
+        parents: &[GitOid],
+        message: &str,
+    ) -> Result<GitOid, GitEngineError> {
+        self.commit_tree_with_reproducible_identity(repository, tree, parents, message, true)
     }
 
     fn push_ref(

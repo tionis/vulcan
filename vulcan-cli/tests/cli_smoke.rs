@@ -5008,6 +5008,8 @@ fn sync_conflicts_cli_lists_and_shows_immutable_records() {
 
     let detail = parse_stdout_json(&command(&[&id]));
     assert_eq!(detail["record"]["id"], id);
+    assert!(detail["record"]["preserved_record_ref"].is_string());
+    assert!(detail["record"]["provenance_revision"].is_string());
     assert_eq!(detail["record"]["paths"][0]["path"], "Home.md");
     assert_eq!(
         detail["record"]["paths"][0]["classification"]["class"],
@@ -11609,6 +11611,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("conflict_record"));
     assert!(git_skill.contains("vulcan sync conflicts <id>"));
     assert!(git_skill.contains("stable `classification`"));
+    assert!(git_skill.contains("`provenance_revision`"));
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
     assert!(git_skill.contains("vulcan sync checkpoint [<wiki>] --dry-run"));
     assert!(git_skill.contains("vulcan vault clone <remote> <path> --dry-run"));

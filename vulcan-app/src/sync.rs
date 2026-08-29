@@ -1656,6 +1656,8 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         let record = report.conflict_record.expect("durable conflict record");
         assert_eq!(record.paths.len(), 1);
         assert_eq!(record.paths[0].path, "Home.md");
+        assert!(record.preserved_record_ref.is_some());
+        assert!(record.provenance_revision.is_some());
         assert_overlapping_text_classification(&record);
         let conflict_root = store
             .root()
