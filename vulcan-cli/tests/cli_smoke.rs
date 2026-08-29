@@ -5294,6 +5294,105 @@ fn sync_resolve_cli_applies_a_reviewed_patch_through_a_proposal() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn sync_resolve_cli_applies_a_reviewed_editor_result_through_a_proposal() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (temporary, state_home, reader, id) = setup_cli_sync_conflict();
+    let editor = temporary.path().join("resolve-editor.sh");
+    fs::write(
+        &editor,
+        "#!/bin/sh\nfor path in \"$@\"; do printf 'editor resolution\\n' > \"$path\"; done\n",
+    )
+    .expect("editor script");
+    let mut permissions = fs::metadata(&editor)
+        .expect("editor metadata")
+        .permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&editor, permissions).expect("editor permissions");
+    let run = |dry_run: bool, editor_command: &std::path::Path| {
+        let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+        command
+            .env("XDG_STATE_HOME", &state_home)
+            .env("EDITOR", editor_command)
+            .arg("--vault")
+            .arg(&reader)
+            .args(["--output", "json", "sync", "resolve", &id, "--editor"]);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        command.assert().success()
+    };
+
+    let objects_before = run_git_stdout(&reader, &["count-objects", "-v"]);
+    let preview = parse_stdout_json(&run(true, std::path::Path::new("/does/not/exist")));
+    assert_eq!(preview["outcome"], "planned");
+    assert_eq!(preview["paths"][0], "Home.md");
+    assert_eq!(
+        run_git_stdout(&reader, &["count-objects", "-v"]),
+        objects_before
+    );
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
+        .env("EDITOR", "true")
+        .arg("--vault")
+        .arg(&reader)
+        .args(["sync", "resolve", &id, "--editor"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "left conflict path `Home.md` unchanged",
+        ));
+    assert_eq!(
+        run_git_stdout(&reader, &["count-objects", "-v"]),
+        objects_before
+    );
+
+    let marker_editor = temporary.path().join("marker-editor.sh");
+    fs::write(
+        &marker_editor,
+        format!(
+            "#!/bin/sh\nfor path in \"$@\"; do printf 'VULCAN-CONFLICT-{id}\\n' > \"$path\"; done\n"
+        ),
+    )
+    .expect("marker editor script");
+    let mut marker_permissions = fs::metadata(&marker_editor)
+        .expect("marker editor metadata")
+        .permissions();
+    marker_permissions.set_mode(0o700);
+    fs::set_permissions(&marker_editor, marker_permissions).expect("marker editor permissions");
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
+        .env("EDITOR", &marker_editor)
+        .arg("--vault")
+        .arg(&reader)
+        .args(["sync", "resolve", &id, "--editor"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "still contains Vulcan conflict markers",
+        ));
+    assert_eq!(
+        run_git_stdout(&reader, &["count-objects", "-v"]),
+        objects_before
+    );
+
+    let resolved = parse_stdout_json(&run(false, &editor));
+    assert_eq!(resolved["outcome"], "applied");
+    assert_eq!(
+        fs::read_to_string(reader.join("Home.md")).expect("resolved note"),
+        "editor resolution\n"
+    );
+    assert_eq!(
+        fs::read_to_string(reader.join("Writer.md")).expect("clean merged note"),
+        "clean remote addition\n"
+    );
+}
+
 #[test]
 fn sync_resolve_cli_previews_and_explicitly_approves_a_retained_proposal() {
     let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
@@ -12013,6 +12112,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
     assert!(git_skill.contains("--file '<conflict-path>=<source-file>' --dry-run"));
     assert!(git_skill.contains("--patch <patch-file> --dry-run"));
+    assert!(git_skill.contains("--editor --dry-run"));
     assert!(git_skill.contains("vulcan sync propose <conflict-id> --model <model>"));
     assert!(git_skill.contains("sent as exact UTF-8 with a content hash"));
     assert!(git_skill.contains("vault_search`, `vault_query`, and `vault_links`"));
@@ -12051,6 +12151,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("vulcan sync resolve <id> --side <side> --dry-run"));
     assert!(diagnostics_skill.contains("--file '<conflict-path>=<source-file>'"));
     assert!(diagnostics_skill.contains("--patch <patch-file> --dry-run"));
+    assert!(diagnostics_skill.contains("--editor --dry-run"));
     assert!(diagnostics_skill.contains("offline/cancelled cycle"));
     assert!(diagnostics_skill.contains("outside `.vulcan/cache.db`"));
     assert!(diagnostics_skill.contains("stable device identity"));

@@ -4007,15 +4007,15 @@ pub enum SyncCommand {
         #[arg(
             long,
             value_enum,
-            required_unless_present_any = ["approve_proposal", "files", "patch"],
-            conflicts_with_all = ["approve_proposal", "files", "patch"],
+            required_unless_present_any = ["approve_proposal", "files", "patch", "editor"],
+            conflicts_with_all = ["approve_proposal", "files", "patch", "editor"],
             help = "Preserved side to use for conflicted paths"
         )]
         side: Option<SyncConflictSideArg>,
         #[arg(
             long,
-            required_unless_present_any = ["side", "files", "patch"],
-            conflicts_with_all = ["side", "files", "patch"],
+            required_unless_present_any = ["side", "files", "patch", "editor"],
+            conflicts_with_all = ["side", "files", "patch", "editor"],
             help = "Explicitly approve and apply this retained proposal ID"
         )]
         approve_proposal: Option<String>,
@@ -4023,19 +4023,26 @@ pub enum SyncCommand {
             long = "file",
             value_name = "CONFLICT_PATH=SOURCE",
             action = ArgAction::Append,
-            required_unless_present_any = ["side", "approve_proposal", "patch"],
-            conflicts_with_all = ["side", "approve_proposal", "patch"],
+            required_unless_present_any = ["side", "approve_proposal", "patch", "editor"],
+            conflicts_with_all = ["side", "approve_proposal", "patch", "editor"],
             help = "Resolve one conflicted path from a reviewed file; repeat for every path"
         )]
         files: Vec<String>,
         #[arg(
             long,
             value_name = "PATCH_FILE",
-            required_unless_present_any = ["side", "approve_proposal", "files"],
-            conflicts_with_all = ["side", "approve_proposal", "files"],
+            required_unless_present_any = ["side", "approve_proposal", "files", "editor"],
+            conflicts_with_all = ["side", "approve_proposal", "files", "editor"],
             help = "Apply a reviewed unified patch against the preserved local candidate"
         )]
         patch: Option<String>,
+        #[arg(
+            long,
+            required_unless_present_any = ["side", "approve_proposal", "files", "patch"],
+            conflicts_with_all = ["side", "approve_proposal", "files", "patch"],
+            help = "Open temporary conflict-marker files in $VISUAL/$EDITOR"
+        )]
+        editor: bool,
         #[arg(long, help = "Optional registered wiki ID")]
         wiki: Option<String>,
         #[command(flatten)]

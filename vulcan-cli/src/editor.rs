@@ -32,6 +32,13 @@ where
 }
 
 pub(crate) fn open_in_editor(path: &Path) -> Result<(), String> {
+    open_paths_in_editor(&[path])
+}
+
+pub(crate) fn open_paths_in_editor(paths: &[&Path]) -> Result<(), String> {
+    if paths.is_empty() {
+        return Err("cannot open an empty editor path set".to_string());
+    }
     let editor = std::env::var("VISUAL")
         .ok()
         .or_else(|| std::env::var("EDITOR").ok())
@@ -43,7 +50,7 @@ pub(crate) fn open_in_editor(path: &Path) -> Result<(), String> {
         command.arg(arg);
     }
     let status = command
-        .arg(path)
+        .args(paths)
         .status()
         .map_err(|error| format!("failed to launch editor `{editor}`: {error}"))?;
     if status.success() {

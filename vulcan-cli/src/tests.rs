@@ -2289,6 +2289,7 @@ fn parses_sync_resolve_command() {
                 approve_proposal: None,
                 files: Vec::new(),
                 patch: None,
+                editor: false,
                 wiki: Some("personal".to_string()),
                 target: SyncTargetArgs {
                     remote: "origin".to_string(),
@@ -2525,6 +2526,30 @@ fn parses_supplied_file_sync_resolution() {
                 ..
             }
         } if patch.as_deref() == Some("/tmp/resolution.patch") && files.is_empty()
+    ));
+
+    let editor = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "resolve",
+        "conflict-id",
+        "--editor",
+        "--dry-run",
+    ])
+    .expect("editor resolution should parse");
+    assert!(matches!(
+        editor.command,
+        Command::Sync {
+            command: SyncCommand::Resolve {
+                editor: true,
+                side: None,
+                approve_proposal: None,
+                ref files,
+                patch: None,
+                dry_run: true,
+                ..
+            }
+        } if files.is_empty()
     ));
 }
 

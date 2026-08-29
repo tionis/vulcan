@@ -1,7 +1,7 @@
 ---
 name: diagnostics-and-repair
 description: Diagnose vault health, broken links, parser diagnostics, suspicious state, synchronization pauses or conflicts, and repairable problems. Use when the user asks why something is broken, wants a health check, sees diagnostics, or needs safe repair steps before editing notes.
-version: 12
+version: 13
 tools:
   - doctor
   - cache_verify
@@ -46,6 +46,7 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 - If the user explicitly selects `base`, `local`, or `remote`, run `vulcan sync resolve <id> --side <side> --dry-run` first. A stale worktree, changed preserved ref, active Git operation, or moved remote is a safety stop—not a reason to reset files or refs. The mutating form is appropriate only after reviewing the lossy path-level choice.
 - If the user instead supplies reviewed replacement files, require one `--file '<conflict-path>=<source-file>'` for every conflicted path and run with `--dry-run` first. Missing, duplicate, unrelated, oversized, malformed, or ineligible files must remain unresolved; do not work around those diagnostics by choosing an arbitrary preserved side.
 - For a reviewed unified patch, run `vulcan sync resolve <id> --patch <patch-file> --dry-run` first. Patch diagnostics are safety stops when it does not apply to the preserved local candidate, covers only part of the conflict, touches unrelated paths, deletes a conflict file, or uses unsupported rename/copy records.
+- For interactive resolution, run `vulcan sync resolve <id> --editor --dry-run` before launching the mutating form. The editor works on private temporary marker files, not vault files; an unchanged file or remaining `VULCAN-CONFLICT-<id>` token is an incomplete resolution and must fail without publishing.
 
 ## Example Moves
 

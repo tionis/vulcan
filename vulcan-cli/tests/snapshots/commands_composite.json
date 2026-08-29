@@ -8843,6 +8843,20 @@
                 ]
               },
               {
+                "help": "Open temporary conflict-marker files in $VISUAL/$EDITOR",
+                "id": "editor",
+                "long": "editor",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EDITOR"
+                ]
+              },
+              {
                 "help": "Optional registered wiki ID",
                 "id": "wiki",
                 "long": "wiki",

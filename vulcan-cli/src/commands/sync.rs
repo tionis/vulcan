@@ -1,3 +1,4 @@
+use crate::editor::open_paths_in_editor;
 use crate::output::print_json;
 use crate::{
     selected_permission_guard, Cli, CliError, OutputFormat, SemanticGroupingArg,
@@ -17,11 +18,12 @@ use vulcan_app::sync_conflicts::{
     SyncConflictResolutionSide,
 };
 use vulcan_app::sync_proposals::{
-    approve_resolution_proposal, create_resolution_proposal, preview_patch_resolution,
-    preview_supplied_resolution, reject_resolution_proposal, resolution_paths_from_patch,
-    ApproveResolutionProposalOptions, ApproveResolutionProposalReport,
-    PatchResolutionPreviewReport, RejectResolutionProposalReport, ResolutionAgentPathOutput,
-    ResolutionProposalOptions, SuppliedResolutionPreviewReport, SuppliedResolutionProvider,
+    approve_resolution_proposal, create_resolution_proposal, prepare_editor_resolution,
+    preview_patch_resolution, preview_supplied_resolution, reject_resolution_proposal,
+    resolution_paths_from_patch, ApproveResolutionProposalOptions, ApproveResolutionProposalReport,
+    EditorResolutionPlan, PatchResolutionPreviewReport, RejectResolutionProposalReport,
+    ResolutionAgentPathOutput, ResolutionProposalOptions, SuppliedResolutionPreviewReport,
+    SuppliedResolutionProvider,
 };
 #[cfg(feature = "web")]
 use vulcan_app::sync_proposals::{OpenAiCompatibleResolutionProvider, ResolutionProposal};
@@ -142,24 +144,7 @@ fn handle_non_cycle_sync_command(
             proposal_id,
             *dry_run,
         ),
-        SyncCommand::Resolve {
-            conflict_id,
-            side,
-            approve_proposal,
-            files,
-            patch,
-            wiki,
-            target,
-            dry_run,
-        } => run_sync_resolve(
-            cli,
-            paths,
-            wiki.as_deref(),
-            conflict_id,
-            cli_resolution(*side, approve_proposal.as_deref(), files, patch.as_deref()),
-            target,
-            *dry_run,
-        ),
+        command @ SyncCommand::Resolve { .. } => handle_sync_resolve_command(cli, paths, command),
         SyncCommand::Checkpoint {
             wiki,
             kind,
@@ -196,6 +181,42 @@ fn handle_non_cycle_sync_command(
         SyncCommand::Run { .. } | SyncCommand::Status { .. } => return None,
     };
     Some(result)
+}
+
+fn handle_sync_resolve_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &SyncCommand,
+) -> Result<(), CliError> {
+    let SyncCommand::Resolve {
+        conflict_id,
+        side,
+        approve_proposal,
+        files,
+        patch,
+        editor,
+        wiki,
+        target,
+        dry_run,
+    } = command
+    else {
+        unreachable!("resolve handler receives a resolve command")
+    };
+    run_sync_resolve(
+        cli,
+        paths,
+        wiki.as_deref(),
+        conflict_id,
+        cli_resolution(
+            *side,
+            approve_proposal.as_deref(),
+            files,
+            patch.as_deref(),
+            *editor,
+        ),
+        target,
+        *dry_run,
+    )
 }
 
 fn run_sync_reject(
@@ -467,6 +488,7 @@ enum CliResolution<'a> {
     Proposal(&'a str),
     Files(&'a [String]),
     Patch(&'a str),
+    Editor,
 }
 
 fn cli_resolution<'a>(
@@ -474,6 +496,7 @@ fn cli_resolution<'a>(
     proposal: Option<&'a str>,
     files: &'a [String],
     patch: Option<&'a str>,
+    editor: bool,
 ) -> CliResolution<'a> {
     if let Some(proposal) = proposal {
         CliResolution::Proposal(proposal)
@@ -481,6 +504,8 @@ fn cli_resolution<'a>(
         CliResolution::Files(files)
     } else if let Some(patch) = patch {
         CliResolution::Patch(patch)
+    } else if editor {
+        CliResolution::Editor
     } else {
         CliResolution::Side(side.expect("clap requires one resolution mode"))
     }
@@ -524,6 +549,14 @@ fn run_sync_resolve(
             registration_profile.as_deref(),
             conflict_id,
             source,
+            target,
+            dry_run,
+        ),
+        CliResolution::Editor => run_editor_resolution(
+            cli,
+            &paths,
+            registration_profile.as_deref(),
+            conflict_id,
             target,
             dry_run,
         ),
@@ -622,6 +655,101 @@ fn run_patch_resolution(
         &approval_options,
         supplied,
     )
+}
+
+fn run_editor_resolution(
+    cli: &Cli,
+    paths: &VaultPaths,
+    registration_profile: Option<&str>,
+    conflict_id: &str,
+    target: &crate::SyncTargetArgs,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let (proposal_options, approval_options) =
+        manual_resolution_options(cli, registration_profile, target, dry_run)?;
+    let plan = prepare_editor_resolution(paths, conflict_id, &proposal_options, &approval_options)
+        .map_err(CliError::operation)?;
+    if dry_run {
+        return print_editor_resolution_preview(cli.output, &plan);
+    }
+    let supplied = edit_resolution_files(&plan)?;
+    run_supplied_resolution(
+        cli.output,
+        paths,
+        conflict_id,
+        &proposal_options,
+        &approval_options,
+        supplied,
+    )
+}
+
+fn edit_resolution_files(
+    plan: &EditorResolutionPlan,
+) -> Result<Vec<ResolutionAgentPathOutput>, CliError> {
+    let temporary = tempfile::tempdir().map_err(CliError::operation)?;
+    let mut edited_paths = Vec::with_capacity(plan.files.len());
+    for file in &plan.files {
+        let path = safe_editor_path(temporary.path(), &file.path)?;
+        std::fs::create_dir_all(
+            path.parent()
+                .expect("editor conflict path always has a temporary parent"),
+        )
+        .map_err(CliError::operation)?;
+        std::fs::write(&path, &file.initial_content).map_err(CliError::operation)?;
+        edited_paths.push(path);
+    }
+    let editor_paths = edited_paths
+        .iter()
+        .map(std::path::PathBuf::as_path)
+        .collect::<Vec<_>>();
+    open_paths_in_editor(&editor_paths).map_err(CliError::operation)?;
+    plan.files
+        .iter()
+        .zip(edited_paths)
+        .map(|(file, path)| {
+            let content = std::fs::read(&path).map_err(CliError::operation)?;
+            if content == file.initial_content {
+                return Err(CliError::operation(format!(
+                    "editor left conflict path `{}` unchanged",
+                    file.path
+                )));
+            }
+            if contains_bytes(&content, file.marker_token.as_bytes()) {
+                return Err(CliError::operation(format!(
+                    "editor result for `{}` still contains Vulcan conflict markers",
+                    file.path
+                )));
+            }
+            Ok(ResolutionAgentPathOutput {
+                path: file.path.clone(),
+                content,
+            })
+        })
+        .collect()
+}
+
+fn safe_editor_path(
+    root: &std::path::Path,
+    relative: &str,
+) -> Result<std::path::PathBuf, CliError> {
+    let path = std::path::Path::new(relative);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(CliError::operation(format!(
+            "conflict path `{relative}` is unsafe for editor materialization"
+        )));
+    }
+    Ok(root.join(path))
+}
+
+fn contains_bytes(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
 }
 
 fn manual_resolution_options(
@@ -737,6 +865,23 @@ fn print_patch_resolution_preview(
     }
     println!(
         "Conflict {}: {:?} (patch touches {} path(s), dry run)",
+        report.conflict_id,
+        report.outcome,
+        report.paths.len()
+    );
+    Ok(())
+}
+
+fn print_editor_resolution_preview(
+    output: OutputFormat,
+    plan: &EditorResolutionPlan,
+) -> Result<(), CliError> {
+    let report = plan.preview_report();
+    if output == OutputFormat::Json {
+        return print_json(&report);
+    }
+    println!(
+        "Conflict {}: {:?} (editor would open {} path(s), dry run)",
         report.conflict_id,
         report.outcome,
         report.paths.len()

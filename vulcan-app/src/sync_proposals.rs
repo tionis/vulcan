@@ -911,6 +911,33 @@ pub struct PatchResolutionPreviewReport {
     pub validation: Vec<ResolutionProposalValidationCheck>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorResolutionFile {
+    pub path: String,
+    pub initial_content: Vec<u8>,
+    pub initial_hash: String,
+    pub marker_token: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorResolutionPlan {
+    pub vault: PathBuf,
+    pub repository_key: String,
+    pub conflict_id: String,
+    pub files: Vec<EditorResolutionFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct EditorResolutionPreviewReport {
+    pub vault: PathBuf,
+    pub repository_key: String,
+    pub conflict_id: String,
+    pub dry_run: bool,
+    pub outcome: ApproveResolutionProposalOutcome,
+    pub paths: Vec<String>,
+    pub validation: Vec<ResolutionProposalValidationCheck>,
+}
+
 pub fn preview_supplied_resolution(
     paths: &VaultPaths,
     conflict_id: &str,
@@ -1072,6 +1099,160 @@ pub fn resolution_paths_from_patch(
             })
         })
         .collect()
+}
+
+pub fn prepare_editor_resolution(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+) -> Result<EditorResolutionPlan, AppError> {
+    let state_store = SyncStateStore::user_default()?;
+    let manual = prepare_manual_resolution_scope(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        &state_store,
+    )?;
+    let base = GitOid::parse(
+        manual
+            .record
+            .base_revision
+            .as_deref()
+            .ok_or_else(|| AppError::operation("editor resolution requires one merge base"))?,
+    )
+    .map_err(AppError::operation)?;
+    let local = GitOid::parse(&manual.record.local_revision).map_err(AppError::operation)?;
+    let remote = GitOid::parse(&manual.record.remote_revision).map_err(AppError::operation)?;
+    let mut total = 0_usize;
+    let mut files = Vec::with_capacity(manual.record.paths.len());
+    for conflict_path in &manual.record.paths {
+        let base_content = editor_side_content(
+            &manual.engine,
+            &manual.repository,
+            &base,
+            &conflict_path.path,
+        )?;
+        let local_content = editor_side_content(
+            &manual.engine,
+            &manual.repository,
+            &local,
+            &conflict_path.path,
+        )?;
+        let remote_content = editor_side_content(
+            &manual.engine,
+            &manual.repository,
+            &remote,
+            &conflict_path.path,
+        )?;
+        let marker_token = format!("VULCAN-CONFLICT-{}", manual.record.id);
+        let initial_content = render_editor_conflict(
+            &marker_token,
+            &base_content,
+            &local_content,
+            &remote_content,
+        );
+        if initial_content.len() > MAX_AGENT_FILE_BYTES {
+            return Err(AppError::operation(format!(
+                "editor resolution `{}` exceeds the per-file byte limit",
+                conflict_path.path
+            )));
+        }
+        total = total.saturating_add(initial_content.len());
+        files.push(EditorResolutionFile {
+            path: conflict_path.path.clone(),
+            initial_hash: blake3::hash(&initial_content).to_hex().to_string(),
+            initial_content,
+            marker_token,
+        });
+    }
+    if total > MAX_AGENT_TOTAL_BYTES {
+        return Err(AppError::operation(
+            "editor resolution files exceed the total byte limit",
+        ));
+    }
+    Ok(EditorResolutionPlan {
+        vault: manual.vault,
+        repository_key: manual.repository_key,
+        conflict_id: conflict_id.to_string(),
+        files,
+    })
+}
+
+impl EditorResolutionPlan {
+    #[must_use]
+    pub fn preview_report(&self) -> EditorResolutionPreviewReport {
+        EditorResolutionPreviewReport {
+            vault: self.vault.clone(),
+            repository_key: self.repository_key.clone(),
+            conflict_id: self.conflict_id.clone(),
+            dry_run: true,
+            outcome: ApproveResolutionProposalOutcome::Planned,
+            paths: self.files.iter().map(|file| file.path.clone()).collect(),
+            validation: vec![
+                ResolutionProposalValidationCheck::ConflictInputsPreserved,
+                ResolutionProposalValidationCheck::PermissionProfileNamed,
+                ResolutionProposalValidationCheck::OutputPathsExact,
+                ResolutionProposalValidationCheck::OutputBytesBounded,
+                ResolutionProposalValidationCheck::WorktreeUnchanged,
+                ResolutionProposalValidationCheck::RefsUnchanged,
+            ],
+        }
+    }
+}
+
+fn editor_side_content(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    revision: &GitOid,
+    path: &str,
+) -> Result<String, AppError> {
+    let object = engine
+        .path_object(repository, revision, path)
+        .map_err(AppError::operation)?
+        .ok_or_else(|| {
+            AppError::operation(format!(
+                "editor resolution requires `{path}` to exist on every preserved side"
+            ))
+        })?;
+    let data = object.data.ok_or_else(|| {
+        AppError::operation(format!(
+            "editor resolution requires `{path}` to be a regular blob"
+        ))
+    })?;
+    String::from_utf8(data).map_err(|_| {
+        AppError::operation(format!(
+            "editor resolution requires `{path}` to be valid UTF-8"
+        ))
+    })
+}
+
+fn render_editor_conflict(marker: &str, base: &str, local: &str, remote: &str) -> Vec<u8> {
+    let mut output = String::new();
+    output.push_str("<<<<<<< ");
+    output.push_str(marker);
+    output.push_str(" LOCAL\n");
+    append_editor_side(&mut output, local);
+    output.push_str("||||||| ");
+    output.push_str(marker);
+    output.push_str(" BASE\n");
+    append_editor_side(&mut output, base);
+    output.push_str("======= ");
+    output.push_str(marker);
+    output.push('\n');
+    append_editor_side(&mut output, remote);
+    output.push_str(">>>>>>> ");
+    output.push_str(marker);
+    output.push_str(" REMOTE\n");
+    output.into_bytes()
+}
+
+fn append_editor_side(output: &mut String, content: &str) {
+    output.push_str(content);
+    if !content.ends_with('\n') {
+        output.push('\n');
+    }
 }
 
 struct ManualResolutionScope {
@@ -3020,6 +3201,21 @@ mod tests {
     struct InventedContextProvider;
 
     struct ToolUsingProvider;
+
+    #[test]
+    fn editor_conflict_markers_are_unique_and_preserve_all_sides() {
+        let rendered = String::from_utf8(render_editor_conflict(
+            "VULCAN-CONFLICT-deadbeef",
+            "base",
+            "local\n",
+            "remote",
+        ))
+        .expect("UTF-8 markers");
+        assert!(rendered.contains("<<<<<<< VULCAN-CONFLICT-deadbeef LOCAL\nlocal\n"));
+        assert!(rendered.contains("||||||| VULCAN-CONFLICT-deadbeef BASE\nbase\n"));
+        assert!(rendered.contains("======= VULCAN-CONFLICT-deadbeef\nremote\n"));
+        assert!(rendered.ends_with(">>>>>>> VULCAN-CONFLICT-deadbeef REMOTE\n"));
+    }
 
     impl ResolutionAgentProvider for ToolUsingProvider {
         fn identity(&self) -> ResolutionAgentIdentity {
