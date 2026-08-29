@@ -11,17 +11,18 @@ use std::fs::{self, File, OpenOptions};
 use std::path::PathBuf;
 use vulcan_core::VaultPaths;
 use vulcan_sync::{
-    git_live_epoch_id, GitEngine, GitOid, GitPushResult, GitRefCreateResult, GitRefDeleteResult,
-    GitRefName, GitReference, GitRemote, GitSyncOptions, GitSyncRefs,
+    find_git_live_epoch, git_live_epoch_id, GitEngine, GitOid, GitPushResult, GitRefCreateResult,
+    GitRefDeleteResult, GitRefName, GitReference, GitRemote, GitSyncOptions, GitSyncRefs,
 };
 
-pub const SYNC_RETENTION_PLAN_VERSION: u32 = 1;
+pub const SYNC_RETENTION_PLAN_VERSION: u32 = 2;
 const MAX_RETENTION_BOUND: usize = 100_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SyncRetentionPolicy {
     pub live_epoch_max_commits: usize,
     pub recovery_checkpoints_keep: usize,
+    pub epoch_archives_keep: usize,
 }
 
 impl Default for SyncRetentionPolicy {
@@ -29,6 +30,7 @@ impl Default for SyncRetentionPolicy {
         Self {
             live_epoch_max_commits: 256,
             recovery_checkpoints_keep: 16,
+            epoch_archives_keep: 8,
         }
     }
 }
@@ -43,6 +45,11 @@ impl SyncRetentionPolicy {
         if self.recovery_checkpoints_keep > MAX_RETENTION_BOUND {
             return Err(AppError::operation(format!(
                 "recovery checkpoint retention must not exceed {MAX_RETENTION_BOUND}"
+            )));
+        }
+        if self.epoch_archives_keep == 0 || self.epoch_archives_keep > MAX_RETENTION_BOUND {
+            return Err(AppError::operation(format!(
+                "epoch archive retention must be between 1 and {MAX_RETENTION_BOUND}"
             )));
         }
         Ok(())
@@ -78,6 +85,22 @@ pub struct SyncRetentionCheckpointPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncRetentionEpochArchiveRefPlan {
+    pub local_reference: GitRefName,
+    pub remote_reference: GitRefName,
+    pub revision: String,
+    pub remote_present: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncRetentionEpochArchivePlan {
+    pub keep: usize,
+    pub chain_complete: bool,
+    pub retained: Vec<SyncRetentionEpochArchiveRefPlan>,
+    pub expirable: Vec<SyncRetentionEpochArchiveRefPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SyncRetentionPlanReport {
     pub version: u32,
     pub vault: PathBuf,
@@ -88,7 +111,7 @@ pub struct SyncRetentionPlanReport {
     pub active_epoch: SyncRetentionEpochPlan,
     pub recovery_checkpoints: SyncRetentionCheckpointPlan,
     pub permanent_semantic_checkpoints: Vec<SyncRetentionRefPlan>,
-    pub retained_epoch_archives: Vec<SyncRetentionRefPlan>,
+    pub epoch_archives: SyncRetentionEpochArchivePlan,
     pub mutation_free: bool,
 }
 
@@ -98,6 +121,7 @@ pub struct SyncRetentionApplyReport {
     pub dry_run: bool,
     pub plan: SyncRetentionPlanReport,
     pub released_recovery_checkpoints: Vec<SyncRetentionRefPlan>,
+    pub released_epoch_archives: Vec<SyncRetentionEpochArchiveRefPlan>,
     pub epoch_rollover_applied: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub epoch_rollover: Option<SyncEpochRolloverReport>,
@@ -161,14 +185,16 @@ pub fn plan_sync_retention(
             &GitRefName::parse("refs/vulcan/checkpoints/semantic").map_err(AppError::operation)?,
         )
         .map_err(AppError::operation)?;
-    let epochs = engine
-        .list_refs(
-            &repository,
-            &GitRefName::parse("refs/vulcan/epochs/live").map_err(AppError::operation)?,
-        )
-        .map_err(AppError::operation)?;
     let (retained, expirable) =
         partition_recovery_refs(recovery, options.policy.recovery_checkpoints_keep);
+    let epoch_archives = plan_epoch_archives(
+        &engine,
+        &repository,
+        options,
+        &refs,
+        &accepted,
+        options.policy.epoch_archives_keep,
+    )?;
 
     Ok(SyncRetentionPlanReport {
         version: SYNC_RETENTION_PLAN_VERSION,
@@ -189,26 +215,94 @@ pub fn plan_sync_retention(
             expirable: expirable.into_iter().map(ref_plan).collect(),
         },
         permanent_semantic_checkpoints: semantic.into_iter().map(ref_plan).collect(),
-        retained_epoch_archives: epochs.into_iter().map(ref_plan).collect(),
+        epoch_archives,
         mutation_free: true,
     })
 }
 
-/// Applies only the checkpoint-expiry portion of a retention plan.
-///
-/// Every deletion uses the object ID observed by a freshly recomputed plan as
-/// its lease. A partial interruption is safe to retry: already deleted refs no
-/// longer appear in the next plan. Live epoch and semantic refs are untouched.
+fn plan_epoch_archives(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    options: &SyncRetentionPlanOptions,
+    refs: &GitSyncRefs,
+    accepted: &GitOid,
+    keep: usize,
+) -> Result<SyncRetentionEpochArchivePlan, AppError> {
+    let mut epoch =
+        find_git_live_epoch(engine, repository, refs, accepted).map_err(AppError::operation)?;
+    let mut chain = Vec::new();
+    let mut chain_complete = true;
+    for _ in 0..MAX_RETENTION_BOUND {
+        let Some(current) = epoch.take() else {
+            break;
+        };
+        let remote = engine
+            .remote_ref(repository, &options.remote, &current.remote_archive)
+            .map_err(AppError::operation)?;
+        if remote
+            .as_ref()
+            .is_some_and(|remote| remote != &current.previous)
+        {
+            return Err(AppError::operation(format!(
+                "remote epoch archive {} identifies an unexpected object",
+                current.remote_archive
+            )));
+        }
+        let local = engine
+            .read_ref(repository, &current.local_archive)
+            .map_err(AppError::operation)?;
+        let Some(local) = local else {
+            if remote.is_some() {
+                chain_complete = false;
+            }
+            break;
+        };
+        if local != current.previous {
+            return Err(AppError::operation(format!(
+                "epoch archive {} does not identify its declared previous tip",
+                current.local_archive
+            )));
+        }
+        chain.push(SyncRetentionEpochArchiveRefPlan {
+            local_reference: current.local_archive,
+            remote_reference: current.remote_archive,
+            revision: current.previous.to_string(),
+            remote_present: remote.is_some(),
+        });
+        epoch = find_git_live_epoch(engine, repository, refs, &current.previous)
+            .map_err(AppError::operation)?;
+    }
+    if epoch.is_some() {
+        chain_complete = false;
+    }
+    let expirable = if chain_complete && chain.len() > keep {
+        let mut older = chain.split_off(keep);
+        older.reverse();
+        older
+    } else {
+        Vec::new()
+    };
+    Ok(SyncRetentionEpochArchivePlan {
+        keep,
+        chain_complete,
+        retained: chain,
+        expirable,
+    })
+}
+
+/// Applies explicitly selected portions of a freshly recomputed retention plan.
 pub fn apply_sync_retention(
     paths: &VaultPaths,
     options: &SyncRetentionPlanOptions,
     dry_run: bool,
     rollover: bool,
+    expire_epoch_archives: bool,
 ) -> Result<SyncRetentionApplyReport, AppError> {
     if dry_run {
         return Ok(retention_apply_report(
             true,
             plan_sync_retention(paths, options)?,
+            Vec::new(),
             Vec::new(),
             None,
         ));
@@ -225,6 +319,11 @@ pub fn apply_sync_retention(
     } else {
         None
     };
+    if expire_epoch_archives && !plan.epoch_archives.chain_complete {
+        return Err(AppError::operation(
+            "epoch archive chain is incomplete locally; synchronize the archive chain before expiring it",
+        ));
+    }
     let mut deleted = Vec::new();
     for candidate in &plan.recovery_checkpoints.expirable {
         let expected = GitOid::parse(&candidate.revision).map_err(AppError::operation)?;
@@ -243,13 +342,69 @@ pub fn apply_sync_retention(
             }
         }
     }
-    Ok(retention_apply_report(false, plan, deleted, epoch_rollover))
+    let released_epoch_archives = if expire_epoch_archives {
+        expire_epoch_archives_with_leases(&engine, &repository, options, &plan)?
+    } else {
+        Vec::new()
+    };
+    Ok(retention_apply_report(
+        false,
+        plan,
+        deleted,
+        released_epoch_archives,
+        epoch_rollover,
+    ))
+}
+
+fn expire_epoch_archives_with_leases(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    options: &SyncRetentionPlanOptions,
+    plan: &SyncRetentionPlanReport,
+) -> Result<Vec<SyncRetentionEpochArchiveRefPlan>, AppError> {
+    let mut released = Vec::new();
+    for candidate in &plan.epoch_archives.expirable {
+        let expected = GitOid::parse(&candidate.revision).map_err(AppError::operation)?;
+        match engine
+            .delete_remote_ref(
+                repository,
+                &options.remote,
+                &candidate.remote_reference,
+                &expected,
+            )
+            .map_err(AppError::operation)?
+        {
+            GitRefDeleteResult::Deleted | GitRefDeleteResult::Missing => {}
+            GitRefDeleteResult::Stale => {
+                return Err(AppError::operation(format!(
+                    "remote epoch archive {} moved while retention was being applied; rerun retention-plan",
+                    candidate.remote_reference
+                )))
+            }
+        }
+        match engine
+            .delete_ref(repository, &candidate.local_reference, &expected)
+            .map_err(AppError::operation)?
+        {
+            GitRefDeleteResult::Deleted | GitRefDeleteResult::Missing => {
+                released.push(candidate.clone());
+            }
+            GitRefDeleteResult::Stale => {
+                return Err(AppError::operation(format!(
+                    "local epoch archive {} moved while retention was being applied; remote deletion may already have succeeded",
+                    candidate.local_reference
+                )))
+            }
+        }
+    }
+    Ok(released)
 }
 
 fn retention_apply_report(
     dry_run: bool,
     plan: SyncRetentionPlanReport,
     released_recovery_checkpoints: Vec<SyncRetentionRefPlan>,
+    released_epoch_archives: Vec<SyncRetentionEpochArchiveRefPlan>,
     epoch_rollover: Option<SyncEpochRolloverReport>,
 ) -> SyncRetentionApplyReport {
     SyncRetentionApplyReport {
@@ -257,6 +412,7 @@ fn retention_apply_report(
         dry_run,
         plan,
         released_recovery_checkpoints,
+        released_epoch_archives,
         epoch_rollover_applied: epoch_rollover.is_some(),
         epoch_rollover,
         semantic_refs_changed: false,
@@ -506,7 +662,7 @@ impl RetentionLock {
 
 #[cfg(test)]
 mod tests {
-    use super::partition_recovery_refs;
+    use super::{partition_recovery_refs, SyncRetentionPolicy};
     use vulcan_sync::{GitOid, GitRefName, GitReference};
 
     fn reference(name: &str, oid: &str) -> GitReference {
@@ -541,5 +697,18 @@ mod tests {
             expirable[0].name.as_str(),
             "refs/vulcan/checkpoints/recovery/01"
         );
+    }
+
+    #[test]
+    fn retention_policy_keeps_a_nonzero_offline_epoch_horizon() {
+        let policy = SyncRetentionPolicy::default();
+        assert_eq!(policy.epoch_archives_keep, 8);
+        assert!(policy.validate().is_ok());
+
+        let invalid = SyncRetentionPolicy {
+            epoch_archives_keep: 0,
+            ..policy
+        };
+        assert!(invalid.validate().is_err());
     }
 }

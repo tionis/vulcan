@@ -39,10 +39,11 @@ pub use merge_policy::{
     MergePolicyError, MergePolicyRule, MergeResolution, MERGE_POLICY_SCHEMA_VERSION,
 };
 pub use sync::{
-    git_live_epoch_id, sync_git_once, sync_git_once_with_control, GitAutomaticMergeValidation,
-    GitAutomaticResolution, GitAutomaticResolutionValidation, GitAutomaticValidationCheck,
-    GitConflictClass, GitConflictClassification, GitConflictRefs, GitSyncAction, GitSyncBackend,
-    GitSyncConflict, GitSyncDeviceId, GitSyncError, GitSyncObserver, GitSyncObserverError,
-    GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase,
-    GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
+    find_git_live_epoch, git_live_epoch_id, sync_git_once, sync_git_once_with_control,
+    GitAutomaticMergeValidation, GitAutomaticResolution, GitAutomaticResolutionValidation,
+    GitAutomaticValidationCheck, GitConflictClass, GitConflictClassification, GitConflictRefs,
+    GitLiveEpoch, GitSyncAction, GitSyncBackend, GitSyncConflict, GitSyncDeviceId, GitSyncError,
+    GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPause,
+    GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
+    IgnoreGitSyncProgress, SyncCancellationToken,
 };

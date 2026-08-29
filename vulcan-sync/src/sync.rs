@@ -1036,7 +1036,7 @@ fn reconcile(
     if engine.is_ancestor(&report.repository, &capture.commit, &remote)? {
         return Ok(Some((remote, GitSyncOutcome::Pulled, false)));
     }
-    if let Some(epoch) = epoch_root(engine, &report.repository, &report.refs, &remote)? {
+    if let Some(epoch) = find_git_live_epoch(engine, &report.repository, &report.refs, &remote)? {
         if engine.is_ancestor(&report.repository, &epoch.root, &capture.commit)? {
             return merge_divergence(engine, options, report, capture, remote, control);
         }
@@ -1049,20 +1049,20 @@ const MAX_EPOCH_DISCOVERY_COMMITS: usize = 100_001;
 const MAX_MISSED_EPOCHS: usize = 1_024;
 
 #[derive(Debug, Clone)]
-struct EpochRoot {
-    root: GitOid,
-    id: String,
-    previous: GitOid,
-    remote_archive: GitRefName,
-    local_archive: GitRefName,
+pub struct GitLiveEpoch {
+    pub root: GitOid,
+    pub id: String,
+    pub previous: GitOid,
+    pub remote_archive: GitRefName,
+    pub local_archive: GitRefName,
 }
 
-fn epoch_root(
+pub fn find_git_live_epoch(
     engine: &dyn GitEngine,
     repository: &GitRepository,
     refs: &GitSyncRefs,
     live: &GitOid,
-) -> Result<Option<EpochRoot>, GitSyncError> {
+) -> Result<Option<GitLiveEpoch>, GitSyncError> {
     for commit in engine.first_parent_history(repository, live, MAX_EPOCH_DISCOVERY_COMMITS)? {
         let metadata = engine.commit_metadata(repository, &commit)?;
         let Some(id) = trailer(&metadata.message, "Vulcan-Sync-Epoch") else {
@@ -1113,7 +1113,7 @@ fn epoch_root(
             }
             let local_archive =
                 GitRefName::parse(format!("refs/vulcan/epochs/live/{profile}/{id}"))?;
-            return Ok(Some(EpochRoot {
+            return Ok(Some(GitLiveEpoch {
                 root: commit,
                 id: id.to_string(),
                 previous,
@@ -1151,7 +1151,7 @@ fn reconcile_epoch_root(
     report: &mut GitSyncReport,
     capture: &crate::GitCapture,
     remote_live: GitOid,
-    epoch: &EpochRoot,
+    epoch: &GitLiveEpoch,
     control: &mut AttemptControl<'_>,
 ) -> Result<Option<(GitOid, GitSyncOutcome, bool)>, GitSyncError> {
     let bridge_parent = epoch_bridge_parent(
@@ -1242,7 +1242,7 @@ fn epoch_bridge_parent(
     repository: &GitRepository,
     refs: &GitSyncRefs,
     capture: &GitOid,
-    mut epoch: EpochRoot,
+    mut epoch: GitLiveEpoch,
 ) -> Result<GitOid, GitSyncError> {
     let mut visited = HashSet::new();
     for _ in 0..MAX_MISSED_EPOCHS {
@@ -1253,7 +1253,7 @@ fn epoch_bridge_parent(
         if engine.merge_base(repository, &archived, capture)?.is_some() {
             return Ok(archived);
         }
-        epoch = epoch_root(engine, repository, refs, &archived)?.ok_or_else(|| {
+        epoch = find_git_live_epoch(engine, repository, refs, &archived)?.ok_or_else(|| {
             invalid_epoch("offline candidate has no common ancestry with the epoch archive chain")
         })?;
     }
@@ -1266,8 +1266,21 @@ fn fetch_epoch_archive(
     engine: &dyn GitEngine,
     options: &GitSyncOptions,
     repository: &GitRepository,
-    epoch: &EpochRoot,
+    epoch: &GitLiveEpoch,
 ) -> Result<GitOid, GitSyncError> {
+    match engine.remote_ref(repository, &options.remote, &epoch.remote_archive)? {
+        Some(remote) if remote != epoch.previous => {
+            return Err(invalid_epoch(
+                "remote archive does not match previous-epoch trailer",
+            ));
+        }
+        Some(_) => {}
+        None => {
+            return Err(invalid_epoch(
+                "required archive has expired; this offline candidate predates the retained epoch horizon",
+            ));
+        }
+    }
     if let Some(local_archive) = engine.read_ref(repository, &epoch.local_archive)? {
         if local_archive != epoch.previous {
             return Err(invalid_epoch(

@@ -4940,6 +4940,9 @@ fn sync_checkpoint_cli_retains_the_accepted_commit_without_new_objects() {
         "2",
         "--dry-run",
         "--rollover",
+        "--epoch-archives-keep",
+        "1",
+        "--expire-epoch-archives",
     ]));
     assert_eq!(retention_preview["dry_run"], true);
     assert_eq!(retention_preview["epoch_rollover_applied"], false);
@@ -4950,6 +4953,9 @@ fn sync_checkpoint_cli_retains_the_accepted_commit_without_new_objects() {
         Some(1)
     );
     assert!(retention_preview["released_recovery_checkpoints"]
+        .as_array()
+        .is_some_and(Vec::is_empty));
+    assert!(retention_preview["released_epoch_archives"]
         .as_array()
         .is_some_and(Vec::is_empty));
     assert_eq!(
@@ -5136,6 +5142,26 @@ fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_a
         ],
     );
     sync(&long_offline);
+    let expired_offline = temporary.path().join("expired-offline");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "clone",
+            "--quiet",
+            writer.to_str().expect("writer"),
+            expired_offline.to_str().expect("expired-offline reader"),
+        ],
+    );
+    run_git_ok(
+        &expired_offline,
+        &[
+            "remote",
+            "set-url",
+            "origin",
+            remote.to_str().expect("remote"),
+        ],
+    );
+    sync(&expired_offline);
 
     fs::write(writer.join("Writer.md"), "writer change\n").expect("writer change");
     sync(&writer);
@@ -5151,6 +5177,11 @@ fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_a
         "change across two rollovers\n",
     )
     .expect("long-offline change");
+    fs::write(
+        expired_offline.join("Expired Offline.md"),
+        "must survive an expired horizon\n",
+    )
+    .expect("expired-offline change");
 
     let rollover = Command::cargo_bin("vulcan")
         .expect("binary")
@@ -5256,10 +5287,16 @@ fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_a
         ])
         .assert()
         .success();
-    assert_eq!(
-        parse_stdout_json(&second_rollover)["epoch_rollover_applied"],
-        true
-    );
+    let second_rollover = parse_stdout_json(&second_rollover);
+    assert_eq!(second_rollover["epoch_rollover_applied"], true);
+    let second_remote_archive = second_rollover["epoch_rollover"]["remote_archive_ref"]
+        .as_str()
+        .expect("second remote archive")
+        .to_string();
+    let second_local_archive = second_rollover["epoch_rollover"]["local_archive_ref"]
+        .as_str()
+        .expect("second local archive")
+        .to_string();
     let long_reconciled = parse_stdout_json(&sync(&long_offline));
     assert_eq!(long_reconciled["outcome"], "merged");
     assert_eq!(
@@ -5276,6 +5313,166 @@ fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_a
         fs::read_to_string(long_offline.join("Long Offline.md"))
             .expect("long-offline note retained"),
         "change across two rollovers\n"
+    );
+    assert_eq!(parse_stdout_json(&sync(&writer))["outcome"], "pulled");
+
+    let expiry_plan = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&writer)
+        .args([
+            "--output",
+            "json",
+            "sync",
+            "retention-plan",
+            "--epoch-archives-keep",
+            "1",
+        ])
+        .assert()
+        .success();
+    let expiry_plan = parse_stdout_json(&expiry_plan);
+    assert_eq!(expiry_plan["epoch_archives"]["chain_complete"], true);
+    assert_eq!(
+        expiry_plan["epoch_archives"]["retained"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        expiry_plan["epoch_archives"]["expirable"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        expiry_plan["epoch_archives"]["expirable"][0]["remote_reference"],
+        remote_archive
+    );
+
+    let expiry = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&writer)
+        .args([
+            "--output",
+            "json",
+            "sync",
+            "retention-apply",
+            "--epoch-archives-keep",
+            "1",
+            "--expire-epoch-archives",
+        ])
+        .assert()
+        .success();
+    let expiry = parse_stdout_json(&expiry);
+    assert_eq!(
+        expiry["released_epoch_archives"].as_array().map(Vec::len),
+        Some(1)
+    );
+    let remote_epoch_refs = run_git_stdout(
+        &remote,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/heads/__vulcan-sync/epochs",
+        ],
+    );
+    assert!(!remote_epoch_refs.lines().any(|line| line == remote_archive));
+    assert!(remote_epoch_refs
+        .lines()
+        .any(|line| line == second_remote_archive));
+    let local_epoch_refs = run_git_stdout(
+        &writer,
+        &[
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/vulcan/epochs/live",
+        ],
+    );
+    assert_eq!(local_epoch_refs.lines().count(), 1);
+    let repeated_expiry = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&writer)
+        .args([
+            "--output",
+            "json",
+            "sync",
+            "retention-apply",
+            "--epoch-archives-keep",
+            "1",
+            "--expire-epoch-archives",
+        ])
+        .assert()
+        .success();
+    let repeated_expiry = parse_stdout_json(&repeated_expiry);
+    assert_eq!(
+        repeated_expiry["plan"]["epoch_archives"]["chain_complete"],
+        true
+    );
+    assert!(repeated_expiry["released_epoch_archives"]
+        .as_array()
+        .is_some_and(Vec::is_empty));
+    run_git_ok(&writer, &["update-ref", "-d", &second_local_archive]);
+    let incomplete_plan = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&writer)
+        .args([
+            "--output",
+            "json",
+            "sync",
+            "retention-plan",
+            "--epoch-archives-keep",
+            "1",
+        ])
+        .assert()
+        .success();
+    let incomplete_plan = parse_stdout_json(&incomplete_plan);
+    assert_eq!(incomplete_plan["epoch_archives"]["chain_complete"], false);
+    assert!(incomplete_plan["epoch_archives"]["expirable"]
+        .as_array()
+        .is_some_and(Vec::is_empty));
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&writer)
+        .args([
+            "--output",
+            "json",
+            "sync",
+            "retention-apply",
+            "--epoch-archives-keep",
+            "1",
+            "--expire-epoch-archives",
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains(
+            "epoch archive chain is incomplete locally",
+        ));
+
+    let expired_attempt = Command::cargo_bin("vulcan")
+        .expect("binary")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&expired_offline)
+        .args(["--output", "json", "sync", "run"])
+        .assert()
+        .failure();
+    let expired_attempt = parse_stdout_json(&expired_attempt);
+    assert!(expired_attempt["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("predates the retained epoch horizon")));
+    assert_eq!(
+        fs::read_to_string(expired_offline.join("Expired Offline.md"))
+            .expect("expired offline bytes remain"),
+        "must survive an expired horizon\n"
     );
 }
 
@@ -12619,6 +12816,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync retention-apply [<wiki>] --dry-run"));
     assert!(git_skill.contains("Add `--rollover` only when the user has explicitly chosen"));
     assert!(git_skill.contains("Offline devices reconcile through that durable archive"));
+    assert!(git_skill.contains("Treat `--epoch-archives-keep <n> --expire-epoch-archives`"));
+    assert!(git_skill.contains("device beyond the retained horizon fails without losing"));
     assert!(git_skill.contains("--group-by file"));
     assert!(git_skill.contains("semantic branch with compare-and-swap"));
     assert!(git_skill.contains("pause.reason"));

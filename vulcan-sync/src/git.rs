@@ -268,6 +268,14 @@ pub trait GitEngine: Send + Sync {
         expected: Option<&GitOid>,
     ) -> Result<GitPushResult, GitEngineError>;
 
+    fn delete_remote_ref(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        reference: &GitRefName,
+        expected: &GitOid,
+    ) -> Result<GitRefDeleteResult, GitEngineError>;
+
     fn plan_tree_application(
         &self,
         repository: &GitRepository,
@@ -2485,6 +2493,52 @@ impl GitEngine for GitCliEngine {
         Err(command_failed("push the live sync ref", &output))
     }
 
+    fn delete_remote_ref(
+        &self,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        reference: &GitRefName,
+        expected: &GitOid,
+    ) -> Result<GitRefDeleteResult, GitEngineError> {
+        match self.remote_ref(repository, remote, reference)? {
+            None => return Ok(GitRefDeleteResult::Missing),
+            Some(current) if current != *expected => return Ok(GitRefDeleteResult::Stale),
+            Some(_) => {}
+        }
+        let lease = format!(
+            "--force-with-lease={}:{}",
+            reference.as_str(),
+            expected.as_str()
+        );
+        let refspec = format!(":{}", reference.as_str());
+        let mut command = self.repository_command(repository);
+        command
+            .args(["push", "--porcelain"])
+            .arg(lease)
+            .arg("--")
+            .arg(remote.as_str())
+            .arg(refspec);
+        let output = self.execute(command)?;
+        if output.status.success() {
+            return Ok(GitRefDeleteResult::Deleted);
+        }
+        let combined = format!(
+            "{}\n{}",
+            bounded_lossy(&output.stdout),
+            bounded_lossy(&output.stderr)
+        );
+        if ["stale info", "fetch first", "non-fast-forward"]
+            .iter()
+            .any(|needle| combined.contains(needle))
+        {
+            return Ok(GitRefDeleteResult::Stale);
+        }
+        Err(command_failed(
+            "delete a remote Git ref with lease",
+            &output,
+        ))
+    }
+
     fn plan_tree_application(
         &self,
         repository: &GitRepository,
@@ -4057,7 +4111,27 @@ mod tests {
             engine
                 .fetch_ref(&repository, &remote, &live, &fetched)
                 .expect("fetch"),
-            head
+            head.clone()
+        );
+        let stale = GitOid::parse("1111111111111111111111111111111111111111")
+            .expect("valid stale object ID");
+        assert_eq!(
+            engine
+                .delete_remote_ref(&repository, &remote, &live, &stale)
+                .expect("stale deletion"),
+            GitRefDeleteResult::Stale
+        );
+        assert_eq!(
+            engine
+                .delete_remote_ref(&repository, &remote, &live, &head)
+                .expect("leased deletion"),
+            GitRefDeleteResult::Deleted
+        );
+        assert_eq!(
+            engine
+                .delete_remote_ref(&repository, &remote, &live, &head)
+                .expect("repeated deletion"),
+            GitRefDeleteResult::Missing
         );
     }
 

@@ -211,6 +211,7 @@ fn handle_retention_command(
             target,
             live_epoch_max_commits,
             recovery_checkpoints_keep,
+            epoch_archives_keep,
         } => Some(run_sync_retention_plan(
             cli,
             paths,
@@ -218,14 +219,17 @@ fn handle_retention_command(
             target,
             *live_epoch_max_commits,
             *recovery_checkpoints_keep,
+            *epoch_archives_keep,
         )),
         SyncCommand::RetentionApply {
             wiki,
             target,
             live_epoch_max_commits,
             recovery_checkpoints_keep,
+            epoch_archives_keep,
             dry_run,
             rollover,
+            expire_epoch_archives,
         } => Some(run_sync_retention_apply(
             cli,
             paths,
@@ -233,8 +237,10 @@ fn handle_retention_command(
             target,
             *live_epoch_max_commits,
             *recovery_checkpoints_keep,
+            *epoch_archives_keep,
             *dry_run,
             *rollover,
+            *expire_epoch_archives,
         )),
         _ => None,
     }
@@ -582,6 +588,7 @@ fn run_sync_retention_plan(
     target: &crate::SyncTargetArgs,
     live_epoch_max_commits: usize,
     recovery_checkpoints_keep: usize,
+    epoch_archives_keep: usize,
 ) -> Result<(), CliError> {
     let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
@@ -593,6 +600,7 @@ fn run_sync_retention_plan(
             policy: SyncRetentionPolicy {
                 live_epoch_max_commits,
                 recovery_checkpoints_keep,
+                epoch_archives_keep,
             },
         },
     )
@@ -621,6 +629,16 @@ fn print_sync_retention_plan(
         report.recovery_checkpoints.retained.len(),
         report.recovery_checkpoints.expirable.len()
     );
+    println!(
+        "Epoch archives: {} retained, {} expirable; chain {}.",
+        report.epoch_archives.retained.len(),
+        report.epoch_archives.expirable.len(),
+        if report.epoch_archives.chain_complete {
+            "complete"
+        } else {
+            "incomplete"
+        }
+    );
     Ok(())
 }
 
@@ -632,8 +650,10 @@ fn run_sync_retention_apply(
     target: &crate::SyncTargetArgs,
     live_epoch_max_commits: usize,
     recovery_checkpoints_keep: usize,
+    epoch_archives_keep: usize,
     dry_run: bool,
     rollover: bool,
+    expire_epoch_archives: bool,
 ) -> Result<(), CliError> {
     let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
@@ -645,10 +665,12 @@ fn run_sync_retention_apply(
             policy: SyncRetentionPolicy {
                 live_epoch_max_commits,
                 recovery_checkpoints_keep,
+                epoch_archives_keep,
             },
         },
         dry_run,
         rollover,
+        expire_epoch_archives,
     )
     .map_err(CliError::operation)?;
     print_sync_retention_apply(cli.output, &report)
@@ -670,6 +692,19 @@ fn print_sync_retention_apply(
         },
         if report.dry_run {
             "would be released"
+        } else {
+            "released"
+        }
+    );
+    println!(
+        "Epoch archives: {} {}.",
+        if report.dry_run {
+            report.plan.epoch_archives.expirable.len()
+        } else {
+            report.released_epoch_archives.len()
+        },
+        if report.dry_run {
+            "would be eligible for explicit expiry"
         } else {
             "released"
         }

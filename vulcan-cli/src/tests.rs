@@ -2435,6 +2435,7 @@ fn parses_sync_retention_plan_command() {
                 },
                 live_epoch_max_commits: 128,
                 recovery_checkpoints_keep: 8,
+                epoch_archives_keep: 8,
             },
         }
     );
@@ -2448,6 +2449,9 @@ fn parses_sync_retention_plan_command() {
         "8",
         "--dry-run",
         "--rollover",
+        "--epoch-archives-keep",
+        "4",
+        "--expire-epoch-archives",
     ])
     .expect("sync retention apply should parse");
     assert!(matches!(
@@ -2458,6 +2462,8 @@ fn parses_sync_retention_plan_command() {
                 recovery_checkpoints_keep: 8,
                 dry_run: true,
                 rollover: true,
+                epoch_archives_keep: 4,
+                expire_epoch_archives: true,
                 ..
             }
         } if wiki == "personal"
