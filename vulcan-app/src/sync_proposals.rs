@@ -338,6 +338,44 @@ pub trait ResolutionAgentProvider: Send + Sync {
     ) -> Result<ResolutionAgentOutput, AppError>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SuppliedResolutionProvider {
+    output: ResolutionAgentOutput,
+}
+
+impl SuppliedResolutionProvider {
+    #[must_use]
+    pub fn new(paths: Vec<ResolutionAgentPathOutput>) -> Self {
+        Self {
+            output: ResolutionAgentOutput {
+                explanation: "Resolution content supplied explicitly by the user.".to_string(),
+                referenced_context: Vec::new(),
+                paths,
+            },
+        }
+    }
+}
+
+impl ResolutionAgentProvider for SuppliedResolutionProvider {
+    fn identity(&self) -> ResolutionAgentIdentity {
+        ResolutionAgentIdentity {
+            provider: "vulcan-manual".to_string(),
+            model: "supplied-files-v1".to_string(),
+            prompt_contract_version: 1,
+        }
+    }
+
+    fn propose(
+        &self,
+        _request: &ResolutionAgentRequest,
+        _tools: &mut dyn ResolutionAgentTools,
+        cancellation: &SyncCancellationToken,
+    ) -> Result<ResolutionAgentOutput, AppError> {
+        cancellation_check(cancellation)?;
+        Ok(self.output.clone())
+    }
+}
+
 #[cfg(feature = "web")]
 pub struct OpenAiCompatibleResolutionProvider {
     client: reqwest::blocking::Client,
@@ -849,6 +887,132 @@ pub struct ApproveResolutionProposalReport {
     pub resolution_commit: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_refresh: Option<ScanSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SuppliedResolutionPreviewReport {
+    pub vault: PathBuf,
+    pub repository_key: String,
+    pub conflict_id: String,
+    pub dry_run: bool,
+    pub outcome: ApproveResolutionProposalOutcome,
+    pub paths: Vec<ResolutionProposalPath>,
+    pub validation: Vec<ResolutionProposalValidationCheck>,
+}
+
+pub fn preview_supplied_resolution(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    supplied: Vec<ResolutionAgentPathOutput>,
+) -> Result<SuppliedResolutionPreviewReport, AppError> {
+    let state_store = SyncStateStore::user_default()?;
+    preview_supplied_resolution_with_state_store(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        supplied,
+        &state_store,
+    )
+}
+
+pub fn preview_supplied_resolution_with_state_store(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    supplied: Vec<ResolutionAgentPathOutput>,
+    state_store: &SyncStateStore,
+) -> Result<SuppliedResolutionPreviewReport, AppError> {
+    if !approval_options.dry_run {
+        return Err(AppError::operation(
+            "supplied-resolution preview requires dry-run mode",
+        ));
+    }
+    let AgentScope {
+        vault,
+        repository_key,
+        record,
+        ..
+    } = prepare_agent_scope(paths, conflict_id, proposal_options, state_store)?;
+    let engine = vulcan_sync::GitCliEngine::default();
+    let repository = engine
+        .discover_repository(&vault)
+        .map_err(AppError::operation)?;
+    let conflict_store = SyncConflictStore::from_state_store(state_store);
+    if conflict_store
+        .get_resolution(&repository_key, conflict_id)?
+        .is_some()
+    {
+        return Err(AppError::operation(
+            "the conflict already has a resolution in progress or applied",
+        ));
+    }
+    ensure_no_existing_proposal(state_store, &repository_key, conflict_id)?;
+    verify_preserved_conflict_refs(&engine, &repository, &record)?;
+    let safety = engine
+        .safety_state(&repository)
+        .map_err(AppError::operation)?;
+    if safety.staged_changes || safety.operation.is_some() {
+        return Err(AppError::operation(
+            "supplied resolution requires a clean normal index and no Git operation in progress",
+        ));
+    }
+    let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
+    if !engine
+        .worktree_matches_tree(&repository, &local)
+        .map_err(AppError::operation)?
+    {
+        return Err(AppError::operation(
+            "the worktree no longer matches the preserved local conflict input",
+        ));
+    }
+    if engine
+        .remote_ref(
+            &repository,
+            &approval_options.remote,
+            &approval_options.live_ref,
+        )
+        .map_err(AppError::operation)?
+        .as_ref()
+        .map(GitOid::as_str)
+        != Some(record.remote_revision.as_str())
+    {
+        return Err(AppError::operation(
+            "the remote live ref moved after the conflict inputs were preserved",
+        ));
+    }
+    let prepared = prepare_output(
+        &engine,
+        &repository,
+        &record,
+        &BTreeSet::new(),
+        ResolutionAgentOutput {
+            explanation: "Resolution content supplied explicitly by the user.".to_string(),
+            referenced_context: Vec::new(),
+            paths: supplied,
+        },
+        Vec::new(),
+    )?;
+    Ok(SuppliedResolutionPreviewReport {
+        vault,
+        repository_key,
+        conflict_id: conflict_id.to_string(),
+        dry_run: true,
+        outcome: ApproveResolutionProposalOutcome::Planned,
+        paths: prepared.paths,
+        validation: vec![
+            ResolutionProposalValidationCheck::ConflictInputsPreserved,
+            ResolutionProposalValidationCheck::PermissionProfileNamed,
+            ResolutionProposalValidationCheck::OutputPathsExact,
+            ResolutionProposalValidationCheck::OutputBytesBounded,
+            ResolutionProposalValidationCheck::NoFileDeletion,
+            ResolutionProposalValidationCheck::WorktreeUnchanged,
+            ResolutionProposalValidationCheck::RefsUnchanged,
+        ],
+    })
 }
 
 pub fn create_resolution_proposal_with_provider(

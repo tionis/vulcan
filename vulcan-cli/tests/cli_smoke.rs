@@ -5188,6 +5188,63 @@ fn sync_resolve_cli_requires_an_explicit_side_and_preserves_clean_merge_paths() 
 }
 
 #[test]
+fn sync_resolve_cli_applies_reviewed_supplied_files_through_a_proposal() {
+    let (temporary, state_home, reader, id) = setup_cli_sync_conflict();
+    let source = temporary.path().join("resolved-home.md");
+    fs::write(&source, "reviewed resolution\n").expect("resolution source");
+    let specification = format!("Home.md={}", source.display());
+    let run = |dry_run: bool| {
+        let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+        command
+            .env("XDG_STATE_HOME", &state_home)
+            .arg("--vault")
+            .arg(&reader)
+            .args(["--output", "json", "sync", "resolve", &id, "--file"])
+            .arg(&specification);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        command.assert().success()
+    };
+
+    let objects_before = run_git_stdout(&reader, &["count-objects", "-v"]);
+    let preview = parse_stdout_json(&run(true));
+    assert_eq!(preview["outcome"], "planned");
+    assert_eq!(preview["dry_run"], true);
+    assert_eq!(preview["paths"][0]["path"], "Home.md");
+    assert_eq!(
+        run_git_stdout(&reader, &["count-objects", "-v"]),
+        objects_before
+    );
+    assert_eq!(
+        fs::read_to_string(reader.join("Home.md")).expect("reader note"),
+        "reader\n"
+    );
+
+    let resolved = parse_stdout_json(&run(false));
+    assert_eq!(resolved["outcome"], "applied");
+    assert!(resolved["proposal_id"].is_string());
+    assert!(resolved["resolution_commit"].is_string());
+    assert_eq!(
+        fs::read_to_string(reader.join("Home.md")).expect("resolved note"),
+        "reviewed resolution\n"
+    );
+    assert_eq!(
+        fs::read_to_string(reader.join("Writer.md")).expect("clean merged note"),
+        "clean remote addition\n"
+    );
+    let conflicts = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&reader)
+        .args(["--output", "json", "sync", "conflicts"])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&conflicts)["count"], 0);
+}
+
+#[test]
 fn sync_resolve_cli_previews_and_explicitly_approves_a_retained_proposal() {
     let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
     let store = SyncStateStore::at(state_home.join("vulcan/sync/repositories"));
@@ -11904,6 +11961,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("stable `classification`"));
     assert!(git_skill.contains("`provenance_revision`"));
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
+    assert!(git_skill.contains("--file '<conflict-path>=<source-file>' --dry-run"));
     assert!(git_skill.contains("vulcan sync propose <conflict-id> --model <model>"));
     assert!(git_skill.contains("sent as exact UTF-8 with a content hash"));
     assert!(git_skill.contains("vault_search`, `vault_query`, and `vault_links`"));
@@ -11940,6 +11998,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("immutable conflict ID"));
     assert!(diagnostics_skill.contains("vulcan sync conflicts <id>"));
     assert!(diagnostics_skill.contains("vulcan sync resolve <id> --side <side> --dry-run"));
+    assert!(diagnostics_skill.contains("--file '<conflict-path>=<source-file>'"));
     assert!(diagnostics_skill.contains("offline/cancelled cycle"));
     assert!(diagnostics_skill.contains("outside `.vulcan/cache.db`"));
     assert!(diagnostics_skill.contains("stable device identity"));

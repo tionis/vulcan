@@ -4000,25 +4000,34 @@ pub enum SyncCommand {
         #[arg(long, help = "Validate and report without recording the rejection")]
         dry_run: bool,
     },
-    #[command(about = "Resolve a conflict with an explicit side or approved proposal")]
+    #[command(about = "Resolve a conflict with a side, supplied files, or approved proposal")]
     Resolve {
         #[arg(help = "Immutable conflict ID to resolve")]
         conflict_id: String,
         #[arg(
             long,
             value_enum,
-            required_unless_present = "approve_proposal",
-            conflicts_with = "approve_proposal",
+            required_unless_present_any = ["approve_proposal", "files"],
+            conflicts_with_all = ["approve_proposal", "files"],
             help = "Preserved side to use for conflicted paths"
         )]
         side: Option<SyncConflictSideArg>,
         #[arg(
             long,
-            required_unless_present = "side",
-            conflicts_with = "side",
+            required_unless_present_any = ["side", "files"],
+            conflicts_with_all = ["side", "files"],
             help = "Explicitly approve and apply this retained proposal ID"
         )]
         approve_proposal: Option<String>,
+        #[arg(
+            long = "file",
+            value_name = "CONFLICT_PATH=SOURCE",
+            action = ArgAction::Append,
+            required_unless_present_any = ["side", "approve_proposal"],
+            conflicts_with_all = ["side", "approve_proposal"],
+            help = "Resolve one conflicted path from a reviewed file; repeat for every path"
+        )]
+        files: Vec<String>,
         #[arg(long, help = "Optional registered wiki ID")]
         wiki: Option<String>,
         #[command(flatten)]

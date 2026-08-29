@@ -8780,7 +8780,7 @@
             "subcommands": []
           },
           {
-            "about": "Resolve a conflict with an explicit side or approved proposal",
+            "about": "Resolve a conflict with a side, supplied files, or approved proposal",
             "name": "resolve",
             "options": [
               {
@@ -8818,6 +8818,17 @@
                 "short": null,
                 "value_names": [
                   "APPROVE_PROPOSAL"
+                ]
+              },
+              {
+                "help": "Resolve one conflicted path from a reviewed file; repeat for every path",
+                "id": "files",
+                "long": "file",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CONFLICT_PATH=SOURCE"
                 ]
               },
               {

@@ -1,7 +1,7 @@
 ---
 name: diagnostics-and-repair
 description: Diagnose vault health, broken links, parser diagnostics, suspicious state, synchronization pauses or conflicts, and repairable problems. Use when the user asks why something is broken, wants a health check, sees diagnostics, or needs safe repair steps before editing notes.
-version: 10
+version: 11
 tools:
   - doctor
   - cache_verify
@@ -44,6 +44,7 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 - For a sync conflict, retain the immutable conflict ID and inspect its base/local/remote revisions and path records. The original commits remain Git-reachable and file artifacts live in device-local sync state, so cache repair and note cleanup must never delete them.
 - Start conflict investigation with `vulcan sync conflicts`, then use `vulcan sync conflicts <id>` to inspect per-side object IDs, modes, hashes, byte counts, and artifact locations. This read-only command is safe before deciding how to resolve the conflict.
 - If the user explicitly selects `base`, `local`, or `remote`, run `vulcan sync resolve <id> --side <side> --dry-run` first. A stale worktree, changed preserved ref, active Git operation, or moved remote is a safety stop—not a reason to reset files or refs. The mutating form is appropriate only after reviewing the lossy path-level choice.
+- If the user instead supplies reviewed replacement files, require one `--file '<conflict-path>=<source-file>'` for every conflicted path and run with `--dry-run` first. Missing, duplicate, unrelated, oversized, malformed, or ineligible files must remain unresolved; do not work around those diagnostics by choosing an arbitrary preserved side.
 
 ## Example Moves
 

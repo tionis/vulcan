@@ -2287,6 +2287,7 @@ fn parses_sync_resolve_command() {
                 conflict_id: "0123456789abcdef0123456789abcdef".to_string(),
                 side: Some(SyncConflictSideArg::Local),
                 approve_proposal: None,
+                files: Vec::new(),
                 wiki: Some("personal".to_string()),
                 target: SyncTargetArgs {
                     remote: "origin".to_string(),
@@ -2470,6 +2471,36 @@ fn parses_sync_semantic_commands() {
             }
         }
     );
+}
+
+#[test]
+fn parses_supplied_file_sync_resolution() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "resolve",
+        "conflict-id",
+        "--file",
+        "Notes/A.md=/tmp/A.md",
+        "--file",
+        "Notes/B.md=/tmp/B.md",
+        "--dry-run",
+    ])
+    .expect("supplied-file resolution should parse");
+    assert!(matches!(
+        cli.command,
+        Command::Sync {
+            command: SyncCommand::Resolve {
+                ref conflict_id,
+                ref files,
+                side: None,
+                approve_proposal: None,
+                dry_run: true,
+                ..
+            }
+        } if conflict_id == "conflict-id"
+            && files == &["Notes/A.md=/tmp/A.md", "Notes/B.md=/tmp/B.md"]
+    ));
 }
 
 #[test]
