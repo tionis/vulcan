@@ -4932,6 +4932,88 @@ fn sync_checkpoint_cli_retains_the_accepted_commit_without_new_objects() {
         ),
         refs_before
     );
+    let retention_preview = parse_stdout_json(&run(&[
+        "retention-apply",
+        "--live-epoch-max-commits",
+        "1",
+        "--recovery-checkpoints-keep",
+        "2",
+        "--dry-run",
+    ]));
+    assert_eq!(retention_preview["dry_run"], true);
+    assert_eq!(
+        retention_preview["plan"]["recovery_checkpoints"]["expirable"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert!(retention_preview["released_recovery_checkpoints"]
+        .as_array()
+        .is_some_and(Vec::is_empty));
+    assert_eq!(
+        run_git_stdout(
+            &vault,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/vulcan/",
+            ],
+        ),
+        refs_before
+    );
+
+    let retention_apply = parse_stdout_json(&run(&[
+        "retention-apply",
+        "--live-epoch-max-commits",
+        "1",
+        "--recovery-checkpoints-keep",
+        "2",
+    ]));
+    assert_eq!(retention_apply["dry_run"], false);
+    assert_eq!(retention_apply["epoch_rollover_applied"], false);
+    assert_eq!(retention_apply["semantic_refs_changed"], false);
+    assert_eq!(
+        retention_apply["released_recovery_checkpoints"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        run_git_stdout(
+            &vault,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/vulcan/checkpoints/recovery"
+            ],
+        )
+        .lines()
+        .count(),
+        2
+    );
+    assert_eq!(
+        run_git_stdout(
+            &vault,
+            &[
+                "for-each-ref",
+                "--format=%(refname)",
+                "refs/vulcan/checkpoints/semantic"
+            ],
+        )
+        .lines()
+        .count(),
+        1
+    );
+    let repeated = parse_stdout_json(&run(&[
+        "retention-apply",
+        "--live-epoch-max-commits",
+        "1",
+        "--recovery-checkpoints-keep",
+        "2",
+    ]));
+    assert!(repeated["released_recovery_checkpoints"]
+        .as_array()
+        .is_some_and(Vec::is_empty));
 
     let config_home = temporary.path().join("config");
     fs::create_dir(&config_home).expect("config home");
@@ -12294,6 +12376,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("Vulcan-Sync-*` trailers"));
     assert!(git_skill.contains("vulcan sync semantic-plan"));
     assert!(git_skill.contains("vulcan sync retention-plan [<wiki>]"));
+    assert!(git_skill.contains("vulcan sync retention-apply [<wiki>] --dry-run"));
     assert!(git_skill.contains("--group-by file"));
     assert!(git_skill.contains("semantic branch with compare-and-swap"));
     assert!(git_skill.contains("pause.reason"));

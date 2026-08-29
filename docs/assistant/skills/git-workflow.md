@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 40
+version: 41
 tools:
   - git_status
   - git_diff
@@ -52,6 +52,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Use `vulcan sync pause [<wiki>]` and `vulcan sync resume [<wiki>]` to change device-local automatic behavior. Omitting the ID resolves the selected vault's registration; add `--dry-run` to preview the registry mutation.
 - Use `vulcan sync checkpoint [<wiki>] --dry-run` before deliberately retaining the accepted live commit; add `--kind semantic` when the retention intent is human-facing semantic history rather than recovery. Checkpoints create unique local refs without copying objects or advancing the checked-out branch, and refuse when local accepted refs disagree with the remote.
 - Use `vulcan sync retention-plan [<wiki>]` to inspect active live-epoch pressure and checkpoint retention without mutation. `--live-epoch-max-commits` bounds first-parent observation and `--recovery-checkpoints-keep` classifies only the oldest excess recovery refs as expirable; semantic checkpoints are always reported as permanent. Treat `rollover_required` as a plan signal, not permission to delete refs or rewrite the live tip.
+- After reviewing that plan, preview `vulcan sync retention-apply [<wiki>] --dry-run`. Rerun without `--dry-run` only to release the reported excess recovery checkpoints. Application recomputes under the sync lock and uses an exact-object lease for every ref, so moved refs fail closed and interrupted/repeated runs are safe. It never rolls over the live epoch or changes semantic refs.
 - Use `vulcan sync semantic-plan [<wiki>] --from <rev> --to <accepted-live-rev> --group-by top-level --dry-run` to review deterministic commit grouping and patches without creating objects or state. Choose `--group-by file` for one commit per changed path or `--group-by all` for one commit containing the complete selected change; `top-level` is the default. Rerun without `--dry-run` to retain the proposal under `refs/vulcan/proposals/semantic/<plan-id>`, then use `vulcan sync semantic-apply <plan-id> --dry-run` before explicit acceptance. Apply refuses stale source, proposal, or live refs, advances only the semantic branch with compare-and-swap, and releases the redundant proposal ref after durable success; it never rewrites live history. Agent grouping is not yet available and `--agent` fails explicitly.
 - If a semantic plan is declined, preview `vulcan sync semantic-reject <plan-id> --dry-run`, then rerun without `--dry-run` after confirmation. Rejection uses an exact-object lease to delete only the proposal ref, retains the bounded device-local plan record as rejected audit state, is idempotent, and never advances the semantic branch or any live synchronization ref.
 - Use `vulcan vault clone <remote> <path> --dry-run` to validate a new clone and registration. For Android shared storage accessed from Termux, add both `--git-dir <private-path>` and `--platform android-shared`; native policy remains the default elsewhere.

@@ -5,12 +5,14 @@
 //! no canonical live tip is rewritten by this module.
 
 use crate::AppError;
+use fs2::FileExt;
 use serde::Serialize;
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::path::PathBuf;
 use vulcan_core::VaultPaths;
 use vulcan_sync::{
-    GitEngine, GitOid, GitRefName, GitReference, GitRemote, GitSyncOptions, GitSyncRefs,
+    GitEngine, GitOid, GitRefDeleteResult, GitRefName, GitReference, GitRemote, GitSyncOptions,
+    GitSyncRefs,
 };
 
 pub const SYNC_RETENTION_PLAN_VERSION: u32 = 1;
@@ -88,6 +90,16 @@ pub struct SyncRetentionPlanReport {
     pub permanent_semantic_checkpoints: Vec<SyncRetentionRefPlan>,
     pub retained_epoch_archives: Vec<SyncRetentionRefPlan>,
     pub mutation_free: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncRetentionApplyReport {
+    pub version: u32,
+    pub dry_run: bool,
+    pub plan: SyncRetentionPlanReport,
+    pub released_recovery_checkpoints: Vec<SyncRetentionRefPlan>,
+    pub epoch_rollover_applied: bool,
+    pub semantic_refs_changed: bool,
 }
 
 /// Builds a bounded, mutation-free retention plan for one synchronized vault.
@@ -170,6 +182,66 @@ pub fn plan_sync_retention(
     })
 }
 
+/// Applies only the checkpoint-expiry portion of a retention plan.
+///
+/// Every deletion uses the object ID observed by a freshly recomputed plan as
+/// its lease. A partial interruption is safe to retry: already deleted refs no
+/// longer appear in the next plan. Live epoch and semantic refs are untouched.
+pub fn apply_sync_retention(
+    paths: &VaultPaths,
+    options: &SyncRetentionPlanOptions,
+    dry_run: bool,
+) -> Result<SyncRetentionApplyReport, AppError> {
+    if dry_run {
+        return Ok(retention_apply_report(
+            true,
+            plan_sync_retention(paths, options)?,
+            Vec::new(),
+        ));
+    }
+    let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let engine = vulcan_sync::GitCliEngine::default();
+    let repository = engine
+        .discover_repository(&vault)
+        .map_err(AppError::operation)?;
+    let _lock = RetentionLock::acquire(&repository)?;
+    let plan = plan_sync_retention(paths, options)?;
+    let mut deleted = Vec::new();
+    for candidate in &plan.recovery_checkpoints.expirable {
+        let expected = GitOid::parse(&candidate.revision).map_err(AppError::operation)?;
+        match engine
+            .delete_ref(&repository, &candidate.reference, &expected)
+            .map_err(AppError::operation)?
+        {
+            GitRefDeleteResult::Deleted | GitRefDeleteResult::Missing => {
+                deleted.push(candidate.clone());
+            }
+            GitRefDeleteResult::Stale => {
+                return Err(AppError::operation(format!(
+                    "recovery checkpoint {} moved while retention was being applied; rerun retention-plan",
+                    candidate.reference
+                )))
+            }
+        }
+    }
+    Ok(retention_apply_report(false, plan, deleted))
+}
+
+fn retention_apply_report(
+    dry_run: bool,
+    plan: SyncRetentionPlanReport,
+    released_recovery_checkpoints: Vec<SyncRetentionRefPlan>,
+) -> SyncRetentionApplyReport {
+    SyncRetentionApplyReport {
+        version: SYNC_RETENTION_PLAN_VERSION,
+        dry_run,
+        plan,
+        released_recovery_checkpoints,
+        epoch_rollover_applied: false,
+        semantic_refs_changed: false,
+    }
+}
+
 fn accepted_revision(
     engine: &dyn GitEngine,
     repository: &vulcan_sync::GitRepository,
@@ -208,6 +280,36 @@ fn ref_plan(reference: GitReference) -> SyncRetentionRefPlan {
     SyncRetentionRefPlan {
         reference: reference.name,
         revision: reference.target.to_string(),
+    }
+}
+
+struct RetentionLock {
+    _file: File,
+}
+
+impl RetentionLock {
+    fn acquire(repository: &vulcan_sync::GitRepository) -> Result<Self, AppError> {
+        let path = repository.git_dir.join("vulcan-sync/sync.lock");
+        fs::create_dir_all(
+            path.parent()
+                .expect("the sync repository lock always has a parent"),
+        )
+        .map_err(AppError::operation)?;
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(path)
+            .map_err(AppError::operation)?;
+        file.try_lock_exclusive().map_err(|error| {
+            if error.kind() == std::io::ErrorKind::WouldBlock {
+                AppError::operation("another synchronization operation holds the repository lock")
+            } else {
+                AppError::operation(error)
+            }
+        })?;
+        Ok(Self { _file: file })
     }
 }
 

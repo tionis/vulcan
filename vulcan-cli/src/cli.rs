@@ -576,6 +576,7 @@ Subcommands:
   resolve      resolve with one explicit preserved side or approved proposal
   checkpoint   retain the currently accepted live commit under a durable local ref
   retention-plan inspect live-epoch and checkpoint retention without mutation
+  retention-apply release leased expirable recovery checkpoint refs
   pause        disable future automatic sync for one registered wiki
   resume       enable future automatic sync for one registered wiki
 
@@ -602,6 +603,7 @@ Examples:
   vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run
   vulcan sync checkpoint personal --kind recovery
   vulcan sync retention-plan personal
+  vulcan sync retention-apply personal --dry-run
   vulcan sync pause personal
   vulcan sync resume personal
   vulcan --vault ./wiki sync run --remote origin";
@@ -4098,6 +4100,27 @@ pub enum SyncCommand {
             help = "Number of newest recovery checkpoint refs to retain"
         )]
         recovery_checkpoints_keep: usize,
+    },
+    #[command(about = "Release expirable recovery checkpoint refs with exact leases")]
+    RetentionApply {
+        #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
+        wiki: Option<String>,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+        #[arg(
+            long,
+            default_value_t = 256,
+            help = "Live epoch threshold to bind into the recomputed plan"
+        )]
+        live_epoch_max_commits: usize,
+        #[arg(
+            long,
+            default_value_t = 16,
+            help = "Number of newest recovery checkpoint refs to retain"
+        )]
+        recovery_checkpoints_keep: usize,
+        #[arg(long, help = "Recompute and preview without deleting any refs")]
+        dry_run: bool,
     },
     #[command(about = "Build a reviewable semantic history proposal")]
     SemanticPlan {

@@ -31,7 +31,8 @@ use vulcan_app::sync_proposals::{
     OpenAiCompatibleResolutionProvider, ResolutionProposal,
 };
 use vulcan_app::sync_retention::{
-    plan_sync_retention, SyncRetentionPlanOptions, SyncRetentionPlanReport, SyncRetentionPolicy,
+    apply_sync_retention, plan_sync_retention, SyncRetentionApplyReport, SyncRetentionPlanOptions,
+    SyncRetentionPlanReport, SyncRetentionPolicy,
 };
 use vulcan_app::sync_semantic::{
     apply_semantic_plan, create_semantic_plan, load_semantic_plan, reject_semantic_plan,
@@ -105,6 +106,9 @@ fn handle_non_cycle_sync_command(
     paths: &VaultPaths,
     command: &SyncCommand,
 ) -> Option<Result<(), CliError>> {
+    if let Some(result) = handle_retention_command(cli, paths, command) {
+        return Some(result);
+    }
     let result = match command {
         SyncCommand::Pause { wiki, dry_run } => {
             set_automatic_sync(cli.output, paths, wiki.as_deref(), true, *dry_run)
@@ -161,19 +165,6 @@ fn handle_non_cycle_sync_command(
             target,
             dry_run,
         } => run_sync_checkpoint(cli, paths, wiki.as_deref(), *kind, target, *dry_run),
-        SyncCommand::RetentionPlan {
-            wiki,
-            target,
-            live_epoch_max_commits,
-            recovery_checkpoints_keep,
-        } => run_sync_retention_plan(
-            cli,
-            paths,
-            wiki.as_deref(),
-            target,
-            *live_epoch_max_commits,
-            *recovery_checkpoints_keep,
-        ),
         SyncCommand::SemanticPlan {
             wiki,
             from,
@@ -202,8 +193,49 @@ fn handle_non_cycle_sync_command(
             run_semantic_reject(cli, plan_id, *dry_run)
         }
         SyncCommand::Run { .. } | SyncCommand::Status { .. } => return None,
+        SyncCommand::RetentionPlan { .. } | SyncCommand::RetentionApply { .. } => {
+            unreachable!("retention commands are dispatched before the general sync match")
+        }
     };
     Some(result)
+}
+
+fn handle_retention_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &SyncCommand,
+) -> Option<Result<(), CliError>> {
+    match command {
+        SyncCommand::RetentionPlan {
+            wiki,
+            target,
+            live_epoch_max_commits,
+            recovery_checkpoints_keep,
+        } => Some(run_sync_retention_plan(
+            cli,
+            paths,
+            wiki.as_deref(),
+            target,
+            *live_epoch_max_commits,
+            *recovery_checkpoints_keep,
+        )),
+        SyncCommand::RetentionApply {
+            wiki,
+            target,
+            live_epoch_max_commits,
+            recovery_checkpoints_keep,
+            dry_run,
+        } => Some(run_sync_retention_apply(
+            cli,
+            paths,
+            wiki.as_deref(),
+            target,
+            *live_epoch_max_commits,
+            *recovery_checkpoints_keep,
+            *dry_run,
+        )),
+        _ => None,
+    }
 }
 
 fn handle_sync_resolve_command(
@@ -587,6 +619,60 @@ fn print_sync_retention_plan(
         report.recovery_checkpoints.retained.len(),
         report.recovery_checkpoints.expirable.len()
     );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_sync_retention_apply(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    target: &crate::SyncTargetArgs,
+    live_epoch_max_commits: usize,
+    recovery_checkpoints_keep: usize,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let report = apply_sync_retention(
+        &paths,
+        &SyncRetentionPlanOptions {
+            remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
+            live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
+            policy: SyncRetentionPolicy {
+                live_epoch_max_commits,
+                recovery_checkpoints_keep,
+            },
+        },
+        dry_run,
+    )
+    .map_err(CliError::operation)?;
+    print_sync_retention_apply(cli.output, &report)
+}
+
+fn print_sync_retention_apply(
+    output: OutputFormat,
+    report: &SyncRetentionApplyReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Recovery checkpoints: {} {}.",
+        if report.dry_run {
+            report.plan.recovery_checkpoints.expirable.len()
+        } else {
+            report.released_recovery_checkpoints.len()
+        },
+        if report.dry_run {
+            "would be released"
+        } else {
+            "released"
+        }
+    );
+    if report.plan.active_epoch.rollover_required {
+        println!("Live epoch rollover remains required and was not applied.");
+    }
     Ok(())
 }
 

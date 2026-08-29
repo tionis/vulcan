@@ -2438,6 +2438,28 @@ fn parses_sync_retention_plan_command() {
             },
         }
     );
+
+    let apply = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "retention-apply",
+        "personal",
+        "--recovery-checkpoints-keep",
+        "8",
+        "--dry-run",
+    ])
+    .expect("sync retention apply should parse");
+    assert!(matches!(
+        apply.command,
+        Command::Sync {
+            command: SyncCommand::RetentionApply {
+                wiki: Some(ref wiki),
+                recovery_checkpoints_keep: 8,
+                dry_run: true,
+                ..
+            }
+        } if wiki == "personal"
+    ));
 }
 
 #[test]
