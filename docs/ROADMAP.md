@@ -5350,6 +5350,7 @@ All commands in this section support `--output json`; mutating commands support 
   - [x] Anchor a reproducible two-parent conflict-record commit under `refs/vulcan/conflicts/<id>/record` with conflict, base, policy, profile, device, and source trailers. Preservation refs are create-only and fail closed if any existing ref names a different commit. Explicit resolution commits retain the conflict ID, selected side, immutable sources, policy, and device trailers.
 - [ ] Validate every automatic resolution with parsing, path safety, relevant schema checks, link analysis, worktree verification, and mass-deletion policy before it may update the canonical live ref.
   - [x] Before constructing a live merge commit, require safe repository paths, successful structured parsing, Canvas/Bases root and stable-ID schema shapes, unchanged Markdown bodies (and therefore unchanged Markdown link surfaces), no conflicted-file deletion, and exact resolved blob bytes/modes in the produced tree. Emit the passed validation checks with every automatic-resolution report. Broader final-tree link analysis and configurable whole-tree mass-deletion limits remain to be added.
+  - [x] Immediately before every live-ref push, reconstruct the complete worktree tree and require exact equality with the captured candidate. If an editor writes during capture, fetch, merge, or the pre-push journal transition, leave the remote unchanged and restart from a fresh capture rather than publishing stale bytes.
 
 ### 12.6 Optional agent-assisted conflict resolution
 

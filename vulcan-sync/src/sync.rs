@@ -941,6 +941,9 @@ fn reconcile(
     if !has_remote {
         control.check()?;
         control.emit(GitSyncPhase::Pushing, report, None)?;
+        if !captured_worktree_is_current(engine, &report.repository, capture)? {
+            return Ok(None);
+        }
         return Ok(
             match engine.push_ref(
                 &report.repository,
@@ -969,6 +972,9 @@ fn reconcile(
     if engine.is_ancestor(&report.repository, &remote, &capture.commit)? {
         control.check()?;
         control.emit(GitSyncPhase::Pushing, report, None)?;
+        if !captured_worktree_is_current(engine, &report.repository, capture)? {
+            return Ok(None);
+        }
         return Ok(
             match engine.push_ref(
                 &report.repository,
@@ -1059,6 +1065,9 @@ fn merge_divergence(
     engine.update_ref(&report.repository, &report.refs.pending, &merged)?;
     control.check()?;
     control.emit(GitSyncPhase::Pushing, report, None)?;
+    if !captured_worktree_is_current(engine, &report.repository, capture)? {
+        return Ok(None);
+    }
     Ok(
         match engine.push_ref(
             &report.repository,
@@ -1071,6 +1080,14 @@ fn merge_divergence(
             GitPushResult::Rejected => None,
         },
     )
+}
+
+fn captured_worktree_is_current(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    capture: &crate::GitCapture,
+) -> Result<bool, GitSyncError> {
+    Ok(engine.snapshot_worktree_tree(repository, Some(&capture.commit))? == capture.tree)
 }
 
 fn build_sync_conflict(
@@ -1742,6 +1759,40 @@ mod tests {
         fired: bool,
     }
 
+    struct EditBeforePushObserver {
+        repository: PathBuf,
+        remote: PathBuf,
+        fired: bool,
+        remote_was_absent_on_retry: bool,
+    }
+
+    impl GitSyncObserver for EditBeforePushObserver {
+        fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
+            if progress.phase == GitSyncPhase::Pushing && !self.fired {
+                self.fired = true;
+                fs::write(
+                    self.repository.join("Home.md"),
+                    "edited during pre-push validation\n",
+                )
+                .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
+            } else if progress.phase == GitSyncPhase::Capturing && progress.attempt == 1 {
+                let status = Command::new("git")
+                    .args(["--git-dir"])
+                    .arg(&self.remote)
+                    .args([
+                        "rev-parse",
+                        "--quiet",
+                        "--verify",
+                        "refs/heads/__vulcan-sync/live",
+                    ])
+                    .status()
+                    .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
+                self.remote_was_absent_on_retry = !status.success();
+            }
+            Ok(())
+        }
+    }
+
     struct MoveHeadObserver {
         repository: PathBuf,
         target: String,
@@ -2046,6 +2097,36 @@ mod tests {
         assert_eq!(
             fs::read_to_string(writer.join("Race.md")).expect("peer file pulled"),
             "peer won the first push\n"
+        );
+    }
+
+    #[test]
+    fn worktree_change_before_bootstrap_push_is_recaptured_before_publication() {
+        let (_temporary, remote, writer) = setup_remote_and_writer();
+        let cancellation = SyncCancellationToken::default();
+        let mut observer = EditBeforePushObserver {
+            repository: writer.clone(),
+            remote,
+            fired: false,
+            remote_was_absent_on_retry: false,
+        };
+
+        let report = sync_git_once_with_control(
+            &GitCliEngine::default(),
+            &writer,
+            &GitSyncOptions::default(),
+            &cancellation,
+            &mut observer,
+        )
+        .expect("changed worktree should be recaptured");
+
+        assert!(observer.fired);
+        assert!(observer.remote_was_absent_on_retry);
+        assert_eq!(report.retries, 1);
+        assert_eq!(report.outcome, GitSyncOutcome::Bootstrapped);
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("current note"),
+            "edited during pre-push validation\n"
         );
     }
 
