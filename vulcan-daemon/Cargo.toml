@@ -5,6 +5,10 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+[features]
+default = []
+web = ["vulcan-app/web"]
+
 [dependencies]
 axum.workspace = true
 fs2.workspace = true

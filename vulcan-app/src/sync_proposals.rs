@@ -323,8 +323,12 @@ fn parse_tool_arguments<T: for<'de> Deserialize<'de>>(
         .map_err(|error| AppError::operation(format!("invalid `{name}` arguments: {error}")))
 }
 
-pub trait ResolutionAgentProvider {
+pub trait ResolutionAgentProvider: Send + Sync {
     fn identity(&self) -> ResolutionAgentIdentity;
+
+    fn network_endpoint(&self) -> Option<&str> {
+        None
+    }
 
     fn propose(
         &self,
@@ -386,6 +390,10 @@ impl ResolutionAgentProvider for OpenAiCompatibleResolutionProvider {
             model: self.model.clone(),
             prompt_contract_version: 3,
         }
+    }
+
+    fn network_endpoint(&self) -> Option<&str> {
+        Some(self.endpoint.as_str())
     }
 
     fn propose(

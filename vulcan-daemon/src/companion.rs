@@ -19,6 +19,12 @@ use vulcan_app::sync_conflicts::{
     resolve_sync_conflict_with_state_store, ResolveSyncConflictOptions, ResolveSyncConflictReport,
     SyncConflictDetailReport, SyncConflictListReport, SyncConflictResolutionSide,
 };
+use vulcan_app::sync_proposals::{
+    approve_resolution_proposal_with_state_store, create_resolution_proposal_with_provider,
+    reject_resolution_proposal_with_state_store, ApproveResolutionProposalOptions,
+    ApproveResolutionProposalReport, RejectResolutionProposalReport, ResolutionAgentProvider,
+    ResolutionProposal, ResolutionProposalOptions,
+};
 use vulcan_app::sync_semantic::{
     create_semantic_plan_with_state_store, SemanticPlanOptions, SemanticPlanReport,
 };
@@ -41,6 +47,9 @@ pub enum CompanionOperation {
     SyncResume,
     ConflictList,
     ConflictDetail,
+    ConflictProposalCreate,
+    ConflictProposalApprove,
+    ConflictProposalReject,
     ConflictResolve,
     SemanticPlanCreate,
     JobStatus,
@@ -69,6 +78,59 @@ pub struct ConflictResolveRequest {
     pub live_ref: String,
     #[serde(default)]
     pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ConflictProposalRequest {
+    #[serde(default)]
+    pub context: Vec<String>,
+    #[serde(default)]
+    pub allow_broad_context: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ConflictProposalApprovalRequest {
+    pub proposal_id: String,
+    #[serde(default = "default_remote")]
+    pub remote: String,
+    #[serde(default = "default_live_ref")]
+    pub live_ref: String,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct ConflictProposalRejectionRequest {
+    pub proposal_id: String,
+    #[serde(default)]
+    pub dry_run: bool,
+}
+
+pub struct CompanionResolutionAgent {
+    provider: Box<dyn ResolutionAgentProvider>,
+}
+
+impl CompanionResolutionAgent {
+    #[must_use]
+    pub fn new(provider: impl ResolutionAgentProvider + 'static) -> Self {
+        Self {
+            provider: Box::new(provider),
+        }
+    }
+
+    #[cfg(feature = "web")]
+    pub fn openai_compatible(
+        endpoint: impl Into<String>,
+        model: impl Into<String>,
+        api_key: Option<String>,
+    ) -> Result<Self, CompanionError> {
+        let endpoint = endpoint.into();
+        let provider = vulcan_app::sync_proposals::OpenAiCompatibleResolutionProvider::new(
+            &endpoint, model, api_key,
+        )
+        .map_err(|error| invalid_request(error.to_string()))?;
+        Ok(Self::new(provider))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -134,6 +196,7 @@ pub struct CompanionService<'a> {
     registry: &'a WikiRegistry,
     supervisor: &'a SyncSupervisor,
     state_store: &'a SyncStateStore,
+    resolution_agent: Option<&'a CompanionResolutionAgent>,
 }
 
 impl<'a> CompanionService<'a> {
@@ -147,7 +210,14 @@ impl<'a> CompanionService<'a> {
             registry,
             supervisor,
             state_store,
+            resolution_agent: None,
         }
+    }
+
+    #[must_use]
+    pub const fn with_resolution_agent(mut self, agent: &'a CompanionResolutionAgent) -> Self {
+        self.resolution_agent = Some(agent);
+        self
     }
 
     #[must_use]
@@ -155,20 +225,28 @@ impl<'a> CompanionService<'a> {
         CompanionCapabilities {
             protocol_version: COMPANION_PROTOCOL_VERSION,
             sync_contract_version: SYNC_CONTRACT_VERSION,
-            operations: vec![
-                CompanionOperation::Capabilities,
-                CompanionOperation::WikiList,
-                CompanionOperation::SyncEnqueue,
-                CompanionOperation::SyncStatus,
-                CompanionOperation::SyncPause,
-                CompanionOperation::SyncResume,
-                CompanionOperation::ConflictList,
-                CompanionOperation::ConflictDetail,
-                CompanionOperation::ConflictResolve,
-                CompanionOperation::SemanticPlanCreate,
-                CompanionOperation::JobStatus,
-                CompanionOperation::JobCancel,
-            ],
+            operations: {
+                let mut operations = vec![
+                    CompanionOperation::Capabilities,
+                    CompanionOperation::WikiList,
+                    CompanionOperation::SyncEnqueue,
+                    CompanionOperation::SyncStatus,
+                    CompanionOperation::SyncPause,
+                    CompanionOperation::SyncResume,
+                    CompanionOperation::ConflictList,
+                    CompanionOperation::ConflictDetail,
+                    CompanionOperation::ConflictResolve,
+                    CompanionOperation::ConflictProposalApprove,
+                    CompanionOperation::ConflictProposalReject,
+                    CompanionOperation::SemanticPlanCreate,
+                    CompanionOperation::JobStatus,
+                    CompanionOperation::JobCancel,
+                ];
+                if self.resolution_agent.is_some() {
+                    operations.extend([CompanionOperation::ConflictProposalCreate]);
+                }
+                operations
+            },
             transports: Vec::new(),
             sync_backends: vec!["git".to_string()],
             conflict_resolution_sides: vec![
@@ -176,7 +254,7 @@ impl<'a> CompanionService<'a> {
                 SyncConflictResolutionSide::Local,
                 SyncConflictResolutionSide::Remote,
             ],
-            agent_conflict_proposals: false,
+            agent_conflict_proposals: self.resolution_agent.is_some(),
             agent_semantic_plans: false,
         }
     }
@@ -274,6 +352,90 @@ impl<'a> CompanionService<'a> {
                     .map_err(|error| invalid_request(error.to_string()))?,
                 dry_run: request.dry_run,
             },
+            self.state_store,
+        )
+        .map_err(map_app_error)
+    }
+
+    pub fn create_conflict_proposal(
+        &self,
+        wiki_id: &WikiId,
+        conflict_id: &str,
+        request: &ConflictProposalRequest,
+    ) -> Result<ResolutionProposal, CompanionError> {
+        let agent = self.resolution_agent.ok_or_else(|| {
+            CompanionError::new(
+                CompanionErrorKind::NotFound,
+                "no resolution agent is configured for this companion service",
+            )
+        })?;
+        let registration = self.checked_git_registration(wiki_id)?;
+        let paths = VaultPaths::new(registration.path);
+        let profile = registration
+            .permissions_profile
+            .as_deref()
+            .unwrap_or("unrestricted");
+        let selection = resolve_permission_profile(&paths, Some(profile)).map_err(|error| {
+            CompanionError::new(CompanionErrorKind::PermissionDenied, error.to_string())
+        })?;
+        if let Some(endpoint) = agent.provider.network_endpoint() {
+            ProfilePermissionGuard::new(&paths, selection)
+                .check_network(endpoint)
+                .map_err(|error| {
+                    CompanionError::new(CompanionErrorKind::PermissionDenied, error.to_string())
+                })?;
+        }
+        create_resolution_proposal_with_provider(
+            &paths,
+            conflict_id,
+            &ResolutionProposalOptions {
+                permission_profile: profile.to_string(),
+                focused_context: request.context.clone(),
+                allow_broad_context: request.allow_broad_context,
+            },
+            agent.provider.as_ref(),
+            &vulcan_app::sync::SyncCancellationToken::default(),
+            self.state_store,
+        )
+        .map_err(map_app_error)
+    }
+
+    pub fn approve_conflict_proposal(
+        &self,
+        wiki_id: &WikiId,
+        conflict_id: &str,
+        request: &ConflictProposalApprovalRequest,
+    ) -> Result<ApproveResolutionProposalReport, CompanionError> {
+        let registration = self.checked_git_registration(wiki_id)?;
+        approve_resolution_proposal_with_state_store(
+            &VaultPaths::new(registration.path),
+            conflict_id,
+            &request.proposal_id,
+            &ApproveResolutionProposalOptions {
+                remote: GitRemote::parse(&request.remote)
+                    .map_err(|error| invalid_request(error.to_string()))?,
+                live_ref: GitRefName::parse(&request.live_ref)
+                    .map_err(|error| invalid_request(error.to_string()))?,
+                dry_run: request.dry_run,
+            },
+            &vulcan_app::sync::SyncCancellationToken::default(),
+            self.state_store,
+        )
+        .map_err(map_app_error)
+    }
+
+    pub fn reject_conflict_proposal(
+        &self,
+        wiki_id: &WikiId,
+        conflict_id: &str,
+        request: &ConflictProposalRejectionRequest,
+    ) -> Result<RejectResolutionProposalReport, CompanionError> {
+        let registration = self.checked_git_registration(wiki_id)?;
+        reject_resolution_proposal_with_state_store(
+            &VaultPaths::new(registration.path),
+            conflict_id,
+            &request.proposal_id,
+            request.dry_run,
             self.state_store,
         )
         .map_err(map_app_error)
@@ -426,7 +588,213 @@ mod tests {
     use super::*;
     use crate::registry::AddWikiRequest;
     use serde_json::json;
+    use std::fs;
+    use std::path::Path;
+    use std::process::Command;
     use tempfile::tempdir;
+    use vulcan_app::sync::{sync_git_vault_with_state_store, SyncCancellationToken};
+    use vulcan_app::sync_proposals::{
+        ApproveResolutionProposalOutcome, RejectResolutionProposalOutcome, ResolutionAgentIdentity,
+        ResolutionAgentOutput, ResolutionAgentPathOutput, ResolutionAgentRequest,
+        ResolutionAgentTools,
+    };
+    use vulcan_sync::GitSyncOptions;
+
+    struct ConfiguredTestProvider;
+
+    struct ResolvingTestProvider;
+
+    impl ResolutionAgentProvider for ConfiguredTestProvider {
+        fn identity(&self) -> ResolutionAgentIdentity {
+            ResolutionAgentIdentity {
+                provider: "companion-test".to_string(),
+                model: "fixture-v1".to_string(),
+                prompt_contract_version: 3,
+            }
+        }
+
+        fn network_endpoint(&self) -> Option<&str> {
+            Some("https://agent.example.test/v1/chat/completions")
+        }
+
+        fn propose(
+            &self,
+            _request: &ResolutionAgentRequest,
+            _tools: &mut dyn ResolutionAgentTools,
+            _cancellation: &SyncCancellationToken,
+        ) -> Result<ResolutionAgentOutput, vulcan_app::AppError> {
+            Err(vulcan_app::AppError::operation(
+                "the capability test must not invoke the provider",
+            ))
+        }
+    }
+
+    impl ResolutionAgentProvider for ResolvingTestProvider {
+        fn identity(&self) -> ResolutionAgentIdentity {
+            ResolutionAgentIdentity {
+                provider: "companion-test".to_string(),
+                model: "resolver-v1".to_string(),
+                prompt_contract_version: 3,
+            }
+        }
+
+        fn propose(
+            &self,
+            request: &ResolutionAgentRequest,
+            _tools: &mut dyn ResolutionAgentTools,
+            _cancellation: &SyncCancellationToken,
+        ) -> Result<ResolutionAgentOutput, vulcan_app::AppError> {
+            Ok(ResolutionAgentOutput {
+                explanation: "Resolve the test conflict.".to_string(),
+                referenced_context: Vec::new(),
+                paths: request
+                    .files
+                    .iter()
+                    .map(|file| ResolutionAgentPathOutput {
+                        path: file.path.clone(),
+                        content: b"companion resolution\n".to_vec(),
+                    })
+                    .collect(),
+            })
+        }
+    }
+
+    fn git(directory: &Path, arguments: &[&str]) {
+        let output = Command::new("git")
+            .current_dir(directory)
+            .args(arguments)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {arguments:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn commit_all(directory: &Path, message: &str) {
+        git(directory, &["add", "--all"]);
+        git(
+            directory,
+            &[
+                "-c",
+                "user.name=Vulcan Test",
+                "-c",
+                "user.email=vulcan@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                message,
+            ],
+        );
+    }
+
+    fn conflict_service_fixture() -> (
+        tempfile::TempDir,
+        WikiRegistry,
+        SyncSupervisor,
+        SyncStateStore,
+        WikiId,
+        String,
+    ) {
+        let temporary = tempdir().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote.to_str().expect("remote"),
+            ],
+        );
+        let writer = temporary.path().join("writer");
+        fs::create_dir(&writer).expect("writer directory");
+        git(
+            &writer,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(
+            &writer,
+            &["remote", "add", "origin", remote.to_str().expect("remote")],
+        );
+        fs::write(writer.join("Home.md"), "base\n").expect("base note");
+        commit_all(&writer, "base");
+        let state_store = SyncStateStore::at(temporary.path().join("sync-state"));
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&writer),
+            &GitSyncOptions::default(),
+            &state_store,
+        )
+        .expect("bootstrap writer");
+        let reader = temporary.path().join("reader");
+        git(
+            temporary.path(),
+            &[
+                "clone",
+                "--quiet",
+                writer.to_str().expect("writer"),
+                reader.to_str().expect("reader"),
+            ],
+        );
+        git(
+            &reader,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                remote.to_str().expect("remote"),
+            ],
+        );
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&reader),
+            &GitSyncOptions::default(),
+            &state_store,
+        )
+        .expect("bootstrap reader");
+        fs::write(writer.join("Home.md"), "writer\n").expect("writer edit");
+        fs::write(reader.join("Home.md"), "reader\n").expect("reader edit");
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&writer),
+            &GitSyncOptions::default(),
+            &state_store,
+        )
+        .expect("publish writer");
+        let conflict = sync_git_vault_with_state_store(
+            &VaultPaths::new(&reader),
+            &GitSyncOptions::default(),
+            &state_store,
+        )
+        .expect("reader conflict")
+        .conflict_record
+        .expect("conflict record");
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        let wiki_id = WikiId::parse("notes").expect("wiki id");
+        registry
+            .add(
+                &AddWikiRequest {
+                    id: wiki_id.clone(),
+                    path: reader,
+                    groups: Vec::new(),
+                    git_dir: None,
+                    permissions_profile: None,
+                    sync_backend: Some("git".to_string()),
+                    platform_profile: None,
+                },
+                false,
+            )
+            .expect("register reader");
+        let supervisor =
+            SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor");
+        (
+            temporary,
+            registry,
+            supervisor,
+            state_store,
+            wiki_id,
+            conflict.id,
+        )
+    }
 
     fn fixture(
         temporary: &tempfile::TempDir,
@@ -475,6 +843,76 @@ mod tests {
             .as_array()
             .expect("operations")
             .contains(&json!("event_subscribe")));
+    }
+
+    #[test]
+    fn configured_resolution_agent_is_advertised_without_exposing_its_endpoint() {
+        let temporary = tempdir().expect("temporary directory");
+        let (registry, supervisor, state_store, _) = fixture(&temporary);
+        let agent = CompanionResolutionAgent::new(ConfiguredTestProvider);
+        let service = CompanionService::new(&registry, &supervisor, &state_store)
+            .with_resolution_agent(&agent);
+        let value = serde_json::to_value(service.capabilities()).expect("serialize capabilities");
+
+        assert_eq!(value["agent_conflict_proposals"], json!(true));
+        assert!(value["operations"]
+            .as_array()
+            .expect("operations")
+            .contains(&json!("conflict_proposal_create")));
+        assert!(!value.to_string().contains("agent.example.test"));
+    }
+
+    #[test]
+    fn companion_proposal_creation_preview_and_rejection_reuse_app_transactions() {
+        let (_temporary, registry, supervisor, state_store, wiki_id, conflict_id) =
+            conflict_service_fixture();
+        let agent = CompanionResolutionAgent::new(ResolvingTestProvider);
+        let service = CompanionService::new(&registry, &supervisor, &state_store)
+            .with_resolution_agent(&agent);
+
+        let proposal = service
+            .create_conflict_proposal(
+                &wiki_id,
+                &conflict_id,
+                &ConflictProposalRequest {
+                    context: Vec::new(),
+                    allow_broad_context: false,
+                },
+            )
+            .expect("create proposal");
+        assert_eq!(proposal.provider, "companion-test");
+        let request = ConflictProposalApprovalRequest {
+            proposal_id: proposal.proposal_id.clone(),
+            remote: default_remote(),
+            live_ref: default_live_ref(),
+            dry_run: true,
+        };
+        assert_eq!(
+            service
+                .approve_conflict_proposal(&wiki_id, &conflict_id, &request)
+                .expect("preview approval")
+                .outcome,
+            ApproveResolutionProposalOutcome::Planned
+        );
+        assert_eq!(
+            service
+                .reject_conflict_proposal(
+                    &wiki_id,
+                    &conflict_id,
+                    &ConflictProposalRejectionRequest {
+                        proposal_id: request.proposal_id.clone(),
+                        dry_run: false,
+                    },
+                )
+                .expect("reject proposal")
+                .outcome,
+            RejectResolutionProposalOutcome::Rejected
+        );
+        assert!(service
+            .approve_conflict_proposal(&wiki_id, &conflict_id, &request)
+            .expect_err("rejected proposal cannot be approved")
+            .detail
+            .contains("rejected"));
     }
 
     #[test]

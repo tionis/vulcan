@@ -2,7 +2,9 @@
 
 use crate::companion::{
     CompanionCapabilities, CompanionError, CompanionErrorKind, CompanionOperation,
-    CompanionService, ConflictResolveRequest, SemanticPlanRequest, COMPANION_PROTOCOL_VERSION,
+    CompanionResolutionAgent, CompanionService, ConflictProposalApprovalRequest,
+    ConflictProposalRejectionRequest, ConflictProposalRequest, ConflictResolveRequest,
+    SemanticPlanRequest, COMPANION_PROTOCOL_VERSION,
 };
 use crate::credentials::CompanionCredential;
 use crate::registry::{WikiId, WikiRegistry};
@@ -43,12 +45,17 @@ pub struct CompanionHttpState {
     pub supervisor: Arc<SyncSupervisor>,
     pub state_store: Arc<SyncStateStore>,
     pub credential: Arc<CompanionCredential>,
+    pub resolution_agent: Option<Arc<CompanionResolutionAgent>>,
 }
 
 impl CompanionHttpState {
     #[must_use]
     pub fn service(&self) -> CompanionService<'_> {
-        CompanionService::new(&self.registry, &self.supervisor, &self.state_store)
+        let service = CompanionService::new(&self.registry, &self.supervisor, &self.state_store);
+        match self.resolution_agent.as_deref() {
+            Some(agent) => service.with_resolution_agent(agent),
+            None => service,
+        }
     }
 }
 
@@ -101,6 +108,18 @@ pub fn companion_router(state: CompanionHttpState) -> Router {
         .route(
             "/{id}/sync/conflicts/{conflict}/resolve",
             post(resolve_conflict),
+        )
+        .route(
+            "/{id}/sync/conflicts/{conflict}/proposals",
+            post(create_conflict_proposal),
+        )
+        .route(
+            "/{id}/sync/conflicts/{conflict}/proposals/approve",
+            post(approve_conflict_proposal),
+        )
+        .route(
+            "/{id}/sync/conflicts/{conflict}/proposals/reject",
+            post(reject_conflict_proposal),
         )
         .route("/{id}/sync/semantic-plans", post(create_semantic_plan))
         .route("/jobs/{job}", get(job_status).delete(cancel_job))
@@ -369,6 +388,54 @@ async fn resolve_conflict(
     Ok(Json(serde_json::to_value(result).map_err(json_error)?))
 }
 
+async fn create_conflict_proposal(
+    State(state): State<CompanionHttpState>,
+    Path((id, conflict)): Path<(String, String)>,
+    request: Result<Json<ConflictProposalRequest>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let id = parse_wiki_id(id)?;
+    let Json(request) = request.map_err(request_rejection)?;
+    let result = blocking(move || {
+        state
+            .service()
+            .create_conflict_proposal(&id, &conflict, &request)
+    })
+    .await?;
+    Ok(Json(serde_json::to_value(result).map_err(json_error)?))
+}
+
+async fn approve_conflict_proposal(
+    State(state): State<CompanionHttpState>,
+    Path((id, conflict)): Path<(String, String)>,
+    request: Result<Json<ConflictProposalApprovalRequest>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let id = parse_wiki_id(id)?;
+    let Json(request) = request.map_err(request_rejection)?;
+    let result = blocking(move || {
+        state
+            .service()
+            .approve_conflict_proposal(&id, &conflict, &request)
+    })
+    .await?;
+    Ok(Json(serde_json::to_value(result).map_err(json_error)?))
+}
+
+async fn reject_conflict_proposal(
+    State(state): State<CompanionHttpState>,
+    Path((id, conflict)): Path<(String, String)>,
+    request: Result<Json<ConflictProposalRejectionRequest>, JsonRejection>,
+) -> Result<Json<Value>, ApiError> {
+    let id = parse_wiki_id(id)?;
+    let Json(request) = request.map_err(request_rejection)?;
+    let result = blocking(move || {
+        state
+            .service()
+            .reject_conflict_proposal(&id, &conflict, &request)
+    })
+    .await?;
+    Ok(Json(serde_json::to_value(result).map_err(json_error)?))
+}
+
 async fn create_semantic_plan(
     State(state): State<CompanionHttpState>,
     Path(id): Path<String>,
@@ -535,6 +602,7 @@ mod tests {
                 CompanionCredential::generate(vec!["app://obsidian.md".to_string()])
                     .expect("credential"),
             ),
+            resolution_agent: None,
         };
         (temporary, state)
     }
@@ -684,6 +752,30 @@ mod tests {
         let value = body_json(response).await;
         assert_eq!(value["version"], json!(1));
         assert_eq!(value["kind"], json!("invalid_request"));
+    }
+
+    #[tokio::test]
+    async fn conflict_proposal_endpoint_fails_closed_without_a_configured_provider() {
+        let (_temporary, state) = fixture();
+        let request = HttpRequest::builder()
+            .method(Method::POST)
+            .uri("/notes/sync/conflicts/0123456789abcdef0123456789abcdef/proposals")
+            .header(AUTHORIZATION, format!("Bearer {}", state.credential.token))
+            .header(PROTOCOL_VERSION_HEADER, "1")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"context":[],"allow_broad_context":false}"#))
+            .expect("request");
+        let response = companion_router(state)
+            .oneshot(request)
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let value = body_json(response).await;
+        assert_eq!(value["kind"], json!("not_found"));
+        assert!(value["detail"]
+            .as_str()
+            .expect("detail")
+            .contains("no resolution agent is configured"));
     }
 
     #[test]

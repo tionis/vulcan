@@ -11836,6 +11836,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync reject <conflict-id> <proposal-id> --dry-run"));
     assert!(git_skill
         .contains("vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run"));
+    assert!(git_skill.contains("server-configured resolver"));
+    assert!(git_skill.contains("never supply provider endpoints or credentials"));
     assert!(git_skill.contains("vulcan sync checkpoint [<wiki>] --dry-run"));
     assert!(git_skill.contains("vulcan vault clone <remote> <path> --dry-run"));
     assert!(git_skill.contains("clone that succeeds before registration fails"));
