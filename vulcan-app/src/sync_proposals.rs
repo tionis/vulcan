@@ -1,7 +1,9 @@
 //! Isolated, review-first agent resolution proposals for preserved Git conflicts.
 
+use crate::scan::refresh_cache_incrementally;
 use crate::sync_conflicts::{
-    verify_preserved_conflict_refs, SyncConflictRecord, SyncConflictStore,
+    verify_preserved_conflict_refs, SyncConflictRecord, SyncConflictResolutionRecord,
+    SyncConflictStore, SYNC_CONFLICT_RESOLUTION_VERSION,
 };
 use crate::sync_state::{repository_state_key, SyncStateStore};
 use crate::AppError;
@@ -12,14 +14,17 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
-use vulcan_core::VaultPaths;
-use vulcan_core::{resolve_permission_profile, PermissionGuard, ProfilePermissionGuard};
+use vulcan_core::{
+    resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, ScanSummary, VaultPaths,
+};
 use vulcan_sync::{
-    GitContentMergeResolutionRequest, GitEngine, GitOid, GitResolvedPath, SyncCancellationToken,
+    GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine, GitOid, GitPushResult,
+    GitRefName, GitRemote, GitResolvedPath, GitSyncOptions, GitSyncRefs, SyncCancellationToken,
 };
 
 pub const RESOLUTION_PROPOSAL_VERSION: u32 = 1;
 pub const RESOLUTION_AGENT_TOOL_CONTRACT_VERSION: u32 = 1;
+pub const RESOLUTION_PROPOSAL_AUDIT_VERSION: u32 = 1;
 const MAX_AGENT_FILE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_AGENT_TOTAL_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PROPOSAL_RECORD_BYTES: usize = 32 * 1024 * 1024;
@@ -141,6 +146,61 @@ pub struct ResolutionProposal {
     pub patch: String,
     pub paths: Vec<ResolutionProposalPath>,
     pub validation: Vec<ResolutionProposalValidationCheck>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApproveResolutionProposalOptions {
+    pub remote: GitRemote,
+    pub live_ref: GitRefName,
+    pub dry_run: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResolutionProposalAuditAction {
+    Approved,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolutionProposalAuditRecord {
+    pub version: u32,
+    pub event_id: String,
+    pub repository_key: String,
+    pub conflict_id: String,
+    pub proposal_id: String,
+    pub action: ResolutionProposalAuditAction,
+    pub provider: String,
+    pub model: String,
+    pub prompt_contract_version: u32,
+    pub tool_contract_version: u32,
+    pub proposal_tree: String,
+    pub resolution_commit: String,
+    pub validation: Vec<ResolutionProposalValidationCheck>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ApproveResolutionProposalOutcome {
+    Planned,
+    Applied,
+    AlreadyApplied,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApproveResolutionProposalReport {
+    pub vault: PathBuf,
+    pub repository_key: String,
+    pub conflict_id: String,
+    pub proposal_id: String,
+    pub dry_run: bool,
+    pub outcome: ApproveResolutionProposalOutcome,
+    pub proposal_tree: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recovery_revision: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_commit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_refresh: Option<ScanSummary>,
 }
 
 pub fn create_resolution_proposal_with_provider(
@@ -274,6 +334,633 @@ pub fn load_resolution_proposal(
         ));
     }
     Ok(proposal)
+}
+
+pub fn approve_resolution_proposal_with_state_store(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_id: &str,
+    options: &ApproveResolutionProposalOptions,
+    cancellation: &SyncCancellationToken,
+    state_store: &SyncStateStore,
+) -> Result<ApproveResolutionProposalReport, AppError> {
+    cancellation_check(cancellation)?;
+    let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let repository_key = repository_state_key(&vault);
+    let store = SyncConflictStore::from_state_store(state_store);
+    let record = store.get(&repository_key, conflict_id)?;
+    if record.work_tree != vault {
+        return Err(AppError::operation(
+            "sync conflict record does not belong to the selected worktree",
+        ));
+    }
+    let proposal =
+        load_resolution_proposal(state_store, &repository_key, conflict_id, proposal_id)?;
+    validate_proposal_inputs(&record, &proposal)?;
+    let engine = vulcan_sync::GitCliEngine::default();
+    let repository = engine
+        .discover_repository(&vault)
+        .map_err(AppError::operation)?;
+    verify_preserved_conflict_refs(&engine, &repository, &record)?;
+    revalidate_proposal_tree(&engine, &repository, &record, &proposal, false)?;
+    let existing = store.get_resolution(&repository_key, conflict_id)?;
+    validate_existing_proposal_resolution(existing.as_ref(), &proposal)?;
+    if existing
+        .as_ref()
+        .is_some_and(|resolution| resolution.applied)
+    {
+        return Ok(proposal_report(
+            &vault,
+            &proposal,
+            options,
+            ApproveResolutionProposalOutcome::AlreadyApplied,
+            existing.as_ref(),
+            None,
+        ));
+    }
+    if options.dry_run {
+        verify_approval_preconditions(
+            &engine,
+            &repository,
+            &record,
+            &proposal,
+            options,
+            existing.as_ref(),
+        )?;
+        return Ok(proposal_report(
+            &vault,
+            &proposal,
+            options,
+            ApproveResolutionProposalOutcome::Planned,
+            None,
+            None,
+        ));
+    }
+
+    apply_approved_proposal(
+        &ApprovalExecution {
+            paths,
+            vault: &vault,
+            repository_key: &repository_key,
+            record: &record,
+            proposal: &proposal,
+            options,
+            state_store,
+            store: &store,
+        },
+        &engine,
+        &repository,
+        cancellation,
+    )
+}
+
+struct ApprovalExecution<'a> {
+    paths: &'a VaultPaths,
+    vault: &'a Path,
+    repository_key: &'a str,
+    record: &'a SyncConflictRecord,
+    proposal: &'a ResolutionProposal,
+    options: &'a ApproveResolutionProposalOptions,
+    state_store: &'a SyncStateStore,
+    store: &'a SyncConflictStore,
+}
+
+fn apply_approved_proposal(
+    context: &ApprovalExecution<'_>,
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    cancellation: &SyncCancellationToken,
+) -> Result<ApproveResolutionProposalReport, AppError> {
+    let _lock = ProposalLock::acquire(repository)?;
+    cancellation_check(cancellation)?;
+    verify_preserved_conflict_refs(engine, repository, context.record)?;
+    revalidate_proposal_tree(engine, repository, context.record, context.proposal, true)?;
+    let local = GitOid::parse(&context.record.local_revision).map_err(AppError::operation)?;
+    let recovery_ref = GitRefName::parse(format!(
+        "refs/vulcan/conflicts/{}/recovery/current",
+        context.record.id
+    ))
+    .map_err(AppError::operation)?;
+    let device_id = context
+        .state_store
+        .load_or_create_device_id(true)?
+        .expect("mutating device identity creation returns an identity");
+    let capture = engine
+        .capture_worktree(
+            repository,
+            &GitCaptureRequest {
+                base: Some(local.clone()),
+                target_ref: recovery_ref,
+                message: format!(
+                    "vulcan proposal recovery snapshot\n\nVulcan-Conflict: {}\nVulcan-Proposal: {}\nVulcan-Sync-Version: 1\nVulcan-Sync-Device: {}\nVulcan-Sync-Source: {local}\nVulcan-Sync-Semantic: false\n",
+                    context.record.id,
+                    context.proposal.proposal_id,
+                    device_id.as_str(),
+                ),
+            },
+        )
+        .map_err(AppError::operation)?;
+    let immutable_recovery_ref = GitRefName::parse(format!(
+        "refs/vulcan/conflicts/{}/recovery/{}",
+        context.record.id, capture.commit
+    ))
+    .map_err(AppError::operation)?;
+    engine
+        .update_ref(repository, &immutable_recovery_ref, &capture.commit)
+        .map_err(AppError::operation)?;
+    cancellation_check(cancellation)?;
+    let existing = context
+        .store
+        .get_resolution(context.repository_key, &context.record.id)?;
+    validate_existing_proposal_resolution(existing.as_ref(), context.proposal)?;
+    verify_approval_preconditions(
+        engine,
+        repository,
+        context.record,
+        context.proposal,
+        context.options,
+        existing.as_ref(),
+    )?;
+    let mut resolution = resume_or_prepare_proposal(
+        engine,
+        repository,
+        context.record,
+        context.proposal,
+        &capture,
+        device_id.as_str(),
+        existing,
+    )?;
+    context
+        .store
+        .save_resolution(context.repository_key, &resolution)?;
+    cancellation_check(cancellation)?;
+    publish_proposal_resolution(engine, repository, context.options, &mut resolution)?;
+    context
+        .store
+        .save_resolution(context.repository_key, &resolution)?;
+    cancellation_check(cancellation)?;
+    let proposal_tree =
+        GitOid::parse(&context.proposal.proposal_tree).map_err(AppError::operation)?;
+    if capture.tree != proposal_tree {
+        engine
+            .apply_tree(
+                repository,
+                &capture.commit,
+                &GitOid::parse(&resolution.resolution_commit).map_err(AppError::operation)?,
+            )
+            .map_err(AppError::operation)?;
+    }
+    update_sync_refs(engine, repository, context.options, &resolution)?;
+    let cache_refresh = if context.paths.cache_db().is_file() {
+        Some(refresh_cache_incrementally(context.paths)?)
+    } else {
+        None
+    };
+    save_approval_audit(context.state_store, context.proposal, &resolution)?;
+    resolution.applied = true;
+    context
+        .store
+        .save_resolution(context.repository_key, &resolution)?;
+    Ok(proposal_report(
+        context.vault,
+        context.proposal,
+        context.options,
+        ApproveResolutionProposalOutcome::Applied,
+        Some(&resolution),
+        cache_refresh,
+    ))
+}
+
+fn validate_proposal_inputs(
+    record: &SyncConflictRecord,
+    proposal: &ResolutionProposal,
+) -> Result<(), AppError> {
+    if proposal.status != ResolutionProposalStatus::Ready
+        || proposal.conflict_id != record.id
+        || proposal.repository_key != record.repository_key
+        || proposal.base_revision != record.base_revision.as_deref().unwrap_or_default()
+        || proposal.local_revision != record.local_revision
+        || proposal.remote_revision != record.remote_revision
+        || proposal.policy_version != record.policy_version
+        || proposal.policy_hash != record.policy_hash
+    {
+        return Err(AppError::operation(
+            "resolution proposal no longer matches its immutable conflict inputs",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_existing_proposal_resolution(
+    existing: Option<&SyncConflictResolutionRecord>,
+    proposal: &ResolutionProposal,
+) -> Result<(), AppError> {
+    if let Some(existing) = existing {
+        if existing.side.is_some()
+            || existing.proposal_id.as_deref() != Some(proposal.proposal_id.as_str())
+            || existing.base_revision != proposal.base_revision
+            || existing.local_revision != proposal.local_revision
+            || existing.remote_revision != proposal.remote_revision
+            || existing.resolved_tree != proposal.proposal_tree
+        {
+            return Err(AppError::operation(
+                "another conflict resolution is already in progress",
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn revalidate_proposal_tree(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    record: &SyncConflictRecord,
+    proposal: &ResolutionProposal,
+    reconstruct: bool,
+) -> Result<(), AppError> {
+    if proposal.paths.len() != record.paths.len() {
+        return Err(AppError::operation(
+            "resolution proposal path set no longer matches the conflict",
+        ));
+    }
+    let tree = GitOid::parse(&proposal.proposal_tree).map_err(AppError::operation)?;
+    let mut resolved = Vec::with_capacity(proposal.paths.len());
+    let mut seen = BTreeSet::new();
+    for path in &proposal.paths {
+        if !seen.insert(path.path.as_str())
+            || !record.paths.iter().any(|record| record.path == path.path)
+        {
+            return Err(AppError::operation(
+                "resolution proposal contains a duplicate or unrelated path",
+            ));
+        }
+        let object = engine
+            .path_object(repository, &tree, &path.path)
+            .map_err(AppError::operation)?
+            .ok_or_else(|| AppError::operation(format!("proposal tree omitted `{}`", path.path)))?;
+        let data = object.data.ok_or_else(|| {
+            AppError::operation(format!("proposal path `{}` is not a blob", path.path))
+        })?;
+        if object.kind != "blob"
+            || object.mode != path.mode
+            || data.len() as u64 != path.bytes
+            || blake3::hash(&data).to_hex().as_str() != path.content_hash
+        {
+            return Err(AppError::operation(format!(
+                "proposal path `{}` failed exact object revalidation",
+                path.path
+            )));
+        }
+        validate_proposal_content(record, &path.path, &data)?;
+        resolved.push(GitResolvedPath {
+            path: path.path.clone(),
+            mode: Some(path.mode.clone()),
+            data: Some(data),
+        });
+    }
+    if reconstruct {
+        let reconstructed = engine
+            .resolve_merge_tree_with_paths(
+                repository,
+                &GitContentMergeResolutionRequest {
+                    base: GitOid::parse(&proposal.base_revision).map_err(AppError::operation)?,
+                    accepted_remote: GitOid::parse(&proposal.remote_revision)
+                        .map_err(AppError::operation)?,
+                    local_candidate: GitOid::parse(&proposal.local_revision)
+                        .map_err(AppError::operation)?,
+                    paths: resolved,
+                },
+            )
+            .map_err(AppError::operation)?;
+        if reconstructed != tree {
+            return Err(AppError::operation(
+                "resolution proposal tree does not reconstruct from its immutable inputs",
+            ));
+        }
+    }
+    let patch = engine
+        .diff_patch(
+            repository,
+            &GitOid::parse(&proposal.remote_revision).map_err(AppError::operation)?,
+            &tree,
+            &proposal
+                .paths
+                .iter()
+                .map(|path| path.path.clone())
+                .collect::<Vec<_>>(),
+        )
+        .map_err(AppError::operation)?;
+    if patch != proposal.patch {
+        return Err(AppError::operation(
+            "resolution proposal patch no longer matches its tree",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_proposal_content(
+    record: &SyncConflictRecord,
+    path: &str,
+    data: &[u8],
+) -> Result<(), AppError> {
+    let kind = record
+        .paths
+        .iter()
+        .find(|entry| entry.path == path)
+        .and_then(|entry| entry.classification.as_ref())
+        .map(|classification| classification.file_kind)
+        .ok_or_else(|| AppError::operation(format!("proposal path `{path}` has no file kind")))?;
+    match kind {
+        vulcan_sync::MergeFileKind::Markdown => {
+            let source = std::str::from_utf8(data).map_err(AppError::operation)?;
+            let parsed = vulcan_core::parse_document(source, &vulcan_core::VaultConfig::default());
+            if !parsed.diagnostics.is_empty() {
+                return Err(AppError::operation(format!(
+                    "proposal Markdown `{path}` produced parser diagnostics"
+                )));
+            }
+        }
+        vulcan_sync::MergeFileKind::Json | vulcan_sync::MergeFileKind::Canvas => {
+            serde_json::from_slice::<serde_json::Value>(data).map_err(AppError::operation)?;
+        }
+        vulcan_sync::MergeFileKind::Bases => {
+            serde_yaml::from_slice::<serde_yaml::Value>(data).map_err(AppError::operation)?;
+        }
+        vulcan_sync::MergeFileKind::Text => {
+            std::str::from_utf8(data).map_err(AppError::operation)?;
+        }
+        vulcan_sync::MergeFileKind::Binary
+        | vulcan_sync::MergeFileKind::ObsidianState
+        | vulcan_sync::MergeFileKind::Missing => {
+            return Err(AppError::operation(format!(
+                "proposal path `{path}` has an ineligible file kind"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn prepare_proposal_resolution(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    record: &SyncConflictRecord,
+    proposal: &ResolutionProposal,
+    capture: &vulcan_sync::GitCapture,
+    device_id: &str,
+) -> Result<SyncConflictResolutionRecord, AppError> {
+    let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
+    let local_tree = engine
+        .tree_oid(repository, &local)
+        .map_err(AppError::operation)?;
+    if capture.tree != local_tree {
+        return Err(AppError::operation(
+            "the worktree changed after the proposal was created; its recovery snapshot was retained",
+        ));
+    }
+    let tree = GitOid::parse(&proposal.proposal_tree).map_err(AppError::operation)?;
+    let remote = GitOid::parse(&record.remote_revision).map_err(AppError::operation)?;
+    let commit = engine
+        .create_commit(
+            repository,
+            &tree,
+            &[remote.clone(), local.clone()],
+            &format!(
+                "vulcan conflict proposal resolution\n\nVulcan-Conflict: {}\nVulcan-Proposal: {}\nVulcan-Resolution-Provider: {}\nVulcan-Resolution-Model: {}\nVulcan-Sync-Version: 1\nVulcan-Sync-Device: {device_id}\nVulcan-Sync-Policy: {}:{}\nVulcan-Sync-Source: {remote}+{local}\nVulcan-Sync-Semantic: false\n",
+                record.id,
+                proposal.proposal_id,
+                proposal.provider,
+                proposal.model,
+                record.policy_version,
+                record.policy_hash,
+            ),
+        )
+        .map_err(AppError::operation)?;
+    let resolved_ref = GitRefName::parse(format!(
+        "refs/vulcan/conflicts/{}/resolved/proposals/{}",
+        record.id, proposal.proposal_id
+    ))
+    .map_err(AppError::operation)?;
+    engine
+        .update_ref(repository, &resolved_ref, &commit)
+        .map_err(AppError::operation)?;
+    Ok(SyncConflictResolutionRecord {
+        version: SYNC_CONFLICT_RESOLUTION_VERSION,
+        conflict_id: record.id.clone(),
+        side: None,
+        proposal_id: Some(proposal.proposal_id.clone()),
+        base_revision: proposal.base_revision.clone(),
+        local_revision: proposal.local_revision.clone(),
+        remote_revision: proposal.remote_revision.clone(),
+        recovery_revision: capture.commit.to_string(),
+        resolved_tree: proposal.proposal_tree.clone(),
+        resolution_commit: commit.to_string(),
+        published: false,
+        applied: false,
+    })
+}
+
+fn resume_or_prepare_proposal(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    record: &SyncConflictRecord,
+    proposal: &ResolutionProposal,
+    capture: &vulcan_sync::GitCapture,
+    device_id: &str,
+    existing: Option<SyncConflictResolutionRecord>,
+) -> Result<SyncConflictResolutionRecord, AppError> {
+    let Some(mut resolution) = existing else {
+        return prepare_proposal_resolution(
+            engine, repository, record, proposal, capture, device_id,
+        );
+    };
+    let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
+    let local_tree = engine
+        .tree_oid(repository, &local)
+        .map_err(AppError::operation)?;
+    let proposal_tree = GitOid::parse(&proposal.proposal_tree).map_err(AppError::operation)?;
+    let resolution_tree = engine
+        .tree_oid(
+            repository,
+            &GitOid::parse(&resolution.resolution_commit).map_err(AppError::operation)?,
+        )
+        .map_err(AppError::operation)?;
+    if capture.tree != local_tree
+        && capture.tree != proposal_tree
+        && capture.tree != resolution_tree
+    {
+        return Err(AppError::operation(
+            "the worktree changed while proposal approval was pending; its recovery snapshot was retained",
+        ));
+    }
+    resolution.recovery_revision = capture.commit.to_string();
+    Ok(resolution)
+}
+
+fn publish_proposal_resolution(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    options: &ApproveResolutionProposalOptions,
+    resolution: &mut SyncConflictResolutionRecord,
+) -> Result<(), AppError> {
+    let commit = GitOid::parse(&resolution.resolution_commit).map_err(AppError::operation)?;
+    let remote_before = GitOid::parse(&resolution.remote_revision).map_err(AppError::operation)?;
+    match engine
+        .remote_ref(repository, &options.remote, &options.live_ref)
+        .map_err(AppError::operation)?
+        .as_ref()
+    {
+        Some(current) if current == &commit => {}
+        Some(current) if current == &remote_before => {
+            if engine
+                .push_ref(
+                    repository,
+                    &options.remote,
+                    &commit,
+                    &options.live_ref,
+                    Some(&remote_before),
+                )
+                .map_err(AppError::operation)?
+                == GitPushResult::Rejected
+            {
+                return Err(AppError::operation(
+                    "the remote live ref changed while publishing the approved proposal",
+                ));
+            }
+        }
+        _ => {
+            return Err(AppError::operation(
+                "the remote live ref no longer matches the proposal inputs",
+            ));
+        }
+    }
+    resolution.published = true;
+    Ok(())
+}
+
+fn update_sync_refs(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    options: &ApproveResolutionProposalOptions,
+    resolution: &SyncConflictResolutionRecord,
+) -> Result<(), AppError> {
+    let refs = GitSyncRefs::for_options(&GitSyncOptions {
+        remote: options.remote.clone(),
+        live_ref: options.live_ref.clone(),
+        ..GitSyncOptions::default()
+    })
+    .map_err(AppError::operation)?;
+    let commit = GitOid::parse(&resolution.resolution_commit).map_err(AppError::operation)?;
+    for reference in [&refs.local, &refs.fetched, &refs.pending] {
+        engine
+            .update_ref(repository, reference, &commit)
+            .map_err(AppError::operation)?;
+    }
+    Ok(())
+}
+
+fn save_approval_audit(
+    store: &SyncStateStore,
+    proposal: &ResolutionProposal,
+    resolution: &SyncConflictResolutionRecord,
+) -> Result<(), AppError> {
+    let event_id = blake3::hash(
+        format!(
+            "approved\0{}\0{}\0{}",
+            proposal.conflict_id, proposal.proposal_id, resolution.resolution_commit
+        )
+        .as_bytes(),
+    )
+    .to_hex()[..32]
+        .to_string();
+    let record = ResolutionProposalAuditRecord {
+        version: RESOLUTION_PROPOSAL_AUDIT_VERSION,
+        event_id,
+        repository_key: proposal.repository_key.clone(),
+        conflict_id: proposal.conflict_id.clone(),
+        proposal_id: proposal.proposal_id.clone(),
+        action: ResolutionProposalAuditAction::Approved,
+        provider: proposal.provider.clone(),
+        model: proposal.model.clone(),
+        prompt_contract_version: proposal.prompt_contract_version,
+        tool_contract_version: proposal.tool_contract_version,
+        proposal_tree: proposal.proposal_tree.clone(),
+        resolution_commit: resolution.resolution_commit.clone(),
+        validation: proposal.validation.clone(),
+    };
+    let directory = store
+        .root()
+        .join(&proposal.repository_key)
+        .join("conflicts")
+        .join(&proposal.conflict_id)
+        .join("audit");
+    fs::create_dir_all(&directory).map_err(AppError::operation)?;
+    let path = directory.join(format!("{}.json", record.event_id));
+    write_json_noclobber(&directory, &path, &record)
+}
+
+fn proposal_report(
+    vault: &Path,
+    proposal: &ResolutionProposal,
+    options: &ApproveResolutionProposalOptions,
+    outcome: ApproveResolutionProposalOutcome,
+    resolution: Option<&SyncConflictResolutionRecord>,
+    cache_refresh: Option<ScanSummary>,
+) -> ApproveResolutionProposalReport {
+    ApproveResolutionProposalReport {
+        vault: vault.to_path_buf(),
+        repository_key: proposal.repository_key.clone(),
+        conflict_id: proposal.conflict_id.clone(),
+        proposal_id: proposal.proposal_id.clone(),
+        dry_run: options.dry_run,
+        outcome,
+        proposal_tree: proposal.proposal_tree.clone(),
+        recovery_revision: resolution.map(|value| value.recovery_revision.clone()),
+        resolution_commit: resolution.map(|value| value.resolution_commit.clone()),
+        cache_refresh,
+    }
+}
+
+fn verify_approval_preconditions(
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    record: &SyncConflictRecord,
+    proposal: &ResolutionProposal,
+    options: &ApproveResolutionProposalOptions,
+    existing: Option<&SyncConflictResolutionRecord>,
+) -> Result<(), AppError> {
+    let safety = engine
+        .safety_state(repository)
+        .map_err(AppError::operation)?;
+    if safety.staged_changes || safety.operation.is_some() {
+        return Err(AppError::operation(
+            "proposal approval requires a clean normal index and no Git operation in progress",
+        ));
+    }
+    let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
+    let proposal_tree = GitOid::parse(&proposal.proposal_tree).map_err(AppError::operation)?;
+    if !engine
+        .worktree_matches_tree(repository, &local)
+        .map_err(AppError::operation)?
+        && !engine
+            .worktree_matches_tree(repository, &proposal_tree)
+            .map_err(AppError::operation)?
+    {
+        return Err(AppError::operation(
+            "the worktree no longer matches the preserved local input or approved proposal",
+        ));
+    }
+    let remote = engine
+        .remote_ref(repository, &options.remote, &options.live_ref)
+        .map_err(AppError::operation)?;
+    let expected_resolution = existing.map(|resolution| resolution.resolution_commit.as_str());
+    if remote.as_ref().map(GitOid::as_str) != Some(record.remote_revision.as_str())
+        && remote.as_ref().map(GitOid::as_str) != expected_resolution
+    {
+        return Err(AppError::operation(
+            "the remote live ref moved after the proposal inputs were preserved",
+        ));
+    }
+    Ok(())
 }
 
 fn assemble_proposal(
@@ -452,6 +1139,7 @@ fn prepare_output(
         let content = supplied
             .remove(&conflict_path.path)
             .expect("validated exact path set");
+        validate_proposal_content(record, &conflict_path.path, &content)?;
         let mode = resolved_mode(conflict_path)?;
         let resolved = GitResolvedPath {
             path: conflict_path.path.clone(),
@@ -495,7 +1183,7 @@ fn resolved_mode(path: &crate::sync_conflicts::SyncConflictPathRecord) -> Result
     } else {
         None
     }
-    .filter(|mode| *mode == "100644" || *mode == "100755" || *mode == "120000")
+    .filter(|mode| *mode == "100644" || *mode == "100755")
     .map(str::to_string)
     .ok_or_else(|| {
         AppError::operation(format!(
@@ -605,16 +1293,34 @@ fn save_proposal(store: &SyncStateStore, proposal: &ResolutionProposal) -> Resul
             "resolution proposal record exceeds its byte limit",
         ));
     }
-    let mut temporary = NamedTempFile::new_in(&directory).map_err(AppError::operation)?;
-    temporary.write_all(&bytes).map_err(AppError::operation)?;
+    write_bytes_noclobber(&directory, &path, &bytes)
+}
+
+fn write_json_noclobber(
+    directory: &Path,
+    path: &Path,
+    value: &impl Serialize,
+) -> Result<(), AppError> {
+    let bytes = serde_json::to_vec_pretty(value).map_err(AppError::operation)?;
+    if bytes.len() > MAX_PROPOSAL_RECORD_BYTES {
+        return Err(AppError::operation(
+            "resolution proposal state exceeds its byte limit",
+        ));
+    }
+    write_bytes_noclobber(directory, path, &bytes)
+}
+
+fn write_bytes_noclobber(directory: &Path, path: &Path, bytes: &[u8]) -> Result<(), AppError> {
+    let mut temporary = NamedTempFile::new_in(directory).map_err(AppError::operation)?;
+    temporary.write_all(bytes).map_err(AppError::operation)?;
     temporary
         .as_file()
         .sync_all()
         .map_err(AppError::operation)?;
-    match temporary.persist_noclobber(&path) {
+    match temporary.persist_noclobber(path) {
         Ok(_) => Ok(()),
         Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let existing = fs::read(&path).map_err(AppError::operation)?;
+            let existing = fs::read(path).map_err(AppError::operation)?;
             if existing == bytes {
                 Ok(())
             } else {
@@ -699,7 +1405,7 @@ fn validate_agent_conflict_scope(record: &SyncConflictRecord) -> Result<(), AppE
             || path.path.starts_with(".obsidian/")
             || path.path == ".vulcan"
             || path.path.starts_with(".vulcan/");
-        let unsupported = path.classification.as_ref().is_some_and(|classification| {
+        let unsupported = path.classification.as_ref().is_none_or(|classification| {
             matches!(
                 classification.file_kind,
                 vulcan_sync::MergeFileKind::Binary
@@ -990,6 +1696,132 @@ mod tests {
         assert_eq!(
             object.data.as_deref(),
             Some(b"agent resolution\n".as_slice())
+        );
+
+        assert_approval_lifecycle(&fixture, &proposal, &refs_before);
+    }
+
+    fn assert_approval_lifecycle(
+        fixture: &ConflictFixture,
+        proposal: &ResolutionProposal,
+        refs_before: &str,
+    ) {
+        let sync_options = GitSyncOptions::default();
+        fs::write(fixture.reader.join("Home.md"), "stale local edit\n").expect("stale local edit");
+        let stale = approve_resolution_proposal_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &proposal.proposal_id,
+            &ApproveResolutionProposalOptions {
+                remote: sync_options.remote.clone(),
+                live_ref: sync_options.live_ref.clone(),
+                dry_run: true,
+            },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect_err("stale worktree must reject approval");
+        assert!(stale.to_string().contains("worktree no longer matches"));
+        fs::write(fixture.reader.join("Home.md"), "reader\n").expect("restore local input");
+        let dry_run = approve_resolution_proposal_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &proposal.proposal_id,
+            &ApproveResolutionProposalOptions {
+                remote: sync_options.remote.clone(),
+                live_ref: sync_options.live_ref.clone(),
+                dry_run: true,
+            },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect("approval preview");
+        assert_eq!(dry_run.outcome, ApproveResolutionProposalOutcome::Planned);
+        assert!(SyncConflictStore::from_state_store(&fixture.store)
+            .get_resolution(&fixture.record.repository_key, &fixture.record.id)
+            .expect("resolution state")
+            .is_none());
+        assert_eq!(
+            git_stdout(
+                &fixture.reader,
+                &[
+                    "for-each-ref",
+                    "--format=%(refname) %(objectname)",
+                    "refs/vulcan"
+                ],
+            ),
+            refs_before
+        );
+
+        let applied = approve_resolution_proposal_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &proposal.proposal_id,
+            &ApproveResolutionProposalOptions {
+                remote: sync_options.remote.clone(),
+                live_ref: sync_options.live_ref.clone(),
+                dry_run: false,
+            },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect("approved proposal");
+        assert_eq!(applied.outcome, ApproveResolutionProposalOutcome::Applied);
+        assert_eq!(
+            fs::read_to_string(fixture.reader.join("Home.md")).expect("approved note"),
+            "agent resolution\n"
+        );
+        let resolution = SyncConflictStore::from_state_store(&fixture.store)
+            .get_resolution(&fixture.record.repository_key, &fixture.record.id)
+            .expect("resolution state")
+            .expect("proposal resolution");
+        assert_eq!(
+            resolution.proposal_id.as_deref(),
+            Some(proposal.proposal_id.as_str())
+        );
+        assert!(resolution.applied);
+        assert_audit_and_idempotency(fixture, proposal, sync_options);
+    }
+
+    fn assert_audit_and_idempotency(
+        fixture: &ConflictFixture,
+        proposal: &ResolutionProposal,
+        sync_options: GitSyncOptions,
+    ) {
+        let audit_directory = fixture
+            .store
+            .root()
+            .join(&fixture.record.repository_key)
+            .join("conflicts")
+            .join(&fixture.record.id)
+            .join("audit");
+        let audit_path = fs::read_dir(audit_directory)
+            .expect("audit directory")
+            .next()
+            .expect("audit event")
+            .expect("audit entry")
+            .path();
+        let audit = fs::read_to_string(audit_path).expect("audit record");
+        assert!(audit.contains(&proposal.proposal_id));
+        assert!(!audit.contains(&proposal.explanation));
+        assert!(!audit.contains("agent resolution"));
+
+        let repeated = approve_resolution_proposal_with_state_store(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &proposal.proposal_id,
+            &ApproveResolutionProposalOptions {
+                remote: sync_options.remote,
+                live_ref: sync_options.live_ref,
+                dry_run: false,
+            },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect("repeated approval");
+        assert_eq!(
+            repeated.outcome,
+            ApproveResolutionProposalOutcome::AlreadyApplied
         );
     }
 

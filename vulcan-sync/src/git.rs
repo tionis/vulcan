@@ -120,6 +120,13 @@ pub trait GitEngine: Send + Sync {
         base: Option<&GitOid>,
     ) -> Result<GitOid, GitEngineError>;
 
+    /// Checks the complete worktree against a tree without writing Git objects or indexes.
+    fn worktree_matches_tree(
+        &self,
+        repository: &GitRepository,
+        expected: &GitOid,
+    ) -> Result<bool, GitEngineError>;
+
     fn remote_ref(
         &self,
         repository: &GitRepository,
@@ -1646,6 +1653,31 @@ impl GitEngine for GitCliEngine {
         self.snapshot_worktree_tree_inner(repository, base)
     }
 
+    fn worktree_matches_tree(
+        &self,
+        repository: &GitRepository,
+        expected: &GitOid,
+    ) -> Result<bool, GitEngineError> {
+        repository.require_work_tree()?;
+        let mut command = self.repository_command(repository);
+        command.args(["diff", "--quiet", expected.as_str(), "--", "."]);
+        let tracked = self.execute(command)?;
+        if !tracked.status.success() {
+            if tracked.status.code() == Some(1) {
+                return Ok(false);
+            }
+            return Err(command_failed("compare the working tree", &tracked));
+        }
+        Ok(self
+            .repository_capture(
+                repository,
+                "list untracked worktree paths",
+                ["ls-files", "--others", "--exclude-standard", "--", "."],
+            )?
+            .trim()
+            .is_empty())
+    }
+
     fn remote_ref(
         &self,
         repository: &GitRepository,
@@ -3014,6 +3046,31 @@ mod tests {
             .expect("unchanged capture should succeed");
         assert!(!second.created);
         assert_eq!(second.commit, capture.commit);
+    }
+
+    #[test]
+    fn worktree_match_check_is_read_only_and_includes_untracked_paths() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Home.md"), "initial\n").expect("initial note");
+        let head = commit_all(temporary.path(), "initial");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let index_before = run_git_capture(temporary.path(), &["write-tree"]);
+
+        assert!(engine
+            .worktree_matches_tree(&repository, &head)
+            .expect("matching worktree"));
+        fs::write(temporary.path().join("Untracked.md"), "new\n").expect("untracked note");
+        assert!(!engine
+            .worktree_matches_tree(&repository, &head)
+            .expect("untracked worktree"));
+        assert_eq!(
+            run_git_capture(temporary.path(), &["write-tree"]),
+            index_before
+        );
     }
 
     #[test]

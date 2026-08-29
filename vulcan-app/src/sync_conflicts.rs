@@ -118,7 +118,10 @@ pub struct ResolveSyncConflictOptions {
 pub struct SyncConflictResolutionRecord {
     pub version: u32,
     pub conflict_id: String,
-    pub side: SyncConflictResolutionSide,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub side: Option<SyncConflictResolutionSide>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal_id: Option<String>,
     pub base_revision: String,
     pub local_revision: String,
     pub remote_revision: String,
@@ -264,10 +267,9 @@ pub fn resolve_sync_conflict_with_state_store(
     }
     let existing_resolution = store.get_resolution(&repository_key, conflict_id)?;
     if let Some(existing) = &existing_resolution {
-        if existing.side != options.side {
+        if existing.side != Some(options.side) || existing.proposal_id.is_some() {
             return Err(AppError::operation(format!(
-                "conflict `{conflict_id}` already has a {:?} resolution in progress",
-                existing.side
+                "conflict `{conflict_id}` already has another resolution in progress"
             )));
         }
         if existing.applied {
@@ -669,7 +671,8 @@ fn prepare_resolution(
     Ok(SyncConflictResolutionRecord {
         version: SYNC_CONFLICT_RESOLUTION_VERSION,
         conflict_id: record.id.clone(),
-        side: options.side,
+        side: Some(options.side),
+        proposal_id: None,
         base_revision: base.to_string(),
         local_revision: local.to_string(),
         remote_revision: remote.to_string(),
@@ -697,7 +700,8 @@ fn resume_resolution(
     options: &ResolveSyncConflictOptions,
     mut resolution: SyncConflictResolutionRecord,
 ) -> Result<SyncConflictResolutionRecord, AppError> {
-    if resolution.side != options.side
+    if resolution.side != Some(options.side)
+        || resolution.proposal_id.is_some()
         || resolution.base_revision != record.base_revision.as_deref().unwrap_or_default()
         || resolution.local_revision != record.local_revision
         || resolution.remote_revision != record.remote_revision
