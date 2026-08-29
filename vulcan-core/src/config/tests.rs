@@ -4605,3 +4605,74 @@ fn core_importer_supports_partial_sources_and_local_target() {
     assert!(!rendered.contains("[templates]"));
     assert!(!rendered.contains("[property_types]"));
 }
+
+#[test]
+fn sync_policy_is_shared_while_the_automation_ceiling_is_device_local() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let vault_root = temporary.path();
+    fs::create_dir(vault_root.join(".vulcan")).expect("Vulcan directory");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[sync]
+merge_automation = "require_review"
+
+[sync.merge_policy]
+version = 1
+rules = [{ id = "shared-review", selector = { glob = "**", kinds = [] }, resolution = "require_review" }]
+"#,
+    )
+    .expect("shared config");
+    fs::write(
+        vault_root.join(".vulcan/config.local.toml"),
+        r#"[sync]
+merge_automation = "require_review"
+
+[sync.merge_policy]
+version = 1
+rules = [{ id = "local-ignored", selector = { glob = "**", kinds = [] }, resolution = "structured" }]
+"#,
+    )
+    .expect("local config");
+
+    let loaded = load_vault_config(&VaultPaths::new(vault_root));
+
+    assert_eq!(
+        loaded
+            .config
+            .sync
+            .merge_policy
+            .expect("shared merge policy")
+            .rules[0]
+            .id,
+        "shared-review"
+    );
+    assert_eq!(
+        loaded.config.sync.merge_automation,
+        MergeAutomation::RequireReview
+    );
+    assert!(loaded.diagnostics.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("ignored shared sync.merge_automation")));
+    assert!(loaded.diagnostics.iter().any(|diagnostic| diagnostic
+        .message
+        .contains("ignored local sync.merge_policy")));
+}
+
+#[test]
+fn sync_policy_config_validation_rejects_unsupported_or_invalid_contracts() {
+    for contents in [
+        r#"[sync.merge_policy]
+version = 2
+rules = [{ id = "fallback", selector = { glob = "**", kinds = [] }, resolution = "require_review" }]
+"#,
+        r#"[sync.merge_policy]
+version = 1
+rules = [{ id = "broken", selector = { glob = "[", kinds = [] }, resolution = "structured" }]
+"#,
+    ] {
+        assert!(
+            validate_vulcan_overrides_toml(contents).is_err(),
+            "invalid merge policy should fail: {contents}"
+        );
+    }
+}

@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use toml::Value as TomlValue;
+use vulcan_sync::{MergeAutomation, MergePolicy};
 
 const DEFAULT_CONFIG_TEMPLATE: &str = include_str!("default_config.toml");
 
@@ -234,6 +235,20 @@ pub struct GitConfig {
     pub scope: GitScope,
     #[serde(default)]
     pub exclude: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct SyncConfig {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_policy: Option<MergePolicy>,
+    #[serde(default)]
+    pub merge_automation: MergeAutomation,
+}
+
+impl SyncConfig {
+    fn is_default(&self) -> bool {
+        self == &Self::default()
+    }
 }
 
 impl Default for GitConfig {
@@ -2432,6 +2447,8 @@ pub struct VaultConfig {
     pub embedding: Option<EmbeddingProviderConfig>,
     pub extraction: Option<AttachmentExtractionConfig>,
     pub git: GitConfig,
+    #[serde(default, skip_serializing_if = "SyncConfig::is_default")]
+    pub sync: SyncConfig,
     pub inbox: InboxConfig,
     pub tasks: TasksConfig,
     pub tasknotes: TaskNotesConfig,
@@ -2471,6 +2488,7 @@ impl Default for VaultConfig {
             embedding: None,
             extraction: None,
             git: GitConfig::default(),
+            sync: SyncConfig::default(),
             inbox: InboxConfig::default(),
             tasks: TasksConfig::default(),
             tasknotes: TaskNotesConfig::default(),
@@ -2552,6 +2570,15 @@ fn validate_partial_vulcan_config(config: &PartialVulcanConfig) -> Result<(), Co
             .validate()
             .map_err(ConfigImportError::InvalidConfig)?;
     }
+    if let Some(policy) = config
+        .sync
+        .as_ref()
+        .and_then(|sync| sync.merge_policy.as_ref())
+    {
+        policy
+            .validate()
+            .map_err(|error| ConfigImportError::InvalidConfig(error.to_string()))?;
+    }
     Ok(())
 }
 
@@ -2576,6 +2603,11 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
                 &mut loaded.diagnostics,
             );
         }
+        remove_shared_local_sync_ceiling(
+            &mut vulcan_config,
+            paths.config_file(),
+            &mut loaded.diagnostics,
+        );
         apply_vulcan_overrides(&mut loaded.config, vulcan_config);
     }
 
@@ -2590,10 +2622,51 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
                 message: "ignored local [folder_notes]: folder-note conventions are repository-level shared configuration".to_string(),
             });
         }
+        remove_local_shared_sync_policy(
+            &mut local_config,
+            paths.local_config_file(),
+            &mut loaded.diagnostics,
+        );
         apply_vulcan_overrides(&mut loaded.config, local_config);
     }
 
     loaded
+}
+
+fn remove_shared_local_sync_ceiling(
+    config: &mut PartialVulcanConfig,
+    path: &Path,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) {
+    if config
+        .sync
+        .as_mut()
+        .and_then(|sync| sync.merge_automation.take())
+        .is_some()
+    {
+        diagnostics.push(ConfigDiagnostic {
+            path: path.to_path_buf(),
+            message: "ignored shared sync.merge_automation: the automation ceiling is device-local configuration".to_string(),
+        });
+    }
+}
+
+fn remove_local_shared_sync_policy(
+    config: &mut PartialVulcanConfig,
+    path: &Path,
+    diagnostics: &mut Vec<ConfigDiagnostic>,
+) {
+    if config
+        .sync
+        .as_mut()
+        .and_then(|sync| sync.merge_policy.take())
+        .is_some()
+    {
+        diagnostics.push(ConfigDiagnostic {
+            path: path.to_path_buf(),
+            message: "ignored local sync.merge_policy: merge policy is repository-level shared configuration".to_string(),
+        });
+    }
 }
 
 fn remove_untrusted_executable_overrides(
@@ -2660,6 +2733,7 @@ pub fn load_vault_config_with_overrides(
         "Vulcan config",
         paths.config_file(),
         &mut loaded.diagnostics,
+        false,
     );
     apply_vulcan_override_value(
         &mut loaded.config,
@@ -2667,6 +2741,7 @@ pub fn load_vault_config_with_overrides(
         "local Vulcan config",
         paths.local_config_file(),
         &mut loaded.diagnostics,
+        true,
     );
     loaded
 }
@@ -2803,12 +2878,18 @@ fn apply_vulcan_override_value(
     description: &str,
     path: &Path,
     diagnostics: &mut Vec<ConfigDiagnostic>,
+    local: bool,
 ) {
-    let Some(parsed) =
+    let Some(mut parsed) =
         parse_in_memory_vulcan_override(override_value, description, path, diagnostics)
     else {
         return;
     };
+    if local {
+        remove_local_shared_sync_policy(&mut parsed, path, diagnostics);
+    } else {
+        remove_shared_local_sync_ceiling(&mut parsed, path, diagnostics);
+    }
     apply_vulcan_overrides(config, parsed);
 }
 
@@ -4152,6 +4233,14 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         }
         if let Some(exclude) = git.exclude {
             config.git.exclude = exclude;
+        }
+    }
+    if let Some(sync) = overrides.sync {
+        if let Some(merge_policy) = sync.merge_policy {
+            config.sync.merge_policy = Some(merge_policy);
+        }
+        if let Some(merge_automation) = sync.merge_automation {
+            config.sync.merge_automation = merge_automation;
         }
     }
     if let Some(inbox) = overrides.inbox {

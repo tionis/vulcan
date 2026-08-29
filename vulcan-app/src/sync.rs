@@ -6,7 +6,7 @@ use crate::{scan::refresh_cache_incrementally, AppError};
 use fs2::FileExt;
 use serde::Serialize;
 use std::fs::OpenOptions;
-use vulcan_core::{ScanSummary, VaultPaths};
+use vulcan_core::{load_vault_config, ScanSummary, VaultPaths};
 use vulcan_sync::{GitEngine, GitSyncObserver};
 
 pub use vulcan_sync::{
@@ -121,7 +121,16 @@ fn doctor_git_vault_with_optional_state(
     state_store: Option<&SyncStateStore>,
 ) -> SyncDoctorReport {
     let engine = vulcan_sync::GitCliEngine::default();
+    let (effective_options, policy_severity, policy_detail) =
+        configured_options_for_doctor(paths, options);
+    let options = &effective_options;
     let mut report = initial_doctor_report(paths, options);
+    doctor_check(
+        &mut report,
+        "sync.merge-policy",
+        policy_severity,
+        policy_detail,
+    );
     doctor_device_identity(state_store, &mut report);
 
     match engine.installation() {
@@ -215,6 +224,26 @@ fn doctor_git_vault_with_optional_state(
     doctor_apply_marker(state_store, &repository, &mut report);
     doctor_cache(paths, &mut report);
     finish_doctor_report(report)
+}
+
+fn configured_options_for_doctor(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+) -> (GitSyncOptions, SyncDoctorSeverity, String) {
+    match configured_git_sync_options(paths, options) {
+        Ok(options) => {
+            let detail = format!(
+                "merge policy v{} is valid with automation ceiling {:?}",
+                options.merge_policy.version, options.merge_automation
+            );
+            (options, SyncDoctorSeverity::Pass, detail)
+        }
+        Err(error) => (
+            options.clone(),
+            SyncDoctorSeverity::Error,
+            error.to_string(),
+        ),
+    }
 }
 
 fn initial_doctor_report(paths: &VaultPaths, options: &GitSyncOptions) -> SyncDoctorReport {
@@ -736,11 +765,8 @@ pub fn sync_git_vault_with_observer(
     cancellation: &SyncCancellationToken,
     delegate: &mut dyn GitSyncObserver,
 ) -> Result<VaultSyncReport, AppError> {
-    if cancellation.is_cancelled() {
-        return Err(AppError::operation(
-            "synchronization was cancelled before the transaction started",
-        ));
-    }
+    check_sync_start(cancellation)?;
+    let options = configured_git_sync_options(paths, options)?;
     let mut journal = SyncJournal::preparing(
         paths.vault_root(),
         options.remote.to_string(),
@@ -838,6 +864,55 @@ pub fn sync_git_vault_with_observer(
     })
 }
 
+fn check_sync_start(cancellation: &SyncCancellationToken) -> Result<(), AppError> {
+    if cancellation.is_cancelled() {
+        Err(AppError::operation(
+            "synchronization was cancelled before the transaction started",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+/// Applies the shared vault merge policy and device-local automation ceiling.
+///
+/// Caller-supplied automation is also a ceiling, so configuration can never
+/// increase automation selected by an embedding application.
+pub fn configured_git_sync_options(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+) -> Result<GitSyncOptions, AppError> {
+    let loaded = load_vault_config(paths);
+    if let Some(diagnostic) = loaded.diagnostics.iter().find(|diagnostic| {
+        diagnostic
+            .message
+            .starts_with("failed to parse Vulcan config")
+            || diagnostic
+                .message
+                .starts_with("failed to parse local Vulcan config")
+    }) {
+        return Err(AppError::operation(format!(
+            "cannot synchronize with malformed configuration at {}: {}",
+            diagnostic.path.display(),
+            diagnostic.message
+        )));
+    }
+    let mut effective = options.clone();
+    if let Some(policy) = loaded.config.sync.merge_policy {
+        effective.merge_policy = policy;
+    }
+    if loaded.config.sync.merge_automation == vulcan_sync::MergeAutomation::RequireReview
+        || options.merge_automation == vulcan_sync::MergeAutomation::RequireReview
+    {
+        effective.merge_automation = vulcan_sync::MergeAutomation::RequireReview;
+    }
+    effective
+        .merge_policy
+        .validate()
+        .map_err(AppError::operation)?;
+    Ok(effective)
+}
+
 fn persist_sync_conflict(
     engine: &dyn GitEngine,
     sync: &GitSyncReport,
@@ -924,6 +999,7 @@ mod tests {
     use std::process::Command;
     use tempfile::tempdir;
     use vulcan_core::{initialize_vulcan_dir, properties::load_note_index, scan_vault, ScanMode};
+    use vulcan_sync::{MergeAutomation, MergeResolution};
 
     fn git(path: &Path, arguments: &[&str]) {
         let status = Command::new("git")
@@ -964,6 +1040,85 @@ mod tests {
             .list(&record.repository_key)
             .expect("list conflict records");
         assert_eq!(records, [record.clone()]);
+    }
+
+    #[test]
+    fn configured_sync_options_load_policy_and_only_reduce_automation() {
+        let temporary = tempdir().expect("temporary directory");
+        fs::create_dir(temporary.path().join(".vulcan")).expect("Vulcan directory");
+        fs::write(
+            temporary.path().join(".vulcan/config.toml"),
+            r#"[sync.merge_policy]
+version = 1
+rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution = "require_review" }]
+"#,
+        )
+        .expect("shared policy");
+        fs::write(
+            temporary.path().join(".vulcan/config.local.toml"),
+            "[sync]\nmerge_automation = \"require_review\"\n",
+        )
+        .expect("local ceiling");
+        let paths = VaultPaths::new(temporary.path());
+
+        let configured = configured_git_sync_options(&paths, &GitSyncOptions::default())
+            .expect("configured options");
+
+        assert_eq!(configured.merge_policy.rules[0].id, "review-all");
+        assert_eq!(
+            configured.merge_policy.rules[0].resolution,
+            MergeResolution::RequireReview
+        );
+        assert_eq!(configured.merge_automation, MergeAutomation::RequireReview);
+
+        fs::write(
+            temporary.path().join(".vulcan/config.local.toml"),
+            "[sync]\nmerge_automation = \"allow_policy\"\n",
+        )
+        .expect("permissive local ceiling");
+        let configured = configured_git_sync_options(
+            &paths,
+            &GitSyncOptions {
+                merge_automation: MergeAutomation::RequireReview,
+                ..GitSyncOptions::default()
+            },
+        )
+        .expect("caller ceiling");
+        assert_eq!(configured.merge_automation, MergeAutomation::RequireReview);
+    }
+
+    #[test]
+    fn malformed_vault_configuration_blocks_sync_before_transaction_state() {
+        let temporary = tempdir().expect("temporary directory");
+        fs::create_dir(temporary.path().join(".vulcan")).expect("Vulcan directory");
+        fs::write(
+            temporary.path().join(".vulcan/config.toml"),
+            "[sync.merge_policy\nversion = 1\n",
+        )
+        .expect("malformed config");
+
+        let error = configured_git_sync_options(
+            &VaultPaths::new(temporary.path()),
+            &GitSyncOptions::default(),
+        )
+        .expect_err("malformed config must fail closed");
+
+        assert!(error
+            .to_string()
+            .contains("cannot synchronize with malformed configuration"));
+
+        fs::write(temporary.path().join(".vulcan/config.toml"), "[sync]\n")
+            .expect("valid shared config");
+        fs::write(
+            temporary.path().join(".vulcan/config.local.toml"),
+            "[sync\nmerge_automation = \"require_review\"\n",
+        )
+        .expect("malformed local config");
+        assert!(configured_git_sync_options(
+            &VaultPaths::new(temporary.path()),
+            &GitSyncOptions::default()
+        )
+        .is_err());
     }
 
     #[test]

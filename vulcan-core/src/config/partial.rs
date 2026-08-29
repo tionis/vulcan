@@ -11,6 +11,7 @@ pub(super) struct PartialVulcanConfig {
     pub(super) embedding: Option<PartialEmbeddingProviderConfig>,
     pub(super) extraction: Option<PartialAttachmentExtractionConfig>,
     pub(super) git: Option<PartialGitConfig>,
+    pub(super) sync: Option<PartialSyncConfig>,
     pub(super) inbox: Option<PartialInboxConfig>,
     pub(super) tasks: Option<PartialTasksConfig>,
     pub(super) tasknotes: Option<PartialTaskNotesConfig>,
@@ -110,6 +111,12 @@ pub(super) struct PartialGitConfig {
     pub(super) message: Option<String>,
     pub(super) scope: Option<GitScope>,
     pub(super) exclude: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct PartialSyncConfig {
+    pub(super) merge_policy: Option<MergePolicy>,
+    pub(super) merge_automation: Option<MergeAutomation>,
 }
 
 #[derive(Debug, Deserialize, Default)]

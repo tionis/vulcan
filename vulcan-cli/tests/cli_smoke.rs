@@ -11612,6 +11612,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(configuration_skill.contains("Clone dry-run does not contact the remote"));
     assert!(configuration_skill.contains("--platform android-shared"));
     assert!(configuration_skill.contains("must never be treated as permission to delete"));
+    assert!(configuration_skill.contains("sync.merge_policy"));
+    assert!(configuration_skill.contains("sync.merge_automation require_review --target local"));
     let diagnostics_skill =
         fs::read_to_string(vault_root.join(".agents/skills/diagnostics-and-repair/SKILL.md"))
             .expect("diagnostics skill should be readable");

@@ -85,6 +85,18 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # scope = "vulcan-only"
 # exclude = [".obsidian/workspace.json", ".obsidian/workspace-mobile.json"]
 
+# Device-local only; set this in config.local.toml, not this shared file.
+# [sync]
+# merge_automation = "allow_policy" # allow_policy | require_review
+#
+# Shared merge policy example. Rules are evaluated in order and must include a fallback.
+# [sync.merge_policy]
+# version = 1
+# rules = [
+#   { id = "markdown-structured", selector = { glob = "**/*.md", kinds = ["markdown"] }, resolution = "structured" },
+#   { id = "fallback-review", selector = { glob = "**", kinds = [] }, resolution = "require_review" },
+# ]
+
 # [inbox]
 # path = "Inbox.md"
 # format = "- {text}"

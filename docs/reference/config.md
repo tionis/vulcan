@@ -1395,3 +1395,18 @@ Static-site publication profiles, filters, route policies, and theme assets.
   Static-site publication profile metadata, publish filters, theme assets, and route policy settings.
   Preferred command: `vulcan config set`
   Example: `vulcan config set site.profiles.public.title '"Public Notes"'`
+
+### Synchronization
+
+Shared deterministic merge policy and device-local automation ceiling.
+
+- `sync.merge_automation` — type: `enum`; target: `local`; default: `allow_policy`; values: `allow_policy`, `require_review`
+  Set the device-local ceiling to allow shared policy automation or require review for every Git conflict.
+  Example: `vulcan config set sync.merge_automation <value>`
+- `sync.merge_policy.rules` — type: `array`; target: `shared`
+  Define the versioned shared ordered path/type rules used for deterministic Git conflict handling.
+  Preferred command: `vulcan config edit`
+  Example: `vulcan config set sync.merge_policy.rules <value>`
+- `sync.merge_policy.version` — type: `integer`; target: `shared`; default: `1`
+  Define the versioned shared ordered path/type rules used for deterministic Git conflict handling.
+  Example: `vulcan config set sync.merge_policy.version <value>`

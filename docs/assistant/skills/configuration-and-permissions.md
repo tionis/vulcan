@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 6
+version: 7
 tools:
   - config_show
   - config_get
@@ -32,6 +32,7 @@ permission profiles, or diagnoses permission and trust failures.
 6. Use `vulcan config import folder-notes --preview` to inspect an Obsidian Folder Notes convention before applying it. Folder-note structure is shared repository state, so the importer rejects a local target.
 7. Use `vulcan vault clone/add/list/show/set/remove` for device-local wiki setup and registration. Registration is optional; `add`, `set`, and `remove` do not initialize, synchronize, or delete the materialized vault, while `clone` explicitly creates a new Git worktree before registering it.
 8. Use `vulcan sync pause/resume [<wiki>]` for the registration's device-local automatic-sync switch; omission resolves the currently selected registered vault.
+9. Keep `sync.merge_policy` in shared `.vulcan/config.toml`. Set `sync.merge_automation` only in device-local config, for example `vulcan config set sync.merge_automation require_review --target local`; the local ceiling can require review but cannot select a different merge tree.
 
 ## Guardrails
 

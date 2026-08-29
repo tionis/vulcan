@@ -43,6 +43,7 @@ toml.workspace = true
 ulid.workspace = true
 unicode-normalization.workspace = true
 vulcan-embed = { path = "../vulcan-embed", version = "0.1.0", optional = true }
+vulcan-sync = { path = "../vulcan-sync", version = "0.1.0" }
 zip.workspace = true
 
 [dev-dependencies]

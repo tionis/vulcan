@@ -929,6 +929,14 @@ fn dynamic_config_descriptors() -> Vec<ConfigDescriptor> {
     };
 
     push(
+        "sync.merge_policy.rules",
+        ConfigValueKind::Array,
+        ConfigTargetSupport::SharedOnly,
+        Some("vulcan config edit"),
+        None,
+        &[],
+    );
+    push(
         "aliases.<name>",
         ConfigValueKind::String,
         ConfigTargetSupport::SharedAndLocal,
@@ -1700,7 +1708,11 @@ fn resolve_config_descriptor(key: &str) -> Result<ConfigDescriptorMatch, AppErro
 }
 
 fn config_target_support_for_key(key: &str) -> ConfigTargetSupport {
-    if key == "export"
+    if key == "sync.merge_automation" {
+        ConfigTargetSupport::LocalOnly
+    } else if key == "sync.merge_policy"
+        || key.starts_with("sync.merge_policy.")
+        || key == "export"
         || key.starts_with("export.")
         || key == "folder_notes"
         || key.starts_with("folder_notes.")
@@ -1827,6 +1839,7 @@ fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
             title: "Web",
             description: "Web search backend selection and API endpoint configuration.",
         },
+        Some("sync") => sync_category_descriptor(),
         Some("plugins") => CategoryDescriptor {
             key: "plugins",
             title: "Plugins",
@@ -1866,6 +1879,14 @@ fn category_descriptor(display_segments: &[String]) -> CategoryDescriptor {
     }
 }
 
+fn sync_category_descriptor() -> CategoryDescriptor {
+    CategoryDescriptor {
+        key: "sync",
+        title: "Synchronization",
+        description: "Shared deterministic merge policy and device-local automation ceiling.",
+    }
+}
+
 fn integration_routes_category_descriptor() -> CategoryDescriptor {
     CategoryDescriptor {
         key: "integrations",
@@ -1883,6 +1904,10 @@ fn config_path_description(path: &str) -> String {
         "strict_line_breaks" => "Mirror Obsidian's strict line break behavior when rendering Markdown.".to_string(),
         "folder_notes.placement" => "Choose whether a folder note lives inside its folder or beside it in the parent folder.".to_string(),
         "folder_notes.name" => "Set the exact folder-note stem/template; `{{folder_name}}` expands to the folder's basename.".to_string(),
+        "sync.merge_automation" => "Set the device-local ceiling to allow shared policy automation or require review for every Git conflict.".to_string(),
+        _ if path.starts_with("sync.merge_policy") => {
+            "Define the versioned shared ordered path/type rules used for deterministic Git conflict handling.".to_string()
+        }
         _ if path.starts_with("periodic.") => {
             "Periodic note folder, filename format, template, cadence, and schedule heading.".to_string()
         }
@@ -2572,7 +2597,7 @@ mod tests {
         build_config_show_report, build_config_show_report_from_overrides,
         config_descriptor_catalog, config_toml_path_exists, default_config_value_map,
         load_config_file_toml, plan_config_document_save, plan_config_set_report,
-        remove_config_toml_value, set_config_toml_value, ConfigValueKind,
+        remove_config_toml_value, set_config_toml_value, ConfigTargetSupport, ConfigValueKind,
     };
     use std::collections::BTreeSet;
     use std::fs;
@@ -2859,6 +2884,29 @@ read = { allow = ["folder:Projects/**"] }
             placement.preferred_command.as_deref(),
             Some("vulcan refactor folder-notes")
         );
+
+        let merge_policy = catalog
+            .iter()
+            .find(|descriptor| descriptor.key == "sync.merge_policy.version")
+            .expect("sync merge-policy descriptor should exist");
+        assert_eq!(merge_policy.section, "sync");
+        assert_eq!(merge_policy.target_support, ConfigTargetSupport::SharedOnly);
+        let merge_rules = catalog
+            .iter()
+            .find(|descriptor| descriptor.key == "sync.merge_policy.rules")
+            .expect("sync merge-policy rules descriptor should exist");
+        assert_eq!(merge_rules.kind, ConfigValueKind::Array);
+        assert_eq!(merge_rules.target_support, ConfigTargetSupport::SharedOnly);
+        assert_eq!(
+            merge_rules.preferred_command.as_deref(),
+            Some("vulcan config edit")
+        );
+        let automation = catalog
+            .iter()
+            .find(|descriptor| descriptor.key == "sync.merge_automation")
+            .expect("sync automation descriptor should exist");
+        assert_eq!(automation.kind, ConfigValueKind::Enum);
+        assert_eq!(automation.target_support, ConfigTargetSupport::LocalOnly);
 
         for descriptor in &catalog {
             assert!(
