@@ -6,6 +6,7 @@ use std::fmt::{Display, Formatter};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
+use tempfile::TempDir;
 
 const MAX_ERROR_BYTES: usize = 16 * 1024;
 const MAX_DIAGNOSTIC_PATH_BYTES: usize = 16 * 1024 * 1024;
@@ -120,6 +121,22 @@ pub trait GitEngine: Send + Sync {
         to: &GitOid,
         paths: &[String],
     ) -> Result<String, GitEngineError>;
+
+    /// Validates a unified patch against one immutable revision without writing Git objects.
+    fn check_patch(
+        &self,
+        repository: &GitRepository,
+        base: &GitOid,
+        patch: &[u8],
+    ) -> Result<Vec<String>, GitEngineError>;
+
+    /// Applies a validated unified patch to an isolated index based on one revision.
+    fn apply_patch_to_tree(
+        &self,
+        repository: &GitRepository,
+        base: &GitOid,
+        patch: &[u8],
+    ) -> Result<GitOid, GitEngineError>;
 
     fn capture_worktree(
         &self,
@@ -984,6 +1001,41 @@ impl GitCliEngine {
         decode_stdout(operation, output.stdout)
     }
 
+    fn patch_command(
+        &self,
+        repository: &GitRepository,
+        index_path: &Path,
+        operation: &'static str,
+        arguments: &[&str],
+        patch: &[u8],
+    ) -> Result<Output, GitEngineError> {
+        let mut command = self.index_command(repository, index_path)?;
+        command
+            .args(arguments)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(|source| {
+            if source.kind() == std::io::ErrorKind::NotFound {
+                GitEngineError::ExecutableUnavailable {
+                    executable: self.executable.clone(),
+                    source,
+                }
+            } else {
+                GitEngineError::Io(source)
+            }
+        })?;
+        child
+            .stdin
+            .take()
+            .ok_or_else(|| GitEngineError::InvalidOutput {
+                operation,
+                detail: "Git patch command did not expose stdin".to_string(),
+            })?
+            .write_all(patch)?;
+        ensure_success(operation, child.wait_with_output()?)
+    }
+
     fn path_object_metadata(
         &self,
         repository: &GitRepository,
@@ -1683,6 +1735,85 @@ impl GitEngine for GitCliEngine {
             operation: "render a proposed Git patch",
             detail: error.to_string(),
         })
+    }
+
+    fn check_patch(
+        &self,
+        repository: &GitRepository,
+        base: &GitOid,
+        patch: &[u8],
+    ) -> Result<Vec<String>, GitEngineError> {
+        if patch.len() > MAX_DIAGNOSTIC_PATH_BYTES {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "validate a supplied Git patch",
+                detail: format!("patch exceeds the {MAX_DIAGNOSTIC_PATH_BYTES} byte limit"),
+            });
+        }
+        reject_unsupported_patch_operations(patch)?;
+        let temporary = TempDir::new()?;
+        let index = temporary.path().join("index");
+        self.index_output(
+            repository,
+            &index,
+            "seed a supplied patch index",
+            ["read-tree", base.as_str()],
+        )?;
+        self.patch_command(
+            repository,
+            &index,
+            "validate a supplied Git patch",
+            &["apply", "--cached", "--check", "--whitespace=nowarn", "-"],
+            patch,
+        )?;
+        let output = self.patch_command(
+            repository,
+            &index,
+            "inspect supplied Git patch paths",
+            &["apply", "--numstat", "-z", "--whitespace=nowarn", "-"],
+            patch,
+        )?;
+        parse_patch_paths(&output.stdout)
+    }
+
+    fn apply_patch_to_tree(
+        &self,
+        repository: &GitRepository,
+        base: &GitOid,
+        patch: &[u8],
+    ) -> Result<GitOid, GitEngineError> {
+        let expected_paths = self.check_patch(repository, base, patch)?;
+        let temporary = TempDir::new()?;
+        let index = temporary.path().join("index");
+        self.index_output(
+            repository,
+            &index,
+            "seed a supplied patch index",
+            ["read-tree", base.as_str()],
+        )?;
+        self.patch_command(
+            repository,
+            &index,
+            "apply a supplied Git patch",
+            &["apply", "--cached", "--whitespace=nowarn", "-"],
+            patch,
+        )?;
+        let tree = GitOid::parse(
+            self.index_capture(
+                repository,
+                &index,
+                "write a supplied patch tree",
+                ["write-tree"],
+            )?
+            .trim(),
+        )?;
+        let actual_paths = self.changed_paths(repository, base, &tree)?;
+        if actual_paths != expected_paths {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "apply a supplied Git patch",
+                detail: "applied tree paths differ from the inspected patch paths".to_string(),
+            });
+        }
+        Ok(tree)
     }
 
     fn capture_worktree(
@@ -2455,6 +2586,73 @@ fn nul_fields<'a>(
     Ok(fields)
 }
 
+fn parse_patch_paths(bytes: &[u8]) -> Result<Vec<String>, GitEngineError> {
+    if bytes.len() > MAX_DIAGNOSTIC_PATH_BYTES {
+        return Err(GitEngineError::InvalidOutput {
+            operation: "inspect supplied Git patch paths",
+            detail: format!("path output exceeds the {MAX_DIAGNOSTIC_PATH_BYTES} byte limit"),
+        });
+    }
+    if !bytes.is_empty() && bytes.last() != Some(&0) {
+        return Err(GitEngineError::InvalidOutput {
+            operation: "inspect supplied Git patch paths",
+            detail: "expected NUL-terminated numstat records".to_string(),
+        });
+    }
+    let mut paths = Vec::new();
+    for record in bytes
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        let mut fields = record.splitn(3, |byte| *byte == b'\t');
+        let additions = fields.next();
+        let deletions = fields.next();
+        let path = fields.next().unwrap_or_default();
+        if additions.is_none() || deletions.is_none() || path.is_empty() {
+            return Err(GitEngineError::UnsupportedRepository {
+                detail: "supplied patches must use ordinary single-path hunks; rename/copy records are unsupported"
+                    .to_string(),
+            });
+        }
+        let path =
+            String::from_utf8(path.to_vec()).map_err(|error| GitEngineError::InvalidOutput {
+                operation: "inspect supplied Git patch paths",
+                detail: error.to_string(),
+            })?;
+        validate_repository_path(&path)?;
+        paths.push(path);
+    }
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() {
+        return Err(GitEngineError::InvalidOutput {
+            operation: "inspect supplied Git patch paths",
+            detail: "patch contains no changed paths".to_string(),
+        });
+    }
+    Ok(paths)
+}
+
+fn reject_unsupported_patch_operations(patch: &[u8]) -> Result<(), GitEngineError> {
+    for line in patch.split(|byte| *byte == b'\n') {
+        if line == b"+++ /dev/null" || line.starts_with(b"deleted file mode ") {
+            return Err(GitEngineError::UnsupportedRepository {
+                detail: "supplied conflict patches may not delete files".to_string(),
+            });
+        }
+        if line.starts_with(b"rename from ")
+            || line.starts_with(b"rename to ")
+            || line.starts_with(b"copy from ")
+            || line.starts_with(b"copy to ")
+        {
+            return Err(GitEngineError::UnsupportedRepository {
+                detail: "supplied conflict patches may not rename or copy files".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 fn remove_file_if_present(path: &Path) -> Result<(), GitEngineError> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -2683,7 +2881,6 @@ fn bounded_lossy(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::fs;
-    use tempfile::TempDir;
 
     fn run_git(current_dir: &Path, arguments: &[&str]) {
         let status = Command::new("git")
@@ -3417,6 +3614,60 @@ mod tests {
                 .expect("advance proposal"),
             GitRefUpdateResult::Updated
         );
+    }
+
+    #[test]
+    fn supplied_patch_uses_an_isolated_index_and_reports_exact_paths() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Home.md"), "before\n").expect("home note");
+        fs::write(temporary.path().join("Other.md"), "unchanged\n").expect("other note");
+        let base = commit_all(temporary.path(), "initial");
+        fs::write(temporary.path().join("Home.md"), "after\n").expect("home update");
+        let target = commit_all(temporary.path(), "target");
+        run_git(temporary.path(), &["reset", "--hard", base.as_str()]);
+
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let patch = engine
+            .diff_patch(&repository, &base, &target, &["Home.md".to_string()])
+            .expect("patch");
+        let index_before = engine
+            .safety_state(&repository)
+            .expect("safety before patch");
+        assert_eq!(
+            engine
+                .check_patch(&repository, &base, patch.as_bytes())
+                .expect("check patch"),
+            ["Home.md"]
+        );
+        let tree = engine
+            .apply_patch_to_tree(&repository, &base, patch.as_bytes())
+            .expect("apply patch");
+        assert_eq!(
+            engine
+                .path_object(&repository, &tree, "Home.md")
+                .expect("patched object")
+                .and_then(|object| object.data),
+            Some(b"after\n".to_vec())
+        );
+        assert_eq!(
+            engine
+                .safety_state(&repository)
+                .expect("safety after patch"),
+            index_before
+        );
+        assert_eq!(
+            fs::read_to_string(temporary.path().join("Home.md")).expect("worktree note"),
+            "before\n"
+        );
+        let deletion = b"diff --git a/Home.md b/Home.md\ndeleted file mode 100644\n--- a/Home.md\n+++ /dev/null\n@@ -1 +0,0 @@\n-before\n";
+        let error = engine
+            .check_patch(&repository, &base, deletion)
+            .expect_err("deletion patch must fail");
+        assert!(error.to_string().contains("may not delete files"));
     }
 
     #[test]

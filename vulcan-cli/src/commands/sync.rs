@@ -17,10 +17,11 @@ use vulcan_app::sync_conflicts::{
     SyncConflictResolutionSide,
 };
 use vulcan_app::sync_proposals::{
-    approve_resolution_proposal, create_resolution_proposal, preview_supplied_resolution,
-    reject_resolution_proposal, ApproveResolutionProposalOptions, ApproveResolutionProposalReport,
-    RejectResolutionProposalReport, ResolutionAgentPathOutput, ResolutionProposalOptions,
-    SuppliedResolutionPreviewReport, SuppliedResolutionProvider,
+    approve_resolution_proposal, create_resolution_proposal, preview_patch_resolution,
+    preview_supplied_resolution, reject_resolution_proposal, resolution_paths_from_patch,
+    ApproveResolutionProposalOptions, ApproveResolutionProposalReport,
+    PatchResolutionPreviewReport, RejectResolutionProposalReport, ResolutionAgentPathOutput,
+    ResolutionProposalOptions, SuppliedResolutionPreviewReport, SuppliedResolutionProvider,
 };
 #[cfg(feature = "web")]
 use vulcan_app::sync_proposals::{OpenAiCompatibleResolutionProvider, ResolutionProposal};
@@ -146,6 +147,7 @@ fn handle_non_cycle_sync_command(
             side,
             approve_proposal,
             files,
+            patch,
             wiki,
             target,
             dry_run,
@@ -154,7 +156,7 @@ fn handle_non_cycle_sync_command(
             paths,
             wiki.as_deref(),
             conflict_id,
-            cli_resolution(*side, approve_proposal.as_deref(), files),
+            cli_resolution(*side, approve_proposal.as_deref(), files, patch.as_deref()),
             target,
             *dry_run,
         ),
@@ -464,17 +466,21 @@ enum CliResolution<'a> {
     Side(SyncConflictSideArg),
     Proposal(&'a str),
     Files(&'a [String]),
+    Patch(&'a str),
 }
 
 fn cli_resolution<'a>(
     side: Option<SyncConflictSideArg>,
     proposal: Option<&'a str>,
     files: &'a [String],
+    patch: Option<&'a str>,
 ) -> CliResolution<'a> {
     if let Some(proposal) = proposal {
         CliResolution::Proposal(proposal)
     } else if !files.is_empty() {
         CliResolution::Files(files)
+    } else if let Some(patch) = patch {
+        CliResolution::Patch(patch)
     } else {
         CliResolution::Side(side.expect("clap requires one resolution mode"))
     }
@@ -491,87 +497,192 @@ fn run_sync_resolve(
 ) -> Result<(), CliError> {
     let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
-    if let CliResolution::Proposal(proposal_id) = resolution {
-        let report = approve_resolution_proposal(
+    match resolution {
+        CliResolution::Proposal(proposal_id) => {
+            let report = approve_resolution_proposal(
+                &paths,
+                conflict_id,
+                proposal_id,
+                &approval_options(target, dry_run)?,
+                &vulcan_app::sync::SyncCancellationToken::default(),
+            )
+            .map_err(CliError::operation)?;
+            print_proposal_approval(cli.output, &report)
+        }
+        CliResolution::Files(specifications) => run_file_resolution(
+            cli,
             &paths,
+            registration_profile.as_deref(),
             conflict_id,
-            proposal_id,
-            &ApproveResolutionProposalOptions {
-                remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
-                live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
-                dry_run,
-            },
-            &vulcan_app::sync::SyncCancellationToken::default(),
+            specifications,
+            target,
+            dry_run,
+        ),
+        CliResolution::Patch(source) => run_patch_resolution(
+            cli,
+            &paths,
+            registration_profile.as_deref(),
+            conflict_id,
+            source,
+            target,
+            dry_run,
+        ),
+        CliResolution::Side(side) => {
+            let report = resolve_sync_conflict(
+                &paths,
+                conflict_id,
+                &ResolveSyncConflictOptions {
+                    side: match side {
+                        SyncConflictSideArg::Base => SyncConflictResolutionSide::Base,
+                        SyncConflictSideArg::Local => SyncConflictResolutionSide::Local,
+                        SyncConflictSideArg::Remote => SyncConflictResolutionSide::Remote,
+                    },
+                    remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
+                    live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
+                    dry_run,
+                },
+            )
+            .map_err(CliError::operation)?;
+            print_sync_resolution(cli.output, &report)
+        }
+    }
+}
+
+fn run_file_resolution(
+    cli: &Cli,
+    paths: &VaultPaths,
+    registration_profile: Option<&str>,
+    conflict_id: &str,
+    specifications: &[String],
+    target: &crate::SyncTargetArgs,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let (proposal_options, approval_options) =
+        manual_resolution_options(cli, registration_profile, target, dry_run)?;
+    let supplied = read_supplied_resolution_files(specifications)?;
+    if dry_run {
+        let report = preview_supplied_resolution(
+            paths,
+            conflict_id,
+            &proposal_options,
+            &approval_options,
+            supplied,
         )
         .map_err(CliError::operation)?;
-        return print_proposal_approval(cli.output, &report);
+        return print_supplied_resolution_preview(cli.output, &report);
     }
-    if let CliResolution::Files(specifications) = resolution {
-        let profile = cli
-            .permissions
-            .as_deref()
-            .or(registration_profile.as_deref())
-            .unwrap_or("unrestricted");
-        let supplied = read_supplied_resolution_files(specifications)?;
-        let proposal_options = ResolutionProposalOptions {
+    run_supplied_resolution(
+        cli.output,
+        paths,
+        conflict_id,
+        &proposal_options,
+        &approval_options,
+        supplied,
+    )
+}
+
+fn run_patch_resolution(
+    cli: &Cli,
+    paths: &VaultPaths,
+    registration_profile: Option<&str>,
+    conflict_id: &str,
+    source: &str,
+    target: &crate::SyncTargetArgs,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let patch = std::fs::read(source).map_err(|error| {
+        CliError::operation(format!("cannot read resolution patch `{source}`: {error}"))
+    })?;
+    let (proposal_options, approval_options) =
+        manual_resolution_options(cli, registration_profile, target, dry_run)?;
+    if dry_run {
+        let report = preview_patch_resolution(
+            paths,
+            conflict_id,
+            &proposal_options,
+            &approval_options,
+            &patch,
+        )
+        .map_err(CliError::operation)?;
+        return print_patch_resolution_preview(cli.output, &report);
+    }
+    let supplied = resolution_paths_from_patch(
+        paths,
+        conflict_id,
+        &proposal_options,
+        &approval_options,
+        &patch,
+    )
+    .map_err(CliError::operation)?;
+    run_supplied_resolution(
+        cli.output,
+        paths,
+        conflict_id,
+        &proposal_options,
+        &approval_options,
+        supplied,
+    )
+}
+
+fn manual_resolution_options(
+    cli: &Cli,
+    registration_profile: Option<&str>,
+    target: &crate::SyncTargetArgs,
+    dry_run: bool,
+) -> Result<(ResolutionProposalOptions, ApproveResolutionProposalOptions), CliError> {
+    let profile = cli
+        .permissions
+        .as_deref()
+        .or(registration_profile)
+        .unwrap_or("unrestricted");
+    Ok((
+        ResolutionProposalOptions {
             permission_profile: profile.to_string(),
             focused_context: Vec::new(),
             allow_broad_context: false,
-        };
-        let approval_options = ApproveResolutionProposalOptions {
-            remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
-            live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
-            dry_run,
-        };
-        if dry_run {
-            let report = preview_supplied_resolution(
-                &paths,
-                conflict_id,
-                &proposal_options,
-                &approval_options,
-                supplied,
-            )
-            .map_err(CliError::operation)?;
-            return print_supplied_resolution_preview(cli.output, &report);
-        }
-        let provider = SuppliedResolutionProvider::new(supplied);
-        let proposal = create_resolution_proposal(
-            &paths,
-            conflict_id,
-            &proposal_options,
-            &provider,
-            &vulcan_app::sync::SyncCancellationToken::default(),
-        )
-        .map_err(CliError::operation)?;
-        let report = approve_resolution_proposal(
-            &paths,
-            conflict_id,
-            &proposal.proposal_id,
-            &approval_options,
-            &vulcan_app::sync::SyncCancellationToken::default(),
-        )
-        .map_err(CliError::operation)?;
-        return print_proposal_approval(cli.output, &report);
-    }
-    let CliResolution::Side(side) = resolution else {
-        unreachable!("proposal resolution returned above")
-    };
-    let report = resolve_sync_conflict(
-        &paths,
-        conflict_id,
-        &ResolveSyncConflictOptions {
-            side: match side {
-                SyncConflictSideArg::Base => SyncConflictResolutionSide::Base,
-                SyncConflictSideArg::Local => SyncConflictResolutionSide::Local,
-                SyncConflictSideArg::Remote => SyncConflictResolutionSide::Remote,
-            },
-            remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
-            live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
-            dry_run,
         },
+        approval_options(target, dry_run)?,
+    ))
+}
+
+fn approval_options(
+    target: &crate::SyncTargetArgs,
+    dry_run: bool,
+) -> Result<ApproveResolutionProposalOptions, CliError> {
+    Ok(ApproveResolutionProposalOptions {
+        remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
+        live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
+        dry_run,
+    })
+}
+
+fn run_supplied_resolution(
+    output: OutputFormat,
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    supplied: Vec<ResolutionAgentPathOutput>,
+) -> Result<(), CliError> {
+    let provider = SuppliedResolutionProvider::new(supplied);
+    let cancellation = vulcan_app::sync::SyncCancellationToken::default();
+    let proposal = create_resolution_proposal(
+        paths,
+        conflict_id,
+        proposal_options,
+        &provider,
+        &cancellation,
     )
     .map_err(CliError::operation)?;
-    print_sync_resolution(cli.output, &report)
+    let report = approve_resolution_proposal(
+        paths,
+        conflict_id,
+        &proposal.proposal_id,
+        approval_options,
+        &cancellation,
+    )
+    .map_err(CliError::operation)?;
+    print_proposal_approval(output, &report)
 }
 
 fn read_supplied_resolution_files(
@@ -610,6 +721,22 @@ fn print_supplied_resolution_preview(
     }
     println!(
         "Conflict {}: {:?} ({} supplied path(s), dry run)",
+        report.conflict_id,
+        report.outcome,
+        report.paths.len()
+    );
+    Ok(())
+}
+
+fn print_patch_resolution_preview(
+    output: OutputFormat,
+    report: &PatchResolutionPreviewReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Conflict {}: {:?} (patch touches {} path(s), dry run)",
         report.conflict_id,
         report.outcome,
         report.paths.len()

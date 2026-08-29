@@ -8832,6 +8832,17 @@
                 ]
               },
               {
+                "help": "Apply a reviewed unified patch against the preserved local candidate",
+                "id": "patch",
+                "long": "patch",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PATCH_FILE"
+                ]
+              },
+              {
                 "help": "Optional registered wiki ID",
                 "id": "wiki",
                 "long": "wiki",

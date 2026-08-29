@@ -5245,6 +5245,56 @@ fn sync_resolve_cli_applies_reviewed_supplied_files_through_a_proposal() {
 }
 
 #[test]
+fn sync_resolve_cli_applies_a_reviewed_patch_through_a_proposal() {
+    let (temporary, state_home, reader, id) = setup_cli_sync_conflict();
+    let patch = temporary.path().join("resolution.patch");
+    fs::write(
+        &patch,
+        "diff --git a/Home.md b/Home.md\n--- a/Home.md\n+++ b/Home.md\n@@ -1 +1 @@\n-reader\n+patched resolution\n",
+    )
+    .expect("resolution patch");
+    let run = |dry_run: bool| {
+        let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+        command
+            .env("XDG_STATE_HOME", &state_home)
+            .arg("--vault")
+            .arg(&reader)
+            .args(["--output", "json", "sync", "resolve", &id, "--patch"])
+            .arg(&patch);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        command.assert().success()
+    };
+
+    let objects_before = run_git_stdout(&reader, &["count-objects", "-v"]);
+    let preview = parse_stdout_json(&run(true));
+    assert_eq!(preview["outcome"], "planned");
+    assert_eq!(preview["paths"].as_array().map(Vec::len), Some(1));
+    assert_eq!(preview["paths"][0], "Home.md");
+    assert_eq!(
+        run_git_stdout(&reader, &["count-objects", "-v"]),
+        objects_before
+    );
+    assert_eq!(
+        fs::read_to_string(reader.join("Home.md")).expect("reader note"),
+        "reader\n"
+    );
+
+    let resolved = parse_stdout_json(&run(false));
+    assert_eq!(resolved["outcome"], "applied");
+    assert!(resolved["proposal_id"].is_string());
+    assert_eq!(
+        fs::read_to_string(reader.join("Home.md")).expect("resolved note"),
+        "patched resolution\n"
+    );
+    assert_eq!(
+        fs::read_to_string(reader.join("Writer.md")).expect("clean merged note"),
+        "clean remote addition\n"
+    );
+}
+
+#[test]
 fn sync_resolve_cli_previews_and_explicitly_approves_a_retained_proposal() {
     let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
     let store = SyncStateStore::at(state_home.join("vulcan/sync/repositories"));
@@ -11962,6 +12012,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("`provenance_revision`"));
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
     assert!(git_skill.contains("--file '<conflict-path>=<source-file>' --dry-run"));
+    assert!(git_skill.contains("--patch <patch-file> --dry-run"));
     assert!(git_skill.contains("vulcan sync propose <conflict-id> --model <model>"));
     assert!(git_skill.contains("sent as exact UTF-8 with a content hash"));
     assert!(git_skill.contains("vault_search`, `vault_query`, and `vault_links`"));
@@ -11999,6 +12050,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("vulcan sync conflicts <id>"));
     assert!(diagnostics_skill.contains("vulcan sync resolve <id> --side <side> --dry-run"));
     assert!(diagnostics_skill.contains("--file '<conflict-path>=<source-file>'"));
+    assert!(diagnostics_skill.contains("--patch <patch-file> --dry-run"));
     assert!(diagnostics_skill.contains("offline/cancelled cycle"));
     assert!(diagnostics_skill.contains("outside `.vulcan/cache.db`"));
     assert!(diagnostics_skill.contains("stable device identity"));

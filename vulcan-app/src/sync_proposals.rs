@@ -900,6 +900,17 @@ pub struct SuppliedResolutionPreviewReport {
     pub validation: Vec<ResolutionProposalValidationCheck>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PatchResolutionPreviewReport {
+    pub vault: PathBuf,
+    pub repository_key: String,
+    pub conflict_id: String,
+    pub dry_run: bool,
+    pub outcome: ApproveResolutionProposalOutcome,
+    pub paths: Vec<String>,
+    pub validation: Vec<ResolutionProposalValidationCheck>,
+}
+
 pub fn preview_supplied_resolution(
     paths: &VaultPaths,
     conflict_id: &str,
@@ -931,6 +942,153 @@ pub fn preview_supplied_resolution_with_state_store(
             "supplied-resolution preview requires dry-run mode",
         ));
     }
+    let manual = prepare_manual_resolution_scope(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        state_store,
+    )?;
+    let prepared = prepare_output(
+        &manual.engine,
+        &manual.repository,
+        &manual.record,
+        &BTreeSet::new(),
+        ResolutionAgentOutput {
+            explanation: "Resolution content supplied explicitly by the user.".to_string(),
+            referenced_context: Vec::new(),
+            paths: supplied,
+        },
+        Vec::new(),
+    )?;
+    Ok(SuppliedResolutionPreviewReport {
+        vault: manual.vault,
+        repository_key: manual.repository_key,
+        conflict_id: conflict_id.to_string(),
+        dry_run: true,
+        outcome: ApproveResolutionProposalOutcome::Planned,
+        paths: prepared.paths,
+        validation: vec![
+            ResolutionProposalValidationCheck::ConflictInputsPreserved,
+            ResolutionProposalValidationCheck::PermissionProfileNamed,
+            ResolutionProposalValidationCheck::OutputPathsExact,
+            ResolutionProposalValidationCheck::OutputBytesBounded,
+            ResolutionProposalValidationCheck::NoFileDeletion,
+            ResolutionProposalValidationCheck::WorktreeUnchanged,
+            ResolutionProposalValidationCheck::RefsUnchanged,
+        ],
+    })
+}
+
+pub fn preview_patch_resolution(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    patch: &[u8],
+) -> Result<PatchResolutionPreviewReport, AppError> {
+    if !approval_options.dry_run {
+        return Err(AppError::operation(
+            "patch-resolution preview requires dry-run mode",
+        ));
+    }
+    let state_store = SyncStateStore::user_default()?;
+    let manual = prepare_manual_resolution_scope(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        &state_store,
+    )?;
+    let local = GitOid::parse(&manual.record.local_revision).map_err(AppError::operation)?;
+    let patch_paths = manual
+        .engine
+        .check_patch(&manual.repository, &local, patch)
+        .map_err(AppError::operation)?;
+    require_exact_conflict_paths(&manual.record, &patch_paths)?;
+    Ok(PatchResolutionPreviewReport {
+        vault: manual.vault,
+        repository_key: manual.repository_key,
+        conflict_id: conflict_id.to_string(),
+        dry_run: true,
+        outcome: ApproveResolutionProposalOutcome::Planned,
+        paths: patch_paths,
+        validation: vec![
+            ResolutionProposalValidationCheck::ConflictInputsPreserved,
+            ResolutionProposalValidationCheck::PermissionProfileNamed,
+            ResolutionProposalValidationCheck::OutputPathsExact,
+            ResolutionProposalValidationCheck::WorktreeUnchanged,
+            ResolutionProposalValidationCheck::RefsUnchanged,
+        ],
+    })
+}
+
+pub fn resolution_paths_from_patch(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    patch: &[u8],
+) -> Result<Vec<ResolutionAgentPathOutput>, AppError> {
+    if approval_options.dry_run {
+        return Err(AppError::operation(
+            "patch resolution paths require mutating mode",
+        ));
+    }
+    let state_store = SyncStateStore::user_default()?;
+    let manual = prepare_manual_resolution_scope(
+        paths,
+        conflict_id,
+        proposal_options,
+        approval_options,
+        &state_store,
+    )?;
+    let local = GitOid::parse(&manual.record.local_revision).map_err(AppError::operation)?;
+    let patch_paths = manual
+        .engine
+        .check_patch(&manual.repository, &local, patch)
+        .map_err(AppError::operation)?;
+    require_exact_conflict_paths(&manual.record, &patch_paths)?;
+    let tree = manual
+        .engine
+        .apply_patch_to_tree(&manual.repository, &local, patch)
+        .map_err(AppError::operation)?;
+    patch_paths
+        .into_iter()
+        .map(|path| {
+            let object = manual
+                .engine
+                .path_object(&manual.repository, &tree, &path)
+                .map_err(AppError::operation)?
+                .ok_or_else(|| {
+                    AppError::operation(format!("supplied patch deleted conflict path `{path}`"))
+                })?;
+            let data = object.data.ok_or_else(|| {
+                AppError::operation(format!("supplied patch path `{path}` is not a blob"))
+            })?;
+            Ok(ResolutionAgentPathOutput {
+                path,
+                content: data,
+            })
+        })
+        .collect()
+}
+
+struct ManualResolutionScope {
+    vault: PathBuf,
+    repository_key: String,
+    record: SyncConflictRecord,
+    engine: vulcan_sync::GitCliEngine,
+    repository: vulcan_sync::GitRepository,
+}
+
+fn prepare_manual_resolution_scope(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_options: &ResolutionProposalOptions,
+    approval_options: &ApproveResolutionProposalOptions,
+    state_store: &SyncStateStore,
+) -> Result<ManualResolutionScope, AppError> {
     let AgentScope {
         vault,
         repository_key,
@@ -984,35 +1142,33 @@ pub fn preview_supplied_resolution_with_state_store(
             "the remote live ref moved after the conflict inputs were preserved",
         ));
     }
-    let prepared = prepare_output(
-        &engine,
-        &repository,
-        &record,
-        &BTreeSet::new(),
-        ResolutionAgentOutput {
-            explanation: "Resolution content supplied explicitly by the user.".to_string(),
-            referenced_context: Vec::new(),
-            paths: supplied,
-        },
-        Vec::new(),
-    )?;
-    Ok(SuppliedResolutionPreviewReport {
+    Ok(ManualResolutionScope {
         vault,
         repository_key,
-        conflict_id: conflict_id.to_string(),
-        dry_run: true,
-        outcome: ApproveResolutionProposalOutcome::Planned,
-        paths: prepared.paths,
-        validation: vec![
-            ResolutionProposalValidationCheck::ConflictInputsPreserved,
-            ResolutionProposalValidationCheck::PermissionProfileNamed,
-            ResolutionProposalValidationCheck::OutputPathsExact,
-            ResolutionProposalValidationCheck::OutputBytesBounded,
-            ResolutionProposalValidationCheck::NoFileDeletion,
-            ResolutionProposalValidationCheck::WorktreeUnchanged,
-            ResolutionProposalValidationCheck::RefsUnchanged,
-        ],
+        record,
+        engine,
+        repository,
     })
+}
+
+fn require_exact_conflict_paths(
+    record: &SyncConflictRecord,
+    actual: &[String],
+) -> Result<(), AppError> {
+    let mut expected = record
+        .paths
+        .iter()
+        .map(|path| path.path.clone())
+        .collect::<Vec<_>>();
+    expected.sort();
+    expected.dedup();
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(AppError::operation(format!(
+            "supplied patch paths do not exactly match the conflict: expected {expected:?}, got {actual:?}"
+        )))
+    }
 }
 
 pub fn create_resolution_proposal_with_provider(
