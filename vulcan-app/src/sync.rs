@@ -791,7 +791,7 @@ pub fn sync_git_vault_with_observer(
     if !options.dry_run {
         state_store.save(&journal)?;
     }
-    let validation_config = load_vault_config(paths).config;
+    let validation_config = load_validated_sync_config(paths)?;
     let mut observer = JournalSyncObserver {
         state_store,
         journal: &mut journal,
@@ -889,6 +889,24 @@ pub fn configured_git_sync_options(
     paths: &VaultPaths,
     options: &GitSyncOptions,
 ) -> Result<GitSyncOptions, AppError> {
+    let config = load_validated_sync_config(paths)?;
+    let mut effective = options.clone();
+    if let Some(policy) = config.sync.merge_policy {
+        effective.merge_policy = policy;
+    }
+    if config.sync.merge_automation == vulcan_sync::MergeAutomation::RequireReview
+        || options.merge_automation == vulcan_sync::MergeAutomation::RequireReview
+    {
+        effective.merge_automation = vulcan_sync::MergeAutomation::RequireReview;
+    }
+    effective
+        .merge_policy
+        .validate()
+        .map_err(AppError::operation)?;
+    Ok(effective)
+}
+
+pub(crate) fn load_validated_sync_config(paths: &VaultPaths) -> Result<VaultConfig, AppError> {
     let loaded = load_vault_config(paths);
     if let Some(diagnostic) = loaded.diagnostics.iter().find(|diagnostic| {
         diagnostic
@@ -904,26 +922,26 @@ pub fn configured_git_sync_options(
             diagnostic.message
         )));
     }
-    let mut effective = options.clone();
     loaded
         .config
         .sync
         .tree_validation
         .validate()
         .map_err(AppError::operation)?;
-    if let Some(policy) = loaded.config.sync.merge_policy {
-        effective.merge_policy = policy;
+    if let Some(policy) = &loaded.config.sync.merge_policy {
+        policy.validate().map_err(AppError::operation)?;
     }
-    if loaded.config.sync.merge_automation == vulcan_sync::MergeAutomation::RequireReview
-        || options.merge_automation == vulcan_sync::MergeAutomation::RequireReview
-    {
-        effective.merge_automation = vulcan_sync::MergeAutomation::RequireReview;
-    }
-    effective
-        .merge_policy
-        .validate()
-        .map_err(AppError::operation)?;
-    Ok(effective)
+    Ok(loaded.config)
+}
+
+pub(crate) fn validate_git_merge_tree(
+    config: &VaultConfig,
+    engine: &dyn GitEngine,
+    request: &GitAutomaticMergeValidation<'_>,
+) -> Result<(), AppError> {
+    VaultTreeValidator::new(config.clone())
+        .validate(engine, request)
+        .map_err(AppError::operation)
 }
 
 fn persist_sync_conflict(

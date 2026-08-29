@@ -1,6 +1,7 @@
 //! Isolated, review-first agent resolution proposals for preserved Git conflicts.
 
 use crate::scan::refresh_cache_incrementally;
+use crate::sync::{load_validated_sync_config, validate_git_merge_tree};
 use crate::sync_conflicts::{
     verify_preserved_conflict_refs, SyncConflictRecord, SyncConflictResolutionRecord,
     SyncConflictStore, SYNC_CONFLICT_RESOLUTION_VERSION,
@@ -20,8 +21,9 @@ use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, ScanSummary, VaultPaths,
 };
 use vulcan_sync::{
-    GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine, GitOid, GitPushResult,
-    GitRefName, GitRemote, GitResolvedPath, GitSyncOptions, GitSyncRefs, SyncCancellationToken,
+    GitAutomaticMergeValidation, GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine,
+    GitOid, GitPushResult, GitRefName, GitRemote, GitResolvedPath, GitSyncOptions, GitSyncRefs,
+    SyncCancellationToken,
 };
 
 pub const RESOLUTION_PROPOSAL_VERSION: u32 = 1;
@@ -313,6 +315,8 @@ pub enum ResolutionProposalValidationCheck {
     ExactTreeObjects,
     WorktreeUnchanged,
     RefsUnchanged,
+    WholeTreeLinksValid,
+    MassDeletionPolicy,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -470,6 +474,17 @@ pub fn create_resolution_proposal_with_provider(
         )
         .map_err(AppError::operation)?;
     verify_tree_objects(&engine, &repository, &proposal_tree, &prepared.git_paths)?;
+    let conflict_paths = conflict_path_names(&record);
+    validate_proposal_whole_tree_inputs(
+        paths,
+        &engine,
+        &repository,
+        base_revision,
+        &record.local_revision,
+        &record.remote_revision,
+        &proposal_tree,
+        &conflict_paths,
+    )?;
     verify_no_external_mutation(
         &engine,
         &repository,
@@ -482,11 +497,7 @@ pub fn create_resolution_proposal_with_provider(
             &repository,
             &GitOid::parse(&record.remote_revision).map_err(AppError::operation)?,
             &proposal_tree,
-            &record
-                .paths
-                .iter()
-                .map(|path| path.path.clone())
-                .collect::<Vec<_>>(),
+            &conflict_paths,
         )
         .map_err(AppError::operation)?;
     let proposal = assemble_proposal(
@@ -500,6 +511,10 @@ pub fn create_resolution_proposal_with_provider(
     )?;
     save_proposal(state_store, &proposal)?;
     Ok(proposal)
+}
+
+fn conflict_path_names(record: &SyncConflictRecord) -> Vec<String> {
+    record.paths.iter().map(|path| path.path.clone()).collect()
 }
 
 pub fn create_resolution_proposal(
@@ -582,6 +597,7 @@ pub fn approve_resolution_proposal_with_state_store(
         .map_err(AppError::operation)?;
     verify_preserved_conflict_refs(&engine, &repository, &record)?;
     revalidate_proposal_tree(&engine, &repository, &record, &proposal, false)?;
+    revalidate_proposal_whole_tree(paths, &engine, &repository, &proposal)?;
     let existing = store.get_resolution(&repository_key, conflict_id)?;
     validate_existing_proposal_resolution(existing.as_ref(), &proposal)?;
     if existing
@@ -672,6 +688,7 @@ fn apply_approved_proposal(
     cancellation_check(cancellation)?;
     verify_preserved_conflict_refs(engine, repository, context.record)?;
     revalidate_proposal_tree(engine, repository, context.record, context.proposal, true)?;
+    revalidate_proposal_whole_tree(context.paths, engine, repository, context.proposal)?;
     let local = GitOid::parse(&context.record.local_revision).map_err(AppError::operation)?;
     let recovery_ref = GitRefName::parse(format!(
         "refs/vulcan/conflicts/{}/recovery/current",
@@ -893,6 +910,59 @@ fn revalidate_proposal_tree(
         ));
     }
     Ok(())
+}
+
+fn revalidate_proposal_whole_tree(
+    paths: &VaultPaths,
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    proposal: &ResolutionProposal,
+) -> Result<(), AppError> {
+    let tree = GitOid::parse(&proposal.proposal_tree).map_err(AppError::operation)?;
+    let resolved_paths = proposal
+        .paths
+        .iter()
+        .map(|path| path.path.clone())
+        .collect::<Vec<_>>();
+    validate_proposal_whole_tree_inputs(
+        paths,
+        engine,
+        repository,
+        &proposal.base_revision,
+        &proposal.local_revision,
+        &proposal.remote_revision,
+        &tree,
+        &resolved_paths,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_proposal_whole_tree_inputs(
+    paths: &VaultPaths,
+    engine: &dyn GitEngine,
+    repository: &vulcan_sync::GitRepository,
+    base_revision: &str,
+    local_revision: &str,
+    remote_revision: &str,
+    tree: &GitOid,
+    resolved_paths: &[String],
+) -> Result<(), AppError> {
+    let config = load_validated_sync_config(paths)?;
+    let base = GitOid::parse(base_revision).map_err(AppError::operation)?;
+    let local = GitOid::parse(local_revision).map_err(AppError::operation)?;
+    let remote = GitOid::parse(remote_revision).map_err(AppError::operation)?;
+    validate_git_merge_tree(
+        &config,
+        engine,
+        &GitAutomaticMergeValidation {
+            repository,
+            base: &base,
+            local_candidate: &local,
+            accepted_remote: &remote,
+            merged_tree: tree,
+            resolved_paths,
+        },
+    )
 }
 
 fn validate_proposal_content(
@@ -1245,6 +1315,8 @@ fn assemble_proposal(
             ResolutionProposalValidationCheck::ExactTreeObjects,
             ResolutionProposalValidationCheck::WorktreeUnchanged,
             ResolutionProposalValidationCheck::RefsUnchanged,
+            ResolutionProposalValidationCheck::WholeTreeLinksValid,
+            ResolutionProposalValidationCheck::MassDeletionPolicy,
         ],
     })
 }
@@ -1740,6 +1812,33 @@ mod tests {
         cancel: bool,
     }
 
+    struct AmbiguousLinkProvider;
+
+    impl ResolutionAgentProvider for AmbiguousLinkProvider {
+        fn identity(&self) -> ResolutionAgentIdentity {
+            ResolutionAgentIdentity {
+                provider: "fake".to_string(),
+                model: "ambiguous-link-v1".to_string(),
+                prompt_contract_version: 1,
+            }
+        }
+
+        fn propose(
+            &self,
+            request: &ResolutionAgentRequest,
+            _cancellation: &SyncCancellationToken,
+        ) -> Result<ResolutionAgentOutput, AppError> {
+            Ok(ResolutionAgentOutput {
+                explanation: "Link the merged note to Target.".to_string(),
+                referenced_context: Vec::new(),
+                paths: vec![ResolutionAgentPathOutput {
+                    path: request.files[0].path.clone(),
+                    content: b"[[Target]]\n".to_vec(),
+                }],
+            })
+        }
+    }
+
     impl ResolutionAgentProvider for FakeProvider {
         fn identity(&self) -> ResolutionAgentIdentity {
             ResolutionAgentIdentity {
@@ -1782,6 +1881,10 @@ mod tests {
     }
 
     fn conflict_fixture() -> ConflictFixture {
+        conflict_fixture_with_split_targets(false)
+    }
+
+    fn conflict_fixture_with_split_targets(split_targets: bool) -> ConflictFixture {
         let temporary = tempdir().expect("temporary directory");
         let remote = temporary.path().join("remote.git");
         git(
@@ -1819,6 +1922,12 @@ mod tests {
         .expect("reader baseline");
         fs::write(writer.join("Home.md"), "writer\n").expect("writer edit");
         fs::write(reader.join("Home.md"), "reader\n").expect("reader edit");
+        if split_targets {
+            fs::create_dir(writer.join("Writer")).expect("writer folder");
+            fs::write(writer.join("Writer/Target.md"), "writer target\n").expect("writer target");
+            fs::create_dir(reader.join("Reader")).expect("reader folder");
+            fs::write(reader.join("Reader/Target.md"), "reader target\n").expect("reader target");
+        }
         sync_git_vault_with_state_store(
             &VaultPaths::new(&writer),
             &GitSyncOptions::default(),
@@ -1871,6 +1980,12 @@ mod tests {
             blake3::hash(b"agent resolution\n").to_hex().to_string()
         );
         assert!(proposal.patch.contains("agent resolution"));
+        assert!(proposal
+            .validation
+            .contains(&ResolutionProposalValidationCheck::WholeTreeLinksValid));
+        assert!(proposal
+            .validation
+            .contains(&ResolutionProposalValidationCheck::MassDeletionPolicy));
         assert_eq!(
             fs::read_to_string(fixture.reader.join("Home.md")).expect("note"),
             "reader\n"
@@ -1936,6 +2051,39 @@ mod tests {
         );
 
         assert_approval_lifecycle(&fixture, &proposal, &refs_before);
+    }
+
+    #[test]
+    fn proposal_generation_rejects_new_whole_tree_link_ambiguity() {
+        let fixture = conflict_fixture_with_split_targets(true);
+        let error = create_resolution_proposal_with_provider(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &ResolutionProposalOptions {
+                permission_profile: "unrestricted".to_string(),
+                focused_context: Vec::new(),
+                allow_broad_context: false,
+            },
+            &AmbiguousLinkProvider,
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect_err("new ambiguity must reject the proposal");
+
+        assert!(error
+            .to_string()
+            .contains("new ambiguous wikilink link-resolution problem"));
+        assert!(load_resolution_proposal(
+            &fixture.store,
+            &fixture.record.repository_key,
+            &fixture.record.id,
+            "missing"
+        )
+        .is_err());
+        assert_eq!(
+            fs::read_to_string(fixture.reader.join("Home.md")).expect("local note"),
+            "reader\n"
+        );
     }
 
     fn assert_approval_lifecycle(

@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 27
+version: 28
 tools:
   - git_status
   - git_diff
@@ -65,7 +65,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Do not delete or edit `vulcan-sync/apply.json` to hide an interrupted application. Its transaction and revision identities let Vulcan distinguish and safely recover a partially applied worktree.
 - Treat semantic plan patches and messages as proposals for human review. Do not edit proposal refs or device-local plan JSON, and do not apply a plan after changing its source branch or accepted live target; create a new plan instead.
 - Treat conflict proposal JSON and its unreferenced tree as immutable review state. Do not edit the file, manufacture an approval ID, or approve a proposal for a different conflict; use the exact IDs returned by `vulcan sync propose`.
-- Provider output is untrusted even when it is valid JSON. Review the returned explanation, patch, referenced context, path set, model identity, and validation checks before previewing approval. A successful `sync propose` is never authorization to run `--approve-proposal`.
+- Provider output is untrusted even when it is valid JSON. Review the returned explanation, patch, referenced context, path set, model identity, and validation checks before previewing approval. Ready proposals have already passed whole-tree link and shared mass-deletion validation, and approval reruns those checks against current shared config; neither fact makes generation an authorization to run `--approve-proposal`.
 - A remote/network failure after capture is not a lost sync: the local candidate remains reachable and its journal phase identifies where the finite cycle stopped. Do not replace it with a fresh clone as an error-recovery shortcut.
 
 ## Example Moves
