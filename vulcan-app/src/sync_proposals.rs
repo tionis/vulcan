@@ -414,6 +414,24 @@ pub fn approve_resolution_proposal_with_state_store(
     )
 }
 
+pub fn approve_resolution_proposal(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    proposal_id: &str,
+    options: &ApproveResolutionProposalOptions,
+    cancellation: &SyncCancellationToken,
+) -> Result<ApproveResolutionProposalReport, AppError> {
+    let state_store = SyncStateStore::user_default()?;
+    approve_resolution_proposal_with_state_store(
+        paths,
+        conflict_id,
+        proposal_id,
+        options,
+        cancellation,
+        &state_store,
+    )
+}
+
 struct ApprovalExecution<'a> {
     paths: &'a VaultPaths,
     vault: &'a Path,

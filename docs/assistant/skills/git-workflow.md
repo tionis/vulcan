@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 24
+version: 25
 tools:
   - git_status
   - git_diff
@@ -35,6 +35,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - If doctor reports `state.apply-marker`, a worktree application may have been interrupted. Preserve the marker and transaction journal, avoid editing Vulcan-owned refs, and rerun a finite sync so Vulcan can recapture current bytes and verify the accepted tree. The marker lives in the private Git directory and is cleared only after successful verification.
 - Use `vulcan sync conflicts` to list unresolved preserved conflicts for the selected vault, `vulcan sync conflicts <id>` for the immutable full record and current resolution state, or add `--wiki <id>` for a registered wiki. Detail output gives each path a stable `classification` with its conflict class, content kind, matched policy rule, configured action, effective action, and diagnostic code. Artifact paths are device-local evidence, not vault-relative note paths.
 - Only after the user explicitly chooses a preserved side, preview it with `vulcan sync resolve <id> --side base|local|remote --dry-run`, then rerun without `--dry-run` on approval. The choice applies only to conflicted paths while retaining clean merge results; Vulcan captures current bytes first, rejects stale inputs, publishes with compare-and-swap, and retains the original conflict refs and record.
+- When a reviewed agent workflow has already retained a proposal ID, preview that exact object with `vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run`. Applying it requires the same command without `--dry-run` and explicit user approval. Never substitute a proposal ID, bypass stale-input or parser failures, or treat model output as accepted merely because proposal generation succeeded; approval reconstructs and validates the tree, captures recovery state, uses a remote lease, and writes a content-free audit record.
 - Inspect JSON sync reports: `state.recovered_from` means Vulcan found an interruption-sensitive device-local transaction and recaptured before continuing; `state.retained` identifies the exact paused, conflicted, cancelled, or failed phase and any captured object IDs available for follow-up.
 - When a sync applies an accepted tree, inspect `application.additions`, `updates`, `deletions`, `type_changes`, and the per-path expected/target object metadata. Vulcan aborts with `worktree_changed` if the complete current worktree no longer exactly matches the captured pre-apply revision; do not bypass that check or manually replay only part of the plan.
 - Vulcan-created sync commits carry `Vulcan-Sync-*` trailers with the stable device ID, protocol/profile, policy, immutable sources, and `Semantic: false`. Use these trailers for provenance; do not infer an author's semantic intent from live snapshot subjects.
@@ -62,6 +63,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Do not delete a reported transaction journal to hide recovery state. It lives outside the vault and rebuildable cache; let a successful sync clear it or use a future explicit repair command.
 - Do not delete or edit `vulcan-sync/apply.json` to hide an interrupted application. Its transaction and revision identities let Vulcan distinguish and safely recover a partially applied worktree.
 - Treat semantic plan patches and messages as proposals for human review. Do not edit proposal refs or device-local plan JSON, and do not apply a plan after changing its source branch or accepted live target; create a new plan instead.
+- Treat conflict proposal JSON and its unreferenced tree as immutable review state. Do not edit the file, manufacture an approval ID, or approve a proposal for a different conflict; use the exact IDs returned by the future resolver-provider workflow.
 - A remote/network failure after capture is not a lost sync: the local candidate remains reachable and its journal phase identifies where the finite cycle stopped. Do not replace it with a fresh clone as an error-recovery shortcut.
 
 ## Example Moves

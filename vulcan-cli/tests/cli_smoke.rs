@@ -13,6 +13,13 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Command as ProcessCommand, Stdio};
 use std::thread;
 use tempfile::TempDir;
+use vulcan_app::sync::SyncCancellationToken;
+use vulcan_app::sync_proposals::{
+    create_resolution_proposal_with_provider, ResolutionAgentIdentity, ResolutionAgentOutput,
+    ResolutionAgentPathOutput, ResolutionAgentProvider, ResolutionAgentRequest,
+    ResolutionProposalOptions,
+};
+use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::{CacheDatabase, VaultPaths};
 use zip::ZipArchive;
 
@@ -4762,6 +4769,37 @@ fn setup_cli_sync_conflict() -> (TempDir, std::path::PathBuf, std::path::PathBuf
     (temporary, state_home, reader, id)
 }
 
+struct CliResolutionProvider;
+
+impl ResolutionAgentProvider for CliResolutionProvider {
+    fn identity(&self) -> ResolutionAgentIdentity {
+        ResolutionAgentIdentity {
+            provider: "cli-test".to_string(),
+            model: "fixture-v1".to_string(),
+            prompt_contract_version: 1,
+        }
+    }
+
+    fn propose(
+        &self,
+        request: &ResolutionAgentRequest,
+        _cancellation: &SyncCancellationToken,
+    ) -> Result<ResolutionAgentOutput, vulcan_app::AppError> {
+        Ok(ResolutionAgentOutput {
+            explanation: "Reviewed resolution for the CLI fixture.".to_string(),
+            referenced_context: Vec::new(),
+            paths: request
+                .files
+                .iter()
+                .map(|file| ResolutionAgentPathOutput {
+                    path: file.path.clone(),
+                    content: b"approved proposal\n".to_vec(),
+                })
+                .collect(),
+        })
+    }
+}
+
 #[test]
 fn sync_checkpoint_cli_retains_the_accepted_commit_without_new_objects() {
     let temporary = TempDir::new().expect("temp dir should be created");
@@ -5072,6 +5110,71 @@ fn sync_resolve_cli_requires_an_explicit_side_and_preserves_clean_merge_paths() 
     assert_eq!(detail["resolution"], "resolved");
     let repeated = parse_stdout_json(&run(&["resolve", &id, "--side", "local"]));
     assert_eq!(repeated["outcome"], "already_resolved");
+}
+
+#[test]
+fn sync_resolve_cli_previews_and_explicitly_approves_a_retained_proposal() {
+    let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
+    let store = SyncStateStore::at(state_home.join("vulcan/sync/repositories"));
+    let proposal = create_resolution_proposal_with_provider(
+        &VaultPaths::new(&reader),
+        &id,
+        &ResolutionProposalOptions {
+            permission_profile: "unrestricted".to_string(),
+            focused_context: Vec::new(),
+            allow_broad_context: false,
+        },
+        &CliResolutionProvider,
+        &SyncCancellationToken::default(),
+        &store,
+    )
+    .expect("retained proposal");
+    let run = |dry_run: bool| {
+        let mut command = Command::cargo_bin("vulcan").expect("binary should build");
+        command
+            .env("XDG_STATE_HOME", &state_home)
+            .arg("--vault")
+            .arg(&reader)
+            .args([
+                "--output",
+                "json",
+                "sync",
+                "resolve",
+                &id,
+                "--approve-proposal",
+                &proposal.proposal_id,
+            ]);
+        if dry_run {
+            command.arg("--dry-run");
+        }
+        command.assert().success()
+    };
+
+    let preview = parse_stdout_json(&run(true));
+    assert_eq!(preview["outcome"], "planned");
+    assert_eq!(preview["proposal_id"], proposal.proposal_id);
+    assert_eq!(
+        fs::read_to_string(reader.join("Home.md")).expect("local note"),
+        "reader\n"
+    );
+
+    let applied = parse_stdout_json(&run(false));
+    assert_eq!(applied["outcome"], "applied");
+    assert!(applied["recovery_revision"].is_string());
+    assert!(applied["resolution_commit"].is_string());
+    assert_eq!(
+        fs::read_to_string(reader.join("Home.md")).expect("approved note"),
+        "approved proposal\n"
+    );
+    let conflicts = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
+        .arg("--vault")
+        .arg(&reader)
+        .args(["--output", "json", "sync", "conflicts"])
+        .assert()
+        .success();
+    assert_eq!(parse_stdout_json(&conflicts)["count"], 0);
 }
 
 #[test]
@@ -11614,6 +11717,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("stable `classification`"));
     assert!(git_skill.contains("`provenance_revision`"));
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
+    assert!(git_skill
+        .contains("vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run"));
     assert!(git_skill.contains("vulcan sync checkpoint [<wiki>] --dry-run"));
     assert!(git_skill.contains("vulcan vault clone <remote> <path> --dry-run"));
     assert!(git_skill.contains("clone that succeeds before registration fails"));

@@ -16,6 +16,9 @@ use vulcan_app::sync_conflicts::{
     ResolveSyncConflictReport, SyncConflictDetailReport, SyncConflictListReport,
     SyncConflictResolutionSide,
 };
+use vulcan_app::sync_proposals::{
+    approve_resolution_proposal, ApproveResolutionProposalOptions, ApproveResolutionProposalReport,
+};
 use vulcan_app::sync_semantic::{
     apply_semantic_plan, create_semantic_plan, load_semantic_plan, SemanticApplyReport,
     SemanticPlanOptions, SemanticPlanReport,
@@ -103,6 +106,7 @@ fn handle_non_cycle_sync_command(
         SyncCommand::Resolve {
             conflict_id,
             side,
+            approve_proposal,
             wiki,
             target,
             dry_run,
@@ -111,7 +115,10 @@ fn handle_non_cycle_sync_command(
             paths,
             wiki.as_deref(),
             conflict_id,
-            *side,
+            approve_proposal.as_deref().map_or_else(
+                || CliResolution::Side(side.expect("clap requires one resolution mode")),
+                CliResolution::Proposal,
+            ),
             target,
             *dry_run,
         ),
@@ -266,17 +273,41 @@ fn print_sync_checkpoint(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+enum CliResolution<'a> {
+    Side(SyncConflictSideArg),
+    Proposal(&'a str),
+}
+
 fn run_sync_resolve(
     cli: &Cli,
     selected_paths: &VaultPaths,
     wiki: Option<&str>,
     conflict_id: &str,
-    side: SyncConflictSideArg,
+    resolution: CliResolution<'_>,
     target: &crate::SyncTargetArgs,
     dry_run: bool,
 ) -> Result<(), CliError> {
     let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    if let CliResolution::Proposal(proposal_id) = resolution {
+        let report = approve_resolution_proposal(
+            &paths,
+            conflict_id,
+            proposal_id,
+            &ApproveResolutionProposalOptions {
+                remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
+                live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
+                dry_run,
+            },
+            &vulcan_app::sync::SyncCancellationToken::default(),
+        )
+        .map_err(CliError::operation)?;
+        return print_proposal_approval(cli.output, &report);
+    }
+    let CliResolution::Side(side) = resolution else {
+        unreachable!("proposal resolution returned above")
+    };
     let report = resolve_sync_conflict(
         &paths,
         conflict_id,
@@ -293,6 +324,22 @@ fn run_sync_resolve(
     )
     .map_err(CliError::operation)?;
     print_sync_resolution(cli.output, &report)
+}
+
+fn print_proposal_approval(
+    output: OutputFormat,
+    report: &ApproveResolutionProposalReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Resolution proposal {}: {:?}{}",
+        report.proposal_id,
+        report.outcome,
+        if report.dry_run { " (dry run)" } else { "" }
+    );
+    Ok(())
 }
 
 fn print_sync_resolution(

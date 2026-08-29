@@ -2285,7 +2285,8 @@ fn parses_sync_resolve_command() {
         Command::Sync {
             command: SyncCommand::Resolve {
                 conflict_id: "0123456789abcdef0123456789abcdef".to_string(),
-                side: SyncConflictSideArg::Local,
+                side: Some(SyncConflictSideArg::Local),
+                approve_proposal: None,
                 wiki: Some("personal".to_string()),
                 target: SyncTargetArgs {
                     remote: "origin".to_string(),
@@ -2295,6 +2296,28 @@ fn parses_sync_resolve_command() {
             },
         }
     );
+
+    let approval = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "resolve",
+        "0123456789abcdef0123456789abcdef",
+        "--approve-proposal",
+        "fedcba9876543210fedcba9876543210",
+        "--dry-run",
+    ])
+    .expect("proposal approval should parse");
+    assert!(matches!(
+        approval.command,
+        Command::Sync {
+            command: SyncCommand::Resolve {
+                side: None,
+                approve_proposal: Some(_),
+                dry_run: true,
+                ..
+            }
+        }
+    ));
 }
 
 #[test]

@@ -571,7 +571,7 @@ Subcommands:
   status       inspect local safety and remote live-ref state without mutating either
   doctor       diagnose Git, refs, filters, recovery state, and cache coherence
   conflicts    list preserved conflicts or show one immutable record
-  resolve      resolve preserved conflict paths with one explicitly selected side
+  resolve      resolve with one explicit preserved side or approved proposal
   checkpoint   retain the currently accepted live commit under a durable local ref
   pause        disable future automatic sync for one registered wiki
   resume       enable future automatic sync for one registered wiki
@@ -594,6 +594,7 @@ Examples:
   vulcan sync conflicts
   vulcan sync conflicts <conflict-id>
   vulcan sync resolve <conflict-id> --side local --dry-run
+  vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run
   vulcan sync checkpoint personal --kind recovery
   vulcan sync pause personal
   vulcan sync resume personal
@@ -3948,12 +3949,25 @@ pub enum SyncCommand {
         #[arg(long, help = "Optional registered wiki ID")]
         wiki: Option<String>,
     },
-    #[command(about = "Resolve preserved conflict paths with an explicit side")]
+    #[command(about = "Resolve a conflict with an explicit side or approved proposal")]
     Resolve {
         #[arg(help = "Immutable conflict ID to resolve")]
         conflict_id: String,
-        #[arg(long, value_enum, help = "Preserved side to use for conflicted paths")]
-        side: SyncConflictSideArg,
+        #[arg(
+            long,
+            value_enum,
+            required_unless_present = "approve_proposal",
+            conflicts_with = "approve_proposal",
+            help = "Preserved side to use for conflicted paths"
+        )]
+        side: Option<SyncConflictSideArg>,
+        #[arg(
+            long,
+            required_unless_present = "side",
+            conflicts_with = "side",
+            help = "Explicitly approve and apply this retained proposal ID"
+        )]
+        approve_proposal: Option<String>,
         #[arg(long, help = "Optional registered wiki ID")]
         wiki: Option<String>,
         #[command(flatten)]
