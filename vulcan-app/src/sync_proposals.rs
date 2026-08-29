@@ -18,7 +18,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 use vulcan_core::{
-    resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, ScanSummary, VaultPaths,
+    paths::secure_read, resolve_permission_profile, PermissionGuard, ProfilePermissionGuard,
+    ScanSummary, VaultPaths,
 };
 use vulcan_sync::{
     GitAutomaticMergeValidation, GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine,
@@ -26,10 +27,11 @@ use vulcan_sync::{
     SyncCancellationToken,
 };
 
-pub const RESOLUTION_PROPOSAL_VERSION: u32 = 1;
-pub const RESOLUTION_AGENT_TOOL_CONTRACT_VERSION: u32 = 1;
+pub const RESOLUTION_PROPOSAL_VERSION: u32 = 2;
+pub const RESOLUTION_AGENT_TOOL_CONTRACT_VERSION: u32 = 2;
 pub const RESOLUTION_PROPOSAL_AUDIT_VERSION: u32 = 1;
 const MAX_AGENT_FILE_BYTES: usize = 16 * 1024 * 1024;
+const MAX_AGENT_CONTEXT_FILE_BYTES: usize = 1024 * 1024;
 const MAX_AGENT_TOTAL_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PROPOSAL_RECORD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
@@ -60,12 +62,19 @@ pub struct ResolutionAgentFile {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolutionAgentContextFile {
+    pub path: String,
+    pub content_hash: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolutionAgentRequest {
     pub conflict_id: String,
     pub policy_version: u32,
     pub policy_hash: String,
     pub files: Vec<ResolutionAgentFile>,
-    pub focused_context: Vec<String>,
+    pub focused_context: Vec<ResolutionAgentContextFile>,
     pub broad_context_allowed: bool,
     pub tool_contract_version: u32,
 }
@@ -143,7 +152,7 @@ impl ResolutionAgentProvider for OpenAiCompatibleResolutionProvider {
         ResolutionAgentIdentity {
             provider: "openai-compatible".to_string(),
             model: self.model.clone(),
-            prompt_contract_version: 1,
+            prompt_contract_version: 2,
         }
     }
 
@@ -200,7 +209,11 @@ fn openai_resolution_request(
         "conflict_id": request.conflict_id,
         "policy_version": request.policy_version,
         "policy_hash": request.policy_hash,
-        "focused_context_paths": request.focused_context,
+        "focused_context": request.focused_context.iter().map(|context| serde_json::json!({
+            "path": context.path,
+            "content_hash": context.content_hash,
+            "content": context.content,
+        })).collect::<Vec<_>>(),
         "broad_context_allowed": request.broad_context_allowed,
         "files": files,
     });
@@ -328,6 +341,13 @@ pub struct ResolutionProposalPath {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolutionProposalContext {
+    pub path: String,
+    pub content_hash: String,
+    pub bytes: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolutionProposal {
     pub version: u32,
     pub proposal_id: String,
@@ -345,6 +365,8 @@ pub struct ResolutionProposal {
     pub tool_contract_version: u32,
     pub permission_profile: String,
     pub broad_context_allowed: bool,
+    #[serde(default)]
+    pub focused_context: Vec<ResolutionProposalContext>,
     pub explanation: String,
     pub referenced_context: Vec<String>,
     pub proposal_tree: String,
@@ -474,13 +496,15 @@ pub fn create_resolution_proposal_with_provider(
     let worktree_before = engine
         .snapshot_worktree_tree(&repository, Some(&local_revision))
         .map_err(AppError::operation)?;
-    let request = build_agent_request(&engine, &repository, &record, options)?;
-    cancellation_check(cancellation)?;
-    let identity = provider.identity();
-    validate_identity(&identity)?;
-    let output = provider.propose(&request, cancellation)?;
-    cancellation_check(cancellation)?;
-    let prepared = prepare_output(&engine, &repository, &record, output)?;
+    let request = build_agent_request(paths, &engine, &repository, &record, options)?;
+    let (identity, output) = invoke_provider(provider, &request, cancellation)?;
+    let prepared = prepare_output(
+        &engine,
+        &repository,
+        &record,
+        &request.focused_context,
+        output,
+    )?;
     let proposal_tree = engine
         .resolve_merge_tree_with_paths(
             &repository,
@@ -526,12 +550,28 @@ pub fn create_resolution_proposal_with_provider(
         repository_key,
         identity,
         options,
+        &request.focused_context,
         prepared,
-        &proposal_tree,
-        patch,
+        ProposalTree {
+            oid: proposal_tree,
+            patch,
+        },
     )?;
     save_proposal(state_store, &proposal)?;
     Ok(proposal)
+}
+
+fn invoke_provider(
+    provider: &dyn ResolutionAgentProvider,
+    request: &ResolutionAgentRequest,
+    cancellation: &SyncCancellationToken,
+) -> Result<(ResolutionAgentIdentity, ResolutionAgentOutput), AppError> {
+    cancellation_check(cancellation)?;
+    let identity = provider.identity();
+    validate_identity(&identity)?;
+    let output = provider.propose(request, cancellation)?;
+    cancellation_check(cancellation)?;
+    Ok((identity, output))
 }
 
 fn conflict_path_names(record: &SyncConflictRecord) -> Vec<String> {
@@ -579,7 +619,7 @@ pub fn load_resolution_proposal(
     let proposal: ResolutionProposal =
         serde_json::from_slice(&fs::read(&path).map_err(AppError::operation)?)
             .map_err(AppError::operation)?;
-    if proposal.version != RESOLUTION_PROPOSAL_VERSION
+    if !(1..=RESOLUTION_PROPOSAL_VERSION).contains(&proposal.version)
         || proposal.repository_key != repository_key
         || proposal.conflict_id != conflict_id
         || proposal.proposal_id != proposal_id
@@ -1498,11 +1538,25 @@ fn assemble_proposal(
     repository_key: String,
     identity: ResolutionAgentIdentity,
     options: &ResolutionProposalOptions,
+    focused_context: &[ResolutionAgentContextFile],
     prepared: PreparedOutput,
-    proposal_tree: &GitOid,
-    patch: String,
+    tree: ProposalTree,
 ) -> Result<ResolutionProposal, AppError> {
-    let proposal_id = proposal_id(record, &identity, &prepared.paths, proposal_tree)?;
+    let proposal_context = focused_context
+        .iter()
+        .map(|context| ResolutionProposalContext {
+            path: context.path.clone(),
+            content_hash: context.content_hash.clone(),
+            bytes: context.content.len() as u64,
+        })
+        .collect::<Vec<_>>();
+    let proposal_id = proposal_id(
+        record,
+        &identity,
+        &proposal_context,
+        &prepared.paths,
+        &tree.oid,
+    )?;
     Ok(ResolutionProposal {
         version: RESOLUTION_PROPOSAL_VERSION,
         proposal_id,
@@ -1523,10 +1577,11 @@ fn assemble_proposal(
         tool_contract_version: RESOLUTION_AGENT_TOOL_CONTRACT_VERSION,
         permission_profile: options.permission_profile.clone(),
         broad_context_allowed: options.allow_broad_context,
+        focused_context: proposal_context,
         explanation: prepared.explanation,
         referenced_context: prepared.referenced_context,
-        proposal_tree: proposal_tree.to_string(),
-        patch,
+        proposal_tree: tree.oid.to_string(),
+        patch: tree.patch,
         paths: prepared.paths,
         validation: vec![
             ResolutionProposalValidationCheck::ConflictInputsPreserved,
@@ -1544,6 +1599,11 @@ fn assemble_proposal(
     })
 }
 
+struct ProposalTree {
+    oid: GitOid,
+    patch: String,
+}
+
 struct PreparedOutput {
     explanation: String,
     referenced_context: Vec<String>,
@@ -1552,6 +1612,7 @@ struct PreparedOutput {
 }
 
 fn build_agent_request(
+    paths: &VaultPaths,
     engine: &dyn GitEngine,
     repository: &vulcan_sync::GitRepository,
     record: &SyncConflictRecord,
@@ -1605,12 +1666,45 @@ fn build_agent_request(
             "conflict inputs exceed the total agent byte limit",
         ));
     }
+    let mut context_paths = options.focused_context.clone();
+    context_paths.sort();
+    let mut focused_context = Vec::with_capacity(context_paths.len());
+    let mut seen_context = BTreeSet::new();
+    for path in &context_paths {
+        if !seen_context.insert(path.as_str()) {
+            return Err(AppError::operation(format!(
+                "focused context path `{path}` was supplied more than once"
+            )));
+        }
+        let bytes = secure_read(paths.vault_root(), Path::new(path)).map_err(|error| {
+            AppError::operation(format!("cannot read focused context `{path}`: {error}"))
+        })?;
+        if bytes.len() > MAX_AGENT_CONTEXT_FILE_BYTES {
+            return Err(AppError::operation(format!(
+                "focused context `{path}` exceeds the per-file agent limit"
+            )));
+        }
+        total = total.saturating_add(bytes.len());
+        let content = String::from_utf8(bytes).map_err(|_| {
+            AppError::operation(format!("focused context `{path}` must be valid UTF-8"))
+        })?;
+        focused_context.push(ResolutionAgentContextFile {
+            path: path.clone(),
+            content_hash: blake3::hash(content.as_bytes()).to_hex().to_string(),
+            content,
+        });
+    }
+    if total > MAX_AGENT_TOTAL_BYTES {
+        return Err(AppError::operation(
+            "conflict inputs and focused context exceed the total agent byte limit",
+        ));
+    }
     Ok(ResolutionAgentRequest {
         conflict_id: record.id.clone(),
         policy_version: record.policy_version,
         policy_hash: record.policy_hash.clone(),
         files,
-        focused_context: options.focused_context.clone(),
+        focused_context,
         broad_context_allowed: options.allow_broad_context,
         tool_contract_version: RESOLUTION_AGENT_TOOL_CONTRACT_VERSION,
     })
@@ -1620,6 +1714,7 @@ fn prepare_output(
     engine: &dyn GitEngine,
     repository: &vulcan_sync::GitRepository,
     record: &SyncConflictRecord,
+    focused_context: &[ResolutionAgentContextFile],
     output: ResolutionAgentOutput,
 ) -> Result<PreparedOutput, AppError> {
     validate_text("proposal explanation", &output.explanation)?;
@@ -1637,6 +1732,7 @@ fn prepare_output(
             "proposal referenced an invalid context path",
         ));
     }
+    validate_referenced_context(focused_context, &output.referenced_context)?;
     let expected = record
         .paths
         .iter()
@@ -1700,6 +1796,30 @@ fn prepare_output(
         git_paths,
         paths,
     })
+}
+
+fn validate_referenced_context(
+    focused_context: &[ResolutionAgentContextFile],
+    referenced_context: &[String],
+) -> Result<(), AppError> {
+    let allowed = focused_context
+        .iter()
+        .map(|context| context.path.as_str())
+        .collect::<BTreeSet<_>>();
+    if referenced_context.iter().collect::<BTreeSet<_>>().len() != referenced_context.len() {
+        return Err(AppError::operation(
+            "proposal referenced the same context path more than once",
+        ));
+    }
+    if referenced_context
+        .iter()
+        .any(|path| !allowed.contains(path.as_str()))
+    {
+        return Err(AppError::operation(
+            "proposal referenced context that was not supplied to the provider",
+        ));
+    }
+    Ok(())
 }
 
 fn resolved_mode(path: &crate::sync_conflicts::SyncConflictPathRecord) -> Result<String, AppError> {
@@ -1802,10 +1922,11 @@ fn verify_no_external_mutation(
 fn proposal_id(
     record: &SyncConflictRecord,
     identity: &ResolutionAgentIdentity,
+    context: &[ResolutionProposalContext],
     paths: &[ResolutionProposalPath],
     tree: &GitOid,
 ) -> Result<String, AppError> {
-    let bytes = serde_json::to_vec(&(record.id.as_str(), identity, paths, tree.as_str()))
+    let bytes = serde_json::to_vec(&(record.id.as_str(), identity, context, paths, tree.as_str()))
         .map_err(AppError::operation)?;
     Ok(blake3::hash(&bytes).to_hex()[..32].to_string())
 }
@@ -1922,13 +2043,20 @@ fn validate_options(options: &ResolutionProposalOptions) -> Result<(), AppError>
         || options
             .focused_context
             .iter()
-            .any(|path| !valid_relative_path(path))
+            .any(|path| !valid_relative_path(path) || is_internal_context_path(path))
     {
         return Err(AppError::operation(
             "focused context paths are invalid or unbounded",
         ));
     }
     Ok(())
+}
+
+fn is_internal_context_path(path: &str) -> bool {
+    path == ".obsidian"
+        || path.starts_with(".obsidian/")
+        || path == ".vulcan"
+        || path.starts_with(".vulcan/")
 }
 
 fn validate_agent_conflict_scope(record: &SyncConflictRecord) -> Result<(), AppError> {
@@ -1959,12 +2087,9 @@ fn valid_relative_path(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 4096
         && !value.bytes().any(|byte| byte == 0)
-        && Path::new(value).components().all(|component| {
-            matches!(
-                component,
-                std::path::Component::Normal(_) | std::path::Component::CurDir
-            )
-        })
+        && Path::new(value)
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
 }
 
 fn validate_identity(identity: &ResolutionAgentIdentity) -> Result<(), AppError> {
@@ -2037,6 +2162,33 @@ mod tests {
 
     struct AmbiguousLinkProvider;
 
+    struct InventedContextProvider;
+
+    impl ResolutionAgentProvider for InventedContextProvider {
+        fn identity(&self) -> ResolutionAgentIdentity {
+            ResolutionAgentIdentity {
+                provider: "fake".to_string(),
+                model: "invented-context-v1".to_string(),
+                prompt_contract_version: 1,
+            }
+        }
+
+        fn propose(
+            &self,
+            _request: &ResolutionAgentRequest,
+            _cancellation: &SyncCancellationToken,
+        ) -> Result<ResolutionAgentOutput, AppError> {
+            Ok(ResolutionAgentOutput {
+                explanation: "Claim context that was never supplied.".to_string(),
+                referenced_context: vec!["Secret.md".to_string()],
+                paths: vec![ResolutionAgentPathOutput {
+                    path: "Home.md".to_string(),
+                    content: b"agent resolution\n".to_vec(),
+                }],
+            })
+        }
+    }
+
     impl ResolutionAgentProvider for AmbiguousLinkProvider {
         fn identity(&self) -> ResolutionAgentIdentity {
             ResolutionAgentIdentity {
@@ -2082,12 +2234,24 @@ mod tests {
                 request.files[0].base.content.as_deref(),
                 Some(b"base\n".as_slice())
             );
+            if let Some(context) = request.focused_context.first() {
+                assert_eq!(context.path, "Home.md");
+                assert_eq!(context.content, "reader\n");
+                assert_eq!(
+                    context.content_hash,
+                    blake3::hash(b"reader\n").to_hex().to_string()
+                );
+            }
             if self.cancel {
                 cancellation.cancel();
             }
             Ok(ResolutionAgentOutput {
                 explanation: "Combine the two intended edits.".to_string(),
-                referenced_context: request.focused_context.clone(),
+                referenced_context: request
+                    .focused_context
+                    .iter()
+                    .map(|context| context.path.clone())
+                    .collect(),
                 paths: vec![ResolutionAgentPathOutput {
                     path: "Home.md".to_string(),
                     content: b"agent resolution\n".to_vec(),
@@ -2172,6 +2336,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn provider_proposal_is_bounded_persisted_and_does_not_mutate_refs_or_worktree() {
         let fixture = conflict_fixture();
         let refs_before = git_stdout(
@@ -2203,6 +2368,14 @@ mod tests {
             blake3::hash(b"agent resolution\n").to_hex().to_string()
         );
         assert!(proposal.patch.contains("agent resolution"));
+        assert_eq!(proposal.version, RESOLUTION_PROPOSAL_VERSION);
+        assert_eq!(proposal.tool_contract_version, 2);
+        assert_eq!(proposal.focused_context.len(), 1);
+        assert_eq!(proposal.focused_context[0].path, "Home.md");
+        assert_eq!(
+            proposal.focused_context[0].content_hash,
+            blake3::hash(b"reader\n").to_hex().to_string()
+        );
         assert!(proposal
             .validation
             .contains(&ResolutionProposalValidationCheck::WholeTreeLinksValid));
@@ -2307,6 +2480,99 @@ mod tests {
             fs::read_to_string(fixture.reader.join("Home.md")).expect("local note"),
             "reader\n"
         );
+    }
+
+    #[test]
+    fn proposal_rejects_provider_references_to_unsupplied_context() {
+        let fixture = conflict_fixture();
+        let error = create_resolution_proposal_with_provider(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &ResolutionProposalOptions {
+                permission_profile: "unrestricted".to_string(),
+                focused_context: Vec::new(),
+                allow_broad_context: false,
+            },
+            &InventedContextProvider,
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect_err("invented context must fail closed");
+        assert!(error.to_string().contains("context that was not supplied"));
+    }
+
+    #[test]
+    fn proposal_loader_accepts_version_one_records_without_context_metadata() {
+        let fixture = conflict_fixture();
+        let proposal = create_resolution_proposal_with_provider(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &ResolutionProposalOptions {
+                permission_profile: "unrestricted".to_string(),
+                focused_context: Vec::new(),
+                allow_broad_context: false,
+            },
+            &FakeProvider { cancel: false },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect("proposal");
+        let path = proposal_path(
+            &fixture.store,
+            &proposal.repository_key,
+            &proposal.conflict_id,
+            &proposal.proposal_id,
+        );
+        let mut json = serde_json::to_value(&proposal).expect("proposal JSON");
+        json["version"] = serde_json::json!(1);
+        json.as_object_mut()
+            .expect("proposal object")
+            .remove("focused_context");
+        fs::write(&path, serde_json::to_vec_pretty(&json).expect("JSON bytes"))
+            .expect("legacy proposal fixture");
+
+        let loaded = load_resolution_proposal(
+            &fixture.store,
+            &proposal.repository_key,
+            &proposal.conflict_id,
+            &proposal.proposal_id,
+        )
+        .expect("version one proposal");
+        assert_eq!(loaded.version, 1);
+        assert!(loaded.focused_context.is_empty());
+    }
+
+    #[test]
+    fn focused_context_rejects_internal_and_non_utf8_files() {
+        let fixture = conflict_fixture();
+        let options = |path: &str| ResolutionProposalOptions {
+            permission_profile: "unrestricted".to_string(),
+            focused_context: vec![path.to_string()],
+            allow_broad_context: false,
+        };
+        let internal = create_resolution_proposal_with_provider(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &options(".vulcan/config.toml"),
+            &FakeProvider { cancel: false },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect_err("internal context must be rejected");
+        assert!(internal.to_string().contains("invalid or unbounded"));
+
+        fs::write(fixture.reader.join("Context.bin"), [0xff, 0xfe])
+            .expect("binary context fixture");
+        let binary = create_resolution_proposal_with_provider(
+            &VaultPaths::new(&fixture.reader),
+            &fixture.record.id,
+            &options("Context.bin"),
+            &FakeProvider { cancel: false },
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect_err("binary context must be rejected");
+        assert!(binary.to_string().contains("must be valid UTF-8"));
     }
 
     #[test]
@@ -2593,6 +2859,12 @@ mod tests {
             assert!(body["messages"][1]["content"]
                 .as_str()
                 .is_some_and(|content| content.contains("local text")));
+            assert!(body["messages"][1]["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("context text")));
+            assert!(body["messages"][1]["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("content_hash")));
             let response_content = serde_json::json!({
                 "explanation": "combined",
                 "referenced_context": [],
@@ -2645,9 +2917,13 @@ mod tests {
                 local: side("local text"),
                 remote: side("remote text"),
             }],
-            focused_context: Vec::new(),
+            focused_context: vec![ResolutionAgentContextFile {
+                path: "Context.md".to_string(),
+                content_hash: blake3::hash(b"context text").to_hex().to_string(),
+                content: "context text".to_string(),
+            }],
             broad_context_allowed: false,
-            tool_contract_version: 1,
+            tool_contract_version: RESOLUTION_AGENT_TOOL_CONTRACT_VERSION,
         }
     }
 

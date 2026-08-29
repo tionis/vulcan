@@ -11829,6 +11829,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("`provenance_revision`"));
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
     assert!(git_skill.contains("vulcan sync propose <conflict-id> --model <model>"));
+    assert!(git_skill.contains("sent as exact UTF-8 with a content hash"));
     assert!(git_skill.contains("vulcan sync reject <conflict-id> <proposal-id> --dry-run"));
     assert!(git_skill
         .contains("vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run"));
