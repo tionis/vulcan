@@ -575,6 +575,7 @@ Subcommands:
   reject       explicitly reject a retained conflict proposal
   resolve      resolve with one explicit preserved side or approved proposal
   checkpoint   retain the currently accepted live commit under a durable local ref
+  retention-plan inspect live-epoch and checkpoint retention without mutation
   pause        disable future automatic sync for one registered wiki
   resume       enable future automatic sync for one registered wiki
 
@@ -600,6 +601,7 @@ Examples:
   vulcan sync resolve <conflict-id> --side local --dry-run
   vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run
   vulcan sync checkpoint personal --kind recovery
+  vulcan sync retention-plan personal
   vulcan sync pause personal
   vulcan sync resume personal
   vulcan --vault ./wiki sync run --remote origin";
@@ -4077,6 +4079,25 @@ pub enum SyncCommand {
         target: SyncTargetArgs,
         #[arg(long, help = "Validate and report without creating a ref")]
         dry_run: bool,
+    },
+    #[command(about = "Plan live-epoch and checkpoint retention without mutation")]
+    RetentionPlan {
+        #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
+        wiki: Option<String>,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+        #[arg(
+            long,
+            default_value_t = 256,
+            help = "Recommend epoch rollover after this many first-parent commits"
+        )]
+        live_epoch_max_commits: usize,
+        #[arg(
+            long,
+            default_value_t = 16,
+            help = "Number of newest recovery checkpoint refs to retain"
+        )]
+        recovery_checkpoints_keep: usize,
     },
     #[command(about = "Build a reviewable semantic history proposal")]
     SemanticPlan {

@@ -29,7 +29,7 @@ pub use git::{
     GitFilterRequirement, GitInstallation, GitMerge, GitMergeResolutionRequest, GitObjectFormat,
     GitOid, GitPathLengthPolicy, GitPathObject, GitPlatformPolicy, GitPlatformProfile,
     GitPushResult, GitRefCreateResult, GitRefDeleteResult, GitRefName, GitRefUpdateResult,
-    GitRemote, GitRepository, GitRepositoryLayout, GitRepositoryRequirements,
+    GitReference, GitRemote, GitRepository, GitRepositoryLayout, GitRepositoryRequirements,
     GitReservedNamesPolicy, GitResolvedPath, GitSafetyState, GitSymlinkPolicy, GitTimestampPolicy,
     GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan, GitVersion,
 };

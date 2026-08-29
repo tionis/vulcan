@@ -51,6 +51,14 @@ pub trait GitEngine: Send + Sync {
         reference: &GitRefName,
     ) -> Result<Option<GitOid>, GitEngineError>;
 
+    /// Lists direct refs beneath one validated namespace without resolving or
+    /// following symbolic refs.
+    fn list_refs(
+        &self,
+        repository: &GitRepository,
+        prefix: &GitRefName,
+    ) -> Result<Vec<GitReference>, GitEngineError>;
+
     fn head_commit(&self, repository: &GitRepository) -> Result<Option<GitOid>, GitEngineError>;
 
     fn head_reference(
@@ -63,6 +71,15 @@ pub trait GitEngine: Send + Sync {
         repository: &GitRepository,
         revision: &str,
     ) -> Result<GitOid, GitEngineError>;
+
+    /// Returns a bounded newest-first first-parent history from one immutable
+    /// commit, used by retention planning without traversing unrelated refs.
+    fn first_parent_history(
+        &self,
+        repository: &GitRepository,
+        tip: &GitOid,
+        limit: usize,
+    ) -> Result<Vec<GitOid>, GitEngineError>;
 
     fn update_ref(
         &self,
@@ -639,6 +656,12 @@ impl Display for GitRefName {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.0)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitReference {
+    pub name: GitRefName,
+    pub target: GitOid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1583,6 +1606,19 @@ impl GitEngine for GitCliEngine {
         Err(command_failed("read a Git ref", &output))
     }
 
+    fn list_refs(
+        &self,
+        repository: &GitRepository,
+        prefix: &GitRefName,
+    ) -> Result<Vec<GitReference>, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command
+            .args(["for-each-ref", "--format=%(refname)%00%(objectname)%00"])
+            .arg(prefix.as_str());
+        let output = ensure_success("list Git refs", self.execute(command)?)?;
+        parse_reference_list(&output.stdout)
+    }
+
     fn head_commit(&self, repository: &GitRepository) -> Result<Option<GitOid>, GitEngineError> {
         let mut command = self.repository_command(repository);
         command.args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"]);
@@ -1625,6 +1661,30 @@ impl GitEngine for GitCliEngine {
         let output = self.execute(command)?;
         let output = ensure_success("resolve a Git revision", output)?;
         GitOid::parse(decode_stdout("resolve a Git revision", output.stdout)?.trim())
+    }
+
+    fn first_parent_history(
+        &self,
+        repository: &GitRepository,
+        tip: &GitOid,
+        limit: usize,
+    ) -> Result<Vec<GitOid>, GitEngineError> {
+        if limit == 0 || limit > 1_000_000 {
+            return Err(GitEngineError::UnsupportedRepository {
+                detail: "first-parent history limit must be between 1 and 1000000".to_string(),
+            });
+        }
+        let mut command = self.repository_command(repository);
+        command
+            .args(["rev-list", "--first-parent"])
+            .arg(format!("--max-count={limit}"))
+            .arg(tip.as_str());
+        let output = ensure_success("list first-parent history", self.execute(command)?)?;
+        decode_stdout("list first-parent history", output.stdout)?
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(GitOid::parse)
+            .collect()
     }
 
     fn update_ref(
@@ -2761,6 +2821,38 @@ fn command_failed(operation: &'static str, output: &Output) -> GitEngineError {
         exit_code: output.status.code(),
         stderr: if stderr.is_empty() { stdout } else { stderr },
     }
+}
+
+fn parse_reference_list(stdout: &[u8]) -> Result<Vec<GitReference>, GitEngineError> {
+    let mut references = Vec::new();
+    for line in stdout.split(|byte| *byte == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let fields = line.split(|byte| *byte == 0).collect::<Vec<_>>();
+        if fields.len() != 3 || !fields[2].is_empty() {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "list Git refs",
+                detail: "expected ref name and object ID as NUL-delimited fields".to_string(),
+            });
+        }
+        let name =
+            std::str::from_utf8(fields[0]).map_err(|error| GitEngineError::InvalidOutput {
+                operation: "list Git refs",
+                detail: error.to_string(),
+            })?;
+        let target =
+            std::str::from_utf8(fields[1]).map_err(|error| GitEngineError::InvalidOutput {
+                operation: "list Git refs",
+                detail: error.to_string(),
+            })?;
+        references.push(GitReference {
+            name: GitRefName::parse(name)?,
+            target: GitOid::parse(target)?,
+        });
+    }
+    references.sort_by(|left, right| left.name.as_str().cmp(right.name.as_str()));
+    Ok(references)
 }
 
 fn redact_clone_source(mut error: GitEngineError, source: &str) -> GitEngineError {
@@ -3927,6 +4019,53 @@ mod tests {
                 .expect("checkpoint read"),
             Some(initial)
         );
+    }
+
+    #[test]
+    fn lists_validated_hidden_refs_in_stable_name_order() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Home.md"), "initial\n").expect("note");
+        let commit = commit_all(temporary.path(), "initial");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        for reference in [
+            "refs/vulcan/checkpoints/recovery/02",
+            "refs/vulcan/checkpoints/semantic/01",
+            "refs/vulcan/checkpoints/recovery/01",
+        ] {
+            engine
+                .create_ref(
+                    &repository,
+                    &GitRefName::parse(reference).expect("ref"),
+                    &commit,
+                )
+                .expect("create ref");
+        }
+
+        let references = engine
+            .list_refs(
+                &repository,
+                &GitRefName::parse("refs/vulcan/checkpoints").expect("prefix"),
+            )
+            .expect("list refs");
+
+        assert_eq!(
+            references
+                .iter()
+                .map(|reference| reference.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "refs/vulcan/checkpoints/recovery/01",
+                "refs/vulcan/checkpoints/recovery/02",
+                "refs/vulcan/checkpoints/semantic/01",
+            ]
+        );
+        assert!(references
+            .iter()
+            .all(|reference| reference.target == commit));
     }
 
     #[test]

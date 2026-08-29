@@ -30,6 +30,9 @@ use vulcan_app::sync_proposals::{
     create_and_auto_accept_resolution_proposal, AutoAcceptResolutionProposalReport,
     OpenAiCompatibleResolutionProvider, ResolutionProposal,
 };
+use vulcan_app::sync_retention::{
+    plan_sync_retention, SyncRetentionPlanOptions, SyncRetentionPlanReport, SyncRetentionPolicy,
+};
 use vulcan_app::sync_semantic::{
     apply_semantic_plan, create_semantic_plan, load_semantic_plan, reject_semantic_plan,
     SemanticApplyReport, SemanticGrouping, SemanticPlanOptions, SemanticPlanReport,
@@ -158,6 +161,19 @@ fn handle_non_cycle_sync_command(
             target,
             dry_run,
         } => run_sync_checkpoint(cli, paths, wiki.as_deref(), *kind, target, *dry_run),
+        SyncCommand::RetentionPlan {
+            wiki,
+            target,
+            live_epoch_max_commits,
+            recovery_checkpoints_keep,
+        } => run_sync_retention_plan(
+            cli,
+            paths,
+            wiki.as_deref(),
+            target,
+            *live_epoch_max_commits,
+            *recovery_checkpoints_keep,
+        ),
         SyncCommand::SemanticPlan {
             wiki,
             from,
@@ -521,6 +537,55 @@ fn print_sync_checkpoint(
     println!(
         "Sync checkpoint: {} -> {} ({:?})",
         report.checkpoint_ref, report.revision, report.kind
+    );
+    Ok(())
+}
+
+fn run_sync_retention_plan(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    target: &crate::SyncTargetArgs,
+    live_epoch_max_commits: usize,
+    recovery_checkpoints_keep: usize,
+) -> Result<(), CliError> {
+    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let report = plan_sync_retention(
+        &paths,
+        &SyncRetentionPlanOptions {
+            remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
+            live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
+            policy: SyncRetentionPolicy {
+                live_epoch_max_commits,
+                recovery_checkpoints_keep,
+            },
+        },
+    )
+    .map_err(CliError::operation)?;
+    print_sync_retention_plan(cli.output, &report)
+}
+
+fn print_sync_retention_plan(
+    output: OutputFormat,
+    report: &SyncRetentionPlanReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Active live epoch: {} observed commit(s), rollover {}.",
+        report.active_epoch.observed_commits,
+        if report.active_epoch.rollover_required {
+            "required"
+        } else {
+            "not required"
+        }
+    );
+    println!(
+        "Recovery checkpoints: {} retained, {} expirable; semantic checkpoints remain permanent.",
+        report.recovery_checkpoints.retained.len(),
+        report.recovery_checkpoints.expirable.len()
     );
     Ok(())
 }

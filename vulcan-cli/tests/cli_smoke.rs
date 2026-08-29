@@ -4880,6 +4880,59 @@ fn sync_checkpoint_cli_retains_the_accepted_commit_without_new_objects() {
         object_state_before
     );
 
+    fs::write(vault.join("Home.md"), "accepted second epoch candidate\n")
+        .expect("second accepted edit");
+    run(&["run"]);
+    for _ in 0..3 {
+        run(&["checkpoint", "--kind", "recovery"]);
+    }
+    let refs_before = run_git_stdout(
+        &vault,
+        &[
+            "for-each-ref",
+            "--format=%(refname) %(objectname)",
+            "refs/vulcan/",
+        ],
+    );
+    let retention = parse_stdout_json(&run(&[
+        "retention-plan",
+        "--live-epoch-max-commits",
+        "1",
+        "--recovery-checkpoints-keep",
+        "2",
+    ]));
+    assert_eq!(retention["mutation_free"], true);
+    assert_eq!(retention["active_epoch"]["rollover_required"], true);
+    assert_eq!(
+        retention["recovery_checkpoints"]["retained"]
+            .as_array()
+            .map(Vec::len),
+        Some(2)
+    );
+    assert_eq!(
+        retention["recovery_checkpoints"]["expirable"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        retention["permanent_semantic_checkpoints"]
+            .as_array()
+            .map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        run_git_stdout(
+            &vault,
+            &[
+                "for-each-ref",
+                "--format=%(refname) %(objectname)",
+                "refs/vulcan/",
+            ],
+        ),
+        refs_before
+    );
+
     let config_home = temporary.path().join("config");
     fs::create_dir(&config_home).expect("config home");
     let config_home = config_home.to_str().expect("config path");
@@ -12240,6 +12293,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync run --max-retries <n>"));
     assert!(git_skill.contains("Vulcan-Sync-*` trailers"));
     assert!(git_skill.contains("vulcan sync semantic-plan"));
+    assert!(git_skill.contains("vulcan sync retention-plan [<wiki>]"));
     assert!(git_skill.contains("--group-by file"));
     assert!(git_skill.contains("semantic branch with compare-and-swap"));
     assert!(git_skill.contains("pause.reason"));

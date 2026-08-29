@@ -2412,6 +2412,35 @@ fn parses_sync_checkpoint_command() {
 }
 
 #[test]
+fn parses_sync_retention_plan_command() {
+    let plan = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "retention-plan",
+        "personal",
+        "--live-epoch-max-commits",
+        "128",
+        "--recovery-checkpoints-keep",
+        "8",
+    ])
+    .expect("sync retention plan should parse");
+    assert_eq!(
+        plan.command,
+        Command::Sync {
+            command: SyncCommand::RetentionPlan {
+                wiki: Some("personal".to_string()),
+                target: SyncTargetArgs {
+                    remote: "origin".to_string(),
+                    live_ref: "refs/heads/__vulcan-sync/live".to_string(),
+                },
+                live_epoch_max_commits: 128,
+                recovery_checkpoints_keep: 8,
+            },
+        }
+    );
+}
+
+#[test]
 fn parses_sync_semantic_commands() {
     let plan = Cli::try_parse_from([
         "vulcan",
