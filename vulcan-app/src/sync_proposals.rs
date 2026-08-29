@@ -17,9 +17,11 @@ use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
+use vulcan_core::search::SearchMode;
 use vulcan_core::{
-    paths::secure_read, resolve_permission_profile, PermissionGuard, ProfilePermissionGuard,
-    ScanSummary, VaultPaths,
+    execute_query_report_with_filter, paths::secure_read, query_backlinks_with_filter,
+    query_links_with_filter, resolve_permission_profile, search_vault_with_filter, PermissionGuard,
+    ProfilePermissionGuard, QueryAst, ScanSummary, SearchQuery, VaultPaths,
 };
 use vulcan_sync::{
     GitAutomaticMergeValidation, GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine,
@@ -27,8 +29,8 @@ use vulcan_sync::{
     SyncCancellationToken,
 };
 
-pub const RESOLUTION_PROPOSAL_VERSION: u32 = 2;
-pub const RESOLUTION_AGENT_TOOL_CONTRACT_VERSION: u32 = 2;
+pub const RESOLUTION_PROPOSAL_VERSION: u32 = 3;
+pub const RESOLUTION_AGENT_TOOL_CONTRACT_VERSION: u32 = 3;
 pub const RESOLUTION_PROPOSAL_AUDIT_VERSION: u32 = 1;
 const MAX_AGENT_FILE_BYTES: usize = 16 * 1024 * 1024;
 const MAX_AGENT_CONTEXT_FILE_BYTES: usize = 1024 * 1024;
@@ -36,6 +38,9 @@ const MAX_AGENT_TOTAL_BYTES: usize = 32 * 1024 * 1024;
 const MAX_PROPOSAL_RECORD_BYTES: usize = 32 * 1024 * 1024;
 const MAX_TEXT_BYTES: usize = 64 * 1024;
 const MAX_CONTEXT_PATHS: usize = 64;
+const MAX_AGENT_TOOL_CALLS: usize = 8;
+const MAX_AGENT_TOOL_ARGUMENT_BYTES: usize = 8 * 1024;
+const MAX_AGENT_TOOL_RESULT_BYTES: usize = 256 * 1024;
 #[cfg(feature = "web")]
 const MAX_AGENT_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
@@ -92,12 +97,239 @@ pub struct ResolutionAgentOutput {
     pub paths: Vec<ResolutionAgentPathOutput>,
 }
 
+pub trait ResolutionAgentTools {
+    fn call(&mut self, name: &str, arguments: &str) -> Result<String, AppError>;
+}
+
+struct VaultResolutionAgentTools {
+    paths: VaultPaths,
+    guard: ProfilePermissionGuard,
+    broad_context_allowed: bool,
+    explicit_paths: BTreeSet<String>,
+    calls: Vec<ResolutionProposalToolCall>,
+    referenced_paths: BTreeSet<String>,
+}
+
+impl VaultResolutionAgentTools {
+    fn new(
+        paths: &VaultPaths,
+        guard: ProfilePermissionGuard,
+        broad_context_allowed: bool,
+        explicit_paths: impl IntoIterator<Item = String>,
+    ) -> Self {
+        Self {
+            paths: paths.clone(),
+            guard,
+            broad_context_allowed,
+            explicit_paths: explicit_paths.into_iter().collect(),
+            calls: Vec::new(),
+            referenced_paths: BTreeSet::new(),
+        }
+    }
+
+    fn record_result(
+        &mut self,
+        name: &str,
+        arguments: &str,
+        value: &impl Serialize,
+        referenced_paths: Vec<String>,
+    ) -> Result<String, AppError> {
+        if self.calls.len() >= MAX_AGENT_TOOL_CALLS {
+            return Err(AppError::operation("agent exceeded the tool-call limit"));
+        }
+        let result = serde_json::to_string(value).map_err(AppError::operation)?;
+        if result.len() > MAX_AGENT_TOOL_RESULT_BYTES {
+            return Err(AppError::operation(format!(
+                "agent tool `{name}` result exceeds its byte limit"
+            )));
+        }
+        let mut referenced_paths = referenced_paths;
+        referenced_paths.sort();
+        referenced_paths.dedup();
+        self.referenced_paths
+            .extend(referenced_paths.iter().cloned());
+        self.calls.push(ResolutionProposalToolCall {
+            name: name.to_string(),
+            arguments_hash: blake3::hash(arguments.as_bytes()).to_hex().to_string(),
+            result_hash: blake3::hash(result.as_bytes()).to_hex().to_string(),
+            referenced_paths,
+        });
+        Ok(result)
+    }
+
+    fn authorize_references(&self, paths: &[String]) -> Result<(), AppError> {
+        for path in paths {
+            self.guard
+                .check_read_path(path)
+                .map_err(AppError::operation)?;
+        }
+        Ok(())
+    }
+
+    fn read(&mut self, arguments: &str) -> Result<String, AppError> {
+        #[derive(Deserialize)]
+        struct Arguments {
+            path: String,
+        }
+        let arguments_value: Arguments = parse_tool_arguments("vault_read", arguments)?;
+        if !valid_relative_path(&arguments_value.path)
+            || is_internal_context_path(&arguments_value.path)
+        {
+            return Err(AppError::operation("vault_read received an invalid path"));
+        }
+        if !self.broad_context_allowed && !self.explicit_paths.contains(&arguments_value.path) {
+            return Err(AppError::operation(
+                "vault_read outside explicit context requires broad context access",
+            ));
+        }
+        self.guard
+            .check_read_path(&arguments_value.path)
+            .map_err(AppError::operation)?;
+        let bytes = secure_read(self.paths.vault_root(), Path::new(&arguments_value.path))
+            .map_err(AppError::operation)?;
+        if bytes.len() > MAX_AGENT_CONTEXT_FILE_BYTES {
+            return Err(AppError::operation(
+                "vault_read result exceeds its byte limit",
+            ));
+        }
+        let content = String::from_utf8(bytes)
+            .map_err(|_| AppError::operation("vault_read requires a UTF-8 text file"))?;
+        let value = serde_json::json!({
+            "path": arguments_value.path,
+            "content_hash": blake3::hash(content.as_bytes()).to_hex().to_string(),
+            "content": content,
+        });
+        self.record_result("vault_read", arguments, &value, vec![arguments_value.path])
+    }
+
+    fn search(&mut self, arguments: &str) -> Result<String, AppError> {
+        #[derive(Deserialize)]
+        struct Arguments {
+            query: String,
+        }
+        let arguments_value: Arguments = parse_tool_arguments("vault_search", arguments)?;
+        validate_text("vault_search query", &arguments_value.query)?;
+        let query = SearchQuery {
+            text: arguments_value.query,
+            mode: SearchMode::Keyword,
+            limit: Some(10),
+            context_size: 8,
+            ..SearchQuery::default()
+        };
+        let filter = self.guard.read_filter();
+        let report = search_vault_with_filter(&self.paths, &query, Some(&filter))
+            .map_err(AppError::operation)?;
+        let referenced = report
+            .hits
+            .iter()
+            .map(|hit| hit.document_path.clone())
+            .collect::<Vec<_>>();
+        self.authorize_references(&referenced)?;
+        self.record_result("vault_search", arguments, &report, referenced)
+    }
+
+    fn query(&mut self, arguments: &str) -> Result<String, AppError> {
+        #[derive(Deserialize)]
+        struct Arguments {
+            dsl: String,
+        }
+        let arguments_value: Arguments = parse_tool_arguments("vault_query", arguments)?;
+        let mut query = QueryAst::from_dsl(&arguments_value.dsl).map_err(AppError::operation)?;
+        query.limit = Some(query.limit.unwrap_or(10).min(10));
+        query.offset = query.offset.min(1_000);
+        let filter = self.guard.read_filter();
+        let report = execute_query_report_with_filter(&self.paths, query, Some(&filter))
+            .map_err(AppError::operation)?;
+        let referenced = report
+            .notes
+            .iter()
+            .map(|note| note.document_path.clone())
+            .collect::<Vec<_>>();
+        self.authorize_references(&referenced)?;
+        self.record_result("vault_query", arguments, &report, referenced)
+    }
+
+    fn links(&mut self, arguments: &str) -> Result<String, AppError> {
+        #[derive(Deserialize)]
+        struct Arguments {
+            path: String,
+            #[serde(default)]
+            direction: LinkDirection,
+        }
+        #[derive(Default, Deserialize)]
+        #[serde(rename_all = "snake_case")]
+        enum LinkDirection {
+            #[default]
+            Outgoing,
+            Incoming,
+        }
+        let arguments_value: Arguments = parse_tool_arguments("vault_links", arguments)?;
+        self.guard
+            .check_read_path(&arguments_value.path)
+            .map_err(AppError::operation)?;
+        let filter = self.guard.read_filter();
+        match arguments_value.direction {
+            LinkDirection::Outgoing => {
+                let report =
+                    query_links_with_filter(&self.paths, &arguments_value.path, Some(&filter))
+                        .map_err(AppError::operation)?;
+                let mut referenced = vec![report.note_path.clone()];
+                referenced.extend(
+                    report
+                        .links
+                        .iter()
+                        .filter_map(|link| link.resolved_target_path.clone()),
+                );
+                self.authorize_references(&referenced)?;
+                self.record_result("vault_links", arguments, &report, referenced)
+            }
+            LinkDirection::Incoming => {
+                let report =
+                    query_backlinks_with_filter(&self.paths, &arguments_value.path, Some(&filter))
+                        .map_err(AppError::operation)?;
+                let mut referenced = vec![report.note_path.clone()];
+                referenced.extend(report.backlinks.iter().map(|link| link.source_path.clone()));
+                self.authorize_references(&referenced)?;
+                self.record_result("vault_links", arguments, &report, referenced)
+            }
+        }
+    }
+}
+
+impl ResolutionAgentTools for VaultResolutionAgentTools {
+    fn call(&mut self, name: &str, arguments: &str) -> Result<String, AppError> {
+        if arguments.len() > MAX_AGENT_TOOL_ARGUMENT_BYTES {
+            return Err(AppError::operation(
+                "agent tool arguments exceed their byte limit",
+            ));
+        }
+        match name {
+            "vault_read" => self.read(arguments),
+            "vault_search" => self.search(arguments),
+            "vault_query" => self.query(arguments),
+            "vault_links" => self.links(arguments),
+            _ => Err(AppError::operation(format!(
+                "agent requested unknown tool `{name}`"
+            ))),
+        }
+    }
+}
+
+fn parse_tool_arguments<T: for<'de> Deserialize<'de>>(
+    name: &str,
+    arguments: &str,
+) -> Result<T, AppError> {
+    serde_json::from_str(arguments)
+        .map_err(|error| AppError::operation(format!("invalid `{name}` arguments: {error}")))
+}
+
 pub trait ResolutionAgentProvider {
     fn identity(&self) -> ResolutionAgentIdentity;
 
     fn propose(
         &self,
         request: &ResolutionAgentRequest,
+        tools: &mut dyn ResolutionAgentTools,
         cancellation: &SyncCancellationToken,
     ) -> Result<ResolutionAgentOutput, AppError>;
 }
@@ -152,18 +384,51 @@ impl ResolutionAgentProvider for OpenAiCompatibleResolutionProvider {
         ResolutionAgentIdentity {
             provider: "openai-compatible".to_string(),
             model: self.model.clone(),
-            prompt_contract_version: 2,
+            prompt_contract_version: 3,
         }
     }
 
     fn propose(
         &self,
         request: &ResolutionAgentRequest,
+        tools: &mut dyn ResolutionAgentTools,
         cancellation: &SyncCancellationToken,
     ) -> Result<ResolutionAgentOutput, AppError> {
-        cancellation_check(cancellation)?;
-        let body = openai_resolution_request(&self.model, request)?;
-        let mut builder = self.client.post(self.endpoint.clone()).json(&body);
+        let mut body = openai_resolution_request(&self.model, request)?;
+        for _ in 0..=MAX_AGENT_TOOL_CALLS {
+            cancellation_check(cancellation)?;
+            let bytes = self.send(&body)?;
+            cancellation_check(cancellation)?;
+            match parse_openai_resolution_turn(&bytes)? {
+                OpenAiResolutionTurn::Final(output) => return Ok(output),
+                OpenAiResolutionTurn::Tools {
+                    assistant_message,
+                    calls,
+                } => {
+                    let messages = body["messages"]
+                        .as_array_mut()
+                        .expect("resolution request messages are an array");
+                    messages.push(assistant_message);
+                    for call in calls {
+                        cancellation_check(cancellation)?;
+                        let result = tools.call(&call.name, &call.arguments)?;
+                        messages.push(serde_json::json!({
+                            "role": "tool",
+                            "tool_call_id": call.id,
+                            "content": result,
+                        }));
+                    }
+                }
+            }
+        }
+        Err(AppError::operation("agent exceeded the tool-call limit"))
+    }
+}
+
+#[cfg(feature = "web")]
+impl OpenAiCompatibleResolutionProvider {
+    fn send(&self, body: &serde_json::Value) -> Result<Vec<u8>, AppError> {
+        let mut builder = self.client.post(self.endpoint.clone()).json(body);
         if let Some(api_key) = self.api_key.as_deref() {
             builder = builder.bearer_auth(api_key);
         }
@@ -183,8 +448,7 @@ impl ResolutionAgentProvider for OpenAiCompatibleResolutionProvider {
                 "agent provider returned HTTP {status}"
             )));
         }
-        cancellation_check(cancellation)?;
-        parse_openai_resolution_response(&bytes)
+        Ok(bytes)
     }
 }
 
@@ -221,10 +485,11 @@ fn openai_resolution_request(
         "model": model,
         "temperature": 0,
         "response_format": { "type": "json_object" },
+        "tools": openai_resolution_tools(),
         "messages": [
             {
                 "role": "system",
-                "content": "Resolve only the supplied conflicted files. Return one JSON object with explanation (string), referenced_context (array of vault-relative path strings), and paths (array of objects with path and complete UTF-8 content strings). Include every supplied path exactly once, invent no extra paths, delete no files, and emit no Markdown fence or commentary outside the JSON object. Preserve valid file syntax and use context only to understand intent."
+                "content": "Resolve only the supplied conflicted files. You may use the bounded read-only vault tools for context. Return one JSON object with explanation (string), referenced_context (a deduplicated array containing only vault paths supplied initially or returned by tools), and paths (array of objects with path and complete UTF-8 content strings). Include every supplied conflict path exactly once, invent no output paths, delete no files, and emit no Markdown fence or commentary outside the JSON object. Preserve valid file syntax and use context only to understand intent."
             },
             {
                 "role": "user",
@@ -232,6 +497,67 @@ fn openai_resolution_request(
             }
         ]
     }))
+}
+
+#[cfg(feature = "web")]
+fn openai_resolution_tools() -> serde_json::Value {
+    serde_json::json!([
+        {
+            "type": "function",
+            "function": {
+                "name": "vault_read",
+                "description": "Read one permitted UTF-8 vault file. Paths outside explicitly supplied context require broad context access.",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "path": { "type": "string" } },
+                    "required": ["path"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "vault_search",
+                "description": "Run a bounded permission-filtered keyword search over the vault index.",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "query": { "type": "string" } },
+                    "required": ["query"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "vault_query",
+                "description": "Run a bounded permission-filtered canonical Vulcan query DSL expression.",
+                "parameters": {
+                    "type": "object",
+                    "properties": { "dsl": { "type": "string" } },
+                    "required": ["dsl"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "vault_links",
+                "description": "Inspect bounded permission-filtered outgoing or incoming links for one note.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string" },
+                        "direction": { "type": "string", "enum": ["outgoing", "incoming"] }
+                    },
+                    "required": ["path"],
+                    "additionalProperties": false
+                }
+            }
+        }
+    ])
 }
 
 #[cfg(feature = "web")]
@@ -250,19 +576,83 @@ fn agent_side_json(side: &ResolutionAgentSide) -> Result<serde_json::Value, AppE
 }
 
 #[cfg(feature = "web")]
-fn parse_openai_resolution_response(bytes: &[u8]) -> Result<ResolutionAgentOutput, AppError> {
+enum OpenAiResolutionTurn {
+    Final(ResolutionAgentOutput),
+    Tools {
+        assistant_message: serde_json::Value,
+        calls: Vec<OpenAiToolCall>,
+    },
+}
+
+#[cfg(feature = "web")]
+struct OpenAiToolCall {
+    id: String,
+    name: String,
+    arguments: String,
+}
+
+#[cfg(feature = "web")]
+fn parse_openai_resolution_turn(bytes: &[u8]) -> Result<OpenAiResolutionTurn, AppError> {
     #[derive(Deserialize)]
     struct Response {
         choices: Vec<Choice>,
     }
     #[derive(Deserialize)]
     struct Choice {
-        message: Message,
+        message: serde_json::Value,
     }
-    #[derive(Deserialize)]
-    struct Message {
-        content: String,
+    let response: Response = serde_json::from_slice(bytes).map_err(AppError::operation)?;
+    let message = response
+        .choices
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::operation("agent response contained no choices"))?
+        .message;
+    if let Some(calls) = message
+        .get("tool_calls")
+        .and_then(serde_json::Value::as_array)
+    {
+        if calls.is_empty() {
+            return Err(AppError::operation(
+                "agent response contained an empty tool-call list",
+            ));
+        }
+        let calls = calls
+            .iter()
+            .map(parse_openai_tool_call)
+            .collect::<Result<Vec<_>, _>>()?;
+        return Ok(OpenAiResolutionTurn::Tools {
+            assistant_message: message,
+            calls,
+        });
     }
+    let content = message
+        .get("content")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| AppError::operation("agent response contained no final JSON content"))?;
+    Ok(OpenAiResolutionTurn::Final(parse_resolution_output(
+        content,
+    )?))
+}
+
+#[cfg(feature = "web")]
+fn parse_openai_tool_call(value: &serde_json::Value) -> Result<OpenAiToolCall, AppError> {
+    let text = |value: Option<&serde_json::Value>, label: &str| {
+        value
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| AppError::operation(format!("agent tool call omitted {label}")))
+    };
+    Ok(OpenAiToolCall {
+        id: text(value.get("id"), "its ID")?,
+        name: text(value.pointer("/function/name"), "its function name")?,
+        arguments: text(value.pointer("/function/arguments"), "its arguments")?,
+    })
+}
+
+#[cfg(feature = "web")]
+fn parse_resolution_output(content: &str) -> Result<ResolutionAgentOutput, AppError> {
     #[derive(Deserialize)]
     struct Output {
         explanation: String,
@@ -275,16 +665,7 @@ fn parse_openai_resolution_response(bytes: &[u8]) -> Result<ResolutionAgentOutpu
         path: String,
         content: String,
     }
-
-    let response: Response = serde_json::from_slice(bytes).map_err(AppError::operation)?;
-    let content = response
-        .choices
-        .into_iter()
-        .next()
-        .ok_or_else(|| AppError::operation("agent response contained no choices"))?
-        .message
-        .content;
-    let output: Output = serde_json::from_str(&content).map_err(|error| {
+    let output: Output = serde_json::from_str(content).map_err(|error| {
         AppError::operation(format!(
             "agent response content was not exact JSON: {error}"
         ))
@@ -322,6 +703,7 @@ pub enum ResolutionProposalValidationCheck {
     ConflictInputsPreserved,
     PermissionProfileNamed,
     FocusedContextBounded,
+    FocusedToolsBounded,
     OutputPathsExact,
     OutputBytesBounded,
     NoFileDeletion,
@@ -348,6 +730,14 @@ pub struct ResolutionProposalContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolutionProposalToolCall {
+    pub name: String,
+    pub arguments_hash: String,
+    pub result_hash: String,
+    pub referenced_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResolutionProposal {
     pub version: u32,
     pub proposal_id: String,
@@ -367,6 +757,8 @@ pub struct ResolutionProposal {
     pub broad_context_allowed: bool,
     #[serde(default)]
     pub focused_context: Vec<ResolutionProposalContext>,
+    #[serde(default)]
+    pub tool_calls: Vec<ResolutionProposalToolCall>,
     pub explanation: String,
     pub referenced_context: Vec<String>,
     pub proposal_tree: String,
@@ -459,27 +851,13 @@ pub fn create_resolution_proposal_with_provider(
     cancellation: &SyncCancellationToken,
     state_store: &SyncStateStore,
 ) -> Result<ResolutionProposal, AppError> {
-    validate_options(options)?;
-    let selection = resolve_permission_profile(paths, Some(&options.permission_profile))
-        .map_err(AppError::operation)?;
-    let permission_guard = ProfilePermissionGuard::new(paths, selection);
-    permission_guard.check_git().map_err(AppError::operation)?;
-    for path in &options.focused_context {
-        permission_guard
-            .check_read_path(path)
-            .map_err(AppError::operation)?;
-    }
     cancellation_check(cancellation)?;
-    let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
-    let repository_key = repository_state_key(&vault);
-    let conflict_store = SyncConflictStore::from_state_store(state_store);
-    let record = conflict_store.get(&repository_key, conflict_id)?;
-    validate_agent_conflict_scope(&record)?;
-    for path in &record.paths {
-        permission_guard
-            .check_read_path(&path.path)
-            .map_err(AppError::operation)?;
-    }
+    let AgentScope {
+        vault,
+        repository_key,
+        record,
+        permission_guard,
+    } = prepare_agent_scope(paths, conflict_id, options, state_store)?;
     let base_revision = record
         .base_revision
         .as_deref()
@@ -497,13 +875,26 @@ pub fn create_resolution_proposal_with_provider(
         .snapshot_worktree_tree(&repository, Some(&local_revision))
         .map_err(AppError::operation)?;
     let request = build_agent_request(paths, &engine, &repository, &record, options)?;
-    let (identity, output) = invoke_provider(provider, &request, cancellation)?;
+    let ProviderRun {
+        identity,
+        output,
+        tool_calls,
+        supplied_context,
+    } = run_provider_with_tools(
+        paths,
+        permission_guard,
+        options,
+        &request,
+        provider,
+        cancellation,
+    )?;
     let prepared = prepare_output(
         &engine,
         &repository,
         &record,
-        &request.focused_context,
+        &supplied_context,
         output,
+        tool_calls,
     )?;
     let proposal_tree = engine
         .resolve_merge_tree_with_paths(
@@ -561,15 +952,94 @@ pub fn create_resolution_proposal_with_provider(
     Ok(proposal)
 }
 
+struct AgentScope {
+    vault: PathBuf,
+    repository_key: String,
+    record: SyncConflictRecord,
+    permission_guard: ProfilePermissionGuard,
+}
+
+fn prepare_agent_scope(
+    paths: &VaultPaths,
+    conflict_id: &str,
+    options: &ResolutionProposalOptions,
+    state_store: &SyncStateStore,
+) -> Result<AgentScope, AppError> {
+    validate_options(options)?;
+    let selection = resolve_permission_profile(paths, Some(&options.permission_profile))
+        .map_err(AppError::operation)?;
+    let permission_guard = ProfilePermissionGuard::new(paths, selection);
+    permission_guard.check_git().map_err(AppError::operation)?;
+    for path in &options.focused_context {
+        permission_guard
+            .check_read_path(path)
+            .map_err(AppError::operation)?;
+    }
+    let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
+    let repository_key = repository_state_key(&vault);
+    let record =
+        SyncConflictStore::from_state_store(state_store).get(&repository_key, conflict_id)?;
+    validate_agent_conflict_scope(&record)?;
+    for path in &record.paths {
+        permission_guard
+            .check_read_path(&path.path)
+            .map_err(AppError::operation)?;
+    }
+    Ok(AgentScope {
+        vault,
+        repository_key,
+        record,
+        permission_guard,
+    })
+}
+
+struct ProviderRun {
+    identity: ResolutionAgentIdentity,
+    output: ResolutionAgentOutput,
+    tool_calls: Vec<ResolutionProposalToolCall>,
+    supplied_context: BTreeSet<String>,
+}
+
+fn run_provider_with_tools(
+    paths: &VaultPaths,
+    guard: ProfilePermissionGuard,
+    options: &ResolutionProposalOptions,
+    request: &ResolutionAgentRequest,
+    provider: &dyn ResolutionAgentProvider,
+    cancellation: &SyncCancellationToken,
+) -> Result<ProviderRun, AppError> {
+    let explicit_paths = request
+        .focused_context
+        .iter()
+        .map(|context| context.path.clone())
+        .collect::<Vec<_>>();
+    let mut tools = VaultResolutionAgentTools::new(
+        paths,
+        guard,
+        options.allow_broad_context,
+        explicit_paths.iter().cloned(),
+    );
+    let (identity, output) = invoke_provider(provider, request, &mut tools, cancellation)?;
+    let mut supplied_context = tools.referenced_paths;
+    supplied_context.extend(explicit_paths);
+    Ok(ProviderRun {
+        identity,
+        output,
+        tool_calls: tools.calls,
+        supplied_context,
+    })
+}
+
 fn invoke_provider(
     provider: &dyn ResolutionAgentProvider,
     request: &ResolutionAgentRequest,
+    tools: &mut dyn ResolutionAgentTools,
     cancellation: &SyncCancellationToken,
 ) -> Result<(ResolutionAgentIdentity, ResolutionAgentOutput), AppError> {
     cancellation_check(cancellation)?;
     let identity = provider.identity();
     validate_identity(&identity)?;
-    let output = provider.propose(request, cancellation)?;
+    let output = provider.propose(request, tools, cancellation)?;
     cancellation_check(cancellation)?;
     Ok((identity, output))
 }
@@ -626,6 +1096,13 @@ pub fn load_resolution_proposal(
     {
         return Err(AppError::operation(
             "resolution proposal identity or version mismatch",
+        ));
+    }
+    if proposal.version == RESOLUTION_PROPOSAL_VERSION
+        && proposal.proposal_id != recompute_current_proposal_id(&proposal)?
+    {
+        return Err(AppError::operation(
+            "resolution proposal content does not match its immutable ID",
         ));
     }
     Ok(proposal)
@@ -1551,9 +2028,10 @@ fn assemble_proposal(
         })
         .collect::<Vec<_>>();
     let proposal_id = proposal_id(
-        record,
+        &record.id,
         &identity,
         &proposal_context,
+        &prepared.tool_calls,
         &prepared.paths,
         &tree.oid,
     )?;
@@ -1578,6 +2056,7 @@ fn assemble_proposal(
         permission_profile: options.permission_profile.clone(),
         broad_context_allowed: options.allow_broad_context,
         focused_context: proposal_context,
+        tool_calls: prepared.tool_calls,
         explanation: prepared.explanation,
         referenced_context: prepared.referenced_context,
         proposal_tree: tree.oid.to_string(),
@@ -1587,6 +2066,7 @@ fn assemble_proposal(
             ResolutionProposalValidationCheck::ConflictInputsPreserved,
             ResolutionProposalValidationCheck::PermissionProfileNamed,
             ResolutionProposalValidationCheck::FocusedContextBounded,
+            ResolutionProposalValidationCheck::FocusedToolsBounded,
             ResolutionProposalValidationCheck::OutputPathsExact,
             ResolutionProposalValidationCheck::OutputBytesBounded,
             ResolutionProposalValidationCheck::NoFileDeletion,
@@ -1609,6 +2089,7 @@ struct PreparedOutput {
     referenced_context: Vec<String>,
     git_paths: Vec<GitResolvedPath>,
     paths: Vec<ResolutionProposalPath>,
+    tool_calls: Vec<ResolutionProposalToolCall>,
 }
 
 fn build_agent_request(
@@ -1714,8 +2195,9 @@ fn prepare_output(
     engine: &dyn GitEngine,
     repository: &vulcan_sync::GitRepository,
     record: &SyncConflictRecord,
-    focused_context: &[ResolutionAgentContextFile],
+    supplied_context: &BTreeSet<String>,
     output: ResolutionAgentOutput,
+    tool_calls: Vec<ResolutionProposalToolCall>,
 ) -> Result<PreparedOutput, AppError> {
     validate_text("proposal explanation", &output.explanation)?;
     if output.referenced_context.len() > MAX_CONTEXT_PATHS {
@@ -1732,7 +2214,7 @@ fn prepare_output(
             "proposal referenced an invalid context path",
         ));
     }
-    validate_referenced_context(focused_context, &output.referenced_context)?;
+    validate_referenced_context(supplied_context, &output.referenced_context)?;
     let expected = record
         .paths
         .iter()
@@ -1795,17 +2277,14 @@ fn prepare_output(
         referenced_context: output.referenced_context,
         git_paths,
         paths,
+        tool_calls,
     })
 }
 
 fn validate_referenced_context(
-    focused_context: &[ResolutionAgentContextFile],
+    supplied_context: &BTreeSet<String>,
     referenced_context: &[String],
 ) -> Result<(), AppError> {
-    let allowed = focused_context
-        .iter()
-        .map(|context| context.path.as_str())
-        .collect::<BTreeSet<_>>();
     if referenced_context.iter().collect::<BTreeSet<_>>().len() != referenced_context.len() {
         return Err(AppError::operation(
             "proposal referenced the same context path more than once",
@@ -1813,7 +2292,7 @@ fn validate_referenced_context(
     }
     if referenced_context
         .iter()
-        .any(|path| !allowed.contains(path.as_str()))
+        .any(|path| !supplied_context.contains(path))
     {
         return Err(AppError::operation(
             "proposal referenced context that was not supplied to the provider",
@@ -1920,15 +2399,38 @@ fn verify_no_external_mutation(
 }
 
 fn proposal_id(
-    record: &SyncConflictRecord,
+    conflict_id: &str,
     identity: &ResolutionAgentIdentity,
     context: &[ResolutionProposalContext],
+    tool_calls: &[ResolutionProposalToolCall],
     paths: &[ResolutionProposalPath],
     tree: &GitOid,
 ) -> Result<String, AppError> {
-    let bytes = serde_json::to_vec(&(record.id.as_str(), identity, context, paths, tree.as_str()))
-        .map_err(AppError::operation)?;
+    let bytes = serde_json::to_vec(&(
+        conflict_id,
+        identity,
+        context,
+        tool_calls,
+        paths,
+        tree.as_str(),
+    ))
+    .map_err(AppError::operation)?;
     Ok(blake3::hash(&bytes).to_hex()[..32].to_string())
+}
+
+fn recompute_current_proposal_id(proposal: &ResolutionProposal) -> Result<String, AppError> {
+    proposal_id(
+        &proposal.conflict_id,
+        &ResolutionAgentIdentity {
+            provider: proposal.provider.clone(),
+            model: proposal.model.clone(),
+            prompt_contract_version: proposal.prompt_contract_version,
+        },
+        &proposal.focused_context,
+        &proposal.tool_calls,
+        &proposal.paths,
+        &GitOid::parse(&proposal.proposal_tree).map_err(AppError::operation)?,
+    )
 }
 
 fn save_proposal(store: &SyncStateStore, proposal: &ResolutionProposal) -> Result<(), AppError> {
@@ -2154,15 +2656,70 @@ mod tests {
     use crate::sync::sync_git_vault_with_state_store;
     use std::process::Command;
     use tempfile::{tempdir, TempDir};
+    use vulcan_core::{paths::initialize_vulcan_dir, scan_vault, ScanMode};
     use vulcan_sync::{GitCliEngine, GitSyncOptions};
 
     struct FakeProvider {
         cancel: bool,
     }
 
+    struct NoopTools;
+
+    #[cfg(feature = "web")]
+    #[derive(Default)]
+    struct RecordingTools {
+        calls: Vec<(String, String)>,
+    }
+
+    impl ResolutionAgentTools for NoopTools {
+        fn call(&mut self, name: &str, _arguments: &str) -> Result<String, AppError> {
+            Err(AppError::operation(format!(
+                "unexpected test tool call `{name}`"
+            )))
+        }
+    }
+
+    #[cfg(feature = "web")]
+    impl ResolutionAgentTools for RecordingTools {
+        fn call(&mut self, name: &str, arguments: &str) -> Result<String, AppError> {
+            self.calls.push((name.to_string(), arguments.to_string()));
+            Ok(r#"{"hits":[{"document_path":"Context.md"}]}"#.to_string())
+        }
+    }
+
     struct AmbiguousLinkProvider;
 
     struct InventedContextProvider;
+
+    struct ToolUsingProvider;
+
+    impl ResolutionAgentProvider for ToolUsingProvider {
+        fn identity(&self) -> ResolutionAgentIdentity {
+            ResolutionAgentIdentity {
+                provider: "fake".to_string(),
+                model: "tool-using-v1".to_string(),
+                prompt_contract_version: 1,
+            }
+        }
+
+        fn propose(
+            &self,
+            _request: &ResolutionAgentRequest,
+            tools: &mut dyn ResolutionAgentTools,
+            _cancellation: &SyncCancellationToken,
+        ) -> Result<ResolutionAgentOutput, AppError> {
+            let result = tools.call("vault_search", r#"{"query":"context marker"}"#)?;
+            assert!(result.contains("Context.md"));
+            Ok(ResolutionAgentOutput {
+                explanation: "Use the indexed context.".to_string(),
+                referenced_context: vec!["Context.md".to_string()],
+                paths: vec![ResolutionAgentPathOutput {
+                    path: "Home.md".to_string(),
+                    content: b"agent resolution\n".to_vec(),
+                }],
+            })
+        }
+    }
 
     impl ResolutionAgentProvider for InventedContextProvider {
         fn identity(&self) -> ResolutionAgentIdentity {
@@ -2176,6 +2733,7 @@ mod tests {
         fn propose(
             &self,
             _request: &ResolutionAgentRequest,
+            _tools: &mut dyn ResolutionAgentTools,
             _cancellation: &SyncCancellationToken,
         ) -> Result<ResolutionAgentOutput, AppError> {
             Ok(ResolutionAgentOutput {
@@ -2201,6 +2759,7 @@ mod tests {
         fn propose(
             &self,
             request: &ResolutionAgentRequest,
+            _tools: &mut dyn ResolutionAgentTools,
             _cancellation: &SyncCancellationToken,
         ) -> Result<ResolutionAgentOutput, AppError> {
             Ok(ResolutionAgentOutput {
@@ -2226,6 +2785,7 @@ mod tests {
         fn propose(
             &self,
             request: &ResolutionAgentRequest,
+            _tools: &mut dyn ResolutionAgentTools,
             cancellation: &SyncCancellationToken,
         ) -> Result<ResolutionAgentOutput, AppError> {
             assert_eq!(request.files.len(), 1);
@@ -2369,7 +2929,7 @@ mod tests {
         );
         assert!(proposal.patch.contains("agent resolution"));
         assert_eq!(proposal.version, RESOLUTION_PROPOSAL_VERSION);
-        assert_eq!(proposal.tool_contract_version, 2);
+        assert_eq!(proposal.tool_contract_version, 3);
         assert_eq!(proposal.focused_context.len(), 1);
         assert_eq!(proposal.focused_context[0].path, "Home.md");
         assert_eq!(
@@ -2502,6 +3062,61 @@ mod tests {
     }
 
     #[test]
+    fn proposal_records_bounded_tool_evidence_and_dynamic_context() {
+        let fixture = conflict_fixture();
+        let paths = VaultPaths::new(&fixture.reader);
+        initialize_vulcan_dir(&paths).expect("initialize cache");
+        fs::write(fixture.reader.join("Context.md"), "context marker\n").expect("context note");
+        scan_vault(&paths, ScanMode::Full).expect("scan context");
+        let proposal = create_resolution_proposal_with_provider(
+            &paths,
+            &fixture.record.id,
+            &ResolutionProposalOptions {
+                permission_profile: "unrestricted".to_string(),
+                focused_context: Vec::new(),
+                allow_broad_context: false,
+            },
+            &ToolUsingProvider,
+            &SyncCancellationToken::default(),
+            &fixture.store,
+        )
+        .expect("tool-assisted proposal");
+
+        assert_eq!(proposal.referenced_context, ["Context.md"]);
+        assert_eq!(proposal.tool_calls.len(), 1);
+        assert_eq!(proposal.tool_calls[0].name, "vault_search");
+        assert_eq!(proposal.tool_calls[0].referenced_paths, ["Context.md"]);
+        assert!(proposal
+            .validation
+            .contains(&ResolutionProposalValidationCheck::FocusedToolsBounded));
+        let path = proposal_path(
+            &fixture.store,
+            &proposal.repository_key,
+            &proposal.conflict_id,
+            &proposal.proposal_id,
+        );
+        let mut json: serde_json::Value =
+            serde_json::from_slice(&fs::read(&path).expect("proposal record"))
+                .expect("proposal JSON");
+        json["tool_calls"][0]["result_hash"] = serde_json::json!("0".repeat(64));
+        fs::write(
+            &path,
+            serde_json::to_vec_pretty(&json).expect("tampered JSON"),
+        )
+        .expect("tampered proposal fixture");
+        let error = load_resolution_proposal(
+            &fixture.store,
+            &proposal.repository_key,
+            &proposal.conflict_id,
+            &proposal.proposal_id,
+        )
+        .expect_err("tampered tool evidence must invalidate the proposal ID");
+        assert!(error
+            .to_string()
+            .contains("does not match its immutable ID"));
+    }
+
+    #[test]
     fn proposal_loader_accepts_version_one_records_without_context_metadata() {
         let fixture = conflict_fixture();
         let proposal = create_resolution_proposal_with_provider(
@@ -2573,6 +3188,56 @@ mod tests {
         )
         .expect_err("binary context must be rejected");
         assert!(binary.to_string().contains("must be valid UTF-8"));
+    }
+
+    #[test]
+    fn focused_tools_are_bounded_permission_filtered_and_auditable() {
+        let temporary = tempdir().expect("temporary vault");
+        let paths = VaultPaths::new(temporary.path());
+        initialize_vulcan_dir(&paths).expect("initialize vault");
+        fs::write(
+            paths.config_file(),
+            "[permissions.profiles.resolver]\nread = { allow = [\"note:A.md\"] }\n",
+        )
+        .expect("permission profile");
+        fs::write(temporary.path().join("A.md"), "alpha [[B]]\n").expect("allowed note");
+        fs::write(temporary.path().join("B.md"), "secret beta\n").expect("denied note");
+        scan_vault(&paths, ScanMode::Full).expect("scan fixture");
+        let selection = resolve_permission_profile(&paths, Some("resolver")).expect("profile");
+        let guard = ProfilePermissionGuard::new(&paths, selection);
+        let mut tools = VaultResolutionAgentTools::new(&paths, guard, false, ["A.md".to_string()]);
+
+        let allowed = tools
+            .call("vault_search", r#"{"query":"alpha"}"#)
+            .expect("allowed search");
+        assert!(allowed.contains("A.md"));
+        let denied = tools
+            .call("vault_search", r#"{"query":"secret"}"#)
+            .expect("filtered search");
+        assert!(!denied.contains("B.md"));
+        let query = tools
+            .call("vault_query", r#"{"dsl":"FROM notes"}"#)
+            .expect("bounded query");
+        assert!(query.contains("A.md"));
+        assert!(!query.contains("B.md"));
+        let links = tools
+            .call("vault_links", r#"{"path":"A.md","direction":"outgoing"}"#)
+            .expect("filtered links");
+        assert!(!links.contains("\"resolved_target_path\":\"B.md\""));
+        let read_error = tools
+            .call("vault_read", r#"{"path":"B.md"}"#)
+            .expect_err("broad read must remain disabled");
+        assert!(read_error.to_string().contains("requires broad context"));
+        let read = tools
+            .call("vault_read", r#"{"path":"A.md"}"#)
+            .expect("explicit read");
+        assert!(read.contains("alpha"));
+        assert_eq!(tools.calls.len(), 5);
+        assert!(tools
+            .calls
+            .iter()
+            .all(|call| { call.arguments_hash.len() == 64 && call.result_hash.len() == 64 }));
+        assert_eq!(tools.referenced_paths, BTreeSet::from(["A.md".to_string()]));
     }
 
     #[test]
@@ -2892,11 +3557,105 @@ mod tests {
         let output = provider
             .propose(
                 &provider_request_fixture(),
+                &mut NoopTools,
                 &SyncCancellationToken::default(),
             )
             .expect("provider output");
         assert_eq!(output.explanation, "combined");
         assert_eq!(output.paths[0].content, b"resolved\n");
+        server.join().expect("server thread");
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn openai_compatible_provider_executes_bounded_tool_turns() {
+        use std::io::{BufRead, BufReader, Read as _, Write as _};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("listener address");
+        let server = std::thread::spawn(move || {
+            for turn in 0..2 {
+                let (stream, _) = listener.accept().expect("request");
+                let mut reader = BufReader::new(stream);
+                let mut length = None;
+                loop {
+                    let mut line = String::new();
+                    reader.read_line(&mut line).expect("header");
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length: ")
+                    {
+                        length = value.trim().parse::<usize>().ok();
+                    }
+                }
+                let mut bytes = vec![0; length.expect("content length")];
+                reader.read_exact(&mut bytes).expect("request body");
+                let body: serde_json::Value = serde_json::from_slice(&bytes).expect("request JSON");
+                assert!(body["tools"]
+                    .as_array()
+                    .is_some_and(|tools| tools.len() == 4));
+                let response = if turn == 0 {
+                    serde_json::json!({
+                        "choices": [{"message": {
+                            "role": "assistant",
+                            "content": null,
+                            "tool_calls": [{
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {
+                                    "name": "vault_search",
+                                    "arguments": "{\"query\":\"context\"}"
+                                }
+                            }]
+                        }}]
+                    })
+                } else {
+                    assert!(body["messages"].as_array().is_some_and(|messages| {
+                        messages.iter().any(|message| {
+                            message["role"] == "tool"
+                                && message["content"]
+                                    .as_str()
+                                    .is_some_and(|content| content.contains("Context.md"))
+                        })
+                    }));
+                    let content = serde_json::json!({
+                        "explanation": "used search context",
+                        "referenced_context": ["Context.md"],
+                        "paths": [{"path": "Home.md", "content": "resolved\n"}]
+                    })
+                    .to_string();
+                    serde_json::json!({
+                        "choices": [{"message": {"role": "assistant", "content": content}}]
+                    })
+                }
+                .to_string();
+                write!(
+                    reader.get_mut(),
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.len(),
+                    response
+                )
+                .expect("response");
+            }
+        });
+        let provider = OpenAiCompatibleResolutionProvider::new(
+            &format!("http://{address}/v1"),
+            "fixture-model",
+            None,
+        )
+        .expect("provider");
+        let mut tools = RecordingTools::default();
+        let output = provider
+            .propose(
+                &provider_request_fixture(),
+                &mut tools,
+                &SyncCancellationToken::default(),
+            )
+            .expect("tool-assisted output");
+        assert_eq!(tools.calls.len(), 1);
+        assert_eq!(tools.calls[0].0, "vault_search");
+        assert_eq!(output.referenced_context, ["Context.md"]);
         server.join().expect("server thread");
     }
 

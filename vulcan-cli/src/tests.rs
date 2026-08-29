@@ -2331,6 +2331,7 @@ fn parses_sync_propose_command() {
         "resolver-v1",
         "--context",
         "Projects/Alpha.md",
+        "--allow-broad-context",
     ])
     .expect("sync proposal should parse");
     assert!(matches!(
@@ -2339,6 +2340,7 @@ fn parses_sync_propose_command() {
             command: SyncCommand::Propose {
                 model,
                 context,
+                allow_broad_context: true,
                 ..
             }
         } if model == "resolver-v1" && context == ["Projects/Alpha.md"]

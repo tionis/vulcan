@@ -116,6 +116,7 @@ fn handle_non_cycle_sync_command(
             model,
             api_key_env,
             context,
+            allow_broad_context,
         } => run_sync_propose(
             cli,
             paths,
@@ -125,6 +126,7 @@ fn handle_non_cycle_sync_command(
             model,
             api_key_env.as_deref(),
             context,
+            *allow_broad_context,
         ),
         SyncCommand::Reject {
             conflict_id,
@@ -231,6 +233,7 @@ fn run_sync_propose(
     model: &str,
     api_key_env: Option<&str>,
     context: &[String],
+    allow_broad_context: bool,
 ) -> Result<(), CliError> {
     let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
     let profile = cli
@@ -257,7 +260,7 @@ fn run_sync_propose(
         &ResolutionProposalOptions {
             permission_profile: profile.to_string(),
             focused_context: context.to_vec(),
-            allow_broad_context: false,
+            allow_broad_context,
         },
         &provider,
         &vulcan_app::sync::SyncCancellationToken::default(),
@@ -277,6 +280,7 @@ fn run_sync_propose(
     _model: &str,
     _api_key_env: Option<&str>,
     _context: &[String],
+    _allow_broad_context: bool,
 ) -> Result<(), CliError> {
     Err(CliError::operation(
         "sync proposal generation requires the `web` feature",

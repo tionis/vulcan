@@ -3975,6 +3975,11 @@ pub enum SyncCommand {
             help = "Permit and identify one focused vault-relative context path"
         )]
         context: Vec<String>,
+        #[arg(
+            long,
+            help = "Permit the resolver's bounded read tool beyond explicit context paths"
+        )]
+        allow_broad_context: bool,
     },
     #[command(about = "Explicitly reject a retained conflict proposal")]
     Reject {

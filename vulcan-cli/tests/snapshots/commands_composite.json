@@ -8707,6 +8707,20 @@
                 "value_names": [
                   "CONTEXT"
                 ]
+              },
+              {
+                "help": "Permit the resolver's bounded read tool beyond explicit context paths",
+                "id": "allow_broad_context",
+                "long": "allow-broad-context",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ALLOW_BROAD_CONTEXT"
+                ]
               }
             ],
             "subcommands": []
