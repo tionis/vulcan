@@ -12,6 +12,7 @@
 mod contracts;
 mod git;
 mod merge_policy;
+mod platform;
 mod structured_merge;
 mod sync;
 
@@ -32,11 +33,15 @@ pub use git::{
     GitRefName, GitRefUpdateResult, GitReference, GitRemote, GitRepository, GitRepositoryLayout,
     GitRepositoryRequirements, GitReservedNamesPolicy, GitResolvedPath, GitSafetyState,
     GitSymlinkPolicy, GitTimestampPolicy, GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan,
-    GitVersion,
+    GitTreeEntry, GitVersion,
 };
 pub use merge_policy::{
     MergeAutomation, MergeFileKind, MergePathSelector, MergePolicy, MergePolicyDecision,
     MergePolicyError, MergePolicyRule, MergeResolution, MERGE_POLICY_SCHEMA_VERSION,
+};
+pub use platform::{
+    inspect_git_tree_platform, GitPlatformDiagnostic, GitPlatformDiagnosticSeverity,
+    GitPlatformPreflight,
 };
 pub use sync::{
     find_git_live_epoch, git_live_epoch_id, sync_git_once, sync_git_once_with_control,

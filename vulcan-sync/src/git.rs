@@ -143,6 +143,13 @@ pub trait GitEngine: Send + Sync {
         revision: &GitOid,
     ) -> Result<Vec<String>, GitEngineError>;
 
+    /// Lists every leaf entry in a commit or tree without loading object contents.
+    fn tree_entries(
+        &self,
+        repository: &GitRepository,
+        revision: &GitOid,
+    ) -> Result<Vec<GitTreeEntry>, GitEngineError>;
+
     fn tree_with_paths(
         &self,
         repository: &GitRepository,
@@ -398,6 +405,18 @@ impl GitPlatformProfile {
             Self::WindowsNative
         } else {
             Self::OtherNative
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, GitEngineError> {
+        match value {
+            "linux_native" => Ok(Self::LinuxNative),
+            "windows_native" => Ok(Self::WindowsNative),
+            "android_shared" => Ok(Self::AndroidShared),
+            "other_native" => Ok(Self::OtherNative),
+            _ => Err(GitEngineError::UnsupportedRepository {
+                detail: format!("unknown Git platform profile `{value}`"),
+            }),
         }
     }
 
@@ -744,6 +763,14 @@ pub struct GitPathObject {
     pub kind: String,
     #[serde(skip)]
     pub data: Option<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitTreeEntry {
+    pub path: String,
+    pub oid: GitOid,
+    pub mode: String,
+    pub kind: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1909,6 +1936,19 @@ impl GitEngine for GitCliEngine {
             ["ls-tree", "-r", "-z", "--name-only", revision.as_str()],
         )?;
         parse_nul_paths("list Git tree paths", &output.stdout)
+    }
+
+    fn tree_entries(
+        &self,
+        repository: &GitRepository,
+        revision: &GitOid,
+    ) -> Result<Vec<GitTreeEntry>, GitEngineError> {
+        let output = self.repository_output(
+            repository,
+            "list Git tree entries",
+            ["ls-tree", "-r", "-z", revision.as_str()],
+        )?;
+        parse_tree_entries(&output.stdout)
     }
 
     fn tree_with_paths(
@@ -3183,6 +3223,59 @@ fn parse_nul_paths(operation: &'static str, bytes: &[u8]) -> Result<Vec<String>,
             })
         })
         .collect()
+}
+
+fn parse_tree_entries(bytes: &[u8]) -> Result<Vec<GitTreeEntry>, GitEngineError> {
+    const OPERATION: &str = "list Git tree entries";
+    if bytes.len() > MAX_DIAGNOSTIC_PATH_BYTES {
+        return Err(GitEngineError::InvalidOutput {
+            operation: OPERATION,
+            detail: format!("tree output exceeds the {MAX_DIAGNOSTIC_PATH_BYTES} byte limit"),
+        });
+    }
+    let mut entries = Vec::new();
+    for record in bytes
+        .split(|byte| *byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        let separator = record
+            .iter()
+            .position(|byte| *byte == b'\t')
+            .ok_or_else(|| GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: "tree entry lacks a path separator".to_string(),
+            })?;
+        let (header, path_with_separator) = record.split_at(separator);
+        let path = &path_with_separator[1..];
+        let header =
+            std::str::from_utf8(header).map_err(|error| GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: error.to_string(),
+            })?;
+        let mut fields = header.split_whitespace();
+        let mode = fields.next().unwrap_or_default();
+        let kind = fields.next().unwrap_or_default();
+        let oid = fields.next().unwrap_or_default();
+        if mode.is_empty() || kind.is_empty() || oid.is_empty() || fields.next().is_some() {
+            return Err(GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: "expected `<mode> <type> <object>\\t<path>`".to_string(),
+            });
+        }
+        let path =
+            String::from_utf8(path.to_vec()).map_err(|error| GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: error.to_string(),
+            })?;
+        validate_repository_path(&path)?;
+        entries.push(GitTreeEntry {
+            path,
+            oid: GitOid::parse(oid)?,
+            mode: mode.to_string(),
+            kind: kind.to_string(),
+        });
+    }
+    Ok(entries)
 }
 
 fn parse_tree_application_paths(bytes: &[u8]) -> Result<Vec<GitTreeApplyPath>, GitEngineError> {

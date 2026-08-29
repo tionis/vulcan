@@ -16,10 +16,10 @@ use vulcan_sync::{GitAutomaticMergeValidation, GitEngine, GitSyncObserver};
 
 pub use vulcan_sync::{
     GitCloneRequest, GitDetachedRecoveryReport, GitDetachedRecoveryRequest, GitInstallation,
-    GitObjectFormat, GitPlatformPolicy, GitPlatformProfile, GitRefName, GitRemote, GitRepository,
-    GitRepositoryLayout, GitRepositoryRequirements, GitSyncAction, GitSyncConflict,
-    GitSyncDeviceId, GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPause,
-    GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
+    GitObjectFormat, GitPlatformPolicy, GitPlatformPreflight, GitPlatformProfile, GitRefName,
+    GitRemote, GitRepository, GitRepositoryLayout, GitRepositoryRequirements, GitSyncAction,
+    GitSyncConflict, GitSyncDeviceId, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
+    GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
     SyncCancellationToken,
 };
 
@@ -108,6 +108,9 @@ pub struct SyncDoctorReport {
     pub remote_revision: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub requirements: Option<GitRepositoryRequirements>,
+    pub platform_policy: GitPlatformPolicy,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub platform_preflight: Option<GitPlatformPreflight>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub journal: Option<SyncJournal>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -118,8 +121,18 @@ pub struct SyncDoctorReport {
 /// Inspects a Git-backed vault and its device-local recovery state without mutation.
 #[must_use]
 pub fn doctor_git_vault(paths: &VaultPaths, options: &GitSyncOptions) -> SyncDoctorReport {
+    doctor_git_vault_for_platform(paths, options, GitPlatformProfile::native())
+}
+
+/// Inspects a Git-backed vault for an explicit registered target platform.
+#[must_use]
+pub fn doctor_git_vault_for_platform(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    platform: GitPlatformProfile,
+) -> SyncDoctorReport {
     let state_store = SyncStateStore::user_default().ok();
-    doctor_git_vault_with_optional_state(paths, options, state_store.as_ref())
+    doctor_git_vault_with_optional_state(paths, options, platform, state_store.as_ref())
 }
 
 #[must_use]
@@ -128,19 +141,25 @@ pub fn doctor_git_vault_with_state_store(
     options: &GitSyncOptions,
     state_store: &SyncStateStore,
 ) -> SyncDoctorReport {
-    doctor_git_vault_with_optional_state(paths, options, Some(state_store))
+    doctor_git_vault_with_optional_state(
+        paths,
+        options,
+        GitPlatformProfile::native(),
+        Some(state_store),
+    )
 }
 
 fn doctor_git_vault_with_optional_state(
     paths: &VaultPaths,
     options: &GitSyncOptions,
+    platform: GitPlatformProfile,
     state_store: Option<&SyncStateStore>,
 ) -> SyncDoctorReport {
     let engine = vulcan_sync::GitCliEngine::default();
     let (effective_options, policy_severity, policy_detail) =
         configured_options_for_doctor(paths, options);
     let options = &effective_options;
-    let mut report = initial_doctor_report(paths, options);
+    let mut report = initial_doctor_report(paths, options, platform);
     doctor_check(
         &mut report,
         "sync.merge-policy",
@@ -235,6 +254,7 @@ fn doctor_git_vault_with_optional_state(
     }
 
     doctor_refs(&engine, &repository, options, &mut report);
+    doctor_platform_tree(&engine, &repository, options, &mut report);
     doctor_repository_lock(&repository, &mut report);
     doctor_journal(paths, state_store, &mut report);
     doctor_apply_marker(state_store, &repository, &mut report);
@@ -262,7 +282,11 @@ fn configured_options_for_doctor(
     }
 }
 
-fn initial_doctor_report(paths: &VaultPaths, options: &GitSyncOptions) -> SyncDoctorReport {
+fn initial_doctor_report(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    platform: GitPlatformProfile,
+) -> SyncDoctorReport {
     SyncDoctorReport {
         version: SYNC_DOCTOR_VERSION,
         healthy: true,
@@ -274,6 +298,8 @@ fn initial_doctor_report(paths: &VaultPaths, options: &GitSyncOptions) -> SyncDo
         repository: None,
         remote_revision: None,
         requirements: None,
+        platform_policy: platform.policy(),
+        platform_preflight: None,
         journal: None,
         apply_marker: None,
         checks: Vec::new(),
@@ -522,6 +548,96 @@ fn doctor_refs(
             format!("remote could not be inspected: {error}"),
         ),
     }
+}
+
+fn doctor_platform_tree(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    options: &GitSyncOptions,
+    report: &mut SyncDoctorReport,
+) {
+    let local = match GitSyncRefs::for_options(options) {
+        Ok(refs) => engine.read_ref(repository, &refs.local),
+        Err(error) => {
+            doctor_check(
+                report,
+                "platform.tree",
+                SyncDoctorSeverity::Error,
+                format!("cannot derive the local sync ref: {error}"),
+            );
+            return;
+        }
+    };
+    let revision = match local {
+        Ok(Some(revision)) => Some(revision),
+        Ok(None) => match engine.head_commit(repository) {
+            Ok(revision) => revision,
+            Err(error) => {
+                doctor_check(
+                    report,
+                    "platform.tree",
+                    SyncDoctorSeverity::Error,
+                    format!("cannot select a tree for platform preflight: {error}"),
+                );
+                return;
+            }
+        },
+        Err(error) => {
+            doctor_check(
+                report,
+                "platform.tree",
+                SyncDoctorSeverity::Error,
+                format!("cannot inspect the local sync candidate: {error}"),
+            );
+            return;
+        }
+    };
+    let Some(revision) = revision else {
+        doctor_check(
+            report,
+            "platform.tree",
+            SyncDoctorSeverity::Info,
+            "the unborn repository has no immutable tree to preflight yet",
+        );
+        return;
+    };
+    let entries = match engine.tree_entries(repository, &revision) {
+        Ok(entries) => entries,
+        Err(error) => {
+            doctor_check(
+                report,
+                "platform.tree",
+                SyncDoctorSeverity::Error,
+                format!("cannot inspect the selected Git tree: {error}"),
+            );
+            return;
+        }
+    };
+    let preflight =
+        vulcan_sync::inspect_git_tree_platform(revision, &entries, report.platform_policy.clone());
+    for diagnostic in &preflight.diagnostics {
+        let severity = match diagnostic.severity {
+            vulcan_sync::GitPlatformDiagnosticSeverity::Pass => SyncDoctorSeverity::Pass,
+            vulcan_sync::GitPlatformDiagnosticSeverity::Info => SyncDoctorSeverity::Info,
+            vulcan_sync::GitPlatformDiagnosticSeverity::Warning => SyncDoctorSeverity::Warning,
+            vulcan_sync::GitPlatformDiagnosticSeverity::Error => SyncDoctorSeverity::Error,
+        };
+        let examples = if diagnostic.paths.is_empty() {
+            String::new()
+        } else {
+            format!("; examples: {}", diagnostic.paths.join(", "))
+        };
+        doctor_check(
+            report,
+            &diagnostic.code,
+            severity,
+            format!(
+                "{} ({} path(s)){examples}",
+                diagnostic.message, diagnostic.count
+            ),
+        );
+    }
+    report.platform_preflight = Some(preflight);
 }
 
 fn doctor_repository_lock(repository: &GitRepository, report: &mut SyncDoctorReport) {
@@ -2011,6 +2127,56 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         assert!(report.checks.iter().any(|check| {
             check.code == "cache.coherence" && check.severity == SyncDoctorSeverity::Info
         }));
+        assert_eq!(report.platform_policy.profile, GitPlatformProfile::native());
+        assert!(report
+            .platform_preflight
+            .as_ref()
+            .is_some_and(|preflight| { preflight.compatible && preflight.entries == 2 }));
+        assert!(!store.root().exists());
+    }
+
+    #[test]
+    fn sync_doctor_applies_an_explicit_target_platform_without_host_dependence() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        git(
+            &vault,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&vault, &["config", "user.name", "Vulcan Test"]);
+        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        for path in ["CON.txt", "Notes/Alpha.md", "notes/alpha.md"] {
+            let absolute = vault.join(path);
+            fs::create_dir_all(absolute.parent().expect("path parent")).expect("parent");
+            fs::write(absolute, path).expect("fixture path");
+        }
+        git(&vault, &["add", "."]);
+        git(&vault, &["commit", "--quiet", "-m", "portable fixtures"]);
+        let paths = VaultPaths::new(&vault);
+        let store = SyncStateStore::at(temporary.path().join("state"));
+
+        let report = doctor_git_vault_with_optional_state(
+            &paths,
+            &GitSyncOptions::default(),
+            GitPlatformProfile::AndroidShared,
+            Some(&store),
+        );
+
+        assert!(!report.healthy);
+        assert_eq!(
+            report.platform_policy.profile,
+            GitPlatformProfile::AndroidShared
+        );
+        assert!(report
+            .platform_preflight
+            .as_ref()
+            .is_some_and(|preflight| !preflight.compatible));
+        for code in ["platform.case-collision", "platform.reserved-name"] {
+            assert!(report.checks.iter().any(|check| {
+                check.code == code && check.severity == SyncDoctorSeverity::Error
+            }));
+        }
         assert!(!store.root().exists());
     }
 

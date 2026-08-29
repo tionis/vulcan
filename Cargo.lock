@@ -4536,6 +4536,7 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "ulid",
+ "unicode-normalization",
 ]
 
 [[package]]

@@ -6,8 +6,8 @@ use crate::{
 };
 use serde::Serialize;
 use vulcan_app::sync::{
-    doctor_git_vault, sync_git_vault, GitRefName, GitRemote, GitSyncAction, GitSyncOptions,
-    SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
+    doctor_git_vault_for_platform, sync_git_vault, GitPlatformProfile, GitRefName, GitRemote,
+    GitSyncAction, GitSyncOptions, SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
 };
 use vulcan_app::sync_checkpoints::{
     create_sync_checkpoint, SyncCheckpointKind, SyncCheckpointOptions, SyncCheckpointReport,
@@ -290,7 +290,7 @@ fn run_sync_reject(
     proposal_id: &str,
     dry_run: bool,
 ) -> Result<(), CliError> {
-    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
     let report = reject_resolution_proposal(&paths, conflict_id, proposal_id, dry_run)
         .map_err(CliError::operation)?;
@@ -326,7 +326,7 @@ fn run_sync_propose(
     auto_accept: bool,
     target: &crate::SyncTargetArgs,
 ) -> Result<(), CliError> {
-    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     let profile = cli
         .permissions
         .as_deref()
@@ -446,7 +446,7 @@ fn run_semantic_plan(
     agent: bool,
     dry_run: bool,
 ) -> Result<(), CliError> {
-    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
     let report = create_semantic_plan(
         &paths,
@@ -549,7 +549,7 @@ fn run_sync_checkpoint(
     target: &crate::SyncTargetArgs,
     dry_run: bool,
 ) -> Result<(), CliError> {
-    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
     let report = create_sync_checkpoint(
         &paths,
@@ -590,7 +590,7 @@ fn run_sync_retention_plan(
     recovery_checkpoints_keep: usize,
     epoch_archives_keep: usize,
 ) -> Result<(), CliError> {
-    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
     let report = plan_sync_retention(
         &paths,
@@ -655,7 +655,7 @@ fn run_sync_retention_apply(
     rollover: bool,
     expire_epoch_archives: bool,
 ) -> Result<(), CliError> {
-    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
     let report = apply_sync_retention(
         &paths,
@@ -758,7 +758,7 @@ fn run_sync_resolve(
     target: &crate::SyncTargetArgs,
     dry_run: bool,
 ) -> Result<(), CliError> {
-    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
     match resolution {
         CliResolution::Proposal(proposal_id) => {
@@ -1170,7 +1170,8 @@ fn run_sync_doctor(
     wiki: Option<&str>,
     target: &crate::SyncTargetArgs,
 ) -> Result<(), CliError> {
-    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    let (paths, registration_profile, registration_platform) =
+        resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
     let options = GitSyncOptions {
         remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
@@ -1178,14 +1179,20 @@ fn run_sync_doctor(
         dry_run: true,
         ..GitSyncOptions::default()
     };
-    let report = doctor_git_vault(&paths, &options);
+    let platform = registration_platform
+        .as_deref()
+        .map(GitPlatformProfile::parse)
+        .transpose()
+        .map_err(CliError::operation)?
+        .unwrap_or_else(GitPlatformProfile::native);
+    let report = doctor_git_vault_for_platform(&paths, &options, platform);
     print_sync_doctor_report(cli.output, &report)
 }
 
 fn resolve_sync_paths(
     selected_paths: &VaultPaths,
     wiki: Option<&str>,
-) -> Result<(VaultPaths, Option<String>), CliError> {
+) -> Result<(VaultPaths, Option<String>, Option<String>), CliError> {
     let resolved = if let Some(wiki) = wiki {
         let id = WikiId::parse(wiki).map_err(CliError::operation)?;
         let status = WikiRegistry::user_default()
@@ -1210,9 +1217,10 @@ fn resolve_sync_paths(
         (
             VaultPaths::new(status.registration.path),
             status.registration.permissions_profile,
+            status.registration.platform_profile,
         )
     } else {
-        (selected_paths.clone(), None)
+        (selected_paths.clone(), None, None)
     };
     Ok(resolved)
 }
@@ -1235,7 +1243,7 @@ fn run_sync_conflicts(
     wiki: Option<&str>,
     conflict_id: Option<&str>,
 ) -> Result<(), CliError> {
-    let (paths, registration_profile) = resolve_sync_paths(selected_paths, wiki)?;
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
     if let Some(conflict_id) = conflict_id {
         let report = get_sync_conflict(&paths, conflict_id).map_err(CliError::operation)?;
