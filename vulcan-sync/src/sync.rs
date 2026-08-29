@@ -2073,6 +2073,32 @@ mod tests {
     }
 
     #[test]
+    fn conflict_identity_is_independent_of_candidate_and_path_arrival_order() {
+        let policy = MergePolicy::default();
+        let base = GitOid::parse("0".repeat(40)).expect("base oid");
+        let first = GitOid::parse("1".repeat(40)).expect("first oid");
+        let second = GitOid::parse("2".repeat(40)).expect("second oid");
+        let (forward, forward_policy) = conflict_identity(
+            &policy,
+            Some(&base),
+            &first,
+            &second,
+            &["B.md".to_string(), "A.md".to_string(), "A.md".to_string()],
+        )
+        .expect("forward identity");
+        let (swapped, swapped_policy) = conflict_identity(
+            &policy,
+            Some(&base),
+            &second,
+            &first,
+            &["A.md".to_string(), "B.md".to_string()],
+        )
+        .expect("swapped identity");
+        assert_eq!(forward, swapped);
+        assert_eq!(forward_policy, swapped_policy);
+    }
+
+    #[test]
     fn progress_reports_ordered_finite_cycle_phases() {
         let (_temporary, _remote, writer) = setup_remote_and_writer();
         let cancellation = SyncCancellationToken::default();

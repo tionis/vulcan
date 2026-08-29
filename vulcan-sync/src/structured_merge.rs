@@ -453,6 +453,34 @@ mod tests {
     }
 
     #[test]
+    fn structured_addition_order_is_independent_of_local_and_remote_roles() {
+        let base = Some(br#"{"items":[1]}"#.as_slice());
+        let candidate_a = Some(br#"{"items":[1,3]}"#.as_slice());
+        let candidate_b = Some(br#"{"items":[1,2]}"#.as_slice());
+        let first = resolved(merge_structured_path(
+            MergeFileKind::Json,
+            base,
+            candidate_b,
+            candidate_a,
+            "b",
+            "a",
+        ));
+        let swapped = resolved(merge_structured_path(
+            MergeFileKind::Json,
+            base,
+            candidate_a,
+            candidate_b,
+            "a",
+            "b",
+        ));
+        assert_eq!(first, swapped);
+        assert_eq!(
+            serde_json::from_slice::<Value>(&first.expect("content")).expect("JSON"),
+            serde_json::json!({"items": [1, 3, 2]})
+        );
+    }
+
+    #[test]
     fn markdown_merges_frontmatter_only_when_body_is_unchanged() {
         let base = b"---\ntitle: Home\ntags: [base]\n---\n# Home\n";
         let local = b"---\ntitle: Local\ntags: [base]\n---\n# Home\n";
