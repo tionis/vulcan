@@ -1079,7 +1079,10 @@ impl GitCliEngine {
         write_gitdir_pointer(&request.work_tree, &request.git_dir)?;
         let repository = self.discover_repository(&request.work_tree)?;
         if repository.layout != GitRepositoryLayout::Detached
-            || repository.git_dir != prospective_absolute_path(&request.git_dir)?
+            || !same_prospective_path(
+                &repository.git_dir,
+                &prospective_absolute_path(&request.git_dir)?,
+            )
         {
             return Err(GitEngineError::UnsupportedRepository {
                 detail: "the recreated repository did not resolve to the registered detached Git directory"
