@@ -16,11 +16,11 @@ use ulid::Ulid;
 use vulcan_core::VaultPaths;
 use vulcan_sync::{
     semantic_proposal_ref as namespace_semantic_proposal_ref, GitChange, GitChangeKind,
-    GitCliEngine, GitEngine, GitOid, GitRefDeleteResult, GitRefName, GitRefUpdateResult, GitRemote,
-    GitRepository, GitSyncOptions, GitSyncRefs,
+    GitCliEngine, GitEngine, GitOid, GitPushResult, GitRefDeleteResult, GitRefName,
+    GitRefUpdateResult, GitRemote, GitRepository, GitSyncOptions, GitSyncRefs,
 };
 
-pub const SEMANTIC_PLAN_VERSION: u32 = 5;
+pub const SEMANTIC_PLAN_VERSION: u32 = 6;
 const MAX_SEMANTIC_PLAN_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SEMANTIC_AGENT_PATCH_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SEMANTIC_AGENT_MESSAGE_BYTES: usize = 16 * 1024;
@@ -321,6 +321,10 @@ pub struct SemanticPlanReport {
     pub target_revision: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub proposal_tip: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_remote_previous_revision: Option<String>,
     pub commits: Vec<SemanticCommitProposal>,
     pub validation: SemanticPlanValidation,
 }
@@ -343,6 +347,18 @@ pub struct SemanticApplyReport {
     pub applied_revision: String,
     pub target_revision: String,
     pub proposal_ref_released: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SemanticPublishReport {
+    pub version: u32,
+    pub plan_id: String,
+    pub dry_run: bool,
+    pub remote: String,
+    pub semantic_ref: String,
+    pub previous_revision: String,
+    pub published_revision: String,
+    pub already_published: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -561,6 +577,134 @@ pub fn load_semantic_plan_with_state_store(
 pub fn apply_semantic_plan(plan_id: &str, dry_run: bool) -> Result<SemanticApplyReport, AppError> {
     let store = SyncStateStore::user_default()?;
     apply_semantic_plan_with_state_store(plan_id, dry_run, &store)
+}
+
+pub fn publish_semantic_plan(
+    plan_id: &str,
+    dry_run: bool,
+) -> Result<SemanticPublishReport, AppError> {
+    publish_semantic_plan_with_state_store(plan_id, dry_run, &SyncStateStore::user_default()?)
+}
+
+pub fn publish_semantic_plan_with_state_store(
+    plan_id: &str,
+    dry_run: bool,
+    store: &SyncStateStore,
+) -> Result<SemanticPublishReport, AppError> {
+    let mut plan = load_semantic_plan_with_state_store(plan_id, store)?;
+    if plan.status != SemanticPlanStatus::Applied {
+        return Err(AppError::operation(format!(
+            "semantic plan {plan_id} must be applied before publication"
+        )));
+    }
+    let engine = GitCliEngine::default();
+    let repository = engine
+        .discover_repository(&plan.vault)
+        .map_err(AppError::operation)?;
+    if repository_state_key(&plan.vault) != plan.repository_key {
+        return Err(AppError::operation(
+            "semantic plan vault identity no longer matches its repository key",
+        ));
+    }
+    let _lock = SemanticLock::acquire(&repository)?;
+    let source = GitOid::parse(plan.source_revision.clone()).map_err(AppError::operation)?;
+    let tip = GitOid::parse(
+        plan.proposal_tip
+            .clone()
+            .ok_or_else(|| AppError::operation("semantic plan has no proposal tip"))?,
+    )
+    .map_err(AppError::operation)?;
+    let target = GitOid::parse(plan.target_revision.clone()).map_err(AppError::operation)?;
+    let semantic_ref = GitRefName::parse(plan.semantic_ref.clone()).map_err(AppError::operation)?;
+    let remote = GitRemote::parse(plan.remote.clone()).map_err(AppError::operation)?;
+    validate_semantic_publication(&engine, &repository, &semantic_ref, &source, &target, &tip)?;
+    let remote_revision = engine
+        .remote_ref(&repository, &remote, &semantic_ref)
+        .map_err(AppError::operation)?;
+    let already_published = remote_revision.as_ref() == Some(&tip);
+    if !already_published && remote_revision.as_ref() != Some(&source) {
+        return Err(AppError::operation(format!(
+            "remote semantic ref {semantic_ref} changed from expected source {source}"
+        )));
+    }
+    let report = SemanticPublishReport {
+        version: SEMANTIC_PLAN_VERSION,
+        plan_id: plan_id.to_string(),
+        dry_run,
+        remote: remote.to_string(),
+        semantic_ref: semantic_ref.to_string(),
+        previous_revision: source.to_string(),
+        published_revision: tip.to_string(),
+        already_published,
+    };
+    if dry_run {
+        return Ok(report);
+    }
+    if !already_published
+        && engine
+            .push_ref(&repository, &remote, &tip, &semantic_ref, Some(&source))
+            .map_err(AppError::operation)?
+            != GitPushResult::Updated
+    {
+        return Err(AppError::operation(
+            "remote semantic branch changed while publishing the applied plan",
+        ));
+    }
+    if engine
+        .remote_ref(&repository, &remote, &semantic_ref)
+        .map_err(AppError::operation)?
+        .as_ref()
+        != Some(&tip)
+    {
+        return Err(AppError::operation(
+            "remote semantic branch does not identify the published proposal tip",
+        ));
+    }
+    plan.version = SEMANTIC_PLAN_VERSION;
+    plan.published_revision = Some(tip.to_string());
+    plan.published_remote_previous_revision = Some(source.to_string());
+    save_plan(store, &plan, false)?;
+    Ok(report)
+}
+
+fn validate_semantic_publication(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    semantic_ref: &GitRefName,
+    source: &GitOid,
+    target: &GitOid,
+    tip: &GitOid,
+) -> Result<(), AppError> {
+    if engine
+        .read_ref(repository, semantic_ref)
+        .map_err(AppError::operation)?
+        .as_ref()
+        != Some(tip)
+    {
+        return Err(AppError::operation(
+            "local semantic branch does not identify the applied proposal tip",
+        ));
+    }
+    if !engine
+        .is_ancestor(repository, source, tip)
+        .map_err(AppError::operation)?
+    {
+        return Err(AppError::operation(
+            "published semantic proposal is not a fast-forward of its source",
+        ));
+    }
+    if engine
+        .tree_oid(repository, tip)
+        .map_err(AppError::operation)?
+        != engine
+            .tree_oid(repository, target)
+            .map_err(AppError::operation)?
+    {
+        return Err(AppError::operation(
+            "published semantic proposal no longer matches its accepted target tree",
+        ));
+    }
+    Ok(())
 }
 
 pub fn reject_semantic_plan(
@@ -1713,6 +1857,8 @@ fn initial_plan_report(
         source_revision: source.to_string(),
         target_revision: target.to_string(),
         proposal_tip: None,
+        published_revision: None,
+        published_remote_previous_revision: None,
         commits: Vec::new(),
         validation: SemanticPlanValidation {
             source_ref_matches: true,
@@ -1793,6 +1939,38 @@ fn validate_loaded_plan(
             "semantic proposal ref mismatch at {}",
             path.display()
         )));
+    }
+    match (
+        plan.published_revision.as_deref(),
+        plan.published_remote_previous_revision.as_deref(),
+    ) {
+        (None, None) => {}
+        (Some(published), Some(previous)) => {
+            if plan.status != SemanticPlanStatus::Applied {
+                return Err(AppError::operation(format!(
+                    "semantic publication metadata requires applied status at {}",
+                    path.display()
+                )));
+            }
+            if plan.proposal_tip.as_deref() != Some(published) {
+                return Err(AppError::operation(format!(
+                    "semantic published revision differs from the proposal tip at {}",
+                    path.display()
+                )));
+            }
+            if previous != plan.source_revision {
+                return Err(AppError::operation(format!(
+                    "semantic publication lease differs from the plan source at {}",
+                    path.display()
+                )));
+            }
+        }
+        _ => {
+            return Err(AppError::operation(format!(
+                "semantic publication metadata is incomplete at {}",
+                path.display()
+            )));
+        }
     }
     Ok(())
 }
@@ -2142,6 +2320,8 @@ mod tests {
             source_revision: "0".repeat(40),
             target_revision: "1".repeat(40),
             proposal_tip: Some("2".repeat(40)),
+            published_revision: None,
+            published_remote_previous_revision: None,
             commits: Vec::new(),
             validation: SemanticPlanValidation {
                 source_ref_matches: true,
@@ -2160,6 +2340,45 @@ mod tests {
         let decoded: SemanticPlanReport =
             serde_json::from_value(legacy).expect("decode plan without grouping field");
         assert_eq!(decoded.grouping, SemanticGrouping::TopLevel);
+    }
+
+    #[test]
+    fn semantic_publication_metadata_is_complete_and_bound_to_the_plan() {
+        let id = "01arz3ndektsv4rrffq69g5fav";
+        let mut plan = SemanticPlanReport {
+            version: 6,
+            plan_id: id.to_string(),
+            status: SemanticPlanStatus::Applied,
+            dry_run: false,
+            agent: false,
+            agent_identity: None,
+            grouping: SemanticGrouping::TopLevel,
+            vault: "/tmp/vault".into(),
+            repository_key: "repository".to_string(),
+            semantic_ref: "refs/heads/main".to_string(),
+            proposal_ref: semantic_proposal_ref(id).expect("proposal ref").to_string(),
+            remote: "origin".to_string(),
+            live_ref: "refs/heads/__vulcan-sync/live".to_string(),
+            source_revision: "0".repeat(40),
+            target_revision: "1".repeat(40),
+            proposal_tip: Some("2".repeat(40)),
+            published_revision: Some("2".repeat(40)),
+            published_remote_previous_revision: Some("0".repeat(40)),
+            commits: Vec::new(),
+            validation: SemanticPlanValidation {
+                source_ref_matches: true,
+                source_is_ancestor: true,
+                target_is_accepted_live: true,
+                final_tree_matches_target: true,
+            },
+        };
+        validate_loaded_plan(id, Path::new("plan.json"), &plan).expect("valid publication");
+
+        plan.published_remote_previous_revision = None;
+        assert!(validate_loaded_plan(id, Path::new("plan.json"), &plan).is_err());
+        plan.published_remote_previous_revision = Some("0".repeat(40));
+        plan.published_revision = Some("3".repeat(40));
+        assert!(validate_loaded_plan(id, Path::new("plan.json"), &plan).is_err());
     }
 
     #[cfg(unix)]

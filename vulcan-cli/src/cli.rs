@@ -579,6 +579,7 @@ Subcommands:
   retention-apply apply reviewed checkpoint, rollover, and epoch-expiry decisions
   semantic-plan build a reviewable deterministic or agent-organized history
   semantic-apply apply a reviewed semantic history by compare-and-swap
+  semantic-publish publish an applied semantic history with an exact remote lease
   semantic-reject reject a semantic proposal and release its retained ref
   pause        disable future automatic sync for one registered wiki
   resume       enable future automatic sync for one registered wiki
@@ -612,6 +613,7 @@ Examples:
   vulcan sync semantic-plan --from main --to <accepted-live-rev> --dry-run
   vulcan sync semantic-plan --from main --to <accepted-live-rev> --agent --model <model> --dry-run
   vulcan sync semantic-apply <plan-id> --dry-run
+  vulcan sync semantic-publish <plan-id> --dry-run
   vulcan sync pause personal
   vulcan sync resume personal
   vulcan --vault ./wiki sync run --remote origin";
@@ -4236,6 +4238,13 @@ pub enum SyncCommand {
         #[arg(help = "Semantic plan ULID")]
         plan_id: String,
         #[arg(long, help = "Validate without advancing the semantic branch")]
+        dry_run: bool,
+    },
+    #[command(about = "Publish an applied semantic history with an exact remote lease")]
+    SemanticPublish {
+        #[arg(help = "Applied semantic plan ULID")]
+        plan_id: String,
+        #[arg(long, help = "Validate the remote lease without pushing")]
         dry_run: bool,
     },
     #[command(about = "Reject a semantic history proposal and release its Git ref")]

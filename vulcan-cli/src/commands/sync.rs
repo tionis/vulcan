@@ -35,9 +35,9 @@ use vulcan_app::sync_retention::{
     SyncRetentionPlanReport, SyncRetentionPolicy,
 };
 use vulcan_app::sync_semantic::{
-    apply_semantic_plan, create_semantic_plan, load_semantic_plan, reject_semantic_plan,
-    SemanticApplyReport, SemanticGrouping, SemanticPlanOptions, SemanticPlanReport,
-    SemanticRejectReport,
+    apply_semantic_plan, create_semantic_plan, load_semantic_plan, publish_semantic_plan,
+    reject_semantic_plan, SemanticApplyReport, SemanticGrouping, SemanticPlanOptions,
+    SemanticPlanReport, SemanticPublishReport, SemanticRejectReport,
 };
 #[cfg(feature = "web")]
 use vulcan_app::sync_semantic::{
@@ -113,6 +113,9 @@ fn handle_non_cycle_sync_command(
     if let Some(result) = handle_retention_command(cli, paths, command) {
         return Some(result);
     }
+    if let Some(result) = handle_semantic_sync_command(cli, paths, command) {
+        return Some(result);
+    }
     let result = match command {
         SyncCommand::Pause { wiki, dry_run } => {
             set_automatic_sync(cli.output, paths, wiki.as_deref(), true, *dry_run)
@@ -169,6 +172,26 @@ fn handle_non_cycle_sync_command(
             target,
             dry_run,
         } => run_sync_checkpoint(cli, paths, wiki.as_deref(), *kind, target, *dry_run),
+        SyncCommand::SemanticPlan { .. }
+        | SyncCommand::SemanticApply { .. }
+        | SyncCommand::SemanticPublish { .. }
+        | SyncCommand::SemanticReject { .. } => {
+            unreachable!("semantic commands are dispatched before the general sync match")
+        }
+        SyncCommand::Run { .. } | SyncCommand::Status { .. } => return None,
+        SyncCommand::RetentionPlan { .. } | SyncCommand::RetentionApply { .. } => {
+            unreachable!("retention commands are dispatched before the general sync match")
+        }
+    };
+    Some(result)
+}
+
+fn handle_semantic_sync_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &SyncCommand,
+) -> Option<Result<(), CliError>> {
+    let result = match command {
         SyncCommand::SemanticPlan {
             wiki,
             from,
@@ -199,13 +222,13 @@ fn handle_non_cycle_sync_command(
         SyncCommand::SemanticApply { plan_id, dry_run } => {
             run_semantic_apply(cli, plan_id, *dry_run)
         }
+        SyncCommand::SemanticPublish { plan_id, dry_run } => {
+            run_semantic_publish(cli, plan_id, *dry_run)
+        }
         SyncCommand::SemanticReject { plan_id, dry_run } => {
             run_semantic_reject(cli, plan_id, *dry_run)
         }
-        SyncCommand::Run { .. } | SyncCommand::Status { .. } => return None,
-        SyncCommand::RetentionPlan { .. } | SyncCommand::RetentionApply { .. } => {
-            unreachable!("retention commands are dispatched before the general sync match")
-        }
+        _ => return None,
     };
     Some(result)
 }
@@ -596,6 +619,39 @@ fn print_semantic_apply(
         report.previous_revision,
         report.applied_revision,
         if report.dry_run { " (dry run)" } else { "" }
+    );
+    Ok(())
+}
+
+fn run_semantic_publish(cli: &Cli, plan_id: &str, dry_run: bool) -> Result<(), CliError> {
+    let plan = load_semantic_plan(plan_id).map_err(CliError::operation)?;
+    let paths = VaultPaths::new(&plan.vault);
+    selected_permission_guard(cli, &paths)?
+        .check_git()
+        .map_err(CliError::operation)?;
+    let report = publish_semantic_plan(plan_id, dry_run).map_err(CliError::operation)?;
+    print_semantic_publish(cli.output, &report)
+}
+
+fn print_semantic_publish(
+    output: OutputFormat,
+    report: &SemanticPublishReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Semantic plan {}: published {} to {}/{}{}{}",
+        report.plan_id,
+        report.published_revision,
+        report.remote,
+        report.semantic_ref,
+        if report.dry_run { " (dry run)" } else { "" },
+        if report.already_published {
+            " (already published)"
+        } else {
+            ""
+        }
     );
     Ok(())
 }

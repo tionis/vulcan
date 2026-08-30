@@ -5652,7 +5652,7 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
         ])
         .success(),
     );
-    assert_eq!(by_hunk["version"], 5);
+    assert_eq!(by_hunk["version"], 6);
     assert_eq!(by_hunk["grouping"], "hunk");
     assert_eq!(by_hunk["commits"].as_array().map(Vec::len), Some(4));
     assert_eq!(by_hunk["commits"][2]["group"], "hunk 1/2 Root.md");
@@ -5798,7 +5798,7 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
 
     let plan =
         parse_stdout_json(&sync(&["semantic-plan", "--from", &source, "--to", &target]).success());
-    assert_eq!(plan["version"], 5);
+    assert_eq!(plan["version"], 6);
     assert_eq!(plan["grouping"], "top_level");
     assert_eq!(plan["status"], "ready");
     assert_eq!(plan["validation"]["final_tree_matches_target"], true);
@@ -5874,6 +5874,31 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
     let repeated = parse_stdout_json(&sync(&["semantic-apply", plan_id]).success());
     assert_eq!(repeated["applied_revision"], tip);
     assert_eq!(repeated["proposal_ref_released"], true);
+
+    run_git_ok(
+        &vault,
+        &["push", "origin", &format!("{source}:refs/heads/main")],
+    );
+    let publication_preview =
+        parse_stdout_json(&sync(&["semantic-publish", plan_id, "--dry-run"]).success());
+    assert_eq!(publication_preview["dry_run"], true);
+    assert_eq!(publication_preview["published_revision"], tip);
+    assert_eq!(
+        run_git_stdout(&vault, &["ls-remote", "origin", "refs/heads/main"])
+            .split_whitespace()
+            .next(),
+        Some(source.as_str())
+    );
+    let publication = parse_stdout_json(&sync(&["semantic-publish", plan_id]).success());
+    assert_eq!(publication["already_published"], false);
+    assert_eq!(
+        run_git_stdout(&vault, &["ls-remote", "origin", "refs/heads/main"])
+            .split_whitespace()
+            .next(),
+        Some(tip)
+    );
+    let repeated_publication = parse_stdout_json(&sync(&["semantic-publish", plan_id]).success());
+    assert_eq!(repeated_publication["already_published"], true);
 }
 
 #[test]

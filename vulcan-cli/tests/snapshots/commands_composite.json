@@ -8450,7 +8450,7 @@
       },
       {
         "about": "Synchronize a vault through a hidden Git live ref",
-        "after_help": "Subcommands:\n  run          perform one finite capture, reconcile, push, and apply cycle\n  status       inspect local safety and remote live-ref state without mutating either\n  doctor       diagnose Git, refs, filters, recovery state, and cache coherence\n  conflicts    list preserved conflicts or show one immutable record\n  propose      ask an OpenAI-compatible provider for a review-only conflict proposal\n  reject       explicitly reject a retained conflict proposal\n  resolve      resolve with one explicit preserved side or approved proposal\n  checkpoint   retain the currently accepted live commit under a durable local ref\n  retention-plan inspect live-epoch and checkpoint retention without mutation\n  retention-apply apply reviewed checkpoint, rollover, and epoch-expiry decisions\n  semantic-plan build a reviewable deterministic or agent-organized history\n  semantic-apply apply a reviewed semantic history by compare-and-swap\n  semantic-reject reject a semantic proposal and release its retained ref\n  pause        disable future automatic sync for one registered wiki\n  resume       enable future automatic sync for one registered wiki\n\nNotes:\n  Run/status/doctor work directly against the selected vault path and do not require a daemon or wiki registration.\n  The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.\n  Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.\n  Staged changes and in-progress Git operations pause worktree synchronization.\n  Pause/resume updates device-local automatic behavior only; manual run and status remain available.\n\nExamples:\n  vulcan sync run\n  vulcan sync run personal\n  vulcan sync run --group daily\n  vulcan sync status --all\n  vulcan sync run --dry-run\n  vulcan sync status\n  vulcan sync doctor\n  vulcan sync conflicts\n  vulcan sync conflicts <conflict-id>\n  vulcan sync propose <conflict-id> --model <model> --base-url <url>\n  vulcan sync reject <conflict-id> <proposal-id> --dry-run\n  vulcan sync resolve <conflict-id> --side local --dry-run\n  vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run\n  vulcan sync checkpoint personal --kind recovery\n  vulcan sync retention-plan personal\n  vulcan sync retention-apply personal --dry-run\n  vulcan sync retention-apply personal --rollover\n  vulcan sync retention-apply personal --epoch-archives-keep 8 --expire-epoch-archives\n  vulcan sync semantic-plan --from main --to <accepted-live-rev> --dry-run\n  vulcan sync semantic-plan --from main --to <accepted-live-rev> --agent --model <model> --dry-run\n  vulcan sync semantic-apply <plan-id> --dry-run\n  vulcan sync pause personal\n  vulcan sync resume personal\n  vulcan --vault ./wiki sync run --remote origin",
+        "after_help": "Subcommands:\n  run          perform one finite capture, reconcile, push, and apply cycle\n  status       inspect local safety and remote live-ref state without mutating either\n  doctor       diagnose Git, refs, filters, recovery state, and cache coherence\n  conflicts    list preserved conflicts or show one immutable record\n  propose      ask an OpenAI-compatible provider for a review-only conflict proposal\n  reject       explicitly reject a retained conflict proposal\n  resolve      resolve with one explicit preserved side or approved proposal\n  checkpoint   retain the currently accepted live commit under a durable local ref\n  retention-plan inspect live-epoch and checkpoint retention without mutation\n  retention-apply apply reviewed checkpoint, rollover, and epoch-expiry decisions\n  semantic-plan build a reviewable deterministic or agent-organized history\n  semantic-apply apply a reviewed semantic history by compare-and-swap\n  semantic-publish publish an applied semantic history with an exact remote lease\n  semantic-reject reject a semantic proposal and release its retained ref\n  pause        disable future automatic sync for one registered wiki\n  resume       enable future automatic sync for one registered wiki\n\nNotes:\n  Run/status/doctor work directly against the selected vault path and do not require a daemon or wiki registration.\n  The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.\n  Local bytes are captured in Vulcan-owned refs before an accepted remote tree is applied.\n  Staged changes and in-progress Git operations pause worktree synchronization.\n  Pause/resume updates device-local automatic behavior only; manual run and status remain available.\n\nExamples:\n  vulcan sync run\n  vulcan sync run personal\n  vulcan sync run --group daily\n  vulcan sync status --all\n  vulcan sync run --dry-run\n  vulcan sync status\n  vulcan sync doctor\n  vulcan sync conflicts\n  vulcan sync conflicts <conflict-id>\n  vulcan sync propose <conflict-id> --model <model> --base-url <url>\n  vulcan sync reject <conflict-id> <proposal-id> --dry-run\n  vulcan sync resolve <conflict-id> --side local --dry-run\n  vulcan sync resolve <conflict-id> --approve-proposal <proposal-id> --dry-run\n  vulcan sync checkpoint personal --kind recovery\n  vulcan sync retention-plan personal\n  vulcan sync retention-apply personal --dry-run\n  vulcan sync retention-apply personal --rollover\n  vulcan sync retention-apply personal --epoch-archives-keep 8 --expire-epoch-archives\n  vulcan sync semantic-plan --from main --to <accepted-live-rev> --dry-run\n  vulcan sync semantic-plan --from main --to <accepted-live-rev> --agent --model <model> --dry-run\n  vulcan sync semantic-apply <plan-id> --dry-run\n  vulcan sync semantic-publish <plan-id> --dry-run\n  vulcan sync pause personal\n  vulcan sync resume personal\n  vulcan --vault ./wiki sync run --remote origin",
         "name": "sync",
         "options": [],
         "subcommands": [
@@ -9366,6 +9366,38 @@
               },
               {
                 "help": "Validate without advancing the semantic branch",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Publish an applied semantic history with an exact remote lease",
+            "name": "semantic-publish",
+            "options": [
+              {
+                "help": "Applied semantic plan ULID",
+                "id": "plan_id",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "PLAN_ID"
+                ]
+              },
+              {
+                "help": "Validate the remote lease without pushing",
                 "id": "dry_run",
                 "long": "dry-run",
                 "possible_values": [

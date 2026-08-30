@@ -98,7 +98,9 @@ apply markers, or `refs/vulcan/**` to make a status look clean.
   history without rewriting live snapshots. `top-level` is default; `file`, `change`, `hunk`, and
   `all` are deterministic alternatives. Hunk grouping splits only safe separated text changes.
 - Materialize the plan only after review, preview `sync semantic-apply <plan-id> --dry-run`, and then
-  apply explicitly. Reject declined plans with `sync semantic-reject <plan-id> --dry-run` followed
+  apply explicitly. Preview `sync semantic-publish <plan-id> --dry-run` before publication; the
+  real command uses the recorded source as an exact remote lease and refuses divergence instead
+  of force-pushing. Reject declined plans with `sync semantic-reject <plan-id> --dry-run` followed
   by the reviewed mutation. Never edit proposal refs or retained plan JSON manually.
 
 ## Non-negotiable safety properties
