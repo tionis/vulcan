@@ -5507,7 +5507,24 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
             remote.to_str().expect("remote path"),
         ],
     );
-    fs::write(vault.join("Root.md"), "initial\n").expect("root note");
+    fs::write(
+        vault.join("Root.md"),
+        concat!(
+            "initial first\n",
+            "line 02\n",
+            "line 03\n",
+            "line 04\n",
+            "line 05\n",
+            "line 06\n",
+            "line 07\n",
+            "line 08\n",
+            "line 09\n",
+            "line 10\n",
+            "line 11\n",
+            "initial last\n",
+        ),
+    )
+    .expect("root note");
     commit_all(&vault, "Initial");
     let source = run_git_stdout(&vault, &["rev-parse", "refs/heads/main"]);
     let sync = |arguments: &[&str]| {
@@ -5524,7 +5541,24 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
     fs::create_dir(vault.join("Area")).expect("area directory");
     fs::write(vault.join("Area/One.md"), "one\n").expect("area note");
     fs::write(vault.join("Area/Two.md"), "two\n").expect("second area note");
-    fs::write(vault.join("Root.md"), "changed\n").expect("root change");
+    fs::write(
+        vault.join("Root.md"),
+        concat!(
+            "changed first\n",
+            "line 02\n",
+            "line 03\n",
+            "line 04\n",
+            "line 05\n",
+            "line 06\n",
+            "line 07\n",
+            "line 08\n",
+            "line 09\n",
+            "line 10\n",
+            "line 11\n",
+            "changed last\n",
+        ),
+    )
+    .expect("root change");
     let accepted = parse_stdout_json(&sync(&["run"]).success());
     let target = accepted["accepted"]
         .as_str()
@@ -5604,6 +5638,62 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
     assert!(by_change["commits"][2]["message"]
         .as_str()
         .is_some_and(|message| message.starts_with("Update Root.md\n")));
+
+    let by_hunk = parse_stdout_json(
+        &sync(&[
+            "semantic-plan",
+            "--from",
+            &source,
+            "--to",
+            &target,
+            "--group-by",
+            "hunk",
+            "--dry-run",
+        ])
+        .success(),
+    );
+    assert_eq!(by_hunk["version"], 5);
+    assert_eq!(by_hunk["grouping"], "hunk");
+    assert_eq!(by_hunk["commits"].as_array().map(Vec::len), Some(4));
+    assert_eq!(by_hunk["commits"][2]["group"], "hunk 1/2 Root.md");
+    assert_eq!(by_hunk["commits"][3]["group"], "hunk 2/2 Root.md");
+    assert!(by_hunk["commits"][2]["patch"]
+        .as_str()
+        .is_some_and(|patch| patch.contains("initial first") && !patch.contains("initial last")));
+    assert!(by_hunk["commits"][3]["patch"]
+        .as_str()
+        .is_some_and(|patch| patch.contains("initial last") && !patch.contains("initial first")));
+    assert!(by_hunk.get("proposal_tip").is_none());
+    assert!(by_hunk["commits"].as_array().is_some_and(|commits| commits
+        .iter()
+        .all(|commit| commit.get("revision").is_none())));
+
+    let hunk_plan = parse_stdout_json(
+        &sync(&[
+            "semantic-plan",
+            "--from",
+            &source,
+            "--to",
+            &target,
+            "--group-by",
+            "hunk",
+        ])
+        .success(),
+    );
+    assert_eq!(hunk_plan["status"], "ready");
+    assert_eq!(
+        run_git_stdout(
+            &vault,
+            &[
+                "rev-parse",
+                &format!(
+                    "{}^{{tree}}",
+                    hunk_plan["proposal_tip"].as_str().expect("hunk plan tip")
+                ),
+            ],
+        ),
+        run_git_stdout(&vault, &["rev-parse", &format!("{target}^{{tree}}")])
+    );
 
     let grouped_all = parse_stdout_json(
         &sync(&[
@@ -5708,7 +5798,7 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
 
     let plan =
         parse_stdout_json(&sync(&["semantic-plan", "--from", &source, "--to", &target]).success());
-    assert_eq!(plan["version"], 4);
+    assert_eq!(plan["version"], 5);
     assert_eq!(plan["grouping"], "top_level");
     assert_eq!(plan["status"], "ready");
     assert_eq!(plan["validation"]["final_tree_matches_target"], true);
@@ -13112,6 +13202,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("MCP `sync` pack"));
     assert!(git_skill.contains("mutation-free `sync_plan`"));
     assert!(git_skill.contains("vulcan sync semantic-plan"));
+    assert!(git_skill.contains("--group-by hunk"));
     assert!(git_skill.contains("vulcan daemon status"));
     assert!(git_skill.contains("vulcan daemon companion --reveal-token"));
     assert!(git_skill.contains("reference Obsidian companion"));

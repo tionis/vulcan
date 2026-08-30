@@ -85,7 +85,9 @@ back a successful child.
 Conflict resolution JSON contains `side` (`base`, `local`, or `remote`) and may contain `remote`,
 `live_ref`, and `dry_run`. Semantic-plan JSON contains `from`, `to`, and `semantic_ref`, and may
 contain `remote`, `live_ref`, `grouping`, `agent`, and `dry_run`. The defaults are remote `origin`,
-live ref `refs/heads/__vulcan-sync/live`, and deterministic `top_level` grouping. Capability
+live ref `refs/heads/__vulcan-sync/live`, and deterministic `top_level` grouping. Deterministic
+grouping accepts `top_level`, `file`, `change`, `hunk`, or `all`; `hunk` splits only safe separated
+text modifications and leaves other change kinds atomic. Capability
 negotiation is authoritative for both optional agent modes.
 
 ## WebSocket events

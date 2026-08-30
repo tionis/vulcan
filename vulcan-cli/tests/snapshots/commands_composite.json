@@ -9276,6 +9276,7 @@
                   "top-level",
                   "file",
                   "change",
+                  "hunk",
                   "all"
                 ],
                 "required": false,

@@ -20,7 +20,7 @@ use vulcan_sync::{
     GitRepository, GitSyncOptions, GitSyncRefs,
 };
 
-pub const SEMANTIC_PLAN_VERSION: u32 = 4;
+pub const SEMANTIC_PLAN_VERSION: u32 = 5;
 const MAX_SEMANTIC_PLAN_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SEMANTIC_AGENT_PATCH_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SEMANTIC_AGENT_MESSAGE_BYTES: usize = 16 * 1024;
@@ -47,6 +47,7 @@ pub enum SemanticGrouping {
     TopLevel,
     File,
     Change,
+    Hunk,
     All,
     Agent,
 }
@@ -329,6 +330,7 @@ struct PlannedSemanticGroup {
     group: String,
     message: String,
     paths: Vec<String>,
+    patch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -464,6 +466,15 @@ fn create_semantic_plan_internal(
                 .changed_entries(&repository, &source, &target)
                 .map_err(AppError::operation)?;
             (deterministic_change_groups(changes), None)
+        }
+        None if options.grouping == SemanticGrouping::Hunk => {
+            let changes = engine
+                .changed_entries(&repository, &source, &target)
+                .map_err(AppError::operation)?;
+            (
+                deterministic_hunk_groups(&engine, &repository, &source, &target, changes)?,
+                None,
+            )
         }
         None => (deterministic_groups(changed_paths, options.grouping), None),
     };
@@ -1088,15 +1099,29 @@ fn construct_proposal(
             group,
             message: proposed_message,
             paths,
+            patch: planned_patch,
         } = planned;
-        let tree = engine
-            .tree_with_paths(repository, &parent, target, &paths)
-            .map_err(AppError::operation)?;
+        let tree = match &planned_patch {
+            Some(patch) => engine
+                .apply_patch_to_tree(repository, &parent, patch.as_bytes())
+                .map_err(AppError::operation)?,
+            None => engine
+                .tree_with_paths(repository, &parent, target, &paths)
+                .map_err(AppError::operation)?,
+        };
         let message = semantic_message(&proposed_message, &group, plan_id, source, target);
         let commit = engine
             .create_commit(repository, &tree, std::slice::from_ref(&parent), &message)
             .map_err(AppError::operation)?;
-        validate_intermediate_commit(engine, repository, &parent, &commit, target, &paths)?;
+        validate_intermediate_commit(
+            engine,
+            repository,
+            &parent,
+            &commit,
+            target,
+            &paths,
+            planned_patch.is_none(),
+        )?;
         let patch = engine
             .diff_patch(repository, &parent, &commit, &paths)
             .map_err(AppError::operation)?;
@@ -1122,6 +1147,7 @@ fn validate_intermediate_commit(
     commit: &GitOid,
     target: &GitOid,
     paths: &[String],
+    require_target_objects: bool,
 ) -> Result<(), AppError> {
     let mut actual = engine
         .changed_paths(repository, parent, commit)
@@ -1133,6 +1159,9 @@ fn validate_intermediate_commit(
         return Err(AppError::operation(format!(
             "semantic intermediate commit {commit} changed paths outside its proposed group"
         )));
+    }
+    if !require_target_objects {
+        return Ok(());
     }
     for path in paths {
         let proposed = engine
@@ -1174,10 +1203,14 @@ fn preview_commits(
                 group,
                 message: proposed_message,
                 paths,
+                patch: planned_patch,
             } = planned;
-            let patch = engine
-                .diff_patch(repository, source, target, &paths)
-                .map_err(AppError::operation)?;
+            let patch = match planned_patch {
+                Some(patch) => patch,
+                None => engine
+                    .diff_patch(repository, source, target, &paths)
+                    .map_err(AppError::operation)?,
+            };
             Ok(SemanticCommitProposal {
                 position: position + 1,
                 message: semantic_message(&proposed_message, &group, "dry-run", source, target),
@@ -1318,6 +1351,7 @@ fn validate_agent_output(
             group: commit.group,
             message: commit.message.trim().to_string(),
             paths,
+            patch: None,
         });
     }
     if seen_paths != expected {
@@ -1384,7 +1418,9 @@ fn deterministic_groups(
             SemanticGrouping::TopLevel => path
                 .split_once('/')
                 .map_or_else(|| path.clone(), |(top, _)| top.to_string()),
-            SemanticGrouping::File | SemanticGrouping::Change => path.clone(),
+            SemanticGrouping::File | SemanticGrouping::Change | SemanticGrouping::Hunk => {
+                path.clone()
+            }
             SemanticGrouping::All => "all changes".to_string(),
             SemanticGrouping::Agent => "agent plan".to_string(),
         };
@@ -1396,6 +1432,7 @@ fn deterministic_groups(
             message: format!("Update {group}"),
             group,
             paths,
+            patch: None,
         })
         .collect()
 }
@@ -1436,6 +1473,7 @@ fn deterministic_change_groups(mut changes: Vec<GitChange>) -> Vec<PlannedSemant
                 group,
                 message: format!("{verb} {}", change.path),
                 paths: vec![change.path],
+                patch: None,
             },
         ));
     }
@@ -1475,11 +1513,103 @@ fn deterministic_change_groups(mut changes: Vec<GitChange>) -> Vec<PlannedSemant
                 group,
                 message,
                 paths: paths.into_iter().collect(),
+                patch: None,
             },
         ));
     }
     groups.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
     groups.into_iter().map(|(_, _, group)| group).collect()
+}
+
+fn deterministic_hunk_groups(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    source: &GitOid,
+    target: &GitOid,
+    changes: Vec<GitChange>,
+) -> Result<Vec<PlannedSemanticGroup>, AppError> {
+    let modified_paths = changes
+        .iter()
+        .filter(|change| change.kind == GitChangeKind::Modified)
+        .map(|change| change.path.clone())
+        .collect::<BTreeSet<_>>();
+    let mut groups = Vec::new();
+    for group in deterministic_change_groups(changes) {
+        if group.paths.len() != 1 || !modified_paths.contains(&group.paths[0]) {
+            groups.push(group);
+            continue;
+        }
+        let path = &group.paths[0];
+        let file_diff = engine
+            .diff_patch(repository, source, target, std::slice::from_ref(path))
+            .map_err(AppError::operation)?;
+        let hunks = split_modified_patch_hunks(&file_diff);
+        if hunks.len() < 2 {
+            groups.push(group);
+            continue;
+        }
+        let count = hunks.len();
+        for (index, patch) in hunks.into_iter().enumerate() {
+            let position = index + 1;
+            groups.push(PlannedSemanticGroup {
+                group: format!("hunk {position}/{count} {path}"),
+                message: format!("Update {path} (hunk {position}/{count})"),
+                paths: vec![path.clone()],
+                patch: Some(patch),
+            });
+        }
+    }
+    Ok(groups)
+}
+
+fn split_modified_patch_hunks(patch: &str) -> Vec<String> {
+    if !patch.ends_with('\n')
+        || [
+            "new file mode ",
+            "deleted file mode ",
+            "old mode ",
+            "new mode ",
+            "rename from ",
+            "rename to ",
+            "copy from ",
+            "copy to ",
+            "Binary files ",
+            "GIT binary patch",
+        ]
+        .iter()
+        .any(|marker| patch.lines().any(|line| line.starts_with(marker)))
+    {
+        return vec![patch.to_string()];
+    }
+    let lines = patch.split_inclusive('\n').collect::<Vec<_>>();
+    if lines
+        .iter()
+        .filter(|line| line.starts_with("diff --git "))
+        .count()
+        != 1
+    {
+        return vec![patch.to_string()];
+    }
+    let hunk_starts = lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| line.starts_with("@@ ").then_some(index))
+        .collect::<Vec<_>>();
+    if hunk_starts.len() < 2 {
+        return vec![patch.to_string()];
+    }
+    let header = lines[..hunk_starts[0]].concat();
+    hunk_starts
+        .iter()
+        .enumerate()
+        .map(|(position, start)| {
+            let end = hunk_starts
+                .get(position + 1)
+                .copied()
+                .unwrap_or(lines.len());
+            format!("{header}{}", lines[*start..end].concat())
+        })
+        .collect()
 }
 
 const fn change_precedence(kind: GitChangeKind) -> u8 {
@@ -1712,9 +1842,10 @@ impl SemanticLock {
 mod tests {
     use super::{
         deterministic_change_groups, deterministic_groups, load_semantic_plan_with_state_store,
-        semantic_plan_path, semantic_proposal_ref, validate_agent_output, validate_loaded_plan,
-        validate_plan_id, SemanticAgentCommit, SemanticAgentOutput, SemanticGrouping,
-        SemanticPlanReport, SemanticPlanStatus, SemanticPlanValidation,
+        semantic_plan_path, semantic_proposal_ref, split_modified_patch_hunks,
+        validate_agent_output, validate_loaded_plan, validate_plan_id, SemanticAgentCommit,
+        SemanticAgentOutput, SemanticGrouping, SemanticPlanReport, SemanticPlanStatus,
+        SemanticPlanValidation,
     };
     use crate::sync_state::SyncStateStore;
     use std::fs;
@@ -1800,6 +1931,38 @@ mod tests {
             ]
         );
         assert_eq!(groups[1].paths, ["New.md", "Old.md"]);
+    }
+
+    #[test]
+    fn modified_text_patches_split_only_at_real_hunk_boundaries() {
+        let patch = concat!(
+            "diff --git a/Note.md b/Note.md\n",
+            "index 1111111..2222222 100644\n",
+            "--- a/Note.md\n",
+            "+++ b/Note.md\n",
+            "@@ -1,4 +1,4 @@\n",
+            "-before one\n",
+            "+after one\n",
+            " context\n",
+            "@@ -20,4 +20,4 @@ context\n",
+            "-before two\n",
+            "+after two\n",
+        );
+        let hunks = split_modified_patch_hunks(patch);
+        assert_eq!(hunks.len(), 2);
+        assert!(hunks[0].contains("before one"));
+        assert!(!hunks[0].contains("before two"));
+        assert!(hunks[1].contains("before two"));
+        assert!(hunks
+            .iter()
+            .all(|hunk| hunk.starts_with("diff --git a/Note.md b/Note.md\n")));
+
+        let deletion = patch.replacen(
+            "index 1111111..2222222 100644\n",
+            "deleted file mode 100644\n",
+            1,
+        );
+        assert_eq!(split_modified_patch_hunks(&deletion), [deletion]);
     }
 
     #[test]

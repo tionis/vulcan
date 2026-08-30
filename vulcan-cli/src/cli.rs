@@ -3958,6 +3958,7 @@ pub enum SemanticGroupingArg {
     TopLevel,
     File,
     Change,
+    Hunk,
     All,
 }
 

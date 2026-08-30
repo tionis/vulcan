@@ -471,6 +471,7 @@ fn run_semantic_plan(
             SemanticGroupingArg::TopLevel => SemanticGrouping::TopLevel,
             SemanticGroupingArg::File => SemanticGrouping::File,
             SemanticGroupingArg::Change => SemanticGrouping::Change,
+            SemanticGroupingArg::Hunk => SemanticGrouping::Hunk,
             SemanticGroupingArg::All => SemanticGrouping::All,
         },
         agent,

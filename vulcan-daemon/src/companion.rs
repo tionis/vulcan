@@ -1162,6 +1162,15 @@ mod tests {
         }))
         .expect("change-grouped semantic plan request");
         assert_eq!(by_change.grouping, SemanticGrouping::Change);
+
+        let by_hunk: SemanticPlanRequest = serde_json::from_value(json!({
+            "from": "main",
+            "to": "refs/vulcan/sync/local/live",
+            "semantic_ref": "refs/heads/main",
+            "grouping": "hunk"
+        }))
+        .expect("hunk-grouped semantic plan request");
+        assert_eq!(by_hunk.grouping, SemanticGrouping::Hunk);
     }
 
     #[test]
