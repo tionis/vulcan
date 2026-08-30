@@ -12877,6 +12877,11 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     .expect("permission skill should be readable");
     assert!(permission_skill.contains("read-only `sync` tool pack"));
     assert!(permission_skill.contains("full-vault read access"));
+    let index_skill =
+        fs::read_to_string(vault_root.join(".agents/skills/index-maintenance/SKILL.md"))
+            .expect("index maintenance skill should be readable");
+    assert!(index_skill.contains("content-comparing polling"));
+    assert!(index_skill.contains("incremental safety rescan"));
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
     assert!(git_skill.contains("--file '<conflict-path>=<source-file>' --dry-run"));
     assert!(git_skill.contains("--patch <patch-file> --dry-run"));

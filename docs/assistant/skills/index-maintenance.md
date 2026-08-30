@@ -1,7 +1,7 @@
 ---
 name: index-maintenance
 description: Maintain the cache, scanner, search index, vector index, and derived repairable state. Use when the user asks about scan, reindex, cache, repair, watch, vectors, embeddings, stale search results, or index diagnostics.
-version: 1
+version: 2
 tools:
   - index_scan
   - index_rebuild
@@ -29,12 +29,14 @@ Use this skill when derived state may be stale, broken, slow, or incomplete.
 - Use `vulcan cache verify` and `vulcan doctor` to distinguish cache problems from source-note problems.
 - Use `vulcan repair` for derived index repair paths before manually deleting cache files.
 - Use `vulcan vectors ...` for embedding queue, neighbors, duplicates, clusters, and vector repair.
+- Long-running watch surfaces fall back to content-comparing polling when the native backend cannot start or its runtime channel fails. They also perform a bounded incremental safety rescan, so a native watcher that silently misses an event does not leave search or preview output stale indefinitely.
 
 ## Guardrails
 
 - The vault is the source of truth. `.vulcan/cache.db` and search/vector indexes are rebuildable.
 - Prefer repair/rebuild commands over manual SQLite edits.
 - Do not treat stale cache output as note truth; rescan before making write decisions.
+- If watch output remains stale beyond the safety-rescan interval, inspect callback/scan diagnostics rather than assuming the operating-system watcher is authoritative. Errors confined to ignored `.vulcan` transient files are intentionally not treated as source changes.
 - Vector search depends on provider/config/model state, so inspect queue/status before assuming semantic search is broken.
 
 ## Example Moves

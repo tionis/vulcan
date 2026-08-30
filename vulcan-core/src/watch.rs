@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+const WATCH_SAFETY_RESCAN_INTERVAL: Duration = Duration::from_secs(1);
+
 #[derive(Debug)]
 pub enum WatchError {
     Callback(String),
@@ -90,7 +92,7 @@ pub fn watch_vault_until<F, S, E>(
     paths: &VaultPaths,
     options: &WatchOptions,
     should_stop: S,
-    on_report: F,
+    mut on_report: F,
 ) -> Result<(), WatchError>
 where
     F: FnMut(WatchReport) -> Result<(), E>,
@@ -106,18 +108,26 @@ where
             .watch(paths.vault_root(), RecursiveMode::Recursive)
             .is_ok()
         {
-            return watch_vault_until_with_registered_watcher(
+            match watch_vault_until_with_registered_watcher(
                 paths,
                 *options,
-                should_stop,
-                on_report,
+                &should_stop,
+                &mut on_report,
                 watcher,
                 &receiver,
-            );
+            ) {
+                Ok(()) => return Ok(()),
+                Err(error) if recoverable_native_watch_error(&error) && !should_stop() => {}
+                Err(error) => return Err(error),
+            }
         }
     }
 
     watch_vault_until_polling(paths, *options, should_stop, on_report)
+}
+
+fn recoverable_native_watch_error(error: &WatchError) -> bool {
+    matches!(error, WatchError::Notify(_) | WatchError::ChannelClosed)
 }
 
 fn watch_vault_until_polling<F, S, E>(
@@ -180,7 +190,8 @@ where
     .map_err(|error| WatchError::Callback(error.to_string()))?;
 
     let debounce = Duration::from_millis(options.debounce_ms);
-    loop {
+    let mut last_safety_scan = Instant::now();
+    'watch: loop {
         if should_stop() {
             return Ok(());
         }
@@ -198,9 +209,20 @@ where
                             break;
                         }
                     }
+                    Err(error) if notify_error_is_internal(paths, &error) => {}
                     Err(error) => return Err(WatchError::Notify(error)),
                 },
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    if last_safety_scan.elapsed() >= WATCH_SAFETY_RESCAN_INTERVAL {
+                        let summary = scan_vault(paths, ScanMode::Incremental)?;
+                        last_safety_scan = Instant::now();
+                        if scan_summary_changed(&summary) {
+                            on_report(WatchBatch::default().into_report(summary))
+                                .map_err(|error| WatchError::Callback(error.to_string()))?;
+                            continue 'watch;
+                        }
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return Err(WatchError::ChannelClosed),
             }
         }
@@ -220,6 +242,7 @@ where
                         deadline = Instant::now() + debounce;
                     }
                 }
+                Ok(Err(error)) if notify_error_is_internal(paths, &error) => {}
                 Ok(Err(error)) => return Err(WatchError::Notify(error)),
                 Err(mpsc::RecvTimeoutError::Timeout) => break,
                 Err(mpsc::RecvTimeoutError::Disconnected) => return Err(WatchError::ChannelClosed),
@@ -227,9 +250,22 @@ where
         }
 
         let summary = scan_vault(paths, ScanMode::Incremental)?;
+        last_safety_scan = Instant::now();
         on_report(batch.into_report(summary))
             .map_err(|error| WatchError::Callback(error.to_string()))?;
     }
+}
+
+fn scan_summary_changed(summary: &ScanSummary) -> bool {
+    summary.added != 0 || summary.updated != 0 || summary.deleted != 0
+}
+
+fn notify_error_is_internal(paths: &VaultPaths, error: &notify::Error) -> bool {
+    !error.paths.is_empty()
+        && error
+            .paths
+            .iter()
+            .all(|path| normalize_watch_path(paths, path).is_none())
 }
 
 impl WatchBatch {
@@ -453,5 +489,47 @@ mod tests {
         writer.join().expect("writer should stop");
 
         assert_eq!(changed_paths, ["Home.md"]);
+    }
+
+    #[test]
+    fn safety_rescan_detects_changes_when_registered_watcher_is_silent() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let note = temp_dir.path().join("Home.md");
+        std::fs::write(&note, "# Alpha\n").expect("note should write");
+        std::fs::create_dir_all(temp_dir.path().join(".vulcan"))
+            .expect(".vulcan dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(250));
+            std::fs::write(note, "# Bravo\n").expect("note should update");
+        });
+        let should_stop = std::sync::Arc::clone(&stop);
+        let on_report_stop = std::sync::Arc::clone(&stop);
+        let (_sender, receiver) = mpsc::channel::<notify::Result<Event>>();
+        let watcher = notify::NullWatcher::new(|_| {}, Config::default())
+            .expect("null watcher should initialize");
+        let mut safety_report = None;
+
+        watch_vault_until_with_registered_watcher(
+            &paths,
+            WatchOptions { debounce_ms: 10 },
+            || should_stop.load(std::sync::atomic::Ordering::Acquire),
+            |report| {
+                if !report.startup && report.summary.updated == 1 {
+                    safety_report = Some(report);
+                    on_report_stop.store(true, std::sync::atomic::Ordering::Release);
+                }
+                Ok::<_, std::convert::Infallible>(())
+            },
+            watcher,
+            &receiver,
+        )
+        .expect("silent watcher should be covered by safety rescans");
+        writer.join().expect("writer should finish");
+
+        let report = safety_report.expect("safety rescan should report the update");
+        assert_eq!(report.event_count, 0);
+        assert!(report.paths.is_empty());
     }
 }

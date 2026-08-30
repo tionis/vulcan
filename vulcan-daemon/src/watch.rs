@@ -2,7 +2,7 @@
 
 use crate::registry::WikiRegistration;
 use crate::supervisor::{SupervisorError, SyncSupervisor, SyncWatchMetadata};
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config, Event, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -14,6 +14,7 @@ use vulcan_core::VaultPaths;
 use vulcan_sync::{GitCliEngine, GitEngine, GitEngineError, SyncJobTrigger};
 
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const WATCH_SAFETY_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_REPORTED_PATHS: usize = 256;
 const MAX_REPORTED_ERRORS: usize = 16;
 
@@ -94,6 +95,17 @@ struct WatchBatch {
     watcher_errors: BTreeSet<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WatchSource {
+    Native,
+    Polling,
+}
+
+struct RegisteredWatchers {
+    _native: Option<RecommendedWatcher>,
+    _polling: Option<PollWatcher>,
+}
+
 /// Watches one registered worktree and turns event batches into idempotent
 /// supervisor triggers. Startup always schedules reconciliation before the
 /// event loop begins.
@@ -109,12 +121,6 @@ where
 {
     validate_options(options)?;
     let repository = GitCliEngine::default().discover_repository(&registration.path)?;
-    let (sender, receiver) = mpsc::channel::<notify::Result<Event>>();
-    let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |event| {
-        let _ = sender.send(event);
-    })?;
-    watcher.watch(&registration.path, RecursiveMode::Recursive)?;
-
     match state_store.load_apply_marker(&repository.git_dir) {
         Ok(Some(_)) => {
             supervisor.enqueue(
@@ -143,6 +149,10 @@ where
         }
     }
 
+    let (sender, receiver) = mpsc::channel::<(WatchSource, notify::Result<Event>)>();
+    let _watchers = register_watchers(&registration.path, &sender, WATCH_SAFETY_POLL_INTERVAL)?;
+    drop(sender);
+
     let paths = VaultPaths::new(&registration.path);
     let debounce = Duration::from_millis(options.debounce_ms);
     let max_dirty = Duration::from_millis(options.max_dirty_ms);
@@ -154,7 +164,7 @@ where
         let now = Instant::now();
         let timeout = batch.next_timeout(now, debounce, max_dirty);
         match receiver.recv_timeout(timeout) {
-            Ok(Ok(event)) => {
+            Ok((_, Ok(event))) => {
                 let now = Instant::now();
                 batch.push_event(&paths, &event, now, || {
                     state_store
@@ -167,7 +177,11 @@ where
                         .map_err(|error| error.to_string())
                 });
             }
-            Ok(Err(error)) => batch.push_watcher_error(Instant::now(), error.to_string()),
+            Ok((_, Err(error))) if notify_error_is_internal(&paths, &error) => {}
+            Ok((source, Err(error))) => batch.push_watcher_error(
+                Instant::now(),
+                format!("{} watcher: {error}", source.label()),
+            ),
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => {
                 return Err(DaemonWatchError::ChannelClosed);
@@ -176,6 +190,60 @@ where
         if batch.is_ready(Instant::now(), debounce, max_dirty) {
             let metadata = batch.take_metadata();
             supervisor.enqueue_watch(registration.id.as_str(), &registration.path, metadata)?;
+        }
+    }
+}
+
+fn register_watchers(
+    path: &Path,
+    sender: &mpsc::Sender<(WatchSource, notify::Result<Event>)>,
+    safety_poll_interval: Duration,
+) -> Result<RegisteredWatchers, notify::Error> {
+    let native_sender = sender.clone();
+    let native = notify::recommended_watcher(move |event| {
+        let _ = native_sender.send((WatchSource::Native, event));
+    })
+    .and_then(|mut watcher| {
+        watcher.watch(path, RecursiveMode::Recursive)?;
+        Ok(watcher)
+    });
+
+    let polling_sender = sender.clone();
+    let polling = PollWatcher::new(
+        move |event| {
+            let _ = polling_sender.send((WatchSource::Polling, event));
+        },
+        Config::default()
+            .with_poll_interval(safety_poll_interval)
+            .with_compare_contents(true),
+    )
+    .and_then(|mut watcher| {
+        watcher.watch(path, RecursiveMode::Recursive)?;
+        Ok(watcher)
+    });
+
+    match (native, polling) {
+        (Ok(native), Ok(polling)) => Ok(RegisteredWatchers {
+            _native: Some(native),
+            _polling: Some(polling),
+        }),
+        (Ok(native), Err(_)) => Ok(RegisteredWatchers {
+            _native: Some(native),
+            _polling: None,
+        }),
+        (Err(_), Ok(polling)) => Ok(RegisteredWatchers {
+            _native: None,
+            _polling: Some(polling),
+        }),
+        (Err(native_error), Err(_)) => Err(native_error),
+    }
+}
+
+impl WatchSource {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Polling => "polling",
         }
     }
 }
@@ -317,6 +385,14 @@ fn normalize_watch_path(paths: &VaultPaths, path: &Path) -> Option<String> {
         return None;
     }
     Some(normalized.join("/"))
+}
+
+fn notify_error_is_internal(paths: &VaultPaths, error: &notify::Error) -> bool {
+    !error.paths.is_empty()
+        && error
+            .paths
+            .iter()
+            .all(|path| normalize_watch_path(paths, path).is_none())
 }
 
 fn relative_watch_path(paths: &VaultPaths, path: &Path) -> Option<PathBuf> {
@@ -480,5 +556,32 @@ mod tests {
         let jobs = supervisor.list().expect("jobs");
         assert_eq!(jobs.len(), 1);
         assert_eq!(jobs[0].triggers, vec![SyncJobTrigger::Resume]);
+    }
+
+    #[test]
+    fn polling_backup_detects_same_size_content_changes() {
+        let temporary = tempdir().expect("temporary directory");
+        let note = temporary.path().join("note.md");
+        std::fs::write(&note, "alpha\n").expect("initial note");
+        let (sender, receiver) = mpsc::channel();
+        let _watchers = register_watchers(temporary.path(), &sender, Duration::from_millis(25))
+            .expect("register at least one watcher");
+        drop(sender);
+        std::thread::sleep(Duration::from_millis(100));
+        std::fs::write(&note, "bravo\n").expect("same-size update");
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut detected_by_polling = false;
+        while Instant::now() < deadline {
+            match receiver.recv_timeout(Duration::from_millis(50)) {
+                Ok((WatchSource::Polling, Ok(event))) if event.paths.contains(&note) => {
+                    detected_by_polling = true;
+                    break;
+                }
+                Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            }
+        }
+        assert!(detected_by_polling);
     }
 }
