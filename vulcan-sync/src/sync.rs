@@ -1,11 +1,11 @@
 use crate::{
     GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine, GitEngineError,
-    GitInstallation, GitOid, GitPathObject, GitPushResult, GitRefName, GitRemote, GitRepository,
-    GitResolvedPath, GitSafetyState, GitTreeApplyPlan, MergeAutomation, MergeFileKind, MergePolicy,
-    MergeResolution, SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncConflict,
-    SyncContext, SyncError, SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome,
-    SyncPlan, SyncProgress, SyncReport, SyncResolutionState, SyncState, SyncStatus,
-    SYNC_CONTRACT_VERSION,
+    GitInstallation, GitOid, GitPathObject, GitPlatformPreflight, GitPlatformProfile,
+    GitPushResult, GitRefName, GitRemote, GitRepository, GitResolvedPath, GitSafetyState,
+    GitTreeApplyPlan, MergeAutomation, MergeFileKind, MergePolicy, MergeResolution, SyncAction,
+    SyncBackend, SyncCapabilities, SyncCapability, SyncConflict, SyncContext, SyncError,
+    SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome, SyncPlan, SyncProgress,
+    SyncReport, SyncResolutionState, SyncState, SyncStatus, SYNC_CONTRACT_VERSION,
 };
 use fs2::FileExt;
 use serde::Serialize;
@@ -72,6 +72,7 @@ pub struct GitSyncOptions {
     pub device_id: GitSyncDeviceId,
     pub merge_policy: MergePolicy,
     pub merge_automation: MergeAutomation,
+    pub platform: GitPlatformProfile,
 }
 
 impl Default for GitSyncOptions {
@@ -84,6 +85,7 @@ impl Default for GitSyncOptions {
             device_id: GitSyncDeviceId::anonymous(),
             merge_policy: MergePolicy::default(),
             merge_automation: MergeAutomation::default(),
+            platform: GitPlatformProfile::native(),
         }
     }
 }
@@ -343,6 +345,7 @@ pub struct GitSyncReport {
     pub remote: GitRemote,
     pub refs: GitSyncRefs,
     pub safety: GitSafetyState,
+    pub platform_policy: crate::GitPlatformPolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub head_before: Option<GitOid>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -350,7 +353,11 @@ pub struct GitSyncReport {
     pub remote_before: Option<GitOid>,
     pub local_before: Option<GitOid>,
     pub local_snapshot: Option<GitOid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_platform_preflight: Option<GitPlatformPreflight>,
     pub accepted: Option<GitOid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub accepted_platform_preflight: Option<GitPlatformPreflight>,
     pub actions: Vec<GitSyncAction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub automatic_resolutions: Vec<GitAutomaticResolution>,
@@ -380,12 +387,15 @@ impl GitSyncReport {
             remote: options.remote.clone(),
             refs,
             safety,
+            platform_policy: options.platform.policy(),
             head_before: head_before.0,
             head_ref_before: head_before.1,
             remote_before: observed.0,
             local_before: observed.1,
             local_snapshot: None,
+            local_platform_preflight: None,
             accepted: None,
+            accepted_platform_preflight: None,
             actions: Vec::new(),
             automatic_resolutions: Vec::new(),
             retries: 0,
@@ -402,6 +412,7 @@ pub enum GitSyncError {
     Locked,
     Cancelled,
     Observer(GitSyncObserverError),
+    PlatformIncompatible(GitPlatformPreflight),
     RetryLimit { attempts: usize },
     Io(std::io::Error),
 }
@@ -417,6 +428,21 @@ impl Display for GitSyncError {
                 "synchronization was cancelled; captured refs and recovery state remain preserved",
             ),
             Self::Observer(error) => write!(formatter, "sync progress observer failed: {error}"),
+            Self::PlatformIncompatible(preflight) => {
+                let codes = preflight
+                    .diagnostics
+                    .iter()
+                    .filter(|item| item.severity == crate::GitPlatformDiagnosticSeverity::Error)
+                    .map(|item| item.code.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                write!(
+                    formatter,
+                    "Git tree {} is incompatible with target platform `{}`: {codes}",
+                    preflight.revision,
+                    preflight.policy.profile.as_str()
+                )
+            }
             Self::RetryLimit { attempts } => write!(
                 formatter,
                 "synchronization did not converge after {attempts} attempts; local snapshots remain preserved"
@@ -432,7 +458,10 @@ impl Error for GitSyncError {
             Self::Git(error) => Some(error),
             Self::Observer(error) => Some(error),
             Self::Io(error) => Some(error),
-            Self::Locked | Self::Cancelled | Self::RetryLimit { .. } => None,
+            Self::Locked
+            | Self::Cancelled
+            | Self::PlatformIncompatible(_)
+            | Self::RetryLimit { .. } => None,
         }
     }
 }
@@ -662,6 +691,7 @@ fn sync_error_from_git(error: &GitSyncError) -> SyncError {
         }
         GitSyncError::Cancelled => (SyncErrorCategory::Cancelled, false),
         GitSyncError::Observer(_) => (SyncErrorCategory::Observer, false),
+        GitSyncError::PlatformIncompatible(_) => (SyncErrorCategory::Unsupported, false),
         GitSyncError::RetryLimit { .. } => (SyncErrorCategory::Network, true),
         GitSyncError::Io(_) | GitSyncError::Git(GitEngineError::Io(_)) => {
             (SyncErrorCategory::Io, true)
@@ -742,6 +772,14 @@ pub fn sync_git_once_with_control(
     );
     emit_progress(observer, GitSyncPhase::Preparing, 0, &report, None)?;
     if options.dry_run {
+        if let Some(revision) = report.local_before.as_ref().or(report.head_before.as_ref()) {
+            report.local_platform_preflight = Some(platform_preflight(
+                engine,
+                &report.repository,
+                revision,
+                options.platform,
+            )?);
+        }
         emit_progress(observer, GitSyncPhase::Completed, 0, &report, None)?;
         return Ok(report);
     }
@@ -860,6 +898,7 @@ fn run_attempt(
         report.actions.push(GitSyncAction::SnapshotCreated);
     }
     control.emit(GitSyncPhase::Captured, report, Some(capture.tree.clone()))?;
+    require_local_platform(engine, options, report, &capture.commit)?;
 
     control.check()?;
     control.emit(GitSyncPhase::Fetching, report, None)?;
@@ -892,6 +931,8 @@ fn run_attempt(
             AttemptResult::Retry
         });
     };
+
+    require_accepted_platform(engine, options, report, &accepted)?;
 
     control.check()?;
     control.emit(GitSyncPhase::Verifying, report, None)?;
@@ -971,6 +1012,55 @@ fn sync_pause(
         }));
     }
     Ok(None)
+}
+
+fn platform_preflight(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    revision: &GitOid,
+    platform: GitPlatformProfile,
+) -> Result<GitPlatformPreflight, GitSyncError> {
+    let entries = engine.tree_entries(repository, revision)?;
+    Ok(crate::inspect_git_tree_platform(
+        revision.clone(),
+        &entries,
+        platform.policy(),
+    ))
+}
+
+fn require_accepted_platform(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    revision: &GitOid,
+) -> Result<(), GitSyncError> {
+    if report
+        .accepted_platform_preflight
+        .as_ref()
+        .is_some_and(|preflight| preflight.revision == *revision)
+    {
+        return Ok(());
+    }
+    let preflight = platform_preflight(engine, &report.repository, revision, options.platform)?;
+    if !preflight.compatible {
+        return Err(GitSyncError::PlatformIncompatible(preflight));
+    }
+    report.accepted_platform_preflight = Some(preflight);
+    Ok(())
+}
+
+fn require_local_platform(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    revision: &GitOid,
+) -> Result<(), GitSyncError> {
+    let preflight = platform_preflight(engine, &report.repository, revision, options.platform)?;
+    if !preflight.compatible {
+        return Err(GitSyncError::PlatformIncompatible(preflight));
+    }
+    report.local_platform_preflight = Some(preflight);
+    Ok(())
 }
 
 fn reconcile(
@@ -1216,6 +1306,7 @@ fn reconcile_epoch_root(
             bridge_parent
         ),
     )?;
+    require_accepted_platform(engine, options, report, &rebased)?;
     engine.update_ref(&report.repository, &report.refs.pending, &rebased)?;
     control.check()?;
     control.emit(GitSyncPhase::Pushing, report, None)?;
@@ -1354,6 +1445,7 @@ fn merge_divergence(
         &[remote.clone(), capture.commit.clone()],
         &merge_message(&report.refs, options, &remote, &capture.commit),
     )?;
+    require_accepted_platform(engine, options, report, &merged)?;
     engine.update_ref(&report.repository, &report.refs.pending, &merged)?;
     control.check()?;
     control.emit(GitSyncPhase::Pushing, report, None)?;
@@ -2344,6 +2436,125 @@ mod tests {
         assert!(report.actions.contains(&GitSyncAction::Pushed));
         assert!(!report.actions.contains(&GitSyncAction::WorktreeApplied));
         assert_eq!(report.accepted, report.local_snapshot);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn incompatible_local_tree_is_captured_before_remote_contact() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        fs::write(writer.join("CON.txt"), "reserved on portable targets\n")
+            .expect("reserved fixture");
+        let engine = GitCliEngine::default();
+        let options = GitSyncOptions {
+            platform: GitPlatformProfile::AndroidShared,
+            ..GitSyncOptions::default()
+        };
+
+        let error = sync_git_once(&engine, &writer, &options).expect_err("platform rejection");
+        let GitSyncError::PlatformIncompatible(preflight) = error else {
+            panic!("unexpected error: {error}");
+        };
+        assert_eq!(preflight.policy.profile, GitPlatformProfile::AndroidShared);
+        assert!(preflight.diagnostics.iter().any(|item| {
+            item.code == "platform.reserved-name"
+                && item.severity == crate::GitPlatformDiagnosticSeverity::Error
+        }));
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let refs = GitSyncRefs::for_options(&options).expect("sync refs");
+        assert!(engine
+            .read_ref(&repository, &refs.local)
+            .expect("captured local ref")
+            .is_some());
+        assert_eq!(
+            engine
+                .remote_ref(&repository, &options.remote, &options.live_ref)
+                .expect("remote live ref"),
+            None
+        );
+        assert_eq!(
+            fs::read_to_string(writer.join("CON.txt")).expect("preserved local bytes"),
+            "reserved on portable targets\n"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn incompatible_remote_tree_is_not_applied_or_republished() {
+        let (temporary, remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let initial = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("bootstrap")
+            .accepted
+            .expect("initial accepted revision");
+        let reader = clone_reader(&temporary, &remote, &writer);
+        fs::write(writer.join("CON.txt"), "remote reserved path\n").expect("reserved fixture");
+        let pushed = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("native writer push")
+            .accepted
+            .expect("remote accepted revision");
+        assert_ne!(initial, pushed);
+        let options = GitSyncOptions {
+            platform: GitPlatformProfile::AndroidShared,
+            ..GitSyncOptions::default()
+        };
+
+        assert!(matches!(
+            sync_git_once(&engine, &reader, &options),
+            Err(GitSyncError::PlatformIncompatible(_))
+        ));
+        assert!(!reader.join("CON.txt").exists());
+        assert_eq!(
+            fs::read_to_string(reader.join("Home.md")).expect("preserved reader bytes"),
+            "initial\n"
+        );
+        let repository = engine
+            .discover_repository(&reader)
+            .expect("reader repository");
+        assert_eq!(
+            engine
+                .remote_ref(&repository, &options.remote, &options.live_ref)
+                .expect("remote live ref"),
+            Some(pushed)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn representational_platform_warnings_are_retained_in_success_reports() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let script = writer.join("sync.sh");
+        fs::write(&script, "#!/bin/sh\n").expect("script");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("executable mode");
+        let options = GitSyncOptions {
+            platform: GitPlatformProfile::AndroidShared,
+            ..GitSyncOptions::default()
+        };
+
+        let report = sync_git_once(&GitCliEngine::default(), &writer, &options)
+            .expect("warnings do not block sync");
+
+        assert_eq!(
+            report.platform_policy.profile,
+            GitPlatformProfile::AndroidShared
+        );
+        for preflight in [
+            report
+                .local_platform_preflight
+                .as_ref()
+                .expect("local preflight"),
+            report
+                .accepted_platform_preflight
+                .as_ref()
+                .expect("accepted preflight"),
+        ] {
+            assert!(preflight.compatible);
+            assert!(preflight.diagnostics.iter().any(|item| {
+                item.code == "platform.executable-bit"
+                    && item.severity == crate::GitPlatformDiagnosticSeverity::Warning
+            }));
+        }
     }
 
     #[test]

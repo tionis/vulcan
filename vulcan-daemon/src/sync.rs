@@ -9,8 +9,8 @@ use serde::Serialize;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use vulcan_app::sync::{
-    sync_git_vault, sync_git_vault_with_observer, GitSyncObserverError, GitSyncOptions,
-    GitSyncOutcome, GitSyncPhase, GitSyncProgress, VaultSyncReport,
+    sync_git_vault, sync_git_vault_with_observer, GitPlatformProfile, GitSyncObserverError,
+    GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress, VaultSyncReport,
 };
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::{
@@ -92,6 +92,10 @@ fn execute_claimed_job(
     if let Err(error) = check_registration_permission(&paths, &registration) {
         return complete_execution_error(supervisor, &id, error);
     }
+    let options = match options_for_registration(options, &registration) {
+        Ok(options) => options,
+        Err(error) => return complete_execution_error(supervisor, &id, error),
+    };
     let mut observer = SupervisorProgressObserver {
         supervisor,
         job_id: &id,
@@ -99,7 +103,7 @@ fn execute_claimed_job(
     };
     match sync_git_vault_with_observer(
         &paths,
-        options,
+        &options,
         state_store,
         &claimed.cancellation,
         &mut observer,
@@ -184,6 +188,28 @@ fn check_registration_permission(
                     SyncError::new(SyncErrorCategory::Configuration, error.to_string(), false)
                 })
         })
+}
+
+fn options_for_registration(
+    options: &GitSyncOptions,
+    registration: &WikiRegistration,
+) -> Result<GitSyncOptions, SyncError> {
+    let platform = registration
+        .platform_profile
+        .as_deref()
+        .map(GitPlatformProfile::parse)
+        .transpose()
+        .map_err(|error| {
+            SyncError::new(
+                SyncErrorCategory::Configuration,
+                format!("wiki `{}`: {error}", registration.id),
+                false,
+            )
+        })?
+        .unwrap_or_else(GitPlatformProfile::native);
+    let mut effective = options.clone();
+    effective.platform = platform;
+    Ok(effective)
 }
 
 fn complete_execution_error(
@@ -441,7 +467,9 @@ fn sync_registration(
                 .as_deref()
                 .is_none_or(|backend| backend == "git")
             {
-                sync_git_vault(&paths, options).map_err(|error| error.to_string())
+                let effective =
+                    options_for_registration(options, wiki).map_err(|error| error.to_string())?;
+                sync_git_vault(&paths, &effective).map_err(|error| error.to_string())
             } else {
                 Err(format!(
                     "wiki `{}` uses unsupported sync backend `{}`",
@@ -493,6 +521,33 @@ mod tests {
             .status()
             .expect("Git should launch");
         assert!(status.success(), "Git failed: {arguments:?}");
+    }
+
+    #[test]
+    fn registered_platform_profile_overrides_the_callers_native_default() {
+        let temporary = tempdir().expect("temporary directory");
+        let path = temporary.path().join("wiki");
+        fs::create_dir(&path).expect("wiki directory");
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        let wiki = registry
+            .add(
+                &AddWikiRequest {
+                    id: WikiId::parse("mobile").expect("wiki ID"),
+                    path,
+                    groups: Vec::new(),
+                    git_dir: None,
+                    permissions_profile: None,
+                    sync_backend: Some("git".to_string()),
+                    platform_profile: Some("android_shared".to_string()),
+                },
+                false,
+            )
+            .expect("registration");
+
+        let effective = options_for_registration(&GitSyncOptions::default(), &wiki)
+            .expect("registered options");
+
+        assert_eq!(effective.platform, GitPlatformProfile::AndroidShared);
     }
 
     #[test]

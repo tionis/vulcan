@@ -1960,6 +1960,51 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         assert!(journal.error.is_some());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn platform_preflight_failure_retains_the_captured_recovery_journal() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        git(
+            &vault,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&vault, &["config", "user.name", "Vulcan Test"]);
+        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        fs::write(vault.join("Home.md"), "home\n").expect("home note");
+        git(&vault, &["add", "Home.md"]);
+        git(&vault, &["commit", "--quiet", "-m", "initial"]);
+        fs::write(vault.join("CON.txt"), "preserve me\n").expect("reserved note");
+        let paths = VaultPaths::new(&vault);
+        let store = SyncStateStore::at(temporary.path().join("state"));
+        let options = GitSyncOptions {
+            platform: GitPlatformProfile::AndroidShared,
+            ..GitSyncOptions::default()
+        };
+
+        assert!(sync_git_vault_with_state_store(&paths, &options, &store).is_err());
+
+        let key = crate::sync_state::repository_state_key(
+            &fs::canonicalize(&vault).expect("canonical vault"),
+        );
+        let journal = store
+            .load(&key)
+            .expect("load journal")
+            .expect("retained platform journal");
+        assert_eq!(journal.phase, SyncJournalPhase::Captured);
+        assert!(journal.local_snapshot.is_some());
+        assert!(journal.expected_worktree_tree.is_some());
+        assert!(journal
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("platform `android_shared`")));
+        assert_eq!(
+            fs::read_to_string(vault.join("CON.txt")).expect("preserved bytes"),
+            "preserve me\n"
+        );
+    }
+
     #[test]
     fn staged_sync_retains_a_paused_journal_after_capture() {
         let temporary = tempdir().expect("temporary directory");

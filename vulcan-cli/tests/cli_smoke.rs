@@ -6506,9 +6506,15 @@ fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
         .args(["--output", "json", "sync", "run", "detached"])
         .assert()
         .success();
+    let sync_json = parse_stdout_json(&sync);
+    assert_eq!(sync_json["items"][0]["report"]["outcome"], "bootstrapped");
     assert_eq!(
-        parse_stdout_json(&sync)["items"][0]["report"]["outcome"],
-        "bootstrapped"
+        sync_json["items"][0]["report"]["platform_policy"]["profile"],
+        "android_shared"
+    );
+    assert_eq!(
+        sync_json["items"][0]["report"]["accepted_platform_preflight"]["compatible"],
+        true
     );
 
     let doctor = cargo_vulcan_with_xdg_config(config_home)
