@@ -6269,7 +6269,7 @@ done < "$record_path"
 
     let output = ProcessCommand::new(&bash_path)
         .arg("-lc")
-        .arg(script)
+        .arg(script.replace("\r\n", "\n"))
         .output()
         .expect("bash should run generated completion helper");
     assert!(
@@ -6363,7 +6363,7 @@ done
 
     let output = ProcessCommand::new(&bash_path)
         .arg("-lc")
-        .arg(script)
+        .arg(script.replace("\r\n", "\n"))
         .output()
         .expect("bash should run generated completion helper");
     assert!(
@@ -6424,7 +6424,7 @@ done
 
     let output = ProcessCommand::new(&bash_path)
         .arg("-lc")
-        .arg(script)
+        .arg(script.replace("\r\n", "\n"))
         .output()
         .expect("bash should run generated completion helper");
     assert!(
