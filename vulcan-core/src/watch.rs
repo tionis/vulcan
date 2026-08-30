@@ -500,8 +500,11 @@ mod tests {
             .expect(".vulcan dir should be created");
         let paths = VaultPaths::new(temp_dir.path());
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let (startup_sender, startup_receiver) = mpsc::channel();
         let writer = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(250));
+            startup_receiver
+                .recv()
+                .expect("startup scan should complete before the update");
             std::fs::write(note, "# Bravo\n").expect("note should update");
         });
         let should_stop = std::sync::Arc::clone(&stop);
@@ -516,7 +519,11 @@ mod tests {
             WatchOptions { debounce_ms: 10 },
             || should_stop.load(std::sync::atomic::Ordering::Acquire),
             |report| {
-                if !report.startup && report.summary.updated == 1 {
+                if report.startup {
+                    startup_sender
+                        .send(())
+                        .expect("writer should await the startup scan");
+                } else if report.summary.updated == 1 {
                     safety_report = Some(report);
                     on_report_stop.store(true, std::sync::atomic::Ordering::Release);
                 }
