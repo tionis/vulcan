@@ -6,6 +6,14 @@ arbitrary Git command.
 
 ## Connection and authentication
 
+Start the daemon, then run `vulcan daemon companion --output json` to inspect its loopback endpoint
+and non-secret credential identity. For an explicit client setup, run
+`vulcan daemon companion --reveal-token --output json` and transfer the returned token directly
+into device-local client storage. The reveal command refuses to provision a stopped or
+credential-mismatched daemon. Never put its output in a vault note, `.obsidian/plugins/*/data.json`,
+shared configuration, shell history, logs, or source control; the token is bearer authority for
+the local companion API.
+
 - The server accepts only listeners whose bound address is IPv4 or IPv6 loopback.
 - HTTP requests use `Authorization: Bearer <device-token>`.
 - Every HTTP operation except `GET /capabilities` uses `Vulcan-Protocol-Version: 1`.

@@ -2258,6 +2258,14 @@ fn parses_daemon_lifecycle_commands() {
             command: DaemonCommand::Stop
         }
     ));
+    assert_eq!(
+        Cli::try_parse_from(["vulcan", "daemon", "companion", "--reveal-token"])
+            .expect("daemon companion provisioning should parse")
+            .command,
+        Command::Daemon {
+            command: DaemonCommand::Companion { reveal_token: true },
+        }
+    );
 
     let configure = Cli::try_parse_from([
         "vulcan",

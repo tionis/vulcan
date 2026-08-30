@@ -6561,10 +6561,31 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
     assert_eq!(running["registered_wikis"], serde_json::json!([]));
     assert!(running["uptime_ms"].as_u64().is_some());
 
+    let redacted = parse_stdout_json(&daemon(&["companion"]).success());
+    assert!(redacted["base_url"]
+        .as_str()
+        .is_some_and(|url| url.starts_with("http://127.0.0.1:")));
+    assert!(redacted.get("token").is_none());
+    assert_eq!(
+        redacted["credential_id"],
+        running["runtime"]["credential_id"]
+    );
+
+    let revealed = parse_stdout_json(&daemon(&["companion", "--reveal-token"]).success());
+    assert!(revealed["token"]
+        .as_str()
+        .is_some_and(|token| token.len() == 43));
+    assert_eq!(revealed["credential_id"], redacted["credential_id"]);
+
     let stopped = parse_stdout_json(&daemon(&["stop"]).success());
     assert_eq!(stopped["running"], false);
     let after = parse_stdout_json(&daemon(&["status"]).success());
     assert_eq!(after["running"], false);
+    daemon(&["companion"])
+        .failure()
+        .stdout(predicate::str::contains(
+            "daemon must be running to provision a companion client",
+        ));
 }
 
 #[test]
@@ -13092,6 +13113,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("mutation-free `sync_plan`"));
     assert!(git_skill.contains("vulcan sync semantic-plan"));
     assert!(git_skill.contains("vulcan daemon status"));
+    assert!(git_skill.contains("vulcan daemon companion --reveal-token"));
     assert!(git_skill.contains("vulcan daemon config set-agent resolution"));
     assert!(git_skill.contains("agent_semantic_plans: true"));
     assert!(git_skill.contains("vulcan sync retention-plan [<wiki>]"));
@@ -13138,6 +13160,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("read-only `sync` tool pack"));
     assert!(permission_skill.contains("full-vault read access"));
     assert!(permission_skill.contains("vulcan daemon config show"));
+    assert!(permission_skill.contains("vulcan daemon companion --output json"));
+    assert!(permission_skill.contains("synchronized plugin data"));
     assert!(permission_skill.contains("Never put a provider key in `daemon.toml`"));
     let index_skill =
         fs::read_to_string(vault_root.join(".agents/skills/index-maintenance/SKILL.md"))
@@ -13518,6 +13542,7 @@ fn skill_list_and_get_surface_bundled_skills() {
         fs::read_to_string(installed_skills.join("configuration-and-permissions/SKILL.md"))
             .expect("configuration skill should be installed");
     assert!(configuration.contains("vulcan config import folder-notes --preview"));
+    assert!(configuration.contains("vulcan daemon companion --output json"));
 }
 
 #[test]

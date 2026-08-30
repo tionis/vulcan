@@ -645,6 +645,7 @@ Subcommands:
   start        run the multi-wiki sync daemon in the foreground or detach it
   status       probe the authenticated loopback service and show runtime state
   stop         request graceful shutdown over the authenticated loopback service
+  companion    show connection details for a local companion client
 
 Notes:
   The daemon watches and periodically reconciles registered Git-backed wikis.
@@ -655,6 +656,7 @@ Examples:
   vulcan daemon start
   vulcan daemon start --detach
   vulcan daemon status --output json
+  vulcan daemon companion --reveal-token --output json
   vulcan daemon stop";
 
 const WEB_COMMAND_AFTER_HELP: &str = "\
@@ -4282,6 +4284,14 @@ pub enum DaemonCommand {
     Status,
     #[command(about = "Request graceful daemon shutdown")]
     Stop,
+    #[command(about = "Show local companion connection details")]
+    Companion {
+        #[arg(
+            long,
+            help = "Include the bearer token for explicit transfer into device-local client storage"
+        )]
+        reveal_token: bool,
+    },
     #[command(about = "Inspect or change device-local daemon configuration")]
     Config {
         #[command(subcommand)]

@@ -6,6 +6,7 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
+use vulcan_daemon::credentials::CompanionCredentialStore;
 use vulcan_daemon::process::{
     daemon_status, request_daemon_shutdown, run_daemon_foreground, DaemonProcessContext,
     DaemonStatusReport,
@@ -21,6 +22,16 @@ struct DaemonStartReport<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     log_path: Option<&'a std::path::Path>,
     status: &'a DaemonStatusReport,
+}
+
+#[derive(Debug, Serialize)]
+struct DaemonCompanionReport {
+    version: u32,
+    base_url: String,
+    credential_id: String,
+    allowed_origins: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    token: Option<String>,
 }
 
 pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Result<(), CliError> {
@@ -41,8 +52,50 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
             let status = request_daemon_shutdown(&context).map_err(CliError::operation)?;
             print_status(cli.output, &status)
         }
+        DaemonCommand::Companion { reveal_token } => {
+            print_companion(cli.output, &context, *reveal_token)
+        }
         DaemonCommand::Config { command } => handle_config(cli.output, &context, command),
     }
+}
+
+fn print_companion(
+    output: OutputFormat,
+    context: &DaemonProcessContext,
+    reveal_token: bool,
+) -> Result<(), CliError> {
+    let status = daemon_status(context).map_err(CliError::operation)?;
+    let runtime = status.runtime.filter(|_| status.running).ok_or_else(|| {
+        CliError::operation("the Vulcan daemon must be running to provision a companion client")
+    })?;
+    let credential = CompanionCredentialStore::at(&context.state_root)
+        .load()
+        .map_err(CliError::operation)?;
+    if credential.id != runtime.credential_id {
+        return Err(CliError::operation(
+            "daemon runtime credential identity does not match device state",
+        ));
+    }
+    let report = DaemonCompanionReport {
+        version: 1,
+        base_url: format!("http://{}", runtime.bind),
+        credential_id: credential.id,
+        allowed_origins: credential.allowed_origins,
+        token: reveal_token.then_some(credential.token),
+    };
+    if output == OutputFormat::Json {
+        return print_json(&report);
+    }
+    println!("Companion endpoint: {}", report.base_url);
+    println!("Credential ID: {}", report.credential_id);
+    println!("Allowed origins: {}", report.allowed_origins.join(", "));
+    if let Some(token) = report.token {
+        println!("Bearer token: {token}");
+        println!("Store this token only in device-local client storage.");
+    } else {
+        println!("Bearer token: [REDACTED] (pass --reveal-token for explicit transfer)");
+    }
+    Ok(())
 }
 
 fn handle_config(
