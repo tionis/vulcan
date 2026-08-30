@@ -2472,6 +2472,29 @@ fn parses_sync_retention_plan_command() {
 
 #[test]
 fn parses_sync_semantic_commands() {
+    assert!(Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "semantic-plan",
+        "--from",
+        "main",
+        "--to",
+        "live",
+        "--agent",
+    ])
+    .is_err());
+    assert!(Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "semantic-plan",
+        "--from",
+        "main",
+        "--to",
+        "live",
+        "--model",
+        "semantic-model",
+    ])
+    .is_err());
     let plan = Cli::try_parse_from([
         "vulcan",
         "sync",
@@ -2484,6 +2507,8 @@ fn parses_sync_semantic_commands() {
         "--group-by",
         "file",
         "--agent",
+        "--model",
+        "semantic-model",
         "--dry-run",
     ])
     .expect("semantic plan should parse");
@@ -2496,10 +2521,11 @@ fn parses_sync_semantic_commands() {
                 ref to,
                 group_by: SemanticGroupingArg::File,
                 agent: true,
+                model: Some(ref model),
                 dry_run: true,
                 ..
             }
-        } if wiki == "personal" && from == "main" && to == "refs/vulcan/sync/local/live"
+        } if wiki == "personal" && from == "main" && to == "refs/vulcan/sync/local/live" && model == "semantic-model"
     ));
 
     let apply = Cli::try_parse_from([

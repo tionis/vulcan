@@ -577,6 +577,9 @@ Subcommands:
   checkpoint   retain the currently accepted live commit under a durable local ref
   retention-plan inspect live-epoch and checkpoint retention without mutation
   retention-apply apply reviewed checkpoint, rollover, and epoch-expiry decisions
+  semantic-plan build a reviewable deterministic or agent-organized history
+  semantic-apply apply a reviewed semantic history by compare-and-swap
+  semantic-reject reject a semantic proposal and release its retained ref
   pause        disable future automatic sync for one registered wiki
   resume       enable future automatic sync for one registered wiki
 
@@ -606,6 +609,9 @@ Examples:
   vulcan sync retention-apply personal --dry-run
   vulcan sync retention-apply personal --rollover
   vulcan sync retention-apply personal --epoch-archives-keep 8 --expire-epoch-archives
+  vulcan sync semantic-plan --from main --to <accepted-live-rev> --dry-run
+  vulcan sync semantic-plan --from main --to <accepted-live-rev> --agent --model <model> --dry-run
+  vulcan sync semantic-apply <plan-id> --dry-run
   vulcan sync pause personal
   vulcan sync resume personal
   vulcan --vault ./wiki sync run --remote origin";
@@ -4169,8 +4175,30 @@ pub enum SyncCommand {
             help = "Deterministic commit grouping strategy"
         )]
         group_by: SemanticGroupingArg,
-        #[arg(long, help = "Request optional agent-assisted grouping")]
+        #[arg(
+            long,
+            requires = "model",
+            help = "Request optional agent-assisted grouping"
+        )]
         agent: bool,
+        #[arg(
+            long,
+            default_value = "http://localhost:11434/v1",
+            help = "OpenAI-compatible API base URL used with --agent"
+        )]
+        base_url: String,
+        #[arg(
+            long,
+            requires = "agent",
+            help = "Provider model identifier required with --agent"
+        )]
+        model: Option<String>,
+        #[arg(
+            long,
+            requires = "agent",
+            help = "Environment variable containing the semantic provider API key"
+        )]
+        api_key_env: Option<String>,
         #[arg(
             long,
             help = "Report deterministic grouping without creating objects or state"

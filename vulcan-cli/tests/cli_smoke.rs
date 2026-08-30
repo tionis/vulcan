@@ -5597,6 +5597,90 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
     assert_eq!(grouped_all["commits"].as_array().map(Vec::len), Some(1));
     assert_eq!(grouped_all["commits"][0]["group"], "all changes");
 
+    let listener = TcpListener::bind("127.0.0.1:0").expect("semantic agent listener");
+    let address = listener.local_addr().expect("semantic agent address");
+    let server = thread::spawn(move || {
+        let (stream, _) = listener.accept().expect("semantic agent request");
+        let mut reader = BufReader::new(stream);
+        let mut content_length = None;
+        loop {
+            let mut line = String::new();
+            reader.read_line(&mut line).expect("request header");
+            if line == "\r\n" {
+                break;
+            }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length: ") {
+                content_length = value.trim().parse::<usize>().ok();
+            }
+        }
+        let mut body = vec![0; content_length.expect("content length")];
+        reader.read_exact(&mut body).expect("request body");
+        let body: Value = serde_json::from_slice(&body).expect("request JSON");
+        let input: Value = serde_json::from_str(
+            body["messages"][1]["content"]
+                .as_str()
+                .expect("semantic input"),
+        )
+        .expect("semantic input JSON");
+        assert_eq!(input["changes"].as_array().map(Vec::len), Some(3));
+        let content = serde_json::json!({
+            "commits": [
+                {
+                    "group": "root",
+                    "message": "Revise the root note",
+                    "paths": ["Root.md"]
+                },
+                {
+                    "group": "area",
+                    "message": "Add the area notes",
+                    "paths": ["Area/Two.md", "Area/One.md"]
+                }
+            ]
+        })
+        .to_string();
+        let response = serde_json::json!({
+            "choices": [{"message": {"content": content}}]
+        })
+        .to_string();
+        write!(
+            reader.get_mut(),
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            response.len(),
+            response
+        )
+        .expect("semantic agent response");
+    });
+    let agent = parse_stdout_json(
+        &sync(&[
+            "semantic-plan",
+            "--from",
+            &source,
+            "--to",
+            &target,
+            "--agent",
+            "--model",
+            "fixture-model",
+            "--base-url",
+            &format!("http://{address}/v1"),
+            "--dry-run",
+        ])
+        .success(),
+    );
+    server.join().expect("semantic agent server");
+    assert_eq!(agent["agent"], true);
+    assert_eq!(agent["grouping"], "agent");
+    assert_eq!(agent["agent_identity"]["provider"], "openai-compatible");
+    assert_eq!(agent["agent_identity"]["model"], "fixture-model");
+    assert_eq!(agent["commits"][0]["group"], "root");
+    assert_eq!(agent["commits"][1]["group"], "area");
+    assert_eq!(
+        agent["commits"][1]["paths"],
+        serde_json::json!(["Area/One.md", "Area/Two.md"])
+    );
+    assert!(agent["commits"][0]["message"]
+        .as_str()
+        .is_some_and(|message| message.starts_with("Revise the root note\n\n")));
+
     let plan =
         parse_stdout_json(&sync(&["semantic-plan", "--from", &source, "--to", &target]).success());
     assert_eq!(plan["version"], 4);
@@ -12887,6 +12971,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("--patch <patch-file> --dry-run"));
     assert!(git_skill.contains("agent_conflict_proposal_limit_per_conflict: 1"));
     assert!(git_skill.contains("agent_conflict_proposal_claim_scope: daemon_process"));
+    assert!(git_skill.contains("--agent --model <model>"));
+    assert!(git_skill.contains("every accepted path must appear exactly once"));
     assert!(git_skill.contains("--editor --dry-run"));
     assert!(git_skill.contains("vulcan sync propose <conflict-id> --model <model>"));
     assert!(git_skill.contains("sent as exact UTF-8 with a content hash"));

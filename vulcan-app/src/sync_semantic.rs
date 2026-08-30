@@ -7,6 +7,8 @@ use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
+#[cfg(feature = "web")]
+use std::io::Read;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
@@ -23,6 +25,8 @@ const MAX_SEMANTIC_PLAN_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_SEMANTIC_AGENT_PATCH_BYTES: usize = 8 * 1024 * 1024;
 const MAX_SEMANTIC_AGENT_MESSAGE_BYTES: usize = 16 * 1024;
 const MAX_SEMANTIC_AGENT_LABEL_BYTES: usize = 256;
+#[cfg(feature = "web")]
+const MAX_SEMANTIC_AGENT_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,6 +47,7 @@ pub enum SemanticGrouping {
     TopLevel,
     File,
     All,
+    Agent,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +106,173 @@ pub trait SemanticAgentProvider: Send + Sync {
         request: &SemanticAgentRequest,
         cancellation: &SyncCancellationToken,
     ) -> Result<SemanticAgentOutput, AppError>;
+}
+
+#[cfg(feature = "web")]
+pub struct OpenAiCompatibleSemanticProvider {
+    client: reqwest::blocking::Client,
+    endpoint: reqwest::Url,
+    model: String,
+    api_key: Option<String>,
+}
+
+#[cfg(feature = "web")]
+impl OpenAiCompatibleSemanticProvider {
+    pub fn new(
+        base_url: &str,
+        model: impl Into<String>,
+        api_key: Option<String>,
+    ) -> Result<Self, AppError> {
+        let mut endpoint = reqwest::Url::parse(base_url).map_err(AppError::operation)?;
+        if !matches!(endpoint.scheme(), "http" | "https")
+            || endpoint.host_str().is_none()
+            || !endpoint.username().is_empty()
+            || endpoint.password().is_some()
+            || endpoint.query().is_some()
+            || endpoint.fragment().is_some()
+        {
+            return Err(AppError::operation(
+                "semantic agent base URL must be an absolute HTTP(S) URL without credentials, query, or fragment",
+            ));
+        }
+        let path = endpoint.path().trim_end_matches('/');
+        endpoint.set_path(&format!("{path}/chat/completions"));
+        let model = model.into();
+        validate_agent_identity(&SemanticAgentIdentity {
+            provider: "openai-compatible".to_string(),
+            model: model.clone(),
+            prompt_contract_version: 1,
+        })?;
+        let client = reqwest::blocking::Client::builder()
+            .timeout(std::time::Duration::from_secs(120))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(AppError::operation)?;
+        Ok(Self {
+            client,
+            endpoint,
+            model,
+            api_key,
+        })
+    }
+
+    fn send(&self, body: &serde_json::Value) -> Result<Vec<u8>, AppError> {
+        let mut builder = self.client.post(self.endpoint.clone()).json(body);
+        if let Some(api_key) = self.api_key.as_deref() {
+            builder = builder.bearer_auth(api_key);
+        }
+        let mut response = builder.send().map_err(AppError::operation)?;
+        let status = response.status();
+        let mut bytes = Vec::new();
+        response
+            .by_ref()
+            .take((MAX_SEMANTIC_AGENT_RESPONSE_BYTES + 1) as u64)
+            .read_to_end(&mut bytes)
+            .map_err(AppError::operation)?;
+        if bytes.len() > MAX_SEMANTIC_AGENT_RESPONSE_BYTES {
+            return Err(AppError::operation(
+                "semantic agent response exceeds its byte limit",
+            ));
+        }
+        if !status.is_success() {
+            return Err(AppError::operation(format!(
+                "semantic agent provider returned HTTP {status}"
+            )));
+        }
+        Ok(bytes)
+    }
+}
+
+#[cfg(feature = "web")]
+impl SemanticAgentProvider for OpenAiCompatibleSemanticProvider {
+    fn identity(&self) -> SemanticAgentIdentity {
+        SemanticAgentIdentity {
+            provider: "openai-compatible".to_string(),
+            model: self.model.clone(),
+            prompt_contract_version: 1,
+        }
+    }
+
+    fn network_endpoint(&self) -> Option<&str> {
+        Some(self.endpoint.as_str())
+    }
+
+    fn propose(
+        &self,
+        request: &SemanticAgentRequest,
+        cancellation: &SyncCancellationToken,
+    ) -> Result<SemanticAgentOutput, AppError> {
+        semantic_cancellation_check(cancellation)?;
+        let input = serde_json::to_string(request).map_err(AppError::operation)?;
+        let body = serde_json::json!({
+            "model": self.model,
+            "temperature": 0,
+            "response_format": { "type": "json_object" },
+            "messages": [
+                {
+                    "role": "system",
+                    "content": "Organize only the supplied accepted Git changes into an ordered semantic commit plan. Return exactly one JSON object with commits, an ordered array of objects containing group (a unique short label), message (a human commit message without Vulcan-Semantic trailers), and paths (an array). Include every supplied path exactly once, name no other path, preserve dependency order, and do not propose or invent file content. Emit no Markdown fence or commentary outside the JSON object."
+                },
+                { "role": "user", "content": input }
+            ]
+        });
+        let bytes = self.send(&body)?;
+        semantic_cancellation_check(cancellation)?;
+        parse_openai_semantic_output(&bytes)
+    }
+}
+
+#[cfg(feature = "web")]
+fn parse_openai_semantic_output(bytes: &[u8]) -> Result<SemanticAgentOutput, AppError> {
+    #[derive(Deserialize)]
+    struct Response {
+        choices: Vec<Choice>,
+    }
+    #[derive(Deserialize)]
+    struct Choice {
+        message: Message,
+    }
+    #[derive(Deserialize)]
+    struct Message {
+        content: String,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Output {
+        commits: Vec<Commit>,
+    }
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Commit {
+        group: String,
+        message: String,
+        paths: Vec<String>,
+    }
+
+    let response: Response = serde_json::from_slice(bytes).map_err(AppError::operation)?;
+    let content = response
+        .choices
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::operation("semantic agent response contained no choices"))?
+        .message
+        .content;
+    let output: Output = serde_json::from_str(&content).map_err(|error| {
+        AppError::operation(format!(
+            "semantic agent response content was not exact JSON: {error}"
+        ))
+    })?;
+    Ok(SemanticAgentOutput {
+        commits: output
+            .commits
+            .into_iter()
+            .map(|commit| SemanticAgentCommit {
+                group: commit.group,
+                message: commit.message,
+                paths: commit.paths,
+            })
+            .collect(),
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -205,6 +377,11 @@ pub fn create_semantic_plan_with_state_store(
     if options.agent {
         return Err(AppError::operation(
             "agent-assisted semantic grouping requires a configured semantic planning provider",
+        ));
+    }
+    if options.grouping == SemanticGrouping::Agent {
+        return Err(AppError::operation(
+            "agent grouping requires agent mode and a configured provider",
         ));
     }
     create_semantic_plan_internal(
@@ -1202,6 +1379,7 @@ fn deterministic_groups(
                 .map_or_else(|| path.clone(), |(top, _)| top.to_string()),
             SemanticGrouping::File => path.clone(),
             SemanticGrouping::All => "all changes".to_string(),
+            SemanticGrouping::Agent => "agent plan".to_string(),
         };
         groups.entry(group).or_default().push(path);
     }
@@ -1244,7 +1422,11 @@ fn initial_plan_report(
         dry_run: options.dry_run,
         agent: options.agent,
         agent_identity,
-        grouping: options.grouping,
+        grouping: if options.agent {
+            SemanticGrouping::Agent
+        } else {
+            options.grouping
+        },
         vault: vault.to_path_buf(),
         repository_key: repository_state_key(vault),
         semantic_ref: options.semantic_ref.to_string(),
@@ -1483,6 +1665,95 @@ mod tests {
             }],
         };
         assert!(validate_agent_output(&["A.md".to_string()], output).is_err());
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn openai_semantic_provider_sends_bounded_patches_and_parses_exact_groups() {
+        use super::{
+            OpenAiCompatibleSemanticProvider, SemanticAgentChange, SemanticAgentProvider,
+            SemanticAgentRequest,
+        };
+        use crate::sync::SyncCancellationToken;
+        use std::io::{BufRead, BufReader, Read as _, Write as _};
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener");
+        let address = listener.local_addr().expect("listener address");
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("request");
+            let mut reader = BufReader::new(stream);
+            let mut headers = String::new();
+            loop {
+                let mut line = String::new();
+                reader.read_line(&mut line).expect("header");
+                if line == "\r\n" {
+                    break;
+                }
+                headers.push_str(&line);
+            }
+            assert!(headers
+                .to_ascii_lowercase()
+                .contains("authorization: bearer secret"));
+            let length = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length: ")
+                        .map(str::to_string)
+                })
+                .and_then(|value| value.trim().parse::<usize>().ok())
+                .expect("content length");
+            let mut body = vec![0; length];
+            reader.read_exact(&mut body).expect("request body");
+            let body: serde_json::Value = serde_json::from_slice(&body).expect("request JSON");
+            assert_eq!(body["model"], "fixture-model");
+            assert!(body["messages"][1]["content"]
+                .as_str()
+                .is_some_and(|content| content.contains("diff --git") && content.contains("A.md")));
+            let content = serde_json::json!({
+                "commits": [{
+                    "group": "notes",
+                    "message": "Update the notes",
+                    "paths": ["A.md"]
+                }]
+            })
+            .to_string();
+            let response = serde_json::json!({
+                "id": "response-id",
+                "choices": [{"message": {"role": "assistant", "content": content}}]
+            })
+            .to_string();
+            write!(
+                reader.get_mut(),
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                response.len(),
+                response
+            )
+            .expect("response");
+        });
+        let provider = OpenAiCompatibleSemanticProvider::new(
+            &format!("http://{address}/v1"),
+            "fixture-model",
+            Some("secret".to_string()),
+        )
+        .expect("provider");
+        let output = provider
+            .propose(
+                &SemanticAgentRequest {
+                    source_revision: "0".repeat(40),
+                    target_revision: "1".repeat(40),
+                    changes: vec![SemanticAgentChange {
+                        path: "A.md".to_string(),
+                        patch: "diff --git a/A.md b/A.md".to_string(),
+                    }],
+                },
+                &SyncCancellationToken::default(),
+            )
+            .expect("provider output");
+        assert_eq!(output.commits[0].group, "notes");
+        assert_eq!(output.commits[0].paths, ["A.md"]);
+        server.join().expect("server thread");
     }
 
     #[test]

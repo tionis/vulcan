@@ -39,6 +39,10 @@ use vulcan_app::sync_semantic::{
     SemanticApplyReport, SemanticGrouping, SemanticPlanOptions, SemanticPlanReport,
     SemanticRejectReport,
 };
+#[cfg(feature = "web")]
+use vulcan_app::sync_semantic::{
+    create_semantic_plan_with_provider, OpenAiCompatibleSemanticProvider,
+};
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
@@ -173,6 +177,9 @@ fn handle_non_cycle_sync_command(
             target,
             group_by,
             agent,
+            base_url,
+            model,
+            api_key_env,
             dry_run,
         } => run_semantic_plan(
             cli,
@@ -184,6 +191,9 @@ fn handle_non_cycle_sync_command(
             target,
             *group_by,
             *agent,
+            base_url,
+            model.as_deref(),
+            api_key_env.as_deref(),
             *dry_run,
         ),
         SyncCommand::SemanticApply { plan_id, dry_run } => {
@@ -444,29 +454,100 @@ fn run_semantic_plan(
     target: &crate::SyncTargetArgs,
     group_by: SemanticGroupingArg,
     agent: bool,
+    base_url: &str,
+    model: Option<&str>,
+    api_key_env: Option<&str>,
     dry_run: bool,
 ) -> Result<(), CliError> {
     let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
     check_sync_permission(cli, &paths, registration_profile.as_deref())?;
-    let report = create_semantic_plan(
-        &paths,
-        &SemanticPlanOptions {
-            from: from.to_string(),
-            to: to.to_string(),
-            semantic_ref: GitRefName::parse(semantic_ref).map_err(CliError::operation)?,
-            remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
-            live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
-            grouping: match group_by {
-                SemanticGroupingArg::TopLevel => SemanticGrouping::TopLevel,
-                SemanticGroupingArg::File => SemanticGrouping::File,
-                SemanticGroupingArg::All => SemanticGrouping::All,
-            },
-            agent,
-            dry_run,
+    let options = SemanticPlanOptions {
+        from: from.to_string(),
+        to: to.to_string(),
+        semantic_ref: GitRefName::parse(semantic_ref).map_err(CliError::operation)?,
+        remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
+        live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
+        grouping: match group_by {
+            SemanticGroupingArg::TopLevel => SemanticGrouping::TopLevel,
+            SemanticGroupingArg::File => SemanticGrouping::File,
+            SemanticGroupingArg::All => SemanticGrouping::All,
         },
-    )
-    .map_err(CliError::operation)?;
+        agent,
+        dry_run,
+    };
+    let report = if agent {
+        create_agent_semantic_plan(
+            cli,
+            &paths,
+            registration_profile.as_deref(),
+            &options,
+            base_url,
+            model,
+            api_key_env,
+        )?
+    } else {
+        if model.is_some() || api_key_env.is_some() {
+            return Err(CliError::operation(
+                "--model and --api-key-env require --agent",
+            ));
+        }
+        create_semantic_plan(&paths, &options).map_err(CliError::operation)?
+    };
     print_semantic_plan(cli.output, &report)
+}
+
+#[cfg(feature = "web")]
+fn create_agent_semantic_plan(
+    cli: &Cli,
+    paths: &VaultPaths,
+    registration_profile: Option<&str>,
+    options: &SemanticPlanOptions,
+    base_url: &str,
+    model: Option<&str>,
+    api_key_env: Option<&str>,
+) -> Result<SemanticPlanReport, CliError> {
+    let model = model.ok_or_else(|| CliError::operation("--agent requires --model"))?;
+    let profile = cli
+        .permissions
+        .as_deref()
+        .or(registration_profile)
+        .unwrap_or("unrestricted");
+    let selection =
+        resolve_permission_profile(paths, Some(profile)).map_err(CliError::operation)?;
+    ProfilePermissionGuard::new(paths, selection)
+        .check_network(base_url)
+        .map_err(CliError::operation)?;
+    let api_key = api_key_env
+        .map(|name| {
+            std::env::var(name).map_err(|_| {
+                CliError::operation(format!("semantic agent API key env `{name}` is not set"))
+            })
+        })
+        .transpose()?;
+    let provider = OpenAiCompatibleSemanticProvider::new(base_url, model, api_key)
+        .map_err(CliError::operation)?;
+    create_semantic_plan_with_provider(
+        paths,
+        options,
+        &provider,
+        &vulcan_app::sync::SyncCancellationToken::default(),
+    )
+    .map_err(CliError::operation)
+}
+
+#[cfg(not(feature = "web"))]
+fn create_agent_semantic_plan(
+    _cli: &Cli,
+    _paths: &VaultPaths,
+    _registration_profile: Option<&str>,
+    _options: &SemanticPlanOptions,
+    _base_url: &str,
+    _model: Option<&str>,
+    _api_key_env: Option<&str>,
+) -> Result<SemanticPlanReport, CliError> {
+    Err(CliError::operation(
+        "agent-assisted semantic planning requires the `web` feature",
+    ))
 }
 
 fn run_semantic_apply(cli: &Cli, plan_id: &str, dry_run: bool) -> Result<(), CliError> {
