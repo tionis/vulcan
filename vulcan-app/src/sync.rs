@@ -1534,6 +1534,32 @@ mod tests {
         );
     }
 
+    fn assert_materialization_candidate(record: &SyncConflictRecord) {
+        let materialization = record
+            .materialization
+            .as_ref()
+            .expect("materialization candidate");
+        assert_eq!(materialization.copies.len(), 1);
+        assert_eq!(materialization.copies[0].original_path, "Home.md");
+        assert!(materialization.copies[0]
+            .copy_path
+            .starts_with(&format!(".sync-conflicts/{}/local/", record.id)));
+    }
+
+    fn assert_conflict_artifacts(store: &SyncStateStore, record: &SyncConflictRecord) {
+        let root = store
+            .root()
+            .join(&record.repository_key)
+            .join("conflicts")
+            .join(&record.id);
+        let read = |artifact: &Option<std::path::PathBuf>| {
+            fs::read(root.join(artifact.as_ref().expect("artifact path"))).expect("artifact bytes")
+        };
+        assert_eq!(read(&record.paths[0].base.artifact), b"base\n");
+        assert_eq!(read(&record.paths[0].local.artifact), b"reader\n");
+        assert_eq!(read(&record.paths[0].remote.artifact), b"writer\n");
+    }
+
     #[test]
     fn configured_sync_options_load_policy_and_only_reduce_automation() {
         let temporary = tempdir().expect("temporary directory");
@@ -2429,19 +2455,9 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         assert_eq!(record.paths[0].path, "Home.md");
         assert!(record.preserved_record_ref.is_some());
         assert!(record.provenance_revision.is_some());
+        assert_materialization_candidate(&record);
         assert_overlapping_text_classification(&record);
-        let conflict_root = store
-            .root()
-            .join(&record.repository_key)
-            .join("conflicts")
-            .join(&record.id);
-        let read_artifact = |artifact: &Option<std::path::PathBuf>| {
-            fs::read(conflict_root.join(artifact.as_ref().expect("artifact path")))
-                .expect("artifact bytes")
-        };
-        assert_eq!(read_artifact(&record.paths[0].base.artifact), b"base\n");
-        assert_eq!(read_artifact(&record.paths[0].local.artifact), b"reader\n");
-        assert_eq!(read_artifact(&record.paths[0].remote.artifact), b"writer\n");
+        assert_conflict_artifacts(&store, &record);
         assert_conflict_read_workflows(&VaultPaths::new(&reader), &store, &record);
         assert_eq!(
             fs::read_to_string(reader.join("Home.md")).expect("reader bytes"),

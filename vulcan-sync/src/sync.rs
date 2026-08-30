@@ -251,8 +251,25 @@ pub struct GitSyncConflict {
     pub policy_hash: String,
     pub preserved_refs: GitConflictRefs,
     pub provenance_revision: GitOid,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub materialization: Option<GitConflictMaterialization>,
     pub merge_tree: Option<GitOid>,
     pub diagnostics: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitConflictMaterialization {
+    pub directory: String,
+    pub tree: GitOid,
+    pub copies: Vec<GitConflictCopy>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitConflictCopy {
+    pub original_path: String,
+    pub copy_path: String,
+    pub object_id: GitOid,
+    pub mode: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -1621,6 +1638,15 @@ fn build_sync_conflict(
         &remote,
         &merge.conflict_paths,
     )?;
+    let materialization = build_conflict_materialization(
+        engine,
+        repository,
+        merge.base.as_ref(),
+        &capture.commit,
+        &remote,
+        &merge.conflict_paths,
+        &id,
+    )?;
     let (preserved_refs, provenance_revision) = preserve_conflict_refs(
         engine,
         repository,
@@ -1631,7 +1657,10 @@ fn build_sync_conflict(
             base: merge.base.as_ref(),
             local: &capture.commit,
             remote: &remote,
-            merge_tree: merge.tree.as_ref(),
+            merge_tree: materialization
+                .as_ref()
+                .map(|candidate| &candidate.tree)
+                .or(merge.tree.as_ref()),
         },
     )?;
     Ok(GitSyncConflict {
@@ -1645,9 +1674,105 @@ fn build_sync_conflict(
         policy_hash,
         preserved_refs,
         provenance_revision,
+        materialization,
         merge_tree: merge.tree,
         diagnostics: merge.diagnostics,
     })
+}
+
+fn build_conflict_materialization(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    base: Option<&GitOid>,
+    local: &GitOid,
+    remote: &GitOid,
+    conflict_paths: &[String],
+    conflict_id: &str,
+) -> Result<Option<GitConflictMaterialization>, GitSyncError> {
+    let Some(base) = base else {
+        return Ok(None);
+    };
+    let directory = format!(".sync-conflicts/{conflict_id}");
+    let directory_prefix = format!("{directory}/");
+    if conflict_paths
+        .iter()
+        .any(|path| path == ".sync-conflicts" || path.starts_with(".sync-conflicts/"))
+        || [local, remote]
+            .into_iter()
+            .try_fold(false, |found, revision| {
+                if found {
+                    return Ok::<bool, GitSyncError>(true);
+                }
+                Ok(engine
+                    .tree_paths(repository, revision)?
+                    .into_iter()
+                    .any(|path| path == directory || path.starts_with(&directory_prefix)))
+            })?
+    {
+        return Ok(None);
+    }
+
+    let mut resolved = Vec::new();
+    let mut copies = Vec::new();
+    for path in conflict_paths {
+        let remote_object = engine.path_object(repository, remote, path)?;
+        let local_object = engine.path_object(repository, local, path)?;
+        if remote_object
+            .as_ref()
+            .is_some_and(|object| !is_materializable_blob(object))
+            || local_object
+                .as_ref()
+                .is_some_and(|object| !is_materializable_blob(object))
+        {
+            return Ok(None);
+        }
+        resolved.push(resolved_path(path.clone(), remote_object.as_ref()));
+        if let Some(object) = local_object {
+            let copy_path = format!("{directory}/local/{path}");
+            resolved.push(resolved_path(copy_path.clone(), Some(&object)));
+            copies.push(GitConflictCopy {
+                original_path: path.clone(),
+                copy_path,
+                object_id: object.oid,
+                mode: object.mode,
+            });
+        }
+    }
+    let tree = engine.resolve_merge_tree_with_paths(
+        repository,
+        &GitContentMergeResolutionRequest {
+            base: base.clone(),
+            accepted_remote: remote.clone(),
+            local_candidate: local.clone(),
+            paths: resolved,
+        },
+    )?;
+    Ok(Some(GitConflictMaterialization {
+        directory,
+        tree,
+        copies,
+    }))
+}
+
+fn is_materializable_blob(object: &GitPathObject) -> bool {
+    object.kind == "blob"
+        && matches!(object.mode.as_str(), "100644" | "100755")
+        && object.data.is_some()
+}
+
+fn resolved_path(path: String, object: Option<&GitPathObject>) -> GitResolvedPath {
+    object.map_or(
+        GitResolvedPath {
+            path: path.clone(),
+            mode: None,
+            data: None,
+        },
+        |object| GitResolvedPath {
+            path,
+            mode: Some(object.mode.clone()),
+            data: object.data.clone(),
+        },
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2373,6 +2498,46 @@ mod tests {
             .expect("Git output should be UTF-8")
             .trim()
             .to_string()
+    }
+
+    fn assert_conflict_materialization(reader: &Path, conflict: &GitSyncConflict) {
+        let materialization = conflict
+            .materialization
+            .as_ref()
+            .expect("blob conflicts have a safe materialization candidate");
+        assert_eq!(
+            materialization.directory,
+            format!(".sync-conflicts/{}", conflict.id)
+        );
+        assert_eq!(materialization.copies.len(), 1);
+        assert_eq!(materialization.copies[0].original_path, "Home.md");
+        assert_eq!(
+            git_stdout(
+                reader,
+                &["show", &format!("{}:Home.md", materialization.tree)]
+            ),
+            "writer version"
+        );
+        assert_eq!(
+            git_stdout(
+                reader,
+                &[
+                    "show",
+                    &format!(
+                        "{}:.sync-conflicts/{}/local/Home.md",
+                        materialization.tree, conflict.id
+                    )
+                ]
+            ),
+            "reader version"
+        );
+        for path in ["Writer.md", "Reader.md"] {
+            assert!(!git_stdout(
+                reader,
+                &["show", &format!("{}:{path}", materialization.tree)]
+            )
+            .is_empty());
+        }
     }
 
     fn init_repo(path: &Path) {
@@ -3157,6 +3322,8 @@ mod tests {
 
         fs::write(writer.join("Home.md"), "writer version\n").expect("writer edit");
         fs::write(reader.join("Home.md"), "reader version\n").expect("reader edit");
+        fs::write(writer.join("Writer.md"), "clean remote addition\n").expect("writer addition");
+        fs::write(reader.join("Reader.md"), "clean local addition\n").expect("reader addition");
         sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("writer push");
         let report =
             sync_git_once(&engine, &reader, &GitSyncOptions::default()).expect("conflict report");
@@ -3180,6 +3347,7 @@ mod tests {
         assert!(conflict.base.is_some());
         assert_eq!(conflict.id.len(), 32);
         assert_eq!(conflict.policy_version, MergePolicy::default().version);
+        assert_conflict_materialization(reader.as_path(), conflict);
         assert_eq!(
             engine
                 .read_ref(&report.repository, &conflict.preserved_refs.local)

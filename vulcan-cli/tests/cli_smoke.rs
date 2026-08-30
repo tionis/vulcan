@@ -13050,6 +13050,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("validation.checks"));
     assert!(git_skill.contains("device-local automation ceiling"));
     assert!(git_skill.contains("conflict_record"));
+    assert!(git_skill.contains("conflict.materialization"));
+    assert!(git_skill.contains("`.sync-conflicts/<id>/local/`"));
     assert!(git_skill.contains("vulcan sync conflicts <id>"));
     assert!(git_skill.contains("stable `classification`"));
     assert!(git_skill.contains("`provenance_revision`"));

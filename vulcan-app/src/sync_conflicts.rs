@@ -39,8 +39,25 @@ pub struct SyncConflictRecord {
     pub preserved_record_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance_revision: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialization: Option<SyncConflictMaterializationRecord>,
     pub paths: Vec<SyncConflictPathRecord>,
     pub diagnostics: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncConflictMaterializationRecord {
+    pub directory: String,
+    pub tree: String,
+    pub copies: Vec<SyncConflictCopyRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncConflictCopyRecord {
+    pub original_path: String,
+    pub copy_path: String,
+    pub object_id: String,
+    pub mode: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -847,6 +864,22 @@ impl SyncConflictStore {
             preserved_remote_ref: conflict.preserved_refs.remote.to_string(),
             preserved_record_ref: Some(conflict.preserved_refs.record.to_string()),
             provenance_revision: Some(conflict.provenance_revision.to_string()),
+            materialization: conflict.materialization.as_ref().map(|materialization| {
+                SyncConflictMaterializationRecord {
+                    directory: materialization.directory.clone(),
+                    tree: materialization.tree.to_string(),
+                    copies: materialization
+                        .copies
+                        .iter()
+                        .map(|copy| SyncConflictCopyRecord {
+                            original_path: copy.original_path.clone(),
+                            copy_path: copy.copy_path.clone(),
+                            object_id: copy.object_id.to_string(),
+                            mode: copy.mode.clone(),
+                        })
+                        .collect(),
+                }
+            }),
             paths,
             diagnostics: conflict.diagnostics.clone(),
         };
@@ -1126,6 +1159,7 @@ fn verify_record_inputs(
             .preserved_record_ref
             .as_deref()
             .is_some_and(|reference| reference != conflict.preserved_refs.record.as_str())
+        || !materialization_matches(record.materialization.as_ref(), conflict)
         || record
             .paths
             .iter()
@@ -1147,6 +1181,31 @@ fn verify_record_inputs(
         )));
     }
     Ok(())
+}
+
+fn materialization_matches(
+    record: Option<&SyncConflictMaterializationRecord>,
+    conflict: &GitSyncConflict,
+) -> bool {
+    match (record, conflict.materialization.as_ref()) {
+        (None, _) => true,
+        (Some(_), None) => false,
+        (Some(record), Some(materialization)) => {
+            record.directory == materialization.directory
+                && record.tree == materialization.tree.as_str()
+                && record.copies.len() == materialization.copies.len()
+                && record
+                    .copies
+                    .iter()
+                    .zip(&materialization.copies)
+                    .all(|(record, copy)| {
+                        record.original_path == copy.original_path
+                            && record.copy_path == copy.copy_path
+                            && record.object_id == copy.object_id.as_str()
+                            && record.mode == copy.mode
+                    })
+        }
+    }
 }
 
 fn validate_hex_id(label: &str, value: &str) -> Result<(), AppError> {
