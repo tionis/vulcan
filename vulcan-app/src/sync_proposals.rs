@@ -3,6 +3,7 @@
 use crate::scan::refresh_cache_incrementally;
 use crate::sync::{load_validated_sync_config, validate_git_merge_tree};
 use crate::sync_conflicts::{
+    conflict_live_input, conflict_worktree_revision, conflict_worktree_tree,
     verify_preserved_conflict_refs, SyncConflictRecord, SyncConflictResolutionRecord,
     SyncConflictStore, SYNC_CONFLICT_RESOLUTION_VERSION,
 };
@@ -1307,10 +1308,12 @@ fn prepare_manual_resolution_scope(
             "supplied resolution requires a clean normal index and no Git operation in progress",
         ));
     }
-    let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
-    if !engine
-        .worktree_matches_tree(&repository, &local)
+    let local = conflict_worktree_revision(&record)?;
+    let expected_tree = conflict_worktree_tree(&engine, &repository, &record)?;
+    if engine
+        .snapshot_worktree_tree(&repository, Some(&local))
         .map_err(AppError::operation)?
+        != expected_tree
     {
         return Err(AppError::operation(
             "the worktree no longer matches the preserved local conflict input",
@@ -1325,7 +1328,7 @@ fn prepare_manual_resolution_scope(
         .map_err(AppError::operation)?
         .as_ref()
         .map(GitOid::as_str)
-        != Some(record.remote_revision.as_str())
+        != Some(conflict_live_input(&record)?)
     {
         return Err(AppError::operation(
             "the remote live ref moved after the conflict inputs were preserved",
@@ -1387,7 +1390,7 @@ pub fn create_resolution_proposal_with_provider(
     ensure_no_existing_proposal(state_store, &repository_key, conflict_id)?;
     verify_preserved_conflict_refs(&engine, &repository, &record)?;
     let refs_before = preserved_ref_snapshot(&engine, &repository, &record)?;
-    let local_revision = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
+    let local_revision = conflict_worktree_revision(&record)?;
     let worktree_before = engine
         .snapshot_worktree_tree(&repository, Some(&local_revision))
         .map_err(AppError::operation)?;
@@ -1802,7 +1805,7 @@ pub fn approve_resolution_proposal_with_state_store(
     revalidate_proposal_tree(&engine, &repository, &record, &proposal, false)?;
     revalidate_proposal_whole_tree(paths, &engine, &repository, &proposal)?;
     let existing = store.get_resolution(&repository_key, conflict_id)?;
-    validate_existing_proposal_resolution(existing.as_ref(), &proposal)?;
+    validate_existing_proposal_resolution(existing.as_ref(), &record, &proposal)?;
     if existing
         .as_ref()
         .is_some_and(|resolution| resolution.applied)
@@ -1893,7 +1896,7 @@ fn apply_approved_proposal(
     verify_preserved_conflict_refs(engine, repository, context.record)?;
     revalidate_proposal_tree(engine, repository, context.record, context.proposal, true)?;
     revalidate_proposal_whole_tree(context.paths, engine, repository, context.proposal)?;
-    let local = GitOid::parse(&context.record.local_revision).map_err(AppError::operation)?;
+    let local = conflict_worktree_revision(context.record)?;
     let recovery_ref =
         conflict_recovery_ref(&context.record.id, "current").map_err(AppError::operation)?;
     let device_id = context
@@ -1924,7 +1927,7 @@ fn apply_approved_proposal(
     let existing = context
         .store
         .get_resolution(context.repository_key, &context.record.id)?;
-    validate_existing_proposal_resolution(existing.as_ref(), context.proposal)?;
+    validate_existing_proposal_resolution(existing.as_ref(), context.record, context.proposal)?;
     verify_approval_preconditions(
         engine,
         repository,
@@ -2017,6 +2020,7 @@ fn validate_proposal_inputs(
 
 fn validate_existing_proposal_resolution(
     existing: Option<&SyncConflictResolutionRecord>,
+    record: &SyncConflictRecord,
     proposal: &ResolutionProposal,
 ) -> Result<(), AppError> {
     if let Some(existing) = existing {
@@ -2025,6 +2029,11 @@ fn validate_existing_proposal_resolution(
             || existing.base_revision != proposal.base_revision
             || existing.local_revision != proposal.local_revision
             || existing.remote_revision != proposal.remote_revision
+            || existing
+                .live_input_revision
+                .as_deref()
+                .unwrap_or(&existing.remote_revision)
+                != conflict_live_input(record)?
             || existing.resolved_tree != proposal.proposal_tree
         {
             return Err(AppError::operation(
@@ -2226,9 +2235,7 @@ fn prepare_proposal_resolution(
     device_id: &str,
 ) -> Result<SyncConflictResolutionRecord, AppError> {
     let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
-    let local_tree = engine
-        .tree_oid(repository, &local)
-        .map_err(AppError::operation)?;
+    let local_tree = conflict_worktree_tree(engine, repository, record)?;
     if capture.tree != local_tree {
         return Err(AppError::operation(
             "the worktree changed after the proposal was created; its recovery snapshot was retained",
@@ -2236,11 +2243,17 @@ fn prepare_proposal_resolution(
     }
     let tree = GitOid::parse(&proposal.proposal_tree).map_err(AppError::operation)?;
     let remote = GitOid::parse(&record.remote_revision).map_err(AppError::operation)?;
+    let live_input = GitOid::parse(conflict_live_input(record)?).map_err(AppError::operation)?;
+    let parents = if live_input == remote {
+        vec![remote.clone(), local.clone()]
+    } else {
+        vec![live_input.clone()]
+    };
     let commit = engine
         .create_commit(
             repository,
             &tree,
-            &[remote.clone(), local.clone()],
+            &parents,
             &format!(
                 "vulcan conflict proposal resolution\n\nVulcan-Conflict: {}\nVulcan-Proposal: {}\nVulcan-Resolution-Provider: {}\nVulcan-Resolution-Model: {}\nVulcan-Sync-Version: 1\nVulcan-Sync-Device: {device_id}\nVulcan-Sync-Policy: {}:{}\nVulcan-Sync-Source: {remote}+{local}\nVulcan-Sync-Semantic: false\n",
                 record.id,
@@ -2265,6 +2278,7 @@ fn prepare_proposal_resolution(
         base_revision: proposal.base_revision.clone(),
         local_revision: proposal.local_revision.clone(),
         remote_revision: proposal.remote_revision.clone(),
+        live_input_revision: Some(live_input.to_string()),
         recovery_revision: capture.commit.to_string(),
         resolved_tree: proposal.proposal_tree.clone(),
         resolution_commit: commit.to_string(),
@@ -2287,10 +2301,7 @@ fn resume_or_prepare_proposal(
             engine, repository, record, proposal, capture, device_id,
         );
     };
-    let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
-    let local_tree = engine
-        .tree_oid(repository, &local)
-        .map_err(AppError::operation)?;
+    let local_tree = conflict_worktree_tree(engine, repository, record)?;
     let proposal_tree = GitOid::parse(&proposal.proposal_tree).map_err(AppError::operation)?;
     let resolution_tree = engine
         .tree_oid(
@@ -2317,7 +2328,13 @@ fn publish_proposal_resolution(
     resolution: &mut SyncConflictResolutionRecord,
 ) -> Result<(), AppError> {
     let commit = GitOid::parse(&resolution.resolution_commit).map_err(AppError::operation)?;
-    let remote_before = GitOid::parse(&resolution.remote_revision).map_err(AppError::operation)?;
+    let remote_before = GitOid::parse(
+        resolution
+            .live_input_revision
+            .as_deref()
+            .unwrap_or(&resolution.remote_revision),
+    )
+    .map_err(AppError::operation)?;
     match engine
         .remote_ref(repository, &options.remote, &options.live_ref)
         .map_err(AppError::operation)?
@@ -2582,15 +2599,13 @@ fn verify_approval_preconditions(
             "proposal approval requires a clean normal index and no Git operation in progress",
         ));
     }
-    let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
+    let local = conflict_worktree_revision(record)?;
+    let current_tree = engine
+        .snapshot_worktree_tree(repository, Some(&local))
+        .map_err(AppError::operation)?;
+    let expected_tree = conflict_worktree_tree(engine, repository, record)?;
     let proposal_tree = GitOid::parse(&proposal.proposal_tree).map_err(AppError::operation)?;
-    if !engine
-        .worktree_matches_tree(repository, &local)
-        .map_err(AppError::operation)?
-        && !engine
-            .worktree_matches_tree(repository, &proposal_tree)
-            .map_err(AppError::operation)?
-    {
+    if current_tree != expected_tree && current_tree != proposal_tree {
         return Err(AppError::operation(
             "the worktree no longer matches the preserved local input or approved proposal",
         ));
@@ -2599,7 +2614,7 @@ fn verify_approval_preconditions(
         .remote_ref(repository, &options.remote, &options.live_ref)
         .map_err(AppError::operation)?;
     let expected_resolution = existing.map(|resolution| resolution.resolution_commit.as_str());
-    if remote.as_ref().map(GitOid::as_str) != Some(record.remote_revision.as_str())
+    if remote.as_ref().map(GitOid::as_str) != Some(conflict_live_input(record)?)
         && remote.as_ref().map(GitOid::as_str) != expected_resolution
     {
         return Err(AppError::operation(
@@ -2980,7 +2995,7 @@ fn verify_no_external_mutation(
     expected_tree: &GitOid,
     refs_before: &[(String, Option<String>)],
 ) -> Result<(), AppError> {
-    let local_revision = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
+    let local_revision = conflict_worktree_revision(record)?;
     let current = engine
         .snapshot_worktree_tree(repository, Some(&local_revision))
         .map_err(AppError::operation)?;
@@ -3410,10 +3425,10 @@ mod tests {
             );
             if let Some(context) = request.focused_context.first() {
                 assert_eq!(context.path, "Home.md");
-                assert_eq!(context.content, "reader\n");
+                assert_eq!(context.content, "writer\n");
                 assert_eq!(
                     context.content_hash,
-                    blake3::hash(b"reader\n").to_hex().to_string()
+                    blake3::hash(b"writer\n").to_hex().to_string()
                 );
             }
             if self.cancel {
@@ -3548,7 +3563,7 @@ mod tests {
         assert_eq!(proposal.focused_context[0].path, "Home.md");
         assert_eq!(
             proposal.focused_context[0].content_hash,
-            blake3::hash(b"reader\n").to_hex().to_string()
+            blake3::hash(b"writer\n").to_hex().to_string()
         );
         assert!(proposal
             .validation
@@ -3558,7 +3573,7 @@ mod tests {
             .contains(&ResolutionProposalValidationCheck::MassDeletionPolicy));
         assert_eq!(
             fs::read_to_string(fixture.reader.join("Home.md")).expect("note"),
-            "reader\n"
+            "writer\n"
         );
         assert_eq!(
             git_stdout(
@@ -3652,7 +3667,7 @@ mod tests {
         .is_err());
         assert_eq!(
             fs::read_to_string(fixture.reader.join("Home.md")).expect("local note"),
-            "reader\n"
+            "writer\n"
         );
     }
 
@@ -3935,7 +3950,7 @@ mod tests {
         assert!(approval_error.to_string().contains("explicitly rejected"));
         assert_eq!(
             fs::read_to_string(fixture.reader.join("Home.md")).expect("local note"),
-            "reader\n"
+            "writer\n"
         );
         assert_eq!(
             git_stdout(
@@ -4041,7 +4056,7 @@ mod tests {
         )
         .expect_err("stale worktree must reject approval");
         assert!(stale.to_string().contains("worktree no longer matches"));
-        fs::write(fixture.reader.join("Home.md"), "reader\n").expect("restore local input");
+        fs::write(fixture.reader.join("Home.md"), "writer\n").expect("restore accepted input");
         let dry_run = approve_resolution_proposal_with_state_store(
             &VaultPaths::new(&fixture.reader),
             &fixture.record.id,

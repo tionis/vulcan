@@ -262,6 +262,8 @@ pub struct GitConflictMaterialization {
     pub directory: String,
     pub tree: GitOid,
     pub copies: Vec<GitConflictCopy>,
+    pub published: bool,
+    pub applied: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1004,6 +1006,16 @@ fn run_attempt(
             Some(engine.apply_tree(&report.repository, &verification.commit, &accepted)?);
         report.actions.push(GitSyncAction::WorktreeApplied);
     }
+    if outcome == GitSyncOutcome::Conflicted {
+        if let Some(materialization) = report
+            .conflict
+            .as_mut()
+            .and_then(|conflict| conflict.materialization.as_mut())
+        {
+            materialization.published = true;
+            materialization.applied = true;
+        }
+    }
     engine.update_ref(&report.repository, &report.refs.local, &accepted)?;
     engine.update_ref(&report.repository, &report.refs.fetched, &accepted)?;
     engine.update_ref(&report.repository, &report.refs.pending, &accepted)?;
@@ -1167,11 +1179,11 @@ fn reconcile(
     }
     if let Some(epoch) = find_git_live_epoch(engine, &report.repository, &report.refs, &remote)? {
         if engine.is_ancestor(&report.repository, &epoch.root, &capture.commit)? {
-            return merge_divergence(engine, options, report, capture, remote, control);
+            return merge_divergence(engine, options, report, capture, &remote, control);
         }
         return reconcile_epoch_root(engine, options, report, capture, remote, &epoch, control);
     }
-    merge_divergence(engine, options, report, capture, remote, control)
+    merge_divergence(engine, options, report, capture, &remote, control)
 }
 
 const MAX_EPOCH_DISCOVERY_COMMITS: usize = 100_001;
@@ -1324,6 +1336,7 @@ fn reconcile_epoch_root(
             &report.repository,
             capture,
             remote_live,
+            None,
             merge,
         )?);
         control.emit(GitSyncPhase::Conflicted, report, None)?;
@@ -1441,34 +1454,35 @@ fn merge_divergence(
     options: &GitSyncOptions,
     report: &mut GitSyncReport,
     capture: &crate::GitCapture,
-    remote: GitOid,
+    remote: &GitOid,
     control: &mut AttemptControl<'_>,
 ) -> Result<Option<(GitOid, GitSyncOutcome, bool)>, GitSyncError> {
     control.check()?;
     control.emit(GitSyncPhase::Merging, report, None)?;
     report.automatic_resolutions.clear();
-    let mut merge = engine.merge_commits(&report.repository, &remote, &capture.commit)?;
+    let mut merge = engine.merge_commits(&report.repository, remote, &capture.commit)?;
     let tree = resolve_merge_candidate_tree(
         engine,
         options,
         report,
         control,
         &capture.commit,
-        &remote,
+        remote,
         &mut merge,
     );
     if tree.is_none() {
-        report.outcome = GitSyncOutcome::Conflicted;
-        report.conflict = Some(build_sync_conflict(
+        let conflict = build_sync_conflict(
             engine,
             options,
             &report.repository,
             capture,
-            remote,
+            remote.clone(),
+            Some(remote),
             merge,
-        )?);
-        control.emit(GitSyncPhase::Conflicted, report, None)?;
-        return Ok(None);
+        )?;
+        return publish_materialized_conflict(
+            engine, options, report, capture, remote, conflict, control,
+        );
     }
     let tree = tree.ok_or_else(|| {
         GitSyncError::Git(GitEngineError::InvalidOutput {
@@ -1480,7 +1494,7 @@ fn merge_divergence(
         &report.repository,
         &tree,
         &[remote.clone(), capture.commit.clone()],
-        &merge_message(&report.refs, options, &remote, &capture.commit),
+        &merge_message(&report.refs, options, remote, &capture.commit),
     )?;
     require_accepted_platform(engine, options, report, &merged)?;
     engine.update_ref(&report.repository, &report.refs.pending, &merged)?;
@@ -1495,7 +1509,7 @@ fn merge_divergence(
             &options.remote,
             &merged,
             &report.refs.live,
-            Some(&remote),
+            Some(remote),
         )? {
             GitPushResult::Updated => Some((merged, GitSyncOutcome::Merged, true)),
             GitPushResult::Rejected => None,
@@ -1613,12 +1627,66 @@ fn captured_worktree_is_current(
     Ok(engine.snapshot_worktree_tree(repository, Some(&capture.commit))? == capture.tree)
 }
 
+fn publish_materialized_conflict(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &mut GitSyncReport,
+    capture: &crate::GitCapture,
+    remote: &GitOid,
+    conflict: GitSyncConflict,
+    control: &mut AttemptControl<'_>,
+) -> Result<Option<(GitOid, GitSyncOutcome, bool)>, GitSyncError> {
+    let Some(materialized) = conflict
+        .materialization
+        .as_ref()
+        .map(|_| conflict.provenance_revision.clone())
+    else {
+        report.outcome = GitSyncOutcome::Conflicted;
+        report.conflict = Some(conflict);
+        control.emit(GitSyncPhase::Conflicted, report, None)?;
+        return Ok(None);
+    };
+    report.outcome = GitSyncOutcome::Conflicted;
+    report.conflict = Some(conflict);
+    control.emit(GitSyncPhase::Conflicted, report, None)?;
+    require_accepted_platform(engine, options, report, &materialized)?;
+    engine.update_ref(&report.repository, &report.refs.pending, &materialized)?;
+    control.check()?;
+    control.emit(GitSyncPhase::Pushing, report, None)?;
+    if !captured_worktree_is_current(engine, &report.repository, capture)? {
+        report.outcome = GitSyncOutcome::Planned;
+        report.conflict = None;
+        return Ok(None);
+    }
+    match engine.push_ref(
+        &report.repository,
+        &options.remote,
+        &materialized,
+        &report.refs.live,
+        Some(remote),
+    )? {
+        GitPushResult::Updated => Ok(Some((materialized, GitSyncOutcome::Conflicted, true))),
+        GitPushResult::Rejected => {
+            let remote_after =
+                engine.remote_ref(&report.repository, &options.remote, &report.refs.live)?;
+            if remote_after.as_ref() == Some(&materialized) {
+                Ok(Some((materialized, GitSyncOutcome::Conflicted, false)))
+            } else {
+                report.outcome = GitSyncOutcome::Planned;
+                report.conflict = None;
+                Ok(None)
+            }
+        }
+    }
+}
+
 fn build_sync_conflict(
     engine: &dyn GitEngine,
     options: &GitSyncOptions,
     repository: &GitRepository,
     capture: &crate::GitCapture,
     remote: GitOid,
+    materialization_remote: Option<&GitOid>,
     merge: crate::GitMerge,
 ) -> Result<GitSyncConflict, GitSyncError> {
     let classifications = classify_conflicts(
@@ -1638,15 +1706,20 @@ fn build_sync_conflict(
         &remote,
         &merge.conflict_paths,
     )?;
-    let materialization = build_conflict_materialization(
-        engine,
-        repository,
-        merge.base.as_ref(),
-        &capture.commit,
-        &remote,
-        &merge.conflict_paths,
-        &id,
-    )?;
+    let materialization = materialization_remote
+        .map(|materialization_remote| {
+            build_conflict_materialization(
+                engine,
+                repository,
+                merge.base.as_ref(),
+                &capture.commit,
+                materialization_remote,
+                &merge.conflict_paths,
+                &id,
+            )
+        })
+        .transpose()?
+        .flatten();
     let (preserved_refs, provenance_revision) = preserve_conflict_refs(
         engine,
         repository,
@@ -1751,6 +1824,8 @@ fn build_conflict_materialization(
         directory,
         tree,
         copies,
+        published: false,
+        applied: false,
     }))
 }
 
@@ -2540,6 +2615,92 @@ mod tests {
         }
     }
 
+    fn assert_published_conflict_state(
+        engine: &dyn GitEngine,
+        reader: &Path,
+        report: &GitSyncReport,
+    ) {
+        let conflict = report.conflict.as_ref().expect("conflict details");
+        assert_conflict_materialization(reader, conflict);
+        let materialization = conflict.materialization.as_ref().expect("materialization");
+        assert!(materialization.published);
+        assert!(materialization.applied);
+        assert!(report.actions.contains(&GitSyncAction::Pushed));
+        assert!(report.actions.contains(&GitSyncAction::WorktreeApplied));
+        assert_eq!(
+            engine
+                .read_ref(&report.repository, &conflict.preserved_refs.local)
+                .expect("conflict local ref"),
+            Some(conflict.local.clone())
+        );
+        assert_eq!(
+            engine
+                .read_ref(&report.repository, &conflict.preserved_refs.remote)
+                .expect("conflict remote ref"),
+            Some(conflict.remote.clone())
+        );
+        assert_eq!(
+            conflict.preserved_refs.base.as_ref().map(|reference| engine
+                .read_ref(&report.repository, reference)
+                .expect("base ref")),
+            Some(conflict.base.clone())
+        );
+        assert_eq!(
+            engine
+                .read_ref(&report.repository, &conflict.preserved_refs.record)
+                .expect("provenance ref"),
+            Some(conflict.provenance_revision.clone())
+        );
+        let provenance_message = git_stdout(
+            reader,
+            &[
+                "show",
+                "-s",
+                "--format=%B",
+                conflict.provenance_revision.as_str(),
+            ],
+        );
+        assert!(provenance_message.contains(&format!("Vulcan-Conflict: {}", conflict.id)));
+        assert!(provenance_message.contains("Vulcan-Sync-Semantic: false"));
+        assert_eq!(
+            fs::read_to_string(reader.join("Home.md")).expect("accepted remote note"),
+            "writer version\n"
+        );
+        assert_eq!(
+            fs::read_to_string(reader.join(&materialization.copies[0].copy_path))
+                .expect("materialized local conflict copy"),
+            "reader version\n"
+        );
+        assert_eq!(
+            engine
+                .read_ref(&report.repository, &report.refs.local)
+                .expect("accepted local ref"),
+            report.accepted
+        );
+
+        let repeated = sync_git_once(engine, reader, &GitSyncOptions::default())
+            .expect("repeat convergence report");
+        assert_eq!(repeated.outcome, GitSyncOutcome::UpToDate);
+        assert!(repeated.conflict.is_none());
+        engine
+            .update_ref(
+                &report.repository,
+                &conflict.preserved_refs.record,
+                &conflict.local,
+            )
+            .expect("simulate provenance ref tampering");
+        let error = preserve_exact_ref(
+            engine,
+            &report.repository,
+            &conflict.preserved_refs.record,
+            &conflict.provenance_revision,
+        )
+        .expect_err("a changed preservation ref must fail closed");
+        assert!(error
+            .to_string()
+            .contains("already identifies a different commit"));
+    }
+
     fn init_repo(path: &Path) {
         run_git(path, &["-c", "init.defaultBranch=main", "init", "--quiet"]);
         run_git(path, &["config", "user.name", "Vulcan Test"]);
@@ -3313,7 +3474,7 @@ mod tests {
     }
 
     #[test]
-    fn conflicting_edits_are_reported_without_overwriting_local_bytes() {
+    fn conflicting_edits_publish_clean_paths_and_hidden_local_copies() {
         let (temporary, remote, writer) = setup_remote_and_writer();
         let engine = GitCliEngine::default();
         sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
@@ -3347,71 +3508,7 @@ mod tests {
         assert!(conflict.base.is_some());
         assert_eq!(conflict.id.len(), 32);
         assert_eq!(conflict.policy_version, MergePolicy::default().version);
-        assert_conflict_materialization(reader.as_path(), conflict);
-        assert_eq!(
-            engine
-                .read_ref(&report.repository, &conflict.preserved_refs.local)
-                .expect("conflict local ref"),
-            Some(conflict.local.clone())
-        );
-        assert_eq!(
-            engine
-                .read_ref(&report.repository, &conflict.preserved_refs.remote)
-                .expect("conflict remote ref"),
-            Some(conflict.remote.clone())
-        );
-        assert_eq!(
-            conflict.preserved_refs.base.as_ref().map(|reference| engine
-                .read_ref(&report.repository, reference)
-                .expect("base ref")),
-            Some(conflict.base.clone())
-        );
-        assert_eq!(
-            engine
-                .read_ref(&report.repository, &conflict.preserved_refs.record)
-                .expect("provenance ref"),
-            Some(conflict.provenance_revision.clone())
-        );
-        let provenance_message = git_stdout(
-            reader.as_path(),
-            &[
-                "show",
-                "-s",
-                "--format=%B",
-                conflict.provenance_revision.as_str(),
-            ],
-        );
-        assert!(provenance_message.contains(&format!("Vulcan-Conflict: {}", conflict.id)));
-        assert!(provenance_message.contains("Vulcan-Sync-Semantic: false"));
-        assert_eq!(
-            fs::read_to_string(reader.join("Home.md")).expect("preserved reader note"),
-            "reader version\n"
-        );
-        assert_eq!(
-            engine
-                .read_ref(&report.repository, &report.refs.local)
-                .expect("preserved local ref"),
-            report.local_snapshot
-        );
-
-        let repeated = sync_git_once(&engine, &reader, &GitSyncOptions::default())
-            .expect("repeat conflict report");
-        assert_eq!(
-            repeated.conflict.as_ref().map(|item| &item.id),
-            Some(&conflict.id)
-        );
-        engine
-            .update_ref(
-                &report.repository,
-                &conflict.preserved_refs.record,
-                &conflict.local,
-            )
-            .expect("simulate provenance ref tampering");
-        let error = sync_git_once(&engine, &reader, &GitSyncOptions::default())
-            .expect_err("a changed preservation ref must fail closed");
-        assert!(error
-            .to_string()
-            .contains("already identifies a different commit"));
+        assert_published_conflict_state(&engine, reader.as_path(), &report);
     }
 
     #[test]

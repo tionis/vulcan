@@ -13,8 +13,9 @@ use tempfile::NamedTempFile;
 use vulcan_core::{ScanSummary, VaultPaths};
 use vulcan_sync::{
     conflict_recovery_ref, conflict_resolved_ref, GitCaptureRequest, GitConflictClassification,
-    GitConflictSide, GitEngine, GitMergeResolutionRequest, GitOid, GitPushResult, GitRefName,
-    GitRemote, GitRepository, GitSyncConflict, GitSyncOptions, GitSyncRefs,
+    GitConflictSide, GitContentMergeResolutionRequest, GitEngine, GitMergeResolutionRequest,
+    GitOid, GitPushResult, GitRefName, GitRemote, GitRepository, GitResolvedPath, GitSyncConflict,
+    GitSyncOptions, GitSyncRefs,
 };
 
 pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 1;
@@ -50,6 +51,10 @@ pub struct SyncConflictMaterializationRecord {
     pub directory: String,
     pub tree: String,
     pub copies: Vec<SyncConflictCopyRecord>,
+    #[serde(default)]
+    pub published: bool,
+    #[serde(default)]
+    pub applied: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -142,6 +147,8 @@ pub struct SyncConflictResolutionRecord {
     pub base_revision: String,
     pub local_revision: String,
     pub remote_revision: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_input_revision: Option<String>,
     pub recovery_revision: String,
     pub resolved_tree: String,
     pub resolution_commit: String,
@@ -352,7 +359,7 @@ fn resolve_sync_conflict_locked(
         .load_or_create_device_id(true)?
         .expect("mutating device identity creation returns an identity");
     verify_preserved_conflict_refs(&engine, repository, record)?;
-    let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
+    let local = conflict_worktree_revision(record)?;
     let recovery_ref =
         conflict_recovery_ref(&context.conflict_id, "current").map_err(AppError::operation)?;
     let capture = engine
@@ -406,7 +413,7 @@ fn publish_and_apply_resolution(
     let engine = vulcan_sync::GitCliEngine::default();
     let resolution_commit =
         GitOid::parse(&resolution.resolution_commit).map_err(AppError::operation)?;
-    let remote_before = GitOid::parse(&resolution.remote_revision).map_err(AppError::operation)?;
+    let remote_before = resolution_live_input(&resolution)?;
     let current_remote = engine
         .remote_ref(repository, &options.remote, &options.live_ref)
         .map_err(AppError::operation)?;
@@ -590,8 +597,7 @@ fn verify_remote_for_resolution(
     let remote = engine
         .remote_ref(repository, &options.remote, &options.live_ref)
         .map_err(AppError::operation)?;
-    let matches_input =
-        remote.as_ref().map(GitOid::as_str) == Some(record.remote_revision.as_str());
+    let matches_input = remote.as_ref().map(GitOid::as_str) == Some(conflict_live_input(record)?);
     let matches_prepared = existing.is_some_and(|resolution| {
         remote.as_ref().map(GitOid::as_str) == Some(resolution.resolution_commit.as_str())
     });
@@ -602,6 +608,134 @@ fn verify_remote_for_resolution(
             "the remote live ref no longer matches the preserved conflict input or prepared resolution",
         ))
     }
+}
+
+pub(crate) fn conflict_live_input(record: &SyncConflictRecord) -> Result<&str, AppError> {
+    if record
+        .materialization
+        .as_ref()
+        .is_some_and(|materialization| materialization.published)
+    {
+        record.provenance_revision.as_deref().ok_or_else(|| {
+            AppError::operation("published conflict materialization has no provenance revision")
+        })
+    } else {
+        Ok(&record.remote_revision)
+    }
+}
+
+pub(crate) fn conflict_worktree_revision(record: &SyncConflictRecord) -> Result<GitOid, AppError> {
+    let revision = if record
+        .materialization
+        .as_ref()
+        .is_some_and(|materialization| materialization.applied)
+    {
+        record.provenance_revision.as_deref().ok_or_else(|| {
+            AppError::operation("applied conflict materialization has no provenance revision")
+        })?
+    } else {
+        &record.local_revision
+    };
+    GitOid::parse(revision).map_err(AppError::operation)
+}
+
+pub(crate) fn conflict_worktree_tree(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    record: &SyncConflictRecord,
+) -> Result<GitOid, AppError> {
+    if let Some(materialization) = record
+        .materialization
+        .as_ref()
+        .filter(|materialization| materialization.applied)
+    {
+        let tree = GitOid::parse(&materialization.tree).map_err(AppError::operation)?;
+        let revision = conflict_worktree_revision(record)?;
+        if engine
+            .tree_oid(repository, &revision)
+            .map_err(AppError::operation)?
+            != tree
+        {
+            return Err(AppError::operation(
+                "conflict materialization provenance tree no longer matches its durable record",
+            ));
+        }
+        Ok(tree)
+    } else {
+        let revision = conflict_worktree_revision(record)?;
+        engine
+            .tree_oid(repository, &revision)
+            .map_err(AppError::operation)
+    }
+}
+
+fn resolution_live_input(resolution: &SyncConflictResolutionRecord) -> Result<GitOid, AppError> {
+    GitOid::parse(
+        resolution
+            .live_input_revision
+            .as_deref()
+            .unwrap_or(&resolution.remote_revision),
+    )
+    .map_err(AppError::operation)
+}
+
+fn resolve_materialized_conflict_tree(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    record: &SyncConflictRecord,
+    side: SyncConflictResolutionSide,
+    live_input: &GitOid,
+) -> Result<GitOid, AppError> {
+    let selected = match side {
+        SyncConflictResolutionSide::Base => record
+            .base_revision
+            .as_deref()
+            .ok_or_else(|| AppError::operation("this conflict has no merge base to select"))?,
+        SyncConflictResolutionSide::Local => &record.local_revision,
+        SyncConflictResolutionSide::Remote => &record.remote_revision,
+    };
+    let selected = GitOid::parse(selected).map_err(AppError::operation)?;
+    let mut paths = Vec::new();
+    for path in &record.paths {
+        let object = engine
+            .path_object(repository, &selected, &path.path)
+            .map_err(AppError::operation)?;
+        paths.push(object.map_or(
+            GitResolvedPath {
+                path: path.path.clone(),
+                mode: None,
+                data: None,
+            },
+            |object| GitResolvedPath {
+                path: path.path.clone(),
+                mode: Some(object.mode),
+                data: object.data,
+            },
+        ));
+    }
+    for copy in &record
+        .materialization
+        .as_ref()
+        .expect("materialized resolution requires candidate metadata")
+        .copies
+    {
+        paths.push(GitResolvedPath {
+            path: copy.copy_path.clone(),
+            mode: None,
+            data: None,
+        });
+    }
+    engine
+        .resolve_merge_tree_with_paths(
+            repository,
+            &GitContentMergeResolutionRequest {
+                base: live_input.clone(),
+                accepted_remote: live_input.clone(),
+                local_candidate: live_input.clone(),
+                paths,
+            },
+        )
+        .map_err(AppError::operation)
 }
 
 fn reject_unsafe_resolution(safety: &vulcan_sync::GitSafetyState) -> Result<(), AppError> {
@@ -627,11 +761,8 @@ fn prepare_resolution(
     device_id: &vulcan_sync::GitSyncDeviceId,
 ) -> Result<SyncConflictResolutionRecord, AppError> {
     let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
-    if capture.tree
-        != engine
-            .tree_oid(repository, &local)
-            .map_err(AppError::operation)?
-    {
+    let expected_tree = conflict_worktree_tree(engine, repository, record)?;
+    if capture.tree != expected_tree {
         return Err(AppError::operation(
             "the worktree changed after the conflict was preserved; its recovery snapshot was retained and the resolution was not applied",
         ));
@@ -646,23 +777,37 @@ fn prepare_resolution(
         })
         .and_then(|value| GitOid::parse(value).map_err(AppError::operation))?;
     let remote = GitOid::parse(&record.remote_revision).map_err(AppError::operation)?;
-    let tree = engine
-        .resolve_merge_tree(
-            repository,
-            &GitMergeResolutionRequest {
-                base: base.clone(),
-                accepted_remote: remote.clone(),
-                local_candidate: local.clone(),
-                paths: record.paths.iter().map(|path| path.path.clone()).collect(),
-                side: options.side.into(),
-            },
-        )
-        .map_err(AppError::operation)?;
+    let live_input = GitOid::parse(conflict_live_input(record)?).map_err(AppError::operation)?;
+    let tree = if record
+        .materialization
+        .as_ref()
+        .is_some_and(|item| item.applied)
+    {
+        resolve_materialized_conflict_tree(engine, repository, record, options.side, &live_input)?
+    } else {
+        engine
+            .resolve_merge_tree(
+                repository,
+                &GitMergeResolutionRequest {
+                    base: base.clone(),
+                    accepted_remote: remote.clone(),
+                    local_candidate: local.clone(),
+                    paths: record.paths.iter().map(|path| path.path.clone()).collect(),
+                    side: options.side.into(),
+                },
+            )
+            .map_err(AppError::operation)?
+    };
+    let parents = if live_input == remote {
+        vec![remote.clone(), local.clone()]
+    } else {
+        vec![live_input.clone()]
+    };
     let commit = engine
         .create_commit(
             repository,
             &tree,
-            &[remote.clone(), local.clone()],
+            &parents,
             &format!(
                 "vulcan conflict resolution\n\nVulcan-Conflict: {}\nVulcan-Resolution-Side: {}\nVulcan-Sync-Version: 1\nVulcan-Sync-Device: {}\nVulcan-Sync-Policy: {}:{}\nVulcan-Sync-Source: {}+{}\nVulcan-Sync-Semantic: false\n",
                 record.id,
@@ -687,6 +832,7 @@ fn prepare_resolution(
         base_revision: base.to_string(),
         local_revision: local.to_string(),
         remote_revision: remote.to_string(),
+        live_input_revision: Some(live_input.to_string()),
         recovery_revision: capture.commit.to_string(),
         resolved_tree: tree.to_string(),
         resolution_commit: commit.to_string(),
@@ -716,17 +862,19 @@ fn resume_resolution(
         || resolution.base_revision != record.base_revision.as_deref().unwrap_or_default()
         || resolution.local_revision != record.local_revision
         || resolution.remote_revision != record.remote_revision
+        || resolution
+            .live_input_revision
+            .as_deref()
+            .unwrap_or(&resolution.remote_revision)
+            != conflict_live_input(record)?
     {
         return Err(AppError::operation(
             "prepared conflict resolution does not match the immutable conflict inputs",
         ));
     }
-    let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
     let resolved = GitOid::parse(&resolution.resolution_commit).map_err(AppError::operation)?;
     let actual_tree = &capture.tree;
-    let local_tree = engine
-        .tree_oid(repository, &local)
-        .map_err(AppError::operation)?;
+    let local_tree = conflict_worktree_tree(engine, repository, record)?;
     let resolved_tree = engine
         .tree_oid(repository, &resolved)
         .map_err(AppError::operation)?;
@@ -878,6 +1026,8 @@ impl SyncConflictStore {
                             mode: copy.mode.clone(),
                         })
                         .collect(),
+                    published: materialization.published,
+                    applied: materialization.applied,
                 }
             }),
             paths,
@@ -1194,6 +1344,8 @@ fn materialization_matches(
             record.directory == materialization.directory
                 && record.tree == materialization.tree.as_str()
                 && record.copies.len() == materialization.copies.len()
+                && record.published == materialization.published
+                && record.applied == materialization.applied
                 && record
                     .copies
                     .iter()

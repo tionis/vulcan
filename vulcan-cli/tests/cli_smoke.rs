@@ -5800,7 +5800,7 @@ fn sync_conflicts_cli_lists_and_shows_immutable_records() {
     assert_eq!(detail["resolution"], "unresolved");
     assert_eq!(
         fs::read_to_string(reader.join("Home.md")).expect("reader note"),
-        "reader\n"
+        "writer\n"
     );
 }
 
@@ -5824,7 +5824,7 @@ fn sync_resolve_cli_requires_an_explicit_side_and_preserves_clean_merge_paths() 
     assert_eq!(dry_run["side"], "local");
     assert_eq!(
         fs::read_to_string(reader.join("Home.md")).expect("reader note"),
-        "reader\n"
+        "writer\n"
     );
 
     let resolved = parse_stdout_json(&run(&["resolve", &id, "--side", "local"]));
@@ -5839,6 +5839,7 @@ fn sync_resolve_cli_requires_an_explicit_side_and_preserves_clean_merge_paths() 
         fs::read_to_string(reader.join("Writer.md")).expect("clean merged note"),
         "clean remote addition\n"
     );
+    assert!(!reader.join(".sync-conflicts").join(&id).exists());
 
     let list = parse_stdout_json(&run(&["conflicts"]));
     assert_eq!(list["count"], 0);
@@ -5879,7 +5880,7 @@ fn sync_resolve_cli_applies_reviewed_supplied_files_through_a_proposal() {
     );
     assert_eq!(
         fs::read_to_string(reader.join("Home.md")).expect("reader note"),
-        "reader\n"
+        "writer\n"
     );
 
     let resolved = parse_stdout_json(&run(false));
@@ -5939,7 +5940,7 @@ fn sync_resolve_cli_applies_a_reviewed_patch_through_a_proposal() {
     );
     assert_eq!(
         fs::read_to_string(reader.join("Home.md")).expect("reader note"),
-        "reader\n"
+        "writer\n"
     );
 
     let resolved = parse_stdout_json(&run(false));
@@ -6097,7 +6098,7 @@ fn sync_resolve_cli_previews_and_explicitly_approves_a_retained_proposal() {
     assert_eq!(preview["proposal_id"], proposal.proposal_id);
     assert_eq!(
         fs::read_to_string(reader.join("Home.md")).expect("local note"),
-        "reader\n"
+        "writer\n"
     );
 
     let applied = parse_stdout_json(&run(false));
@@ -6212,20 +6213,25 @@ fn sync_propose_cli_calls_an_openai_compatible_provider_without_applying_output(
         .is_some_and(|patch| patch.contains("provider proposal")));
     assert_eq!(
         fs::read_to_string(reader.join("Home.md")).expect("unchanged local note"),
-        "reader\n"
+        "writer\n"
     );
-    assert_eq!(
-        run_git_stdout(
-            &reader,
-            &["ls-remote", "origin", "refs/heads/__vulcan-sync/live"]
-        )
-        .split_whitespace()
-        .next(),
-        Some(
-            proposal["remote_revision"]
-                .as_str()
-                .expect("remote revision")
-        )
+    let live_revision = run_git_stdout(
+        &reader,
+        &["ls-remote", "origin", "refs/heads/__vulcan-sync/live"],
+    )
+    .split_whitespace()
+    .next()
+    .expect("live revision")
+    .to_string();
+    assert_ne!(
+        live_revision,
+        proposal["remote_revision"]
+            .as_str()
+            .expect("remote revision")
+    );
+    assert!(
+        run_git_stdout(&reader, &["show", "-s", "--format=%B", &live_revision])
+            .contains(&format!("Vulcan-Conflict: {id}"))
     );
     server.shutdown();
 }
@@ -6346,8 +6352,18 @@ fn sync_resolve_cli_resumes_a_published_unapplied_resolution() {
         serde_json::to_vec_pretty(&resolution).expect("serialize pending resolution"),
     )
     .expect("write simulated interrupted state");
-    fs::write(reader.join("Home.md"), "reader\n").expect("restore local conflict side");
-    fs::remove_file(reader.join("Writer.md")).expect("remove remote-only merged path");
+    let record: Value = serde_json::from_slice(
+        &fs::read(resolution_path.with_file_name("record.json"))
+            .expect("conflict record should exist"),
+    )
+    .expect("conflict record should be JSON");
+    let copy_path = record["materialization"]["copies"][0]["copy_path"]
+        .as_str()
+        .expect("materialized copy path");
+    fs::write(reader.join("Home.md"), "writer\n").expect("restore accepted conflict side");
+    let copy = reader.join(copy_path);
+    fs::create_dir_all(copy.parent().expect("copy parent")).expect("copy parent directory");
+    fs::write(copy, "reader\n").expect("restore materialized local copy");
 
     let resumed = parse_stdout_json(&run(&["resolve", &id, "--side", "local"]));
     assert_eq!(resumed["outcome"], "resolved");
@@ -13052,6 +13068,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("conflict_record"));
     assert!(git_skill.contains("conflict.materialization"));
     assert!(git_skill.contains("`.sync-conflicts/<id>/local/`"));
+    assert!(git_skill.contains("When `published` and `applied` are true"));
+    assert!(git_skill.contains("removes the hidden directory atomically"));
     assert!(git_skill.contains("vulcan sync conflicts <id>"));
     assert!(git_skill.contains("stable `classification`"));
     assert!(git_skill.contains("`provenance_revision`"));
