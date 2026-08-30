@@ -7,8 +7,7 @@ use crate::commands::docs::{describe_cli, CliArgDescribe, CliCommandDescribe};
 use clap::Parser;
 use serde_yaml::Value as YamlValue;
 use std::fs;
-use std::io::Write;
-use std::process::{Command as ProcessCommand, Output as ProcessOutput, Stdio};
+use std::process::{Command as ProcessCommand, Output as ProcessOutput};
 use tempfile::TempDir;
 use vulcan_core::expression::functions::parse_date_like_string;
 
@@ -6226,21 +6225,14 @@ fn completion_test_bash_path() -> PathBuf {
 }
 
 fn run_completion_bash_script(bash_path: &Path, script: &str) -> ProcessOutput {
-    let mut child = ProcessCommand::new(bash_path)
-        .arg("-s")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("bash should start for generated completion helper");
-    child
-        .stdin
-        .take()
-        .expect("bash stdin should be piped")
-        .write_all(script.replace("\r\n", "\n").as_bytes())
-        .expect("completion helper should be written to bash stdin");
-    child
-        .wait_with_output()
+    ProcessCommand::new(bash_path)
+        .arg("-c")
+        .arg("eval \"$VULCAN_COMPLETION_TEST_SCRIPT\"")
+        .env(
+            "VULCAN_COMPLETION_TEST_SCRIPT",
+            script.replace("\r\n", "\n"),
+        )
+        .output()
         .expect("bash should run generated completion helper")
 }
 
