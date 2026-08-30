@@ -640,6 +640,23 @@ Examples:
   vulcan vault set personal --group mobile --remove-group desktop
   vulcan vault remove personal --dry-run";
 
+const DAEMON_COMMAND_AFTER_HELP: &str = "\
+Subcommands:
+  start        run the multi-wiki sync daemon in the foreground or detach it
+  status       probe the authenticated loopback service and show runtime state
+  stop         request graceful shutdown over the authenticated loopback service
+
+Notes:
+  The daemon watches and periodically reconciles registered Git-backed wikis.
+  Direct `vulcan sync run` remains available while the daemon is stopped.
+  Runtime metadata and the companion credential stay in the device-local Vulcan state directory.
+
+Examples:
+  vulcan daemon start
+  vulcan daemon start --detach
+  vulcan daemon status --output json
+  vulcan daemon stop";
+
 const WEB_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
   search      query the configured web search backend
@@ -4242,6 +4259,30 @@ pub enum SyncCommand {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum DaemonCommand {
+    #[command(about = "Start the multi-wiki synchronization daemon")]
+    Start {
+        #[arg(
+            long,
+            conflicts_with = "child",
+            help = "Run as a background child process"
+        )]
+        detach: bool,
+        #[arg(
+            long,
+            hide = true,
+            conflicts_with = "detach",
+            help = "Internal detached-child entrypoint"
+        )]
+        child: bool,
+    },
+    #[command(about = "Probe the running daemon and report its state")]
+    Status,
+    #[command(about = "Request graceful daemon shutdown")]
+    Stop,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum ClonePlatformArg {
     Native,
@@ -6223,6 +6264,14 @@ pub enum Command {
     Sync {
         #[command(subcommand)]
         command: SyncCommand,
+    },
+    #[command(
+        about = "Run and inspect the multi-wiki synchronization daemon",
+        after_help = DAEMON_COMMAND_AFTER_HELP
+    )]
+    Daemon {
+        #[command(subcommand)]
+        command: DaemonCommand,
     },
     #[command(
         about = "Manage device-local wiki registrations",

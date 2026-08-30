@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 51
+version: 52
 tools:
   - git_status
   - git_diff
@@ -54,6 +54,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - `vulcan sync run --max-retries <n>` bounds rejected compare-and-swap reconciliation attempts. Retries recapture and re-fetch with capped exponential backoff and remain cancellable; do not replace them with unconditional force pushes.
 - When a divergent sync reports `automatic_resolutions`, Vulcan first ran ordinary Git merge and then resolved every remaining listed path under the shared deterministic policy. Review each path's `kind`, `rule_id`, and `validation.checks`; the latter records successful path, syntax, schema, Markdown-link-surface, no-file-deletion, exact-tree, whole-tree link-resolution, and mass-deletion checks as applicable. An empty resolution list means no structured fallback was used. A newly unresolved or ambiguous link, an exceeded shared `sync.tree_validation` ceiling, Markdown body overlap, malformed structured content, binary data, delete-modify case, built-in device-state path, or any path requiring review remains a preserved conflict rather than receiving an implicit winner. A replacement shared policy may opt a narrowly selected Obsidian/plugin JSON path into bounded structured merging; never generalize that opt-in to other `.obsidian` state.
 - Use `vulcan sync run <wiki>`, `--group <name>`, or `--all` for registered selections. Group/all results are independent per-wiki transactions with aggregate counts, never one atomic cross-repository operation.
+- Use `vulcan daemon status` to verify the authenticated background service before diagnosing automatic sync. Start it in the foreground with `vulcan daemon start` or explicitly choose `--detach`; use `vulcan daemon stop` for graceful cross-platform shutdown. A stopped or stale daemon does not prevent direct `vulcan sync run`, and runtime PID metadata alone is not proof that the service is live.
 - Use `vulcan sync pause [<wiki>]` and `vulcan sync resume [<wiki>]` to change device-local automatic behavior. Omitting the ID resolves the selected vault's registration; add `--dry-run` to preview the registry mutation.
 - Use `vulcan sync checkpoint [<wiki>] --dry-run` before deliberately retaining the accepted live commit; add `--kind semantic` when the retention intent is human-facing semantic history rather than recovery. Checkpoints create unique local refs without copying objects or advancing the checked-out branch, and refuse when local accepted refs disagree with the remote.
 - Use `vulcan sync retention-plan [<wiki>]` to inspect active live-epoch pressure and checkpoint retention without mutation. `--live-epoch-max-commits` bounds first-parent observation and `--recovery-checkpoints-keep` classifies only the oldest excess recovery refs as expirable; semantic checkpoints are always reported as permanent. Treat `rollover_required` as a plan signal, not permission to delete refs or rewrite the live tip.

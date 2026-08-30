@@ -48,7 +48,7 @@ sha2 = "0.10.9"
 subtle = "2.6.1"
 sqlite-vec = "0.1.7"
 tempfile = "3.23.0"
-tokio = { version = "1.50.0", features = ["macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1.50.0", features = ["macros", "net", "rt-multi-thread", "signal", "sync", "time"] }
 toml = "0.8.23"
 tower = { version = "0.5.3", features = ["util"] }
 ulid = { version = "1.2.1", features = ["serde"] }

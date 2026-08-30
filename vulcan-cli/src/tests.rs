@@ -2217,6 +2217,50 @@ fn parses_sync_commands() {
 }
 
 #[test]
+fn parses_daemon_lifecycle_commands() {
+    let foreground = Cli::try_parse_from(["vulcan", "daemon", "start"])
+        .expect("foreground daemon start should parse");
+    assert_eq!(
+        foreground.command,
+        Command::Daemon {
+            command: DaemonCommand::Start {
+                detach: false,
+                child: false,
+            },
+        }
+    );
+
+    let detached = Cli::try_parse_from(["vulcan", "daemon", "start", "--detach"])
+        .expect("detached daemon start should parse");
+    assert_eq!(
+        detached.command,
+        Command::Daemon {
+            command: DaemonCommand::Start {
+                detach: true,
+                child: false,
+            },
+        }
+    );
+    assert!(Cli::try_parse_from(["vulcan", "daemon", "start", "--detach", "--child"]).is_err());
+    assert!(matches!(
+        Cli::try_parse_from(["vulcan", "daemon", "status"])
+            .expect("daemon status should parse")
+            .command,
+        Command::Daemon {
+            command: DaemonCommand::Status
+        }
+    ));
+    assert!(matches!(
+        Cli::try_parse_from(["vulcan", "daemon", "stop"])
+            .expect("daemon stop should parse")
+            .command,
+        Command::Daemon {
+            command: DaemonCommand::Stop
+        }
+    ));
+}
+
+#[test]
 fn parses_sync_doctor_command() {
     let doctor =
         Cli::try_parse_from(["vulcan", "sync", "doctor", "personal", "--remote", "backup"])

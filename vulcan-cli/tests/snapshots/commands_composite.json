@@ -9518,6 +9518,61 @@
         ]
       },
       {
+        "about": "Run and inspect the multi-wiki synchronization daemon",
+        "after_help": "Subcommands:\n  start        run the multi-wiki sync daemon in the foreground or detach it\n  status       probe the authenticated loopback service and show runtime state\n  stop         request graceful shutdown over the authenticated loopback service\n\nNotes:\n  The daemon watches and periodically reconciles registered Git-backed wikis.\n  Direct `vulcan sync run` remains available while the daemon is stopped.\n  Runtime metadata and the companion credential stay in the device-local Vulcan state directory.\n\nExamples:\n  vulcan daemon start\n  vulcan daemon start --detach\n  vulcan daemon status --output json\n  vulcan daemon stop",
+        "name": "daemon",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Start the multi-wiki synchronization daemon",
+            "name": "start",
+            "options": [
+              {
+                "help": "Run as a background child process",
+                "id": "detach",
+                "long": "detach",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DETACH"
+                ]
+              },
+              {
+                "help": "Internal detached-child entrypoint",
+                "id": "child",
+                "long": "child",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CHILD"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Probe the running daemon and report its state",
+            "name": "status",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Request graceful daemon shutdown",
+            "name": "stop",
+            "options": [],
+            "subcommands": []
+          }
+        ]
+      },
+      {
         "about": "Manage device-local wiki registrations",
         "after_help": "Subcommands:\n  clone        clone and register a Git-backed wiki\n  recover-git  recreate a registered missing detached Git directory safely\n  add          register an existing local wiki without changing its files\n  list         list registered wikis, optionally filtered by group\n  show         inspect one registration and its local availability\n  set          update groups or the permission profile\n  remove       unregister a wiki without deleting its worktree or Git data\n\nNotes:\n  Registry state is device-local under the XDG Vulcan config directory.\n  Registration is optional: ordinary `--vault <path>` commands continue to work directly.\n\nExamples:\n  vulcan vault clone https://git.example/wiki.git ~/vaults/wiki --id personal\n  vulcan vault clone ssh://git@example/wiki.git /storage/wiki --git-dir ~/.local/share/vulcan/git/wiki --platform android-shared\n  vulcan vault recover-git personal ssh://git@example/wiki.git --dry-run\n  vulcan vault add personal ~/vaults/personal --group daily\n  vulcan vault list --group daily\n  vulcan vault show personal\n  vulcan vault set personal --group mobile --remove-group desktop\n  vulcan vault remove personal --dry-run",
         "name": "vault",

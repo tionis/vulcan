@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::future::Future;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
@@ -47,6 +48,7 @@ pub struct CompanionHttpState {
     pub credential: Arc<CompanionCredential>,
     pub resolution_agent: Option<Arc<CompanionResolutionAgent>>,
     pub semantic_agent: Option<Arc<CompanionSemanticAgent>>,
+    pub shutdown: Option<Arc<AtomicBool>>,
 }
 
 impl CompanionHttpState {
@@ -135,6 +137,7 @@ pub fn companion_router(state: CompanionHttpState) -> Router {
             get(aggregate_job_status).delete(cancel_aggregate_job),
         )
         .route("/events", get(events))
+        .route("/shutdown", post(shutdown))
         .layer(DefaultBodyLimit::max(MAX_REQUEST_BYTES))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -309,7 +312,26 @@ async fn capabilities(State(state): State<CompanionHttpState>) -> Json<Companion
     capabilities
         .operations
         .push(CompanionOperation::EventSubscribe);
+    if state.shutdown.is_some() {
+        capabilities
+            .operations
+            .push(CompanionOperation::DaemonShutdown);
+    }
     Json(capabilities)
+}
+
+async fn shutdown(State(state): State<CompanionHttpState>) -> Result<Json<Value>, ApiError> {
+    let shutdown = state.shutdown.ok_or_else(|| {
+        ApiError(CompanionError::new(
+            CompanionErrorKind::NotFound,
+            "daemon shutdown is not available on this companion service",
+        ))
+    })?;
+    shutdown.store(true, Ordering::Release);
+    Ok(Json(serde_json::json!({
+        "version": COMPANION_PROTOCOL_VERSION,
+        "stopping": true
+    })))
 }
 
 async fn list_vaults(
@@ -654,6 +676,7 @@ mod tests {
             ),
             resolution_agent: None,
             semantic_agent: None,
+            shutdown: None,
         };
         (temporary, state)
     }

@@ -6484,6 +6484,49 @@ fn vault_registry_cli_round_trips_without_touching_wiki_files() {
 }
 
 #[test]
+fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let vulcan_config = config_home.join("vulcan");
+    fs::create_dir_all(&vulcan_config).expect("config directory");
+    fs::write(
+        vulcan_config.join("daemon.toml"),
+        format!(
+            "device_id = \"{}\"\nbind = \"127.0.0.1:0\"\n",
+            ulid::Ulid::new()
+        ),
+    )
+    .expect("daemon config");
+    let daemon = |arguments: &[&str]| {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .args(["--output", "json", "daemon"])
+            .args(arguments)
+            .assert()
+    };
+
+    let started = parse_stdout_json(&daemon(&["start", "--detach"]).success());
+    assert_eq!(started["detached"], true);
+    assert_eq!(started["status"]["running"], true);
+    assert!(started["status"]["runtime"]["bind"]
+        .as_str()
+        .is_some_and(|bind| bind.starts_with("127.0.0.1:")));
+
+    let running = parse_stdout_json(&daemon(&["status"]).success());
+    assert_eq!(running["running"], true);
+    assert_eq!(running["registered_wikis"], serde_json::json!([]));
+    assert!(running["uptime_ms"].as_u64().is_some());
+
+    let stopped = parse_stdout_json(&daemon(&["stop"]).success());
+    assert_eq!(stopped["running"], false);
+    let after = parse_stdout_json(&daemon(&["status"]).success());
+    assert_eq!(after["running"], false);
+}
+
+#[test]
 fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let config_home = temporary.path().join("config");
@@ -12923,6 +12966,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("MCP `sync` pack"));
     assert!(git_skill.contains("mutation-free `sync_plan`"));
     assert!(git_skill.contains("vulcan sync semantic-plan"));
+    assert!(git_skill.contains("vulcan daemon status"));
     assert!(git_skill.contains("agent_semantic_plans: true"));
     assert!(git_skill.contains("vulcan sync retention-plan [<wiki>]"));
     assert!(git_skill.contains("vulcan sync retention-apply [<wiki>] --dry-run"));
@@ -13021,6 +13065,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("stable device identity"));
     assert!(diagnostics_skill.contains("state.apply-marker"));
     assert!(diagnostics_skill.contains("vulcan-sync/apply.json"));
+    assert!(diagnostics_skill.contains("vulcan daemon start --detach"));
     assert!(json["support_files"].as_array().is_some_and(|items| items
         .iter()
         .any(|item| item["path"] == "AGENTS.md")

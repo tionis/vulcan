@@ -5,6 +5,7 @@ pub(crate) mod browse;
 pub(crate) mod cache;
 pub(crate) mod completions;
 pub(crate) mod config;
+pub(crate) mod daemon;
 pub(crate) mod dataview;
 pub(crate) mod docs;
 pub(crate) mod edit;

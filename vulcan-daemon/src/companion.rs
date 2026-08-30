@@ -64,6 +64,7 @@ pub enum CompanionOperation {
     AggregateJobStatus,
     AggregateJobCancel,
     EventSubscribe,
+    DaemonShutdown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

@@ -44,6 +44,7 @@ Clients should call `GET /capabilities` before relying on optional operations.
 | `GET` | `/aggregate-jobs/{job}` | Aggregate selection status, independent child reports, and outcome counts |
 | `DELETE` | `/aggregate-jobs/{job}` | Cancel the parent and each child not shared by another active aggregate request |
 | `GET` | `/events` | WebSocket upgrade |
+| `POST` | `/shutdown` | Gracefully stop a process-owned daemon when advertised |
 
 Conflict proposal creation and explicit approval/rejection are advertised only when the daemon has
 a server-configured resolution provider. Provider endpoints or credentials never come from a
@@ -94,3 +95,7 @@ Axum handlers move synchronous registry, supervisor, state-store, and applicatio
 `spawn_blocking`. Repository operations continue to acquire the same locks and enforce the same
 registered permission profiles as direct CLI workflows. Request bodies and WebSocket messages are
 bounded, and the server never exposes arbitrary Git execution.
+
+`daemon_shutdown` appears in capabilities only for a process-owned service. `POST /shutdown`
+requires the same bearer, version, and Origin checks as other mutating companion requests and sets
+the cooperative process stop flag; embedded routers may omit the operation entirely.

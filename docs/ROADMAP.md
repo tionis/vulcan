@@ -5169,13 +5169,13 @@ All endpoints are namespaced by vault ID: `/{vault_id}/...`
 - [ ] Each registered vault gets its own file watcher thread (reuse `watch_vault_until`)
 - [ ] Watcher keeps cache fresh automatically — API queries always return current data
 - [ ] Watcher errors are surfaced via `/health` and `/{id}/health` endpoints
-- [ ] Graceful shutdown: daemon stop signals all watchers to terminate
+- [x] Graceful shutdown: authenticated daemon stop or foreground Ctrl-C signals the HTTP service, trigger runtime, sync worker, and all watcher threads to terminate before removing the owned runtime record
 
 ### 10.5 CLI daemon integration
 
-- [ ] `vulcan daemon start` — start the daemon (foreground or `--detach` for background)
-- [ ] `vulcan daemon stop` — send shutdown signal
-- [ ] `vulcan daemon status` — show running state, registered vaults, uptime
+- [x] `vulcan daemon start` — start the daemon in the foreground or as a detached child, hold a single-process device-local lock, publish bounded runtime metadata only after binding, and start the registry watcher/periodic-trigger runtime plus retained-job worker over the same sync transaction
+- [x] `vulcan daemon stop` — send an authenticated loopback shutdown request and wait for the listener to close without relying on Unix-only signals
+- [x] `vulcan daemon status` — authenticate a live capability probe and show the bound address, PID, uptime, and current registered-wiki reports; a stale runtime file never counts as running
 - [ ] `vulcan --daemon` flag or `VULCAN_DAEMON_URL` env var on any CLI command: route the command through the daemon's REST API instead of direct SQLite access. Same UX, daemon does the work.
 - [ ] Transparent fallback: if daemon is not running, fall back to direct mode with a warning
 
@@ -5423,6 +5423,7 @@ All commands in this section support `--output json`; mutating commands support 
   - [x] Add the versioned transport-neutral companion service for truthful capability negotiation, wiki listing, reconstructed status, scoped idempotent sync/resume enqueueing, pause, conflict list/detail/deterministic resolution, deterministic semantic-plan creation, and job status/cancellation. Registered permission profiles are enforced for repository-reading or mutating workflows; the HTTP/WebSocket projection advertises event subscription only on that transport.
   - [x] Project the provider-neutral conflict proposal transaction through an optional server-configured resolver. Provider endpoints and credentials never come from companion requests; capability negotiation advertises creation only when a provider exists, the registered permission profile gates Git/read/network access, and explicit approval/rejection reuse the same stale-checking application transactions as direct CLI mode. Proposal creation claims the repository/conflict pair before provider invocation, permits one active request per configured daemon, fails a concurrent request immediately, and advertises the device-local claim scope and limit.
   - [x] Project provider-neutral semantic planning through an optional server-configured semantic agent. Companion requests cannot choose provider endpoints, models, or credentials; `agent_semantic_plans` is true only while a provider exists, and the registered permission profile gates the provider's reported network endpoint before bounded planning. Deterministic semantic plans remain available without a provider, while an explicit agent request fails closed when none is configured and reuses the same exact accepted-tree validation and reviewable proposal transaction as direct mode.
+  - [x] Add the runnable same-binary daemon lifecycle. Foreground and detached starts share a daemon-owned process lock, runtime record, companion credential, loopback listener, watcher/periodic trigger coordinator, and retained-job execution worker. Status authenticates the live service rather than trusting PID metadata, and stop sets the same cooperative flag used by Ctrl-C so HTTP, workers, and watcher threads join cleanly. Direct CLI operation remains independent.
 - [x] Define the initial endpoint contract alongside the report schemas: `GET /capabilities`, `GET /vaults`, `GET /{id}/sync/status`, `POST /{id}/sync`, `POST /{id}/sync/pause`, `POST /{id}/sync/resume`, `GET /{id}/sync/conflicts`, `GET /{id}/sync/conflicts/{conflict}`, `POST /{id}/sync/conflicts/{conflict}/proposals`, `POST /{id}/sync/conflicts/{conflict}/resolve`, `POST /{id}/sync/semantic-plans`, `GET/DELETE /jobs/{job}`, and `GET /events` for WebSocket upgrade
   - [x] Implement every initial endpoint, including provider-configured conflict proposal creation, plus explicit proposal approval and rejection endpoints for thin companion clients.
 - [ ] Build a thin Obsidian companion that requests editor saves, triggers the daemon/direct bridge, displays state and conflicts, and opens reviewed resolutions. It must not run an independent Git state machine against a worktree managed by Vulcan.
