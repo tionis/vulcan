@@ -6940,6 +6940,7 @@ fn daemon_semantic_worker_runs_and_exposes_latest_status() {
 }
 
 #[test]
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 fn daemon_service_installation_is_native_and_mutation_free_in_dry_run() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let config_home = temporary.path().join("config");
@@ -6974,6 +6975,29 @@ fn daemon_service_installation_is_native_and_mutation_free_in_dry_run() {
     assert!(!config_home
         .join("systemd/user/vulcan-daemon.service")
         .exists());
+}
+
+#[test]
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn daemon_service_installation_reports_unsupported_platform_without_mutation() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+
+    let install = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .args(["--output", "json", "daemon", "install", "--dry-run"])
+        .assert()
+        .failure();
+    let install = parse_stdout_json(&install);
+    assert_eq!(install["code"], "operation_failed");
+    assert!(install["error"].as_str().is_some_and(
+        |error| error.contains("automatic daemon service installation is unsupported")
+    ));
+    assert!(!config_home.exists());
+    assert!(!state_home.exists());
 }
 
 #[test]
@@ -25786,6 +25810,7 @@ fn read_request(stream: &mut std::net::TcpStream) -> CapturedRequest {
 
 fn read_header_request(stream: &mut std::net::TcpStream) -> CapturedHeaderRequest {
     let mut buffer = Vec::new();
+    let mut header_end = None;
 
     loop {
         let mut chunk = [0_u8; 1024];
@@ -25794,12 +25819,14 @@ fn read_header_request(stream: &mut std::net::TcpStream) -> CapturedHeaderReques
             break;
         }
         buffer.extend_from_slice(&chunk[..bytes_read]);
-        if find_subslice(&buffer, b"\r\n\r\n").is_some() {
+        if let Some(position) = find_subslice(&buffer, b"\r\n\r\n") {
+            header_end = Some(position + 4);
             break;
         }
     }
 
-    let request = String::from_utf8(buffer).expect("request should be utf8");
+    let header_end = header_end.expect("request should contain headers");
+    let request = String::from_utf8(buffer[..header_end].to_vec()).expect("request should be utf8");
     let mut lines = request.lines();
     let request_line = lines
         .next()
@@ -25815,7 +25842,23 @@ fn read_header_request(stream: &mut std::net::TcpStream) -> CapturedHeaderReques
             let (name, value) = line.split_once(':')?;
             Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
         })
-        .collect();
+        .collect::<std::collections::BTreeMap<_, _>>();
+
+    let content_length = headers
+        .get("content-length")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or_default();
+    let mut body_read = buffer.len().saturating_sub(header_end);
+    while body_read < content_length {
+        let mut chunk = vec![0_u8; content_length - body_read];
+        let bytes_read = stream
+            .read(chunk.as_mut_slice())
+            .expect("request body should be readable");
+        if bytes_read == 0 {
+            break;
+        }
+        body_read += bytes_read;
+    }
 
     CapturedHeaderRequest { path, headers }
 }

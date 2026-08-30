@@ -1635,7 +1635,7 @@ impl GitEngine for GitCliEngine {
         let work_tree = if is_bare {
             None
         } else {
-            Some(absolute_path(self.rev_parse(
+            Some(canonical_work_tree(self.rev_parse(
                 path,
                 "discover the repository worktree",
                 "--show-toplevel",
@@ -3665,20 +3665,25 @@ fn parse_git_bool(value: &str, operation: &'static str) -> Result<bool, GitEngin
 fn absolute_path(value: String) -> Result<PathBuf, GitEngineError> {
     let path = PathBuf::from(value);
     if path.is_absolute() {
-        path.canonicalize()
-            .map_err(|error| GitEngineError::InvalidOutput {
-                operation: "discover repository paths",
-                detail: format!(
-                    "cannot canonicalize discovered path `{}`: {error}",
-                    path.display()
-                ),
-            })
+        Ok(path)
     } else {
         Err(GitEngineError::InvalidOutput {
             operation: "discover repository paths",
             detail: format!("expected an absolute path, received `{}`", path.display()),
         })
     }
+}
+
+fn canonical_work_tree(value: String) -> Result<PathBuf, GitEngineError> {
+    let path = absolute_path(value)?;
+    path.canonicalize()
+        .map_err(|error| GitEngineError::InvalidOutput {
+            operation: "discover repository paths",
+            detail: format!(
+                "cannot canonicalize discovered worktree `{}`: {error}",
+                path.display()
+            ),
+        })
 }
 
 fn colocated_git_dir(work_tree: &Path, git_dir: &Path) -> bool {
@@ -3820,7 +3825,10 @@ mod tests {
             Some(temporary.path().canonicalize().expect("canonical root"))
         );
         assert_eq!(
-            repository.git_dir,
+            repository
+                .git_dir
+                .canonicalize()
+                .expect("canonical discovered Git directory"),
             temporary
                 .path()
                 .join(".git")
@@ -3831,9 +3839,9 @@ mod tests {
     }
 
     #[test]
-    fn discovered_absolute_paths_use_the_platform_canonical_form() {
+    fn discovered_work_tree_uses_the_platform_canonical_form() {
         let temporary = TempDir::new().expect("temporary directory");
-        let discovered = absolute_path(temporary.path().to_string_lossy().into_owned())
+        let discovered = canonical_work_tree(temporary.path().to_string_lossy().into_owned())
             .expect("existing absolute path");
 
         assert_eq!(
@@ -3868,7 +3876,10 @@ mod tests {
             Some(work_tree.canonicalize().expect("canonical worktree"))
         );
         assert_eq!(
-            repository.git_dir,
+            repository
+                .git_dir
+                .canonicalize()
+                .expect("canonical discovered Git directory"),
             git_dir.canonicalize().expect("canonical Git directory")
         );
     }
