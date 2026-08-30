@@ -2581,6 +2581,8 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         git(
             temporary.path(),
             &[
+                "-c",
+                "core.autocrlf=false",
                 "clone",
                 "--quiet",
                 writer.to_str().expect("writer path"),

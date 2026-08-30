@@ -3018,7 +3018,7 @@ fn validate_detached_recovery_request(
     } else {
         request.work_tree.join(referenced)
     };
-    if referenced != request.git_dir {
+    if !same_prospective_path(&referenced, &request.git_dir) {
         return Err(GitEngineError::UnsupportedRepository {
             detail: format!(
                 "refusing destructive reattachment: {} points to {}, not the registered missing Git directory {}",
@@ -3034,6 +3034,21 @@ fn validate_detached_recovery_request(
         });
     }
     Ok(())
+}
+
+fn same_prospective_path(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    let canonical_parent_and_name =
+        |path: &Path| Some(path.parent()?.canonicalize().ok()?.join(path.file_name()?));
+    matches!(
+        (
+            canonical_parent_and_name(left),
+            canonical_parent_and_name(right)
+        ),
+        (Some(left), Some(right)) if left == right
+    )
 }
 
 fn prospective_absolute_path(path: &Path) -> Result<PathBuf, GitEngineError> {
@@ -3848,6 +3863,25 @@ mod tests {
             discovered,
             temporary.path().canonicalize().expect("canonical path")
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn prospective_paths_accept_equivalent_parent_aliases() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let actual_parent = temporary.path().join("actual");
+        let alias_parent = temporary.path().join("alias");
+        fs::create_dir(&actual_parent).expect("actual parent");
+        std::os::unix::fs::symlink(&actual_parent, &alias_parent).expect("parent alias");
+
+        assert!(same_prospective_path(
+            &actual_parent.join("missing.git"),
+            &alias_parent.join("missing.git")
+        ));
+        assert!(!same_prospective_path(
+            &actual_parent.join("missing.git"),
+            &alias_parent.join("other.git")
+        ));
     }
 
     #[test]
