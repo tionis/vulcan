@@ -6607,6 +6607,7 @@ fn daemon_config_cli_persists_only_non_secret_agent_settings() {
 fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
     let source = temporary.path().join("source");
     let colocated = temporary.path().join("colocated");
     let detached = temporary.path().join("detached");
@@ -6669,6 +6670,7 @@ fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
     assert!(colocated.join("Home.md").is_file());
 
     let detached_assert = cargo_vulcan_with_xdg_config(config_home)
+        .env("XDG_STATE_HOME", &state_home)
         .args([
             "--output",
             "json",
@@ -6711,7 +6713,10 @@ fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
         "false"
     );
 
+    fs::write(detached.join("Mobile.md"), "written from Termux\n")
+        .expect("mobile note should be written");
     let sync = cargo_vulcan_with_xdg_config(config_home)
+        .env("XDG_STATE_HOME", &state_home)
         .args(["--output", "json", "sync", "run", "detached"])
         .assert()
         .success();
@@ -6725,8 +6730,26 @@ fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
         sync_json["items"][0]["report"]["accepted_platform_preflight"]["compatible"],
         true
     );
+    let accepted = sync_json["items"][0]["report"]["accepted"]
+        .as_str()
+        .expect("accepted revision");
+    assert_eq!(
+        run_git_stdout(&detached, &["show", &format!("{accepted}:Mobile.md")]),
+        "written from Termux"
+    );
+    assert_eq!(
+        run_git_stdout(
+            &detached,
+            &["ls-remote", "origin", "refs/heads/__vulcan-sync/live"]
+        )
+        .split_whitespace()
+        .next(),
+        Some(accepted)
+    );
+    assert!(!state_home.join("vulcan/daemon/runtime.json").exists());
 
     let doctor = cargo_vulcan_with_xdg_config(config_home)
+        .env("XDG_STATE_HOME", &state_home)
         .args(["--output", "json", "sync", "doctor", "detached"])
         .assert()
         .success();
@@ -13119,6 +13142,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan vault recover-git <wiki> <remote> --dry-run"));
     assert!(git_skill.contains("clone that succeeds before registration fails"));
     assert!(git_skill.contains("--platform android-shared"));
+    assert!(git_skill.contains("supported baseline is one-shot direct execution"));
+    assert!(git_skill.contains("do not require or start the daemon"));
     assert!(git_skill.contains("case-only renames require an intermediate path"));
     assert!(git_skill.contains("never one atomic cross-repository operation"));
     let configuration_skill = fs::read_to_string(

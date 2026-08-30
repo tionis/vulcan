@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 53
+version: 54
 tools:
   - git_status
   - git_diff
@@ -63,6 +63,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - Use `vulcan sync semantic-plan [<wiki>] --from <rev> --to <accepted-live-rev> --group-by top-level --dry-run` to review deterministic commit grouping and patches without creating objects or state. Choose `--group-by file` for one commit per changed path or `--group-by all` for one commit containing the complete selected change; `top-level` is the default. When the user explicitly requests model-assisted organization, add `--agent --model <model> [--base-url <openai-compatible-base>] [--api-key-env <name>]`; the key is read only from that environment variable, network access is permission-checked, and even dry-run calls the provider. Agent output can order whole-file groups and propose messages, but every accepted path must appear exactly once and the exact live target bytes remain authoritative. Review `agent_identity`, every message/path group, and the bounded patches. Rerun without `--dry-run` to retain the proposal under `refs/vulcan/proposals/semantic/<plan-id>`, then use `vulcan sync semantic-apply <plan-id> --dry-run` before explicit acceptance. Apply refuses stale source, proposal, or live refs, advances only the semantic branch with compare-and-swap, and releases the redundant proposal ref after durable success; it never rewrites live history.
 - If a semantic plan is declined, preview `vulcan sync semantic-reject <plan-id> --dry-run`, then rerun without `--dry-run` after confirmation. Rejection uses an exact-object lease to delete only the proposal ref, retains the bounded device-local plan record as rejected audit state, is idempotent, and never advances the semantic branch or any live synchronization ref.
 - Use `vulcan vault clone <remote> <path> --dry-run` to validate a new clone and registration. For Android shared storage accessed from Termux, add both `--git-dir <private-path>` and `--platform android-shared`; native policy remains the default elsewhere.
+- On Termux, the supported baseline is one-shot direct execution: run `vulcan sync status <wiki>`, `vulcan sync doctor <wiki>`, and `vulcan sync run <wiki>` from a shell, shortcut, or explicitly configured scheduler. These commands do not require or start the daemon. Keep the Git directory in Termux-private storage and the materialized vault in shared storage; do not move Git locks, indexes, refs, or objects into Android shared storage.
 - If a registered detached Git directory was lost but its materialized vault remains, preview `vulcan vault recover-git <wiki> <remote> --dry-run`, then rerun only after verifying the registered path, missing Git directory, stale-pointer target, redacted remote, and loss warning. Recovery snapshots the untouched vault under the returned `refs/vulcan/recovery/detached-git-loss/<ulid>` ref before fetching and never checks remote content out over it. Any reported local namespace—including sync candidates, epochs, conflicts, checkpoints, proposals, recovery refs, and legacy development roots—that existed only in the lost directory cannot be reconstructed.
 
 ## Guardrails

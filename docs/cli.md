@@ -25,6 +25,8 @@ Typical first run against a vault:
 ./target/release/vulcan --vault ~/wikis/mimir browse
 ```
 
+For whole-vault device synchronization, including a detached Git directory for Android shared storage, see [Git-backed device synchronization](guide/git-sync.md). `vulcan sync run` is a finite direct workflow and does not require the daemon.
+
 ## Self-discovery
 
 The CLI is designed to be self-describing at runtime.

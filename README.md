@@ -14,6 +14,7 @@ The current implementation is a strong single-vault CLI and MCP server; the next
 - **Edit safely**: `note get/create/append/patch/set/delete/rename`, task create/complete/reschedule/archive, property updates, refactors, dry-run reports, link rewriting, and permission profiles.
 - **Publish, import, and route**: Markdown, JSON, CSV, Graph, EPUB, ZIP, SQLite, static search indexes, frontend bundles, full static sites, Outline-compatible ZIPs, conflict-aware Outline publication/pull, exact document bindings, and named subtree mirror routes.
 - **Automate locally**: JSON output on commands, saved reports, automation runs, checkpoints, shell completions, JavaScript scripting with sandbox tiers, custom skills, skill commands, and plugins.
+- **Synchronize devices**: finite Git-backed vault synchronization, deterministic conflict preservation and reviewed resolution, multi-wiki daemon scheduling, plus detached Git directories for Obsidian-visible Android/Termux storage.
 - **Integrate with agents**: `vulcan describe`, OpenAI tool schemas, MCP stdio/HTTP, ChatGPT-compatible OAuth/IndieAuth, tool packs, resources, prompts, and Agent Skills-compatible vault guidance.
 
 ## Quick Start
@@ -96,6 +97,7 @@ For a private ChatGPT connector, see [docs/guide/chatgpt-mcp.md](docs/guide/chat
 - [ChatGPT MCP setup](docs/guide/chatgpt-mcp.md)
 - [Static sites](docs/guide/static-sites.md)
 - [Outline publishing](docs/guide/outline-publishing.md)
+- [Git-backed device synchronization](docs/guide/git-sync.md): direct Linux/Windows operation and detached Android/Termux setup
 - [Local information hub and external wikis](docs/guide/information-hub.md): current integration baseline and planned binding/route/connector architecture
 - [Design document](docs/design_document.md): architecture and crate boundaries
 - [Roadmap](docs/ROADMAP.md): implementation status and planned phases
