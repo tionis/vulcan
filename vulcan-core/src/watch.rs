@@ -90,7 +90,7 @@ pub fn watch_vault_until<F, S, E>(
     paths: &VaultPaths,
     options: &WatchOptions,
     should_stop: S,
-    mut on_report: F,
+    on_report: F,
 ) -> Result<(), WatchError>
 where
     F: FnMut(WatchReport) -> Result<(), E>,
@@ -98,9 +98,26 @@ where
     E: Display,
 {
     let (sender, receiver) = mpsc::channel::<notify::Result<Event>>();
-    let mut watcher: RecommendedWatcher = notify::recommended_watcher(move |event| {
+    let watcher: RecommendedWatcher = notify::recommended_watcher(move |event| {
         let _ = sender.send(event);
     })?;
+    watch_vault_until_with_watcher(paths, *options, should_stop, on_report, watcher, &receiver)
+}
+
+fn watch_vault_until_with_watcher<F, S, E, W>(
+    paths: &VaultPaths,
+    options: WatchOptions,
+    should_stop: S,
+    mut on_report: F,
+    mut watcher: W,
+    receiver: &mpsc::Receiver<notify::Result<Event>>,
+) -> Result<(), WatchError>
+where
+    F: FnMut(WatchReport) -> Result<(), E>,
+    S: Fn() -> bool,
+    E: Display,
+    W: Watcher,
+{
     watcher.watch(paths.vault_root(), RecursiveMode::Recursive)?;
 
     let startup_summary = scan_vault(paths, ScanMode::Incremental)?;
@@ -241,6 +258,7 @@ fn strip_windows_verbatim_prefix(path: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use notify::event::{AccessKind, CreateKind, ModifyKind};
+    use notify::{Config, PollWatcher};
     use tempfile::TempDir;
 
     #[test]
@@ -335,14 +353,25 @@ mod tests {
         let paths = VaultPaths::new(temp_dir.path());
         let mut startup_reports = 0_usize;
 
-        watch_vault_until(
+        let (sender, receiver) = mpsc::channel::<notify::Result<Event>>();
+        let watcher = PollWatcher::new(
+            move |event| {
+                let _ = sender.send(event);
+            },
+            Config::default().with_poll_interval(Duration::from_millis(10)),
+        )
+        .expect("polling watcher should initialize");
+
+        watch_vault_until_with_watcher(
             &paths,
-            &WatchOptions { debounce_ms: 10 },
+            WatchOptions { debounce_ms: 10 },
             || true,
             |_| {
                 startup_reports += 1;
                 Ok::<_, std::convert::Infallible>(())
             },
+            watcher,
+            &receiver,
         )
         .expect("watch should stop cleanly");
 
