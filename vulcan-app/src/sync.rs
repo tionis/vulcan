@@ -1540,6 +1540,8 @@ mod tests {
         git(
             temporary.path(),
             &[
+                "-c",
+                "core.autocrlf=false",
                 "clone",
                 "--quiet",
                 writer.to_str().expect("writer path"),

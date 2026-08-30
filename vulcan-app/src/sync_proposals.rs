@@ -3487,7 +3487,14 @@ mod tests {
         let reader = temporary.path().join("reader");
         git(
             temporary.path(),
-            &["clone", "--quiet", path(&writer), path(&reader)],
+            &[
+                "-c",
+                "core.autocrlf=false",
+                "clone",
+                "--quiet",
+                path(&writer),
+                path(&reader),
+            ],
         );
         configure_git(&reader);
         git(&reader, &["remote", "set-url", "origin", path(&remote)]);

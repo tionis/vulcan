@@ -12,7 +12,7 @@ use vulcan_app::sync::{
     sync_git_vault, sync_git_vault_with_observer, GitPlatformProfile, GitSyncObserverError,
     GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress, VaultSyncReport,
 };
-use vulcan_app::sync_state::SyncStateStore;
+use vulcan_app::sync_state::{same_work_tree, SyncStateStore};
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
@@ -151,7 +151,7 @@ fn resolve_claimed_registration(
                 false,
             )
         })?;
-    if registration.path != claimed.job.job.vault {
+    if !same_work_tree(&claimed.job.job.vault, &registration.path) {
         return Err(SyncError::new(
             SyncErrorCategory::Configuration,
             "registered wiki path changed after the job was queued",
