@@ -6958,14 +6958,26 @@ fn daemon_service_installation_is_native_and_mutation_free_in_dry_run() {
     let install = parse_stdout_json(&daemon("install").success());
     assert_eq!(install["version"], 1);
     assert_eq!(install["action"], "install");
-    assert_eq!(install["platform"], "systemd_user");
     assert_eq!(install["dry_run"], true);
     assert_eq!(install["changed"], false);
+    #[cfg(target_os = "linux")]
+    assert_eq!(install["platform"], "systemd_user");
+    #[cfg(target_os = "windows")]
+    assert_eq!(install["platform"], "windows_scheduled_task");
+    #[cfg(target_os = "linux")]
     assert!(install["definition"]
         .as_str()
         .is_some_and(|unit| unit.contains("Restart=on-failure")
             && unit.contains("EnvironmentFile=-")
             && unit.contains(" daemon start")));
+    #[cfg(target_os = "windows")]
+    {
+        assert!(install.get("definition").is_none());
+        assert_eq!(install["commands"][0]["program"], "schtasks.exe");
+        assert!(install["commands"][0]["arguments"]
+            .as_array()
+            .is_some_and(|arguments| arguments.iter().any(|argument| argument == "ONLOGON")));
+    }
     assert!(!config_home
         .join("systemd/user/vulcan-daemon.service")
         .exists());
