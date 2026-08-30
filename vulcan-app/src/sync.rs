@@ -1382,8 +1382,9 @@ fn markdown_path(path: &str) -> bool {
 mod tests {
     use super::*;
     use std::fs;
+    use std::io::Write;
     use std::path::Path;
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     use tempfile::tempdir;
     use vulcan_core::{initialize_vulcan_dir, properties::load_note_index, scan_vault, ScanMode};
     use vulcan_sync::{MergeAutomation, MergeResolution};
@@ -1423,6 +1424,28 @@ mod tests {
             .args(arguments)
             .output()
             .expect("Git should launch");
+        assert!(output.status.success(), "Git failed: {arguments:?}");
+        String::from_utf8(output.stdout)
+            .expect("Git output should be UTF-8")
+            .trim()
+            .to_string()
+    }
+
+    fn git_stdout_with_stdin(path: &Path, arguments: &[&str], input: &[u8]) -> String {
+        let mut child = Command::new("git")
+            .current_dir(path)
+            .args(arguments)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("Git should launch");
+        child
+            .stdin
+            .take()
+            .expect("Git stdin")
+            .write_all(input)
+            .expect("write Git stdin");
+        let output = child.wait_with_output().expect("Git should finish");
         assert!(output.status.success(), "Git failed: {arguments:?}");
         String::from_utf8(output.stdout)
             .expect("Git output should be UTF-8")
@@ -2314,13 +2337,25 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         );
         git(&vault, &["config", "user.name", "Vulcan Test"]);
         git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        git(&vault, &["config", "core.ignoreCase", "false"]);
+        git(&vault, &["config", "core.protectNTFS", "false"]);
+        let blob = git_stdout_with_stdin(&vault, &["hash-object", "-w", "--stdin"], b"fixture\n");
         for path in ["CON.txt", "Notes/Alpha.md", "notes/alpha.md"] {
-            let absolute = vault.join(path);
-            fs::create_dir_all(absolute.parent().expect("path parent")).expect("parent");
-            fs::write(absolute, path).expect("fixture path");
+            git(
+                &vault,
+                &[
+                    "update-index",
+                    "--add",
+                    "--cacheinfo",
+                    "100644",
+                    &blob,
+                    path,
+                ],
+            );
         }
-        git(&vault, &["add", "."]);
-        git(&vault, &["commit", "--quiet", "-m", "portable fixtures"]);
+        let tree = git_stdout(&vault, &["write-tree"]);
+        let commit = git_stdout(&vault, &["commit-tree", &tree, "-m", "portable fixtures"]);
+        git(&vault, &["update-ref", "refs/heads/main", &commit]);
         let paths = VaultPaths::new(&vault);
         let store = SyncStateStore::at(temporary.path().join("state"));
 
@@ -2519,6 +2554,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         );
         git(&writer, &["config", "user.name", "Vulcan Test"]);
         git(&writer, &["config", "user.email", "vulcan@example.invalid"]);
+        git(&writer, &["config", "core.autocrlf", "false"]);
         git(
             &writer,
             &[
@@ -2558,6 +2594,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
                 remote.to_str().expect("remote path"),
             ],
         );
+        git(&reader, &["config", "core.autocrlf", "false"]);
         sync_git_vault_with_state_store(
             &VaultPaths::new(&reader),
             &GitSyncOptions::default(),

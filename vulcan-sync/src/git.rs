@@ -3665,7 +3665,14 @@ fn parse_git_bool(value: &str, operation: &'static str) -> Result<bool, GitEngin
 fn absolute_path(value: String) -> Result<PathBuf, GitEngineError> {
     let path = PathBuf::from(value);
     if path.is_absolute() {
-        Ok(path)
+        path.canonicalize()
+            .map_err(|error| GitEngineError::InvalidOutput {
+                operation: "discover repository paths",
+                detail: format!(
+                    "cannot canonicalize discovered path `{}`: {error}",
+                    path.display()
+                ),
+            })
     } else {
         Err(GitEngineError::InvalidOutput {
             operation: "discover repository paths",
@@ -3821,6 +3828,18 @@ mod tests {
                 .expect("canonical Git directory")
         );
         assert_eq!(repository.common_dir, repository.git_dir);
+    }
+
+    #[test]
+    fn discovered_absolute_paths_use_the_platform_canonical_form() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let discovered = absolute_path(temporary.path().to_string_lossy().into_owned())
+            .expect("existing absolute path");
+
+        assert_eq!(
+            discovered,
+            temporary.path().canonicalize().expect("canonical path")
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Durable device-local conflict records and preserved file artifacts.
 
 use crate::scan::refresh_cache_incrementally;
-use crate::sync_state::SyncStateStore;
+use crate::sync_state::{same_work_tree, SyncStateStore};
 use crate::AppError;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -284,7 +284,7 @@ pub fn resolve_sync_conflict_with_state_store(
     };
     let store = SyncConflictStore::from_state_store(state_store);
     let record = store.get(&repository_key, conflict_id)?;
-    if record.work_tree != work_tree {
+    if !same_work_tree(&record.work_tree, &work_tree) {
         return Err(AppError::operation(
             "sync conflict record does not belong to the selected worktree",
         ));

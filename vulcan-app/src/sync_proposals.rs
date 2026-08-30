@@ -1704,7 +1704,7 @@ pub fn reject_resolution_proposal_with_state_store(
     let repository_key = repository_state_key(&vault);
     let conflict_store = SyncConflictStore::from_state_store(state_store);
     let conflict = conflict_store.get(&repository_key, conflict_id)?;
-    if conflict.work_tree != vault {
+    if !crate::sync_state::same_work_tree(&conflict.work_tree, &vault) {
         return Err(AppError::operation(
             "sync conflict record does not belong to the selected worktree",
         ));
@@ -1788,7 +1788,7 @@ pub fn approve_resolution_proposal_with_state_store(
     let repository_key = repository_state_key(&vault);
     let store = SyncConflictStore::from_state_store(state_store);
     let record = store.get(&repository_key, conflict_id)?;
-    if record.work_tree != vault {
+    if !crate::sync_state::same_work_tree(&record.work_tree, &vault) {
         return Err(AppError::operation(
             "sync conflict record does not belong to the selected worktree",
         ));
@@ -3489,6 +3489,7 @@ mod tests {
             temporary.path(),
             &["clone", "--quiet", path(&writer), path(&reader)],
         );
+        configure_git(&reader);
         git(&reader, &["remote", "set-url", "origin", path(&remote)]);
         sync_git_vault_with_state_store(
             &VaultPaths::new(&reader),
@@ -4399,6 +4400,7 @@ mod tests {
             repository,
             &["config", "user.email", "vulcan@example.invalid"],
         );
+        git(repository, &["config", "core.autocrlf", "false"]);
     }
 
     fn commit_all(repository: &Path, message: &str) {

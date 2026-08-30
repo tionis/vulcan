@@ -393,6 +393,14 @@ pub fn repository_state_key(work_tree: &Path) -> String {
     blake3::hash(normalized.as_bytes()).to_hex()[..32].to_string()
 }
 
+#[must_use]
+pub fn same_work_tree(recorded: &Path, canonical: &Path) -> bool {
+    recorded == canonical
+        || recorded
+            .canonicalize()
+            .is_ok_and(|recorded| recorded == canonical)
+}
+
 fn validate_repository_key(repository_key: &str) -> Result<(), AppError> {
     if repository_key.len() == 32
         && repository_key
@@ -485,6 +493,18 @@ mod tests {
                 "{phase:?} is retained review state"
             );
         }
+    }
+
+    #[test]
+    fn equivalent_existing_worktree_paths_match_after_canonicalization() {
+        let temporary = tempdir().expect("temporary directory");
+        let canonical = temporary.path().canonicalize().expect("canonical path");
+
+        assert!(same_work_tree(temporary.path(), &canonical));
+        assert!(!same_work_tree(
+            &temporary.path().join("missing"),
+            &canonical
+        ));
     }
 
     #[test]
