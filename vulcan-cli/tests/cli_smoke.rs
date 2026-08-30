@@ -13237,6 +13237,15 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync conflicts <id>"));
     assert!(git_skill.contains("stable `classification`"));
     assert!(git_skill.contains("`provenance_revision`"));
+    let sync_skill = fs::read_to_string(vault_root.join(".agents/skills/sync-workflow/SKILL.md"))
+        .expect("sync workflow skill should be readable");
+    assert!(sync_skill.contains("name: sync-workflow"));
+    assert!(sync_skill.contains("managed: true"));
+    assert!(sync_skill.contains("Direct commands never start a daemon implicitly"));
+    assert!(sync_skill.contains("vulcan sync conflicts <conflict-id>"));
+    assert!(sync_skill.contains("--platform android-shared"));
+    assert!(sync_skill.contains("`file`, `change`, `hunk`, and"));
+    assert!(sync_skill.contains("never replace a rejected push with unconditional force"));
     let diagnostics_skill =
         fs::read_to_string(vault_root.join(".agents/skills/diagnostics-and-repair/SKILL.md"))
             .expect("diagnostics skill should be readable");
@@ -13492,6 +13501,7 @@ fn skill_list_and_get_surface_bundled_skills() {
         "conversation-export",
         "artifact-import",
         "portable-exchange",
+        "sync-workflow",
     ] {
         assert!(
             list_json["skills"]
@@ -15016,12 +15026,18 @@ fn agent_install_refreshes_managed_skills_and_preserves_unmanaged_scaffolds() {
             && item["status"] == "created")));
     assert!(initial_json["support_files"]
         .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["path"]
+            == ".agents/skills/sync-workflow/SKILL.md"
+            && item["status"] == "created")));
+    assert!(initial_json["support_files"]
+        .as_array()
         .is_some_and(|items| items
             .iter()
             .any(|item| item["path"] == "AI/Prompts/summarize-note.md"
                 && item["status"] == "created")));
 
     let skill_path = vault_root.join(".agents/skills/note-operations/SKILL.md");
+    let sync_skill_path = vault_root.join(".agents/skills/sync-workflow/SKILL.md");
     let bundled_script_path =
         vault_root.join(".agents/skills/conversation-export/scripts/export-conversation.js");
     let installed_skill = fs::read_to_string(&skill_path).expect("skill should be readable");
@@ -15031,6 +15047,13 @@ fn agent_install_refreshes_managed_skills_and_preserves_unmanaged_scaffolds() {
         installed_skill.replace("# Note Operations", "# Stale Note Operations"),
     )
     .expect("managed skill should be editable");
+    let installed_sync_skill =
+        fs::read_to_string(&sync_skill_path).expect("sync skill should be readable");
+    fs::write(
+        &sync_skill_path,
+        installed_sync_skill.replace("# Sync Workflow", "# Stale Sync Workflow"),
+    )
+    .expect("managed sync skill should be editable");
     fs::write(&bundled_script_path, "stale script\n")
         .expect("managed package script should be editable");
 
@@ -15052,6 +15075,9 @@ fn agent_install_refreshes_managed_skills_and_preserves_unmanaged_scaffolds() {
     assert!(fs::read_to_string(&skill_path)
         .expect("refreshed skill should be readable")
         .contains("# Note Operations"));
+    assert!(fs::read_to_string(&sync_skill_path)
+        .expect("refreshed sync skill should be readable")
+        .contains("# Sync Workflow"));
     assert!(refresh_json["support_files"]
         .as_array()
         .is_some_and(|items| items.iter().any(|item| item["path"]
@@ -15140,12 +15166,19 @@ fn agent_install_preserves_an_entire_unmanaged_same_name_skill_package() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
     let custom_root = vault_root.join(".agents/skills/conversation-export");
+    let custom_sync_root = vault_root.join(".agents/skills/sync-workflow");
     fs::create_dir_all(&custom_root).expect("custom skill directory should be created");
+    fs::create_dir_all(&custom_sync_root).expect("custom sync skill directory should be created");
     fs::write(
         custom_root.join("SKILL.md"),
         "---\nname: conversation-export\ndescription: Custom exporter\n---\nCustom\n",
     )
     .expect("custom skill should be written");
+    fs::write(
+        custom_sync_root.join("SKILL.md"),
+        "---\nname: sync-workflow\ndescription: Custom sync\n---\nCustom sync\n",
+    )
+    .expect("custom sync skill should be written");
 
     let assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
@@ -15167,12 +15200,20 @@ fn agent_install_preserves_an_entire_unmanaged_same_name_skill_package() {
     assert!(fs::read_to_string(custom_root.join("SKILL.md"))
         .expect("custom skill should remain readable")
         .contains("Custom exporter"));
+    assert!(fs::read_to_string(custom_sync_root.join("SKILL.md"))
+        .expect("custom sync skill should remain readable")
+        .contains("Custom sync"));
     assert!(json["support_files"].as_array().is_some_and(|items| items
         .iter()
         .filter(|item| item["path"]
             .as_str()
             .is_some_and(|path| path.starts_with(".agents/skills/conversation-export/")))
         .all(|item| item["status"] == "preserved")));
+    assert!(json["support_files"]
+        .as_array()
+        .is_some_and(|items| items.iter().any(|item| item["path"]
+            == ".agents/skills/sync-workflow/SKILL.md"
+            && item["status"] == "preserved")));
 }
 
 #[test]

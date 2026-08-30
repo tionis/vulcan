@@ -465,10 +465,26 @@ mod tests {
 
     #[test]
     fn journal_phases_identify_interruption_sensitive_states() {
-        assert!(SyncJournalPhase::Applying.requires_recovery());
-        assert!(SyncJournalPhase::Error.requires_recovery());
-        assert!(!SyncJournalPhase::Paused.requires_recovery());
-        assert!(!SyncJournalPhase::Conflicted.requires_recovery());
+        for phase in [
+            SyncJournalPhase::Preparing,
+            SyncJournalPhase::Capturing,
+            SyncJournalPhase::Captured,
+            SyncJournalPhase::Fetching,
+            SyncJournalPhase::Fetched,
+            SyncJournalPhase::Merging,
+            SyncJournalPhase::Pushing,
+            SyncJournalPhase::Applying,
+            SyncJournalPhase::Verifying,
+            SyncJournalPhase::Error,
+        ] {
+            assert!(phase.requires_recovery(), "{phase:?} must recover");
+        }
+        for phase in [SyncJournalPhase::Paused, SyncJournalPhase::Conflicted] {
+            assert!(
+                !phase.requires_recovery(),
+                "{phase:?} is retained review state"
+            );
+        }
     }
 
     #[test]

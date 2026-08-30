@@ -1395,6 +1395,19 @@ mod tests {
         store: SyncStateStore,
     }
 
+    const RECOVERABLE_JOURNAL_PHASES: [SyncJournalPhase; 10] = [
+        SyncJournalPhase::Preparing,
+        SyncJournalPhase::Capturing,
+        SyncJournalPhase::Captured,
+        SyncJournalPhase::Fetching,
+        SyncJournalPhase::Fetched,
+        SyncJournalPhase::Merging,
+        SyncJournalPhase::Pushing,
+        SyncJournalPhase::Applying,
+        SyncJournalPhase::Verifying,
+        SyncJournalPhase::Error,
+    ];
+
     fn git(path: &Path, arguments: &[&str]) {
         let status = Command::new("git")
             .current_dir(path)
@@ -1415,6 +1428,43 @@ mod tests {
             .expect("Git output should be UTF-8")
             .trim()
             .to_string()
+    }
+
+    fn assert_dry_run_recovers_journal_phase(
+        paths: &VaultPaths,
+        store: &SyncStateStore,
+        writer: &Path,
+        phase: SyncJournalPhase,
+    ) {
+        let mut interrupted =
+            SyncJournal::preparing(writer, "origin", "refs/heads/__vulcan-sync/live")
+                .expect("journal");
+        interrupted.phase = phase;
+        store.save(&interrupted).expect("interrupted journal");
+
+        let planned = sync_git_vault_with_state_store(
+            paths,
+            &GitSyncOptions {
+                dry_run: true,
+                ..GitSyncOptions::default()
+            },
+            store,
+        )
+        .expect("recovery plan");
+        assert_eq!(
+            planned
+                .state
+                .recovered_from
+                .as_ref()
+                .map(|journal| (journal.transaction_id, journal.phase)),
+            Some((interrupted.transaction_id, phase))
+        );
+        assert_eq!(
+            store
+                .load(&interrupted.repository_key)
+                .expect("load unchanged journal"),
+            Some(interrupted)
+        );
     }
 
     fn structured_sync_fixture(files: &[(&str, &str)]) -> StructuredSyncFixture {
@@ -1946,6 +1996,11 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         };
         let paths = VaultPaths::new(&writer);
         let store = SyncStateStore::at(temporary.path().join("state"));
+        for phase in RECOVERABLE_JOURNAL_PHASES {
+            assert_dry_run_recovers_journal_phase(&paths, &store, &writer, phase);
+        }
+        assert!(!store.root().join("_device.json").exists());
+
         let mut interrupted =
             SyncJournal::preparing(&writer, "origin", "refs/heads/__vulcan-sync/live")
                 .expect("journal");
@@ -2339,6 +2394,53 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         }));
         assert!(report.checks.iter().any(|check| {
             check.code == "state.apply-marker" && check.severity == SyncDoctorSeverity::Error
+        }));
+    }
+
+    #[test]
+    fn sync_doctor_reports_missing_objects_behind_sync_refs() {
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        git(
+            &vault,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&vault, &["config", "user.name", "Vulcan Test"]);
+        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        fs::write(vault.join(".gitignore"), ".vulcan/cache.db*\n").expect("ignore file");
+        fs::write(vault.join("Home.md"), "home\n").expect("home note");
+        git(&vault, &["add", ".gitignore", "Home.md"]);
+        git(&vault, &["commit", "--quiet", "-m", "initial"]);
+
+        let options = GitSyncOptions::default();
+        let refs = GitSyncRefs::for_options(&options).expect("sync refs");
+        let local_ref = refs
+            .local
+            .as_str()
+            .strip_prefix("refs/")
+            .expect("local ref path");
+        let local_ref_path = vault.join(".git").join("refs").join(local_ref);
+        fs::create_dir_all(local_ref_path.parent().expect("ref parent")).expect("ref parent");
+        fs::write(
+            &local_ref_path,
+            "1111111111111111111111111111111111111111\n",
+        )
+        .expect("dangling sync ref");
+
+        let report = doctor_git_vault_with_state_store(
+            &VaultPaths::new(&vault),
+            &options,
+            &SyncStateStore::at(temporary.path().join("state")),
+        );
+
+        assert!(!report.healthy);
+        assert!(report.checks.iter().any(|check| {
+            check.code == "git.refs"
+                && check.severity == SyncDoctorSeverity::Error
+                && check
+                    .message
+                    .contains("does not resolve to a readable commit object")
         }));
     }
 

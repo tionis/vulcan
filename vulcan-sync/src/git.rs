@@ -1699,7 +1699,29 @@ impl GitEngine for GitCliEngine {
             return GitOid::parse(decode_stdout("read a Git ref", output.stdout)?.trim()).map(Some);
         }
         if output.status.code() == Some(1) && output.stdout.is_empty() && output.stderr.is_empty() {
-            return Ok(None);
+            let mut raw_command = self.repository_command(repository);
+            raw_command
+                .args(["rev-parse", "--verify", "--quiet"])
+                .arg(reference.as_str());
+            let raw_output = self.execute(raw_command)?;
+            if raw_output.status.success() {
+                let target = decode_stdout("inspect an unreadable Git ref", raw_output.stdout)?;
+                return Err(GitEngineError::InvalidOutput {
+                    operation: "read a Git ref",
+                    detail: format!(
+                        "{} exists at {} but does not resolve to a readable commit object",
+                        reference.as_str(),
+                        target.trim()
+                    ),
+                });
+            }
+            if raw_output.status.code() == Some(1)
+                && raw_output.stdout.is_empty()
+                && raw_output.stderr.is_empty()
+            {
+                return Ok(None);
+            }
+            return Err(command_failed("inspect an unreadable Git ref", &raw_output));
         }
         Err(command_failed("read a Git ref", &output))
     }
@@ -4993,6 +5015,48 @@ mod tests {
                 .expect("state")
                 .staged_changes
         );
+    }
+
+    #[test]
+    fn safety_state_detects_every_guarded_git_operation_marker() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Home.md"), "initial\n").expect("initial note");
+        commit_all(temporary.path(), "initial");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+
+        for (marker, expected) in [
+            ("MERGE_HEAD", "merge"),
+            ("CHERRY_PICK_HEAD", "cherry-pick"),
+            ("REVERT_HEAD", "revert"),
+            ("BISECT_LOG", "bisect"),
+            ("rebase-merge", "rebase"),
+            ("rebase-apply", "rebase"),
+        ] {
+            let path = repository.git_dir.join(marker);
+            if marker.starts_with("rebase-") {
+                fs::create_dir(&path).expect("operation directory");
+            } else {
+                fs::write(&path, "fixture\n").expect("operation marker");
+            }
+            assert_eq!(
+                engine
+                    .safety_state(&repository)
+                    .expect("operation safety state")
+                    .operation
+                    .as_deref(),
+                Some(expected),
+                "operation marker {marker}"
+            );
+            if path.is_dir() {
+                fs::remove_dir(&path).expect("remove operation directory");
+            } else {
+                fs::remove_file(&path).expect("remove operation marker");
+            }
+        }
     }
 
     #[test]

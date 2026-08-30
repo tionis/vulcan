@@ -122,6 +122,12 @@ const BUNDLED_SKILL_FILES: &[BundledTextFile] = &[
     },
     BundledTextFile {
         kind: "skill",
+        relative_path: "sync-workflow/SKILL.md",
+        contents: include_str!("../../../docs/assistant/skills/sync-workflow.md"),
+        target: BundledFileTarget::SkillsFolder,
+    },
+    BundledTextFile {
+        kind: "skill",
         relative_path: "task-management/SKILL.md",
         contents: include_str!("../../../docs/assistant/skills/task-management.md"),
         target: BundledFileTarget::SkillsFolder,

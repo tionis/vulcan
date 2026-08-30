@@ -2741,6 +2741,50 @@ mod tests {
         (temporary, remote, writer)
     }
 
+    #[test]
+    fn repository_lock_contention_fails_before_sync_mutation() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let lock_path = repository.git_dir.join("vulcan-sync/sync.lock");
+        fs::create_dir_all(lock_path.parent().expect("lock parent")).expect("lock parent");
+        let lock = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(&lock_path)
+            .expect("lock file");
+        lock.try_lock_exclusive().expect("fixture lock");
+        let refs_before = engine
+            .list_refs(
+                &repository,
+                &GitRefName::parse("refs/vulcan").expect("Vulcan ref prefix"),
+            )
+            .expect("refs before contention");
+
+        let error = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect_err("contended repository must fail");
+
+        assert!(matches!(error, GitSyncError::Locked));
+        assert_eq!(
+            engine
+                .list_refs(
+                    &repository,
+                    &GitRefName::parse("refs/vulcan").expect("Vulcan ref prefix"),
+                )
+                .expect("refs after contention"),
+            refs_before
+        );
+        FileExt::unlock(&lock).expect("release fixture lock");
+        drop(lock);
+        assert!(lock_path.exists(), "the advisory lock file remains on disk");
+
+        let recovered = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("an unlocked stale lock file must not block synchronization");
+        assert_eq!(recovered.outcome, GitSyncOutcome::Bootstrapped);
+    }
+
     fn clone_reader(temporary: &TempDir, remote: &Path, writer: &Path) -> PathBuf {
         let reader = temporary.path().join("reader");
         run_git(
