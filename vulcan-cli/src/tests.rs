@@ -7,7 +7,8 @@ use crate::commands::docs::{describe_cli, CliArgDescribe, CliCommandDescribe};
 use clap::Parser;
 use serde_yaml::Value as YamlValue;
 use std::fs;
-use std::process::Command as ProcessCommand;
+use std::io::Write;
+use std::process::{Command as ProcessCommand, Output as ProcessOutput, Stdio};
 use tempfile::TempDir;
 use vulcan_core::expression::functions::parse_date_like_string;
 
@@ -6224,6 +6225,25 @@ fn completion_test_bash_path() -> PathBuf {
     PathBuf::from("bash")
 }
 
+fn run_completion_bash_script(bash_path: &Path, script: &str) -> ProcessOutput {
+    let mut child = ProcessCommand::new(bash_path)
+        .arg("-s")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("bash should start for generated completion helper");
+    child
+        .stdin
+        .take()
+        .expect("bash stdin should be piped")
+        .write_all(script.replace("\r\n", "\n").as_bytes())
+        .expect("completion helper should be written to bash stdin");
+    child
+        .wait_with_output()
+        .expect("bash should run generated completion helper")
+}
+
 #[test]
 fn bash_dynamic_completions_forward_global_vault_flag() {
     #[cfg(windows)]
@@ -6267,11 +6287,7 @@ done < "$record_path"
 "#
     );
 
-    let output = ProcessCommand::new(&bash_path)
-        .arg("-lc")
-        .arg(script.replace("\r\n", "\n"))
-        .output()
-        .expect("bash should run generated completion helper");
+    let output = run_completion_bash_script(&bash_path, &script);
     assert!(
         output.status.success(),
         "bash helper should succeed (shell: {:?}, status: {:?})\nstdout:\n{}\nstderr:\n{}",
@@ -6361,11 +6377,7 @@ done
 "#
     );
 
-    let output = ProcessCommand::new(&bash_path)
-        .arg("-lc")
-        .arg(script.replace("\r\n", "\n"))
-        .output()
-        .expect("bash should run generated completion helper");
+    let output = run_completion_bash_script(&bash_path, &script);
     assert!(
         output.status.success(),
         "bash helper should succeed (shell: {:?}, status: {:?})\nstdout:\n{}\nstderr:\n{}",
@@ -6422,11 +6434,7 @@ done
 "#
     );
 
-    let output = ProcessCommand::new(&bash_path)
-        .arg("-lc")
-        .arg(script.replace("\r\n", "\n"))
-        .output()
-        .expect("bash should run generated completion helper");
+    let output = run_completion_bash_script(&bash_path, &script);
     assert!(
         output.status.success(),
         "bash helper should succeed (shell: {:?}, status: {:?})\nstdout:\n{}\nstderr:\n{}",
