@@ -5599,7 +5599,7 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
 
     let plan =
         parse_stdout_json(&sync(&["semantic-plan", "--from", &source, "--to", &target]).success());
-    assert_eq!(plan["version"], 3);
+    assert_eq!(plan["version"], 4);
     assert_eq!(plan["grouping"], "top_level");
     assert_eq!(plan["status"], "ready");
     assert_eq!(plan["validation"]["final_tree_matches_target"], true);

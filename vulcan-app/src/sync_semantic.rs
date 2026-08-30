@@ -1,10 +1,11 @@
 //! Reviewable semantic histories derived from immutable accepted sync snapshots.
 
+use crate::sync::SyncCancellationToken;
 use crate::sync_state::{repository_state_key, SyncStateStore};
 use crate::AppError;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -17,8 +18,11 @@ use vulcan_sync::{
     GitSyncRefs,
 };
 
-pub const SEMANTIC_PLAN_VERSION: u32 = 3;
+pub const SEMANTIC_PLAN_VERSION: u32 = 4;
 const MAX_SEMANTIC_PLAN_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_SEMANTIC_AGENT_PATCH_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SEMANTIC_AGENT_MESSAGE_BYTES: usize = 16 * 1024;
+const MAX_SEMANTIC_AGENT_LABEL_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -54,6 +58,52 @@ pub struct SemanticPlanOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticAgentIdentity {
+    pub provider: String,
+    pub model: String,
+    pub prompt_contract_version: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticAgentChange {
+    pub path: String,
+    pub patch: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticAgentRequest {
+    pub source_revision: String,
+    pub target_revision: String,
+    pub changes: Vec<SemanticAgentChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticAgentCommit {
+    pub group: String,
+    pub message: String,
+    pub paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticAgentOutput {
+    pub commits: Vec<SemanticAgentCommit>,
+}
+
+pub trait SemanticAgentProvider: Send + Sync {
+    fn identity(&self) -> SemanticAgentIdentity;
+
+    fn network_endpoint(&self) -> Option<&str> {
+        None
+    }
+
+    fn propose(
+        &self,
+        request: &SemanticAgentRequest,
+        cancellation: &SyncCancellationToken,
+    ) -> Result<SemanticAgentOutput, AppError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemanticCommitProposal {
     pub position: usize,
     pub group: String,
@@ -83,6 +133,8 @@ pub struct SemanticPlanReport {
     pub status: SemanticPlanStatus,
     pub dry_run: bool,
     pub agent: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_identity: Option<SemanticAgentIdentity>,
     #[serde(default)]
     pub grouping: SemanticGrouping,
     pub vault: PathBuf,
@@ -97,6 +149,13 @@ pub struct SemanticPlanReport {
     pub proposal_tip: Option<String>,
     pub commits: Vec<SemanticCommitProposal>,
     pub validation: SemanticPlanValidation,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PlannedSemanticGroup {
+    group: String,
+    message: String,
+    paths: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -134,11 +193,6 @@ pub fn create_semantic_plan(
     paths: &VaultPaths,
     options: &SemanticPlanOptions,
 ) -> Result<SemanticPlanReport, AppError> {
-    if options.agent {
-        return Err(AppError::operation(
-            "agent-assisted semantic grouping is not available yet; omit --agent to use the deterministic grouper",
-        ));
-    }
     let store = SyncStateStore::user_default()?;
     create_semantic_plan_with_state_store(paths, options, &store)
 }
@@ -147,6 +201,58 @@ pub fn create_semantic_plan_with_state_store(
     paths: &VaultPaths,
     options: &SemanticPlanOptions,
     store: &SyncStateStore,
+) -> Result<SemanticPlanReport, AppError> {
+    if options.agent {
+        return Err(AppError::operation(
+            "agent-assisted semantic grouping requires a configured semantic planning provider",
+        ));
+    }
+    create_semantic_plan_internal(
+        paths,
+        options,
+        store,
+        None,
+        &SyncCancellationToken::default(),
+    )
+}
+
+pub fn create_semantic_plan_with_provider(
+    paths: &VaultPaths,
+    options: &SemanticPlanOptions,
+    provider: &dyn SemanticAgentProvider,
+    cancellation: &SyncCancellationToken,
+) -> Result<SemanticPlanReport, AppError> {
+    let store = SyncStateStore::user_default()?;
+    create_semantic_plan_with_provider_and_state_store(
+        paths,
+        options,
+        provider,
+        cancellation,
+        &store,
+    )
+}
+
+pub fn create_semantic_plan_with_provider_and_state_store(
+    paths: &VaultPaths,
+    options: &SemanticPlanOptions,
+    provider: &dyn SemanticAgentProvider,
+    cancellation: &SyncCancellationToken,
+    store: &SyncStateStore,
+) -> Result<SemanticPlanReport, AppError> {
+    if !options.agent {
+        return Err(AppError::operation(
+            "a semantic planning provider may only be used with agent mode enabled",
+        ));
+    }
+    create_semantic_plan_internal(paths, options, store, Some(provider), cancellation)
+}
+
+fn create_semantic_plan_internal(
+    paths: &VaultPaths,
+    options: &SemanticPlanOptions,
+    store: &SyncStateStore,
+    provider: Option<&dyn SemanticAgentProvider>,
+    cancellation: &SyncCancellationToken,
 ) -> Result<SemanticPlanReport, AppError> {
     let vault = fs::canonicalize(paths.vault_root()).map_err(AppError::operation)?;
     let engine = GitCliEngine::default();
@@ -162,14 +268,30 @@ pub fn create_semantic_plan_with_state_store(
     validate_plan_inputs(&engine, &repository, options, &source, &target)?;
     let plan_id = Ulid::new().to_string().to_ascii_lowercase();
     let proposal_ref = semantic_proposal_ref(&plan_id)?;
-    let groups = group_changed_paths(
-        engine
-            .changed_paths(&repository, &source, &target)
-            .map_err(AppError::operation)?,
-        options.grouping,
+    let changed_paths = engine
+        .changed_paths(&repository, &source, &target)
+        .map_err(AppError::operation)?;
+    let (groups, agent_identity) = match provider {
+        Some(provider) => plan_agent_groups(
+            &engine,
+            &repository,
+            &source,
+            &target,
+            changed_paths,
+            provider,
+            cancellation,
+        )?,
+        None => (deterministic_groups(changed_paths, options.grouping), None),
+    };
+    let mut report = initial_plan_report(
+        &vault,
+        options,
+        &source,
+        &target,
+        &plan_id,
+        &proposal_ref,
+        agent_identity,
     );
-    let mut report =
-        initial_plan_report(&vault, options, &source, &target, &plan_id, &proposal_ref);
     if options.dry_run {
         report.commits = preview_commits(&engine, &repository, &source, &target, groups)?;
         report.validation.final_tree_matches_target = true;
@@ -773,15 +895,20 @@ fn construct_proposal(
     source: &GitOid,
     target: &GitOid,
     plan_id: &str,
-    groups: BTreeMap<String, Vec<String>>,
+    groups: Vec<PlannedSemanticGroup>,
 ) -> Result<(Vec<SemanticCommitProposal>, GitOid), AppError> {
     let mut parent = source.clone();
     let mut commits = Vec::with_capacity(groups.len());
-    for (position, (group, paths)) in groups.into_iter().enumerate() {
+    for (position, planned) in groups.into_iter().enumerate() {
+        let PlannedSemanticGroup {
+            group,
+            message: proposed_message,
+            paths,
+        } = planned;
         let tree = engine
             .tree_with_paths(repository, &parent, target, &paths)
             .map_err(AppError::operation)?;
-        let message = semantic_message(&group, plan_id, source, target);
+        let message = semantic_message(&proposed_message, &group, plan_id, source, target);
         let commit = engine
             .create_commit(repository, &tree, std::slice::from_ref(&parent), &message)
             .map_err(AppError::operation)?;
@@ -853,18 +980,23 @@ fn preview_commits(
     repository: &GitRepository,
     source: &GitOid,
     target: &GitOid,
-    groups: BTreeMap<String, Vec<String>>,
+    groups: Vec<PlannedSemanticGroup>,
 ) -> Result<Vec<SemanticCommitProposal>, AppError> {
     groups
         .into_iter()
         .enumerate()
-        .map(|(position, (group, paths))| {
+        .map(|(position, planned)| {
+            let PlannedSemanticGroup {
+                group,
+                message: proposed_message,
+                paths,
+            } = planned;
             let patch = engine
                 .diff_patch(repository, source, target, &paths)
                 .map_err(AppError::operation)?;
             Ok(SemanticCommitProposal {
                 position: position + 1,
-                message: semantic_message(&group, "dry-run", source, target),
+                message: semantic_message(&proposed_message, &group, "dry-run", source, target),
                 group,
                 paths,
                 from_revision: source.to_string(),
@@ -876,10 +1008,190 @@ fn preview_commits(
         .collect()
 }
 
-fn group_changed_paths(
+#[allow(clippy::too_many_arguments)]
+fn plan_agent_groups(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    source: &GitOid,
+    target: &GitOid,
+    mut changed_paths: Vec<String>,
+    provider: &dyn SemanticAgentProvider,
+    cancellation: &SyncCancellationToken,
+) -> Result<(Vec<PlannedSemanticGroup>, Option<SemanticAgentIdentity>), AppError> {
+    changed_paths.sort();
+    changed_paths.dedup();
+    let identity = provider.identity();
+    validate_agent_identity(&identity)?;
+    if changed_paths.is_empty() {
+        return Ok((Vec::new(), Some(identity)));
+    }
+    semantic_cancellation_check(cancellation)?;
+    let mut total_patch_bytes = 0_usize;
+    let changes = changed_paths
+        .iter()
+        .map(|path| {
+            let patch = engine
+                .diff_patch(repository, source, target, std::slice::from_ref(path))
+                .map_err(AppError::operation)?;
+            total_patch_bytes = total_patch_bytes.saturating_add(patch.len());
+            if total_patch_bytes > MAX_SEMANTIC_AGENT_PATCH_BYTES {
+                return Err(AppError::operation(format!(
+                    "semantic agent input patches exceed the {MAX_SEMANTIC_AGENT_PATCH_BYTES} byte limit"
+                )));
+            }
+            Ok(SemanticAgentChange {
+                path: path.clone(),
+                patch,
+            })
+        })
+        .collect::<Result<Vec<_>, AppError>>()?;
+    let output = provider.propose(
+        &SemanticAgentRequest {
+            source_revision: source.to_string(),
+            target_revision: target.to_string(),
+            changes,
+        },
+        cancellation,
+    )?;
+    semantic_cancellation_check(cancellation)?;
+    let groups = validate_agent_output(&changed_paths, output)?;
+    Ok((groups, Some(identity)))
+}
+
+fn validate_agent_identity(identity: &SemanticAgentIdentity) -> Result<(), AppError> {
+    for (field, value) in [
+        ("provider", identity.provider.as_str()),
+        ("model", identity.model.as_str()),
+    ] {
+        if value.trim().is_empty()
+            || value.len() > MAX_SEMANTIC_AGENT_LABEL_BYTES
+            || value.chars().any(char::is_control)
+        {
+            return Err(AppError::operation(format!(
+                "semantic agent {field} identity is invalid"
+            )));
+        }
+    }
+    if identity.prompt_contract_version == 0 {
+        return Err(AppError::operation(
+            "semantic agent prompt contract version must be greater than zero",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_agent_output(
+    changed_paths: &[String],
+    output: SemanticAgentOutput,
+) -> Result<Vec<PlannedSemanticGroup>, AppError> {
+    if output.commits.is_empty() || output.commits.len() > changed_paths.len() {
+        return Err(AppError::operation(
+            "semantic agent must propose between one commit and the number of changed paths",
+        ));
+    }
+    let expected = changed_paths.iter().cloned().collect::<BTreeSet<_>>();
+    let mut seen_paths = BTreeSet::new();
+    let mut seen_groups = BTreeSet::new();
+    let mut groups = Vec::with_capacity(output.commits.len());
+    for commit in output.commits {
+        validate_agent_group_label(&commit.group)?;
+        if !seen_groups.insert(commit.group.clone()) {
+            return Err(AppError::operation(format!(
+                "semantic agent repeated group label `{}`",
+                commit.group
+            )));
+        }
+        validate_agent_message(&commit.message)?;
+        if commit.paths.is_empty() {
+            return Err(AppError::operation(format!(
+                "semantic agent group `{}` has no paths",
+                commit.group
+            )));
+        }
+        let mut paths = commit.paths;
+        let original_path_count = paths.len();
+        paths.sort();
+        paths.dedup();
+        if paths.len() != original_path_count {
+            return Err(AppError::operation(format!(
+                "semantic agent group `{}` repeats a path",
+                commit.group
+            )));
+        }
+        for path in &paths {
+            if !expected.contains(path) {
+                return Err(AppError::operation(format!(
+                    "semantic agent proposed unchanged or unknown path `{path}`"
+                )));
+            }
+            if !seen_paths.insert(path.clone()) {
+                return Err(AppError::operation(format!(
+                    "semantic agent proposed path `{path}` more than once"
+                )));
+            }
+        }
+        groups.push(PlannedSemanticGroup {
+            group: commit.group,
+            message: commit.message.trim().to_string(),
+            paths,
+        });
+    }
+    if seen_paths != expected {
+        let missing = expected
+            .difference(&seen_paths)
+            .cloned()
+            .collect::<Vec<_>>();
+        return Err(AppError::operation(format!(
+            "semantic agent omitted changed paths: {}",
+            missing.join(", ")
+        )));
+    }
+    Ok(groups)
+}
+
+fn validate_agent_group_label(group: &str) -> Result<(), AppError> {
+    if group.trim().is_empty()
+        || group.len() > MAX_SEMANTIC_AGENT_LABEL_BYTES
+        || group.chars().any(char::is_control)
+    {
+        return Err(AppError::operation(
+            "semantic agent group labels must be non-empty bounded single-line text",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_agent_message(message: &str) -> Result<(), AppError> {
+    if message.trim().is_empty()
+        || message.len() > MAX_SEMANTIC_AGENT_MESSAGE_BYTES
+        || message
+            .chars()
+            .any(|character| character.is_control() && !matches!(character, '\n' | '\t'))
+        || message.lines().any(|line| {
+            line.trim_start()
+                .to_ascii_lowercase()
+                .starts_with("vulcan-semantic-")
+        })
+    {
+        return Err(AppError::operation(
+            "semantic agent commit messages must be bounded text without reserved Vulcan trailers",
+        ));
+    }
+    Ok(())
+}
+
+fn semantic_cancellation_check(cancellation: &SyncCancellationToken) -> Result<(), AppError> {
+    if cancellation.is_cancelled() {
+        Err(AppError::operation("semantic agent planning was cancelled"))
+    } else {
+        Ok(())
+    }
+}
+
+fn deterministic_groups(
     mut paths: Vec<String>,
     grouping: SemanticGrouping,
-) -> BTreeMap<String, Vec<String>> {
+) -> Vec<PlannedSemanticGroup> {
     paths.sort();
     paths.dedup();
     let mut groups = BTreeMap::<String, Vec<String>>::new();
@@ -894,11 +1206,25 @@ fn group_changed_paths(
         groups.entry(group).or_default().push(path);
     }
     groups
+        .into_iter()
+        .map(|(group, paths)| PlannedSemanticGroup {
+            message: format!("Update {group}"),
+            group,
+            paths,
+        })
+        .collect()
 }
 
-fn semantic_message(group: &str, plan_id: &str, source: &GitOid, target: &GitOid) -> String {
+fn semantic_message(
+    proposed: &str,
+    group: &str,
+    plan_id: &str,
+    source: &GitOid,
+    target: &GitOid,
+) -> String {
     format!(
-        "Update {group}\n\nVulcan-Semantic-Version: 1\nVulcan-Semantic-Plan: {plan_id}\nVulcan-Semantic-Source: {source}\nVulcan-Semantic-Target: {target}\nVulcan-Semantic-Group: {group}\n"
+        "{}\n\nVulcan-Semantic-Version: 1\nVulcan-Semantic-Plan: {plan_id}\nVulcan-Semantic-Source: {source}\nVulcan-Semantic-Target: {target}\nVulcan-Semantic-Group: {group}\n",
+        proposed.trim()
     )
 }
 
@@ -909,6 +1235,7 @@ fn initial_plan_report(
     target: &GitOid,
     plan_id: &str,
     proposal_ref: &GitRefName,
+    agent_identity: Option<SemanticAgentIdentity>,
 ) -> SemanticPlanReport {
     SemanticPlanReport {
         version: SEMANTIC_PLAN_VERSION,
@@ -916,6 +1243,7 @@ fn initial_plan_report(
         status: SemanticPlanStatus::Preview,
         dry_run: options.dry_run,
         agent: options.agent,
+        agent_identity,
         grouping: options.grouping,
         vault: vault.to_path_buf(),
         repository_key: repository_state_key(vault),
@@ -1054,9 +1382,10 @@ impl SemanticLock {
 #[cfg(test)]
 mod tests {
     use super::{
-        group_changed_paths, load_semantic_plan_with_state_store, semantic_plan_path,
-        semantic_proposal_ref, validate_loaded_plan, validate_plan_id, SemanticGrouping,
-        SemanticPlanReport, SemanticPlanStatus, SemanticPlanValidation,
+        deterministic_groups, load_semantic_plan_with_state_store, semantic_plan_path,
+        semantic_proposal_ref, validate_agent_output, validate_loaded_plan, validate_plan_id,
+        SemanticAgentCommit, SemanticAgentOutput, SemanticGrouping, SemanticPlanReport,
+        SemanticPlanStatus, SemanticPlanValidation,
     };
     use crate::sync_state::SyncStateStore;
     use std::fs;
@@ -1065,7 +1394,7 @@ mod tests {
 
     #[test]
     fn deterministic_groups_are_top_level_and_sorted() {
-        let groups = group_changed_paths(
+        let groups = deterministic_groups(
             vec![
                 "Z.md".to_string(),
                 "Area/Two.md".to_string(),
@@ -1075,23 +1404,85 @@ mod tests {
             SemanticGrouping::TopLevel,
         );
         assert_eq!(
-            groups.keys().cloned().collect::<Vec<_>>(),
+            groups
+                .iter()
+                .map(|group| group.group.as_str())
+                .collect::<Vec<_>>(),
             ["A.md", "Area", "Z.md"]
         );
-        assert_eq!(groups["Area"], ["Area/One.md", "Area/Two.md"]);
+        assert_eq!(groups[1].paths, ["Area/One.md", "Area/Two.md"]);
     }
 
     #[test]
     fn deterministic_grouping_supports_file_and_all_strategies() {
         let paths = vec!["Area/Two.md".to_string(), "Area/One.md".to_string()];
-        let by_file = group_changed_paths(paths.clone(), SemanticGrouping::File);
+        let by_file = deterministic_groups(paths.clone(), SemanticGrouping::File);
         assert_eq!(
-            by_file.keys().cloned().collect::<Vec<_>>(),
+            by_file
+                .iter()
+                .map(|group| group.group.as_str())
+                .collect::<Vec<_>>(),
             ["Area/One.md", "Area/Two.md"]
         );
-        let all = group_changed_paths(paths, SemanticGrouping::All);
-        assert_eq!(all.keys().cloned().collect::<Vec<_>>(), ["all changes"]);
-        assert_eq!(all["all changes"], ["Area/One.md", "Area/Two.md"]);
+        let all = deterministic_groups(paths, SemanticGrouping::All);
+        assert_eq!(all[0].group, "all changes");
+        assert_eq!(all[0].paths, ["Area/One.md", "Area/Two.md"]);
+    }
+
+    #[test]
+    fn semantic_agent_output_requires_exact_once_only_path_coverage() {
+        let changed = vec!["A.md".to_string(), "B.md".to_string()];
+        let valid = validate_agent_output(
+            &changed,
+            SemanticAgentOutput {
+                commits: vec![
+                    SemanticAgentCommit {
+                        group: "foundation".to_string(),
+                        message: "Add the foundation".to_string(),
+                        paths: vec!["B.md".to_string()],
+                    },
+                    SemanticAgentCommit {
+                        group: "entrypoint".to_string(),
+                        message: "Connect the entrypoint".to_string(),
+                        paths: vec!["A.md".to_string()],
+                    },
+                ],
+            },
+        )
+        .expect("valid agent grouping");
+        assert_eq!(valid[0].group, "foundation");
+        assert_eq!(valid[1].group, "entrypoint");
+
+        for output in [
+            SemanticAgentOutput {
+                commits: vec![SemanticAgentCommit {
+                    group: "partial".to_string(),
+                    message: "Only one path".to_string(),
+                    paths: vec!["A.md".to_string()],
+                }],
+            },
+            SemanticAgentOutput {
+                commits: vec![SemanticAgentCommit {
+                    group: "unknown".to_string(),
+                    message: "Invent a path".to_string(),
+                    paths: vec!["A.md".to_string(), "C.md".to_string()],
+                }],
+            },
+        ] {
+            assert!(validate_agent_output(&changed, output).is_err());
+        }
+    }
+
+    #[test]
+    fn semantic_agent_messages_cannot_spoof_provenance_trailers() {
+        let output = SemanticAgentOutput {
+            commits: vec![SemanticAgentCommit {
+                group: "notes".to_string(),
+                message: "Update notes\n\nVulcan-Semantic-Target: forged".to_string(),
+                paths: vec!["A.md".to_string()],
+            }],
+        };
+        assert!(validate_agent_output(&["A.md".to_string()], output).is_err());
     }
 
     #[test]
@@ -1115,6 +1506,7 @@ mod tests {
             status: SemanticPlanStatus::Ready,
             dry_run: false,
             agent: false,
+            agent_identity: None,
             grouping: SemanticGrouping::TopLevel,
             vault: "/tmp/vault".into(),
             repository_key: "repository".to_string(),
