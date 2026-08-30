@@ -1,5 +1,5 @@
 use crate::{scan_vault, ScanError, ScanMode, ScanSummary, VaultPaths};
-use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config, Event, EventKind, PollWatcher, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::error::Error;
@@ -98,18 +98,70 @@ where
     E: Display,
 {
     let (sender, receiver) = mpsc::channel::<notify::Result<Event>>();
-    let watcher: RecommendedWatcher = notify::recommended_watcher(move |event| {
+    let watcher: Result<RecommendedWatcher, _> = notify::recommended_watcher(move |event| {
         let _ = sender.send(event);
-    })?;
-    watch_vault_until_with_watcher(paths, *options, should_stop, on_report, watcher, &receiver)
+    });
+    if let Ok(mut watcher) = watcher {
+        if watcher
+            .watch(paths.vault_root(), RecursiveMode::Recursive)
+            .is_ok()
+        {
+            return watch_vault_until_with_registered_watcher(
+                paths,
+                *options,
+                should_stop,
+                on_report,
+                watcher,
+                &receiver,
+            );
+        }
+    }
+
+    watch_vault_until_polling(paths, *options, should_stop, on_report)
 }
 
-fn watch_vault_until_with_watcher<F, S, E, W>(
+fn watch_vault_until_polling<F, S, E>(
+    paths: &VaultPaths,
+    options: WatchOptions,
+    should_stop: S,
+    on_report: F,
+) -> Result<(), WatchError>
+where
+    F: FnMut(WatchReport) -> Result<(), E>,
+    S: Fn() -> bool,
+    E: Display,
+{
+    let (sender, receiver) = mpsc::channel::<notify::Result<Event>>();
+    let poll_interval = Duration::from_millis(options.debounce_ms.max(50));
+    let mut watcher = PollWatcher::new(
+        move |event| {
+            let _ = sender.send(event);
+        },
+        Config::default()
+            .with_poll_interval(poll_interval)
+            .with_compare_contents(true),
+    )?;
+    watcher.watch(paths.vault_root(), RecursiveMode::Recursive)?;
+    // PollWatcher establishes its initial comparison snapshot asynchronously.
+    // Let one poll complete before the startup report makes the watcher visible
+    // as ready; the startup scan below still observes writes from this interval.
+    std::thread::sleep(poll_interval.max(Duration::from_millis(250)));
+    watch_vault_until_with_registered_watcher(
+        paths,
+        options,
+        should_stop,
+        on_report,
+        watcher,
+        &receiver,
+    )
+}
+
+fn watch_vault_until_with_registered_watcher<F, S, E, W>(
     paths: &VaultPaths,
     options: WatchOptions,
     should_stop: S,
     mut on_report: F,
-    mut watcher: W,
+    _watcher: W,
     receiver: &mpsc::Receiver<notify::Result<Event>>,
 ) -> Result<(), WatchError>
 where
@@ -118,8 +170,6 @@ where
     E: Display,
     W: Watcher,
 {
-    watcher.watch(paths.vault_root(), RecursiveMode::Recursive)?;
-
     let startup_summary = scan_vault(paths, ScanMode::Incremental)?;
     on_report(WatchReport {
         startup: true,
@@ -258,7 +308,6 @@ fn strip_windows_verbatim_prefix(path: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use notify::event::{AccessKind, CreateKind, ModifyKind};
-    use notify::{Config, PollWatcher};
     use tempfile::TempDir;
 
     #[test]
@@ -353,16 +402,7 @@ mod tests {
         let paths = VaultPaths::new(temp_dir.path());
         let mut startup_reports = 0_usize;
 
-        let (sender, receiver) = mpsc::channel::<notify::Result<Event>>();
-        let watcher = PollWatcher::new(
-            move |event| {
-                let _ = sender.send(event);
-            },
-            Config::default().with_poll_interval(Duration::from_millis(10)),
-        )
-        .expect("polling watcher should initialize");
-
-        watch_vault_until_with_watcher(
+        watch_vault_until_polling(
             &paths,
             WatchOptions { debounce_ms: 10 },
             || true,
@@ -370,11 +410,48 @@ mod tests {
                 startup_reports += 1;
                 Ok::<_, std::convert::Infallible>(())
             },
-            watcher,
-            &receiver,
         )
         .expect("watch should stop cleanly");
 
         assert_eq!(startup_reports, 1);
+    }
+
+    #[test]
+    fn polling_fallback_detects_same_size_content_changes() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        let note = temp_dir.path().join("Home.md");
+        std::fs::write(&note, "# Alpha\n").expect("note should write");
+        std::fs::create_dir_all(temp_dir.path().join(".vulcan"))
+            .expect(".vulcan dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writer_stop = std::sync::Arc::clone(&stop);
+        let writer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(150));
+            std::fs::write(note, "# Bravo\n").expect("note should update");
+            while !writer_stop.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let should_stop = std::sync::Arc::clone(&stop);
+        let on_report_stop = std::sync::Arc::clone(&stop);
+        let mut changed_paths = Vec::new();
+
+        watch_vault_until_polling(
+            &paths,
+            WatchOptions { debounce_ms: 10 },
+            || should_stop.load(std::sync::atomic::Ordering::Acquire),
+            |report| {
+                if !report.startup {
+                    changed_paths.extend(report.paths);
+                    on_report_stop.store(true, std::sync::atomic::Ordering::Release);
+                }
+                Ok::<_, std::convert::Infallible>(())
+            },
+        )
+        .expect("polling watch should stop cleanly");
+        writer.join().expect("writer should stop");
+
+        assert_eq!(changed_paths, ["Home.md"]);
     }
 }
