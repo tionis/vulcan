@@ -2315,6 +2315,50 @@ fn parses_daemon_lifecycle_commands() {
 }
 
 #[test]
+fn parses_daemon_semantic_worker_configuration() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "daemon",
+        "config",
+        "set-semantic-worker",
+        "--wiki",
+        "personal",
+        "--wiki",
+        "work",
+        "--quiet-seconds",
+        "120",
+        "--maximum-wait-seconds",
+        "3600",
+        "--poll-seconds",
+        "15",
+        "--dry-run",
+    ])
+    .expect("semantic worker command parses");
+    let Command::Daemon { command } = cli.command else {
+        panic!("expected daemon command");
+    };
+    let DaemonCommand::Config { command } = command else {
+        panic!("expected daemon config command");
+    };
+    let DaemonConfigCommand::SetSemanticWorker {
+        wiki,
+        quiet_seconds,
+        maximum_wait_seconds,
+        poll_seconds,
+        dry_run,
+        ..
+    } = command
+    else {
+        panic!("expected semantic worker config");
+    };
+    assert_eq!(wiki, ["personal", "work"]);
+    assert_eq!(quiet_seconds, 120);
+    assert_eq!(maximum_wait_seconds, 3_600);
+    assert_eq!(poll_seconds, 15);
+    assert!(dry_run);
+}
+
+#[test]
 fn parses_sync_doctor_command() {
     let doctor =
         Cli::try_parse_from(["vulcan", "sync", "doctor", "personal", "--remote", "backup"])

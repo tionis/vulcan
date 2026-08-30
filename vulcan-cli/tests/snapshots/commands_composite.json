@@ -9718,7 +9718,7 @@
       },
       {
         "about": "Run and inspect the multi-wiki synchronization daemon",
-        "after_help": "Subcommands:\n  install      install and start the native per-user daemon service\n  uninstall    stop and remove the native per-user daemon service\n  start        run the multi-wiki sync daemon in the foreground or detach it\n  status       probe the authenticated loopback service and show runtime state\n  stop         request graceful shutdown over the authenticated loopback service\n  companion    show connection details for a local companion client\n\nNotes:\n  The daemon watches and periodically reconciles registered Git-backed wikis.\n  Direct `vulcan sync run` remains available while the daemon is stopped.\n  Runtime metadata and the companion credential stay in the device-local Vulcan state directory.\n\nExamples:\n  vulcan daemon install --dry-run\n  vulcan daemon install\n  vulcan daemon start\n  vulcan daemon start --detach\n  vulcan daemon status --output json\n  vulcan daemon companion --reveal-token --output json\n  vulcan daemon stop\n  vulcan daemon uninstall --dry-run",
+        "after_help": "Subcommands:\n  install      install and start the native per-user daemon service\n  uninstall    stop and remove the native per-user daemon service\n  start        run the multi-wiki sync daemon in the foreground or detach it\n  status       probe the authenticated loopback service and show runtime state\n  semantic-status show the latest debounced semantic-worker pass\n  stop         request graceful shutdown over the authenticated loopback service\n  companion    show connection details for a local companion client\n  config       configure bind, providers, and the semantic worker\n\nNotes:\n  The daemon watches and periodically reconciles registered Git-backed wikis.\n  Direct `vulcan sync run` remains available while the daemon is stopped.\n  Runtime metadata and the companion credential stay in the device-local Vulcan state directory.\n\nExamples:\n  vulcan daemon install --dry-run\n  vulcan daemon install\n  vulcan daemon start\n  vulcan daemon start --detach\n  vulcan daemon status --output json\n  vulcan daemon semantic-status --output json\n  vulcan daemon config set-semantic-worker --wiki personal --dry-run\n  vulcan daemon companion --reveal-token --output json\n  vulcan daemon stop\n  vulcan daemon uninstall --dry-run",
         "name": "daemon",
         "options": [],
         "subcommands": [
@@ -9802,6 +9802,12 @@
           {
             "about": "Probe the running daemon and report its state",
             "name": "status",
+            "options": [],
+            "subcommands": []
+          },
+          {
+            "about": "Show the latest daemon semantic-worker pass",
+            "name": "semantic-status",
             "options": [],
             "subcommands": []
           },
@@ -9963,6 +9969,139 @@
                   },
                   {
                     "help": "Validate and report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Configure the debounced LLM semantic-commit worker",
+                "name": "set-semantic-worker",
+                "options": [
+                  {
+                    "help": "Registered wiki ID; repeat for each wiki",
+                    "id": "wiki",
+                    "long": "wiki",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "WIKI"
+                    ]
+                  },
+                  {
+                    "help": "Semantic branch",
+                    "id": "semantic_ref",
+                    "long": "semantic-ref",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "SEMANTIC_REF"
+                    ]
+                  },
+                  {
+                    "help": "Git remote",
+                    "id": "remote",
+                    "long": "remote",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "REMOTE"
+                    ]
+                  },
+                  {
+                    "help": "Accepted live branch",
+                    "id": "live_ref",
+                    "long": "live-ref",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "LIVE_REF"
+                    ]
+                  },
+                  {
+                    "help": "Required stable-live-ref interval",
+                    "id": "quiet_seconds",
+                    "long": "quiet-seconds",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "QUIET_SECONDS"
+                    ]
+                  },
+                  {
+                    "help": "Maximum batching interval",
+                    "id": "maximum_wait_seconds",
+                    "long": "maximum-wait-seconds",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "MAXIMUM_WAIT_SECONDS"
+                    ]
+                  },
+                  {
+                    "help": "Low-frequency daemon poll interval",
+                    "id": "poll_seconds",
+                    "long": "poll-seconds",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "POLL_SECONDS"
+                    ]
+                  },
+                  {
+                    "help": "Apply locally but do not publish semantic branches",
+                    "id": "no_publish",
+                    "long": "no-publish",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "NO_PUBLISH"
+                    ]
+                  },
+                  {
+                    "help": "Validate and report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Disable the daemon semantic-commit worker",
+                "name": "clear-semantic-worker",
+                "options": [
+                  {
+                    "help": "Report without writing daemon configuration",
                     "id": "dry_run",
                     "long": "dry-run",
                     "possible_values": [

@@ -175,6 +175,10 @@ impl CompanionSemanticAgent {
         }
     }
 
+    pub(crate) fn provider(&self) -> &dyn SemanticAgentProvider {
+        self.provider.as_ref()
+    }
+
     #[cfg(feature = "web")]
     pub fn openai_compatible(
         endpoint: impl Into<String>,

@@ -13,6 +13,7 @@ pub mod http;
 pub mod process;
 pub mod registry;
 pub mod runtime;
+pub mod semantic_worker;
 pub mod service;
 pub mod status;
 pub mod supervisor;

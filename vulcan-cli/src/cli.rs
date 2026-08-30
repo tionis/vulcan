@@ -650,8 +650,10 @@ Subcommands:
   uninstall    stop and remove the native per-user daemon service
   start        run the multi-wiki sync daemon in the foreground or detach it
   status       probe the authenticated loopback service and show runtime state
+  semantic-status show the latest debounced semantic-worker pass
   stop         request graceful shutdown over the authenticated loopback service
   companion    show connection details for a local companion client
+  config       configure bind, providers, and the semantic worker
 
 Notes:
   The daemon watches and periodically reconciles registered Git-backed wikis.
@@ -664,6 +666,8 @@ Examples:
   vulcan daemon start
   vulcan daemon start --detach
   vulcan daemon status --output json
+  vulcan daemon semantic-status --output json
+  vulcan daemon config set-semantic-worker --wiki personal --dry-run
   vulcan daemon companion --reveal-token --output json
   vulcan daemon stop
   vulcan daemon uninstall --dry-run";
@@ -4365,6 +4369,8 @@ pub enum DaemonCommand {
     },
     #[command(about = "Probe the running daemon and report its state")]
     Status,
+    #[command(about = "Show the latest daemon semantic-worker pass")]
+    SemanticStatus,
     #[command(about = "Request graceful daemon shutdown")]
     Stop,
     #[command(about = "Show local companion connection details")]
@@ -4420,6 +4426,51 @@ pub enum DaemonConfigCommand {
             long,
             help = "Validate and report without writing daemon configuration"
         )]
+        dry_run: bool,
+    },
+    #[command(about = "Configure the debounced LLM semantic-commit worker")]
+    SetSemanticWorker {
+        #[arg(
+            long,
+            required = true,
+            help = "Registered wiki ID; repeat for each wiki"
+        )]
+        wiki: Vec<String>,
+        #[arg(long, default_value = "refs/heads/main", help = "Semantic branch")]
+        semantic_ref: String,
+        #[arg(long, default_value = "origin", help = "Git remote")]
+        remote: String,
+        #[arg(
+            long,
+            default_value = "refs/heads/__vulcan-sync/live",
+            help = "Accepted live branch"
+        )]
+        live_ref: String,
+        #[arg(
+            long,
+            default_value_t = 900,
+            help = "Required stable-live-ref interval"
+        )]
+        quiet_seconds: u64,
+        #[arg(long, default_value_t = 21_600, help = "Maximum batching interval")]
+        maximum_wait_seconds: u64,
+        #[arg(
+            long,
+            default_value_t = 30,
+            help = "Low-frequency daemon poll interval"
+        )]
+        poll_seconds: u64,
+        #[arg(long, help = "Apply locally but do not publish semantic branches")]
+        no_publish: bool,
+        #[arg(
+            long,
+            help = "Validate and report without writing daemon configuration"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Disable the daemon semantic-commit worker")]
+    ClearSemanticWorker {
+        #[arg(long, help = "Report without writing daemon configuration")]
         dry_run: bool,
     },
 }

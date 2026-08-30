@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 use ulid::Ulid;
+use vulcan_app::sync::{GitRefName, GitRemote};
 
 const DAEMON_CONFIG_FILE: &str = "daemon.toml";
 const DEFAULT_BIND: &str = "127.0.0.1:3210";
@@ -77,6 +78,8 @@ pub struct DaemonConfig {
     pub resolution_agent: Option<DaemonAgentConfig>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub semantic_agent: Option<DaemonAgentConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_worker: Option<DaemonSemanticWorkerConfig>,
     #[serde(default, rename = "vault")]
     pub vaults: Vec<WikiRegistration>,
 }
@@ -92,6 +95,7 @@ impl Default for DaemonConfig {
             bind: default_bind(),
             resolution_agent: None,
             semantic_agent: None,
+            semantic_worker: None,
             vaults: Vec::new(),
         }
     }
@@ -103,6 +107,53 @@ pub struct DaemonAgentConfig {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_key_env: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonSemanticWorkerConfig {
+    pub wikis: Vec<WikiId>,
+    #[serde(default = "default_semantic_ref")]
+    pub semantic_ref: String,
+    #[serde(default = "default_sync_remote")]
+    pub remote: String,
+    #[serde(default = "default_sync_live_ref")]
+    pub live_ref: String,
+    #[serde(default = "default_true")]
+    pub publish: bool,
+    #[serde(default = "default_semantic_quiet_seconds")]
+    pub quiet_seconds: u64,
+    #[serde(default = "default_semantic_maximum_wait_seconds")]
+    pub maximum_wait_seconds: u64,
+    #[serde(default = "default_semantic_poll_seconds")]
+    pub poll_seconds: u64,
+}
+
+fn default_semantic_ref() -> String {
+    "refs/heads/main".to_string()
+}
+
+fn default_sync_remote() -> String {
+    "origin".to_string()
+}
+
+fn default_sync_live_ref() -> String {
+    "refs/heads/__vulcan-sync/live".to_string()
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+const fn default_semantic_quiet_seconds() -> u64 {
+    900
+}
+
+const fn default_semantic_maximum_wait_seconds() -> u64 {
+    21_600
+}
+
+const fn default_semantic_poll_seconds() -> u64 {
+    30
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -426,6 +477,25 @@ impl WikiRegistry {
         })
     }
 
+    pub fn set_semantic_worker(
+        &self,
+        worker: DaemonSemanticWorkerConfig,
+        dry_run: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            validate_semantic_worker_config(&worker)?;
+            config.semantic_worker = Some(worker);
+            Ok(config.clone())
+        })
+    }
+
+    pub fn clear_semantic_worker(&self, dry_run: bool) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            config.semantic_worker = None;
+            Ok(config.clone())
+        })
+    }
+
     fn mutate<T>(
         &self,
         dry_run: bool,
@@ -448,6 +518,45 @@ fn validate_daemon_config(config: &DaemonConfig) -> Result<(), RegistryError> {
     }
     if let Some(agent) = &config.semantic_agent {
         validate_agent_config(agent)?;
+    }
+    if let Some(worker) = &config.semantic_worker {
+        validate_semantic_worker_config(worker)?;
+    }
+    Ok(())
+}
+
+fn validate_semantic_worker_config(
+    worker: &DaemonSemanticWorkerConfig,
+) -> Result<(), RegistryError> {
+    if worker.wikis.is_empty() {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "semantic worker requires at least one explicit wiki".to_string(),
+        ));
+    }
+    let unique = worker.wikis.iter().collect::<BTreeSet<_>>();
+    if unique.len() != worker.wikis.len() {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "semantic worker wiki IDs must be unique".to_string(),
+        ));
+    }
+    GitRefName::parse(worker.semantic_ref.clone()).map_err(|error| {
+        RegistryError::InvalidDaemonSetting(format!("invalid semantic ref: {error}"))
+    })?;
+    GitRemote::parse(worker.remote.clone()).map_err(|error| {
+        RegistryError::InvalidDaemonSetting(format!("invalid semantic worker remote: {error}"))
+    })?;
+    GitRefName::parse(worker.live_ref.clone()).map_err(|error| {
+        RegistryError::InvalidDaemonSetting(format!("invalid semantic worker live ref: {error}"))
+    })?;
+    if worker.maximum_wait_seconds == 0 {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "semantic worker maximum wait must be at least one second".to_string(),
+        ));
+    }
+    if !(1..=3_600).contains(&worker.poll_seconds) {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "semantic worker poll interval must be between 1 and 3600 seconds".to_string(),
+        ));
     }
     Ok(())
 }
@@ -774,6 +883,26 @@ mod tests {
             .expect("load cleared registry")
             .semantic_agent
             .is_none());
+
+        let worker = DaemonSemanticWorkerConfig {
+            wikis: vec![WikiId::parse("personal").expect("wiki ID")],
+            semantic_ref: "refs/heads/semantic".to_string(),
+            remote: "origin".to_string(),
+            live_ref: "refs/heads/__vulcan-sync/live".to_string(),
+            publish: true,
+            quiet_seconds: 120,
+            maximum_wait_seconds: 3_600,
+            poll_seconds: 30,
+        };
+        let configured = registry
+            .set_semantic_worker(worker.clone(), false)
+            .expect("set semantic worker");
+        assert_eq!(configured.semantic_worker.as_ref(), Some(&worker));
+        assert!(registry
+            .clear_semantic_worker(false)
+            .expect("clear semantic worker")
+            .semantic_worker
+            .is_none());
     }
 
     #[test]
@@ -801,5 +930,19 @@ mod tests {
                 Err(RegistryError::InvalidDaemonSetting(_))
             ));
         }
+        let invalid_worker = DaemonSemanticWorkerConfig {
+            wikis: Vec::new(),
+            semantic_ref: "refs/heads/main".to_string(),
+            remote: "origin".to_string(),
+            live_ref: "refs/heads/__vulcan-sync/live".to_string(),
+            publish: true,
+            quiet_seconds: 900,
+            maximum_wait_seconds: 21_600,
+            poll_seconds: 30,
+        };
+        assert!(matches!(
+            registry.set_semantic_worker(invalid_worker, true),
+            Err(RegistryError::InvalidDaemonSetting(_))
+        ));
     }
 }

@@ -94,3 +94,26 @@ reproduce the exact accepted live tree. `--dry-run` neither advances the debounc
 Git objects or refs. `--no-publish` keeps a completed semantic history local. Schedule only one
 writer per semantic branch; cross-run races are still rejected by the local compare-and-swap and
 remote exact lease.
+
+To run the same workflow inside Vulcan's installed daemon, configure the provider and an explicit
+wiki allowlist, then restart the daemon (configuration is loaded at startup):
+
+```sh
+vulcan daemon config set-agent semantic \
+  --base-url <openai-compatible-url> \
+  --model <model> \
+  --api-key-env VULCAN_SEMANTIC_KEY
+vulcan daemon config set-semantic-worker \
+  --wiki personal \
+  --semantic-ref refs/heads/main \
+  --quiet-seconds 900 \
+  --maximum-wait-seconds 21600 \
+  --poll-seconds 30
+vulcan daemon semantic-status
+```
+
+The worker only visits listed wikis, skips paused wikis and wikis with queued/running file-tree
+sync jobs, applies the registration's Git and network permission profile, and records the latest
+per-wiki outcome outside the vault. Disable it with
+`vulcan daemon config clear-semantic-worker`. Provider keys remain environment-only; an installed
+Linux service can read them from `$XDG_CONFIG_HOME/vulcan/daemon.env`.

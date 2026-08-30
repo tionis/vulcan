@@ -6848,11 +6848,95 @@ fn daemon_config_cli_persists_only_non_secret_agent_settings() {
     assert!(persisted.contains("VULCAN_PLANNER_KEY"));
     assert!(!persisted.contains("secret-value"));
 
+    let worker = parse_stdout_json(
+        &daemon(&[
+            "set-semantic-worker",
+            "--wiki",
+            "personal",
+            "--semantic-ref",
+            "refs/heads/semantic",
+            "--quiet-seconds",
+            "120",
+            "--maximum-wait-seconds",
+            "3600",
+            "--poll-seconds",
+            "15",
+        ])
+        .success(),
+    );
+    assert_eq!(
+        worker["semantic_worker"]["wikis"],
+        serde_json::json!(["personal"])
+    );
+    assert_eq!(
+        worker["semantic_worker"]["semantic_ref"],
+        "refs/heads/semantic"
+    );
+    assert_eq!(worker["semantic_worker"]["publish"], true);
+    assert_eq!(worker["semantic_worker"]["poll_seconds"], 15);
+    let cleared_worker = parse_stdout_json(&daemon(&["clear-semantic-worker"]).success());
+    assert!(cleared_worker.get("semantic_worker").is_none());
+
     let cleared = parse_stdout_json(&daemon(&["clear-agent", "semantic"]).success());
     assert!(cleared.get("semantic_agent").is_none());
     daemon(&["set-bind", "0.0.0.0:3210"])
         .failure()
         .stdout(predicate::str::contains("must be loopback"));
+}
+
+#[test]
+fn daemon_semantic_worker_runs_and_exposes_latest_status() {
+    let temporary = TempDir::new().expect("temp dir");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let daemon = |arguments: &[&str]| {
+        Command::cargo_bin("vulcan")
+            .expect("binary")
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .args(["--output", "json", "daemon"])
+            .args(arguments)
+            .assert()
+    };
+    daemon(&["config", "set-bind", "127.0.0.1:0"]).success();
+    daemon(&[
+        "config",
+        "set-agent",
+        "semantic",
+        "--base-url",
+        "http://127.0.0.1:9/v1",
+        "--model",
+        "fixture-model",
+    ])
+    .success();
+    daemon(&[
+        "config",
+        "set-semantic-worker",
+        "--wiki",
+        "missing",
+        "--poll-seconds",
+        "1",
+    ])
+    .success();
+    daemon(&["start", "--detach"]).success();
+    let worker_status = state_home.join("vulcan/daemon/semantic-worker.json");
+    for _ in 0..40 {
+        if worker_status.is_file() {
+            break;
+        }
+        thread::sleep(std::time::Duration::from_millis(50));
+    }
+    assert!(
+        worker_status.is_file(),
+        "semantic worker status should appear"
+    );
+    let status = parse_stdout_json(&daemon(&["semantic-status"]).success());
+    assert_eq!(status["version"], 1);
+    assert_eq!(status["entries"][0]["wiki_id"], "missing");
+    assert!(status["entries"][0]["error"]
+        .as_str()
+        .is_some_and(|error| error.contains("no longer exists")));
+    daemon(&["stop"]).success();
 }
 
 #[test]

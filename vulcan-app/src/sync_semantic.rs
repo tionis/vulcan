@@ -337,7 +337,7 @@ struct PlannedSemanticGroup {
     patch: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemanticApplyReport {
     pub version: u32,
     pub plan_id: String,
@@ -349,7 +349,7 @@ pub struct SemanticApplyReport {
     pub proposal_ref_released: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemanticPublishReport {
     pub version: u32,
     pub plan_id: String,

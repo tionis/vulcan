@@ -9,6 +9,7 @@ use crate::registry::{RegistryError, WikiRegistrationStatus, WikiRegistry};
 use crate::runtime::{
     run_sync_trigger_runtime_until, SyncTriggerRuntimeError, SyncTriggerRuntimeOptions,
 };
+use crate::semantic_worker::spawn_semantic_worker;
 use crate::supervisor::{SupervisorError, SyncSupervisor};
 use crate::sync::execute_next_sync_job_with_state_store;
 use fs2::FileExt;
@@ -146,13 +147,27 @@ impl From<serde_json::Error> for DaemonProcessError {
 }
 
 pub fn run_daemon_foreground(context: &DaemonProcessContext) -> Result<(), DaemonProcessError> {
+    let config = context.registry.load()?;
+    let (resolution_agent, semantic_agent) = configured_agents(&config)?;
+    let agents = (resolution_agent.map(Arc::new), semantic_agent.map(Arc::new));
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()?;
-    runtime.block_on(run_daemon(context))
+    runtime.block_on(run_daemon(
+        context,
+        config,
+        (agents.0.clone(), agents.1.clone()),
+    ))
 }
 
-async fn run_daemon(context: &DaemonProcessContext) -> Result<(), DaemonProcessError> {
+async fn run_daemon(
+    context: &DaemonProcessContext,
+    config: crate::registry::DaemonConfig,
+    agents: (
+        Option<Arc<CompanionResolutionAgent>>,
+        Option<Arc<CompanionSemanticAgent>>,
+    ),
+) -> Result<(), DaemonProcessError> {
     let daemon_dir = context.state_root.join("daemon");
     fs::create_dir_all(&daemon_dir)?;
     let lock = OpenOptions::new()
@@ -169,8 +184,12 @@ async fn run_daemon(context: &DaemonProcessContext) -> Result<(), DaemonProcessE
         }
     })?;
 
-    let config = context.registry.load()?;
-    let (resolution_agent, semantic_agent) = configured_agents(&config)?;
+    let (resolution_agent, semantic_agent) = agents;
+    if config.semantic_worker.is_some() && semantic_agent.is_none() {
+        return Err(DaemonProcessError::Configuration(
+            "the semantic worker requires a configured semantic agent".to_string(),
+        ));
+    }
     let requested_bind = config.bind.parse::<SocketAddr>().map_err(|error| {
         DaemonProcessError::Configuration(format!(
             "invalid daemon bind address `{}`: {error}",
@@ -208,25 +227,21 @@ async fn run_daemon(context: &DaemonProcessContext) -> Result<(), DaemonProcessE
         state_store.root().join("daemon/jobs.json"),
     )?);
     let stop = Arc::new(AtomicBool::new(false));
-    let trigger = spawn_trigger_runtime(
-        context.registry.clone(),
-        Arc::clone(&supervisor),
-        Arc::clone(&state_store),
-        Arc::clone(&stop),
-    );
-    let worker = spawn_job_worker(
-        context.registry.clone(),
-        Arc::clone(&supervisor),
-        Arc::clone(&state_store),
-        Arc::clone(&stop),
+    let workers = DaemonWorkers::spawn(
+        context,
+        &config,
+        &supervisor,
+        &state_store,
+        semantic_agent.as_ref(),
+        &stop,
     );
     let state = CompanionHttpState {
         registry: Arc::new(context.registry.clone()),
         supervisor,
         state_store,
         credential: Arc::new(credential),
-        resolution_agent: resolution_agent.map(Arc::new),
-        semantic_agent: semantic_agent.map(Arc::new),
+        resolution_agent,
+        semantic_agent,
         shutdown: Some(Arc::clone(&stop)),
     };
     let shutdown_stop = Arc::clone(&stop);
@@ -242,17 +257,72 @@ async fn run_daemon(context: &DaemonProcessContext) -> Result<(), DaemonProcessE
     })
     .await;
     stop.store(true, Ordering::Release);
-    let trigger_result = trigger
-        .join()
-        .map_err(|_| DaemonProcessError::Worker("daemon trigger runtime panicked".to_string()))?;
-    let worker_result = worker
-        .join()
-        .map_err(|_| DaemonProcessError::Worker("daemon sync worker panicked".to_string()))?;
+    let workers_result = workers.join();
     drop(runtime_guard);
     serve?;
-    trigger_result?;
-    worker_result?;
+    workers_result?;
     Ok(())
+}
+
+struct DaemonWorkers {
+    trigger: thread::JoinHandle<Result<(), DaemonProcessError>>,
+    sync: thread::JoinHandle<Result<(), DaemonProcessError>>,
+    semantic: Option<thread::JoinHandle<Result<(), String>>>,
+}
+
+impl DaemonWorkers {
+    fn spawn(
+        context: &DaemonProcessContext,
+        config: &crate::registry::DaemonConfig,
+        supervisor: &Arc<SyncSupervisor>,
+        state_store: &Arc<SyncStateStore>,
+        semantic_agent: Option<&Arc<CompanionSemanticAgent>>,
+        stop: &Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            trigger: spawn_trigger_runtime(
+                context.registry.clone(),
+                Arc::clone(supervisor),
+                Arc::clone(state_store),
+                Arc::clone(stop),
+            ),
+            sync: spawn_job_worker(
+                context.registry.clone(),
+                Arc::clone(supervisor),
+                Arc::clone(state_store),
+                Arc::clone(stop),
+            ),
+            semantic: config.semantic_worker.clone().map(|worker_config| {
+                spawn_semantic_worker(
+                    worker_config,
+                    context.registry.clone(),
+                    Arc::clone(supervisor),
+                    Arc::clone(state_store),
+                    context.state_root.clone(),
+                    Arc::clone(semantic_agent.expect("semantic worker agent was validated")),
+                    Arc::clone(stop),
+                )
+            }),
+        }
+    }
+
+    fn join(self) -> Result<(), DaemonProcessError> {
+        self.trigger.join().map_err(|_| {
+            DaemonProcessError::Worker("daemon trigger runtime panicked".to_string())
+        })??;
+        self.sync
+            .join()
+            .map_err(|_| DaemonProcessError::Worker("daemon sync worker panicked".to_string()))??;
+        if let Some(worker) = self.semantic {
+            worker
+                .join()
+                .map_err(|_| {
+                    DaemonProcessError::Worker("daemon semantic worker panicked".to_string())
+                })?
+                .map_err(DaemonProcessError::Worker)?;
+        }
+        Ok(())
+    }
 }
 
 fn configured_agents(

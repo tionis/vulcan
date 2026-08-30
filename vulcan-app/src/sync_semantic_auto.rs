@@ -33,7 +33,7 @@ pub struct SemanticAutoOptions {
     pub dry_run: bool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SemanticAutoOutcome {
     Deferred,
@@ -42,7 +42,7 @@ pub enum SemanticAutoOutcome {
     Completed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SemanticAutoReport {
     pub version: u32,
     pub dry_run: bool,

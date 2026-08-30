@@ -79,6 +79,10 @@ apply markers, or `refs/vulcan/**` to make a status look clean.
 - Provider endpoints/models are daemon configuration, not companion request fields. Use
   `vulcan daemon config set-agent resolution|semantic ... --dry-run`, keep key values in the named
   environment variable, apply deliberately, and restart the daemon.
+- For daemon-owned LLM semantic commits, configure the semantic agent first, then preview and apply
+  `vulcan daemon config set-semantic-worker --wiki <id> --quiet-seconds <n> --maximum-wait-seconds <n> --poll-seconds <n>`.
+  The allowlist is explicit; paused/busy wikis are skipped. Restart after changing configuration,
+  inspect `vulcan daemon semantic-status`, and disable with `daemon config clear-semantic-worker`.
 
 ## Android and detached Git data
 

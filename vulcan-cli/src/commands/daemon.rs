@@ -11,7 +11,10 @@ use vulcan_daemon::process::{
     daemon_status, request_daemon_shutdown, run_daemon_foreground, DaemonProcessContext,
     DaemonStatusReport,
 };
-use vulcan_daemon::registry::{DaemonAgentConfig, DaemonAgentKind, DaemonConfig};
+use vulcan_daemon::registry::{
+    DaemonAgentConfig, DaemonAgentKind, DaemonConfig, DaemonSemanticWorkerConfig, WikiId,
+};
+use vulcan_daemon::semantic_worker::{load_semantic_worker_status, SemanticWorkerStatus};
 use vulcan_daemon::service::{
     apply_daemon_service, plan_daemon_service, DaemonServiceAction, DaemonServicePlatform,
     DaemonServiceReport,
@@ -61,6 +64,14 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
             let status = daemon_status(&context).map_err(CliError::operation)?;
             print_status(cli.output, &status)
         }
+        DaemonCommand::SemanticStatus => {
+            let status = load_semantic_worker_status(&context.state_root)
+                .map_err(CliError::operation)?
+                .ok_or_else(|| {
+                    CliError::operation("the semantic worker has not completed a pass")
+                })?;
+            print_semantic_worker_status(cli.output, &status)
+        }
         DaemonCommand::Stop => {
             let status = request_daemon_shutdown(&context).map_err(CliError::operation)?;
             print_status(cli.output, &status)
@@ -70,6 +81,26 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
         }
         DaemonCommand::Config { command } => handle_config(cli.output, &context, command),
     }
+}
+
+fn print_semantic_worker_status(
+    output: OutputFormat,
+    status: &SemanticWorkerStatus,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(status);
+    }
+    println!("Semantic worker checked at {} ms", status.checked_unix_ms);
+    for entry in &status.entries {
+        if let Some(report) = &entry.report {
+            println!("{}: {:?}", entry.wiki_id, report.outcome);
+        } else if let Some(detail) = &entry.skipped {
+            println!("{}: skipped ({detail})", entry.wiki_id);
+        } else if let Some(error) = &entry.error {
+            println!("{}: error ({error})", entry.wiki_id);
+        }
+    }
+    Ok(())
 }
 
 fn manage_service(
@@ -194,6 +225,40 @@ fn handle_config(
         DaemonConfigCommand::ClearAgent { kind, dry_run } => context
             .registry
             .clear_agent(daemon_agent_kind(*kind), *dry_run)
+            .map_err(CliError::operation)?,
+        DaemonConfigCommand::SetSemanticWorker {
+            wiki,
+            semantic_ref,
+            remote,
+            live_ref,
+            quiet_seconds,
+            maximum_wait_seconds,
+            poll_seconds,
+            no_publish,
+            dry_run,
+        } => context
+            .registry
+            .set_semantic_worker(
+                DaemonSemanticWorkerConfig {
+                    wikis: wiki
+                        .iter()
+                        .map(|id| WikiId::parse(id.clone()))
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(CliError::operation)?,
+                    semantic_ref: semantic_ref.clone(),
+                    remote: remote.clone(),
+                    live_ref: live_ref.clone(),
+                    publish: !*no_publish,
+                    quiet_seconds: *quiet_seconds,
+                    maximum_wait_seconds: *maximum_wait_seconds,
+                    poll_seconds: *poll_seconds,
+                },
+                *dry_run,
+            )
+            .map_err(CliError::operation)?,
+        DaemonConfigCommand::ClearSemanticWorker { dry_run } => context
+            .registry
+            .clear_semantic_worker(*dry_run)
             .map_err(CliError::operation)?,
     };
     print_config(output, &config)
