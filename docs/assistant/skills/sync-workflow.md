@@ -90,6 +90,15 @@ apply markers, or `refs/vulcan/**` to make a status look clean.
   storage. Clone with both `--git-dir <private-path>` and `--platform android-shared`.
 - One-shot `sync status`, `sync doctor`, and `sync run` are the supported baseline and require no
   daemon. Android shared storage cannot faithfully represent executable bits or symlinks.
+- For an Android-managed periodic safety net, preview `vulcan sync termux-install <wiki>
+  --period-minutes 60 --dry-run`, then apply only after checking the job ID, wrapper path, and
+  network/battery policy. It requires Termux:API plus `pkg install termux-api`, defaults to
+  battery-not-low and storage-not-low, and never starts the daemon. Use `--network unmetered` or
+  `--charging` when requested. Preview `sync termux-uninstall <wiki> --dry-run` before removal.
+- Treat Android JobScheduler timing as approximate. Use the periodic job as an energy-efficient
+  safety net; a shortcut or future save/resume bridge may invoke the same finite `sync run` for
+  lower latency. Verify unattended Git credentials manually and never embed secrets in the managed
+  wrapper or vault.
 - If private Git data is lost, preview `vulcan vault recover-git <wiki> <remote> --dry-run`.
   Recovery captures the untouched materialized vault before fetching, but cannot reconstruct
   unpushed objects that existed only in the deleted Git directory.

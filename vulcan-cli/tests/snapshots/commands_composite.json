@@ -8610,6 +8610,150 @@
             "subcommands": []
           },
           {
+            "about": "Install an energy-aware Android/Termux periodic sync job",
+            "name": "termux-install",
+            "options": [
+              {
+                "help": "Registered Android-shared wiki ID",
+                "id": "wiki",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "WIKI"
+                ]
+              },
+              {
+                "help": "Approximate Android job interval in minutes (minimum 15)",
+                "id": "period_minutes",
+                "long": "period-minutes",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "PERIOD_MINUTES"
+                ]
+              },
+              {
+                "help": "Required network type",
+                "id": "network",
+                "long": "network",
+                "possible_values": [
+                  "any",
+                  "unmetered",
+                  "cellular",
+                  "not-roaming"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NETWORK"
+                ]
+              },
+              {
+                "help": "Run only while the device is charging",
+                "id": "charging",
+                "long": "charging",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CHARGING"
+                ]
+              },
+              {
+                "help": "Permit execution while Android reports a low battery",
+                "id": "allow_low_battery",
+                "long": "allow-low-battery",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ALLOW_LOW_BATTERY"
+                ]
+              },
+              {
+                "help": "Do not retain the Android job across reboots",
+                "id": "no_persist",
+                "long": "no-persist",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "NO_PERSIST"
+                ]
+              },
+              {
+                "help": "Override the stable positive Android JobScheduler ID",
+                "id": "job_id",
+                "long": "job-id",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "JOB_ID"
+                ]
+              },
+              {
+                "help": "Report the script and scheduler call without changing Android",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Remove a managed Android/Termux periodic sync job",
+            "name": "termux-uninstall",
+            "options": [
+              {
+                "help": "Registered Android-shared wiki ID",
+                "id": "wiki",
+                "long": null,
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "WIKI"
+                ]
+              },
+              {
+                "help": "Report the cancellation without changing Android",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
             "about": "List preserved sync conflicts or show one record",
             "name": "conflicts",
             "options": [

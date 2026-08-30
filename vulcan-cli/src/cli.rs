@@ -3965,6 +3965,15 @@ pub enum SyncCheckpointKindArg {
     Semantic,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]
+pub enum TermuxNetworkArg {
+    #[default]
+    Any,
+    Unmetered,
+    Cellular,
+    NotRoaming,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum SemanticGroupingArg {
     #[default]
@@ -4001,6 +4010,39 @@ pub enum SyncCommand {
         selection: SyncSelectionArgs,
         #[command(flatten)]
         target: SyncTargetArgs,
+    },
+    #[command(about = "Install an energy-aware Android/Termux periodic sync job")]
+    TermuxInstall {
+        #[arg(help = "Registered Android-shared wiki ID")]
+        wiki: String,
+        #[arg(
+            long,
+            default_value_t = 60,
+            help = "Approximate Android job interval in minutes (minimum 15)"
+        )]
+        period_minutes: u32,
+        #[arg(long, value_enum, default_value_t, help = "Required network type")]
+        network: TermuxNetworkArg,
+        #[arg(long, help = "Run only while the device is charging")]
+        charging: bool,
+        #[arg(long, help = "Permit execution while Android reports a low battery")]
+        allow_low_battery: bool,
+        #[arg(long, help = "Do not retain the Android job across reboots")]
+        no_persist: bool,
+        #[arg(long, help = "Override the stable positive Android JobScheduler ID")]
+        job_id: Option<u32>,
+        #[arg(
+            long,
+            help = "Report the script and scheduler call without changing Android"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Remove a managed Android/Termux periodic sync job")]
+    TermuxUninstall {
+        #[arg(help = "Registered Android-shared wiki ID")]
+        wiki: String,
+        #[arg(long, help = "Report the cancellation without changing Android")]
+        dry_run: bool,
     },
     #[command(about = "List preserved sync conflicts or show one record")]
     Conflicts {

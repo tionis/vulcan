@@ -7086,6 +7086,55 @@ fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
         "false"
     );
 
+    let termux_install = cargo_vulcan_with_xdg_config(config_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .args([
+            "--output",
+            "json",
+            "sync",
+            "termux-install",
+            "detached",
+            "--period-minutes",
+            "30",
+            "--network",
+            "unmetered",
+            "--charging",
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let termux_json = parse_stdout_json(&termux_install);
+    assert_eq!(termux_json["version"], 1);
+    assert_eq!(termux_json["action"], "install");
+    assert_eq!(termux_json["wiki_id"], "detached");
+    assert_eq!(termux_json["period_minutes"], 30);
+    assert_eq!(termux_json["network"], "unmetered");
+    assert_eq!(termux_json["battery_not_low"], true);
+    assert_eq!(termux_json["charging"], true);
+    assert_eq!(termux_json["persisted"], true);
+    assert_eq!(termux_json["dry_run"], true);
+    assert_eq!(termux_json["changed"], false);
+    assert!(termux_json["script"]
+        .as_str()
+        .is_some_and(|script| script.contains("sync run 'detached'")));
+    assert!(!state_home.join("vulcan/termux-sync/detached.sh").exists());
+
+    cargo_vulcan_with_xdg_config(config_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .args([
+            "--output",
+            "json",
+            "sync",
+            "termux-uninstall",
+            "detached",
+            "--dry-run",
+        ])
+        .assert()
+        .failure()
+        .stdout(predicate::str::contains(
+            "no managed Termux synchronization job exists",
+        ));
+
     fs::write(detached.join("Mobile.md"), "written from Termux\n")
         .expect("mobile note should be written");
     let sync = cargo_vulcan_with_xdg_config(config_home)
@@ -13459,6 +13508,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("head_moved"));
     assert!(git_skill.contains("vulcan sync run <wiki>"));
     assert!(git_skill.contains("vulcan sync pause [<wiki>]"));
+    assert!(git_skill.contains("vulcan sync termux-install <wiki>"));
+    assert!(git_skill.contains("sync termux-uninstall"));
     assert!(git_skill.contains("state.recovered_from"));
     assert!(git_skill.contains("application.additions"));
     assert!(git_skill.contains("worktree_changed"));
@@ -13483,6 +13534,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("--platform android-shared"));
     assert!(sync_skill.contains("vulcan daemon install --dry-run"));
     assert!(sync_skill.contains("vulcan daemon uninstall --dry-run"));
+    assert!(sync_skill.contains("vulcan sync termux-install <wiki>"));
+    assert!(sync_skill.contains("battery-not-low and storage-not-low"));
     assert!(sync_skill.contains("`file`, `change`, `hunk`, and"));
     assert!(sync_skill.contains("never replace a rejected push with unconditional force"));
     let diagnostics_skill =

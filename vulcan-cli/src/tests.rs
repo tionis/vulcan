@@ -2217,6 +2217,57 @@ fn parses_sync_commands() {
 }
 
 #[test]
+fn parses_termux_sync_scheduler_commands() {
+    let termux = Cli::try_parse_from([
+        "vulcan",
+        "sync",
+        "termux-install",
+        "personal",
+        "--period-minutes",
+        "30",
+        "--network",
+        "unmetered",
+        "--charging",
+        "--job-id",
+        "42",
+        "--dry-run",
+    ])
+    .expect("Termux sync install should parse");
+    assert_eq!(
+        termux.command,
+        Command::Sync {
+            command: SyncCommand::TermuxInstall {
+                wiki: "personal".to_string(),
+                period_minutes: 30,
+                network: TermuxNetworkArg::Unmetered,
+                charging: true,
+                allow_low_battery: false,
+                no_persist: false,
+                job_id: Some(42),
+                dry_run: true,
+            },
+        }
+    );
+    assert_eq!(
+        Cli::try_parse_from([
+            "vulcan",
+            "sync",
+            "termux-uninstall",
+            "personal",
+            "--dry-run"
+        ])
+        .expect("Termux sync uninstall should parse")
+        .command,
+        Command::Sync {
+            command: SyncCommand::TermuxUninstall {
+                wiki: "personal".to_string(),
+                dry_run: true,
+            },
+        }
+    );
+}
+
+#[test]
 fn parses_daemon_lifecycle_commands() {
     assert_eq!(
         Cli::try_parse_from(["vulcan", "daemon", "install", "--dry-run"])

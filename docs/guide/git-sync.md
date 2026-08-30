@@ -48,6 +48,37 @@ vulcan sync run personal
 
 These commands work from an interactive Termux shell, a Termux shortcut, or an explicitly configured scheduler. They neither require nor implicitly start the Vulcan daemon. Android lifecycle and battery integration are packaging concerns layered over this same finite command.
 
+For a low-frequency, energy-aware safety net, install Termux:API from the same source/signing family
+as Termux and install its command package with `pkg install termux-api`. Then preview the managed
+Android JobScheduler entry:
+
+```sh
+vulcan --output json sync termux-install personal \
+  --period-minutes 60 \
+  --network any \
+  --dry-run
+```
+
+Apply it by omitting `--dry-run`. The default job survives reboot and runs only with a usable
+network, non-low battery, and non-low storage; add `--network unmetered` or `--charging` for a more
+restrictive policy. Android periodic jobs are approximate and have a 15-minute minimum, so this is
+a safety net rather than realtime delivery. A Termux shortcut or future Obsidian/native wake bridge
+can call `vulcan sync run personal` after save or resume for lower latency; overlapping invocations
+still enter Vulcan's ordinary per-repository transaction serialization.
+
+Preview removal before cancelling the Android job and deleting only its managed private wrapper and
+manifest:
+
+```sh
+vulcan sync termux-uninstall personal --dry-run
+vulcan sync termux-uninstall personal
+```
+
+The scheduled process inherits Termux's normal account environment, not an interactive SSH agent.
+Configure unattended Git authentication in Termux itself and verify it with a manual
+`vulcan sync run personal` before relying on the scheduler. Do not put credentials in the wrapper,
+vault, or command line.
+
 The `android-shared` profile records the filesystem limitations instead of pretending it behaves like native Linux storage:
 
 - executable bits are not representable;

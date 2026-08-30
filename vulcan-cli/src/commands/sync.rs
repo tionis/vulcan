@@ -2,7 +2,7 @@ use crate::editor::open_paths_in_editor;
 use crate::output::print_json;
 use crate::{
     selected_permission_guard, Cli, CliError, OutputFormat, SemanticGroupingArg,
-    SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncSelectionArgs,
+    SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncSelectionArgs, TermuxNetworkArg,
 };
 use serde::Serialize;
 use vulcan_app::sync::{
@@ -50,6 +50,10 @@ use vulcan_core::{
 };
 use vulcan_daemon::registry::{UpdateWikiRequest, WikiId, WikiRegistration, WikiRegistry};
 use vulcan_daemon::sync::{sync_registered_wikis, RegisteredSyncReport, RegisteredSyncSelection};
+use vulcan_daemon::termux_scheduler::{
+    apply_termux_sync, load_termux_sync_plan, plan_termux_sync, TermuxNetwork, TermuxSyncAction,
+    TermuxSyncInstallOptions, TermuxSyncReport,
+};
 
 pub(crate) fn handle_sync_command(
     cli: &Cli,
@@ -118,6 +122,9 @@ fn handle_non_cycle_sync_command(
     if let Some(result) = handle_semantic_sync_command(cli, paths, command) {
         return Some(result);
     }
+    if let Some(result) = handle_termux_sync_command(cli, command) {
+        return Some(result);
+    }
     let result = match command {
         SyncCommand::Pause { wiki, dry_run } => {
             set_automatic_sync(cli.output, paths, wiki.as_deref(), true, *dry_run)
@@ -182,11 +189,148 @@ fn handle_non_cycle_sync_command(
             unreachable!("semantic commands are dispatched before the general sync match")
         }
         SyncCommand::Run { .. } | SyncCommand::Status { .. } => return None,
+        SyncCommand::TermuxInstall { .. } | SyncCommand::TermuxUninstall { .. } => {
+            unreachable!("Termux commands are dispatched before the general sync match")
+        }
         SyncCommand::RetentionPlan { .. } | SyncCommand::RetentionApply { .. } => {
             unreachable!("retention commands are dispatched before the general sync match")
         }
     };
     Some(result)
+}
+
+fn handle_termux_sync_command(cli: &Cli, command: &SyncCommand) -> Option<Result<(), CliError>> {
+    match command {
+        SyncCommand::TermuxInstall {
+            wiki,
+            period_minutes,
+            network,
+            charging,
+            allow_low_battery,
+            no_persist,
+            job_id,
+            dry_run,
+        } => Some(install_termux_sync(
+            cli,
+            wiki,
+            &TermuxSyncInstallOptions {
+                period_minutes: *period_minutes,
+                network: match network {
+                    TermuxNetworkArg::Any => TermuxNetwork::Any,
+                    TermuxNetworkArg::Unmetered => TermuxNetwork::Unmetered,
+                    TermuxNetworkArg::Cellular => TermuxNetwork::Cellular,
+                    TermuxNetworkArg::NotRoaming => TermuxNetwork::NotRoaming,
+                },
+                battery_not_low: !*allow_low_battery,
+                charging: *charging,
+                persisted: !*no_persist,
+                job_id: *job_id,
+            },
+            *dry_run,
+        )),
+        SyncCommand::TermuxUninstall { wiki, dry_run } => {
+            Some(uninstall_termux_sync(cli.output, wiki, *dry_run))
+        }
+        _ => None,
+    }
+}
+
+fn install_termux_sync(
+    cli: &Cli,
+    wiki: &str,
+    options: &TermuxSyncInstallOptions,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let id = WikiId::parse(wiki).map_err(CliError::operation)?;
+    let status = WikiRegistry::user_default()
+        .map_err(CliError::operation)?
+        .show(&id)
+        .map_err(CliError::operation)?;
+    if status.registration.sync_backend.as_deref() != Some("git")
+        || status.registration.platform_profile.as_deref() != Some("android_shared")
+        || status.registration.git_dir.is_none()
+    {
+        return Err(CliError::operation(format!(
+            "wiki `{wiki}` must be a registered Git wiki with a detached git directory and the android-shared platform profile"
+        )));
+    }
+    let paths = VaultPaths::new(status.registration.path);
+    check_sync_permission(
+        cli,
+        &paths,
+        status.registration.permissions_profile.as_deref(),
+    )?;
+    let state_root = vulcan_core::vulcan_user_state_dir()
+        .ok_or_else(|| CliError::operation("Vulcan user state directory is unavailable"))?;
+    let executable = std::env::current_exe().map_err(CliError::operation)?;
+    let plan = plan_termux_sync(
+        TermuxSyncAction::Install,
+        wiki,
+        &executable,
+        &state_root,
+        options,
+    )
+    .map_err(CliError::operation)?;
+    let report = apply_termux_sync(plan, dry_run).map_err(CliError::operation)?;
+    print_termux_sync_report(cli.output, &report)
+}
+
+fn uninstall_termux_sync(output: OutputFormat, wiki: &str, dry_run: bool) -> Result<(), CliError> {
+    WikiId::parse(wiki).map_err(CliError::operation)?;
+    let state_root = vulcan_core::vulcan_user_state_dir()
+        .ok_or_else(|| CliError::operation("Vulcan user state directory is unavailable"))?;
+    let executable = std::env::current_exe().map_err(CliError::operation)?;
+    let installed = load_termux_sync_plan(&state_root, wiki)
+        .map_err(CliError::operation)?
+        .ok_or_else(|| {
+            CliError::operation(format!(
+                "no managed Termux synchronization job exists for wiki `{wiki}`"
+            ))
+        })?;
+    let options = TermuxSyncInstallOptions {
+        period_minutes: installed.period_minutes,
+        network: installed.network,
+        battery_not_low: installed.battery_not_low,
+        charging: installed.charging,
+        persisted: installed.persisted,
+        job_id: Some(installed.job_id),
+    };
+    let plan = plan_termux_sync(
+        TermuxSyncAction::Uninstall,
+        wiki,
+        &executable,
+        &state_root,
+        &options,
+    )
+    .map_err(CliError::operation)?;
+    let report = apply_termux_sync(plan, dry_run).map_err(CliError::operation)?;
+    print_termux_sync_report(output, &report)
+}
+
+fn print_termux_sync_report(
+    output: OutputFormat,
+    report: &TermuxSyncReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    let action = match report.plan.action {
+        TermuxSyncAction::Install => "install",
+        TermuxSyncAction::Uninstall => "uninstall",
+    };
+    if report.dry_run {
+        println!(
+            "Would {action} Android job {} for wiki `{}`",
+            report.plan.job_id, report.plan.wiki_id
+        );
+    } else {
+        println!(
+            "Android job {} for wiki `{}` was {action}ed",
+            report.plan.job_id, report.plan.wiki_id
+        );
+    }
+    println!("Script: {}", report.plan.script_path.display());
+    Ok(())
 }
 
 fn handle_semantic_sync_command(

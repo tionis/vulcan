@@ -438,9 +438,9 @@ pub use cli::{
     SuggestCommand, SuggestLinkStatusArg, SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg,
     SyncSelectionArgs, SyncTargetArgs, TagSortArg, TasksCommand, TasksListSourceArg,
     TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
-    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TextBundleCommand, ToolCommand,
-    ToolInitTemplateArg, TrustCommand, VaultCommand, VectorQueueCommand, VectorsCommand,
-    WebCommand, WebFetchMode, WikiPackageCommand,
+    TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TermuxNetworkArg, TextBundleCommand,
+    ToolCommand, ToolInitTemplateArg, TrustCommand, VaultCommand, VectorQueueCommand,
+    VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
 };
 
 use crate::commit::AutoCommitPolicy;

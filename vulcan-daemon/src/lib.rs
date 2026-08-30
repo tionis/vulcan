@@ -18,4 +18,5 @@ pub mod service;
 pub mod status;
 pub mod supervisor;
 pub mod sync;
+pub mod termux_scheduler;
 pub mod watch;
