@@ -204,7 +204,10 @@ pub trait GitEngine: Send + Sync {
         base: Option<&GitOid>,
     ) -> Result<GitOid, GitEngineError>;
 
-    /// Checks the complete worktree against a tree without writing Git objects or indexes.
+    /// Checks the complete worktree against a tree without writing Git objects,
+    /// refs, or the user's normal index. Implementations may use a private
+    /// temporary index so paths added by the expected tree are not mistaken for
+    /// unrelated untracked files.
     fn worktree_matches_tree(
         &self,
         repository: &GitRepository,
@@ -2219,8 +2222,32 @@ impl GitEngine for GitCliEngine {
         expected: &GitOid,
     ) -> Result<bool, GitEngineError> {
         repository.require_work_tree()?;
-        let mut command = self.repository_command(repository);
-        command.args(["diff", "--quiet", expected.as_str(), "--"]);
+        let private_index_directory = tempfile::Builder::new()
+            .prefix("worktree-match-")
+            .tempdir()?;
+        let index_path = private_index_directory.path().join("index");
+        self.index_output(
+            repository,
+            &index_path,
+            "seed the worktree comparison index",
+            ["read-tree", expected.as_str()],
+        )?;
+
+        let mut command = self.index_command(repository, &index_path)?;
+        command.arg("update-index").arg("--refresh");
+        let refreshed = self.execute(command)?;
+        if !refreshed.status.success() {
+            if refreshed.status.code() == Some(1) {
+                return Ok(false);
+            }
+            return Err(command_failed(
+                "refresh the worktree comparison",
+                &refreshed,
+            ));
+        }
+
+        let mut command = self.index_command(repository, &index_path)?;
+        command.args(["diff-files", "--quiet", "--"]);
         command.args(WORKTREE_CAPTURE_PATHS);
         let tracked = self.execute(command)?;
         if !tracked.status.success() {
@@ -2229,7 +2256,7 @@ impl GitEngine for GitCliEngine {
             }
             return Err(command_failed("compare the working tree", &tracked));
         }
-        let mut command = self.repository_command(repository);
+        let mut command = self.index_command(repository, &index_path)?;
         command.args(["ls-files", "--others", "--exclude-standard", "--"]);
         command.args(WORKTREE_CAPTURE_PATHS);
         let output = ensure_success("list untracked worktree paths", self.execute(command)?)?;

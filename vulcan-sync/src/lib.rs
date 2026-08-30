@@ -9,6 +9,7 @@
 //! API exposes typed operations rather than arbitrary Git arguments so a later
 //! embedded engine can implement the same contract and conformance suite.
 
+pub mod conformance;
 mod contracts;
 mod git;
 mod merge_policy;
