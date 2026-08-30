@@ -14,8 +14,10 @@ use crate::supervisor::{
 };
 use crate::sync::{enqueue_registered_wikis, RegisteredSyncError, RegisteredSyncSelection};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
+use std::sync::Mutex;
 use vulcan_app::sync_conflicts::{
     get_sync_conflict_with_state_store, list_sync_conflicts_with_state_store,
     resolve_sync_conflict_with_state_store, ResolveSyncConflictOptions, ResolveSyncConflictReport,
@@ -73,7 +75,16 @@ pub struct CompanionCapabilities {
     pub sync_backends: Vec<String>,
     pub conflict_resolution_sides: Vec<SyncConflictResolutionSide>,
     pub agent_conflict_proposals: bool,
+    pub agent_conflict_proposal_limit_per_conflict: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_conflict_proposal_claim_scope: Option<CompanionProposalClaimScope>,
     pub agent_semantic_plans: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompanionProposalClaimScope {
+    DaemonProcess,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -148,6 +159,7 @@ pub struct ConflictProposalRejectionRequest {
 
 pub struct CompanionResolutionAgent {
     provider: Box<dyn ResolutionAgentProvider>,
+    active_conflicts: Mutex<BTreeSet<String>>,
 }
 
 impl CompanionResolutionAgent {
@@ -155,6 +167,7 @@ impl CompanionResolutionAgent {
     pub fn new(provider: impl ResolutionAgentProvider + 'static) -> Self {
         Self {
             provider: Box::new(provider),
+            active_conflicts: Mutex::new(BTreeSet::new()),
         }
     }
 
@@ -170,6 +183,35 @@ impl CompanionResolutionAgent {
         )
         .map_err(|error| invalid_request(error.to_string()))?;
         Ok(Self::new(provider))
+    }
+
+    fn claim_conflict(&self, key: String) -> Result<CompanionConflictClaim<'_>, CompanionError> {
+        let mut active = self.active_conflicts.lock().map_err(|_| {
+            CompanionError::new(
+                CompanionErrorKind::Internal,
+                "resolution-agent conflict claims are unavailable",
+            )
+        })?;
+        if !active.insert(key.clone()) {
+            return Err(CompanionError::new(
+                CompanionErrorKind::Conflict,
+                "a resolution-agent proposal is already running for this conflict",
+            ));
+        }
+        Ok(CompanionConflictClaim { agent: self, key })
+    }
+}
+
+struct CompanionConflictClaim<'a> {
+    agent: &'a CompanionResolutionAgent,
+    key: String,
+}
+
+impl Drop for CompanionConflictClaim<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.agent.active_conflicts.lock() {
+            active.remove(&self.key);
+        }
     }
 }
 
@@ -300,6 +342,10 @@ impl<'a> CompanionService<'a> {
                 SyncConflictResolutionSide::Remote,
             ],
             agent_conflict_proposals: self.resolution_agent.is_some(),
+            agent_conflict_proposal_limit_per_conflict: u32::from(self.resolution_agent.is_some()),
+            agent_conflict_proposal_claim_scope: self
+                .resolution_agent
+                .map(|_| CompanionProposalClaimScope::DaemonProcess),
             agent_semantic_plans: false,
         }
     }
@@ -431,6 +477,8 @@ impl<'a> CompanionService<'a> {
             )
         })?;
         let registration = self.checked_git_registration(wiki_id)?;
+        let _claim =
+            agent.claim_conflict(format!("{}:{conflict_id}", registration.path.display()))?;
         let paths = VaultPaths::new(registration.path);
         let profile = registration
             .permissions_profile
@@ -925,6 +973,11 @@ mod tests {
         assert_eq!(value["protocol_version"], json!(1));
         assert_eq!(value["sync_contract_version"], json!(1));
         assert_eq!(value["agent_conflict_proposals"], json!(false));
+        assert_eq!(
+            value["agent_conflict_proposal_limit_per_conflict"],
+            json!(0)
+        );
+        assert!(value.get("agent_conflict_proposal_claim_scope").is_none());
         assert_eq!(value["agent_semantic_plans"], json!(false));
         assert_eq!(value["transports"], json!([]));
         assert!(value["operations"]
@@ -1010,11 +1063,42 @@ mod tests {
         let value = serde_json::to_value(service.capabilities()).expect("serialize capabilities");
 
         assert_eq!(value["agent_conflict_proposals"], json!(true));
+        assert_eq!(
+            value["agent_conflict_proposal_limit_per_conflict"],
+            json!(1)
+        );
+        assert_eq!(
+            value["agent_conflict_proposal_claim_scope"],
+            json!("daemon_process")
+        );
         assert!(value["operations"]
             .as_array()
             .expect("operations")
             .contains(&json!("conflict_proposal_create")));
         assert!(!value.to_string().contains("agent.example.test"));
+    }
+
+    #[test]
+    fn resolution_agent_claims_one_daemon_request_per_conflict() {
+        let agent = CompanionResolutionAgent::new(ConfiguredTestProvider);
+        let first = agent
+            .claim_conflict("repository:conflict-a".to_string())
+            .expect("first claim");
+        let duplicate = agent
+            .claim_conflict("repository:conflict-a".to_string())
+            .err()
+            .expect("duplicate claim must fail immediately");
+        assert_eq!(duplicate.kind, CompanionErrorKind::Conflict);
+        assert!(duplicate.detail.contains("already running"));
+
+        let independent = agent
+            .claim_conflict("repository:conflict-b".to_string())
+            .expect("independent conflict claim");
+        drop(independent);
+        drop(first);
+        agent
+            .claim_conflict("repository:conflict-a".to_string())
+            .expect("released claim can be acquired again");
     }
 
     #[test]

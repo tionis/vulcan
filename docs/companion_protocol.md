@@ -47,7 +47,12 @@ Clients should call `GET /capabilities` before relying on optional operations.
 
 Conflict proposal creation and explicit approval/rejection are advertised only when the daemon has
 a server-configured resolution provider. Provider endpoints or credentials never come from a
-companion request.
+companion request. When proposal creation is available, capabilities report
+`agent_conflict_proposal_limit_per_conflict: 1` and
+`agent_conflict_proposal_claim_scope: daemon_process`. The daemon claims the repository/conflict
+pair before invoking the provider and returns `conflict` immediately for a concurrent request.
+The scoped claim is released after success or failure. It prevents duplicate token spend inside
+one daemon, but it is not a cross-device coordination protocol.
 
 Aggregate selection JSON contains exactly one of `wiki` (a registered wiki ID), `group` (a
 registered group name), or `all: true`. The retained parent identifies every normalized child job;

@@ -12885,6 +12885,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
     assert!(git_skill.contains("--file '<conflict-path>=<source-file>' --dry-run"));
     assert!(git_skill.contains("--patch <patch-file> --dry-run"));
+    assert!(git_skill.contains("agent_conflict_proposal_limit_per_conflict: 1"));
+    assert!(git_skill.contains("agent_conflict_proposal_claim_scope: daemon_process"));
     assert!(git_skill.contains("--editor --dry-run"));
     assert!(git_skill.contains("vulcan sync propose <conflict-id> --model <model>"));
     assert!(git_skill.contains("sent as exact UTF-8 with a content hash"));
