@@ -445,6 +445,10 @@ impl GitPlatformProfile {
                 timestamp_precision: GitTimestampPolicy::ContentVerified,
                 clone_config: vec![
                     GitCloneConfig {
+                        key: "core.autocrlf",
+                        value: "false",
+                    },
+                    GitCloneConfig {
                         key: "core.fileMode",
                         value: "false",
                     },
@@ -462,7 +466,10 @@ impl GitPlatformProfile {
                 reserved_names: GitReservedNamesPolicy::WindowsRestricted,
                 path_length: GitPathLengthPolicy::FilesystemDependent,
                 timestamp_precision: GitTimestampPolicy::ContentVerified,
-                clone_config: Vec::new(),
+                clone_config: vec![GitCloneConfig {
+                    key: "core.autocrlf",
+                    value: "false",
+                }],
             },
             Self::LinuxNative => GitPlatformPolicy {
                 profile: self,
@@ -472,7 +479,10 @@ impl GitPlatformProfile {
                 reserved_names: GitReservedNamesPolicy::Native,
                 path_length: GitPathLengthPolicy::FilesystemDependent,
                 timestamp_precision: GitTimestampPolicy::ContentVerified,
-                clone_config: Vec::new(),
+                clone_config: vec![GitCloneConfig {
+                    key: "core.autocrlf",
+                    value: "false",
+                }],
             },
             Self::OtherNative => GitPlatformPolicy {
                 profile: self,
@@ -482,7 +492,10 @@ impl GitPlatformProfile {
                 reserved_names: GitReservedNamesPolicy::Native,
                 path_length: GitPathLengthPolicy::FilesystemDependent,
                 timestamp_precision: GitTimestampPolicy::ContentVerified,
-                clone_config: Vec::new(),
+                clone_config: vec![GitCloneConfig {
+                    key: "core.autocrlf",
+                    value: "false",
+                }],
             },
         }
     }
@@ -3944,6 +3957,10 @@ mod tests {
             .expect("colocated clone");
         assert_eq!(repository.layout, GitRepositoryLayout::Colocated);
         assert!(colocated.join("Home.md").is_file());
+        assert_eq!(
+            run_git_capture(&colocated, &["config", "--get", "core.autocrlf"]),
+            "false"
+        );
         #[cfg(unix)]
         assert!(colocated
             .join("Shortcut.md")
@@ -3977,6 +3994,10 @@ mod tests {
         );
         assert_eq!(
             run_git_capture(&detached, &["config", "--bool", "core.symlinks"]),
+            "false"
+        );
+        assert_eq!(
+            run_git_capture(&detached, &["config", "--get", "core.autocrlf"]),
             "false"
         );
     }
@@ -4089,7 +4110,9 @@ mod tests {
     fn platform_policies_are_explicit_and_serializable() {
         let native = GitPlatformProfile::LinuxNative.policy();
         assert_eq!(native.executable_bits, GitExecutableBitsPolicy::GitProbed);
-        assert!(native.clone_config.is_empty());
+        assert_eq!(native.clone_config.len(), 1);
+        assert_eq!(native.clone_config[0].key, "core.autocrlf");
+        assert_eq!(native.clone_config[0].value, "false");
 
         let android = GitPlatformProfile::AndroidShared.policy();
         assert_eq!(
@@ -4101,7 +4124,9 @@ mod tests {
             android.case_only_renames,
             GitCaseRenamePolicy::IntermediatePath
         );
-        assert_eq!(android.clone_config.len(), 2);
+        assert_eq!(android.clone_config.len(), 3);
+        assert_eq!(android.clone_config[0].key, "core.autocrlf");
+        assert_eq!(android.clone_config[0].value, "false");
         assert_eq!(
             serde_json::to_value(android).expect("policy should serialize"),
             serde_json::json!({

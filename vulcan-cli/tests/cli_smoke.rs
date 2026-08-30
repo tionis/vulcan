@@ -60,6 +60,7 @@ fn init_git_repo(vault_root: &Path) {
     run_git_ok(vault_root, &["-c", "init.defaultBranch=main", "init"]);
     run_git_ok(vault_root, &["config", "user.name", "Vulcan Test"]);
     run_git_ok(vault_root, &["config", "user.email", "vulcan@example.com"]);
+    run_git_ok(vault_root, &["config", "core.autocrlf", "false"]);
 }
 
 fn commit_all(vault_root: &Path, message: &str) {
