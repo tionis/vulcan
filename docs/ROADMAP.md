@@ -5518,6 +5518,39 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [ ] Document Linux/Windows daemon behavior and Android's finite JobScheduler fallback. Treat a persistent Termux connection or later native push bridge as a latency optimization over the same trigger, not a second synchronization engine.
 - [ ] Review and update the bundled `sync-workflow`, `configuration-and-permissions`, and `diagnostics-and-repair` skills when the client commands ship; roadmap-only protocol planning does not yet change their executable guidance.
 
+### 12.14 macOS daemon lifecycle and release packaging
+
+**Goal:** Make the existing same-binary daemon and CLI straightforward to install, upgrade, and run on Linux, Windows, and macOS without changing direct local-vault behavior. macOS gains native per-user service parity; release archives remain the canonical distribution input, and package-manager channels project those same artifacts rather than defining a second runtime or configuration model.
+
+**Depends on:** The completed daemon lifecycle and Linux/Windows service installer in 12.8. Realtime relay work in 12.13 is independent: a packaged daemon must remain useful with polling and local watching alone.
+
+**Boundaries:** Installation is user-scoped by default and never starts or enables the daemon implicitly. Package removal and `daemon uninstall` remove only packaging/service projections, never registered wikis, vault files, credentials, conflict records, journals, or other durable state. Git remains an explicit runtime dependency for the initial sync backend; packaging Vulcan does not silently bundle or replace it.
+
+#### 12.14.1 Native macOS LaunchAgent support
+
+- [ ] Extend the service planner with a macOS `launchd` platform and native detection while keeping `daemon start` as the only runtime implementation. Install a per-user LaunchAgent below `~/Library/LaunchAgents` with a stable reverse-DNS label, tokenized `ProgramArguments`, launch-at-login, restart-on-failure behavior, bounded restart throttling, background process classification, and stdout/stderr paths below Vulcan's user-state directory.
+- [ ] Drive `launchctl` through explicit argument vectors using the logged-in user's GUI domain: `bootstrap` and `kickstart` on install, `bootout` on uninstall, and `print` for diagnostics. Preserve complete `--dry-run` plans, atomic regular-file replacement, symlink/reparse-point refusal, idempotent reinstall/uninstall, and actionable partial-failure recovery.
+- [ ] Add a platform-neutral, permission-checked device `daemon.env` loading path before advertising macOS agent-provider support. A LaunchAgent plist must never contain provider tokens or expanded secret values; it may reference only non-secret paths and arguments. Keep direct foreground startup and ordinary inherited environment variables working.
+- [ ] Make service definitions upgrade-safe. Do not pin a versioned Homebrew Cellar path or an extracted release directory that disappears on upgrade; use a stable package-owned executable path or require an atomic service refresh as part of upgrade. `daemon status`/doctor must identify a missing or stale executable and report the exact repair command.
+- [ ] Add renderer/plan/unit tests on every host plus live macOS CI smoke tests for install, bootstrap, authenticated status, clean stop, restart after failure, reinstall, upgrade-path preservation, bootout, and uninstall. Exercise both Apple Silicon and Intel release artifacts before advertising them, with a documented manual fallback where hosted CI cannot run the relevant architecture.
+
+#### 12.14.2 Canonical release artifacts
+
+- [ ] Replace loose release binaries with versioned per-target archives: `tar.gz` for Linux/macOS and ZIP for Windows, initially covering x86_64 and aarch64 Linux, x86_64 and aarch64 macOS, and x86_64 Windows. Each archive contains the `vulcan` executable, generated shell completions and man page, README/install notes, and license files under a stable top-level directory.
+- [ ] Make release construction reproducible from a local or CI command independent of a particular forge. Evaluate `cargo-dist` against the existing small workflow and record the decision; adopt it only if the pinned tool and checked-in configuration preserve the required archive layout, target matrix, generated metadata, and non-GitHub release path without opaque generated policy.
+- [ ] Pin the release workflow to `rust-toolchain.toml`, build with the lockfile, run the release-gate tests before publication, and emit a machine-readable artifact manifest plus SHA-256 checksums. Add an SBOM and signed provenance/signatures when the chosen forge-neutral tooling is established; never publish an archive when its manifest, checksum, version, or target identity disagrees.
+- [ ] Add platform smoke tests that download the just-built archive into a clean environment, verify it, run `vulcan --version` and representative direct-vault commands, confirm `sync doctor` reports the Git dependency truthfully, and exercise service-plan dry runs. Keep Android/Termux as its existing separately tested package/runtime profile rather than relabeling a desktop Linux archive as Android support.
+- [ ] Define the signing gate separately from basic archive correctness: notarize and Developer-ID sign macOS release artifacts once project credentials exist, and Authenticode-sign Windows artifacts when a suitable certificate/identity is available. Nightly or contributor builds must remain clearly identified and verifiable by checksum without pretending to be trusted production releases.
+
+#### 12.14.3 Install channels, upgrades, and documentation
+
+- [ ] Ship checksum-verifying POSIX-shell and PowerShell installers over the canonical archives, defaulting to a documented user-local binary directory with explicit system-wide opt-in. Installers must support non-interactive operation, version selection, architecture/OS validation, and a mutation-free dry-run or equivalent plan output; they do not configure vaults, credentials, Git remotes, or daemon startup.
+- [ ] Maintain a Homebrew tap as the first macOS package-manager channel and an additional Linux convenience channel. The formula installs from the canonical release contract and exposes an optional `service` stanza using Homebrew's stable `opt_bin` path; `brew install` alone does not enable it, while `brew services start vulcan` remains an explicit user action.
+- [ ] Publish a WinGet portable/ZIP manifest from the same checksummed Windows archive, with Scoop as an optional follow-on only if it adds meaningful coverage. Verify install, upgrade, PATH registration, daemon reinstall/status, and uninstall on a clean Windows runner; do not require an MSI until a concrete machine-wide deployment need justifies its greater signing and lifecycle surface.
+- [ ] Keep direct archives and `cargo install --locked --path vulcan-cli` documented as development/fallback paths. Consider native DEB/RPM, AUR, or other repository packages only after demand warrants their ongoing update and signing obligations; do not block the first supported desktop release on every distribution ecosystem.
+- [ ] Document one installation, upgrade, service enable/disable, diagnostics, and uninstall path per advertised platform, including the external Git requirement and state-preservation guarantees. Add a release checklist that tests upgrades across one prior supported version and verifies package metadata, checksums, links, completions, man pages, service definitions, and rollback guidance before tagging.
+- [ ] Review `docs/assistant/skills/configuration-and-permissions.md`, `docs/assistant/skills/diagnostics-and-repair.md`, and `docs/assistant/skills/sync-workflow.md` when macOS service or installation commands ship. Roadmap-only planning does not change the current bundled skill payload.
+
 ---
 
 ## Phase 13: WebUI — Admin and Browse
