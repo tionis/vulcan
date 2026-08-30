@@ -247,6 +247,7 @@ fn render_dynamic_completion_template(template: &str) -> String {
     template
         .trim()
         .to_string()
+        .replace("\r\n", "\n")
         .replace("__VULCAN_CMD__", &completion_command_path_literal())
 }
 
@@ -256,4 +257,18 @@ pub(crate) fn generate_bash_dynamic_completions() -> String {
 
 pub(crate) fn generate_zsh_dynamic_completions() -> String {
     render_dynamic_completion_template(include_str!("../completions_zsh.zsh"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_dynamic_completion_template;
+
+    #[test]
+    fn dynamic_completion_templates_normalize_windows_line_endings() {
+        let rendered = render_dynamic_completion_template("first\r\n__VULCAN_CMD__\r\nlast\r\n");
+
+        assert!(!rendered.contains('\r'));
+        assert!(rendered.starts_with("first\n"));
+        assert!(rendered.ends_with("\nlast"));
+    }
 }
