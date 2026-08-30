@@ -2218,6 +2218,22 @@ fn parses_sync_commands() {
 
 #[test]
 fn parses_daemon_lifecycle_commands() {
+    assert_eq!(
+        Cli::try_parse_from(["vulcan", "daemon", "install", "--dry-run"])
+            .expect("daemon install should parse")
+            .command,
+        Command::Daemon {
+            command: DaemonCommand::Install { dry_run: true },
+        }
+    );
+    assert_eq!(
+        Cli::try_parse_from(["vulcan", "daemon", "uninstall", "--dry-run"])
+            .expect("daemon uninstall should parse")
+            .command,
+        Command::Daemon {
+            command: DaemonCommand::Uninstall { dry_run: true },
+        }
+    );
     let foreground = Cli::try_parse_from(["vulcan", "daemon", "start"])
         .expect("foreground daemon start should parse");
     assert_eq!(

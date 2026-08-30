@@ -6740,6 +6740,43 @@ fn daemon_config_cli_persists_only_non_secret_agent_settings() {
 }
 
 #[test]
+fn daemon_service_installation_is_native_and_mutation_free_in_dry_run() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let daemon = |action: &str| {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .args(["--output", "json", "daemon", action, "--dry-run"])
+            .assert()
+    };
+
+    let install = parse_stdout_json(&daemon("install").success());
+    assert_eq!(install["version"], 1);
+    assert_eq!(install["action"], "install");
+    assert_eq!(install["platform"], "systemd_user");
+    assert_eq!(install["dry_run"], true);
+    assert_eq!(install["changed"], false);
+    assert!(install["definition"]
+        .as_str()
+        .is_some_and(|unit| unit.contains("Restart=on-failure")
+            && unit.contains("EnvironmentFile=-")
+            && unit.contains(" daemon start")));
+    assert!(!config_home
+        .join("systemd/user/vulcan-daemon.service")
+        .exists());
+
+    let uninstall = parse_stdout_json(&daemon("uninstall").success());
+    assert_eq!(uninstall["action"], "uninstall");
+    assert!(uninstall.get("definition").is_none());
+    assert!(!config_home
+        .join("systemd/user/vulcan-daemon.service")
+        .exists());
+}
+
+#[test]
 fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let config_home = temporary.path().join("config");
@@ -13244,6 +13281,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("Direct commands never start a daemon implicitly"));
     assert!(sync_skill.contains("vulcan sync conflicts <conflict-id>"));
     assert!(sync_skill.contains("--platform android-shared"));
+    assert!(sync_skill.contains("vulcan daemon install --dry-run"));
+    assert!(sync_skill.contains("vulcan daemon uninstall --dry-run"));
     assert!(sync_skill.contains("`file`, `change`, `hunk`, and"));
     assert!(sync_skill.contains("never replace a rejected push with unconditional force"));
     let diagnostics_skill =

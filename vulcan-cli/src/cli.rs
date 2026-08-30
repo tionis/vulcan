@@ -642,6 +642,8 @@ Examples:
 
 const DAEMON_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
+  install      install and start the native per-user daemon service
+  uninstall    stop and remove the native per-user daemon service
   start        run the multi-wiki sync daemon in the foreground or detach it
   status       probe the authenticated loopback service and show runtime state
   stop         request graceful shutdown over the authenticated loopback service
@@ -653,11 +655,14 @@ Notes:
   Runtime metadata and the companion credential stay in the device-local Vulcan state directory.
 
 Examples:
+  vulcan daemon install --dry-run
+  vulcan daemon install
   vulcan daemon start
   vulcan daemon start --detach
   vulcan daemon status --output json
   vulcan daemon companion --reveal-token --output json
-  vulcan daemon stop";
+  vulcan daemon stop
+  vulcan daemon uninstall --dry-run";
 
 const WEB_COMMAND_AFTER_HELP: &str = "\
 Subcommands:
@@ -4265,6 +4270,22 @@ pub enum SyncCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum DaemonCommand {
+    #[command(about = "Install and start the native per-user daemon service")]
+    Install {
+        #[arg(
+            long,
+            help = "Report the native service plan without changing the system"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Stop and remove the native per-user daemon service")]
+    Uninstall {
+        #[arg(
+            long,
+            help = "Report the native removal plan without changing the system"
+        )]
+        dry_run: bool,
+    },
     #[command(about = "Start the multi-wiki synchronization daemon")]
     Start {
         #[arg(

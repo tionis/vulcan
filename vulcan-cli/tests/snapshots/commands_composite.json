@@ -9521,10 +9521,52 @@
       },
       {
         "about": "Run and inspect the multi-wiki synchronization daemon",
-        "after_help": "Subcommands:\n  start        run the multi-wiki sync daemon in the foreground or detach it\n  status       probe the authenticated loopback service and show runtime state\n  stop         request graceful shutdown over the authenticated loopback service\n  companion    show connection details for a local companion client\n\nNotes:\n  The daemon watches and periodically reconciles registered Git-backed wikis.\n  Direct `vulcan sync run` remains available while the daemon is stopped.\n  Runtime metadata and the companion credential stay in the device-local Vulcan state directory.\n\nExamples:\n  vulcan daemon start\n  vulcan daemon start --detach\n  vulcan daemon status --output json\n  vulcan daemon companion --reveal-token --output json\n  vulcan daemon stop",
+        "after_help": "Subcommands:\n  install      install and start the native per-user daemon service\n  uninstall    stop and remove the native per-user daemon service\n  start        run the multi-wiki sync daemon in the foreground or detach it\n  status       probe the authenticated loopback service and show runtime state\n  stop         request graceful shutdown over the authenticated loopback service\n  companion    show connection details for a local companion client\n\nNotes:\n  The daemon watches and periodically reconciles registered Git-backed wikis.\n  Direct `vulcan sync run` remains available while the daemon is stopped.\n  Runtime metadata and the companion credential stay in the device-local Vulcan state directory.\n\nExamples:\n  vulcan daemon install --dry-run\n  vulcan daemon install\n  vulcan daemon start\n  vulcan daemon start --detach\n  vulcan daemon status --output json\n  vulcan daemon companion --reveal-token --output json\n  vulcan daemon stop\n  vulcan daemon uninstall --dry-run",
         "name": "daemon",
         "options": [],
         "subcommands": [
+          {
+            "about": "Install and start the native per-user daemon service",
+            "name": "install",
+            "options": [
+              {
+                "help": "Report the native service plan without changing the system",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Stop and remove the native per-user daemon service",
+            "name": "uninstall",
+            "options": [
+              {
+                "help": "Report the native removal plan without changing the system",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
           {
             "about": "Start the multi-wiki synchronization daemon",
             "name": "start",

@@ -12,6 +12,10 @@ use vulcan_daemon::process::{
     DaemonStatusReport,
 };
 use vulcan_daemon::registry::{DaemonAgentConfig, DaemonAgentKind, DaemonConfig};
+use vulcan_daemon::service::{
+    apply_daemon_service, plan_daemon_service, DaemonServiceAction, DaemonServicePlatform,
+    DaemonServiceReport,
+};
 
 #[derive(Debug, Serialize)]
 struct DaemonStartReport<'a> {
@@ -37,6 +41,15 @@ struct DaemonCompanionReport {
 pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Result<(), CliError> {
     let context = DaemonProcessContext::user_default().map_err(CliError::operation)?;
     match command {
+        DaemonCommand::Install { dry_run } => {
+            manage_service(cli.output, &context, DaemonServiceAction::Install, *dry_run)
+        }
+        DaemonCommand::Uninstall { dry_run } => manage_service(
+            cli.output,
+            &context,
+            DaemonServiceAction::Uninstall,
+            *dry_run,
+        ),
         DaemonCommand::Start { detach, child } => {
             if *detach {
                 start_detached(cli, &context)
@@ -57,6 +70,57 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
         }
         DaemonCommand::Config { command } => handle_config(cli.output, &context, command),
     }
+}
+
+fn manage_service(
+    output: OutputFormat,
+    context: &DaemonProcessContext,
+    action: DaemonServiceAction,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let executable = std::env::current_exe().map_err(CliError::operation)?;
+    let config_directory = context.registry.path().parent().ok_or_else(|| {
+        CliError::operation("daemon registry path has no configuration directory")
+    })?;
+    let plan = plan_daemon_service(
+        action,
+        DaemonServicePlatform::native().map_err(CliError::operation)?,
+        &executable,
+        config_directory,
+    )
+    .map_err(CliError::operation)?;
+    let report = apply_daemon_service(plan, dry_run).map_err(CliError::operation)?;
+    print_service_report(output, &report)
+}
+
+fn print_service_report(
+    output: OutputFormat,
+    report: &DaemonServiceReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    let action = match report.plan.action {
+        DaemonServiceAction::Install => "install",
+        DaemonServiceAction::Uninstall => "uninstall",
+    };
+    if report.dry_run {
+        println!(
+            "Would {action} the {:?} per-user daemon service",
+            report.plan.platform
+        );
+    } else if report.changed {
+        println!(
+            "Vulcan {:?} per-user daemon service {action} completed",
+            report.plan.platform
+        );
+    } else {
+        println!("Vulcan daemon service was already uninstalled");
+    }
+    if let Some(path) = &report.plan.definition_path {
+        println!("Definition: {}", path.display());
+    }
+    Ok(())
 }
 
 fn print_companion(
