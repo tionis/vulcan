@@ -883,6 +883,19 @@ pub struct GitSafetyState {
 pub struct GitFilterRequirement {
     pub name: String,
     pub path_count: usize,
+    pub clean_configured: bool,
+    pub smudge_configured: bool,
+    pub process_configured: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub executable_available: Option<bool>,
+}
+
+impl GitFilterRequirement {
+    #[must_use]
+    pub fn ready(&self) -> bool {
+        (self.process_configured || (self.clean_configured && self.smudge_configured))
+            && self.executable_available != Some(false)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2772,19 +2785,30 @@ impl GitEngine for GitCliEngine {
                 *filters.entry(value.to_string()).or_default() += 1;
             }
         }
-        let required_filters = filters
-            .into_iter()
-            .map(|(name, path_count)| GitFilterRequirement { name, path_count })
-            .collect::<Vec<_>>();
-        let git_lfs_available = required_filters
-            .iter()
-            .any(|filter| filter.name == "lfs")
-            .then(|| {
+        let mut required_filters = Vec::with_capacity(filters.len());
+        for (name, path_count) in filters {
+            let clean_configured = self.filter_configured(repository, &name, "clean")?;
+            let smudge_configured = self.filter_configured(repository, &name, "smudge")?;
+            let process_configured = self.filter_configured(repository, &name, "process")?;
+            let executable_available = (name == "lfs").then(|| {
                 let mut command = self.repository_command(repository);
                 command.args(["lfs", "version"]);
                 self.execute(command)
                     .is_ok_and(|output| output.status.success())
             });
+            required_filters.push(GitFilterRequirement {
+                name,
+                path_count,
+                clean_configured,
+                smudge_configured,
+                process_configured,
+                executable_available,
+            });
+        }
+        let git_lfs_available = required_filters
+            .iter()
+            .find(|filter| filter.name == "lfs")
+            .and_then(|filter| filter.executable_available);
 
         let mut ignored_internal_paths = Vec::new();
         for path in [
@@ -2808,6 +2832,28 @@ impl GitEngine for GitCliEngine {
             required_filters,
             git_lfs_available,
         })
+    }
+}
+
+impl GitCliEngine {
+    fn filter_configured(
+        &self,
+        repository: &GitRepository,
+        filter: &str,
+        direction: &str,
+    ) -> Result<bool, GitEngineError> {
+        let key = format!("filter.{filter}.{direction}");
+        let mut command = self.repository_command(repository);
+        command.args(["config", "--get", &key]);
+        let output = self.execute(command)?;
+        match output.status.code() {
+            Some(0) => Ok(!output.stdout.is_empty()),
+            Some(1) => Ok(false),
+            _ => Err(command_failed(
+                "inspect configured Git filter driver",
+                &output,
+            )),
+        }
     }
 }
 
@@ -4002,8 +4048,13 @@ mod tests {
         let temporary = TempDir::new().expect("temporary directory");
         init_repo(temporary.path());
         fs::write(temporary.path().join("Home.md"), "initial\n").expect("note");
-        fs::write(temporary.path().join(".gitignore"), ".vulcan/cache.db*\n").expect("gitignore");
+        fs::write(
+            temporary.path().join(".gitignore"),
+            ".vulcan/cache.db*\nignored.tmp\n",
+        )
+        .expect("gitignore");
         let head = commit_all(temporary.path(), "initial");
+        fs::write(temporary.path().join("ignored.tmp"), "ignored bytes\n").expect("ignored file");
         fs::create_dir(temporary.path().join(".vulcan")).expect("Vulcan directory");
         for (path, contents) in [
             (
@@ -4693,14 +4744,58 @@ mod tests {
                 ".vulcan/cache.db-shm"
             ]
         );
-        assert_eq!(
-            requirements.required_filters,
-            [GitFilterRequirement {
-                name: "lfs".to_string(),
-                path_count: 1,
-            }]
-        );
+        assert_eq!(requirements.required_filters.len(), 1);
+        let lfs = &requirements.required_filters[0];
+        assert_eq!(lfs.name, "lfs");
+        assert_eq!(lfs.path_count, 1);
+        assert_eq!(lfs.executable_available, requirements.git_lfs_available);
         assert!(requirements.git_lfs_available.is_some());
+    }
+
+    #[test]
+    fn repository_requirements_distinguish_complete_and_missing_filter_drivers() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(
+            temporary.path().join(".gitattributes"),
+            "*.ready filter=ready\n*.missing filter=missing\n",
+        )
+        .expect("attributes");
+        fs::write(temporary.path().join("asset.ready"), "ready\n").expect("ready asset");
+        fs::write(temporary.path().join("asset.missing"), "missing\n").expect("missing asset");
+        commit_all(temporary.path(), "requirements");
+        run_git(
+            temporary.path(),
+            &["config", "filter.ready.clean", "configured-clean"],
+        );
+        run_git(
+            temporary.path(),
+            &["config", "filter.ready.smudge", "configured-smudge"],
+        );
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+
+        let requirements = engine
+            .repository_requirements(&repository)
+            .expect("requirements");
+
+        let ready = requirements
+            .required_filters
+            .iter()
+            .find(|filter| filter.name == "ready")
+            .expect("ready filter");
+        assert!(ready.clean_configured);
+        assert!(ready.smudge_configured);
+        assert!(!ready.process_configured);
+        assert!(ready.ready());
+        let missing = requirements
+            .required_filters
+            .iter()
+            .find(|filter| filter.name == "missing")
+            .expect("missing filter");
+        assert!(!missing.ready());
     }
 
     #[test]

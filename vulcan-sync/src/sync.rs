@@ -1,11 +1,12 @@
 use crate::{
     GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine, GitEngineError,
     GitInstallation, GitOid, GitPathObject, GitPlatformPreflight, GitPlatformProfile,
-    GitPushResult, GitRefName, GitRemote, GitRepository, GitResolvedPath, GitSafetyState,
-    GitTreeApplyPlan, MergeAutomation, MergeFileKind, MergePolicy, MergeResolution, SyncAction,
-    SyncBackend, SyncCapabilities, SyncCapability, SyncConflict, SyncContext, SyncError,
-    SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome, SyncPlan, SyncProgress,
-    SyncReport, SyncResolutionState, SyncState, SyncStatus, SYNC_CONTRACT_VERSION,
+    GitPushResult, GitRefName, GitRemote, GitRepository, GitRepositoryRequirements,
+    GitResolvedPath, GitSafetyState, GitTreeApplyPlan, MergeAutomation, MergeFileKind, MergePolicy,
+    MergeResolution, SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncConflict,
+    SyncContext, SyncError, SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome,
+    SyncPlan, SyncProgress, SyncReport, SyncResolutionState, SyncState, SyncStatus,
+    SYNC_CONTRACT_VERSION,
 };
 use fs2::FileExt;
 use serde::Serialize;
@@ -345,6 +346,7 @@ pub struct GitSyncReport {
     pub remote: GitRemote,
     pub refs: GitSyncRefs,
     pub safety: GitSafetyState,
+    pub requirements: GitRepositoryRequirements,
     pub platform_policy: crate::GitPlatformPolicy,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub head_before: Option<GitOid>,
@@ -375,7 +377,7 @@ impl GitSyncReport {
         installation: GitInstallation,
         repository: GitRepository,
         refs: GitSyncRefs,
-        safety: GitSafetyState,
+        repository_preflight: (GitSafetyState, GitRepositoryRequirements),
         head_before: (Option<GitOid>, Option<GitRefName>),
         observed: (Option<GitOid>, Option<GitOid>),
     ) -> Self {
@@ -386,7 +388,8 @@ impl GitSyncReport {
             repository,
             remote: options.remote.clone(),
             refs,
-            safety,
+            safety: repository_preflight.0,
+            requirements: repository_preflight.1,
             platform_policy: options.platform.policy(),
             head_before: head_before.0,
             head_ref_before: head_before.1,
@@ -753,25 +756,24 @@ pub fn sync_git_once_with_control(
     let repository = engine.discover_repository(vault_path)?;
     let refs = GitSyncRefs::for_options(options)?;
     let safety = engine.safety_state(&repository)?;
+    let requirements = engine.repository_requirements(&repository)?;
     let head_before = engine.head_commit(&repository)?;
     let head_ref_before = engine.head_reference(&repository)?;
     let local_before = engine.read_ref(&repository, &refs.local)?;
-    let remote_before = if options.dry_run {
-        engine.remote_ref(&repository, &options.remote, &refs.live)?
-    } else {
-        None
-    };
     let mut report = GitSyncReport::initial(
         options,
         installation,
         repository,
         refs,
-        safety,
+        (safety, requirements),
         (head_before, head_ref_before),
-        (remote_before, local_before),
+        (None, local_before),
     );
     emit_progress(observer, GitSyncPhase::Preparing, 0, &report, None)?;
+    require_filter_drivers(&report.requirements)?;
     if options.dry_run {
+        report.remote_before =
+            engine.remote_ref(&report.repository, &options.remote, &report.refs.live)?;
         if let Some(revision) = report.local_before.as_ref().or(report.head_before.as_ref()) {
             report.local_platform_preflight = Some(platform_preflight(
                 engine,
@@ -804,6 +806,25 @@ pub fn sync_git_once_with_control(
     }
 
     Err(GitSyncError::RetryLimit { attempts })
+}
+
+fn require_filter_drivers(requirements: &GitRepositoryRequirements) -> Result<(), GitSyncError> {
+    let unavailable = requirements
+        .required_filters
+        .iter()
+        .filter(|filter| !filter.ready())
+        .map(|filter| filter.name.as_str())
+        .collect::<Vec<_>>();
+    if unavailable.is_empty() {
+        Ok(())
+    } else {
+        Err(GitSyncError::Git(GitEngineError::UnsupportedRepository {
+            detail: format!(
+                "tracked files require unavailable Git clean/smudge filter drivers: {}; configure each driver for both capture and materialization before synchronizing",
+                unavailable.join(", ")
+            ),
+        }))
+    }
 }
 
 fn retry_backoff(attempt: usize) -> Duration {
@@ -2436,6 +2457,44 @@ mod tests {
         assert!(report.actions.contains(&GitSyncAction::Pushed));
         assert!(!report.actions.contains(&GitSyncAction::WorktreeApplied));
         assert_eq!(report.accepted, report.local_snapshot);
+        assert!(report.requirements.required_filters.is_empty());
+    }
+
+    #[test]
+    fn unavailable_filter_driver_blocks_capture_and_remote_access() {
+        let (_temporary, remote, writer) = setup_remote_and_writer();
+        fs::write(
+            writer.join(".gitattributes"),
+            "*.protected filter=missing\n",
+        )
+        .expect("attributes");
+        fs::write(writer.join("asset.protected"), "canonical bytes\n").expect("asset");
+        commit_all(&writer, "declare missing filter");
+        let engine = GitCliEngine::default();
+        let options = GitSyncOptions::default();
+        let refs = GitSyncRefs::for_options(&options).expect("sync refs");
+
+        let error = sync_git_once(&engine, &writer, &options).expect_err("filter rejection");
+
+        assert!(matches!(
+            error,
+            GitSyncError::Git(GitEngineError::UnsupportedRepository { .. })
+        ));
+        let repository = engine.discover_repository(&writer).expect("repository");
+        assert_eq!(
+            engine
+                .read_ref(&repository, &refs.local)
+                .expect("local ref"),
+            None,
+            "filter preflight must run before capture"
+        );
+        let remote_live = Command::new("git")
+            .args(["--git-dir"])
+            .arg(&remote)
+            .args(["rev-parse", "--quiet", "--verify", refs.live.as_str()])
+            .status()
+            .expect("Git should launch");
+        assert!(!remote_live.success(), "remote live ref must remain absent");
     }
 
     #[cfg(unix)]

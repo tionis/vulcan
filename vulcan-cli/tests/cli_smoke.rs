@@ -4549,6 +4549,10 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     let bootstrap_json = parse_stdout_json(&bootstrap);
     assert_eq!(bootstrap_json["outcome"], "bootstrapped");
     assert_eq!(bootstrap_json["actions"], serde_json::json!(["pushed"]));
+    assert_eq!(
+        bootstrap_json["requirements"]["required_filters"],
+        serde_json::json!([])
+    );
     assert!(bootstrap_json["state"]["repository_key"].is_string());
     assert!(bootstrap_json["state"]["journal_path"].is_string());
     assert!(bootstrap_json["state"].get("retained").is_none());

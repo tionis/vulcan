@@ -1,7 +1,7 @@
 ---
 name: diagnostics-and-repair
 description: Diagnose vault health, broken links, parser diagnostics, suspicious state, synchronization pauses or conflicts, and repairable problems. Use when the user asks why something is broken, wants a health check, sees diagnostics, or needs safe repair steps before editing notes.
-version: 15
+version: 16
 tools:
   - doctor
   - cache_verify
@@ -33,6 +33,7 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 7. `vulcan sync doctor` reports whether a stable device identity already exists but never creates one. Missing identity before the first mutating sync is informational; malformed or unsupported identity state is an error requiring preservation and review.
 8. Treat `state.apply-marker` as an interrupted worktree application, not cache damage. Preserve the private-Git-directory marker and device-local journal, avoid manual ref cleanup, and rerun sync so current bytes are recaptured and the accepted revision is verified before the marker is cleared.
 9. A mutating sync applies the same target-platform preflight as doctor. If a local tree is incompatible, its bytes and object ID are already captured and the journal remains at `captured`; no remote query occurred. If a fetched or merged tree is incompatible, Vulcan leaves the worktree and remote live ref unchanged. Fix or rename the reported paths on a platform that can represent them, then rerun sync rather than bypassing the profile.
+10. If `git.filters` is an error, inspect the typed `required_filters` entries. Every declared driver needs either `process_configured: true` or both `clean_configured` and `smudge_configured`; an LFS driver also needs `executable_available: true`. Install/configure the same round-trip driver used by ordinary Git before retrying. Sync deliberately stops before capture and remote access rather than committing unfiltered bytes.
 
 ## Guardrails
 

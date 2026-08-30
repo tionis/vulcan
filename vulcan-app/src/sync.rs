@@ -426,10 +426,25 @@ fn doctor_repository_requirements(
         let filters = requirements
             .required_filters
             .iter()
-            .map(|filter| format!("{} ({})", filter.name, filter.path_count))
+            .map(|filter| {
+                format!(
+                    "{} ({} paths, {})",
+                    filter.name,
+                    filter.path_count,
+                    if filter.ready() {
+                        "ready"
+                    } else {
+                        "unavailable"
+                    }
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
-        let severity = if requirements.git_lfs_available == Some(false) {
+        let severity = if requirements
+            .required_filters
+            .iter()
+            .any(|filter| !filter.ready())
+        {
             SyncDoctorSeverity::Error
         } else {
             SyncDoctorSeverity::Info
@@ -2271,6 +2286,60 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         }));
         assert!(report.checks.iter().any(|check| {
             check.code == "state.apply-marker" && check.severity == SyncDoctorSeverity::Error
+        }));
+    }
+
+    #[test]
+    fn sync_doctor_reports_unavailable_round_trip_filter_drivers() {
+        let temporary = tempdir().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        git(
+            &vault,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&vault, &["config", "user.name", "Vulcan Test"]);
+        git(&vault, &["config", "user.email", "vulcan@example.invalid"]);
+        git(
+            &vault,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        fs::write(vault.join(".gitattributes"), "*.protected filter=missing\n")
+            .expect("attributes");
+        fs::write(vault.join("asset.protected"), "protected bytes\n").expect("asset");
+        git(&vault, &["add", ".gitattributes", "asset.protected"]);
+        git(&vault, &["commit", "--quiet", "-m", "filtered asset"]);
+        let report = doctor_git_vault_with_state_store(
+            &VaultPaths::new(&vault),
+            &GitSyncOptions::default(),
+            &SyncStateStore::at(temporary.path().join("state")),
+        );
+
+        assert!(!report.healthy);
+        let requirement = report
+            .requirements
+            .as_ref()
+            .and_then(|requirements| requirements.required_filters.first())
+            .expect("filter requirement");
+        assert_eq!(requirement.name, "missing");
+        assert!(!requirement.ready());
+        assert!(report.checks.iter().any(|check| {
+            check.code == "git.filters" && check.severity == SyncDoctorSeverity::Error
         }));
     }
 
