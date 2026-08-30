@@ -12923,6 +12923,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("MCP `sync` pack"));
     assert!(git_skill.contains("mutation-free `sync_plan`"));
     assert!(git_skill.contains("vulcan sync semantic-plan"));
+    assert!(git_skill.contains("agent_semantic_plans: true"));
     assert!(git_skill.contains("vulcan sync retention-plan [<wiki>]"));
     assert!(git_skill.contains("vulcan sync retention-apply [<wiki>] --dry-run"));
     assert!(git_skill.contains("Add `--rollover` only when the user has explicitly chosen"));

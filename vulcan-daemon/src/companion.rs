@@ -30,8 +30,8 @@ use vulcan_app::sync_proposals::{
     ResolutionProposal, ResolutionProposalOptions,
 };
 use vulcan_app::sync_semantic::{
-    create_semantic_plan_with_state_store, SemanticGrouping, SemanticPlanOptions,
-    SemanticPlanReport,
+    create_semantic_plan_with_provider_and_state_store, create_semantic_plan_with_state_store,
+    SemanticAgentProvider, SemanticGrouping, SemanticPlanOptions, SemanticPlanReport,
 };
 use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::{
@@ -162,6 +162,33 @@ pub struct CompanionResolutionAgent {
     active_conflicts: Mutex<BTreeSet<String>>,
 }
 
+pub struct CompanionSemanticAgent {
+    provider: Box<dyn SemanticAgentProvider>,
+}
+
+impl CompanionSemanticAgent {
+    #[must_use]
+    pub fn new(provider: impl SemanticAgentProvider + 'static) -> Self {
+        Self {
+            provider: Box::new(provider),
+        }
+    }
+
+    #[cfg(feature = "web")]
+    pub fn openai_compatible(
+        endpoint: impl Into<String>,
+        model: impl Into<String>,
+        api_key: Option<String>,
+    ) -> Result<Self, CompanionError> {
+        let endpoint = endpoint.into();
+        let provider = vulcan_app::sync_semantic::OpenAiCompatibleSemanticProvider::new(
+            &endpoint, model, api_key,
+        )
+        .map_err(|error| invalid_request(error.to_string()))?;
+        Ok(Self::new(provider))
+    }
+}
+
 impl CompanionResolutionAgent {
     #[must_use]
     pub fn new(provider: impl ResolutionAgentProvider + 'static) -> Self {
@@ -281,6 +308,7 @@ pub struct CompanionService<'a> {
     supervisor: &'a SyncSupervisor,
     state_store: &'a SyncStateStore,
     resolution_agent: Option<&'a CompanionResolutionAgent>,
+    semantic_agent: Option<&'a CompanionSemanticAgent>,
 }
 
 impl<'a> CompanionService<'a> {
@@ -295,12 +323,19 @@ impl<'a> CompanionService<'a> {
             supervisor,
             state_store,
             resolution_agent: None,
+            semantic_agent: None,
         }
     }
 
     #[must_use]
     pub const fn with_resolution_agent(mut self, agent: &'a CompanionResolutionAgent) -> Self {
         self.resolution_agent = Some(agent);
+        self
+    }
+
+    #[must_use]
+    pub const fn with_semantic_agent(mut self, agent: &'a CompanionSemanticAgent) -> Self {
+        self.semantic_agent = Some(agent);
         self
     }
 
@@ -346,7 +381,7 @@ impl<'a> CompanionService<'a> {
             agent_conflict_proposal_claim_scope: self
                 .resolution_agent
                 .map(|_| CompanionProposalClaimScope::DaemonProcess),
-            agent_semantic_plans: false,
+            agent_semantic_plans: self.semantic_agent.is_some(),
         }
     }
 
@@ -557,21 +592,50 @@ impl<'a> CompanionService<'a> {
         request: &SemanticPlanRequest,
     ) -> Result<SemanticPlanReport, CompanionError> {
         let registration = self.checked_git_registration(wiki_id)?;
-        create_semantic_plan_with_state_store(
-            &VaultPaths::new(registration.path),
-            &SemanticPlanOptions {
-                from: request.from.clone(),
-                to: request.to.clone(),
-                semantic_ref: GitRefName::parse(&request.semantic_ref)
-                    .map_err(|error| invalid_request(error.to_string()))?,
-                remote: GitRemote::parse(&request.remote)
-                    .map_err(|error| invalid_request(error.to_string()))?,
-                live_ref: GitRefName::parse(&request.live_ref)
-                    .map_err(|error| invalid_request(error.to_string()))?,
-                grouping: request.grouping,
-                agent: request.agent,
-                dry_run: request.dry_run,
-            },
+        let paths = VaultPaths::new(registration.path);
+        let options = SemanticPlanOptions {
+            from: request.from.clone(),
+            to: request.to.clone(),
+            semantic_ref: GitRefName::parse(&request.semantic_ref)
+                .map_err(|error| invalid_request(error.to_string()))?,
+            remote: GitRemote::parse(&request.remote)
+                .map_err(|error| invalid_request(error.to_string()))?,
+            live_ref: GitRefName::parse(&request.live_ref)
+                .map_err(|error| invalid_request(error.to_string()))?,
+            grouping: request.grouping,
+            agent: request.agent,
+            dry_run: request.dry_run,
+        };
+        if !request.agent {
+            return create_semantic_plan_with_state_store(&paths, &options, self.state_store)
+                .map_err(map_app_error);
+        }
+
+        let agent = self.semantic_agent.ok_or_else(|| {
+            CompanionError::new(
+                CompanionErrorKind::NotFound,
+                "no semantic planning agent is configured for this companion service",
+            )
+        })?;
+        let profile = registration
+            .permissions_profile
+            .as_deref()
+            .unwrap_or("unrestricted");
+        let selection = resolve_permission_profile(&paths, Some(profile)).map_err(|error| {
+            CompanionError::new(CompanionErrorKind::PermissionDenied, error.to_string())
+        })?;
+        if let Some(endpoint) = agent.provider.network_endpoint() {
+            ProfilePermissionGuard::new(&paths, selection)
+                .check_network(endpoint)
+                .map_err(|error| {
+                    CompanionError::new(CompanionErrorKind::PermissionDenied, error.to_string())
+                })?;
+        }
+        create_semantic_plan_with_provider_and_state_store(
+            &paths,
+            &options,
+            agent.provider.as_ref(),
+            &vulcan_app::sync::SyncCancellationToken::default(),
             self.state_store,
         )
         .map_err(map_app_error)
@@ -738,11 +802,16 @@ mod tests {
         ResolutionAgentOutput, ResolutionAgentPathOutput, ResolutionAgentRequest,
         ResolutionAgentTools,
     };
+    use vulcan_app::sync_semantic::{
+        SemanticAgentCommit, SemanticAgentIdentity, SemanticAgentOutput, SemanticAgentRequest,
+    };
     use vulcan_sync::GitSyncOptions;
 
     struct ConfiguredTestProvider;
 
     struct ResolvingTestProvider;
+
+    struct ConfiguredSemanticTestProvider;
 
     impl ResolutionAgentProvider for ConfiguredTestProvider {
         fn identity(&self) -> ResolutionAgentIdentity {
@@ -795,6 +864,38 @@ mod tests {
                         content: b"companion resolution\n".to_vec(),
                     })
                     .collect(),
+            })
+        }
+    }
+
+    impl SemanticAgentProvider for ConfiguredSemanticTestProvider {
+        fn identity(&self) -> SemanticAgentIdentity {
+            SemanticAgentIdentity {
+                provider: "companion-test".to_string(),
+                model: "semantic-v1".to_string(),
+                prompt_contract_version: 1,
+            }
+        }
+
+        fn network_endpoint(&self) -> Option<&str> {
+            Some("https://semantic.example.test/v1/chat/completions")
+        }
+
+        fn propose(
+            &self,
+            request: &SemanticAgentRequest,
+            _cancellation: &SyncCancellationToken,
+        ) -> Result<SemanticAgentOutput, vulcan_app::AppError> {
+            Ok(SemanticAgentOutput {
+                commits: vec![SemanticAgentCommit {
+                    group: "notes".to_string(),
+                    message: "Organize accepted notes".to_string(),
+                    paths: request
+                        .changes
+                        .iter()
+                        .map(|change| change.path.clone())
+                        .collect(),
+                }],
             })
         }
     }
@@ -1076,6 +1177,137 @@ mod tests {
             .expect("operations")
             .contains(&json!("conflict_proposal_create")));
         assert!(!value.to_string().contains("agent.example.test"));
+    }
+
+    #[test]
+    fn configured_semantic_agent_is_advertised_without_exposing_its_endpoint() {
+        let temporary = tempdir().expect("temporary directory");
+        let (registry, supervisor, state_store, _) = fixture(&temporary);
+        let agent = CompanionSemanticAgent::new(ConfiguredSemanticTestProvider);
+        let service =
+            CompanionService::new(&registry, &supervisor, &state_store).with_semantic_agent(&agent);
+        let value = serde_json::to_value(service.capabilities()).expect("serialize capabilities");
+
+        assert_eq!(value["agent_semantic_plans"], json!(true));
+        assert!(!value.to_string().contains("semantic.example.test"));
+    }
+
+    #[test]
+    fn semantic_agent_requests_fail_closed_without_a_configured_provider() {
+        let temporary = tempdir().expect("temporary directory");
+        let (registry, supervisor, state_store, wiki_id) = fixture(&temporary);
+        let service = CompanionService::new(&registry, &supervisor, &state_store);
+        let error = service
+            .create_semantic_plan(
+                &wiki_id,
+                &SemanticPlanRequest {
+                    from: "main".to_string(),
+                    to: "refs/vulcan/sync/local/live".to_string(),
+                    semantic_ref: "refs/heads/main".to_string(),
+                    remote: "origin".to_string(),
+                    live_ref: DEFAULT_REMOTE_LIVE_REF.to_string(),
+                    grouping: SemanticGrouping::Agent,
+                    agent: true,
+                    dry_run: true,
+                },
+            )
+            .expect_err("missing semantic provider must fail closed");
+
+        assert_eq!(error.kind, CompanionErrorKind::NotFound);
+        assert!(error
+            .detail
+            .contains("no semantic planning agent is configured"));
+    }
+
+    #[test]
+    fn configured_semantic_agent_builds_a_reviewable_plan() {
+        let temporary = tempdir().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote.to_str().expect("remote"),
+            ],
+        );
+        let vault = temporary.path().join("vault");
+        fs::create_dir(&vault).expect("vault directory");
+        git(
+            &vault,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(
+            &vault,
+            &["remote", "add", "origin", remote.to_str().expect("remote")],
+        );
+        fs::write(vault.join("Home.md"), "base\n").expect("base note");
+        commit_all(&vault, "base");
+        let state_store = SyncStateStore::at(temporary.path().join("sync-state"));
+        sync_git_vault_with_state_store(
+            &VaultPaths::new(&vault),
+            &GitSyncOptions::default(),
+            &state_store,
+        )
+        .expect("bootstrap sync");
+        fs::write(vault.join("Home.md"), "accepted update\n").expect("update note");
+        let accepted = sync_git_vault_with_state_store(
+            &VaultPaths::new(&vault),
+            &GitSyncOptions::default(),
+            &state_store,
+        )
+        .expect("publish accepted update")
+        .sync
+        .accepted
+        .expect("accepted update")
+        .to_string();
+
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        let wiki_id = WikiId::parse("notes").expect("wiki id");
+        registry
+            .add(
+                &AddWikiRequest {
+                    id: wiki_id.clone(),
+                    path: vault,
+                    groups: Vec::new(),
+                    git_dir: None,
+                    permissions_profile: None,
+                    sync_backend: Some("git".to_string()),
+                    platform_profile: None,
+                },
+                false,
+            )
+            .expect("register vault");
+        let supervisor =
+            SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor");
+        let agent = CompanionSemanticAgent::new(ConfiguredSemanticTestProvider);
+        let service =
+            CompanionService::new(&registry, &supervisor, &state_store).with_semantic_agent(&agent);
+        let report = service
+            .create_semantic_plan(
+                &wiki_id,
+                &SemanticPlanRequest {
+                    from: "main".to_string(),
+                    to: accepted,
+                    semantic_ref: "refs/heads/main".to_string(),
+                    remote: "origin".to_string(),
+                    live_ref: DEFAULT_REMOTE_LIVE_REF.to_string(),
+                    grouping: SemanticGrouping::Agent,
+                    agent: true,
+                    dry_run: true,
+                },
+            )
+            .expect("semantic plan");
+
+        assert_eq!(report.grouping, SemanticGrouping::Agent);
+        assert!(report.agent);
+        assert_eq!(
+            report.agent_identity.expect("agent identity").model,
+            "semantic-v1"
+        );
+        assert_eq!(report.commits.len(), 1);
+        assert_eq!(report.commits[0].paths, vec!["Home.md"]);
     }
 
     #[test]

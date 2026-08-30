@@ -2,9 +2,9 @@
 
 use crate::companion::{
     CompanionCapabilities, CompanionError, CompanionErrorKind, CompanionOperation,
-    CompanionResolutionAgent, CompanionService, ConflictProposalApprovalRequest,
-    ConflictProposalRejectionRequest, ConflictProposalRequest, ConflictResolveRequest,
-    SemanticPlanRequest, SyncSelectionRequest, COMPANION_PROTOCOL_VERSION,
+    CompanionResolutionAgent, CompanionSemanticAgent, CompanionService,
+    ConflictProposalApprovalRequest, ConflictProposalRejectionRequest, ConflictProposalRequest,
+    ConflictResolveRequest, SemanticPlanRequest, SyncSelectionRequest, COMPANION_PROTOCOL_VERSION,
 };
 use crate::credentials::CompanionCredential;
 use crate::registry::{WikiId, WikiRegistry};
@@ -46,16 +46,21 @@ pub struct CompanionHttpState {
     pub state_store: Arc<SyncStateStore>,
     pub credential: Arc<CompanionCredential>,
     pub resolution_agent: Option<Arc<CompanionResolutionAgent>>,
+    pub semantic_agent: Option<Arc<CompanionSemanticAgent>>,
 }
 
 impl CompanionHttpState {
     #[must_use]
     pub fn service(&self) -> CompanionService<'_> {
-        let service = CompanionService::new(&self.registry, &self.supervisor, &self.state_store);
-        match self.resolution_agent.as_deref() {
-            Some(agent) => service.with_resolution_agent(agent),
-            None => service,
+        let mut service =
+            CompanionService::new(&self.registry, &self.supervisor, &self.state_store);
+        if let Some(agent) = self.resolution_agent.as_deref() {
+            service = service.with_resolution_agent(agent);
         }
+        if let Some(agent) = self.semantic_agent.as_deref() {
+            service = service.with_semantic_agent(agent);
+        }
+        service
     }
 }
 
@@ -648,6 +653,7 @@ mod tests {
                     .expect("credential"),
             ),
             resolution_agent: None,
+            semantic_agent: None,
         };
         (temporary, state)
     }
@@ -857,6 +863,32 @@ mod tests {
             .as_str()
             .expect("detail")
             .contains("no resolution agent is configured"));
+    }
+
+    #[tokio::test]
+    async fn semantic_agent_endpoint_fails_closed_without_a_configured_provider() {
+        let (_temporary, state) = fixture();
+        let request = HttpRequest::builder()
+            .method(Method::POST)
+            .uri("/notes/sync/semantic-plans")
+            .header(AUTHORIZATION, format!("Bearer {}", state.credential.token))
+            .header(PROTOCOL_VERSION_HEADER, "1")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"from":"main","to":"accepted","semantic_ref":"refs/heads/main","agent":true,"dry_run":true}"#,
+            ))
+            .expect("request");
+        let response = companion_router(state)
+            .oneshot(request)
+            .await
+            .expect("response");
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let value = body_json(response).await;
+        assert_eq!(value["kind"], json!("not_found"));
+        assert!(value["detail"]
+            .as_str()
+            .expect("detail")
+            .contains("no semantic planning agent is configured"));
     }
 
     #[test]

@@ -38,7 +38,7 @@ Clients should call `GET /capabilities` before relying on optional operations.
 | `POST` | `/{id}/sync/conflicts/{conflict}/proposals` | Provider-backed resolution proposal when advertised |
 | `POST` | `/{id}/sync/conflicts/{conflict}/proposals/approve` | Explicit stale-checked proposal approval |
 | `POST` | `/{id}/sync/conflicts/{conflict}/proposals/reject` | Explicit proposal rejection |
-| `POST` | `/{id}/sync/semantic-plans` | Deterministic semantic-history plan report |
+| `POST` | `/{id}/sync/semantic-plans` | Deterministic or advertised provider-backed semantic-history plan report |
 | `GET` | `/jobs/{job}` | Retained job status |
 | `DELETE` | `/jobs/{job}` | Queued cancellation or cooperative running cancellation report |
 | `GET` | `/aggregate-jobs/{job}` | Aggregate selection status, independent child reports, and outcome counts |
@@ -54,6 +54,12 @@ pair before invoking the provider and returns `conflict` immediately for a concu
 The scoped claim is released after success or failure. It prevents duplicate token spend inside
 one daemon, but it is not a cross-device coordination protocol.
 
+Semantic agent planning is likewise available only when `agent_semantic_plans` is true. The
+daemon owns that provider's endpoint, model, and credential; companion JSON only opts into the
+configured provider with `agent: true`. The registered wiki permission profile gates the reported
+network endpoint before any patches are sent. Deterministic planning remains available when no
+semantic provider is configured, while an explicit agent request then returns `not_found`.
+
 Aggregate selection JSON contains exactly one of `wiki` (a registered wiki ID), `group` (a
 registered group name), or `all: true`. The retained parent identifies every normalized child job;
 its counts and state are derived from those children. A failed or conflicted child does not roll
@@ -61,9 +67,9 @@ back a successful child.
 
 Conflict resolution JSON contains `side` (`base`, `local`, or `remote`) and may contain `remote`,
 `live_ref`, and `dry_run`. Semantic-plan JSON contains `from`, `to`, and `semantic_ref`, and may
-contain `remote`, `live_ref`, `agent`, and `dry_run`. The defaults are remote `origin` and live ref
-`refs/heads/__vulcan-sync/live`. Capability negotiation reports both agent modes as unavailable
-until their complete review and validation pipelines exist.
+contain `remote`, `live_ref`, `grouping`, `agent`, and `dry_run`. The defaults are remote `origin`,
+live ref `refs/heads/__vulcan-sync/live`, and deterministic `top_level` grouping. Capability
+negotiation is authoritative for both optional agent modes.
 
 ## WebSocket events
 
