@@ -470,6 +470,7 @@ fn run_semantic_plan(
         grouping: match group_by {
             SemanticGroupingArg::TopLevel => SemanticGrouping::TopLevel,
             SemanticGroupingArg::File => SemanticGrouping::File,
+            SemanticGroupingArg::Change => SemanticGrouping::Change,
             SemanticGroupingArg::All => SemanticGrouping::All,
         },
         agent,

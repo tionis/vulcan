@@ -15,9 +15,9 @@ use tempfile::NamedTempFile;
 use ulid::Ulid;
 use vulcan_core::VaultPaths;
 use vulcan_sync::{
-    semantic_proposal_ref as namespace_semantic_proposal_ref, GitCliEngine, GitEngine, GitOid,
-    GitRefDeleteResult, GitRefName, GitRefUpdateResult, GitRemote, GitRepository, GitSyncOptions,
-    GitSyncRefs,
+    semantic_proposal_ref as namespace_semantic_proposal_ref, GitChange, GitChangeKind,
+    GitCliEngine, GitEngine, GitOid, GitRefDeleteResult, GitRefName, GitRefUpdateResult, GitRemote,
+    GitRepository, GitSyncOptions, GitSyncRefs,
 };
 
 pub const SEMANTIC_PLAN_VERSION: u32 = 4;
@@ -46,6 +46,7 @@ pub enum SemanticGrouping {
     #[default]
     TopLevel,
     File,
+    Change,
     All,
     Agent,
 }
@@ -458,6 +459,12 @@ fn create_semantic_plan_internal(
             provider,
             cancellation,
         )?,
+        None if options.grouping == SemanticGrouping::Change => {
+            let changes = engine
+                .changed_entries(&repository, &source, &target)
+                .map_err(AppError::operation)?;
+            (deterministic_change_groups(changes), None)
+        }
         None => (deterministic_groups(changed_paths, options.grouping), None),
     };
     let mut report = initial_plan_report(
@@ -1377,7 +1384,7 @@ fn deterministic_groups(
             SemanticGrouping::TopLevel => path
                 .split_once('/')
                 .map_or_else(|| path.clone(), |(top, _)| top.to_string()),
-            SemanticGrouping::File => path.clone(),
+            SemanticGrouping::File | SemanticGrouping::Change => path.clone(),
             SemanticGrouping::All => "all changes".to_string(),
             SemanticGrouping::Agent => "agent plan".to_string(),
         };
@@ -1389,6 +1396,146 @@ fn deterministic_groups(
             message: format!("Update {group}"),
             group,
             paths,
+        })
+        .collect()
+}
+
+fn deterministic_change_groups(mut changes: Vec<GitChange>) -> Vec<PlannedSemanticGroup> {
+    changes.sort_by(|left, right| {
+        change_precedence(left.kind)
+            .cmp(&change_precedence(right.kind))
+            .then_with(|| left.source_path.cmp(&right.source_path))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    changes.dedup_by(|left, right| {
+        left.kind == right.kind && left.path == right.path && left.source_path == right.source_path
+    });
+
+    let renames = changes
+        .iter()
+        .filter(|change| change.kind == GitChangeKind::Renamed)
+        .cloned()
+        .collect::<Vec<_>>();
+    let mut rename_groups = rename_components(&renames);
+    let mut groups = Vec::new();
+    for change in changes {
+        if change.kind == GitChangeKind::Renamed {
+            continue;
+        }
+        let (verb, group) = match change.kind {
+            GitChangeKind::Added => ("Add", format!("add {}", change.path)),
+            GitChangeKind::Modified => ("Update", format!("update {}", change.path)),
+            GitChangeKind::Deleted => ("Remove", format!("remove {}", change.path)),
+            GitChangeKind::TypeChanged => ("Change type of", format!("type {}", change.path)),
+            GitChangeKind::Renamed => unreachable!(),
+        };
+        groups.push((
+            change_precedence(change.kind),
+            change.path.clone(),
+            PlannedSemanticGroup {
+                group,
+                message: format!("{verb} {}", change.path),
+                paths: vec![change.path],
+            },
+        ));
+    }
+    for component in rename_groups.drain(..) {
+        let mut paths = BTreeSet::new();
+        for change in &component {
+            paths.insert(
+                change
+                    .source_path
+                    .as_ref()
+                    .expect("rename changes have a source")
+                    .clone(),
+            );
+            paths.insert(change.path.clone());
+        }
+        let first = &component[0];
+        let (group, message) = if component.len() == 1 {
+            let source = first
+                .source_path
+                .as_ref()
+                .expect("rename changes have a source");
+            (
+                format!("rename {source} -> {}", first.path),
+                format!("Rename {source} to {}", first.path),
+            )
+        } else {
+            let label = paths.iter().next().expect("rename component has paths");
+            (
+                format!("rename set {label}"),
+                format!("Rename {} related paths", component.len()),
+            )
+        };
+        groups.push((
+            change_precedence(GitChangeKind::Renamed),
+            group.clone(),
+            PlannedSemanticGroup {
+                group,
+                message,
+                paths: paths.into_iter().collect(),
+            },
+        ));
+    }
+    groups.sort_by(|left, right| left.0.cmp(&right.0).then_with(|| left.1.cmp(&right.1)));
+    groups.into_iter().map(|(_, _, group)| group).collect()
+}
+
+const fn change_precedence(kind: GitChangeKind) -> u8 {
+    match kind {
+        GitChangeKind::Deleted => 0,
+        GitChangeKind::Renamed => 1,
+        GitChangeKind::TypeChanged => 2,
+        GitChangeKind::Added => 3,
+        GitChangeKind::Modified => 4,
+    }
+}
+
+fn rename_components(renames: &[GitChange]) -> Vec<Vec<GitChange>> {
+    let mut remaining = renames.to_vec();
+    let mut components = Vec::new();
+    while let Some(seed) = remaining.pop() {
+        let mut component = vec![seed];
+        let mut paths = component_paths(&component);
+        loop {
+            let Some(index) = remaining.iter().position(|change| {
+                paths.contains(&change.path)
+                    || change
+                        .source_path
+                        .as_ref()
+                        .is_some_and(|source| paths.contains(source))
+            }) else {
+                break;
+            };
+            component.push(remaining.remove(index));
+            paths = component_paths(&component);
+        }
+        component.sort_by(|left, right| {
+            left.source_path
+                .cmp(&right.source_path)
+                .then_with(|| left.path.cmp(&right.path))
+        });
+        components.push(component);
+    }
+    components.sort_by(|left, right| {
+        left[0]
+            .source_path
+            .cmp(&right[0].source_path)
+            .then_with(|| left[0].path.cmp(&right[0].path))
+    });
+    components
+}
+
+fn component_paths(changes: &[GitChange]) -> BTreeSet<String> {
+    changes
+        .iter()
+        .flat_map(|change| {
+            change
+                .source_path
+                .iter()
+                .cloned()
+                .chain(std::iter::once(change.path.clone()))
         })
         .collect()
 }
@@ -1564,15 +1711,16 @@ impl SemanticLock {
 #[cfg(test)]
 mod tests {
     use super::{
-        deterministic_groups, load_semantic_plan_with_state_store, semantic_plan_path,
-        semantic_proposal_ref, validate_agent_output, validate_loaded_plan, validate_plan_id,
-        SemanticAgentCommit, SemanticAgentOutput, SemanticGrouping, SemanticPlanReport,
-        SemanticPlanStatus, SemanticPlanValidation,
+        deterministic_change_groups, deterministic_groups, load_semantic_plan_with_state_store,
+        semantic_plan_path, semantic_proposal_ref, validate_agent_output, validate_loaded_plan,
+        validate_plan_id, SemanticAgentCommit, SemanticAgentOutput, SemanticGrouping,
+        SemanticPlanReport, SemanticPlanStatus, SemanticPlanValidation,
     };
     use crate::sync_state::SyncStateStore;
     use std::fs;
     use std::path::Path;
     use tempfile::tempdir;
+    use vulcan_sync::{GitChange, GitChangeKind};
 
     #[test]
     fn deterministic_groups_are_top_level_and_sorted() {
@@ -1609,6 +1757,49 @@ mod tests {
         let all = deterministic_groups(paths, SemanticGrouping::All);
         assert_eq!(all[0].group, "all changes");
         assert_eq!(all[0].paths, ["Area/One.md", "Area/Two.md"]);
+    }
+
+    #[test]
+    fn change_grouping_orders_dependencies_and_keeps_renames_atomic() {
+        let groups = deterministic_change_groups(vec![
+            GitChange {
+                kind: GitChangeKind::Added,
+                path: "Folder/Note.md".to_string(),
+                source_path: None,
+                similarity: None,
+            },
+            GitChange {
+                kind: GitChangeKind::Renamed,
+                path: "New.md".to_string(),
+                source_path: Some("Old.md".to_string()),
+                similarity: Some(100),
+            },
+            GitChange {
+                kind: GitChangeKind::Deleted,
+                path: "Folder".to_string(),
+                source_path: None,
+                similarity: None,
+            },
+            GitChange {
+                kind: GitChangeKind::Modified,
+                path: "Root.md".to_string(),
+                source_path: None,
+                similarity: None,
+            },
+        ]);
+        assert_eq!(
+            groups
+                .iter()
+                .map(|group| group.message.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "Remove Folder",
+                "Rename Old.md to New.md",
+                "Add Folder/Note.md",
+                "Update Root.md",
+            ]
+        );
+        assert_eq!(groups[1].paths, ["New.md", "Old.md"]);
     }
 
     #[test]

@@ -25,8 +25,8 @@ pub use contracts::{
 };
 
 pub use git::{
-    GitCapture, GitCaptureRequest, GitCaseRenamePolicy, GitCliEngine, GitCloneRequest,
-    GitCommitMetadata, GitConflictSide, GitContentMergeResolutionRequest,
+    GitCapture, GitCaptureRequest, GitCaseRenamePolicy, GitChange, GitChangeKind, GitCliEngine,
+    GitCloneRequest, GitCommitMetadata, GitConflictSide, GitContentMergeResolutionRequest,
     GitDetachedRecoveryReport, GitDetachedRecoveryRequest, GitEngine, GitEngineError,
     GitEngineKind, GitExecutableBitsPolicy, GitFilterRequirement, GitInstallation, GitMerge,
     GitMergeResolutionRequest, GitObjectFormat, GitOid, GitPathLengthPolicy, GitPathObject,

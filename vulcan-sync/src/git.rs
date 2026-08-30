@@ -137,6 +137,14 @@ pub trait GitEngine: Send + Sync {
         to: &GitOid,
     ) -> Result<Vec<String>, GitEngineError>;
 
+    /// Returns typed tree changes, including rename pairs detected by Git.
+    fn changed_entries(
+        &self,
+        repository: &GitRepository,
+        from: &GitOid,
+        to: &GitOid,
+    ) -> Result<Vec<GitChange>, GitEngineError>;
+
     /// Lists every path in a commit or tree without loading object contents.
     fn tree_paths(
         &self,
@@ -772,6 +780,27 @@ pub struct GitTreeEntry {
     pub oid: GitOid,
     pub mode: String,
     pub kind: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitChangeKind {
+    Added,
+    Modified,
+    Deleted,
+    TypeChanged,
+    Renamed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitChange {
+    pub kind: GitChangeKind,
+    /// The destination path, or the sole path for non-rename changes.
+    pub path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub similarity: Option<u8>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1934,6 +1963,29 @@ impl GitEngine for GitCliEngine {
         let output = self.execute(command)?;
         let output = ensure_success("list changed Git paths", output)?;
         parse_nul_paths("list changed Git paths", &output.stdout)
+    }
+
+    fn changed_entries(
+        &self,
+        repository: &GitRepository,
+        from: &GitOid,
+        to: &GitOid,
+    ) -> Result<Vec<GitChange>, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command.args([
+            "diff-tree",
+            "--no-commit-id",
+            "--name-status",
+            "--find-renames=50%",
+            "-r",
+            "-z",
+            from.as_str(),
+            to.as_str(),
+            "--",
+        ]);
+        let output = self.execute(command)?;
+        let output = ensure_success("list typed Git changes", output)?;
+        parse_git_changes(&output.stdout)
     }
 
     fn tree_paths(
@@ -3259,6 +3311,101 @@ fn parse_nul_paths(operation: &'static str, bytes: &[u8]) -> Result<Vec<String>,
         .collect()
 }
 
+fn parse_git_changes(bytes: &[u8]) -> Result<Vec<GitChange>, GitEngineError> {
+    const OPERATION: &str = "list typed Git changes";
+    if bytes.len() > MAX_DIAGNOSTIC_PATH_BYTES {
+        return Err(GitEngineError::InvalidOutput {
+            operation: OPERATION,
+            detail: format!("change output exceeds the {MAX_DIAGNOSTIC_PATH_BYTES} byte limit"),
+        });
+    }
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    if !bytes.ends_with(&[0]) {
+        return Err(GitEngineError::InvalidOutput {
+            operation: OPERATION,
+            detail: "change output is not NUL terminated".to_string(),
+        });
+    }
+
+    let records = bytes[..bytes.len() - 1]
+        .split(|byte| *byte == 0)
+        .collect::<Vec<_>>();
+    let mut changes = Vec::new();
+    let mut index = 0;
+    while index < records.len() {
+        let status =
+            std::str::from_utf8(records[index]).map_err(|error| GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: error.to_string(),
+            })?;
+        index += 1;
+        let (kind, similarity, path_count) = match status.as_bytes().first().copied() {
+            Some(b'A') if status.len() == 1 => (GitChangeKind::Added, None, 1),
+            Some(b'M') if status.len() == 1 => (GitChangeKind::Modified, None, 1),
+            Some(b'D') if status.len() == 1 => (GitChangeKind::Deleted, None, 1),
+            Some(b'T') if status.len() == 1 => (GitChangeKind::TypeChanged, None, 1),
+            Some(b'R') => {
+                let similarity = status[1..].parse::<u8>().ok().filter(|value| *value <= 100);
+                let Some(similarity) = similarity else {
+                    return Err(GitEngineError::InvalidOutput {
+                        operation: OPERATION,
+                        detail: format!("invalid rename status `{status}`"),
+                    });
+                };
+                (GitChangeKind::Renamed, Some(similarity), 2)
+            }
+            _ => {
+                return Err(GitEngineError::InvalidOutput {
+                    operation: OPERATION,
+                    detail: format!("unsupported change status `{status}`"),
+                });
+            }
+        };
+        if index + path_count > records.len() {
+            return Err(GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: format!("status `{status}` is missing path fields"),
+            });
+        }
+        let parse_path = |path: &[u8]| {
+            String::from_utf8(path.to_vec()).map_err(|error| GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: error.to_string(),
+            })
+        };
+        let first = parse_path(records[index])?;
+        index += 1;
+        if first.is_empty() {
+            return Err(GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: format!("status `{status}` contains an empty path"),
+            });
+        }
+        let (source_path, path) = if kind == GitChangeKind::Renamed {
+            let destination = parse_path(records[index])?;
+            index += 1;
+            if destination.is_empty() {
+                return Err(GitEngineError::InvalidOutput {
+                    operation: OPERATION,
+                    detail: format!("status `{status}` contains an empty destination path"),
+                });
+            }
+            (Some(first), destination)
+        } else {
+            (None, first)
+        };
+        changes.push(GitChange {
+            kind,
+            path,
+            source_path,
+            similarity,
+        });
+    }
+    Ok(changes)
+}
+
 fn parse_tree_entries(bytes: &[u8]) -> Result<Vec<GitTreeEntry>, GitEngineError> {
     const OPERATION: &str = "list Git tree entries";
     if bytes.len() > MAX_DIAGNOSTIC_PATH_BYTES {
@@ -4542,6 +4689,58 @@ mod tests {
                 .expect("advance proposal"),
             GitRefUpdateResult::Updated
         );
+    }
+
+    #[test]
+    fn typed_changes_preserve_rename_pairs() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Old.md"), "unchanged content\n").expect("old note");
+        let from = commit_all(temporary.path(), "initial");
+        run_git(temporary.path(), &["mv", "Old.md", "New.md"]);
+        let to = commit_all(temporary.path(), "rename");
+
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        assert_eq!(
+            engine
+                .changed_entries(&repository, &from, &to)
+                .expect("typed changes"),
+            vec![GitChange {
+                kind: GitChangeKind::Renamed,
+                path: "New.md".to_string(),
+                source_path: Some("Old.md".to_string()),
+                similarity: Some(100),
+            }]
+        );
+        assert_eq!(
+            engine
+                .changed_paths(&repository, &from, &to)
+                .expect("validation paths"),
+            vec!["New.md", "Old.md"]
+        );
+        let rename_tree = engine
+            .tree_with_paths(
+                &repository,
+                &from,
+                &to,
+                &["New.md".to_string(), "Old.md".to_string()],
+            )
+            .expect("atomic rename tree");
+        assert_eq!(
+            rename_tree,
+            engine.tree_oid(&repository, &to).expect("target tree")
+        );
+    }
+
+    #[test]
+    fn typed_change_parser_fails_closed_on_malformed_records() {
+        assert!(parse_git_changes(b"R100\0Old.md\0").is_err());
+        assert!(parse_git_changes(b"R101\0Old.md\0New.md\0").is_err());
+        assert!(parse_git_changes(b"C100\0Old.md\0New.md\0").is_err());
+        assert!(parse_git_changes(b"M\0Note.md").is_err());
     }
 
     #[test]

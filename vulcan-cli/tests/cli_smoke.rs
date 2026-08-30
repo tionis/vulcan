@@ -5580,6 +5580,31 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
     assert_eq!(by_file["commits"][1]["group"], "Area/Two.md");
     assert_eq!(by_file["commits"][2]["group"], "Root.md");
 
+    let by_change = parse_stdout_json(
+        &sync(&[
+            "semantic-plan",
+            "--from",
+            &source,
+            "--to",
+            &target,
+            "--group-by",
+            "change",
+            "--dry-run",
+        ])
+        .success(),
+    );
+    assert_eq!(by_change["grouping"], "change");
+    assert_eq!(by_change["commits"].as_array().map(Vec::len), Some(3));
+    assert!(by_change["commits"][0]["message"]
+        .as_str()
+        .is_some_and(|message| message.starts_with("Add Area/One.md\n")));
+    assert!(by_change["commits"][1]["message"]
+        .as_str()
+        .is_some_and(|message| message.starts_with("Add Area/Two.md\n")));
+    assert!(by_change["commits"][2]["message"]
+        .as_str()
+        .is_some_and(|message| message.starts_with("Update Root.md\n")));
+
     let grouped_all = parse_stdout_json(
         &sync(&[
             "semantic-plan",
@@ -13076,6 +13101,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("Treat `--epoch-archives-keep <n> --expire-epoch-archives`"));
     assert!(git_skill.contains("device beyond the retained horizon fails without losing"));
     assert!(git_skill.contains("--group-by file"));
+    assert!(git_skill.contains("--group-by change"));
     assert!(git_skill.contains("semantic branch with compare-and-swap"));
     assert!(git_skill.contains("pause.reason"));
     assert!(git_skill.contains("head_moved"));

@@ -9275,6 +9275,7 @@
                 "possible_values": [
                   "top-level",
                   "file",
+                  "change",
                   "all"
                 ],
                 "required": false,
