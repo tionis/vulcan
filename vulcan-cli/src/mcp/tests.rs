@@ -427,6 +427,37 @@ fn catalog_pack_selection_and_permissions_filter_builtin_tools() {
 }
 
 #[test]
+fn sync_tools_require_full_read_and_git_and_remain_mutation_free() {
+    let selected = resolve_selected_tool_packs(&[McpToolPackArg::Sync], McpToolPackMode::Static);
+    let visible = visible_tool_catalog(&selected, &PermissionProfile::unrestricted())
+        .into_iter()
+        .map(|tool| tool.name)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        visible,
+        vec!["sync_status", "sync_plan", "sync_doctor", "sync_conflicts"]
+    );
+    assert!(visible_tool_catalog(&selected, &PermissionProfile::readonly()).is_empty());
+
+    let tmp = tempfile::tempdir().expect("tempdir should be created");
+    let paths = VaultPaths::new(tmp.path());
+    let mut core = McpServerCore::new(
+        &paths,
+        None,
+        &[McpToolPackArg::Sync],
+        McpToolPackModeArg::Static,
+    )
+    .expect("MCP core should initialize");
+    let result = core
+        .call_tool("sync_doctor", &Map::new())
+        .expect("read-only sync doctor should execute");
+    assert_eq!(result["isError"].as_bool(), Some(false));
+    assert_eq!(result["structuredContent"]["healthy"], false);
+    assert!(!tmp.path().join(".git").exists());
+    assert!(!tmp.path().join(".vulcan").exists());
+}
+
+#[test]
 fn daily_wiki_agent_can_use_index_scan_when_index_pack_is_selected() {
     let tmp = tempfile::tempdir().expect("tempdir should be created");
     let paths = VaultPaths::new(tmp.path());

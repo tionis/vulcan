@@ -73,6 +73,33 @@ pub(super) struct McpToolCallParams {
     pub(super) arguments: Map<String, Value>,
 }
 
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub(super) struct McpSyncTargetArgs {
+    #[serde(default)]
+    pub(super) remote: Option<String>,
+    #[serde(default)]
+    pub(super) live_ref: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub(super) struct McpSyncDoctorArgs {
+    #[serde(default)]
+    pub(super) remote: Option<String>,
+    #[serde(default)]
+    pub(super) live_ref: Option<String>,
+    #[serde(default)]
+    pub(super) platform: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub(super) struct McpSyncConflictsArgs {
+    #[serde(default)]
+    pub(super) conflict_id: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(super) struct McpPromptGetParams {

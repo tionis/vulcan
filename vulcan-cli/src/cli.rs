@@ -4424,6 +4424,7 @@ pub enum McpToolPackArg {
     Web,
     Config,
     Index,
+    Sync,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Default)]

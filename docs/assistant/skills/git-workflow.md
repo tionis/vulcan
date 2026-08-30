@@ -1,7 +1,7 @@
 ---
 name: git-workflow
 description: Inspect vault changes, review history, create intentional commits, or synchronize a Git-backed vault through Vulcan's hidden live ref.
-version: 47
+version: 48
 tools:
   - git_status
   - git_diff
@@ -49,6 +49,7 @@ Use `vulcan sync` when the user wants device/file-tree synchronization. This is 
 - When a sync applies an accepted tree, inspect `application.additions`, `updates`, `deletions`, `type_changes`, and the per-path expected/target object metadata. Vulcan aborts with `worktree_changed` if the complete current worktree no longer exactly matches the captured pre-apply revision; do not bypass that check or manually replay only part of the plan.
 - Vulcan-created sync commits carry `Vulcan-Sync-*` trailers with the stable device ID, protocol/profile, policy, immutable sources, and `Semantic: false`. Use these trailers for provenance; do not infer an author's semantic intent from live snapshot subjects.
 - Use `vulcan sync run --dry-run` to inspect the selected remote and live ref without creating objects, refs, or files; use `vulcan sync run` for one finite direct-mode cycle.
+- Agent clients may request the MCP `sync` pack for `sync_status`, mutation-free `sync_plan`, `sync_doctor`, and `sync_conflicts`. The pack deliberately has no resolver or generic Git shell and is visible only with Git plus full-vault read permission; keep human approval and the ordinary CLI/companion transaction for mutation.
 - `vulcan sync run --max-retries <n>` bounds rejected compare-and-swap reconciliation attempts. Retries recapture and re-fetch with capped exponential backoff and remain cancellable; do not replace them with unconditional force pushes.
 - When a divergent sync reports `automatic_resolutions`, Vulcan first ran ordinary Git merge and then resolved every remaining listed path under the shared deterministic policy. Review each path's `kind`, `rule_id`, and `validation.checks`; the latter records successful path, syntax, schema, Markdown-link-surface, no-file-deletion, exact-tree, whole-tree link-resolution, and mass-deletion checks as applicable. An empty resolution list means no structured fallback was used. A newly unresolved or ambiguous link, an exceeded shared `sync.tree_validation` ceiling, Markdown body overlap, malformed structured content, binary data, delete-modify case, built-in device-state path, or any path requiring review remains a preserved conflict rather than receiving an implicit winner. A replacement shared policy may opt a narrowly selected Obsidian/plugin JSON path into bounded structured merging; never generalize that opt-in to other `.obsidian` state.
 - Use `vulcan sync run <wiki>`, `--group <name>`, or `--all` for registered selections. Group/all results are independent per-wiki transactions with aggregate counts, never one atomic cross-repository operation.

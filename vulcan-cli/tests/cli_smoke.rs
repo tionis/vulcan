@@ -12836,6 +12836,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("Vulcan-Sync-*` trailers"));
     assert!(git_skill.contains("`refs.namespace_version`"));
     assert!(git_skill.contains("remain local under `refs/vulcan/**`"));
+    assert!(git_skill.contains("MCP `sync` pack"));
+    assert!(git_skill.contains("mutation-free `sync_plan`"));
     assert!(git_skill.contains("vulcan sync semantic-plan"));
     assert!(git_skill.contains("vulcan sync retention-plan [<wiki>]"));
     assert!(git_skill.contains("vulcan sync retention-apply [<wiki>] --dry-run"));
@@ -12865,6 +12867,16 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
             .expect("diagnostics skill should be readable");
     assert!(diagnostics_skill.contains("`possibly_lost_hidden_ref_namespaces`"));
     assert!(diagnostics_skill.contains("unpushed candidates, old epochs, conflicts"));
+    let mcp_skill = fs::read_to_string(vault_root.join(".agents/skills/mcp-setup/SKILL.md"))
+        .expect("MCP skill should be readable");
+    assert!(mcp_skill.contains("`--tool-pack sync`"));
+    assert!(mcp_skill.contains("does not expose conflict resolution"));
+    let permission_skill = fs::read_to_string(
+        vault_root.join(".agents/skills/configuration-and-permissions/SKILL.md"),
+    )
+    .expect("permission skill should be readable");
+    assert!(permission_skill.contains("read-only `sync` tool pack"));
+    assert!(permission_skill.contains("full-vault read access"));
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
     assert!(git_skill.contains("--file '<conflict-path>=<source-file>' --dry-run"));
     assert!(git_skill.contains("--patch <patch-file> --dry-run"));
@@ -21476,6 +21488,19 @@ fn describe_json_output_exposes_runtime_command_schema() {
         .expect("commands should be an array")
         .iter()
         .any(|command| command["name"] == "tasks"));
+    let sync = json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
+        .find(|command| command["name"] == "sync")
+        .expect("sync command should be described");
+    for subcommand in ["run", "status", "doctor", "conflicts", "semantic-plan"] {
+        assert!(sync["subcommands"]
+            .as_array()
+            .expect("sync subcommands should be described")
+            .iter()
+            .any(|command| command["name"] == subcommand));
+    }
     assert!(json["commands"]
         .as_array()
         .expect("commands should be an array")
@@ -22143,7 +22168,63 @@ fn completions_command_emits_shell_script() {
         .args(["completions", "bash"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("vulcan").and(predicate::str::contains("complete")));
+        .stdout(
+            predicate::str::contains("vulcan")
+                .and(predicate::str::contains("complete"))
+                .and(predicate::str::contains("semantic-plan"))
+                .and(predicate::str::contains("recover-git")),
+        );
+}
+
+#[test]
+fn describe_mcp_sync_pack_exposes_only_bounded_read_only_operations() {
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--output",
+            "json",
+            "describe",
+            "--format",
+            "mcp",
+            "--tool-pack",
+            "sync",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+    let tools = json["tools"].as_array().expect("MCP tools");
+    assert_eq!(
+        tools
+            .iter()
+            .map(|tool| tool["name"].as_str().expect("tool name"))
+            .collect::<Vec<_>>(),
+        vec!["sync_status", "sync_plan", "sync_doctor", "sync_conflicts"]
+    );
+    assert!(tools
+        .iter()
+        .all(|tool| tool["annotations"]["readOnlyHint"] == true));
+    assert!(tools
+        .iter()
+        .all(|tool| tool["inputSchema"]["additionalProperties"] == false));
+
+    let denied = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--permissions",
+            "readonly",
+            "--output",
+            "json",
+            "describe",
+            "--format",
+            "mcp",
+            "--tool-pack",
+            "sync",
+        ])
+        .assert()
+        .success();
+    assert!(parse_stdout_json(&denied)["tools"]
+        .as_array()
+        .is_some_and(Vec::is_empty));
 }
 
 #[test]

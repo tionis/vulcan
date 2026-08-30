@@ -1,7 +1,7 @@
 ---
 name: mcp-setup
 description: Set up, debug, and operate Vulcan's MCP server for ChatGPT or other MCP clients. Use when the user asks about MCP transport, OAuth/IndieAuth, tool packs, remote HTTPS setup, ChatGPT Developer Mode, or MCP tool/resource visibility.
-version: 1
+version: 2
 tools:
   - mcp
   - describe
@@ -28,12 +28,14 @@ debugging, tool pack selection, and permission-profile questions.
 4. Choose tool packs explicitly with repeated `--tool-pack` or comma-separated pack names.
 5. Use `vulcan describe --format mcp --tool-pack ...` to inspect the exposed static registry.
 6. Use MCP resources to inspect prompts, skills, skill commands, and pack catalogs from the client.
+7. Select `--tool-pack sync` only for repository-wide Git synchronization diagnostics. It provides `sync_status`, mutation-free `sync_plan`, `sync_doctor`, and `sync_conflicts`; it does not expose conflict resolution or arbitrary Git commands.
 
 ## Guardrails
 
 - Do not expose a no-auth public MCP server for a private vault.
 - Keep Vulcan bound to loopback or a private interface behind the HTTPS front door unless you have a deliberate deployment reason.
 - Tool packs are not authorization. Permission profiles still decide what is visible and callable.
+- The `sync` pack requires Git permission and full-vault read permission because its safety reports may name paths anywhere in the repository. A path-filtered read profile intentionally sees no sync tools; use scoped note/search tools or a separately reviewed full-read Git profile.
 - If ChatGPT cannot start auth, check issuer metadata, redirect URI, PKCE, allowed principals, and public URL consistency before changing tool permissions.
 - If IndieAuth returns an unauthorized subject, use the subject shown in Vulcan's callback error to correct `--oauth-indieauth-me` or an explicit `--oauth-local-user` binding.
 

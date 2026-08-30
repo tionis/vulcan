@@ -36,10 +36,10 @@ use protocol::{
     McpMethodError, McpMethodOutcome, McpNoteAppendArgs, McpNoteCreateArgs, McpNoteDeleteArgs,
     McpNoteGetArgs, McpNoteInfoArgs, McpNoteOutlineArgs, McpNotePatchArgs, McpNoteSetArgs,
     McpPromptGetParams, McpQueryArgs, McpResourceReadParams, McpSearchArgs, McpSuggestLinksArgs,
-    McpTaskCompleteArgs, McpTaskCreateArgs, McpTaskListArgs, McpTaskQueryArgs,
-    McpTaskRescheduleArgs, McpToolCallParams, McpToolPackMutationArgs, McpWebFetchArgs,
-    McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT, MCP_PAGE_SIZE, MCP_PROTOCOL_VERSION,
-    MCP_RESOURCE_NOT_FOUND,
+    McpSyncConflictsArgs, McpSyncDoctorArgs, McpSyncTargetArgs, McpTaskCompleteArgs,
+    McpTaskCreateArgs, McpTaskListArgs, McpTaskQueryArgs, McpTaskRescheduleArgs, McpToolCallParams,
+    McpToolPackMutationArgs, McpWebFetchArgs, McpWebSearchArgs, MCP_INLINE_TEXT_LIMIT,
+    MCP_PAGE_SIZE, MCP_PROTOCOL_VERSION, MCP_RESOURCE_NOT_FOUND,
 };
 use serde::Deserialize;
 use serde_json::{Map, Value};
@@ -56,6 +56,11 @@ use std::thread;
 use std::time::Duration;
 use ulid::Ulid;
 use vulcan_app::notes::resolve_periodic_target as app_resolve_periodic_target;
+use vulcan_app::sync::{
+    doctor_git_vault_for_platform, sync_git_vault, GitPlatformProfile, GitRefName, GitRemote,
+    GitSyncOptions,
+};
+use vulcan_app::sync_conflicts::{get_sync_conflict, list_sync_conflicts};
 use vulcan_core::properties::load_note_index;
 #[cfg(feature = "oauth")]
 use vulcan_core::LocalOAuthUserConfig;
@@ -80,6 +85,20 @@ const MCP_HTTP_KEEPALIVE_INTERVAL: Duration = Duration::from_secs(15);
 const MCP_HTTP_POLL_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const DEFAULT_MCP_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MCP_REQUEST_WORKER_STACK_SIZE: usize = 16 * 1024 * 1024;
+
+fn mcp_git_sync_options(args: &McpSyncTargetArgs) -> Result<GitSyncOptions, McpMethodError> {
+    let mut options = GitSyncOptions::default();
+    if let Some(remote) = args.remote.as_deref() {
+        options.remote = GitRemote::parse(remote)
+            .map_err(|error| McpMethodError::invalid_params(error.to_string()))?;
+    }
+    if let Some(live_ref) = args.live_ref.as_deref() {
+        options.live_ref = GitRefName::parse(live_ref)
+            .map_err(|error| McpMethodError::invalid_params(error.to_string()))?;
+    }
+    options.dry_run = true;
+    Ok(options)
+}
 
 fn filter_tasks_query_report(guard: &ProfilePermissionGuard, report: &mut TasksQueryResult) {
     let readable = |task: &Value| {
@@ -2009,6 +2028,51 @@ impl McpServerCore {
             McpToolId::Status => {
                 let report = run_status_command(&self.paths).map_err(cli_tool_error)?;
                 self.serialize_tool_report(tool.name, &report)
+            }
+            McpToolId::SyncStatus | McpToolId::SyncPlan => {
+                let args: McpSyncTargetArgs = parse_tool_arguments(arguments)?;
+                self.guard
+                    .check_git()
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                let options = mcp_git_sync_options(&args)?;
+                let report = sync_git_vault(&self.paths, &options)
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                self.serialize_tool_report(tool.name, &report)
+            }
+            McpToolId::SyncDoctor => {
+                let args: McpSyncDoctorArgs = parse_tool_arguments(arguments)?;
+                self.guard
+                    .check_git()
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                let target = McpSyncTargetArgs {
+                    remote: args.remote,
+                    live_ref: args.live_ref,
+                };
+                let options = mcp_git_sync_options(&target)?;
+                let platform = args
+                    .platform
+                    .as_deref()
+                    .map(GitPlatformProfile::parse)
+                    .transpose()
+                    .map_err(|error| McpMethodError::invalid_params(error.to_string()))?
+                    .unwrap_or_else(GitPlatformProfile::native);
+                let report = doctor_git_vault_for_platform(&self.paths, &options, platform);
+                self.serialize_tool_report(tool.name, &report)
+            }
+            McpToolId::SyncConflicts => {
+                let args: McpSyncConflictsArgs = parse_tool_arguments(arguments)?;
+                self.guard
+                    .check_git()
+                    .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                if let Some(conflict_id) = args.conflict_id.as_deref() {
+                    let report = get_sync_conflict(&self.paths, conflict_id)
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                    self.serialize_tool_report(tool.name, &report)
+                } else {
+                    let report = list_sync_conflicts(&self.paths)
+                        .map_err(|error| McpMethodError::tool(error.to_string()))?;
+                    self.serialize_tool_report(tool.name, &report)
+                }
             }
             McpToolId::DailyShow => {
                 let args: McpDailyShowArgs = parse_tool_arguments(arguments)?;
@@ -4843,6 +4907,7 @@ fn visibility_requirement_name(requirement: McpVisibilityRequirement) -> &'stati
         McpVisibilityRequirement::Index => "index access",
         McpVisibilityRequirement::ConfigRead => "config read access",
         McpVisibilityRequirement::ConfigWrite => "config write access",
+        McpVisibilityRequirement::GitReadAll => "Git access and full-vault read access",
     }
 }
 

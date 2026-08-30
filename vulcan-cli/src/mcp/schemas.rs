@@ -62,6 +62,56 @@ pub(super) fn generic_report_output_schema() -> Value {
     })
 }
 
+fn sync_target_properties() -> Vec<(&'static str, Value)> {
+    vec![
+        (
+            "remote",
+            schema_string("Configured Git remote name; defaults to `origin`."),
+        ),
+        (
+            "live_ref",
+            schema_string(
+                "Exact canonical remote live ref; defaults to `refs/heads/__vulcan-sync/live`.",
+            ),
+        ),
+    ]
+}
+
+pub(super) fn sync_status_input_schema() -> Value {
+    schema_object(sync_target_properties(), &[])
+}
+
+pub(super) fn sync_plan_input_schema() -> Value {
+    schema_object(sync_target_properties(), &[])
+}
+
+pub(super) fn sync_doctor_input_schema() -> Value {
+    let mut properties = sync_target_properties();
+    properties.push((
+        "platform",
+        schema_string_enum(
+            "Optional target platform override for immutable-tree diagnostics.",
+            &[
+                "linux_native",
+                "windows_native",
+                "other_native",
+                "android_shared",
+            ],
+        ),
+    ));
+    schema_object(properties, &[])
+}
+
+pub(super) fn sync_conflicts_input_schema() -> Value {
+    schema_object(
+        vec![(
+            "conflict_id",
+            schema_string("Optional preserved conflict ID; omit to list unresolved conflicts."),
+        )],
+        &[],
+    )
+}
+
 pub(super) fn note_get_input_schema() -> Value {
     schema_object(
         vec![

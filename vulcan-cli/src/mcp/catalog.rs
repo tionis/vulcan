@@ -15,10 +15,11 @@ use super::schemas::{
     note_outline_input_schema, note_outline_output_schema, note_patch_input_schema,
     note_patch_output_schema, note_set_input_schema, note_set_output_schema, query_input_schema,
     search_input_schema, search_output_schema, status_output_schema, suggest_links_input_schema,
-    task_complete_input_schema, task_create_input_schema, task_list_input_schema,
-    task_query_input_schema, task_reschedule_input_schema, tool_pack_mutation_input_schema,
-    tool_pack_state_output_schema, web_fetch_input_schema, web_fetch_output_schema,
-    web_search_input_schema, web_search_output_schema,
+    sync_conflicts_input_schema, sync_doctor_input_schema, sync_plan_input_schema,
+    sync_status_input_schema, task_complete_input_schema, task_create_input_schema,
+    task_list_input_schema, task_query_input_schema, task_reschedule_input_schema,
+    tool_pack_mutation_input_schema, tool_pack_state_output_schema, web_fetch_input_schema,
+    web_fetch_output_schema, web_search_input_schema, web_search_output_schema,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +60,7 @@ pub(super) enum McpToolPack {
     Config,
     Index,
     ToolPacks,
+    Sync,
 }
 
 impl McpToolPack {
@@ -76,6 +78,7 @@ impl McpToolPack {
             Self::Config => "config",
             Self::Index => "index",
             Self::ToolPacks => "tool-packs",
+            Self::Sync => "sync",
         }
     }
 
@@ -101,6 +104,7 @@ impl McpToolPack {
             Self::ToolPacks => {
                 "Inspect and mutate the MCP tool-pack selection for the current session."
             }
+            Self::Sync => "Inspect and plan Git-backed vault synchronization without mutation.",
         }
     }
 }
@@ -136,6 +140,10 @@ pub(super) enum McpToolId {
     ToolPackEnable,
     ToolPackDisable,
     ToolPackSet,
+    SyncStatus,
+    SyncPlan,
+    SyncDoctor,
+    SyncConflicts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -147,6 +155,7 @@ pub(super) enum McpVisibilityRequirement {
     Index,
     ConfigRead,
     ConfigWrite,
+    GitReadAll,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -191,6 +200,7 @@ pub(super) const PACK_WEB: &[McpToolPack] = &[McpToolPack::Web];
 pub(super) const PACK_CONFIG: &[McpToolPack] = &[McpToolPack::Config];
 pub(super) const PACK_INDEX: &[McpToolPack] = &[McpToolPack::Index];
 const PACK_TOOL_PACKS: &[McpToolPack] = &[McpToolPack::ToolPacks];
+pub(super) const PACK_SYNC: &[McpToolPack] = &[McpToolPack::Sync];
 
 pub(super) const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
     McpToolCatalogEntry {
@@ -511,6 +521,54 @@ pub(super) const MCP_TOOL_CATALOG: &[McpToolCatalogEntry] = &[
         examples: &["vulcan index scan --full"],
     },
     McpToolCatalogEntry {
+        id: McpToolId::SyncStatus,
+        name: "sync_status",
+        title: "Inspect Sync Status",
+        description: "Inspect the selected vault's Git sync state and exact remote live ref without capturing, publishing, or applying files.",
+        packs: PACK_SYNC,
+        visibility: McpVisibilityRequirement::GitReadAll,
+        annotations: mcp_annotations(true, false, true, true),
+        input_schema: sync_status_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["sync_status {}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::SyncPlan,
+        name: "sync_plan",
+        title: "Plan One Sync Cycle",
+        description: "Build the same mutation-free finite-cycle preview as `vulcan sync run --dry-run` for the selected vault.",
+        packs: PACK_SYNC,
+        visibility: McpVisibilityRequirement::GitReadAll,
+        annotations: mcp_annotations(true, false, true, true),
+        input_schema: sync_plan_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["sync_plan {\"remote\":\"origin\"}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::SyncDoctor,
+        name: "sync_doctor",
+        title: "Diagnose Git Sync",
+        description: "Run read-only Git layout, ref, journal, filter, cache, and target-platform synchronization diagnostics.",
+        packs: PACK_SYNC,
+        visibility: McpVisibilityRequirement::GitReadAll,
+        annotations: mcp_annotations(true, false, true, true),
+        input_schema: sync_doctor_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["sync_doctor {}"],
+    },
+    McpToolCatalogEntry {
+        id: McpToolId::SyncConflicts,
+        name: "sync_conflicts",
+        title: "Inspect Preserved Sync Conflicts",
+        description: "List unresolved preserved conflicts or inspect one immutable conflict record; this tool never resolves a conflict.",
+        packs: PACK_SYNC,
+        visibility: McpVisibilityRequirement::GitReadAll,
+        annotations: mcp_annotations(true, false, true, false),
+        input_schema: sync_conflicts_input_schema,
+        output_schema: Some(generic_report_output_schema),
+        examples: &["sync_conflicts {}", "sync_conflicts {\"conflict_id\":\"01...\"}"],
+    },
+    McpToolCatalogEntry {
         id: McpToolId::ToolPackList,
         name: "tool_pack_list",
         title: "List MCP Tool Packs",
@@ -573,6 +631,7 @@ pub(super) const ALL_MCP_TOOL_PACKS: &[McpToolPack] = &[
     McpToolPack::Config,
     McpToolPack::Index,
     McpToolPack::ToolPacks,
+    McpToolPack::Sync,
 ];
 
 pub(super) fn tool_by_name(name: &str) -> Option<&'static McpToolCatalogEntry> {
@@ -592,6 +651,7 @@ pub(super) fn expand_tool_pack_arg(value: McpToolPackArg) -> &'static [McpToolPa
         McpToolPackArg::Web => PACK_WEB,
         McpToolPackArg::Config => PACK_CONFIG,
         McpToolPackArg::Index => PACK_INDEX,
+        McpToolPackArg::Sync => PACK_SYNC,
     }
 }
 
@@ -658,6 +718,7 @@ pub(super) fn parse_tool_pack_selector(value: &str) -> Option<McpToolPackArg> {
         "web" => Some(McpToolPackArg::Web),
         "config" => Some(McpToolPackArg::Config),
         "index" => Some(McpToolPackArg::Index),
+        "sync" => Some(McpToolPackArg::Sync),
         _ => None,
     }
 }
@@ -702,6 +763,9 @@ pub(super) fn tool_allowed_by_profile(
         }
         McpVisibilityRequirement::ConfigWrite => {
             matches!(profile.config, ConfigPermissionMode::Write)
+        }
+        McpVisibilityRequirement::GitReadAll => {
+            matches!(profile.git, PermissionMode::Allow) && profile.read.is_all()
         }
     }
 }
