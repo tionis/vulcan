@@ -1,0 +1,15 @@
+{
+  "name": "vulcan-obsidian-companion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Thin Obsidian client for Vulcan's authenticated loopback companion protocol",
+  "scripts": {
+    "build": "esbuild plugin.js --bundle --external:obsidian --platform=browser --format=cjs --target=es2022 --outfile=main.js",
+    "check": "npm run build && node --check main.js && node --check plugin.js && node --check protocol.js && node --check core.js",
+    "test": "node --test test/*.test.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "obsidian": "1.13.1"
+  }
+}

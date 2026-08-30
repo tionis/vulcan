@@ -115,3 +115,14 @@ bounded, and the server never exposes arbitrary Git execution.
 `daemon_shutdown` appears in capabilities only for a process-owned service. `POST /shutdown`
 requires the same bearer, version, and Origin checks as other mutating companion requests and sets
 the cooperative process stop flag; embedded routers may omit the operation entirely.
+
+## Reference Obsidian companion
+
+`integrations/obsidian-vulcan` contains the reference desktop/mobile client. It requires Obsidian
+1.11.4 so bearer authority can live in native `SecretStorage`; ordinary plugin `data.json` retains
+only allowlisted non-secret connection and trigger preferences. The release bundle contains no Git
+implementation. It requests the editor save command before manual sync, debounces completed vault
+writes, displays authenticated status/event snapshots, and provides conflict detail plus an
+explicit dry-run-then-apply side-selection flow. Its mock-daemon suite verifies authorization,
+protocol versioning, idempotency, path encoding, typed errors, status, sync, conflict preview, and
+application.

@@ -13114,6 +13114,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync semantic-plan"));
     assert!(git_skill.contains("vulcan daemon status"));
     assert!(git_skill.contains("vulcan daemon companion --reveal-token"));
+    assert!(git_skill.contains("reference Obsidian companion"));
+    assert!(git_skill.contains("skip busy, paused, or conflicted state"));
     assert!(git_skill.contains("vulcan daemon config set-agent resolution"));
     assert!(git_skill.contains("agent_semantic_plans: true"));
     assert!(git_skill.contains("vulcan sync retention-plan [<wiki>]"));
@@ -13162,6 +13164,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("vulcan daemon config show"));
     assert!(permission_skill.contains("vulcan daemon companion --output json"));
     assert!(permission_skill.contains("synchronized plugin data"));
+    assert!(permission_skill.contains("native `SecretStorage`"));
     assert!(permission_skill.contains("Never put a provider key in `daemon.toml`"));
     let index_skill =
         fs::read_to_string(vault_root.join(".agents/skills/index-maintenance/SKILL.md"))
@@ -13543,6 +13546,7 @@ fn skill_list_and_get_surface_bundled_skills() {
             .expect("configuration skill should be installed");
     assert!(configuration.contains("vulcan config import folder-notes --preview"));
     assert!(configuration.contains("vulcan daemon companion --output json"));
+    assert!(configuration.contains("native `SecretStorage`"));
 }
 
 #[test]

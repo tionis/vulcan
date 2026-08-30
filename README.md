@@ -98,6 +98,7 @@ For a private ChatGPT connector, see [docs/guide/chatgpt-mcp.md](docs/guide/chat
 - [Static sites](docs/guide/static-sites.md)
 - [Outline publishing](docs/guide/outline-publishing.md)
 - [Git-backed device synchronization](docs/guide/git-sync.md): direct Linux/Windows operation and detached Android/Termux setup
+- [Obsidian companion](integrations/obsidian-vulcan/README.md): authenticated status, sync triggers, and dry-run-first conflict review
 - [Local information hub and external wikis](docs/guide/information-hub.md): current integration baseline and planned binding/route/connector architecture
 - [Design document](docs/design_document.md): architecture and crate boundaries
 - [Roadmap](docs/ROADMAP.md): implementation status and planned phases

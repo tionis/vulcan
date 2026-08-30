@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 13
+version: 14
 tools:
   - config_show
   - config_get
@@ -35,6 +35,7 @@ permission profiles, or diagnoses permission and trust failures.
 9. Keep `sync.merge_policy` and `sync.tree_validation` in shared `.vulcan/config.toml`. Set `sync.merge_automation` only in device-local config, for example `vulcan config set sync.merge_automation require_review --target local`; the local ceiling can require review but cannot select a different merge tree. Agent proposal auto-acceptance requires both `vulcan config set sync.agent_auto_accept true --target local` and an explicit `sync propose --auto-accept` invocation. It defaults off, and the local config file is excluded from Git snapshots and worktree-equivalence checks. `sync.tree_validation.max_deleted_paths` and `max_deleted_percent` are conjunctive ceilings: an automatically resolved merge is preserved for review only when it exceeds both.
 10. Use `vulcan daemon config show` for process-owned settings. Preview `set-bind`, `set-agent resolution|semantic --base-url <url> --model <model> [--api-key-env <name>]`, or `clear-agent` with `--dry-run` before applying it. Restart the daemon after changing provider configuration; startup reads any named credential from the environment and capabilities advertise only providers that were constructed successfully.
 11. Use `vulcan daemon companion --output json` for non-secret local-client connection metadata. `--reveal-token` is an explicit bearer-authority transfer and its output belongs only in device-local client storage, never shared configuration or synchronized plugin data.
+12. The reference Obsidian companion requires Obsidian 1.11.4+ and stores the bearer token through native `SecretStorage`; its ordinary plugin data contains only allowlisted non-secret endpoint/wiki/trigger preferences. Keep the daemon loopback-only and use the registration's permission profile as the authority boundary.
 
 ## Guardrails
 
