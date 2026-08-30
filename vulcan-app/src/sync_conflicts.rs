@@ -12,9 +12,9 @@ use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 use vulcan_core::{ScanSummary, VaultPaths};
 use vulcan_sync::{
-    GitCaptureRequest, GitConflictClassification, GitConflictSide, GitEngine,
-    GitMergeResolutionRequest, GitOid, GitPushResult, GitRefName, GitRemote, GitRepository,
-    GitSyncConflict, GitSyncOptions, GitSyncRefs,
+    conflict_recovery_ref, conflict_resolved_ref, GitCaptureRequest, GitConflictClassification,
+    GitConflictSide, GitEngine, GitMergeResolutionRequest, GitOid, GitPushResult, GitRefName,
+    GitRemote, GitRepository, GitSyncConflict, GitSyncOptions, GitSyncRefs,
 };
 
 pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 1;
@@ -336,11 +336,8 @@ fn resolve_sync_conflict_locked(
         .expect("mutating device identity creation returns an identity");
     verify_preserved_conflict_refs(&engine, repository, record)?;
     let local = GitOid::parse(&record.local_revision).map_err(AppError::operation)?;
-    let recovery_ref = GitRefName::parse(format!(
-        "refs/vulcan/conflicts/{}/recovery/current",
-        context.conflict_id
-    ))
-    .map_err(AppError::operation)?;
+    let recovery_ref =
+        conflict_recovery_ref(&context.conflict_id, "current").map_err(AppError::operation)?;
     let capture = engine
         .capture_worktree(
             repository,
@@ -356,11 +353,9 @@ fn resolve_sync_conflict_locked(
             },
         )
         .map_err(AppError::operation)?;
-    let immutable_recovery_ref = GitRefName::parse(format!(
-        "refs/vulcan/conflicts/{}/recovery/{}",
-        context.conflict_id, capture.commit
-    ))
-    .map_err(AppError::operation)?;
+    let immutable_recovery_ref =
+        conflict_recovery_ref(&context.conflict_id, capture.commit.as_str())
+            .map_err(AppError::operation)?;
     engine
         .update_ref(repository, &immutable_recovery_ref, &capture.commit)
         .map_err(AppError::operation)?;
@@ -663,8 +658,7 @@ fn prepare_resolution(
             ),
         )
         .map_err(AppError::operation)?;
-    let resolved_ref = GitRefName::parse(format!("refs/vulcan/conflicts/{}/resolved", record.id))
-        .map_err(AppError::operation)?;
+    let resolved_ref = conflict_resolved_ref(&record.id).map_err(AppError::operation)?;
     engine
         .update_ref(repository, &resolved_ref, &commit)
         .map_err(AppError::operation)?;

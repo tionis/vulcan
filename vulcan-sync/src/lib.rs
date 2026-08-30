@@ -13,6 +13,7 @@ mod contracts;
 mod git;
 mod merge_policy;
 mod platform;
+mod refs;
 mod structured_merge;
 mod sync;
 
@@ -42,6 +43,13 @@ pub use merge_policy::{
 pub use platform::{
     inspect_git_tree_platform, GitPlatformDiagnostic, GitPlatformDiagnosticSeverity,
     GitPlatformPreflight,
+};
+pub use refs::{
+    checkpoint_ref, conflict_proposal_resolution_ref, conflict_recovery_ref, conflict_ref,
+    conflict_resolved_ref, detached_recovery_ref, local_epoch_ref, local_recovery_ref_namespaces,
+    local_sync_ref, remote_epoch_ref, semantic_proposal_ref, sync_profile_key,
+    DEFAULT_REMOTE_LIVE_REF, LOCAL_RECOVERY_REF_NAMESPACES, LOCAL_VULCAN_REF_ROOT,
+    REMOTE_EPOCH_BRANCH_ROOT, VULCAN_REF_NAMESPACE_VERSION,
 };
 pub use sync::{
     find_git_live_epoch, git_live_epoch_id, sync_git_once, sync_git_once_with_control,

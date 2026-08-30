@@ -10,6 +10,7 @@ use vulcan_app::sync::{
     clone_git_vault, recover_detached_git_vault, GitCloneReport, GitCloneRequest,
     GitDetachedRecoveryReport, GitDetachedRecoveryRequest, GitPlatformPolicy, GitPlatformProfile,
 };
+use vulcan_sync::local_recovery_ref_namespaces;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloneWikiRequest {
@@ -308,17 +309,7 @@ pub fn recover_registered_wiki_git(
 }
 
 fn detached_loss_namespaces() -> Vec<String> {
-    [
-        "refs/vulcan/local/",
-        "refs/vulcan/pending/",
-        "refs/vulcan/conflicts/",
-        "refs/vulcan/checkpoints/",
-        "refs/vulcan/proposals/",
-        "refs/vulcan/semantic/",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
+    local_recovery_ref_namespaces()
 }
 
 fn prospective_directory(path: &Path) -> Result<PathBuf, CloneWikiError> {

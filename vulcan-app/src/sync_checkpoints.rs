@@ -8,8 +8,8 @@ use std::path::PathBuf;
 use ulid::Ulid;
 use vulcan_core::VaultPaths;
 use vulcan_sync::{
-    GitEngine, GitOid, GitRefCreateResult, GitRefName, GitRemote, GitRepository, GitSyncOptions,
-    GitSyncRefs,
+    checkpoint_ref as namespace_checkpoint_ref, GitEngine, GitOid, GitRefCreateResult, GitRefName,
+    GitRemote, GitRepository, GitSyncOptions, GitSyncRefs,
 };
 
 pub const SYNC_CHECKPOINT_REPORT_VERSION: u32 = 1;
@@ -132,12 +132,8 @@ fn accepted_revision(
 }
 
 fn checkpoint_ref(kind: SyncCheckpointKind, id: Ulid) -> Result<GitRefName, AppError> {
-    GitRefName::parse(format!(
-        "refs/vulcan/checkpoints/{}/{}",
-        kind.as_str(),
-        id.to_string().to_ascii_lowercase()
-    ))
-    .map_err(AppError::operation)
+    namespace_checkpoint_ref(kind.as_str(), &id.to_string().to_ascii_lowercase())
+        .map_err(AppError::operation)
 }
 
 fn checkpoint_report(

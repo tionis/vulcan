@@ -12,8 +12,9 @@ use tempfile::NamedTempFile;
 use ulid::Ulid;
 use vulcan_core::VaultPaths;
 use vulcan_sync::{
-    GitCliEngine, GitEngine, GitOid, GitRefDeleteResult, GitRefName, GitRefUpdateResult, GitRemote,
-    GitRepository, GitSyncOptions, GitSyncRefs,
+    semantic_proposal_ref as namespace_semantic_proposal_ref, GitCliEngine, GitEngine, GitOid,
+    GitRefDeleteResult, GitRefName, GitRefUpdateResult, GitRemote, GitRepository, GitSyncOptions,
+    GitSyncRefs,
 };
 
 pub const SEMANTIC_PLAN_VERSION: u32 = 3;
@@ -936,8 +937,7 @@ fn initial_plan_report(
 }
 
 fn semantic_proposal_ref(plan_id: &str) -> Result<GitRefName, AppError> {
-    GitRefName::parse(format!("refs/vulcan/proposals/semantic/{plan_id}"))
-        .map_err(AppError::operation)
+    namespace_semantic_proposal_ref(plan_id).map_err(AppError::operation)
 }
 
 fn semantic_plan_path(store: &SyncStateStore, plan_id: &str) -> PathBuf {

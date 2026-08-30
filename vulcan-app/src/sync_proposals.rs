@@ -24,9 +24,9 @@ use vulcan_core::{
     ProfilePermissionGuard, QueryAst, ScanSummary, SearchQuery, VaultPaths,
 };
 use vulcan_sync::{
-    GitAutomaticMergeValidation, GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine,
-    GitOid, GitPushResult, GitRefName, GitRemote, GitResolvedPath, GitSyncOptions, GitSyncRefs,
-    SyncCancellationToken,
+    conflict_proposal_resolution_ref, conflict_recovery_ref, GitAutomaticMergeValidation,
+    GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine, GitOid, GitPushResult,
+    GitRefName, GitRemote, GitResolvedPath, GitSyncOptions, GitSyncRefs, SyncCancellationToken,
 };
 
 pub const RESOLUTION_PROPOSAL_VERSION: u32 = 3;
@@ -1894,11 +1894,8 @@ fn apply_approved_proposal(
     revalidate_proposal_tree(engine, repository, context.record, context.proposal, true)?;
     revalidate_proposal_whole_tree(context.paths, engine, repository, context.proposal)?;
     let local = GitOid::parse(&context.record.local_revision).map_err(AppError::operation)?;
-    let recovery_ref = GitRefName::parse(format!(
-        "refs/vulcan/conflicts/{}/recovery/current",
-        context.record.id
-    ))
-    .map_err(AppError::operation)?;
+    let recovery_ref =
+        conflict_recovery_ref(&context.record.id, "current").map_err(AppError::operation)?;
     let device_id = context
         .state_store
         .load_or_create_device_id(true)?
@@ -1918,11 +1915,8 @@ fn apply_approved_proposal(
             },
         )
         .map_err(AppError::operation)?;
-    let immutable_recovery_ref = GitRefName::parse(format!(
-        "refs/vulcan/conflicts/{}/recovery/{}",
-        context.record.id, capture.commit
-    ))
-    .map_err(AppError::operation)?;
+    let immutable_recovery_ref = conflict_recovery_ref(&context.record.id, capture.commit.as_str())
+        .map_err(AppError::operation)?;
     engine
         .update_ref(repository, &immutable_recovery_ref, &capture.commit)
         .map_err(AppError::operation)?;
@@ -2258,11 +2252,8 @@ fn prepare_proposal_resolution(
             ),
         )
         .map_err(AppError::operation)?;
-    let resolved_ref = GitRefName::parse(format!(
-        "refs/vulcan/conflicts/{}/resolved/proposals/{}",
-        record.id, proposal.proposal_id
-    ))
-    .map_err(AppError::operation)?;
+    let resolved_ref = conflict_proposal_resolution_ref(&record.id, &proposal.proposal_id)
+        .map_err(AppError::operation)?;
     engine
         .update_ref(repository, &resolved_ref, &commit)
         .map_err(AppError::operation)?;

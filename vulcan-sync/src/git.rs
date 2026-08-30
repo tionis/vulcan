@@ -1,3 +1,4 @@
+use crate::{detached_recovery_ref, local_recovery_ref_namespaces};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -1054,10 +1055,7 @@ impl GitCliEngine {
             });
         }
 
-        let recovery_ref = GitRefName::parse(format!(
-            "refs/vulcan/recovery/detached-git-loss/{}",
-            Ulid::new()
-        ))?;
+        let recovery_ref = detached_recovery_ref(&Ulid::new().to_string())?;
         let capture = self.capture_worktree(
             &repository,
             &GitCaptureRequest {
@@ -2963,17 +2961,7 @@ fn write_gitdir_pointer(work_tree: &Path, git_dir: &Path) -> Result<(), GitEngin
 }
 
 fn lost_detached_ref_namespaces() -> Vec<String> {
-    [
-        "refs/vulcan/local/",
-        "refs/vulcan/pending/",
-        "refs/vulcan/conflicts/",
-        "refs/vulcan/checkpoints/",
-        "refs/vulcan/proposals/",
-        "refs/vulcan/semantic/",
-    ]
-    .into_iter()
-    .map(str::to_string)
-    .collect()
+    local_recovery_ref_namespaces()
 }
 
 fn ensure_success(operation: &'static str, output: Output) -> Result<Output, GitEngineError> {
@@ -3795,6 +3783,12 @@ mod tests {
         assert!(report
             .possibly_lost_hidden_ref_namespaces
             .contains(&"refs/vulcan/conflicts/".to_string()));
+        assert!(report
+            .possibly_lost_hidden_ref_namespaces
+            .contains(&"refs/vulcan/sync/".to_string()));
+        assert!(report
+            .possibly_lost_hidden_ref_namespaces
+            .contains(&"refs/vulcan/epochs/".to_string()));
         assert_eq!(
             run_git_capture(&work_tree, &["config", "--bool", "core.fileMode"]),
             "false"
@@ -4276,6 +4270,68 @@ mod tests {
                 .delete_remote_ref(&repository, &remote, &live, &head)
                 .expect("repeated deletion"),
             GitRefDeleteResult::Missing
+        );
+    }
+
+    #[test]
+    fn push_and_fetch_custom_ref_use_compare_and_swap_with_git_transport() {
+        let temporary = TempDir::new().expect("temporary directory");
+        let remote_path = temporary.path().join("remote.git");
+        run_git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote_path.to_str().expect("remote path"),
+            ],
+        );
+        let worktree = temporary.path().join("wiki");
+        fs::create_dir(&worktree).expect("worktree");
+        init_repo(&worktree);
+        run_git(
+            &worktree,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote_path.to_str().expect("remote path"),
+            ],
+        );
+        fs::write(worktree.join("Home.md"), "home\n").expect("note");
+        let head = commit_all(&worktree, "initial");
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&worktree).expect("repository");
+        let remote = GitRemote::parse("origin").expect("remote");
+        let live = GitRefName::parse("refs/vulcan-sync/v1/live").expect("custom live ref");
+        let fetched =
+            GitRefName::parse("refs/vulcan/sync/remotes/origin/custom-live").expect("local ref");
+
+        assert_eq!(
+            engine
+                .push_ref(&repository, &remote, &head, &live, None)
+                .expect("initial custom-ref push"),
+            GitPushResult::Updated
+        );
+        assert_eq!(
+            engine
+                .fetch_ref(&repository, &remote, &live, &fetched)
+                .expect("custom-ref fetch"),
+            head
+        );
+        let stale = GitOid::parse("1111111111111111111111111111111111111111")
+            .expect("valid stale object ID");
+        assert_eq!(
+            engine
+                .delete_remote_ref(&repository, &remote, &live, &stale)
+                .expect("stale custom-ref deletion"),
+            GitRefDeleteResult::Stale
+        );
+        assert_eq!(
+            engine
+                .delete_remote_ref(&repository, &remote, &live, &head)
+                .expect("leased custom-ref deletion"),
+            GitRefDeleteResult::Deleted
         );
     }
 

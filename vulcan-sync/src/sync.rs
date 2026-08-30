@@ -1,4 +1,5 @@
 use crate::{
+    conflict_ref, local_epoch_ref, local_sync_ref, remote_epoch_ref, sync_profile_key,
     GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine, GitEngineError,
     GitInstallation, GitOid, GitPathObject, GitPlatformPreflight, GitPlatformProfile,
     GitPushResult, GitRefName, GitRemote, GitRepository, GitRepositoryRequirements,
@@ -6,7 +7,7 @@ use crate::{
     MergeResolution, SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncConflict,
     SyncContext, SyncError, SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome,
     SyncPlan, SyncProgress, SyncReport, SyncResolutionState, SyncState, SyncStatus,
-    SYNC_CONTRACT_VERSION,
+    DEFAULT_REMOTE_LIVE_REF, SYNC_CONTRACT_VERSION, VULCAN_REF_NAMESPACE_VERSION,
 };
 use fs2::FileExt;
 use serde::Serialize;
@@ -20,7 +21,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const SYNC_PROTOCOL_VERSION: u32 = 1;
-const DEFAULT_LIVE_REF: &str = "refs/heads/__vulcan-sync/live";
 
 #[must_use]
 pub fn git_live_epoch_id(profile: &str, previous: &GitOid) -> String {
@@ -80,7 +80,8 @@ impl Default for GitSyncOptions {
     fn default() -> Self {
         Self {
             remote: GitRemote::parse("origin").expect("the default Git remote is valid"),
-            live_ref: GitRefName::parse(DEFAULT_LIVE_REF).expect("the default live ref is valid"),
+            live_ref: GitRefName::parse(DEFAULT_REMOTE_LIVE_REF)
+                .expect("the default live ref is valid"),
             max_retries: 4,
             dry_run: false,
             device_id: GitSyncDeviceId::anonymous(),
@@ -208,6 +209,7 @@ impl SyncCancellationToken {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitSyncRefs {
+    pub namespace_version: u32,
     pub live: GitRefName,
     pub local: GitRefName,
     pub fetched: GitRefName,
@@ -216,14 +218,13 @@ pub struct GitSyncRefs {
 
 impl GitSyncRefs {
     pub fn for_options(options: &GitSyncOptions) -> Result<Self, GitSyncError> {
-        let profile =
-            blake3::hash(format!("{}\0{}", options.remote, options.live_ref).as_bytes()).to_hex();
-        let profile = &profile[..16];
+        let profile = sync_profile_key(&options.remote, &options.live_ref);
         Ok(Self {
+            namespace_version: VULCAN_REF_NAMESPACE_VERSION,
             live: options.live_ref.clone(),
-            local: GitRefName::parse(format!("refs/vulcan/sync/{profile}/local/live"))?,
-            fetched: GitRefName::parse(format!("refs/vulcan/sync/{profile}/remotes/live"))?,
-            pending: GitRefName::parse(format!("refs/vulcan/sync/{profile}/pending/live"))?,
+            local: local_sync_ref(&profile, "local")?,
+            fetched: local_sync_ref(&profile, "remotes")?,
+            pending: local_sync_ref(&profile, "pending")?,
         })
     }
 }
@@ -1197,7 +1198,7 @@ pub fn find_git_live_epoch(
                     "epoch root profile does not match this sync target",
                 ));
             }
-            let expected_archive_prefix = format!("refs/heads/__vulcan-sync/epochs/{profile}/");
+            let expected_archive_prefix = format!("{}/{profile}/", crate::REMOTE_EPOCH_BRANCH_ROOT);
             if !remote_archive
                 .as_str()
                 .starts_with(&expected_archive_prefix)
@@ -1216,14 +1217,12 @@ pub fn find_git_live_epoch(
                     "epoch ID does not match its profile and previous tip",
                 ));
             }
-            if remote_archive.as_str() != format!("refs/heads/__vulcan-sync/epochs/{profile}/{id}")
-            {
+            if remote_archive != remote_epoch_ref(profile, id)? {
                 return Err(invalid_epoch(
                     "epoch archive ref does not match the epoch ID",
                 ));
             }
-            let local_archive =
-                GitRefName::parse(format!("refs/vulcan/epochs/live/{profile}/{id}"))?;
+            let local_archive = local_epoch_ref(profile, id)?;
             return Ok(Some(GitLiveEpoch {
                 root: commit,
                 id: id.to_string(),
@@ -2000,12 +1999,10 @@ fn preserve_conflict_refs(
     let local = request.local;
     let remote = request.remote;
     let merge_tree = request.merge_tree;
-    let base_ref = base
-        .map(|_| GitRefName::parse(format!("refs/vulcan/conflicts/{id}/base")))
-        .transpose()?;
-    let local_ref = GitRefName::parse(format!("refs/vulcan/conflicts/{id}/local"))?;
-    let remote_ref = GitRefName::parse(format!("refs/vulcan/conflicts/{id}/remote"))?;
-    let record_ref = GitRefName::parse(format!("refs/vulcan/conflicts/{id}/record"))?;
+    let base_ref = base.map(|_| conflict_ref(id, "base")).transpose()?;
+    let local_ref = conflict_ref(id, "local")?;
+    let remote_ref = conflict_ref(id, "remote")?;
+    let record_ref = conflict_ref(id, "record")?;
     if let (Some(base), Some(reference)) = (base, base_ref.as_ref()) {
         preserve_exact_ref(engine, repository, reference, base)?;
     }
@@ -2095,7 +2092,8 @@ fn sync_trailers(refs: &GitSyncRefs, options: &GitSyncOptions, source: &str) -> 
         .policy_hash()
         .expect("sync policy is validated before creating commits");
     format!(
-        "Vulcan-Sync-Version: {SYNC_PROTOCOL_VERSION}\nVulcan-Sync-Device: {}\nVulcan-Sync-Profile: {}\nVulcan-Sync-Policy: {}:{policy_hash}\nVulcan-Sync-Source: {source}\nVulcan-Sync-Semantic: false\n",
+        "Vulcan-Sync-Version: {SYNC_PROTOCOL_VERSION}\nVulcan-Ref-Namespace: {}\nVulcan-Sync-Device: {}\nVulcan-Sync-Profile: {}\nVulcan-Sync-Policy: {}:{policy_hash}\nVulcan-Sync-Source: {source}\nVulcan-Sync-Semantic: false\n",
+        refs.namespace_version,
         options.device_id.as_str(),
         refs.local
             .as_str()
@@ -2454,6 +2452,7 @@ mod tests {
         .expect("sync should succeed");
 
         assert_eq!(report.outcome, GitSyncOutcome::Bootstrapped);
+        assert_eq!(report.refs.namespace_version, VULCAN_REF_NAMESPACE_VERSION);
         assert!(report.actions.contains(&GitSyncAction::Pushed));
         assert!(!report.actions.contains(&GitSyncAction::WorktreeApplied));
         assert_eq!(report.accepted, report.local_snapshot);
@@ -2633,6 +2632,7 @@ mod tests {
 
         assert!(message.starts_with("vulcan live snapshot\n\n"));
         assert!(message.contains("Vulcan-Sync-Version: 1"));
+        assert!(message.contains("Vulcan-Ref-Namespace: 1"));
         assert!(message.contains(&format!("Vulcan-Sync-Device: {}", device_id.as_str())));
         assert!(message.contains("Vulcan-Sync-Profile:"));
         assert!(message.contains("Vulcan-Sync-Policy: 1:"));

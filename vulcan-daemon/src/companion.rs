@@ -35,6 +35,7 @@ use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
+use vulcan_sync::DEFAULT_REMOTE_LIVE_REF;
 use vulcan_sync::{GitRefName, GitRemote, SyncJobTrigger, SYNC_CONTRACT_VERSION};
 
 pub const COMPANION_PROTOCOL_VERSION: u32 = 1;
@@ -194,7 +195,7 @@ fn default_remote() -> String {
 }
 
 fn default_live_ref() -> String {
-    "refs/heads/__vulcan-sync/live".to_string()
+    DEFAULT_REMOTE_LIVE_REF.to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

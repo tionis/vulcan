@@ -11,8 +11,9 @@ use std::fs::{self, File, OpenOptions};
 use std::path::PathBuf;
 use vulcan_core::VaultPaths;
 use vulcan_sync::{
-    find_git_live_epoch, git_live_epoch_id, GitEngine, GitOid, GitPushResult, GitRefCreateResult,
-    GitRefDeleteResult, GitRefName, GitReference, GitRemote, GitSyncOptions, GitSyncRefs,
+    find_git_live_epoch, git_live_epoch_id, local_epoch_ref, remote_epoch_ref, GitEngine, GitOid,
+    GitPushResult, GitRefCreateResult, GitRefDeleteResult, GitRefName, GitReference, GitRemote,
+    GitSyncOptions, GitSyncRefs, VULCAN_REF_NAMESPACE_VERSION,
 };
 
 pub const SYNC_RETENTION_PLAN_VERSION: u32 = 2;
@@ -459,13 +460,8 @@ fn rollover_live_epoch(
         .nth(3)
         .ok_or_else(|| AppError::operation("sync profile ref has no profile component"))?;
     let epoch_id = git_live_epoch_id(profile, &previous);
-    let local_archive_ref =
-        GitRefName::parse(format!("refs/vulcan/epochs/live/{profile}/{epoch_id}"))
-            .map_err(AppError::operation)?;
-    let remote_archive_ref = GitRefName::parse(format!(
-        "refs/heads/__vulcan-sync/epochs/{profile}/{epoch_id}"
-    ))
-    .map_err(AppError::operation)?;
+    let local_archive_ref = local_epoch_ref(profile, &epoch_id).map_err(AppError::operation)?;
+    let remote_archive_ref = remote_epoch_ref(profile, &epoch_id).map_err(AppError::operation)?;
     ensure_epoch_archive(
         engine,
         repository,
@@ -480,7 +476,7 @@ fn rollover_live_epoch(
             &previous_tree,
             &[],
             &format!(
-                "vulcan live epoch root\n\nVulcan-Sync-Version: 1\nVulcan-Sync-Epoch: {epoch_id}\nVulcan-Sync-Previous-Epoch: {previous}\nVulcan-Sync-Epoch-Archive: {remote_archive_ref}\nVulcan-Sync-Profile: {profile}\nVulcan-Sync-Semantic: false\n"
+                "vulcan live epoch root\n\nVulcan-Sync-Version: 1\nVulcan-Ref-Namespace: {VULCAN_REF_NAMESPACE_VERSION}\nVulcan-Sync-Epoch: {epoch_id}\nVulcan-Sync-Previous-Epoch: {previous}\nVulcan-Sync-Epoch-Archive: {remote_archive_ref}\nVulcan-Sync-Profile: {profile}\nVulcan-Sync-Semantic: false\n"
             ),
         )
         .map_err(AppError::operation)?;

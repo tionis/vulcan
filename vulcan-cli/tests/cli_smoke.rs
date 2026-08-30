@@ -4549,6 +4549,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     let bootstrap_json = parse_stdout_json(&bootstrap);
     assert_eq!(bootstrap_json["outcome"], "bootstrapped");
     assert_eq!(bootstrap_json["actions"], serde_json::json!(["pushed"]));
+    assert_eq!(bootstrap_json["refs"]["namespace_version"], 1);
     assert_eq!(
         bootstrap_json["requirements"]["required_filters"],
         serde_json::json!([])
@@ -6600,7 +6601,7 @@ fn vault_recover_git_preserves_a_materialized_detached_worktree() {
     assert!(dry_run.get("recovery").is_none());
     assert!(dry_run["possibly_lost_hidden_ref_namespaces"]
         .as_array()
-        .is_some_and(|items| items.iter().any(|item| item == "refs/vulcan/local/")));
+        .is_some_and(|items| items.iter().any(|item| item == "refs/vulcan/sync/")));
     assert!(!git_dir.exists());
 
     let recovery = cargo_vulcan_with_xdg_config(config_home)
@@ -12833,6 +12834,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync run --dry-run"));
     assert!(git_skill.contains("vulcan sync run --max-retries <n>"));
     assert!(git_skill.contains("Vulcan-Sync-*` trailers"));
+    assert!(git_skill.contains("`refs.namespace_version`"));
+    assert!(git_skill.contains("remain local under `refs/vulcan/**`"));
     assert!(git_skill.contains("vulcan sync semantic-plan"));
     assert!(git_skill.contains("vulcan sync retention-plan [<wiki>]"));
     assert!(git_skill.contains("vulcan sync retention-apply [<wiki>] --dry-run"));
@@ -12857,6 +12860,11 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("vulcan sync conflicts <id>"));
     assert!(git_skill.contains("stable `classification`"));
     assert!(git_skill.contains("`provenance_revision`"));
+    let diagnostics_skill =
+        fs::read_to_string(vault_root.join(".agents/skills/diagnostics-and-repair/SKILL.md"))
+            .expect("diagnostics skill should be readable");
+    assert!(diagnostics_skill.contains("`possibly_lost_hidden_ref_namespaces`"));
+    assert!(diagnostics_skill.contains("unpushed candidates, old epochs, conflicts"));
     assert!(git_skill.contains("vulcan sync resolve <id> --side base|local|remote --dry-run"));
     assert!(git_skill.contains("--file '<conflict-path>=<source-file>' --dry-run"));
     assert!(git_skill.contains("--patch <patch-file> --dry-run"));
