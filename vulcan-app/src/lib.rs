@@ -51,6 +51,7 @@ pub mod sync_conflicts;
 pub mod sync_proposals;
 pub mod sync_retention;
 pub mod sync_semantic;
+pub mod sync_semantic_auto;
 pub mod sync_state;
 pub mod tasks;
 pub mod templates;

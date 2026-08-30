@@ -73,3 +73,24 @@ vulcan sync resolve <conflict-id> --side local
 Complete-file, patch, editor, and reviewed agent-proposal modes are also available. Successful resolution removes the hidden conflict directory atomically while retaining the original Git objects and durable conflict record.
 
 If a finite cycle is interrupted or the network is unavailable, rerun `vulcan sync run`. Device-local journals and Git refs retain the captured state; do not delete them or replace the vault with a fresh clone as a recovery shortcut.
+
+## Debounced semantic commits
+
+`sync semantic-auto` is a finite scheduler entrypoint for cron, a systemd timer, or Forgejo Actions.
+Each invocation reads the accepted live revision and a small device-local observation record. It
+exits as `deferred` until that revision has been stable for the quiet interval (or the maximum
+batching interval is reached), then creates a semantic plan, applies it to the configured semantic
+branch, and publishes it with an exact remote lease. An already-current tree exits as `up_to_date`.
+
+```sh
+vulcan sync semantic-auto personal \
+  --quiet-seconds 900 \
+  --maximum-wait-seconds 21600
+```
+
+Use `--agent --model <model> --base-url <url> --api-key-env <name>` for LLM-organized whole-file
+groups and commit messages. The model cannot change vault bytes: the generated history must still
+reproduce the exact accepted live tree. `--dry-run` neither advances the debounce record nor creates
+Git objects or refs. `--no-publish` keeps a completed semantic history local. Schedule only one
+writer per semantic branch; cross-run races are still rejected by the local compare-and-swap and
+remote exact lease.

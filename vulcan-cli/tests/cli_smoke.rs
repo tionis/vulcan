@@ -5902,6 +5902,97 @@ fn sync_semantic_plan_and_apply_create_reviewable_exact_history() {
 }
 
 #[test]
+fn sync_semantic_auto_debounces_and_publishes_a_finite_cycle() {
+    let temporary = TempDir::new().expect("temp dir");
+    let state_home = temporary.path().join("state");
+    let remote = temporary.path().join("remote.git");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            remote.to_str().expect("remote"),
+        ],
+    );
+    let vault = temporary.path().join("wiki");
+    fs::create_dir(&vault).expect("vault");
+    init_git_repo(&vault);
+    run_git_ok(
+        &vault,
+        &["remote", "add", "origin", remote.to_str().expect("remote")],
+    );
+    fs::write(vault.join("Home.md"), "initial\n").expect("initial note");
+    commit_all(&vault, "Initial");
+    let source = run_git_stdout(&vault, &["rev-parse", "main"]);
+    run_git_ok(&vault, &["branch", "semantic", &source]);
+    run_git_ok(&vault, &["push", "origin", "semantic:semantic"]);
+    let sync = |arguments: &[&str]| {
+        Command::cargo_bin("vulcan")
+            .expect("binary")
+            .env("XDG_STATE_HOME", &state_home)
+            .arg("--vault")
+            .arg(&vault)
+            .args(["--output", "json", "sync"])
+            .args(arguments)
+            .assert()
+    };
+    sync(&["run"]).success();
+    fs::write(vault.join("Home.md"), "revised\n").expect("revised note");
+    sync(&["run"]).success();
+    let target = run_git_stdout(
+        &vault,
+        &["ls-remote", "origin", "refs/heads/__vulcan-sync/live"],
+    )
+    .split_whitespace()
+    .next()
+    .expect("accepted target")
+    .to_string();
+
+    let automatic = parse_stdout_json(
+        &sync(&[
+            "semantic-auto",
+            "--semantic-ref",
+            "refs/heads/semantic",
+            "--quiet-seconds",
+            "0",
+            "--maximum-wait-seconds",
+            "60",
+        ])
+        .success(),
+    );
+    assert_eq!(automatic["outcome"], "completed");
+    assert_eq!(automatic["target_revision"], target);
+    let tip = automatic["application"]["applied_revision"]
+        .as_str()
+        .expect("semantic tip");
+    assert_eq!(automatic["publication"]["published_revision"], tip);
+    assert_eq!(
+        run_git_stdout(&vault, &["rev-parse", &format!("{tip}^{{tree}}")]),
+        run_git_stdout(&vault, &["rev-parse", &format!("{target}^{{tree}}")])
+    );
+    assert_eq!(
+        run_git_stdout(&vault, &["ls-remote", "origin", "refs/heads/semantic"])
+            .split_whitespace()
+            .next(),
+        Some(tip)
+    );
+    let retry = parse_stdout_json(
+        &sync(&[
+            "semantic-auto",
+            "--semantic-ref",
+            "refs/heads/semantic",
+            "--quiet-seconds",
+            "0",
+            "--maximum-wait-seconds",
+            "60",
+        ])
+        .success(),
+    );
+    assert_eq!(retry["outcome"], "up_to_date");
+}
+
+#[test]
 fn sync_conflicts_cli_lists_and_shows_immutable_records() {
     let (_temporary, state_home, reader, id) = setup_cli_sync_conflict();
     let command = |arguments: &[&str]| {

@@ -580,6 +580,7 @@ Subcommands:
   semantic-plan build a reviewable deterministic or agent-organized history
   semantic-apply apply a reviewed semantic history by compare-and-swap
   semantic-publish publish an applied semantic history with an exact remote lease
+  semantic-auto debounce and run one finite semantic commit-and-publish cycle
   semantic-reject reject a semantic proposal and release its retained ref
   pause        disable future automatic sync for one registered wiki
   resume       enable future automatic sync for one registered wiki
@@ -614,6 +615,7 @@ Examples:
   vulcan sync semantic-plan --from main --to <accepted-live-rev> --agent --model <model> --dry-run
   vulcan sync semantic-apply <plan-id> --dry-run
   vulcan sync semantic-publish <plan-id> --dry-run
+  vulcan sync semantic-auto personal --quiet-seconds 900 --maximum-wait-seconds 21600
   vulcan sync pause personal
   vulcan sync resume personal
   vulcan --vault ./wiki sync run --remote origin";
@@ -4245,6 +4247,56 @@ pub enum SyncCommand {
         #[arg(help = "Applied semantic plan ULID")]
         plan_id: String,
         #[arg(long, help = "Validate the remote lease without pushing")]
+        dry_run: bool,
+    },
+    #[command(about = "Debounce and run one finite semantic commit-and-publish cycle")]
+    SemanticAuto {
+        #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
+        wiki: Option<String>,
+        #[arg(
+            long,
+            default_value = "refs/heads/main",
+            help = "Human-facing semantic branch"
+        )]
+        semantic_ref: String,
+        #[command(flatten)]
+        target: SyncTargetArgs,
+        #[arg(long, value_enum, default_value_t, help = "Commit grouping strategy")]
+        group_by: SemanticGroupingArg,
+        #[arg(
+            long,
+            requires = "model",
+            help = "Use the configured model for grouping"
+        )]
+        agent: bool,
+        #[arg(
+            long,
+            default_value = "http://localhost:11434/v1",
+            help = "OpenAI-compatible API base URL used with --agent"
+        )]
+        base_url: String,
+        #[arg(long, requires = "agent", help = "Provider model identifier")]
+        model: Option<String>,
+        #[arg(
+            long,
+            requires = "agent",
+            help = "Environment variable containing the API key"
+        )]
+        api_key_env: Option<String>,
+        #[arg(
+            long,
+            default_value_t = 900,
+            help = "Required stable-live-ref interval"
+        )]
+        quiet_seconds: u64,
+        #[arg(long, default_value_t = 21_600, help = "Maximum batching interval")]
+        maximum_wait_seconds: u64,
+        #[arg(long, help = "Apply locally but do not publish the semantic branch")]
+        no_publish: bool,
+        #[arg(
+            long,
+            help = "Preview due work without writing state, objects, or refs"
+        )]
         dry_run: bool,
     },
     #[command(about = "Reject a semantic history proposal and release its Git ref")]

@@ -102,6 +102,10 @@ apply markers, or `refs/vulcan/**` to make a status look clean.
   real command uses the recorded source as an exact remote lease and refuses divergence instead
   of force-pushing. Reject declined plans with `sync semantic-reject <plan-id> --dry-run` followed
   by the reviewed mutation. Never edit proposal refs or retained plan JSON manually.
+- For cron, timers, or Forgejo CI, use `sync semantic-auto [<wiki>]`. It runs one bounded cycle and
+  exits: `deferred` means the accepted live revision has not passed `--quiet-seconds`, `up_to_date`
+  means no semantic tree change exists, and `completed` includes application plus leased
+  publication. Use `--maximum-wait-seconds` to cap batching and `--dry-run` for a state-free preview.
 
 ## Non-negotiable safety properties
 

@@ -43,6 +43,8 @@ use vulcan_app::sync_semantic::{
 use vulcan_app::sync_semantic::{
     create_semantic_plan_with_provider, OpenAiCompatibleSemanticProvider,
 };
+use vulcan_app::sync_semantic_auto::{run_semantic_auto, SemanticAutoOptions, SemanticAutoReport};
+use vulcan_app::sync_state::SyncStateStore;
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
@@ -175,6 +177,7 @@ fn handle_non_cycle_sync_command(
         SyncCommand::SemanticPlan { .. }
         | SyncCommand::SemanticApply { .. }
         | SyncCommand::SemanticPublish { .. }
+        | SyncCommand::SemanticAuto { .. }
         | SyncCommand::SemanticReject { .. } => {
             unreachable!("semantic commands are dispatched before the general sync match")
         }
@@ -225,6 +228,35 @@ fn handle_semantic_sync_command(
         SyncCommand::SemanticPublish { plan_id, dry_run } => {
             run_semantic_publish(cli, plan_id, *dry_run)
         }
+        SyncCommand::SemanticAuto {
+            wiki,
+            semantic_ref,
+            target,
+            group_by,
+            agent,
+            base_url,
+            model,
+            api_key_env,
+            quiet_seconds,
+            maximum_wait_seconds,
+            no_publish,
+            dry_run,
+        } => run_semantic_auto_command(
+            cli,
+            paths,
+            wiki.as_deref(),
+            semantic_ref,
+            target,
+            *group_by,
+            *agent,
+            base_url,
+            model.as_deref(),
+            api_key_env.as_deref(),
+            *quiet_seconds,
+            *maximum_wait_seconds,
+            !*no_publish,
+            *dry_run,
+        ),
         SyncCommand::SemanticReject { plan_id, dry_run } => {
             run_semantic_reject(cli, plan_id, *dry_run)
         }
@@ -652,6 +684,167 @@ fn print_semantic_publish(
         } else {
             ""
         }
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_semantic_auto_command(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    semantic_ref: &str,
+    target: &crate::SyncTargetArgs,
+    group_by: SemanticGroupingArg,
+    agent: bool,
+    base_url: &str,
+    model: Option<&str>,
+    api_key_env: Option<&str>,
+    quiet_seconds: u64,
+    maximum_wait_seconds: u64,
+    publish: bool,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let options = SemanticAutoOptions {
+        semantic_ref: GitRefName::parse(semantic_ref).map_err(CliError::operation)?,
+        remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
+        live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
+        grouping: semantic_grouping(group_by),
+        agent,
+        publish,
+        quiet_seconds,
+        maximum_wait_seconds,
+        dry_run,
+    };
+    let store = SyncStateStore::user_default().map_err(CliError::operation)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(CliError::operation)?
+        .as_millis()
+        .try_into()
+        .map_err(CliError::operation)?;
+    let report = run_semantic_auto_with_optional_provider(
+        cli,
+        &paths,
+        registration_profile.as_deref(),
+        &options,
+        base_url,
+        model,
+        api_key_env,
+        &store,
+        now,
+    )?;
+    print_semantic_auto(cli.output, &report)
+}
+
+fn semantic_grouping(grouping: SemanticGroupingArg) -> SemanticGrouping {
+    match grouping {
+        SemanticGroupingArg::TopLevel => SemanticGrouping::TopLevel,
+        SemanticGroupingArg::File => SemanticGrouping::File,
+        SemanticGroupingArg::Change => SemanticGrouping::Change,
+        SemanticGroupingArg::Hunk => SemanticGrouping::Hunk,
+        SemanticGroupingArg::All => SemanticGrouping::All,
+    }
+}
+
+#[cfg(feature = "web")]
+#[allow(clippy::too_many_arguments)]
+fn run_semantic_auto_with_optional_provider(
+    cli: &Cli,
+    paths: &VaultPaths,
+    registration_profile: Option<&str>,
+    options: &SemanticAutoOptions,
+    base_url: &str,
+    model: Option<&str>,
+    api_key_env: Option<&str>,
+    store: &SyncStateStore,
+    now: u64,
+) -> Result<SemanticAutoReport, CliError> {
+    if !options.agent {
+        if model.is_some() || api_key_env.is_some() {
+            return Err(CliError::operation(
+                "--model and --api-key-env require --agent",
+            ));
+        }
+        return run_semantic_auto(
+            paths,
+            options,
+            None,
+            &vulcan_app::sync::SyncCancellationToken::default(),
+            store,
+            now,
+        )
+        .map_err(CliError::operation);
+    }
+    let model = model.ok_or_else(|| CliError::operation("--agent requires --model"))?;
+    let profile = cli
+        .permissions
+        .as_deref()
+        .or(registration_profile)
+        .unwrap_or("unrestricted");
+    let selection =
+        resolve_permission_profile(paths, Some(profile)).map_err(CliError::operation)?;
+    ProfilePermissionGuard::new(paths, selection)
+        .check_network(base_url)
+        .map_err(CliError::operation)?;
+    let api_key = api_key_env
+        .map(|name| {
+            std::env::var(name).map_err(|_| {
+                CliError::operation(format!("semantic agent API key env `{name}` is not set"))
+            })
+        })
+        .transpose()?;
+    let provider = OpenAiCompatibleSemanticProvider::new(base_url, model, api_key)
+        .map_err(CliError::operation)?;
+    run_semantic_auto(
+        paths,
+        options,
+        Some(&provider),
+        &vulcan_app::sync::SyncCancellationToken::default(),
+        store,
+        now,
+    )
+    .map_err(CliError::operation)
+}
+
+#[cfg(not(feature = "web"))]
+#[allow(clippy::too_many_arguments)]
+fn run_semantic_auto_with_optional_provider(
+    _cli: &Cli,
+    paths: &VaultPaths,
+    _registration_profile: Option<&str>,
+    options: &SemanticAutoOptions,
+    _base_url: &str,
+    _model: Option<&str>,
+    _api_key_env: Option<&str>,
+    store: &SyncStateStore,
+    now: u64,
+) -> Result<SemanticAutoReport, CliError> {
+    if options.agent {
+        return Err(CliError::operation(
+            "agent-assisted semantic automation requires the `web` feature",
+        ));
+    }
+    run_semantic_auto(
+        paths,
+        options,
+        None,
+        &vulcan_app::sync::SyncCancellationToken::default(),
+        store,
+        now,
+    )
+    .map_err(CliError::operation)
+}
+
+fn print_semantic_auto(output: OutputFormat, report: &SemanticAutoReport) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    println!(
+        "Semantic automation: {:?} ({} -> {}, stable {}s)",
+        report.outcome, report.source_revision, report.target_revision, report.stable_for_seconds
     );
     Ok(())
 }
