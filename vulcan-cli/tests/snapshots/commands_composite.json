@@ -9569,6 +9569,154 @@
             "name": "stop",
             "options": [],
             "subcommands": []
+          },
+          {
+            "about": "Inspect or change device-local daemon configuration",
+            "name": "config",
+            "options": [],
+            "subcommands": [
+              {
+                "about": "Show non-secret daemon configuration",
+                "name": "show",
+                "options": [],
+                "subcommands": []
+              },
+              {
+                "about": "Set the loopback daemon listen address",
+                "name": "set-bind",
+                "options": [
+                  {
+                    "help": "Loopback socket address, for example 127.0.0.1:3210",
+                    "id": "bind",
+                    "long": null,
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "BIND"
+                    ]
+                  },
+                  {
+                    "help": "Validate and report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Configure a daemon-owned OpenAI-compatible agent",
+                "name": "set-agent",
+                "options": [
+                  {
+                    "help": "Agent workflow to configure",
+                    "id": "kind",
+                    "long": null,
+                    "possible_values": [
+                      "resolution",
+                      "semantic"
+                    ],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "KIND"
+                    ]
+                  },
+                  {
+                    "help": "OpenAI-compatible base URL",
+                    "id": "base_url",
+                    "long": "base-url",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "BASE_URL"
+                    ]
+                  },
+                  {
+                    "help": "Explicit provider model identifier",
+                    "id": "model",
+                    "long": "model",
+                    "possible_values": [],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "MODEL"
+                    ]
+                  },
+                  {
+                    "help": "Environment variable containing the API key",
+                    "id": "api_key_env",
+                    "long": "api-key-env",
+                    "possible_values": [],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "API_KEY_ENV"
+                    ]
+                  },
+                  {
+                    "help": "Validate and report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              },
+              {
+                "about": "Remove a daemon-owned agent configuration",
+                "name": "clear-agent",
+                "options": [
+                  {
+                    "help": "Agent workflow to clear",
+                    "id": "kind",
+                    "long": null,
+                    "possible_values": [
+                      "resolution",
+                      "semantic"
+                    ],
+                    "required": true,
+                    "short": null,
+                    "value_names": [
+                      "KIND"
+                    ]
+                  },
+                  {
+                    "help": "Validate and report without writing daemon configuration",
+                    "id": "dry_run",
+                    "long": "dry-run",
+                    "possible_values": [
+                      "true",
+                      "false"
+                    ],
+                    "required": false,
+                    "short": null,
+                    "value_names": [
+                      "DRY_RUN"
+                    ]
+                  }
+                ],
+                "subcommands": []
+              }
+            ]
           }
         ]
       },

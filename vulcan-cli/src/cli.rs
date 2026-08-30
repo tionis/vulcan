@@ -4281,6 +4281,59 @@ pub enum DaemonCommand {
     Status,
     #[command(about = "Request graceful daemon shutdown")]
     Stop,
+    #[command(about = "Inspect or change device-local daemon configuration")]
+    Config {
+        #[command(subcommand)]
+        command: DaemonConfigCommand,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum DaemonConfigCommand {
+    #[command(about = "Show non-secret daemon configuration")]
+    Show,
+    #[command(about = "Set the loopback daemon listen address")]
+    SetBind {
+        #[arg(help = "Loopback socket address, for example 127.0.0.1:3210")]
+        bind: String,
+        #[arg(
+            long,
+            help = "Validate and report without writing daemon configuration"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Configure a daemon-owned OpenAI-compatible agent")]
+    SetAgent {
+        #[arg(value_enum, help = "Agent workflow to configure")]
+        kind: DaemonAgentKindArg,
+        #[arg(long, help = "OpenAI-compatible base URL")]
+        base_url: String,
+        #[arg(long, help = "Explicit provider model identifier")]
+        model: String,
+        #[arg(long, help = "Environment variable containing the API key")]
+        api_key_env: Option<String>,
+        #[arg(
+            long,
+            help = "Validate and report without writing daemon configuration"
+        )]
+        dry_run: bool,
+    },
+    #[command(about = "Remove a daemon-owned agent configuration")]
+    ClearAgent {
+        #[arg(value_enum, help = "Agent workflow to clear")]
+        kind: DaemonAgentKindArg,
+        #[arg(
+            long,
+            help = "Validate and report without writing daemon configuration"
+        )]
+        dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum DaemonAgentKindArg {
+    Resolution,
+    Semantic,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]

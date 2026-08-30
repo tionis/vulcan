@@ -2258,6 +2258,36 @@ fn parses_daemon_lifecycle_commands() {
             command: DaemonCommand::Stop
         }
     ));
+
+    let configure = Cli::try_parse_from([
+        "vulcan",
+        "daemon",
+        "config",
+        "set-agent",
+        "resolution",
+        "--base-url",
+        "https://agents.example.test/v1",
+        "--model",
+        "resolver-1",
+        "--api-key-env",
+        "VULCAN_AGENT_KEY",
+        "--dry-run",
+    ])
+    .expect("daemon agent configuration should parse");
+    assert_eq!(
+        configure.command,
+        Command::Daemon {
+            command: DaemonCommand::Config {
+                command: DaemonConfigCommand::SetAgent {
+                    kind: DaemonAgentKindArg::Resolution,
+                    base_url: "https://agents.example.test/v1".to_string(),
+                    model: "resolver-1".to_string(),
+                    api_key_env: Some("VULCAN_AGENT_KEY".to_string()),
+                    dry_run: true,
+                },
+            },
+        }
+    );
 }
 
 #[test]

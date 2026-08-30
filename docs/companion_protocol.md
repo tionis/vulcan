@@ -21,6 +21,14 @@ arbitrary Git command.
 The response header `Vulcan-Protocol-Version: 1` is present on transport-generated responses.
 Clients should call `GET /capabilities` before relying on optional operations.
 
+Resolution and semantic provider capabilities are enabled only when the daemon was started with the
+corresponding device-local provider configuration. Operators manage it with
+`vulcan daemon config set-agent resolution|semantic --base-url <url> --model <model>
+[--api-key-env <name>]`; `show`, `clear-agent`, and every setter's `--dry-run` support inspection
+and review. The configuration stores the environment-variable name, never its value, and a missing
+named variable makes daemon startup fail before it advertises readiness. Companion requests cannot
+override any provider setting.
+
 ## HTTP endpoints
 
 | Method | Path | Result |

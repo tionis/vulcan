@@ -6527,6 +6527,67 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
 }
 
 #[test]
+fn daemon_config_cli_persists_only_non_secret_agent_settings() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let daemon = |arguments: &[&str]| {
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .env("VULCAN_PLANNER_KEY", "secret-value")
+            .args(["--output", "json", "daemon", "config"])
+            .args(arguments)
+            .assert()
+    };
+
+    let preview = parse_stdout_json(
+        &daemon(&[
+            "set-agent",
+            "resolution",
+            "--base-url",
+            "https://agents.example.test/v1",
+            "--model",
+            "resolver-1",
+            "--api-key-env",
+            "VULCAN_RESOLVER_KEY",
+            "--dry-run",
+        ])
+        .success(),
+    );
+    assert_eq!(preview["resolution_agent"]["model"], "resolver-1");
+    assert!(!config_home.join("vulcan/daemon.toml").exists());
+
+    daemon(&["set-bind", "127.0.0.1:4321"]).success();
+    daemon(&[
+        "set-agent",
+        "semantic",
+        "--base-url",
+        "https://agents.example.test/v1",
+        "--model",
+        "planner-1",
+        "--api-key-env",
+        "VULCAN_PLANNER_KEY",
+    ])
+    .success();
+    let shown = parse_stdout_json(&daemon(&["show"]).success());
+    assert_eq!(shown["bind"], "127.0.0.1:4321");
+    assert_eq!(shown["semantic_agent"]["model"], "planner-1");
+    assert_eq!(shown["semantic_agent"]["api_key_env"], "VULCAN_PLANNER_KEY");
+    let persisted = fs::read_to_string(config_home.join("vulcan/daemon.toml"))
+        .expect("daemon config should exist");
+    assert!(persisted.contains("VULCAN_PLANNER_KEY"));
+    assert!(!persisted.contains("secret-value"));
+
+    let cleared = parse_stdout_json(&daemon(&["clear-agent", "semantic"]).success());
+    assert!(cleared.get("semantic_agent").is_none());
+    daemon(&["set-bind", "0.0.0.0:3210"])
+        .failure()
+        .stdout(predicate::str::contains("must be loopback"));
+}
+
+#[test]
 fn vault_clone_supports_dry_run_colocated_and_detached_git_layouts() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let config_home = temporary.path().join("config");
@@ -12967,6 +13028,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(git_skill.contains("mutation-free `sync_plan`"));
     assert!(git_skill.contains("vulcan sync semantic-plan"));
     assert!(git_skill.contains("vulcan daemon status"));
+    assert!(git_skill.contains("vulcan daemon config set-agent resolution"));
     assert!(git_skill.contains("agent_semantic_plans: true"));
     assert!(git_skill.contains("vulcan sync retention-plan [<wiki>]"));
     assert!(git_skill.contains("vulcan sync retention-apply [<wiki>] --dry-run"));
@@ -13006,6 +13068,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     .expect("permission skill should be readable");
     assert!(permission_skill.contains("read-only `sync` tool pack"));
     assert!(permission_skill.contains("full-vault read access"));
+    assert!(permission_skill.contains("vulcan daemon config show"));
+    assert!(permission_skill.contains("Never put a provider key in `daemon.toml`"));
     let index_skill =
         fs::read_to_string(vault_root.join(".agents/skills/index-maintenance/SKILL.md"))
             .expect("index maintenance skill should be readable");

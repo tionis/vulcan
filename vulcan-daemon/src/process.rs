@@ -1,7 +1,10 @@
 //! Long-running synchronization daemon process lifecycle.
 
+use crate::companion::{CompanionResolutionAgent, CompanionSemanticAgent};
 use crate::credentials::{CompanionCredential, CompanionCredentialStore, CredentialError};
 use crate::http::{serve_companion_with_shutdown, CompanionHttpState};
+#[cfg(feature = "web")]
+use crate::registry::DaemonAgentConfig;
 use crate::registry::{RegistryError, WikiRegistrationStatus, WikiRegistry};
 use crate::runtime::{
     run_sync_trigger_runtime_until, SyncTriggerRuntimeError, SyncTriggerRuntimeOptions,
@@ -167,6 +170,7 @@ async fn run_daemon(context: &DaemonProcessContext) -> Result<(), DaemonProcessE
     })?;
 
     let config = context.registry.load()?;
+    let (resolution_agent, semantic_agent) = configured_agents(&config)?;
     let requested_bind = config.bind.parse::<SocketAddr>().map_err(|error| {
         DaemonProcessError::Configuration(format!(
             "invalid daemon bind address `{}`: {error}",
@@ -221,8 +225,8 @@ async fn run_daemon(context: &DaemonProcessContext) -> Result<(), DaemonProcessE
         supervisor,
         state_store,
         credential: Arc::new(credential),
-        resolution_agent: None,
-        semantic_agent: None,
+        resolution_agent: resolution_agent.map(Arc::new),
+        semantic_agent: semantic_agent.map(Arc::new),
         shutdown: Some(Arc::clone(&stop)),
     };
     let shutdown_stop = Arc::clone(&stop);
@@ -249,6 +253,69 @@ async fn run_daemon(context: &DaemonProcessContext) -> Result<(), DaemonProcessE
     trigger_result?;
     worker_result?;
     Ok(())
+}
+
+fn configured_agents(
+    config: &crate::registry::DaemonConfig,
+) -> Result<
+    (
+        Option<CompanionResolutionAgent>,
+        Option<CompanionSemanticAgent>,
+    ),
+    DaemonProcessError,
+> {
+    #[cfg(feature = "web")]
+    {
+        let resolution = config
+            .resolution_agent
+            .as_ref()
+            .map(|agent| {
+                CompanionResolutionAgent::openai_compatible(
+                    agent.base_url.clone(),
+                    agent.model.clone(),
+                    configured_api_key(agent)?,
+                )
+                .map_err(|error| DaemonProcessError::Configuration(error.to_string()))
+            })
+            .transpose()?;
+        let semantic = config
+            .semantic_agent
+            .as_ref()
+            .map(|agent| {
+                CompanionSemanticAgent::openai_compatible(
+                    agent.base_url.clone(),
+                    agent.model.clone(),
+                    configured_api_key(agent)?,
+                )
+                .map_err(|error| DaemonProcessError::Configuration(error.to_string()))
+            })
+            .transpose()?;
+        Ok((resolution, semantic))
+    }
+    #[cfg(not(feature = "web"))]
+    {
+        if config.resolution_agent.is_some() || config.semantic_agent.is_some() {
+            return Err(DaemonProcessError::Configuration(
+                "daemon agent providers require Vulcan's `web` feature".to_string(),
+            ));
+        }
+        Ok((None, None))
+    }
+}
+
+#[cfg(feature = "web")]
+fn configured_api_key(agent: &DaemonAgentConfig) -> Result<Option<String>, DaemonProcessError> {
+    agent
+        .api_key_env
+        .as_deref()
+        .map(|name| {
+            std::env::var(name).map_err(|error| {
+                DaemonProcessError::Configuration(format!(
+                    "daemon agent credential environment variable `{name}` is unavailable: {error}"
+                ))
+            })
+        })
+        .transpose()
 }
 
 async fn wait_for_stop(stop: Arc<AtomicBool>) {
@@ -536,6 +603,55 @@ mod tests {
             }],
             ..DaemonConfig::default()
         }
+    }
+
+    #[cfg(feature = "web")]
+    #[test]
+    fn configured_agents_are_constructed_without_exposing_credentials() {
+        let agent = DaemonAgentConfig {
+            base_url: "http://127.0.0.1:9/v1".to_string(),
+            model: "test-model".to_string(),
+            api_key_env: None,
+        };
+        let config = DaemonConfig {
+            resolution_agent: Some(agent.clone()),
+            semantic_agent: Some(agent),
+            ..DaemonConfig::default()
+        };
+        let (resolution, semantic) = configured_agents(&config).expect("configured agents");
+        assert!(resolution.is_some());
+        assert!(semantic.is_some());
+
+        let missing_name = "VULCAN_TEST_MISSING_DAEMON_AGENT_KEY_7F3C9B";
+        let missing = DaemonConfig {
+            resolution_agent: Some(DaemonAgentConfig {
+                base_url: "http://127.0.0.1:9/v1".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: Some(missing_name.to_string()),
+            }),
+            ..DaemonConfig::default()
+        };
+        let error = configured_agents(&missing)
+            .err()
+            .expect("missing credential must fail");
+        assert!(error.to_string().contains(missing_name));
+    }
+
+    #[cfg(not(feature = "web"))]
+    #[test]
+    fn configured_agents_fail_closed_without_web_support() {
+        let config = DaemonConfig {
+            resolution_agent: Some(crate::registry::DaemonAgentConfig {
+                base_url: "http://127.0.0.1:9/v1".to_string(),
+                model: "test-model".to_string(),
+                api_key_env: None,
+            }),
+            ..DaemonConfig::default()
+        };
+        let error = configured_agents(&config)
+            .err()
+            .expect("provider requires web support");
+        assert!(error.to_string().contains("`web` feature"));
     }
 
     #[test]

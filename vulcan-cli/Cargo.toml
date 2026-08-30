@@ -19,7 +19,7 @@ default = ["js_runtime", "oauth", "vectors", "web"]
 js_runtime = ["dep:rquickjs", "vulcan-app/js_runtime", "vulcan-core/js_runtime"]
 oauth = ["vulcan-app/oauth", "vulcan-core/oauth"]
 vectors = ["vulcan-app/vectors", "vulcan-core/vectors"]
-web = ["vulcan-app/web", "vulcan-core/web"]
+web = ["vulcan-app/web", "vulcan-core/web", "vulcan-daemon/web"]
 
 [dependencies]
 clap.workspace = true

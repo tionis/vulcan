@@ -1,5 +1,5 @@
 use crate::output::print_json;
-use crate::{Cli, CliError, DaemonCommand, OutputFormat};
+use crate::{Cli, CliError, DaemonAgentKindArg, DaemonCommand, DaemonConfigCommand, OutputFormat};
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
 use std::process::{Command, Stdio};
@@ -10,6 +10,7 @@ use vulcan_daemon::process::{
     daemon_status, request_daemon_shutdown, run_daemon_foreground, DaemonProcessContext,
     DaemonStatusReport,
 };
+use vulcan_daemon::registry::{DaemonAgentConfig, DaemonAgentKind, DaemonConfig};
 
 #[derive(Debug, Serialize)]
 struct DaemonStartReport<'a> {
@@ -40,7 +41,63 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
             let status = request_daemon_shutdown(&context).map_err(CliError::operation)?;
             print_status(cli.output, &status)
         }
+        DaemonCommand::Config { command } => handle_config(cli.output, &context, command),
     }
+}
+
+fn handle_config(
+    output: OutputFormat,
+    context: &DaemonProcessContext,
+    command: &DaemonConfigCommand,
+) -> Result<(), CliError> {
+    let config = match command {
+        DaemonConfigCommand::Show => context.registry.load().map_err(CliError::operation)?,
+        DaemonConfigCommand::SetBind { bind, dry_run } => context
+            .registry
+            .set_bind(bind, *dry_run)
+            .map_err(CliError::operation)?,
+        DaemonConfigCommand::SetAgent {
+            kind,
+            base_url,
+            model,
+            api_key_env,
+            dry_run,
+        } => context
+            .registry
+            .set_agent(
+                daemon_agent_kind(*kind),
+                DaemonAgentConfig {
+                    base_url: base_url.clone(),
+                    model: model.clone(),
+                    api_key_env: api_key_env.clone(),
+                },
+                *dry_run,
+            )
+            .map_err(CliError::operation)?,
+        DaemonConfigCommand::ClearAgent { kind, dry_run } => context
+            .registry
+            .clear_agent(daemon_agent_kind(*kind), *dry_run)
+            .map_err(CliError::operation)?,
+    };
+    print_config(output, &config)
+}
+
+const fn daemon_agent_kind(kind: DaemonAgentKindArg) -> DaemonAgentKind {
+    match kind {
+        DaemonAgentKindArg::Resolution => DaemonAgentKind::Resolution,
+        DaemonAgentKindArg::Semantic => DaemonAgentKind::Semantic,
+    }
+}
+
+fn print_config(output: OutputFormat, config: &DaemonConfig) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(config);
+    }
+    print!(
+        "{}",
+        toml::to_string_pretty(config).map_err(CliError::operation)?
+    );
+    Ok(())
 }
 
 fn start_foreground(

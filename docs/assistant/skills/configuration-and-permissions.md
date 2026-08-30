@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 11
+version: 12
 tools:
   - config_show
   - config_get
@@ -33,10 +33,12 @@ permission profiles, or diagnoses permission and trust failures.
 7. Use `vulcan vault clone/add/list/show/set/remove` for device-local wiki setup and registration. Registration is optional; `add`, `set`, and `remove` do not initialize, synchronize, or delete the materialized vault, while `clone` explicitly creates a new Git worktree before registering it. `vulcan vault recover-git` is the narrow repair path for a registered missing detached Git directory and preserves the existing materialized vault before fetching.
 8. Use `vulcan sync pause/resume [<wiki>]` for the registration's device-local automatic-sync switch; omission resolves the currently selected registered vault.
 9. Keep `sync.merge_policy` and `sync.tree_validation` in shared `.vulcan/config.toml`. Set `sync.merge_automation` only in device-local config, for example `vulcan config set sync.merge_automation require_review --target local`; the local ceiling can require review but cannot select a different merge tree. Agent proposal auto-acceptance requires both `vulcan config set sync.agent_auto_accept true --target local` and an explicit `sync propose --auto-accept` invocation. It defaults off, and the local config file is excluded from Git snapshots and worktree-equivalence checks. `sync.tree_validation.max_deleted_paths` and `max_deleted_percent` are conjunctive ceilings: an automatically resolved merge is preserved for review only when it exceeds both.
+10. Use `vulcan daemon config show` for process-owned settings. Preview `set-bind`, `set-agent resolution|semantic --base-url <url> --model <model> [--api-key-env <name>]`, or `clear-agent` with `--dry-run` before applying it. Restart the daemon after changing provider configuration; startup reads any named credential from the environment and capabilities advertise only providers that were constructed successfully.
 
 ## Guardrails
 
 - Do not put private credentials in shared `.vulcan/config.toml`; use local config or environment variables.
+- Never put a provider key in `daemon.toml` or a CLI argument. `daemon config set-agent --api-key-env` accepts the environment-variable name only; ensure detached daemon processes inherit that variable.
 - Keep assistant-facing profiles narrow. Add only the read/write/network/execute capabilities required by the workflow.
 - A skill command can narrow authority with `permission_profile`; it cannot widen the caller's profile.
 - Trust is an execution gate, not a permission profile. A trusted vault can still be denied by a profile.

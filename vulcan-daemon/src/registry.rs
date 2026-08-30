@@ -4,6 +4,7 @@ use std::collections::BTreeSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs::{self, File, OpenOptions};
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
 use ulid::Ulid;
@@ -72,6 +73,10 @@ pub struct DaemonConfig {
     pub device_id: Ulid,
     #[serde(default = "default_bind")]
     pub bind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution_agent: Option<DaemonAgentConfig>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub semantic_agent: Option<DaemonAgentConfig>,
     #[serde(default, rename = "vault")]
     pub vaults: Vec<WikiRegistration>,
 }
@@ -85,9 +90,25 @@ impl Default for DaemonConfig {
         Self {
             device_id: Ulid::new(),
             bind: default_bind(),
+            resolution_agent: None,
+            semantic_agent: None,
             vaults: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonAgentConfig {
+    pub base_url: String,
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_key_env: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DaemonAgentKind {
+    Resolution,
+    Semantic,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +163,7 @@ pub enum RegistryError {
     ConfigDirectoryUnavailable,
     InvalidWikiId(String),
     InvalidGroup(String),
+    InvalidDaemonSetting(String),
     MissingDirectory(PathBuf),
     DuplicateId(WikiId),
     DuplicatePath { id: WikiId, path: PathBuf },
@@ -166,6 +188,9 @@ impl Display for RegistryError {
                 formatter,
                 "invalid wiki group `{group}`; group names use the same syntax as wiki IDs"
             ),
+            Self::InvalidDaemonSetting(detail) => {
+                write!(formatter, "invalid daemon setting: {detail}")
+            }
             Self::MissingDirectory(path) => {
                 write!(formatter, "wiki directory does not exist: {}", path.display())
             }
@@ -232,7 +257,9 @@ impl WikiRegistry {
     }
 
     pub fn load(&self) -> Result<DaemonConfig, RegistryError> {
-        load_config(&self.path)
+        let config = load_config(&self.path)?;
+        validate_daemon_config(&config)?;
+        Ok(config)
     }
 
     pub fn list(&self, group: Option<&str>) -> Result<Vec<WikiRegistrationStatus>, RegistryError> {
@@ -361,19 +388,130 @@ impl WikiRegistry {
         })
     }
 
+    pub fn set_bind(&self, bind: &str, dry_run: bool) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            validate_bind(bind)?;
+            config.bind = bind.to_string();
+            Ok(config.clone())
+        })
+    }
+
+    pub fn set_agent(
+        &self,
+        kind: DaemonAgentKind,
+        agent: DaemonAgentConfig,
+        dry_run: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            validate_agent_config(&agent)?;
+            match kind {
+                DaemonAgentKind::Resolution => config.resolution_agent = Some(agent),
+                DaemonAgentKind::Semantic => config.semantic_agent = Some(agent),
+            }
+            Ok(config.clone())
+        })
+    }
+
+    pub fn clear_agent(
+        &self,
+        kind: DaemonAgentKind,
+        dry_run: bool,
+    ) -> Result<DaemonConfig, RegistryError> {
+        self.mutate(dry_run, |config| {
+            match kind {
+                DaemonAgentKind::Resolution => config.resolution_agent = None,
+                DaemonAgentKind::Semantic => config.semantic_agent = None,
+            }
+            Ok(config.clone())
+        })
+    }
+
     fn mutate<T>(
         &self,
         dry_run: bool,
         operation: impl FnOnce(&mut DaemonConfig) -> Result<T, RegistryError>,
     ) -> Result<T, RegistryError> {
         let _lock = RegistryLock::acquire(&self.path)?;
-        let mut config = load_config(&self.path)?;
+        let mut config = self.load()?;
         let result = operation(&mut config)?;
         if !dry_run {
             save_config(&self.path, &config)?;
         }
         Ok(result)
     }
+}
+
+fn validate_daemon_config(config: &DaemonConfig) -> Result<(), RegistryError> {
+    validate_bind(&config.bind)?;
+    if let Some(agent) = &config.resolution_agent {
+        validate_agent_config(agent)?;
+    }
+    if let Some(agent) = &config.semantic_agent {
+        validate_agent_config(agent)?;
+    }
+    Ok(())
+}
+
+fn validate_bind(bind: &str) -> Result<(), RegistryError> {
+    let address = bind.parse::<SocketAddr>().map_err(|error| {
+        RegistryError::InvalidDaemonSetting(format!("bind address `{bind}` is invalid: {error}"))
+    })?;
+    if !address.ip().is_loopback() {
+        return Err(RegistryError::InvalidDaemonSetting(format!(
+            "bind address must be loopback, got `{address}`"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_agent_config(agent: &DaemonAgentConfig) -> Result<(), RegistryError> {
+    let base_url = agent.base_url.as_str();
+    let scheme_length = if base_url.starts_with("https://") {
+        8
+    } else if base_url.starts_with("http://") {
+        7
+    } else {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "agent base URL must use http:// or https://".to_string(),
+        ));
+    };
+    if base_url.len() > 2048
+        || base_url[scheme_length..]
+            .split('/')
+            .next()
+            .is_none_or(|authority| authority.is_empty() || authority.contains('@'))
+        || base_url
+            .bytes()
+            .any(|byte| byte.is_ascii_control() || byte.is_ascii_whitespace())
+    {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "agent base URL must be bounded, have a host, and contain no credentials or whitespace"
+                .to_string(),
+        ));
+    }
+    if agent.model.is_empty()
+        || agent.model.len() > 256
+        || agent.model.bytes().any(|byte| byte.is_ascii_control())
+    {
+        return Err(RegistryError::InvalidDaemonSetting(
+            "agent model must contain 1-256 non-control bytes".to_string(),
+        ));
+    }
+    if let Some(name) = &agent.api_key_env {
+        let valid = !name.is_empty()
+            && name.len() <= 128
+            && name.bytes().enumerate().all(|(index, byte)| match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'_' => true,
+                b'0'..=b'9' => index > 0,
+                _ => false,
+            });
+        if !valid {
+            return Err(RegistryError::InvalidDaemonSetting(format!(
+                "agent API-key environment variable `{name}` is invalid"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn canonical_directory(path: &Path) -> Result<PathBuf, RegistryError> {
@@ -597,5 +735,71 @@ mod tests {
             registry.find_by_path(temporary.path()),
             Err(RegistryError::UnregisteredPath(_))
         ));
+    }
+
+    #[test]
+    fn daemon_settings_are_validated_persisted_and_clearable() {
+        let temporary = tempdir().expect("temporary directory");
+        let config_path = temporary.path().join("config/daemon.toml");
+        let registry = WikiRegistry::at(config_path.clone());
+        let agent = DaemonAgentConfig {
+            base_url: "https://agents.example.test/v1".to_string(),
+            model: "planner-1".to_string(),
+            api_key_env: Some("VULCAN_AGENT_KEY".to_string()),
+        };
+
+        let preview = registry
+            .set_agent(DaemonAgentKind::Resolution, agent.clone(), true)
+            .expect("preview agent");
+        assert_eq!(preview.resolution_agent.as_ref(), Some(&agent));
+        assert!(!config_path.exists());
+
+        registry
+            .set_bind("[::1]:4321", false)
+            .expect("set loopback bind");
+        registry
+            .set_agent(DaemonAgentKind::Semantic, agent.clone(), false)
+            .expect("set semantic agent");
+        let loaded = registry.load().expect("load configured registry");
+        assert_eq!(loaded.bind, "[::1]:4321");
+        assert_eq!(loaded.semantic_agent.as_ref(), Some(&agent));
+        assert!(loaded.resolution_agent.is_none());
+
+        let cleared = registry
+            .clear_agent(DaemonAgentKind::Semantic, false)
+            .expect("clear semantic agent");
+        assert!(cleared.semantic_agent.is_none());
+        assert!(registry
+            .load()
+            .expect("load cleared registry")
+            .semantic_agent
+            .is_none());
+    }
+
+    #[test]
+    fn daemon_settings_reject_remote_binds_embedded_credentials_and_invalid_env_names() {
+        let temporary = tempdir().expect("temporary directory");
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        assert!(matches!(
+            registry.set_bind("0.0.0.0:3210", true),
+            Err(RegistryError::InvalidDaemonSetting(_))
+        ));
+        for agent in [
+            DaemonAgentConfig {
+                base_url: "https://secret@agents.example.test/v1".to_string(),
+                model: "planner".to_string(),
+                api_key_env: None,
+            },
+            DaemonAgentConfig {
+                base_url: "https://agents.example.test/v1".to_string(),
+                model: "planner".to_string(),
+                api_key_env: Some("bad-name".to_string()),
+            },
+        ] {
+            assert!(matches!(
+                registry.set_agent(DaemonAgentKind::Resolution, agent, true),
+                Err(RegistryError::InvalidDaemonSetting(_))
+            ));
+        }
     }
 }
