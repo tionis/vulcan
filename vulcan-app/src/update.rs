@@ -555,6 +555,7 @@ fn copy_executable_permissions(source: &Path, destination: &Path) -> Result<(), 
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // Keep one fallible cross-platform replacement contract.
 fn copy_executable_permissions(_source: &Path, _destination: &Path) -> Result<(), AppError> {
     Ok(())
 }
@@ -566,6 +567,7 @@ fn sync_directory(directory: &Path) -> Result<(), AppError> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // Keep one fallible cross-platform replacement contract.
 fn sync_directory(_directory: &Path) -> Result<(), AppError> {
     Ok(())
 }
