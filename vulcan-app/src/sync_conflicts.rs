@@ -907,7 +907,7 @@ impl ConflictResolutionLock {
             .open(path)
             .map_err(AppError::operation)?;
         file.try_lock_exclusive().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::WouldBlock {
+            if error.kind() == fs2::lock_contended_error().kind() {
                 AppError::operation("another synchronization operation holds the repository lock")
             } else {
                 AppError::operation(error)

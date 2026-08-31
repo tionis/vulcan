@@ -3812,6 +3812,7 @@ mod tests {
         run_git(path, &["-c", "init.defaultBranch=main", "init", "--quiet"]);
         run_git(path, &["config", "user.name", "Vulcan Test"]);
         run_git(path, &["config", "user.email", "vulcan@example.invalid"]);
+        run_git(path, &["config", "core.autocrlf", "false"]);
     }
 
     fn commit_all(path: &Path, message: &str) -> GitOid {

@@ -177,7 +177,7 @@ async fn run_daemon(
         .write(true)
         .open(context.lock_path())?;
     lock.try_lock_exclusive().map_err(|error| {
-        if error.kind() == std::io::ErrorKind::WouldBlock {
+        if error.kind() == fs2::lock_contended_error().kind() {
             DaemonProcessError::AlreadyRunning
         } else {
             DaemonProcessError::Io(error)
@@ -803,6 +803,7 @@ mod tests {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let target = temporary.path().join("target.json");
         fs::write(&target, "{}").expect("target");
+        #[cfg(unix)]
         let link = temporary.path().join("runtime.json");
         #[cfg(unix)]
         {

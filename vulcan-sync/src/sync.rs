@@ -2323,7 +2323,7 @@ impl RepositoryLock {
             .truncate(false)
             .open(lock_path)?;
         file.try_lock_exclusive().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::WouldBlock {
+            if error.kind() == fs2::lock_contended_error().kind() {
                 GitSyncError::Locked
             } else {
                 GitSyncError::Io(error)
@@ -2705,6 +2705,7 @@ mod tests {
         run_git(path, &["-c", "init.defaultBranch=main", "init", "--quiet"]);
         run_git(path, &["config", "user.name", "Vulcan Test"]);
         run_git(path, &["config", "user.email", "vulcan@example.invalid"]);
+        run_git(path, &["config", "core.autocrlf", "false"]);
     }
 
     fn commit_all(path: &Path, message: &str) {

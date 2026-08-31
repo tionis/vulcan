@@ -685,7 +685,7 @@ fn doctor_repository_lock(repository: &GitRepository, report: &mut SyncDoctorRep
             SyncDoctorSeverity::Pass,
             "the persistent lock file is currently unlocked",
         ),
-        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => doctor_check(
+        Err(error) if error.kind() == fs2::lock_contended_error().kind() => doctor_check(
             report,
             "git.lock",
             SyncDoctorSeverity::Info,

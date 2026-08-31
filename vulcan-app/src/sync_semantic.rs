@@ -2006,7 +2006,7 @@ impl SemanticLock {
             .open(path)
             .map_err(AppError::operation)?;
         file.try_lock_exclusive().map_err(|error| {
-            if error.kind() == std::io::ErrorKind::WouldBlock {
+            if error.kind() == fs2::lock_contended_error().kind() {
                 AppError::operation("another synchronization operation holds the repository lock")
             } else {
                 AppError::operation(error)
@@ -2019,15 +2019,19 @@ impl SemanticLock {
 #[cfg(test)]
 mod tests {
     use super::{
-        deterministic_change_groups, deterministic_groups, load_semantic_plan_with_state_store,
-        semantic_plan_path, semantic_proposal_ref, split_modified_patch_hunks,
-        validate_agent_output, validate_loaded_plan, validate_plan_id, SemanticAgentCommit,
-        SemanticAgentOutput, SemanticGrouping, SemanticPlanReport, SemanticPlanStatus,
-        SemanticPlanValidation,
+        deterministic_change_groups, deterministic_groups, semantic_proposal_ref,
+        split_modified_patch_hunks, validate_agent_output, validate_loaded_plan, validate_plan_id,
+        SemanticAgentCommit, SemanticAgentOutput, SemanticGrouping, SemanticPlanReport,
+        SemanticPlanStatus, SemanticPlanValidation,
     };
+    #[cfg(unix)]
+    use super::{load_semantic_plan_with_state_store, semantic_plan_path};
+    #[cfg(unix)]
     use crate::sync_state::SyncStateStore;
+    #[cfg(unix)]
     use std::fs;
     use std::path::Path;
+    #[cfg(unix)]
     use tempfile::tempdir;
     use vulcan_sync::{GitChange, GitChangeKind};
 
