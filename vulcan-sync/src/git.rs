@@ -3108,7 +3108,7 @@ fn git_cli_path(path: &Path) -> OsString {
         && ((b'A' as u16..=b'Z' as u16).contains(&remainder[0])
             || (b'a' as u16..=b'z' as u16).contains(&remainder[0]))
         && remainder[1] == b':' as u16
-        && matches!(remainder[2], b'\\' as u16 | b'/' as u16);
+        && (remainder[2] == b'\\' as u16 || remainder[2] == b'/' as u16);
     if is_verbatim_disk {
         OsString::from_wide(remainder)
     } else {
