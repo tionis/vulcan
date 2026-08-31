@@ -65,6 +65,23 @@ fn init_git_repo(vault_root: &Path) {
     run_git_ok(vault_root, &["config", "core.autocrlf", "false"]);
 }
 
+fn clone_git_repo(parent: &Path, source: &Path, destination: &Path) {
+    run_git_ok(
+        parent,
+        &[
+            "-c",
+            "core.autocrlf=false",
+            "clone",
+            "--quiet",
+            source.to_str().expect("clone source should be UTF-8"),
+            destination
+                .to_str()
+                .expect("clone destination should be UTF-8"),
+        ],
+    );
+    run_git_ok(destination, &["config", "core.autocrlf", "false"]);
+}
+
 fn commit_all(vault_root: &Path, message: &str) {
     run_git_ok(vault_root, &["add", "."]);
     run_git_ok(vault_root, &["commit", "-m", message]);
@@ -4603,15 +4620,7 @@ fn sync_cli_bootstraps_and_pulls_without_vulcan_initialization() {
     assert!(bootstrap_json["state"].get("retained").is_none());
 
     let reader = temporary.path().join("reader");
-    run_git_ok(
-        temporary.path(),
-        &[
-            "clone",
-            "--quiet",
-            writer.to_str().expect("writer path should be utf-8"),
-            reader.to_str().expect("reader path should be utf-8"),
-        ],
-    );
+    clone_git_repo(temporary.path(), &writer, &reader);
     run_git_ok(
         &reader,
         &[
@@ -4786,15 +4795,7 @@ fn setup_cli_sync_conflict() -> (TempDir, std::path::PathBuf, std::path::PathBuf
     };
     run_sync(&writer);
     let reader = temporary.path().join("reader");
-    run_git_ok(
-        temporary.path(),
-        &[
-            "clone",
-            "--quiet",
-            writer.to_str().expect("writer path"),
-            reader.to_str().expect("reader path"),
-        ],
-    );
+    clone_git_repo(temporary.path(), &writer, &reader);
     run_git_ok(
         &reader,
         &[
@@ -5132,15 +5133,7 @@ fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_a
     sync(&writer);
 
     let reader = temporary.path().join("reader");
-    run_git_ok(
-        temporary.path(),
-        &[
-            "clone",
-            "--quiet",
-            writer.to_str().expect("writer"),
-            reader.to_str().expect("reader"),
-        ],
-    );
+    clone_git_repo(temporary.path(), &writer, &reader);
     run_git_ok(
         &reader,
         &[
@@ -5152,15 +5145,7 @@ fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_a
     );
     sync(&reader);
     let second_reader = temporary.path().join("second-reader");
-    run_git_ok(
-        temporary.path(),
-        &[
-            "clone",
-            "--quiet",
-            writer.to_str().expect("writer"),
-            second_reader.to_str().expect("second reader"),
-        ],
-    );
+    clone_git_repo(temporary.path(), &writer, &second_reader);
     run_git_ok(
         &second_reader,
         &[
@@ -5172,15 +5157,7 @@ fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_a
     );
     sync(&second_reader);
     let long_offline = temporary.path().join("long-offline");
-    run_git_ok(
-        temporary.path(),
-        &[
-            "clone",
-            "--quiet",
-            writer.to_str().expect("writer"),
-            long_offline.to_str().expect("long-offline reader"),
-        ],
-    );
+    clone_git_repo(temporary.path(), &writer, &long_offline);
     run_git_ok(
         &long_offline,
         &[
@@ -5192,15 +5169,7 @@ fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_a
     );
     sync(&long_offline);
     let expired_offline = temporary.path().join("expired-offline");
-    run_git_ok(
-        temporary.path(),
-        &[
-            "clone",
-            "--quiet",
-            writer.to_str().expect("writer"),
-            expired_offline.to_str().expect("expired-offline reader"),
-        ],
-    );
+    clone_git_repo(temporary.path(), &writer, &expired_offline);
     run_git_ok(
         &expired_offline,
         &[
