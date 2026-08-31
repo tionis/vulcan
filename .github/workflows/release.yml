@@ -221,6 +221,18 @@ jobs:
           --base-url 'https://github.com/tionis/vulcan/releases/download/v${{ needs.gate.outputs.version }}'
           --output artifacts
 
+      - name: Render stable update channel
+        shell: bash
+        run: |
+          published_at="$(git show -s --format=%cI "$GITHUB_SHA")"
+          python scripts/release/update_channel.py \
+            --manifest 'artifacts/vulcan-${{ needs.gate.outputs.version }}-manifest.json' \
+            --channel stable \
+            --base-url 'https://github.com/tionis/vulcan/releases/download/v${{ needs.gate.outputs.version }}' \
+            --source-commit "$GITHUB_SHA" \
+            --published-at "$published_at" \
+            --output artifacts
+
       - name: Remove internal per-artifact records
         run: rm artifacts/*.artifact.json artifacts/*.sha256
 

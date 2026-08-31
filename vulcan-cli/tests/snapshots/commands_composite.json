@@ -96,7 +96,7 @@
   ],
   "describe": {
     "about": "Headless CLI for Obsidian-style vaults and Markdown directories",
-    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan render README.md                              Render markdown in the terminal\n  vulcan plugin list                                   Inspect registered JS plugins\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox, template\n  Query:       query, search, ls, backlinks, links\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, periodic\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, doctor\n  Index:       index, vectors, cache, repair\n  Interactive: browse, edit, open\n  Scripting:   run, web, render, plugin, tool, skill\n  AI/MCP:      mcp\n  Git/sync:    git, sync, changes\n  Automation:  saved, automation, export, integration, checkpoint\n  Setup:       init, vault, agent, config, trust\n  Reference:   help, describe, completions, status\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
+    "after_help": "Quick start:\n  vulcan query 'from notes where status = \"open\"'    Query by property\n  vulcan search \"meeting notes\"                       Full-text search\n  vulcan today                                         Open today's daily note\n  vulcan note create Projects/new-idea.md              Create a note\n  vulcan render README.md                              Render markdown in the terminal\n  vulcan plugin list                                   Inspect registered JS plugins\n  vulcan run                                           Start the JS REPL\n\nCommand groups (run `vulcan help` for the full grouped reference):\n  Notes:       note, inbox, template\n  Query:       query, search, ls, backlinks, links\n  Refactor:    refactor, move, rename-property\n  Tasks:       tasks, kanban\n  Periodic:    today, daily, periodic\n  Plugins:     bases, dataview\n  Analysis:    graph, suggest, doctor\n  Index:       index, vectors, cache, repair\n  Interactive: browse, edit, open\n  Scripting:   run, web, render, plugin, tool, skill\n  AI/MCP:      mcp\n  Git/sync:    git, sync, changes\n  Automation:  saved, automation, export, integration, checkpoint\n  Setup:       init, vault, agent, config, trust, self-update\n  Reference:   help, describe, completions, status\n\nReference:\n  vulcan help <command>              Integrated help for any command\n  vulcan help --search <keyword>     Search all help topics\n  vulcan query --help                DQL syntax and field reference\n  vulcan search --help               Search query syntax and filters\n  Machine-readable schema: vulcan describe\n\nFreshness:\n  Override automatic cache refresh with --refresh <off|blocking|background>\n\nColor:\n  --color always|never|auto   Force or suppress ANSI color output (default: auto)\n  NO_COLOR env var also suppresses color when set",
     "commands": [
       {
         "about": "Initialize, scan, rebuild, repair, watch, and serve index state",
@@ -11075,6 +11075,133 @@
                 "short": null,
                 "value_names": [
                   "SAVE"
+                ]
+              }
+            ],
+            "subcommands": []
+          }
+        ]
+      },
+      {
+        "about": "Check or update a manually installed Vulcan binary",
+        "name": "self-update",
+        "options": [],
+        "subcommands": [
+          {
+            "about": "Check the selected channel without downloading or changing the binary",
+            "name": "check",
+            "options": [
+              {
+                "help": "Update channel; defaults to the binary's build channel",
+                "id": "channel",
+                "long": "channel",
+                "possible_values": [
+                  "stable",
+                  "main"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CHANNEL"
+                ]
+              },
+              {
+                "help": "Override the HTTPS update-channel metadata URL",
+                "id": "channel_url",
+                "long": "channel-url",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CHANNEL_URL"
+                ]
+              },
+              {
+                "help": "Explicitly permit checksum-only metadata when no trusted signature is available",
+                "id": "allow_unsigned",
+                "long": "allow-unsigned",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ALLOW_UNSIGNED"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Download, verify, and atomically replace this portable installation",
+            "name": "apply",
+            "options": [
+              {
+                "help": "Update channel; defaults to the binary's build channel",
+                "id": "channel",
+                "long": "channel",
+                "possible_values": [
+                  "stable",
+                  "main"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CHANNEL"
+                ]
+              },
+              {
+                "help": "Override the HTTPS update-channel metadata URL",
+                "id": "channel_url",
+                "long": "channel-url",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "CHANNEL_URL"
+                ]
+              },
+              {
+                "help": "Explicitly permit checksum-only metadata when no trusted signature is available",
+                "id": "allow_unsigned",
+                "long": "allow-unsigned",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ALLOW_UNSIGNED"
+                ]
+              },
+              {
+                "help": "Verify the complete update without replacing the executable",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              },
+              {
+                "help": "Explicitly permit reinstalling the same version or installing an older version",
+                "id": "allow_downgrade",
+                "long": "allow-downgrade",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "ALLOW_DOWNGRADE"
                 ]
               }
             ],

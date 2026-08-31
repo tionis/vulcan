@@ -58,6 +58,7 @@ pub mod templates;
 pub mod textbundle;
 pub mod tools;
 pub mod trust;
+pub mod update;
 #[cfg(feature = "web")]
 pub mod web;
 pub mod wiki_package;

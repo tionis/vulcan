@@ -33,6 +33,12 @@ On Windows, download `scripts/install.ps1` from the matching tag and run
 `./install.ps1 -Version 0.1.0 -DryRun`. Review [the installation guide](docs/installation.md) before
 removing `--dry-run`; Git remains a separate runtime dependency for synchronization.
 
+Manual portable installs can check the stable stream with `vulcan self-update check`. A bounded
+rolling build from eligible `main` commits is available through `--channel main`; update descriptors
+are currently unsigned, so either stream requires the explicit `--allow-unsigned` checksum-only
+opt-in until project signing keys are configured. Package-managed installations should update only
+through their package manager. See the [update-channel specification](docs/specs/update-channels.md).
+
 Vulcan requires Rust 1.88 or newer. With `rustup`, the checked-in `rust-toolchain.toml` installs and selects the supported toolchain automatically. Build the CLI:
 
 ```sh

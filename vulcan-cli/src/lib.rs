@@ -439,9 +439,20 @@ pub use cli::{
     SyncSelectionArgs, SyncTargetArgs, TagSortArg, TasksCommand, TasksListSourceArg,
     TasksPomodoroCommand, TasksTrackCommand, TasksTrackSummaryPeriodArg, TasksViewCommand,
     TemplateEngineArg, TemplateRenderArgs, TemplateSubcommand, TermuxNetworkArg, TextBundleCommand,
-    ToolCommand, ToolInitTemplateArg, TrustCommand, VaultCommand, VectorQueueCommand,
-    VectorsCommand, WebCommand, WebFetchMode, WikiPackageCommand,
+    ToolCommand, ToolInitTemplateArg, TrustCommand, UpdateChannelArg, UpdateChannelArgs,
+    UpdateCommand, VaultCommand, VectorQueueCommand, VectorsCommand, WebCommand, WebFetchMode,
+    WikiPackageCommand,
 };
+
+#[must_use]
+pub fn build_version() -> &'static str {
+    option_env!("VULCAN_BUILD_VERSION").unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
+#[must_use]
+pub fn build_update_channel() -> &'static str {
+    option_env!("VULCAN_UPDATE_CHANNEL").unwrap_or("stable")
+}
 
 use crate::commit::AutoCommitPolicy;
 use crate::output::{
@@ -4858,6 +4869,10 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
         );
     }
 
+    if let Command::SelfUpdate { ref command } = cli.command {
+        return commands::update::handle_update_command(cli, command.as_ref());
+    }
+
     let paths = VaultPaths::new(resolve_vault_root(&cli.vault)?);
     let list_controls = ListOutputControls::from_cli(cli);
     let stdout_is_tty = io::stdout().is_terminal();
@@ -4869,6 +4884,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
 
     match cli.command {
         Command::Render(_) => unreachable!("render handled before vault resolution"),
+        Command::SelfUpdate { .. } => unreachable!("self-update handled before vault resolution"),
         Command::Index { ref command } => commands::index::handle_index_command(
             cli,
             &paths,

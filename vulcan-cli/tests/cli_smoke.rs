@@ -27,6 +27,19 @@ use zip::ZipArchive;
 
 const FIXED_NOW: &str = "2026-04-04T12:00:00Z";
 
+#[test]
+fn self_update_help_exposes_channel_and_mutation_safety_controls_without_a_vault() {
+    Command::cargo_bin("vulcan")
+        .expect("binary")
+        .args(["self-update", "apply", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--channel <CHANNEL>"))
+        .stdout(predicate::str::contains("--allow-unsigned"))
+        .stdout(predicate::str::contains("--allow-downgrade"))
+        .stdout(predicate::str::contains("--dry-run"));
+}
+
 fn mdaf_wiki_fixture() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -13611,6 +13624,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
             .expect("diagnostics skill should be readable");
     assert!(diagnostics_skill.contains("`possibly_lost_hidden_ref_namespaces`"));
     assert!(diagnostics_skill.contains("unpushed candidates, old epochs, conflicts"));
+    assert!(diagnostics_skill.contains("vulcan self-update apply --dry-run"));
+    assert!(diagnostics_skill.contains("Never run `self-update` for an APT"));
     let mcp_skill = fs::read_to_string(vault_root.join(".agents/skills/mcp-setup/SKILL.md"))
         .expect("MCP skill should be readable");
     assert!(mcp_skill.contains("`--tool-pack sync`"));

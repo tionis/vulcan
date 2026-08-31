@@ -278,6 +278,10 @@ pub(crate) fn help_overview() -> HelpTopicReport {
                     "trust",
                     "Manage vault trust for startup scripts and plugins",
                 ),
+                (
+                    "self-update",
+                    "Check or replace a manually installed portable Vulcan binary",
+                ),
             ],
         ),
         (

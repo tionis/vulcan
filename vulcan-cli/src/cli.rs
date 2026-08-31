@@ -27,7 +27,7 @@ Command groups (run `vulcan help` for the full grouped reference):
   AI/MCP:      mcp
   Git/sync:    git, sync, changes
   Automation:  saved, automation, export, integration, checkpoint
-  Setup:       init, vault, agent, config, trust
+  Setup:       init, vault, agent, config, trust, self-update
   Reference:   help, describe, completions, status
 
 Reference:
@@ -6344,6 +6344,11 @@ pub enum Command {
         #[command(subcommand)]
         command: WebCommand,
     },
+    #[command(about = "Check or update a manually installed Vulcan binary")]
+    SelfUpdate {
+        #[command(subcommand)]
+        command: Option<UpdateCommand>,
+    },
     #[command(
         about = "Render markdown from a file or stdin in the terminal",
         after_help = RENDER_COMMAND_AFTER_HELP
@@ -7058,11 +7063,68 @@ pub enum TrustCommand {
     List,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum UpdateChannelArg {
+    Stable,
+    Main,
+}
+
+impl UpdateChannelArg {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Main => "main",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Args)]
+pub struct UpdateChannelArgs {
+    #[arg(
+        long,
+        value_enum,
+        help = "Update channel; defaults to the binary's build channel"
+    )]
+    pub channel: Option<UpdateChannelArg>,
+    #[arg(long, help = "Override the HTTPS update-channel metadata URL")]
+    pub channel_url: Option<String>,
+    #[arg(
+        long,
+        help = "Explicitly permit checksum-only metadata when no trusted signature is available"
+    )]
+    pub allow_unsigned: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum UpdateCommand {
+    #[command(about = "Check the selected channel without downloading or changing the binary")]
+    Check {
+        #[command(flatten)]
+        channel: UpdateChannelArgs,
+    },
+    #[command(about = "Download, verify, and atomically replace this portable installation")]
+    Apply {
+        #[command(flatten)]
+        channel: UpdateChannelArgs,
+        #[arg(
+            long,
+            help = "Verify the complete update without replacing the executable"
+        )]
+        dry_run: bool,
+        #[arg(
+            long,
+            help = "Explicitly permit reinstalling the same version or installing an older version"
+        )]
+        allow_downgrade: bool,
+    },
+}
+
 #[derive(Debug, Clone, Parser)]
 #[command(
     name = "vulcan",
     author,
-    version,
+    version = crate::build_version(),
     about = "Headless CLI for Obsidian-style vaults and Markdown directories",
     long_about = None,
     after_help = ROOT_AFTER_HELP,

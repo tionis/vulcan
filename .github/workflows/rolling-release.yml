@@ -1,0 +1,331 @@
+name: Rolling main release
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Republish even when the current main release names the same commit
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: rolling-main-release
+  cancel-in-progress: false
+
+env:
+  RUST_VERSION: "1.88.0"
+  CARGO_INCREMENTAL: "0"
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.eligibility.outputs.publish }}
+      version: ${{ steps.eligibility.outputs.version }}
+      source_commit: ${{ steps.eligibility.outputs.source_commit }}
+      published_at: ${{ steps.eligibility.outputs.published_at }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Require a successful main CI run and a changed commit
+        id: eligibility
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE_RELEASE: ${{ inputs.force || false }}
+        run: |
+          source_commit="$(git rev-parse HEAD)"
+          ci_conclusion="$(gh run list \
+            --workflow CI \
+            --commit "$source_commit" \
+            --limit 10 \
+            --json conclusion,event,headBranch \
+            --jq '[.[] | select(.event == "push" and .headBranch == "main")][0].conclusion // "missing"')"
+          if [[ "$ci_conclusion" != "success" ]]; then
+            echo "Refusing to publish $source_commit because its push CI conclusion is $ci_conclusion" >&2
+            exit 1
+          fi
+
+          previous_commit=""
+          temporary="$(mktemp -d)"
+          if gh release download main \
+            --pattern vulcan-update-channel.json \
+            --dir "$temporary" >/dev/null 2>&1; then
+            previous_commit="$(python - "$temporary/vulcan-update-channel.json" <<'PY'
+          import base64
+          import json
+          import pathlib
+          import sys
+
+          envelope = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+          payload = json.loads(base64.b64decode(envelope["payload"]))
+          print(payload["source_commit"])
+          PY
+          )"
+          fi
+          rm -rf "$temporary"
+
+          if [[ "$previous_commit" == "$source_commit" && "$FORCE_RELEASE" != "true" ]]; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Rolling main release already names $source_commit; nothing to build."
+            exit 0
+          fi
+
+          version="$(python - "$GITHUB_RUN_NUMBER" "$source_commit" <<'PY'
+          import datetime
+          import pathlib
+          import sys
+          import tomllib
+
+          workspace = tomllib.loads(pathlib.Path("Cargo.toml").read_text(encoding="utf-8"))
+          major, minor, patch = map(int, workspace["workspace"]["package"]["version"].split("."))
+          date = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d")
+          print(f"{major}.{minor}.{patch + 1}-dev.{date}.{sys.argv[1]}.g{sys.argv[2][:8]}")
+          PY
+          )"
+          published_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+          echo "published_at=$published_at" >> "$GITHUB_OUTPUT"
+
+  assets:
+    needs: gate
+    if: needs.gate.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.gate.outputs.source_commit }}
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          key: rolling-release-assets
+
+      - name: Build documentation generator binary
+        env:
+          VULCAN_BUILD_VERSION: ${{ needs.gate.outputs.version }}
+          VULCAN_UPDATE_CHANNEL: main
+        run: cargo build --locked -p vulcan-cli
+
+      - name: Generate completions and man page
+        run: >-
+          python scripts/release/generate_assets.py
+          --binary target/debug/vulcan
+          --version '${{ needs.gate.outputs.version }}'
+          --output release-assets
+
+      - name: Reject build-machine paths in generated assets
+        run: '! grep -R -E "(/home/runner|target/debug|D:\\a\\)" release-assets'
+
+      - name: Upload shared release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rolling-release-assets
+          path: release-assets
+          retention-days: 1
+
+  build:
+    needs: [gate, assets]
+    if: needs.gate.outputs.publish == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            smoke: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            smoke: false
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            smoke: true
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            smoke: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            smoke: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.gate.outputs.source_commit }}
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          echo "RUSTFLAGS=-Cllvm-args=--vectorize-slp=false" >> "$GITHUB_ENV"
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          key: rolling-release-${{ matrix.target }}
+
+      - name: Download shared release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: rolling-release-assets
+          path: release-assets
+
+      - name: Build locked release binary
+        env:
+          VULCAN_BUILD_VERSION: ${{ needs.gate.outputs.version }}
+          VULCAN_UPDATE_CHANNEL: main
+        run: cargo build --release --locked --target ${{ matrix.target }} -p vulcan-cli
+
+      - name: Build canonical archive
+        shell: bash
+        env:
+          SOURCE_DATE_EPOCH: "0"
+        run: |
+          binary="target/${{ matrix.target }}/release/vulcan"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then binary="${binary}.exe"; fi
+          python scripts/release/package.py \
+            --binary "$binary" \
+            --assets release-assets \
+            --output dist \
+            --target '${{ matrix.target }}' \
+            --version '${{ needs.gate.outputs.version }}'
+
+      - name: Build Debian package
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          SOURCE_DATE_EPOCH: "0"
+        run: >-
+          python scripts/release/package_deb.py
+          --binary 'target/${{ matrix.target }}/release/vulcan'
+          --assets release-assets
+          --output dist
+          --target '${{ matrix.target }}'
+          --version '${{ needs.gate.outputs.version }}'
+
+      - name: Smoke-test native archive and package
+        if: matrix.smoke
+        shell: bash
+        run: >-
+          python scripts/release/smoke_archive.py
+          --directory dist
+          --target '${{ matrix.target }}'
+          --version '${{ needs.gate.outputs.version }}'
+
+      - name: Upload canonical artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rolling-vulcan-${{ matrix.target }}
+          path: dist/*
+          retention-days: 1
+
+  release:
+    needs: [gate, build]
+    if: needs.gate.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ needs.gate.outputs.source_commit }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Download canonical artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: rolling-vulcan-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Verify and aggregate release manifest
+        run: >-
+          python scripts/release/manifest.py
+          --directory artifacts
+          --version '${{ needs.gate.outputs.version }}'
+
+      - name: Render package-channel publication inputs
+        run: >-
+          python scripts/release/channels.py
+          --manifest 'artifacts/vulcan-${{ needs.gate.outputs.version }}-manifest.json'
+          --base-url 'https://github.com/tionis/vulcan/releases/download/main'
+          --output artifacts
+
+      - name: Render main update channel
+        run: >-
+          python scripts/release/update_channel.py
+          --manifest 'artifacts/vulcan-${{ needs.gate.outputs.version }}-manifest.json'
+          --channel main
+          --base-url 'https://github.com/tionis/vulcan/releases/download/main'
+          --source-commit '${{ needs.gate.outputs.source_commit }}'
+          --published-at '${{ needs.gate.outputs.published_at }}'
+          --output artifacts
+
+      - name: Remove internal per-artifact records
+        run: rm artifacts/*.artifact.json artifacts/*.sha256
+
+      - name: Move the rolling tag
+        shell: bash
+        run: |
+          git tag --force main '${{ needs.gate.outputs.source_commit }}'
+          git push origin refs/tags/main --force
+
+      - name: Publish rolling prerelease
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: main
+          name: Rolling main build
+          prerelease: true
+          make_latest: false
+          overwrite_files: true
+          body: |
+            Automated development build from `${{ needs.gate.outputs.source_commit }}`.
+
+            This rolling release is replaced in place, is not a stable release, and is currently unsigned. Verify `SHA256SUMS`; `vulcan self-update --channel main` requires the explicit `--allow-unsigned` opt-in until a project signing identity is configured.
+          files: artifacts/*
+
+      - name: Prune superseded rolling assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          while IFS= read -r asset; do
+            if [[ ! -f "artifacts/$asset" ]]; then
+              gh release delete-asset main "$asset" --yes
+            fi
+          done < <(gh release view main --json assets --jq '.assets[].name')

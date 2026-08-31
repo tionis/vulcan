@@ -180,6 +180,35 @@ fn parses_defaults_for_doctor_command() {
 }
 
 #[test]
+fn parses_self_update_channel_and_safety_overrides() {
+    let cli = Cli::try_parse_from([
+        "vulcan",
+        "self-update",
+        "apply",
+        "--channel",
+        "main",
+        "--allow-unsigned",
+        "--allow-downgrade",
+        "--dry-run",
+    ])
+    .expect("self-update command should parse");
+    assert!(matches!(
+        cli.command,
+        Command::SelfUpdate {
+            command: Some(UpdateCommand::Apply {
+                channel: UpdateChannelArgs {
+                    channel: Some(UpdateChannelArg::Main),
+                    allow_unsigned: true,
+                    ..
+                },
+                dry_run: true,
+                allow_downgrade: true,
+            })
+        }
+    ));
+}
+
+#[test]
 fn parses_dataview_inline_command() {
     let cli = Cli::try_parse_from(["vulcan", "dataview", "inline", "Dashboard"])
         .expect("cli should parse");
@@ -6804,6 +6833,7 @@ fn help_overview_lists_current_top_level_surfaces() {
         "`status`",
         "`plugin`",
         "`today`",
+        "`self-update`",
     ] {
         assert!(
             report.body.contains(expected),

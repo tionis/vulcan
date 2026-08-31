@@ -27,6 +27,12 @@ Typical first run against a vault:
 
 For whole-vault device synchronization, including a detached Git directory for Android shared storage, see [Git-backed device synchronization](guide/git-sync.md). `vulcan sync run` is a finite direct workflow and does not require the daemon.
 
+For a manually installed portable binary, `vulcan self-update check` inspects the binary's update
+channel and `vulcan self-update apply --dry-run` downloads and verifies an update without replacing
+the executable. Package-managed installations must update through their package manager. See the
+[installation guide](installation.md) and [update-channel specification](specs/update-channels.md)
+for channel selection, current signing status, and trust/downgrade controls.
+
 ## Self-discovery
 
 The CLI is designed to be self-describing at runtime.

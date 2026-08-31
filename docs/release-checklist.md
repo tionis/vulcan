@@ -11,6 +11,11 @@ workspace test gate and every archive build succeed.
   man page, install notes, README, and both license files.
 - [ ] Confirm the release manifest contains exactly the five advertised targets and that
   `SHA256SUMS` verifies every archive and both Debian packages.
+- [ ] Decode `vulcan-update-channel.json`, verify its exact payload signature against a documented
+  trusted key, and confirm the stable channel, version, source commit, timestamp, five archive URLs,
+  sizes, hashes, formats, and top-level directories match the canonical manifest. If no project
+  signing identity is configured, leave signatures empty and clearly label the release and
+  `--allow-unsigned` requirement instead of implying authenticity.
 - [ ] Inspect both Debian packages with `dpkg-deb --info` and `dpkg-deb --contents`. On a clean
   amd64 Debian-family environment, install through `apt`, verify the binary/man page/completions,
   confirm no daemon service was enabled implicitly, upgrade once, and remove the package while
@@ -21,6 +26,9 @@ workspace test gate and every archive build succeed.
   describing that artifact as exercised rather than cross-compiled.
 - [ ] Test `vulcan --version`, a direct vault command, `sync doctor`, and `daemon install --dry-run`
   from each extracted native archive.
+- [ ] From a disposable portable prefix, run `self-update check` and `self-update apply --dry-run`,
+  verify signature and downgrade failures are closed by default, then apply an upgrade and refresh
+  the daemon service. Never exercise portable replacement against a package-managed path.
 - [ ] Upgrade from the prior supported version in the same prefix, refresh the daemon service, check
   authenticated status, then roll back and repeat. Confirm registry, credential, journal, conflict,
   and vault state are preserved.
@@ -31,3 +39,9 @@ workspace test gate and every archive build succeed.
 - [ ] Apply notarization, Developer-ID, Authenticode, SBOM, provenance, or release signatures only
   when their configured identities and verification steps are available. Clearly label unsigned
   builds.
+
+For the bounded rolling `main` prerelease, confirm the gate selected a new commit with successful
+push CI, the embedded version uses the documented `-dev.<date>.<run>.g<commit>` form, the fixed
+release was updated only after all target/package smoke checks passed, and obsolete assets were
+pruned only after their replacements uploaded successfully. A no-change scheduled run must not
+build or publish artifacts.

@@ -5555,9 +5555,12 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 
 #### 12.14.4 Bounded rolling development releases
 
-- [ ] Add one clearly labelled rolling nightly or development prerelease only when `main` advanced since the last published development build. Prefer a single scheduled eligibility check plus manual dispatch, reuse the canonical package builders, and replace or prune the previous rolling release instead of accumulating permanent nightly tags and assets.
-- [ ] Avoid duplicating the entire push CI suite: publish only commits whose required CI already succeeded, then run release-specific build, manifest, checksum, and native package smoke gates. Keep scheduled no-change runs cheap and do not add per-commit package builds.
-- [ ] Keep development packages unsigned unless dedicated identities are configured, encode an unambiguous non-stable version in binary/package/release metadata, and document that a rolling build is not an automatic-update channel or supported downgrade boundary.
+- [x] Add one clearly labelled rolling nightly or development prerelease only when `main` advanced since the last published development build. Prefer a single scheduled eligibility check plus manual dispatch, reuse the canonical package builders, and replace or prune the previous rolling release instead of accumulating permanent nightly tags and assets.
+- [x] Avoid duplicating the entire push CI suite: publish only commits whose required CI already succeeded, then run release-specific build, manifest, checksum, and native package smoke gates. Keep scheduled no-change runs cheap and do not add per-commit package builds.
+- [x] Keep development packages unsigned unless dedicated identities are configured, encode an unambiguous non-stable version in binary/package/release metadata, and document that a rolling build is never the unattended default stream or a supported downgrade boundary.
+- [x] Define forge-neutral `stable` and opt-in `main` update channels that can later map onto package registries without making them Vulcan-specific delivery mechanisms. Publish a strict base64-payload envelope with exact artifact metadata, optional overlapping Ed25519 signatures for key rotation, and a local trust policy that remote metadata cannot weaken.
+- [x] Add portable `vulcan self-update check/apply` commands over a reusable synchronous application workflow. Require HTTPS, bounded downloads, exact target/layout/size/SHA-256 checks, trusted signatures by default, semantic-version monotonicity, explicit unsigned/downgrade overrides, dry-run verification, a same-directory concurrency lock, and atomic replacement with rollback. Package-managed installations remain owned by their package manager.
+- [x] Document channel discovery, current unsigned status, future signing identity/rotation work, package-registry mapping, daemon refresh/restart, and safe agent guidance. Test envelope generation/signing, verification failures, archive extraction, replacement/dry-run/concurrency behavior, vault-independent CLI parsing, and installed managed-skill guidance.
 
 ---
 

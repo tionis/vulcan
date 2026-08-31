@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import hashlib
 import importlib.util
 import json
@@ -29,6 +30,7 @@ package_script = load_script("package")
 package_deb_script = load_script("package_deb")
 manifest_script = load_script("manifest")
 channels_script = load_script("channels")
+update_channel_script = load_script("update_channel")
 
 
 def read_ar(path: pathlib.Path) -> dict[str, bytes]:
@@ -261,6 +263,125 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("x86_64-pc-windows-msvc.zip", winget)
         self.assertIn("PortableCommandAlias: vulcan", winget)
         self.assertNotIn(".deb", formula)
+
+        rolling_manifest = json.loads(manifest.read_text(encoding="utf-8"))
+        rolling_manifest["version"] = "1.2.4-dev.20260831.1.gaaaaaaaa"
+        for artifact in rolling_manifest["artifacts"]:
+            if artifact.get("kind", "archive") == "archive":
+                artifact["top_level_directory"] = (
+                    f'vulcan-{rolling_manifest["version"]}-{artifact["target"]}'
+                )
+        manifest.write_text(json.dumps(rolling_manifest), encoding="utf-8")
+        update_channel = update_channel_script.generate(
+            manifest,
+            "main",
+            "https://releases.example/main",
+            "a" * 40,
+            "2026-08-31T20:00:00+00:00",
+            channel_output,
+        )
+        envelope = json.loads(update_channel.read_text(encoding="utf-8"))
+        payload = json.loads(base64.b64decode(envelope["payload"]))
+        self.assertEqual(envelope["signatures"], [])
+        self.assertEqual(payload["channel"], "main")
+        self.assertTrue(payload["prerelease"])
+        self.assertEqual(len(payload["artifacts"]), 5)
+        self.assertTrue(
+            all(
+                artifact["url"].startswith("https://releases.example/main/")
+                for artifact in payload["artifacts"]
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "prerelease version"):
+            update_channel_script.generate(
+                manifest,
+                "stable",
+                "https://releases.example/stable",
+                "a" * 40,
+                "2026-08-31T20:00:00Z",
+                channel_output,
+            )
+
+    @unittest.skipUnless(shutil.which("openssl"), "OpenSSL is required for signing test")
+    def test_update_channel_signatures_cover_the_exact_payload_bytes(self) -> None:
+        for target in manifest_script.EXPECTED_TARGETS:
+            self.package(target)
+        for target in package_deb_script.TARGET_ARCHITECTURES:
+            self.package_deb(target)
+        manifest, _ = manifest_script.aggregate(
+            self.output, "1.2.3", manifest_script.EXPECTED_ARTIFACTS
+        )
+        key = self.root / "update-key.pem"
+        public = self.root / "update-public.pem"
+        subprocess.run(
+            ["openssl", "genpkey", "-algorithm", "ED25519", "-out", str(key)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+        subprocess.run(
+            ["openssl", "pkey", "-in", str(key), "-pubout", "-out", str(public)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        destination = update_channel_script.generate(
+            manifest,
+            "stable",
+            "https://releases.example/v1.2.3",
+            "b" * 40,
+            "2026-08-31T20:00:00Z",
+            self.root / "signed-channel",
+            key,
+            "release-2026",
+        )
+        envelope = json.loads(destination.read_text(encoding="utf-8"))
+        signature_path = self.root / "signature.bin"
+        payload_path = self.root / "payload.json"
+        signature_path.write_bytes(
+            base64.b64decode(envelope["signatures"][0]["signature"])
+        )
+        payload_path.write_bytes(base64.b64decode(envelope["payload"]))
+        subprocess.run(
+            [
+                "openssl",
+                "pkeyutl",
+                "-verify",
+                "-rawin",
+                "-pubin",
+                "-inkey",
+                str(public),
+                "-sigfile",
+                str(signature_path),
+                "-in",
+                str(payload_path),
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def test_release_workflows_publish_bounded_update_channels(self) -> None:
+        workflows = SCRIPT_ROOT.parents[1] / ".github/workflows"
+        stable = (workflows / "release.yml").read_text(encoding="utf-8")
+        rolling = (workflows / "rolling-release.yml").read_text(encoding="utf-8")
+
+        self.assertIn("scripts/release/update_channel.py", stable)
+        self.assertIn("--channel stable", stable)
+        self.assertIn('cron: "17 3 * * *"', rolling)
+        self.assertIn("workflow_dispatch:", rolling)
+        self.assertIn("--workflow CI", rolling)
+        self.assertIn('if [[ "$previous_commit" == "$source_commit"', rolling)
+        self.assertIn("-dev.", rolling)
+        self.assertIn("VULCAN_UPDATE_CHANNEL: main", rolling)
+        self.assertIn("--channel main", rolling)
+        self.assertIn("retention-days: 1", rolling)
+        self.assertNotIn("cargo test --workspace", rolling)
+        self.assertLess(
+            rolling.index("Publish rolling prerelease"),
+            rolling.index("Prune superseded rolling assets"),
+        )
 
 
 if __name__ == "__main__":

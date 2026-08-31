@@ -1,7 +1,7 @@
 ---
 name: diagnostics-and-repair
 description: Diagnose vault health, broken links, parser diagnostics, suspicious state, synchronization pauses or conflicts, and repairable problems. Use when the user asks why something is broken, wants a health check, sees diagnostics, or needs safe repair steps before editing notes.
-version: 19
+version: 20
 tools:
   - doctor
   - cache_verify
@@ -35,7 +35,8 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 9. Treat `state.apply-marker` as an interrupted worktree application, not cache damage. Preserve the private-Git-directory marker and device-local journal, avoid manual ref cleanup, and rerun sync so current bytes are recaptured and the accepted revision is verified before the marker is cleared.
 10. A mutating sync applies the same target-platform preflight as doctor. If a local tree is incompatible, its bytes and object ID are already captured and the journal remains at `captured`; no remote query occurred. If a fetched or merged tree is incompatible, Vulcan leaves the worktree and remote live ref unchanged. Fix or rename the reported paths on a platform that can represent them, then rerun sync rather than bypassing the profile.
 11. In detached Git-loss reports, `possibly_lost_hidden_ref_namespaces` is the complete version-1 local recovery inventory plus legacy development roots. The materialized vault can be recaptured, but unpushed candidates, old epochs, conflicts, checkpoints, proposals, or recovery objects that existed only in the deleted private Git directory cannot be reconstructed. `refs.namespace_version` identifies the ref contract used by ordinary sync reports.
-10. If `git.filters` is an error, inspect the typed `required_filters` entries. Every declared driver needs either `process_configured: true` or both `clean_configured` and `smudge_configured`; an LFS driver also needs `executable_available: true`. Install/configure the same round-trip driver used by ordinary Git before retrying. Sync deliberately stops before capture and remote access rather than committing unfiltered bytes.
+12. If `git.filters` is an error, inspect the typed `required_filters` entries. Every declared driver needs either `process_configured: true` or both `clean_configured` and `smudge_configured`; an LFS driver also needs `executable_available: true`. Install/configure the same round-trip driver used by ordinary Git before retrying. Sync deliberately stops before capture and remote access rather than committing unfiltered bytes.
+13. For a manually installed portable binary, use `vulcan self-update check` before `vulcan self-update apply --dry-run`. Signature verification and newer-version checks are safety boundaries; do not add `--allow-unsigned` or `--allow-downgrade` unless the user explicitly accepts that narrower trust or rollback decision. The rolling development stream additionally requires `--channel main`. Never run `self-update` for an APT, Homebrew, WinGet, or other package-managed installation; use its package manager, then refresh and restart the daemon service if needed.
 
 ## Guardrails
 
@@ -43,6 +44,8 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 - Parser unsupported-syntax diagnostics are not always data loss; preserve source where possible.
 - Cache/index repair should not edit notes.
 - For bulk repairs, inspect changed paths and commit separately from unrelated edits.
+- Do not weaken update signature or version policy to make a failed update check pass. Confirm the
+  installation owner, selected channel, target, current version, and configured project key first.
 - Do not clear staged state, rewrite Vulcan-owned refs, or pick a conflict side merely to make synchronization continue.
 - Do not remove `vulcan-sync/apply.json` as a repair shortcut. It is durable evidence that mutation began and verification may not have completed.
 - For a sync conflict, retain the immutable conflict ID and inspect its base/local/remote revisions and path records. The original commits remain Git-reachable and file artifacts live in device-local sync state, so cache repair and note cleanup must never delete them.
