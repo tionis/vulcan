@@ -377,6 +377,9 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("VULCAN_UPDATE_CHANNEL: main", rolling)
         self.assertIn("--channel main", rolling)
         self.assertIn("retention-days: 1", rolling)
+        self.assertIn("asset_label", rolling)
+        self.assertIn("(.label // \"\")", rolling)
+        self.assertIn('! -f "artifacts/$asset_label"', rolling)
         self.assertNotIn("cargo test --workspace", rolling)
         self.assertLess(
             rolling.index("Publish rolling prerelease"),

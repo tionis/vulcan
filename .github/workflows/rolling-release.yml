@@ -324,8 +324,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          while IFS= read -r asset; do
-            if [[ ! -f "artifacts/$asset" ]]; then
-              gh release delete-asset main "$asset" --yes
+          while IFS=$'\t' read -r asset_id asset_name asset_label; do
+            # GitHub sanitizes some uploaded names (notably Debian's `~`) while
+            # softprops restores the original filename as the asset label.
+            if [[ ! -f "artifacts/$asset_name" && ! -f "artifacts/$asset_label" ]]; then
+              gh api --method DELETE "/repos/${GITHUB_REPOSITORY}/releases/assets/$asset_id"
             fi
-          done < <(gh release view main --json assets --jq '.assets[].name')
+          done < <(gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/main" \
+            --jq '.assets[] | [.id, .name, (.label // "")] | @tsv')
