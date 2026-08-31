@@ -9,6 +9,7 @@
 pub mod clone;
 pub mod companion;
 pub mod credentials;
+pub mod environment;
 pub mod http;
 pub mod process;
 pub mod registry;

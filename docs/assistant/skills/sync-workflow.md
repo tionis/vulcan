@@ -60,14 +60,15 @@ apply markers, or `refs/vulcan/**` to make a status look clean.
 ## Daemon and Obsidian companion
 
 - Prefer `vulcan daemon install --dry-run` followed by `vulcan daemon install` for a persistent
-  per-user service on Linux or Windows. Linux installs a restartable `systemd --user` unit; Windows
-  installs a limited per-user logon task. Uninstall with `vulcan daemon uninstall --dry-run` and
-  then the reviewed mutation. Uninstalling the service does not remove registrations, credentials,
-  journals, conflicts, or vault data.
-- A Linux service reads optional provider credentials from the device-local
-  `$XDG_CONFIG_HOME/vulcan/daemon.env` file. Keep it mode `0600`, use plain `NAME=value` entries,
-  and never place it in a vault. Windows resolves configured user environment variables when the
-  logon task starts.
+  per-user service on Linux, macOS, or Windows. Linux installs a restartable `systemd --user` unit,
+  macOS installs a restartable per-user LaunchAgent, and Windows installs a limited per-user logon
+  task. Uninstall with `vulcan daemon uninstall --dry-run` and then the reviewed mutation.
+  Uninstalling the service does not remove registrations, credentials, journals, conflicts, or
+  vault data.
+- Services and direct foreground startup read optional provider credentials from the device-local
+  `$XDG_CONFIG_HOME/vulcan/daemon.env` file (normally `~/.config/vulcan/daemon.env`). Keep it mode
+  `0600` on Unix, use literal `NAME=value` entries, and never place it in a vault. Existing process
+  environment variables take precedence, and the file does not execute or expand shell syntax.
 - Start the daemon explicitly with `vulcan daemon start` or `--detach`. Watcher, startup, poll, and
   companion triggers coalesce through one per-wiki supervisor.
 - Provision a companion only from a running daemon. `vulcan daemon companion --output json` is

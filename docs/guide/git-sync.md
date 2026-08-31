@@ -146,5 +146,7 @@ vulcan daemon semantic-status
 The worker only visits listed wikis, skips paused wikis and wikis with queued/running file-tree
 sync jobs, applies the registration's Git and network permission profile, and records the latest
 per-wiki outcome outside the vault. Disable it with
-`vulcan daemon config clear-semantic-worker`. Provider keys remain environment-only; an installed
-Linux service can read them from `$XDG_CONFIG_HOME/vulcan/daemon.env`.
+`vulcan daemon config clear-semantic-worker`. Provider keys remain environment-only; foreground
+and installed Linux/macOS services can read them from `$XDG_CONFIG_HOME/vulcan/daemon.env`
+(normally `~/.config/vulcan/daemon.env`). Keep that file mode `0600` on Unix and use literal
+`NAME=value` records; inherited environment variables take precedence.

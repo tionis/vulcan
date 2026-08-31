@@ -13,11 +13,14 @@ use tempfile::NamedTempFile;
 pub const DAEMON_SERVICE_PLAN_VERSION: u32 = 1;
 const SYSTEMD_UNIT: &str = "vulcan-daemon.service";
 const WINDOWS_TASK: &str = "Vulcan Daemon";
+const LAUNCHD_LABEL: &str = "dev.tionis.vulcan.daemon";
+const LAUNCHD_PLIST: &str = "dev.tionis.vulcan.daemon.plist";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DaemonServicePlatform {
     SystemdUser,
+    LaunchdUser,
     WindowsScheduledTask,
 }
 
@@ -31,7 +34,11 @@ impl DaemonServicePlatform {
         {
             Ok(Self::WindowsScheduledTask)
         }
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        #[cfg(target_os = "macos")]
+        {
+            Ok(Self::LaunchdUser)
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         {
             Err(DaemonServiceError::UnsupportedPlatform(
                 std::env::consts::OS.to_string(),
@@ -99,6 +106,7 @@ pub enum DaemonServiceError {
     UnsafeDefinitionPath(PathBuf),
     CommandFailed {
         program: String,
+        arguments: Vec<String>,
         exit_code: Option<i32>,
         stderr: String,
     },
@@ -129,10 +137,15 @@ impl Display for DaemonServiceError {
             ),
             Self::CommandFailed {
                 program,
+                arguments,
                 exit_code,
                 stderr,
             } => {
-                write!(formatter, "daemon service command `{program}` failed")?;
+                write!(
+                    formatter,
+                    "daemon service command `{}` failed",
+                    render_command(program, arguments)
+                )?;
                 if let Some(code) = exit_code {
                     write!(formatter, " with exit code {code}")?;
                 }
@@ -159,6 +172,9 @@ pub fn plan_daemon_service(
     platform: DaemonServicePlatform,
     executable: &Path,
     config_directory: &Path,
+    state_directory: &Path,
+    home_directory: &Path,
+    user_id: u32,
 ) -> Result<DaemonServicePlan, DaemonServiceError> {
     if !executable.is_absolute() || !executable.is_file() {
         return Err(DaemonServiceError::InvalidExecutable(
@@ -169,6 +185,13 @@ pub fn plan_daemon_service(
         DaemonServicePlatform::SystemdUser => {
             plan_systemd_service(action, executable, config_directory)
         }
+        DaemonServicePlatform::LaunchdUser => Ok(plan_launchd_service(
+            action,
+            executable,
+            state_directory,
+            home_directory,
+            user_id,
+        )),
         DaemonServicePlatform::WindowsScheduledTask => Ok(plan_windows_task(action, executable)),
     }
 }
@@ -212,6 +235,92 @@ pub fn apply_daemon_service(
         dry_run,
         changed,
     })
+}
+
+fn plan_launchd_service(
+    action: DaemonServiceAction,
+    executable: &Path,
+    state_directory: &Path,
+    home_directory: &Path,
+    user_id: u32,
+) -> DaemonServicePlan {
+    let definition_path = home_directory
+        .join("Library/LaunchAgents")
+        .join(LAUNCHD_PLIST);
+    let daemon_state = state_directory.join("daemon");
+    let standard_out = daemon_state.join("daemon.log");
+    let standard_error = daemon_state.join("daemon.error.log");
+    let definition = render_launchd_plist(executable, &standard_out, &standard_error);
+    let domain = format!("gui/{user_id}");
+    let service = format!("{domain}/{LAUNCHD_LABEL}");
+    let definition_argument = definition_path.to_string_lossy().into_owned();
+    let commands = match action {
+        DaemonServiceAction::Install => vec![
+            DaemonServiceCommand::new("launchctl", &["bootout", &service]).tolerant(),
+            DaemonServiceCommand::new("launchctl", &["bootstrap", &domain, &definition_argument]),
+            DaemonServiceCommand::new("launchctl", &["kickstart", "-k", &service]),
+            DaemonServiceCommand::new("launchctl", &["print", &service]),
+        ],
+        DaemonServiceAction::Uninstall => {
+            vec![DaemonServiceCommand::new("launchctl", &["bootout", &service]).tolerant()]
+        }
+    };
+    DaemonServicePlan {
+        version: DAEMON_SERVICE_PLAN_VERSION,
+        action,
+        platform: DaemonServicePlatform::LaunchdUser,
+        executable: executable.to_path_buf(),
+        definition_path: Some(definition_path),
+        definition: (action == DaemonServiceAction::Install).then_some(definition),
+        commands,
+    }
+}
+
+fn render_launchd_plist(executable: &Path, standard_out: &Path, standard_error: &Path) -> String {
+    let executable = xml_escape(&executable.to_string_lossy());
+    let standard_out = xml_escape(&standard_out.to_string_lossy());
+    let standard_error = xml_escape(&standard_error.to_string_lossy());
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>{LAUNCHD_LABEL}</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{executable}</string>
+    <string>daemon</string>
+    <string>start</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>{standard_out}</string>
+  <key>StandardErrorPath</key>
+  <string>{standard_error}</string>
+</dict>
+</plist>
+"#
+    )
+}
+
+fn xml_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
 }
 
 fn plan_systemd_service(
@@ -340,12 +449,30 @@ fn run_commands(commands: &[DaemonServiceCommand]) -> Result<(), DaemonServiceEr
                     .to_string();
             return Err(DaemonServiceError::CommandFailed {
                 program: command.program.clone(),
+                arguments: command.arguments.clone(),
                 exit_code: output.status.code(),
                 stderr,
             });
         }
     }
     Ok(())
+}
+
+fn render_command(program: &str, arguments: &[String]) -> String {
+    std::iter::once(program)
+        .chain(arguments.iter().map(String::as_str))
+        .map(|argument| {
+            if argument
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"-._/:".contains(&byte))
+            {
+                argument.to_string()
+            } else {
+                format!("{argument:?}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
@@ -366,6 +493,9 @@ mod tests {
             DaemonServicePlatform::SystemdUser,
             &executable,
             &config,
+            &temporary.path().join("state/vulcan"),
+            temporary.path(),
+            1000,
         )
         .expect("systemd plan");
 
@@ -401,6 +531,9 @@ mod tests {
             DaemonServicePlatform::WindowsScheduledTask,
             &executable,
             temporary.path(),
+            &temporary.path().join("state/vulcan"),
+            temporary.path(),
+            0,
         )
         .expect("Windows task plan");
 
@@ -421,6 +554,109 @@ mod tests {
     }
 
     #[test]
+    fn launchd_plan_is_user_scoped_restartable_and_secret_free() {
+        let temporary = tempdir().expect("temporary directory");
+        let executable = temporary.path().join("Applications/Vulcan & Tools/vulcan");
+        fs::create_dir_all(executable.parent().expect("binary parent")).expect("binary parent");
+        fs::write(&executable, "binary").expect("binary fixture");
+        let state = temporary.path().join("Library/Application Support/Vulcan");
+
+        let plan = plan_daemon_service(
+            DaemonServiceAction::Install,
+            DaemonServicePlatform::LaunchdUser,
+            &executable,
+            &temporary.path().join("config/vulcan"),
+            &state,
+            temporary.path(),
+            501,
+        )
+        .expect("launchd plan");
+
+        assert_eq!(
+            plan.definition_path,
+            Some(
+                temporary
+                    .path()
+                    .join("Library/LaunchAgents/dev.tionis.vulcan.daemon.plist")
+            )
+        );
+        let definition = plan.definition.expect("plist definition");
+        assert!(definition.contains("<string>dev.tionis.vulcan.daemon</string>"));
+        assert!(definition.contains("Vulcan &amp; Tools/vulcan</string>"));
+        assert!(definition.contains("<key>RunAtLoad</key>\n  <true/>"));
+        assert!(definition.contains("<key>SuccessfulExit</key>\n    <false/>"));
+        assert!(definition.contains("<key>ThrottleInterval</key>\n  <integer>5</integer>"));
+        assert!(definition.contains("<string>Background</string>"));
+        assert!(definition.contains("daemon.error.log</string>"));
+        assert!(!definition.contains("API_KEY"));
+        assert_eq!(plan.commands.len(), 4);
+        assert!(plan
+            .commands
+            .iter()
+            .all(|command| command.program == "launchctl"));
+        assert_eq!(
+            plan.commands[0].arguments,
+            ["bootout", "gui/501/dev.tionis.vulcan.daemon"]
+        );
+        assert_eq!(plan.commands[1].arguments[0..2], ["bootstrap", "gui/501"]);
+        assert!(plan.commands[1].arguments[2].ends_with(LAUNCHD_PLIST));
+        assert_eq!(
+            plan.commands[2].arguments,
+            ["kickstart", "-k", "gui/501/dev.tionis.vulcan.daemon"]
+        );
+        assert_eq!(
+            plan.commands[3].arguments,
+            ["print", "gui/501/dev.tionis.vulcan.daemon"]
+        );
+    }
+
+    #[test]
+    fn launchd_uninstall_boots_out_before_removing_definition() {
+        let temporary = tempdir().expect("temporary directory");
+        let executable = temporary.path().join("bin/vulcan");
+        fs::create_dir_all(executable.parent().expect("binary parent")).expect("binary parent");
+        fs::write(&executable, "binary").expect("binary fixture");
+
+        let plan = plan_daemon_service(
+            DaemonServiceAction::Uninstall,
+            DaemonServicePlatform::LaunchdUser,
+            &executable,
+            temporary.path(),
+            &temporary.path().join("state"),
+            temporary.path(),
+            502,
+        )
+        .expect("launchd uninstall plan");
+
+        assert!(plan.definition.is_none());
+        assert_eq!(plan.commands.len(), 1);
+        assert_eq!(
+            plan.commands[0].arguments,
+            ["bootout", "gui/502/dev.tionis.vulcan.daemon"]
+        );
+        assert!(plan.commands[0].tolerate_failure);
+    }
+
+    #[test]
+    fn command_failures_include_an_actionable_argument_vector() {
+        let error = DaemonServiceError::CommandFailed {
+            program: "launchctl".to_string(),
+            arguments: vec![
+                "bootstrap".to_string(),
+                "gui/501".to_string(),
+                "/Users/Test User/Library/LaunchAgents/vulcan.plist".to_string(),
+            ],
+            exit_code: Some(5),
+            stderr: "input/output error".to_string(),
+        };
+
+        assert_eq!(
+            error.to_string(),
+            "daemon service command `launchctl bootstrap gui/501 \"/Users/Test User/Library/LaunchAgents/vulcan.plist\"` failed with exit code 5: input/output error"
+        );
+    }
+
+    #[test]
     fn dry_run_and_uninstalled_definition_are_idempotent() {
         let temporary = tempdir().expect("temporary directory");
         let executable = temporary.path().join("vulcan");
@@ -430,6 +666,9 @@ mod tests {
             DaemonServicePlatform::SystemdUser,
             &executable,
             &temporary.path().join("config/vulcan"),
+            &temporary.path().join("state/vulcan"),
+            temporary.path(),
+            1000,
         )
         .expect("install plan");
         let report = apply_daemon_service(install.clone(), true).expect("dry run");

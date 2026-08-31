@@ -2,6 +2,7 @@ use crate::output::print_json;
 use crate::{Cli, CliError, DaemonAgentKindArg, DaemonCommand, DaemonConfigCommand, OutputFormat};
 use serde::Serialize;
 use std::fs::{self, OpenOptions};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
 use std::thread;
@@ -113,15 +114,52 @@ fn manage_service(
     let config_directory = context.registry.path().parent().ok_or_else(|| {
         CliError::operation("daemon registry path has no configuration directory")
     })?;
+    let home_directory = service_home_directory()?;
     let plan = plan_daemon_service(
         action,
         DaemonServicePlatform::native().map_err(CliError::operation)?,
         &executable,
         config_directory,
+        &context.state_root,
+        &home_directory,
+        service_user_id()?,
     )
     .map_err(CliError::operation)?;
     let report = apply_daemon_service(plan, dry_run).map_err(CliError::operation)?;
     print_service_report(output, &report)
+}
+
+fn service_home_directory() -> Result<PathBuf, CliError> {
+    std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| CliError::operation("cannot determine the user home directory"))
+}
+
+#[cfg(target_os = "macos")]
+fn service_user_id() -> Result<u32, CliError> {
+    let output = Command::new("/usr/bin/id")
+        .arg("-u")
+        .output()
+        .map_err(CliError::operation)?;
+    if !output.status.success() {
+        return Err(CliError::operation(
+            "failed to determine the logged-in macOS user id with `/usr/bin/id -u`",
+        ));
+    }
+    String::from_utf8(output.stdout)
+        .map_err(CliError::operation)?
+        .trim()
+        .parse()
+        .map_err(CliError::operation)
+}
+
+#[cfg(not(target_os = "macos"))]
+// Keep one fallible call shape at the platform-neutral planner boundary.
+#[allow(clippy::unnecessary_wraps)]
+fn service_user_id() -> Result<u32, CliError> {
+    Ok(0)
 }
 
 fn print_service_report(

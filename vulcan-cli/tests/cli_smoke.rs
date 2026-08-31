@@ -6934,7 +6934,7 @@ fn daemon_semantic_worker_runs_and_exposes_latest_status() {
 }
 
 #[test]
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
 fn daemon_service_installation_is_native_and_mutation_free_in_dry_run() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let config_home = temporary.path().join("config");
@@ -6944,6 +6944,7 @@ fn daemon_service_installation_is_native_and_mutation_free_in_dry_run() {
             .expect("binary should build")
             .env("XDG_CONFIG_HOME", &config_home)
             .env("XDG_STATE_HOME", &state_home)
+            .env("HOME", temporary.path())
             .args(["--output", "json", "daemon", action, "--dry-run"])
             .assert()
     };
@@ -6957,6 +6958,8 @@ fn daemon_service_installation_is_native_and_mutation_free_in_dry_run() {
     assert_eq!(install["platform"], "systemd_user");
     #[cfg(target_os = "windows")]
     assert_eq!(install["platform"], "windows_scheduled_task");
+    #[cfg(target_os = "macos")]
+    assert_eq!(install["platform"], "launchd_user");
     #[cfg(target_os = "linux")]
     assert!(install["definition"]
         .as_str()
@@ -6971,6 +6974,22 @@ fn daemon_service_installation_is_native_and_mutation_free_in_dry_run() {
             .as_array()
             .is_some_and(|arguments| arguments.iter().any(|argument| argument == "ONLOGON")));
     }
+    #[cfg(target_os = "macos")]
+    {
+        assert!(install["definition"].as_str().is_some_and(|plist| plist
+            .contains("dev.tionis.vulcan.daemon")
+            && plist.contains("<key>ProgramArguments</key>")
+            && plist.contains("<key>SuccessfulExit</key>")
+            && !plist.contains("API_KEY")));
+        assert!(install["definition_path"].as_str().is_some_and(
+            |path| path.ends_with("Library/LaunchAgents/dev.tionis.vulcan.daemon.plist")
+        ));
+        assert!(install["commands"]
+            .as_array()
+            .is_some_and(|commands| commands
+                .iter()
+                .all(|command| command["program"] == "launchctl")));
+    }
     assert!(!config_home
         .join("systemd/user/vulcan-daemon.service")
         .exists());
@@ -6984,7 +7003,7 @@ fn daemon_service_installation_is_native_and_mutation_free_in_dry_run() {
 }
 
 #[test]
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 fn daemon_service_installation_reports_unsupported_platform_without_mutation() {
     let temporary = TempDir::new().expect("temp dir should be created");
     let config_home = temporary.path().join("config");

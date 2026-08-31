@@ -2,6 +2,7 @@
 
 use crate::companion::{CompanionResolutionAgent, CompanionSemanticAgent};
 use crate::credentials::{CompanionCredential, CompanionCredentialStore, CredentialError};
+use crate::environment::{load_daemon_environment, DaemonEnvironmentError};
 use crate::http::{serve_companion_with_shutdown, CompanionHttpState};
 #[cfg(feature = "web")]
 use crate::registry::DaemonAgentConfig;
@@ -92,6 +93,7 @@ pub enum DaemonProcessError {
     Configuration(String),
     Registry(RegistryError),
     Credential(CredentialError),
+    Environment(DaemonEnvironmentError),
     Supervisor(SupervisorError),
     Runtime(SyncTriggerRuntimeError),
     Io(std::io::Error),
@@ -106,6 +108,7 @@ impl Display for DaemonProcessError {
             Self::Configuration(detail) | Self::Worker(detail) => formatter.write_str(detail),
             Self::Registry(error) => Display::fmt(error, formatter),
             Self::Credential(error) => Display::fmt(error, formatter),
+            Self::Environment(error) => Display::fmt(error, formatter),
             Self::Supervisor(error) => Display::fmt(error, formatter),
             Self::Runtime(error) => Display::fmt(error, formatter),
             Self::Io(error) => Display::fmt(error, formatter),
@@ -128,6 +131,12 @@ impl From<CredentialError> for DaemonProcessError {
     }
 }
 
+impl From<DaemonEnvironmentError> for DaemonProcessError {
+    fn from(error: DaemonEnvironmentError) -> Self {
+        Self::Environment(error)
+    }
+}
+
 impl From<SupervisorError> for DaemonProcessError {
     fn from(error: SupervisorError) -> Self {
         Self::Supervisor(error)
@@ -147,6 +156,12 @@ impl From<serde_json::Error> for DaemonProcessError {
 }
 
 pub fn run_daemon_foreground(context: &DaemonProcessContext) -> Result<(), DaemonProcessError> {
+    let config_directory = context.registry.path().parent().ok_or_else(|| {
+        DaemonProcessError::Configuration(
+            "daemon registry path has no configuration directory".to_string(),
+        )
+    })?;
+    load_daemon_environment(config_directory)?;
     let config = context.registry.load()?;
     let (resolution_agent, semantic_agent) = configured_agents(&config)?;
     let agents = (resolution_agent.map(Arc::new), semantic_agent.map(Arc::new));
