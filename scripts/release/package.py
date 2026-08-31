@@ -161,6 +161,7 @@ def package(
     )
     manifest = {
         "schema_version": 1,
+        "kind": "archive",
         "name": archive.name,
         "version": version,
         "target": target,

@@ -9,7 +9,11 @@ import pathlib
 
 
 def records_by_target(manifest: dict) -> dict[str, dict]:
-    return {record["target"]: record for record in manifest["artifacts"]}
+    return {
+        record["target"]: record
+        for record in manifest["artifacts"]
+        if record.get("kind", "archive") == "archive"
+    }
 
 
 def render_homebrew(manifest: dict, base_url: str) -> str:

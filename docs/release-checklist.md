@@ -10,7 +10,12 @@ workspace test gate and every archive build succeed.
   `scripts/release/package.py`; inspect the stable top-level directory, binary mode, completions,
   man page, install notes, README, and both license files.
 - [ ] Confirm the release manifest contains exactly the five advertised targets and that
-  `SHA256SUMS` verifies every archive.
+  `SHA256SUMS` verifies every archive and both Debian packages.
+- [ ] Inspect both Debian packages with `dpkg-deb --info` and `dpkg-deb --contents`. On a clean
+  amd64 Debian-family environment, install through `apt`, verify the binary/man page/completions,
+  confirm no daemon service was enabled implicitly, upgrade once, and remove the package while
+  preserving user and vault state. Inspect the arm64 package metadata even when native hardware is
+  unavailable.
 - [ ] Confirm native archive smoke tests pass on x86_64 Linux, x86_64 macOS, aarch64 macOS, and
   x86_64 Windows. Manually validate aarch64 Linux on native hardware or a declared emulator before
   describing that artifact as exercised rather than cross-compiled.

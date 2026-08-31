@@ -20,8 +20,9 @@ The current implementation includes the local CLI and MCP server plus a multi-va
 ## Quick Start
 
 Versioned release archives for Linux, macOS, and Windows include the binary, generated shell
-completions, a man page, install notes, checksums, and license files. The checksum-verifying
-installers require an explicit version and do not enable the daemon:
+completions, a man page, install notes, checksums, and license files. Releases also provide native
+amd64/arm64 Debian packages. The checksum-verifying installers require an explicit version and do
+not enable the daemon:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/tionis/vulcan/v0.1.0/scripts/install.sh | \

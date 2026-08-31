@@ -22,6 +22,28 @@ Place the executable in a stable path on `PATH`, such as `~/.local/bin/vulcan`. 
 when a native daemon service refers to it across upgrades. Replace the executable atomically, then
 run `vulcan daemon install` again after an upgrade to refresh the native service definition.
 
+## Debian package
+
+GitHub releases also contain `vulcan_<version>-1_amd64.deb` and
+`vulcan_<version>-1_arm64.deb`. Download the package for the architecture reported by
+`dpkg --print-architecture` together with `SHA256SUMS`, verify the exact package entry, and install
+it through APT so dependencies are checked:
+
+```sh
+grep ' vulcan_<version>-1_amd64.deb$' SHA256SUMS | sha256sum -c -
+sudo apt install ./vulcan_<version>-1_amd64.deb
+```
+
+The package installs `vulcan` at `/usr/bin/vulcan` plus the man page, Bash/Fish/Zsh completions,
+documentation, and licenses. It depends on Git and the standard GNU/Linux runtime libraries. It
+does not register a wiki or install/start the user daemon service; review `vulcan daemon install
+--dry-run` separately when background synchronization is wanted.
+
+There is not yet a signed APT repository, so `apt update` cannot discover new Vulcan versions.
+Upgrade by downloading and installing a newer release package. `sudo apt remove vulcan` removes
+only packaged files and preserves user configuration, registered wikis, credentials, journals,
+conflicts, and vault content.
+
 ## Checksum-verifying installers
 
 The POSIX installer supports Linux and macOS and defaults to `~/.local`:
@@ -46,11 +68,10 @@ The default Windows prefix is `%LOCALAPPDATA%\Programs\Vulcan`. `-AddToPath` is 
 changes the persistent user environment. Both installers validate OS/architecture and SHA-256 before
 replacing the executable, and neither writes daemon configuration or starts a service.
 
-Each release also publishes a Homebrew formula and WinGet portable-manifest set generated from the
-same verified artifact manifest. These files are publication inputs for the package repositories;
-they do not create a second binary or configuration layout. The Homebrew formula supports Linux and
-macOS and defines an optional service using Homebrew's stable `opt_bin` path. Installing the formula
-does not start it; `brew services start vulcan` is a separate explicit action.
+Each release also contains generated Homebrew formula and WinGet portable-manifest publication
+inputs from the same verified artifact manifest. They are not yet published to a tap or the central
+WinGet repository. The prospective Homebrew formula supports Linux and macOS and defines an optional
+service using Homebrew's stable `opt_bin` path.
 
 ## Daemon service
 

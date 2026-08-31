@@ -5,11 +5,13 @@ import importlib.util
 import json
 import os
 import pathlib
+import shutil
 import subprocess
 import tarfile
 import tempfile
 import unittest
 import zipfile
+from io import BytesIO
 
 
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -24,8 +26,27 @@ def load_script(name: str):
 
 
 package_script = load_script("package")
+package_deb_script = load_script("package_deb")
 manifest_script = load_script("manifest")
 channels_script = load_script("channels")
+
+
+def read_ar(path: pathlib.Path) -> dict[str, bytes]:
+    contents = path.read_bytes()
+    if not contents.startswith(b"!<arch>\n"):
+        raise ValueError("not an ar archive")
+    offset = 8
+    members = {}
+    while offset < len(contents):
+        header = contents[offset : offset + 60]
+        if len(header) != 60 or header[58:60] != b"`\n":
+            raise ValueError("invalid ar member header")
+        name = header[:16].decode("ascii").strip().removesuffix("/")
+        size = int(header[48:58].decode("ascii").strip())
+        offset += 60
+        members[name] = contents[offset : offset + size]
+        offset += size + size % 2
+    return members
 
 
 class ReleasePackagingTests(unittest.TestCase):
@@ -45,7 +66,7 @@ class ReleasePackagingTests(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(name + "\n", encoding="utf-8")
         self.binary = self.root / "vulcan"
-        self.binary.write_bytes(b"test-binary")
+        self.write_fake_elf("x86_64-unknown-linux-gnu")
         os.chmod(self.binary, 0o755)
 
     def tearDown(self) -> None:
@@ -60,6 +81,23 @@ class ReleasePackagingTests(unittest.TestCase):
             target,
             "1.2.3",
         )
+
+    def package_deb(self, target: str) -> pathlib.Path:
+        self.write_fake_elf(target)
+        return package_deb_script.package(
+            self.binary,
+            self.assets,
+            self.source,
+            self.output,
+            target,
+            "1.2.3",
+        )
+
+    def write_fake_elf(self, target: str) -> None:
+        header = bytearray(64)
+        header[:6] = b"\x7fELF\x02\x01"
+        header[18:20] = package_deb_script.TARGET_ELF_MACHINES[target].to_bytes(2, "little")
+        self.binary.write_bytes(header)
 
     def test_tar_archive_is_reproducible_and_has_stable_layout(self) -> None:
         archive = self.package("x86_64-unknown-linux-gnu")
@@ -83,14 +121,95 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("vulcan-1.2.3-x86_64-pc-windows-msvc/vulcan.exe", names)
         self.assertNotIn("vulcan-1.2.3-x86_64-pc-windows-msvc/vulcan", names)
 
+    def test_debian_package_is_reproducible_and_has_expected_metadata(self) -> None:
+        package = self.package_deb("x86_64-unknown-linux-gnu")
+        first = hashlib.sha256(package.read_bytes()).hexdigest()
+        package = self.package_deb("x86_64-unknown-linux-gnu")
+        self.assertEqual(first, hashlib.sha256(package.read_bytes()).hexdigest())
+        self.assertEqual(package.name, "vulcan_1.2.3-1_amd64.deb")
+
+        members = read_ar(package)
+        self.assertEqual(members["debian-binary"], b"2.0\n")
+        with tarfile.open(fileobj=BytesIO(members["control.tar.gz"]), mode="r:gz") as control:
+            self.assertEqual([member.name for member in control.getmembers()], ["./control"])
+            metadata = control.extractfile("./control").read().decode("utf-8")
+        self.assertIn("Package: vulcan\n", metadata)
+        self.assertIn("Version: 1.2.3-1\n", metadata)
+        self.assertIn("Architecture: amd64\n", metadata)
+        self.assertIn("Depends: git, libc6, libgcc-s1\n", metadata)
+        with tarfile.open(fileobj=BytesIO(members["data.tar.gz"]), mode="r:gz") as data:
+            packaged = {member.name: member for member in data.getmembers()}
+        self.assertEqual(packaged["./usr/bin/vulcan"].mode, 0o755)
+        self.assertEqual(packaged["./usr"].mode, 0o755)
+        self.assertIn("./usr/share/man/man1/vulcan.1.gz", packaged)
+        self.assertIn("./usr/share/bash-completion/completions/vulcan", packaged)
+        self.assertIn("./usr/share/doc/vulcan/INSTALL.md", packaged)
+        self.assertIn("./usr/share/doc/vulcan/copyright", packaged)
+        self.assertFalse(any("systemd" in path or "LaunchAgent" in path for path in packaged))
+        if shutil.which("dpkg-deb"):
+            inspected = subprocess.run(
+                ["dpkg-deb", "--field", str(package), "Package", "Architecture"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            ).stdout
+            self.assertIn("Package: vulcan", inspected)
+            self.assertIn("Architecture: amd64", inspected)
+
+    def test_debian_versions_sort_prereleases_before_the_release(self) -> None:
+        self.assertEqual(package_deb_script.debian_version("1.2.3"), "1.2.3-1")
+        self.assertEqual(
+            package_deb_script.debian_version("1.2.3-beta.1"),
+            "1.2.3~beta.1-1",
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported Debian target"):
+            package_deb_script.package(
+                self.binary,
+                self.assets,
+                self.source,
+                self.output,
+                "x86_64-apple-darwin",
+                "1.2.3",
+            )
+        self.write_fake_elf("x86_64-unknown-linux-gnu")
+        with self.assertRaisesRegex(ValueError, "does not match Debian target"):
+            package_deb_script.package(
+                self.binary,
+                self.assets,
+                self.source,
+                self.output,
+                "aarch64-unknown-linux-gnu",
+                "1.2.3",
+            )
+        malformed = bytearray(self.binary.read_bytes())
+        malformed[4] = 1
+        self.binary.write_bytes(malformed)
+        with self.assertRaisesRegex(ValueError, "not a 64-bit little-endian ELF"):
+            package_deb_script.package(
+                self.binary,
+                self.assets,
+                self.source,
+                self.output,
+                "x86_64-unknown-linux-gnu",
+                "1.2.3",
+            )
+
     def test_manifest_aggregation_verifies_archives(self) -> None:
         linux = self.package("x86_64-unknown-linux-gnu")
         windows = self.package("x86_64-pc-windows-msvc")
-        manifest, checksums = manifest_script.aggregate(self.output, "1.2.3")
+        debian = self.package_deb("x86_64-unknown-linux-gnu")
+        expected = {
+            ("archive", "x86_64-unknown-linux-gnu"),
+            ("archive", "x86_64-pc-windows-msvc"),
+            ("debian", "x86_64-unknown-linux-gnu"),
+        }
+        manifest, checksums = manifest_script.aggregate(self.output, "1.2.3", expected)
         data = json.loads(manifest.read_text(encoding="utf-8"))
-        self.assertEqual(len(data["artifacts"]), 2)
+        self.assertEqual(len(data["artifacts"]), 3)
         self.assertIn(linux.name, checksums.read_text(encoding="ascii"))
         self.assertIn(windows.name, checksums.read_text(encoding="ascii"))
+        self.assertIn(debian.name, checksums.read_text(encoding="ascii"))
 
         linux.write_bytes(b"corrupt")
         with self.assertRaisesRegex(ValueError, "checksum mismatch"):
@@ -117,15 +236,17 @@ class ReleasePackagingTests(unittest.TestCase):
             text=True,
         )
         installed = prefix / "bin/vulcan"
-        self.assertEqual(installed.read_bytes(), b"test-binary")
+        self.assertEqual(installed.read_bytes(), self.binary.read_bytes())
         self.assertTrue(os.access(installed, os.X_OK))
         self.assertTrue((prefix / "share/man/man1/vulcan.1").is_file())
 
     def test_package_channel_metadata_uses_canonical_archives(self) -> None:
         for target in manifest_script.EXPECTED_TARGETS:
             self.package(target)
+        for target in package_deb_script.TARGET_ARCHITECTURES:
+            self.package_deb(target)
         manifest, _ = manifest_script.aggregate(
-            self.output, "1.2.3", manifest_script.EXPECTED_TARGETS
+            self.output, "1.2.3", manifest_script.EXPECTED_ARTIFACTS
         )
         channel_output = self.root / "channels"
         channels_script.generate(manifest, "https://releases.example/v1.2.3", channel_output)
@@ -139,6 +260,7 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("InstallerType: portable", winget)
         self.assertIn("x86_64-pc-windows-msvc.zip", winget)
         self.assertIn("PortableCommandAlias: vulcan", winget)
+        self.assertNotIn(".deb", formula)
 
 
 if __name__ == "__main__":

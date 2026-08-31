@@ -162,6 +162,19 @@ jobs:
             --target '${{ matrix.target }}' \
             --version '${{ needs.gate.outputs.version }}'
 
+      - name: Build Debian package
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          SOURCE_DATE_EPOCH: "0"
+        run: >-
+          python scripts/release/package_deb.py
+          --binary 'target/${{ matrix.target }}/release/vulcan'
+          --assets release-assets
+          --output dist
+          --target '${{ matrix.target }}'
+          --version '${{ needs.gate.outputs.version }}'
+
       - name: Smoke-test native archive
         if: matrix.smoke
         shell: bash

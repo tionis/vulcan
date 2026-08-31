@@ -15,6 +15,11 @@ EXPECTED_TARGETS = {
     "aarch64-apple-darwin",
     "x86_64-pc-windows-msvc",
 }
+EXPECTED_ARTIFACTS = {
+    *{("archive", target) for target in EXPECTED_TARGETS},
+    ("debian", "x86_64-unknown-linux-gnu"),
+    ("debian", "aarch64-unknown-linux-gnu"),
+}
 
 
 def sha256(path: pathlib.Path) -> str:
@@ -24,28 +29,29 @@ def sha256(path: pathlib.Path) -> str:
 def aggregate(
     directory: pathlib.Path,
     version: str,
-    expected_targets: set[str] | None = None,
+    expected_artifacts: set[tuple[str, str]] | None = None,
 ) -> tuple[pathlib.Path, pathlib.Path]:
     artifacts = []
-    targets = set()
+    artifact_keys = set()
     for record_path in sorted(directory.glob("*.artifact.json")):
         record = json.loads(record_path.read_text(encoding="utf-8"))
         archive = directory / record["name"]
         if record["version"] != version:
             raise ValueError(f"version mismatch in {record_path.name}")
-        if record["target"] in targets:
-            raise ValueError(f"duplicate target {record['target']}")
+        key = (record.get("kind", "archive"), record["target"])
+        if key in artifact_keys:
+            raise ValueError(f"duplicate artifact {key[0]} for target {key[1]}")
         if not archive.is_file() or sha256(archive) != record["sha256"]:
             raise ValueError(f"checksum mismatch for {record['name']}")
-        targets.add(record["target"])
+        artifact_keys.add(key)
         artifacts.append(record)
     if not artifacts:
         raise ValueError("no artifact records found")
-    if expected_targets is not None and targets != expected_targets:
-        missing = sorted(expected_targets - targets)
-        unexpected = sorted(targets - expected_targets)
+    if expected_artifacts is not None and artifact_keys != expected_artifacts:
+        missing = sorted(expected_artifacts - artifact_keys)
+        unexpected = sorted(artifact_keys - expected_artifacts)
         raise ValueError(
-            f"release target set mismatch: missing={missing}, unexpected={unexpected}"
+            f"release artifact set mismatch: missing={missing}, unexpected={unexpected}"
         )
     manifest_path = directory / f"vulcan-{version}-manifest.json"
     manifest_path.write_text(
@@ -73,7 +79,7 @@ def main() -> None:
     parser.add_argument("--version", required=True)
     arguments = parser.parse_args()
     manifest, checksums = aggregate(
-        arguments.directory.resolve(), arguments.version, EXPECTED_TARGETS
+        arguments.directory.resolve(), arguments.version, EXPECTED_ARTIFACTS
     )
     print(manifest)
     print(checksums)

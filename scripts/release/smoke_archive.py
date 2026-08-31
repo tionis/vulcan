@@ -122,6 +122,53 @@ def smoke_macos_service(
         raise ValueError("macOS daemon uninstall retained the LaunchAgent definition")
 
 
+def smoke_debian_package(
+    directory: pathlib.Path,
+    target: str,
+    version: str,
+    destination: pathlib.Path,
+    environment: dict[str, str],
+) -> None:
+    records = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in directory.glob("*.artifact.json")
+    ]
+    matching = [
+        record
+        for record in records
+        if record.get("kind") == "debian" and record["target"] == target
+    ]
+    if len(matching) != 1:
+        raise ValueError(f"expected one Debian artifact for {target}, found {len(matching)}")
+    record = matching[0]
+    package = directory / record["name"]
+    if hashlib.sha256(package.read_bytes()).hexdigest() != record["sha256"]:
+        raise ValueError("Debian package checksum does not match its artifact record")
+    fields = subprocess.run(
+        ["dpkg-deb", "--field", str(package), "Package", "Version", "Architecture", "Depends"],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    ).stdout
+    if "Package: vulcan" not in fields or f"Version: {record['package_version']}" not in fields:
+        raise ValueError(f"unexpected Debian package metadata: {fields}")
+    package_root = destination / "debian-package"
+    subprocess.run(
+        ["dpkg-deb", "--extract", str(package), str(package_root)],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    packaged_binary = package_root / "usr/bin/vulcan"
+    reported = run(packaged_binary, "--version", environment=environment).strip()
+    if reported != f"vulcan {version}":
+        raise ValueError(f"Debian binary version mismatch: {reported}")
+    if not (package_root / "usr/share/man/man1/vulcan.1.gz").is_file():
+        raise ValueError("Debian package is missing the compressed man page")
+
+
 def smoke(directory: pathlib.Path, target: str, version: str) -> None:
     extension = ".zip" if "windows" in target else ".tar.gz"
     archive = directory / f"vulcan-{version}-{target}{extension}"
@@ -167,6 +214,8 @@ def smoke(directory: pathlib.Path, target: str, version: str) -> None:
             smoke_macos_service(
                 binary, environment, pathlib.Path(plan["definition_path"])
             )
+        elif sys.platform.startswith("linux") and target == "x86_64-unknown-linux-gnu":
+            smoke_debian_package(directory, target, version, temporary, environment)
         vault = temporary / "vault"
         vault.mkdir()
         subprocess.run(["git", "-C", str(vault), "init", "-q"], check=True)
