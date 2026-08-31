@@ -6341,7 +6341,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 
 **Goal:** Let a vault contain installable, interactive applications that run through the Vulcan WebUI and CLI while preserving the vault as the local information hub. A Vulcan App may provide a sandboxed static browser UI, typed CLI commands, resource-limited TypeScript/JavaScript host functions, browser or server WebAssembly components, or a combination of those surfaces. Apps use versioned Vulcan APIs and explicit capability grants rather than direct cache, daemon-internal, or ambient host access.
 
-**Depends on:** Phase 10 (daemon, versioned HTTP service, jobs, and watchers), Phase 13 (WebUI host and read-only browser surfaces), and Phase 17.1–17.5 (identity, sessions, rooted/delegable grants, permission filtering, document secrets, and share boundaries). Write-enabled browser apps additionally depend on Phase 14's mutation and review surfaces. Static publication integration depends on Phase 9.20. QuickJS host/CLI functions reuse Phase 9.18.5 and Phase 9.24's typed tool/runtime contracts. Server-side WebAssembly is a new optional runtime and does not depend on Phase 16.6's collaborative local-first investigation.
+**Depends on:** Phase 10 (daemon, versioned HTTP service, jobs, and watchers), Phase 13 (WebUI host and read-only browser surfaces), and Phase 17.1–17.5 (identity, sessions, rooted/delegable grants, permission filtering, document secrets, and share boundaries). Write-enabled browser apps additionally depend on Phase 14's mutation and review surfaces. Static publication integration depends on Phase 9.20. QuickJS host/CLI functions reuse Phase 9.18.5 and Phase 9.24's typed tool/runtime contracts. Server-side WebAssembly is a new optional runtime and does not depend on Phase 16.6's collaborative local-first investigation. The Feed Reader reuses Phase 15's external binding/reconciliation contracts when available, but neither that example nor Phase 15 blocks the core package and runtime gates.
 
 **Core decisions:**
 
@@ -6465,7 +6465,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 ### 19.9 Versioned Vulcan App API and mutation contract
 
 - [ ] Define a transport-neutral App API over shared domain request/report types rather than exposing CLI parsing, raw SQLite, internal Rust objects, unrestricted filesystem paths, or accidental daemon route shapes
-- [ ] Provide scoped namespaces for app/instance metadata, notes, canonical query AST, search, graph, properties/Bases/tasks, artifacts, state, mutation plans, jobs, events, network, secrets, typed tools, and UI integration
+- [ ] Provide scoped namespaces for app/instance metadata, notes, canonical query AST, search, graph, properties/Bases/tasks, artifacts/processors, external bindings/routes, state, mutation plans, jobs, events, network, secrets, typed tools, and UI integration
 - [ ] Make the same logical API available to the browser bridge, direct/daemon CLI invocation, QuickJS host bindings, server-WASM imports, tests, and future native clients while permitting surface-specific serialization adapters
 - [ ] Require stable typed errors, protocol feature negotiation, request/trace IDs, cancellation, timeouts, pagination/streaming limits, and bounded structured logs with secret redaction
 - [ ] Require expected revisions/content hashes for direct mutations and return typed stale-state reports rather than last-writer-wins behavior
@@ -6477,6 +6477,10 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 ### 19.10 Events, jobs, and background execution
 
 - [ ] Define explicit manifest entrypoints for user-invoked functions, retained jobs, scheduled work, and lifecycle events; importing a module must not register hidden side effects
+- [ ] Extend the shared plugin/app event registry with filtered post-scan file events for create/change/delete, covering Markdown, attachments, Canvas, Bases, app data, and other classified artifacts rather than only note-specific hooks
+- [ ] Let subscriptions declare bounded path, file-kind, extension, and media-type filters that load without executing app code; reject invalid or overly broad subscriptions according to installation policy
+- [ ] Deliver metadata-only file events after the stable file fingerprint and incremental scan are known, including change kind, canonical path, document/artifact kind, media type, size, BLAKE3 digest, causal ID, and prior digest where available; reading bytes remains a separately authorized App API call
+- [ ] Coalesce editor/write bursts by path and digest, preserve deterministic ordering, suppress exact duplicate deliveries, and prevent an app's output writes from creating unbounded self-trigger loops
 - [ ] Reuse daemon retained-job scheduling, cancellation, progress, restart, and bounded history rather than letting app runtimes own untracked background threads or timers
 - [ ] Scope every invocation to an initiating user grant or an explicit attenuated service grant; never silently promote a browser session into durable background authority
 - [ ] Require independent approval for each background/event capability and expose active schedules/subscriptions in admin/CLI surfaces
@@ -6484,6 +6488,11 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] Define update/disable/uninstall behavior for queued and running calls: cooperative cancellation at safe boundaries, no new claims after disablement, and retained typed terminal status
 - [ ] Prevent two mutating invocations for the same instance/store from violating Vulcan's write serialization while allowing bounded independent read/computation work
 - [ ] Add per-app/instance concurrency, CPU, memory, output, log, network, and job-duration ceilings enforced by the host rather than trusted runtime code
+- [ ] Add a reusable `ArtifactProcessor` contract in the core/app boundary with typed `capabilities`, `plan`, `submit`, `status`, `cancel`, `fetch`, and `validate` operations; provider adapters perform finite calls while the daemon owns polling, scheduling, and retained lifecycle
+- [ ] Key conversion idempotency and durable bindings by provider, source BLAKE3 identity, recipe/version identity, and selected output kind; persist remote job/artifact identity outside `cache.db` so restart or reindex cannot duplicate or lose work
+- [ ] Never perform upload, conversion, polling, or artifact import inside a blocking file-write hook. A filtered post event may enqueue a bounded job, and source note/attachment creation succeeds independently of remote processor availability
+- [ ] Route fetched MDAF, TextPack, or other processor output through the existing strict artifact validator and a mutation-free import preview before applying canonical Markdown/assets; local collisions, source drift, recipe drift, and permission changes fail closed
+- [ ] Expose the same processor registry to apps, plugins, CLI, daemon jobs, and future media workflows instead of adding Blobforge-specific behavior to the watcher or parser
 
 ### 19.11 QuickJS host functions and TypeScript authoring
 
@@ -6561,7 +6570,7 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] Add a local development workflow with watch/repack/reload that remains visibly marked as development mode and never converts directory mutability into production trust
 - [ ] Avoid user-facing collision with the existing `vulcan-app` orchestration crate by naming Rust domain/runtime types `VaultApp*`/`AppRuntime*` while keeping the product and CLI group “Vulcan Apps”/`apps`
 
-### 19.17 Verification, hardening, and reference apps
+### 19.17 Verification and hardening
 
 - [ ] Check in one canonical valid package with known manifest bytes, payload digests, `AppContentId`, `PackageBlobId`, and signature result plus hostile fixtures for every ZIP/path/JSON/manifest/resource-limit rejection
 - [ ] Cover duplicate ZIP entries, duplicate JSON keys, noncanonical JSON, incorrect hashes/sizes, missing/extra entries, traversal/absolute/backslash/case-collision paths, malformed/overlapping/prepended/trailing ZIPs, encryption, links, comments/extra fields, ZIP64, unsupported codecs/versions, bombs, and integer overflow
@@ -6570,23 +6579,82 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 - [ ] Add authorization tests for discovery-without-execution, code-change trust invalidation, caller/installation/instance/runtime intersection, optional capabilities, path/query filtering, network-domain ceilings, secret redaction, nested JS/WASM/tool calls, and background grants
 - [ ] Add browser security tests for iframe origin isolation, CSP, forged/cross-instance messages, schema violations, revoked sessions, embed filtering, asset paths/ranges/media types, and denial of daemon credentials
 - [ ] Add lifecycle tests for interrupted install/update/migration, mutable source replacement, rollback, concurrent invocation, disable/uninstall during jobs, retained data, orphan blob cleanup, and daemon restart
-- [ ] Build `dev.vulcan.presenter` as the first-party conformance app: full-page and embedded views, Markdown-derived slides, speaker mode, static publication, browser-WASM-ready rendering, and no write capability in its initial release
-- [ ] Build a bounded finance prototype as the canonical-artifact stress test: transparent Markdown and/or explicit canonical SQLite data, transactional mutation plans, migrations, audit/history/export, conflict preservation, and no network access by default
 - [ ] Document when to choose an app, app CLI command, plugin, skill command, script, QuickJS function, browser WASM, or server WASM; do not advertise WASM as automatically faster
 - [ ] Perform the required bundled-skill impact review: extend existing plugin/tool/configuration skills when app discovery, permission review, or authoring changes agent workflows; add/register a new managed app-authoring skill only if it is a distinct reusable workflow
 - [ ] Review `docs/assistant/AGENTS.template.md`, assistant integration docs, static-site docs, security guidance, and daemon/WebUI API docs for app-aware selection, trust, and mutation rules
 
-### 19.18 Recommended delivery order and gates
+### 19.18 First-party example apps and conformance portfolio
+
+Every reference app is an ordinary signed or explicitly locally trusted `.vapp` built with the public package, bridge, CLI, runtime, event, and App API contracts. Reference apps receive no private daemon endpoints, implicit grants, relaxed validation, filesystem shortcuts, or other privileges unavailable to third-party packages. Keep each app in its own fixture/package project with pinned frontend/runtime dependencies, deterministic builds, declared example data, capability snapshots, and direct/daemon/browser conformance tests.
+
+#### 19.18.1 Presenter
+
+- [ ] Build `dev.vulcan.presenter` as the first read-only conformance app, using a pinned existing browser presentation framework rather than implementing slide navigation, fragments, speaker notes, and export from scratch; prefer [reveal.js](https://github.com/hakimel/reveal.js) for the initial embeddable runtime and record the version/license decision
+- [ ] Let Vulcan parse and render source Markdown so wikilinks, transclusions, callouts, Mermaid, math, code highlighting, attachments, permissions, and diagnostics remain consistent with ordinary note and static-site rendering
+- [ ] Support heading or delimiter slide boundaries, horizontal/vertical slide structure, fragments, themes, speaker notes, timers, audience/presenter routes, named note embeds, fullscreen, and print/PDF-friendly output
+- [ ] Subscribe to filtered source-note and dependency changes, update the deck without a Vite/development server, and preserve the current slide/fragment where the changed structure still permits it
+- [ ] Support static publication through Phase 9.20 without bundling private presenter state or daemon-only control channels; diagnose dynamic constructs that cannot be exported safely
+- [ ] Add typed CLI commands for `present`, `list-slides`, `export`, and `doctor`, with no write capability required for the initial release
+
+#### 19.18.2 Meeting Tool
+
+- [ ] Build `dev.vulcan.meeting` over an ordinary Markdown agenda whose headings/items remain readable and editable without the app
+- [ ] Provide facilitator and audience views with current-item highlighting, next/previous control, speaker list and raised hands, timers, parking lot, lightweight votes/temperature checks, and reconnectable session state
+- [ ] Classify agenda/minutes/decisions/action items as canonical Markdown/tasks, the current item and speaker queue as explicit resumable or ephemeral session state, and participant presence as ephemeral state
+- [ ] Write decisions, notes, and action items through optimistic-concurrency mutation plans scoped to the selected agenda section rather than replacing the whole note
+- [ ] Resolve facilitator, speaker, participant, and viewer actions through caller and instance capabilities; an embedded audience view cannot inherit facilitator authority
+- [ ] Add `start`, `show`, `next`, `previous`, `queue`, `yield`, `decision`, `action`, and `finish` CLI commands with direct/daemon parity and a complete non-interactive path
+- [ ] Ship a single-facilitator/multiple-viewer baseline on Phase 19 events; layer simultaneous collaborative note editing on Phase 16 rather than inventing an app-specific CRDT
+
+#### 19.18.3 Capability-free minigame and Wiki Quest
+
+- [ ] Build a small capability-free browser minigame that requests no vault, network, secret, mutation, job, or host authority and stores progress only in bounded temporary/device-local app state
+- [ ] Use the game as the iframe/CSP/input/audio/browser-WASM/resource-limit baseline and prove denial of undeclared App API calls without degrading normal gameplay
+- [ ] Add an optional “Wiki Quest” mode that derives a navigable map or puzzles from the permission-filtered link graph while preventing inference of restricted nodes through topology, counts, labels, suggestions, timing, or missing-target behavior
+- [ ] Keep canonical achievements/progress as an explicit opt-in capability and mutation plan rather than silently writing game state into the vault
+
+#### 19.18.4 Blobforge Workbench and media-processing integration
+
+- [ ] Build `dev.tionis.blobforge` as a combined WebUI and app-CLI client for the [Blobforge](https://github.com/tionis/blobforge) coordinator: source ingestion, queue dashboard, job status, workers, failures, retained artifacts, recipe selection, preview/download, hydration, and cancellation where supported
+- [ ] Call the coordinator through typed HTTP client functions using an approved origin and opaque instance secret; do not require the external `blobforge` executable or expose its token to browser code
+- [ ] Expose namespaced `ingest`, `dashboard`, `status`, `workers`, `artifacts`, `request-conversion`, and `hydrate` commands over the same typed host functions used by the browser UI
+- [ ] Subscribe optionally to filtered new/changed PDF events, enqueue conversion only through the reusable `ArtifactProcessor`, and key requests by canonical source BLAKE3 plus exact recipe identity so repeated scans are idempotent
+- [ ] Retain coordinator job IDs, signed-transfer provenance, selected recipes, and imported artifact bindings outside `cache.db`; redact tokens and bounded signed URLs from logs, reports, notes, and canonical mappings
+- [ ] Validate downloaded MDAF/TextPack artifacts, compare source/recipe identity, preview Markdown/asset materialization, and apply through the ordinary artifact import and conflict checks
+- [ ] Keep an optional native/offline Blobforge wrapper as a separately approved `execute`-capability adapter only; it is not the default client architecture and never receives shell authority implicitly
+- [ ] Add contract tests against a bounded fake coordinator for signed transfers, redirects, retries, cancellation, progress, stale source/recipe results, malformed artifacts, permission revocation, restart recovery, and duplicate file events
+
+#### 19.18.5 Feed Reader
+
+- [ ] Build `dev.vulcan.feeds` with RSS 2.0, Atom, and JSON Feed parsing plus OPML import/export; unsupported namespaces and malformed entries surface diagnostics rather than disappearing silently
+- [ ] Provide WebUI and CLI flows for subscription management, manual refresh, unread/star/archive state, feed/entry search, reading view, and explicit “save as note” or rule-based capture
+- [ ] Run refresh through retained scheduled jobs with per-instance concurrency/rate limits, cancellation, offline/retry state, conditional HTTP requests (`ETag`/`Last-Modified`), bounded redirects/body sizes, and approved-domain checks on feeds plus discovered item/content URLs
+- [ ] Deduplicate with durable feed identity and entry bindings using stable entry IDs when trustworthy plus normalized URL and content BLAKE3 fallbacks; cache rebuild or feed reordering must not recreate captured entries
+- [ ] Sanitize remote HTML and media before rendering, never execute feed scripts/styles, proxy or localize remote assets only under explicit policy, and prevent server-side request forgery or credential forwarding across origins/redirects
+- [ ] Support authenticated/private feeds through opaque secrets that remain outside package, canonical notes, browser storage, logs, OPML, and exports
+- [ ] Classify subscription definitions and capture rules as explicit canonical or device-local instance configuration, unread UI state as app state, fetched bodies as bounded derived cache, and saved entries as ordinary canonical Markdown with source/provenance fields
+- [ ] Reuse Phase 15 external-route and reconciliation contracts for durable captured-document bindings when available; never treat removal from a remote feed as authority to delete a saved local note
+- [ ] Add `subscriptions`, `add`, `remove`, `refresh`, `entries`, `read`, `star`, `archive`, `capture`, and `opml` CLI commands with `--output json`, dry-run/plan behavior for mutations, and direct-mode diagnostics when scheduling requires the daemon
+- [ ] Test hostile XML/HTML, entity expansion, huge feeds, duplicate/reused IDs, URL normalization, redirect credential leakage, conditional refresh, authenticated feeds, scheduler restart, permission filtering, and idempotent capture
+
+#### 19.18.6 Finance and Collection Studio
+
+- [ ] Build a bounded finance prototype as the canonical-artifact stress test: transparent Markdown and/or explicit canonical SQLite data, transactional mutation plans, migrations, audit/history/export, conflict preservation, and no network access by default
+- [ ] Build `dev.vulcan.collection-studio` as a schema-driven forms/table/detail app over typed Markdown or mdbase-compatible collections, proving reusable validation, multiple instances, property/link editors, filtered queries, bulk mutation previews, import/export, and app-defined views without hiding records in UI-only state
+- [ ] Keep both examples domain-bounded and auditable; they validate general platform contracts but do not turn finance rules or a second database/query language into Vulcan core semantics
+
+### 19.19 Recommended delivery order and gates
 
 - [ ] **Gate A — normative format:** Complete 19.1–19.3's domain model, canonical manifest, BLAKE3 vectors, strict ZIP profile, signature envelope, format specification, hostile fixtures, and raw-package fuzz target before any package code may execute
 - [ ] **Gate B — package substrate:** Complete 19.4 plus the immutable installation/blob-store portion of 19.5 and CLI descriptor validation/discovery from 19.15; `inspect`, `validate`, `pack`, `lint`, install preview/apply, exact identity reporting, and no-extraction invariants work without enabling QuickJS, WASM, or the WebUI
-- [ ] **Gate C — static read-only MVP:** Complete instances, device-local trust/grants, the iframe host, content-addressed asset serving, read-only bridge/App API, full-page routes, note embeds, CLI/WebUI administration, and the presenter reference app; this is the first user-facing release
-- [ ] **Gate D — reviewed mutation and durable data:** Add optimistic concurrency, plan/preview/apply mutations, data classifications/bindings, migration journals, canonical artifact handling, retained jobs/events, and the finance prototype's non-networked storage path
+- [ ] **Gate C — static read-only MVP:** Complete instances, device-local trust/grants, the iframe host, content-addressed asset serving, read-only bridge/App API, full-page routes, note embeds, CLI/WebUI administration, Presenter, and the capability-free minigame; this is the first user-facing release
+- [ ] **Gate D — reviewed mutation and durable data:** Add optimistic concurrency, plan/preview/apply mutations, data classifications/bindings, migration journals, canonical artifact handling, retained jobs/events, Meeting Tool, Collection Studio, and the finance prototype's non-networked storage path
 - [ ] **Gate E — QuickJS functions and CLI apps:** Add compiled-TypeScript authoring, VFS module loading, resource-limited request/job/direct CLI execution, namespaced QuickJS CLI commands, nested typed tools, and JS-to-WASM-ready component calls behind `js_runtime`; static apps remain available without that feature
 - [ ] **Gate F — server WASM and compiled CLI apps:** Select and pin the runtime, finalize the component ABI/host imports, add direct CLI/RPC/job and nested invocation, namespaced WASM CLI commands, resource enforcement, multi-toolchain conformance components, and a feature-disabled compatibility path
 - [ ] **Gate G — publication and distribution:** Add static/live publication modes, source/catalog abstraction, publisher policy and update/revocation UX, optional OCI transport, offline import/export, and complete security/lifecycle conformance
+- [ ] **Gate H — network and processing examples:** Complete filtered attachment events, the reusable `ArtifactProcessor`, Feed Reader, and Blobforge Workbench with durable idempotency/reconciliation, scheduler restart, secret/network isolation, validated artifact import, and direct/daemon CLI parity
 - [ ] Parallelization rule: after Gate A freezes the format contracts, package tooling/VFS, browser-host prototyping, App API domain types, and runtime-adapter investigations may proceed independently; installation authority and runtime execution must converge on the same validated package and permission contracts before Gate C or later ships
-- [ ] Completion gate: validated immutable packages can be discovered, installed, granted, instantiated, embedded, invoked through typed CLI commands, updated, disabled, and uninstalled without extraction or authority expansion; presenter works end-to-end; package/runtime/data state survives restart and sync safely; all CLI/API outputs and security invariants have unit, integration, conformance, and fuzz coverage
+- [ ] Completion gate: validated immutable packages can be discovered, installed, granted, instantiated, embedded, invoked through typed CLI commands, updated, disabled, and uninstalled without extraction or authority expansion; the Phase 19.18 portfolio exercises static, write-enabled, zero-capability, CLI, network, scheduled, artifact-processing, canonical-SQLite, and schema-driven workflows end-to-end; package/runtime/data state survives restart and sync safely; all CLI/API outputs and security invariants have unit, integration, conformance, and fuzz coverage
 
 ---
 
@@ -6635,7 +6703,7 @@ Phase 15 requires 10. Phase 16 requires 13, 14, 9.20, and 17.4–17.5 (document 
 Phase 17.6 (OIDC/SSO) is a future direction — deferred until local identity, rooted grants, delegation, and revocation are stable.
 Phase 16.6 (local-first/WASM) is a future direction beyond the current roadmap scope.
 Phase 18 (Canvas) core parsing/indexing/CLI (18.1–18.4) depends on Phase 7. WebUI read-only rendering (18.5) depends on Phase 13. Interactive canvas editor (18.6) depends on Phase 14. Canvas capability enforcement follows from Phase 17.
-Phase 19 (Vulcan Apps) requires Phase 10, Phase 13, and Phase 17.1–17.5 for its package installation, sandboxed browser host, identity/session, capability, secret, and share foundations. Write-enabled browser apps additionally require Phase 14's mutation/review surface. Static app publication uses Phase 9.20; QuickJS functions reuse Phase 9.18.5 and Phase 9.24. Server-side WASM is a supervised app-function runtime with its own ABI and does not depend on Phase 16.6's collaborative local-first investigation. Phase 19 does not block Phases 12, 15, 16, or 18.
+Phase 19 (Vulcan Apps) requires Phase 10, Phase 13, and Phase 17.1–17.5 for its package installation, sandboxed browser host, identity/session, capability, secret, and share foundations. Write-enabled browser apps additionally require Phase 14's mutation/review surface. Static app publication uses Phase 9.20; QuickJS functions reuse Phase 9.18.5 and Phase 9.24. Server-side WASM is a supervised app-function runtime with its own ABI and does not depend on Phase 16.6's collaborative local-first investigation. The Feed Reader example reuses Phase 15 external bindings when present, while Blobforge motivates a generic Phase 19 artifact processor rather than a knowledge-system relay. Phase 19 does not block Phases 12, 15, 16, or 18.
 Phase 9.8 (Dataview) builds on Phase 4 (properties and Bases expression language) and Phase 9.6 (search operators, task search). Sub-phase 9.8.1 (inline fields + type inference) and 9.8.2 (list items and tasks) extend the parser pipeline. Sub-phase 9.8.3 (file.* metadata) synthesizes implicit fields from existing cache tables. Sub-phase 9.8.4 (type system and expression evaluator) extends the value representation with Date, Duration, Link types, ~60 built-in functions with auto-vectorization, lambda expressions, link indexing, swizzling, and null ordering. Sub-phases 9.8.5–9.8.7 (DQL parser, evaluation, inline expressions) build the query surface on top. Sub-phase 9.8.8 (DataviewJS) adds sandboxed JS evaluation with full dv API and DataArray behind a `js_runtime` compile-time feature flag. Sub-phase 9.8.9 imports Dataview plugin settings from `.obsidian/plugins/dataview/data.json`. Dataview metadata and queries are available to all later phases (daemon, web, wiki) as foundation infrastructure.
 Phase 9.9 (Templater) builds on Phase 9.7 (enhanced templates) and Phase 9.8.8 (DataviewJS sandbox for JS execution commands). Native tp.date/tp.file/tp.frontmatter modules need no JS; tp.web, user scripts, and execution commands reuse the DataviewJS sandbox.
 Phase 9.10 (Tasks plugin) builds on Phase 9.8.2 (task extraction) and provides the parsing and query layer for inline checkbox tasks: Tasks DSL parser, recurring task expansion (RRULE), dependency graph, and custom status types. This shared infrastructure is reused by 9.15 (TaskNotes). The CLI surface is unified under `vulcan tasks` (defined in 9.15.9).
