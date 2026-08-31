@@ -240,6 +240,10 @@ fn validate_owner_only(metadata: &fs::Metadata, path: &Path) -> Result<(), Crede
 }
 
 #[cfg(not(unix))]
+// On Windows the read-only bit is not a Unix-style access mode and clearing it
+// does not make the file world-writable. Preserve the writable temporary file
+// before the atomic rename while ACLs remain inherited from its directory.
+#[allow(clippy::permissions_set_readonly_false)]
 fn set_owner_only(path: &Path) -> Result<(), CredentialError> {
     let mut permissions = fs::metadata(path)?.permissions();
     permissions.set_readonly(false);
@@ -248,6 +252,9 @@ fn set_owner_only(path: &Path) -> Result<(), CredentialError> {
 }
 
 #[cfg(not(unix))]
+// Keep the fallible signature shared with the Unix implementation so callers
+// cannot accidentally omit permission validation on platforms that support it.
+#[allow(clippy::unnecessary_wraps)]
 fn validate_owner_only(_metadata: &fs::Metadata, _path: &Path) -> Result<(), CredentialError> {
     Ok(())
 }
