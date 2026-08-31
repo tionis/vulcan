@@ -10,7 +10,9 @@ use std::fs;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, ChildStdout, Command as ProcessCommand, Stdio};
+use std::process::{
+    Child, ChildStdin, ChildStdout, Command as ProcessCommand, Output as ProcessOutput, Stdio,
+};
 use std::thread;
 use tempfile::TempDir;
 use vulcan_app::sync::SyncCancellationToken;
@@ -66,6 +68,47 @@ fn init_git_repo(vault_root: &Path) {
 fn commit_all(vault_root: &Path, message: &str) {
     run_git_ok(vault_root, &["add", "."]);
     run_git_ok(vault_root, &["commit", "-m", message]);
+}
+
+fn run_daemon_test_command(
+    config_home: &Path,
+    state_home: &Path,
+    arguments: &[&str],
+) -> ProcessOutput {
+    let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"));
+    command
+        .env("XDG_CONFIG_HOME", config_home)
+        .env("XDG_STATE_HOME", state_home)
+        .args(["--output", "json", "daemon"])
+        .args(arguments);
+    #[cfg(not(windows))]
+    return command.output().expect("daemon command should run");
+    #[cfg(windows)]
+    {
+        let capture = TempDir::new().expect("daemon capture directory");
+        let stdout_path = capture.path().join("stdout");
+        let stderr_path = capture.path().join("stderr");
+        command
+            .stdout(fs::File::create(&stdout_path).expect("daemon stdout capture"))
+            .stderr(fs::File::create(&stderr_path).expect("daemon stderr capture"));
+        let status = command.status().expect("daemon command should run");
+        ProcessOutput {
+            status,
+            stdout: fs::read(stdout_path).expect("daemon stdout should read"),
+            stderr: fs::read(stderr_path).expect("daemon stderr should read"),
+        }
+    }
+}
+
+fn successful_process_json(output: &ProcessOutput) -> Value {
+    assert!(
+        output.status.success(),
+        "daemon command failed with {:?}\nstdout:\n{}\nstderr:\n{}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).expect("daemon stdout should be JSON")
 }
 
 #[cfg(unix)]
@@ -6746,29 +6789,21 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
         ),
     )
     .expect("daemon config");
-    let daemon = |arguments: &[&str]| {
-        Command::cargo_bin("vulcan")
-            .expect("binary should build")
-            .env("XDG_CONFIG_HOME", &config_home)
-            .env("XDG_STATE_HOME", &state_home)
-            .args(["--output", "json", "daemon"])
-            .args(arguments)
-            .assert()
-    };
+    let daemon = |arguments: &[&str]| run_daemon_test_command(&config_home, &state_home, arguments);
 
-    let started = parse_stdout_json(&daemon(&["start", "--detach"]).success());
+    let started = successful_process_json(&daemon(&["start", "--detach"]));
     assert_eq!(started["detached"], true);
     assert_eq!(started["status"]["running"], true);
     assert!(started["status"]["runtime"]["bind"]
         .as_str()
         .is_some_and(|bind| bind.starts_with("127.0.0.1:")));
 
-    let running = parse_stdout_json(&daemon(&["status"]).success());
+    let running = successful_process_json(&daemon(&["status"]));
     assert_eq!(running["running"], true);
     assert_eq!(running["registered_wikis"], serde_json::json!([]));
     assert!(running["uptime_ms"].as_u64().is_some());
 
-    let redacted = parse_stdout_json(&daemon(&["companion"]).success());
+    let redacted = successful_process_json(&daemon(&["companion"]));
     assert!(redacted["base_url"]
         .as_str()
         .is_some_and(|url| url.starts_with("http://127.0.0.1:")));
@@ -6778,21 +6813,20 @@ fn daemon_cli_detaches_reports_status_and_stops_gracefully() {
         running["runtime"]["credential_id"]
     );
 
-    let revealed = parse_stdout_json(&daemon(&["companion", "--reveal-token"]).success());
+    let revealed = successful_process_json(&daemon(&["companion", "--reveal-token"]));
     assert!(revealed["token"]
         .as_str()
         .is_some_and(|token| token.len() == 43));
     assert_eq!(revealed["credential_id"], redacted["credential_id"]);
 
-    let stopped = parse_stdout_json(&daemon(&["stop"]).success());
+    let stopped = successful_process_json(&daemon(&["stop"]));
     assert_eq!(stopped["running"], false);
-    let after = parse_stdout_json(&daemon(&["status"]).success());
+    let after = successful_process_json(&daemon(&["status"]));
     assert_eq!(after["running"], false);
-    daemon(&["companion"])
-        .failure()
-        .stdout(predicate::str::contains(
-            "daemon must be running to provision a companion client",
-        ));
+    let companion = daemon(&["companion"]);
+    assert!(!companion.status.success());
+    assert!(String::from_utf8_lossy(&companion.stdout)
+        .contains("daemon must be running to provision a companion client"));
 }
 
 #[test]
@@ -6890,17 +6924,9 @@ fn daemon_semantic_worker_runs_and_exposes_latest_status() {
     let temporary = TempDir::new().expect("temp dir");
     let config_home = temporary.path().join("config");
     let state_home = temporary.path().join("state");
-    let daemon = |arguments: &[&str]| {
-        Command::cargo_bin("vulcan")
-            .expect("binary")
-            .env("XDG_CONFIG_HOME", &config_home)
-            .env("XDG_STATE_HOME", &state_home)
-            .args(["--output", "json", "daemon"])
-            .args(arguments)
-            .assert()
-    };
-    daemon(&["config", "set-bind", "127.0.0.1:0"]).success();
-    daemon(&[
+    let daemon = |arguments: &[&str]| run_daemon_test_command(&config_home, &state_home, arguments);
+    successful_process_json(&daemon(&["config", "set-bind", "127.0.0.1:0"]));
+    successful_process_json(&daemon(&[
         "config",
         "set-agent",
         "semantic",
@@ -6908,18 +6934,16 @@ fn daemon_semantic_worker_runs_and_exposes_latest_status() {
         "http://127.0.0.1:9/v1",
         "--model",
         "fixture-model",
-    ])
-    .success();
-    daemon(&[
+    ]));
+    successful_process_json(&daemon(&[
         "config",
         "set-semantic-worker",
         "--wiki",
         "missing",
         "--poll-seconds",
         "1",
-    ])
-    .success();
-    daemon(&["start", "--detach"]).success();
+    ]));
+    successful_process_json(&daemon(&["start", "--detach"]));
     let worker_status = state_home.join("vulcan/daemon/semantic-worker.json");
     for _ in 0..40 {
         if worker_status.is_file() {
@@ -6931,13 +6955,13 @@ fn daemon_semantic_worker_runs_and_exposes_latest_status() {
         worker_status.is_file(),
         "semantic worker status should appear"
     );
-    let status = parse_stdout_json(&daemon(&["semantic-status"]).success());
+    let status = successful_process_json(&daemon(&["semantic-status"]));
     assert_eq!(status["version"], 1);
     assert_eq!(status["entries"][0]["wiki_id"], "missing");
     assert!(status["entries"][0]["error"]
         .as_str()
         .is_some_and(|error| error.contains("no longer exists")));
-    daemon(&["stop"]).success();
+    successful_process_json(&daemon(&["stop"]));
 }
 
 #[test]
