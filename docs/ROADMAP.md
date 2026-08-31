@@ -13,6 +13,7 @@ The numbered phases describe dependency order, not a requirement to implement ev
 - **Completed optional additions:** 9.30 (Outline publishing) and 9.31 (folder-note normalization) landed as independently useful work after the Phase 9 gate. Their numbering records implementation history rather than extending the daemon prerequisite chain.
 - **Active optional addition:** 9.35 materializes large hierarchical Markdown documents as link-safe wiki trees. It builds on completed parser, refactor, attachment, and folder-note foundations without extending the Phase 10 gate.
 - **Committed hub direction:** Phase 12 owns device/file-tree synchronization and Phase 15 owns external document bindings, content routes, and knowledge-system connectors. SilverBullet, Outline, HedgeDoc, and Git wiki work should extend those shared layers rather than become parallel product architectures.
+- **Committed application-platform direction:** Phase 19 owns immutable `.vapp` packages, installation/instance lifecycle, sandboxed browser applications, QuickJS server functions, server/browser WebAssembly components, and explicit canonical app data. It builds on the daemon, WebUI, and capability model without extending the Phase 10 gate.
 - **Candidate capability tracks:** mdbase expansion and additional native vault workflows with compatibility adapters are maintained below as detailed design backlogs. They retain no implied promise of implementation order or completion before Phase 10.
 - **Promotion gate:** move a candidate into the committed path only when there is a concrete use case, a capability-oriented domain and public surface, an identified dependency/ownership boundary, a sustainable adapter compatibility and testing strategy, and enough maintenance budget to support the advertised surface. Promote only the smallest independently useful native slice; importing one plugin's settings is not by itself a product boundary.
 - **Placement rule:** durable Markdown semantics, parsing, diagnostics, and mutation-free exports may live in core/app tracks; daemon transports belong to Phase 10+, sync protocols to Phase 12, editor behavior to Phase 14, and supervised runtimes or first-party external integrations to Phase 15.
@@ -6336,6 +6337,241 @@ A visual canvas editor in the web interface, completing the Obsidian canvas expe
 
 ---
 
+## Phase 19: Vulcan Apps
+
+**Goal:** Let a vault contain installable, interactive applications that run inside the Vulcan WebUI while preserving the vault as the local information hub. A Vulcan App may provide a sandboxed static browser UI, resource-limited TypeScript/JavaScript server functions, browser or server WebAssembly components, or a combination of those surfaces. Apps use versioned Vulcan APIs and explicit capability grants rather than direct cache, daemon-internal, or ambient host access.
+
+**Depends on:** Phase 10 (daemon, versioned HTTP service, jobs, and watchers), Phase 13 (WebUI host and read-only browser surfaces), and Phase 17.1–17.5 (identity, sessions, rooted/delegable grants, permission filtering, document secrets, and share boundaries). Write-enabled browser apps additionally depend on Phase 14's mutation and review surfaces. Static publication integration depends on Phase 9.20. QuickJS server functions reuse Phase 9.18.5 and Phase 9.24's typed tool/runtime contracts. Server-side WebAssembly is a new optional runtime and does not depend on Phase 16.6's collaborative local-first investigation.
+
+**Core decisions:**
+
+- A Vulcan App is an interactive application package, not another name for a script, skill command, or lifecycle plugin. Scripts are directly executed, skill commands are typed callable operations, plugins react to lifecycle events, and apps own interactive sessions and views. Apps may call typed tools or shared services without bypassing those boundaries.
+- Keep package, installation, instance, and data identities separate. A package is immutable code/assets; an installation is device-local trust and capability approval for one exact content identity; an instance binds an installed package to one vault and configuration; app data is classified independently.
+- `.vapp` is a strictly profiled ZIP archive and immutable application image. Runtime state, caches, databases, user data, generated content, settings, grants, and secrets live outside the package. Normal installation and execution never extract package contents to the filesystem.
+- The logical package model is independent of ZIP serialization. A future physical representation may encode the same manifest and payload model only through an explicit format-version extension; OCI may distribute `.vapp` blobs but is not the local runtime format.
+- Use a canonical UTF-8 JSON manifest and BLAKE3 identities. `AppContentId` identifies the logical manifest and all payloads; `PackageBlobId` identifies the exact ZIP bytes. ZIP CRC-32 is only a structural corruption check and never an authenticity or content-identity mechanism.
+- A package requests capabilities but grants none. Effective authority is the restrictive intersection of the caller/session grant, installation grant, instance grant, manifest request, runtime sandbox ceiling, and canonical policy ceilings.
+- The browser UI, QuickJS functions, and server WebAssembly components are peer application surfaces over one versioned Vulcan App API. Server WASM may be invoked directly, from QuickJS, or as a job; it is not merely a JavaScript optimization format. Browser WASM remains inside the iframe sandbox and initially reaches Vulcan only through the JavaScript bridge.
+- Only `.vulcan/cache.db` is necessarily rebuildable derived state. Apps may own canonical Markdown, Canvas, Bases, media, SQLite, or other explicit artifacts. Every store declares whether it is canonical document data, canonical artifact data, device-local state, secret state, derived cache, or temporary state.
+- V1 packages are self-contained and have no executable package dependencies. Bundle JavaScript/UI dependencies and call other installed behavior only through stable typed Vulcan services or tool APIs.
+- Discovery and synchronization never execute or activate code. Installation trust is bound to the exact `AppContentId`; changed package content requires validation and explicit update handling, and expanded capability requests require renewed approval.
+
+### 19.1 Domain model, ownership, and version contracts
+
+- [ ] Add transport-neutral `AppId`, semantic `AppVersion`, `AppContentId`, `PackageBlobId`, `AppPackageManifest`, `AppInstallation`, `AppInstance`, `AppDataBinding`, and typed app error/report models
+- [ ] Validate reverse-DNS-style stable app IDs independently from human names; distinguish publisher release coordinates from cryptographic content identity
+- [ ] Define `AppContentId` as BLAKE3 derive-key mode with the exact UTF-8 context `dev.vulcan.app-content.v1` over the original validated canonical manifest bytes
+- [ ] Define `PackageBlobId` as BLAKE3 derive-key mode with context `dev.vulcan.app-package-blob.v1` over the exact ZIP bytes
+- [ ] Define payload digests as BLAKE3 derive-key mode with context `dev.vulcan.app-payload.v1` over uncompressed entry bytes; serialize all identifiers as lowercase algorithm-tagged strings such as `blake3:<64 hex characters>`
+- [ ] Keep v1 hash algorithms closed: accept BLAKE3 only rather than generic hash agility or downgrade negotiation; allow external distribution layers to attach their own SHA-256 or registry identifiers without changing native identities
+- [ ] Version the package format, Vulcan App API, browser bridge protocol, QuickJS host API, server-WASM ABI, and instance configuration independently; unknown major versions fail closed
+- [ ] Define package/install/instance/data lifecycle states and stable JSON reports for discovery, validation, installation, grant review, activation, update, migration, disablement, and uninstall
+- [ ] Preserve crate boundaries: manifest/identity/capability/data-classification domain types live in `vulcan-core`; finite install/update/migration workflows live in `vulcan-app`; HTTP, browser sessions, subscriptions, and runtime supervision live in `vulcan-daemon`; package codecs and execution engines remain replaceable adapters
+
+### 19.2 Canonical manifest and logical package specification
+
+- [ ] Specify `manifest.json` as UTF-8 without BOM, I-JSON-compatible canonical JSON whose original bytes must equal its RFC 8785 JSON Canonicalization Scheme representation
+- [ ] Reject duplicate object keys before constructing a generic JSON value, forbid floating-point values in v1, bound integers to the exactly interoperable range, and reject ambiguous uses of `null`
+- [ ] Define application-level canonical rules beyond JSON syntax: payload maps ordered by canonical path, set-like arrays lexicographically sorted and duplicate-free, lowercase digest encodings, and deterministic ordering for entrypoints and capability requests
+- [ ] Reject unknown fields in closed manifest objects; provide named extension objects only where forward-compatible vendor metadata is explicitly safe
+- [ ] Require manifest fields for format version, app ID/version/name, App API compatibility, human metadata, runtime entrypoints, capability requests, resource ceilings, payload inventory, and supported instance/data schema ranges
+- [ ] Require every payload file to appear exactly once in the manifest with canonical path, actual uncompressed byte size, BLAKE3 digest, and optional validated media type/delivery metadata; `manifest.json` does not list itself
+- [ ] Model capabilities as structured requests with stable request IDs, capability names, required/optional status, maximum resource selectors, network-domain ceilings, and whether an instance may bind a narrower concrete scope
+- [ ] Model full-page UI routes, named embeddable views, typed server functions, browser-WASM assets, server-WASM exports, lifecycle/background entrypoints, schemas, migrations, and static-publication support explicitly rather than inferring semantics from directories
+- [ ] Reserve `META-INF/signatures/` for detached signature records that are neither executable payloads nor part of `AppContentId`; prohibit every other unlisted entry
+- [ ] Define Ed25519 as the v1 detached signature algorithm, a canonical signature-record schema with publisher/key identity, and the exact signed statement `"vulcan-app-signature/v1\0" || raw 32-byte AppContentId`; a canonical manifest signature policy makes removal of a required record invalid without creating a digest cycle
+- [ ] Publish the v1 JSON Schema, normative examples, exact hash vectors, path vectors, canonicalization vectors, signature vectors, and a human-readable format specification
+
+### 19.3 Strict ZIP profile and hostile-input validation
+
+- [ ] Add a package reader with the Rust `zip` crate using default features disabled and only the v1 Stored/Deflate codec surface enabled
+- [ ] Accept only single-disk archives containing regular files; reject encryption, directories, symbolic/hard links, special files, duplicate names, overlapping entries, prepended/trailing data, archive/entry comments, unsupported methods, and inconsistent local/central headers
+- [ ] Reject ZIP64 in v1 while configured package and entry limits remain below ZIP64 thresholds; introduce it only through a deliberate format-version change
+- [ ] Reject unknown ZIP extra fields and filename encodings outside the canonical ASCII path profile
+- [ ] Define the v1 path grammar as `[A-Za-z0-9._@+-]+(/[A-Za-z0-9._@+-]+)*`; reject absolute paths, empty/`.`/`..` components, trailing separators, backslashes, NUL/control bytes, drive/device prefixes, and ASCII case-fold collisions
+- [ ] Enforce configured ceilings for blob bytes, manifest bytes, entry count, per-entry compressed/uncompressed bytes, total actual uncompressed bytes, path length/depth, and decompression ratio using checked arithmetic and bounded readers
+- [ ] Do not trust ZIP-declared sizes alone: stream every payload, count actual produced bytes, enforce per-entry/global budgets during decompression, and verify size and BLAKE3 digest against the manifest
+- [ ] Require entries declaring byte-range delivery, including large video/audio assets, to use Stored compression; recommend Stored for already compressed media while allowing Deflate for text and other suitable assets
+- [ ] Implement the complete validation order as one boundary: blob limit, central-directory structure, ZIP profile, path/type checks, bounded manifest read, strict parse/canonical comparison, schema/version checks, manifest/archive bijection, streamed payload verification, identities, then signatures
+- [ ] Expose runtime access only through a `ValidatedAppPackage`-style type that cannot be constructed without complete validation; raw ZIP handles must never enter runtime, installer, module-loader, or asset-server code
+- [ ] Keep every later VFS read bounded and integrity-associated even after validation; validation must not authorize unbounded allocation or decompression
+- [ ] Guarantee that no validation path extracts or writes package entries, including error handling, preview, inspection, and fuzz targets
+
+### 19.4 Read-only package VFS and deterministic builder
+
+- [ ] Implement a read-only archive-backed VFS with canonical `path -> entry` lookup, bounded streaming reads, media metadata, and efficient access to Stored entries
+- [ ] Use the same VFS for static HTTP assets, QuickJS module resolution, source maps, JSON schemas, migrations, and browser/server WASM loading
+- [ ] Define relative module/import resolution entirely in the package namespace; prohibit host paths, package escapes, undeclared files, runtime network imports, and cross-package executable imports
+- [ ] Add a directory development representation with the same logical manifest and path rules; development mode must not weaken runtime permissions or package validation semantics
+- [ ] Add a deterministic `vulcan apps pack <directory>` builder with lexicographic entry order, fixed timestamps/permissions, empty comments/extra fields, deterministic manifest bytes, fixed compression policy, and controlled compressor configuration
+- [ ] Make logical reproducibility mandatory through stable `AppContentId`; only claim byte-for-byte ZIP reproducibility when the complete compressor/toolchain version is pinned and covered by golden tests
+- [ ] Add `apps unpack` only as an explicit developer inspection command with destination preflight, collision checks, no overwrite by default, and the same path/size constraints; installation and execution never call it
+- [ ] Add `apps lint` for source directories and packages, including canonicalization, manifest/file correspondence, runtime entrypoints, schemas, capability declarations, media delivery, and compatibility checks
+- [ ] Add `apps test` support for fixture inputs, expected typed outputs/errors, browser bridge mocks, runtime resource limits, and package conformance cases
+
+### 19.5 Discovery, immutable installation, and update lifecycle
+
+- [ ] Support explicit file installation plus configured discovery of canonical `.vapp` files in a vault namespace; discovery reports metadata and diagnostics without executing, trusting, granting, migrating, or activating code
+- [ ] Validate the source package, compute both identities, and copy the exact verified blob into a device-local immutable content store keyed by `PackageBlobId`; runtime execution uses the installed blob rather than a mutable synchronized path
+- [ ] Make installation atomic/no-clobber and retain a validation receipt keyed by package-format validator version, `AppContentId`, and `PackageBlobId`; never trust timestamps or path identity as proof that bytes are unchanged
+- [ ] Record device-local installation provenance, exact content/blob IDs, publisher evidence, approval state, capability ceiling, compatible runtimes, and install/update timestamps outside the vault and `cache.db`
+- [ ] Distinguish an available vault/catalog package from an installed package and an activated instance; synchronized changes produce an update candidate rather than hot-swapping executable code
+- [ ] Detect same app ID/version with a different `AppContentId` and require explicit replacement policy; never treat a semantic version label as executable identity
+- [ ] Provide mutation-free install/update previews showing identity, provenance, signature status, compatibility, capability deltas, entrypoint changes, data migrations, removed views/functions, and affected instances
+- [ ] Require new approval when an update changes content, publisher continuity, required capabilities, network domains, background behavior, or runtime ceilings; unchanged/narrower requests may reuse only policy-approved grants bound to the new exact content identity
+- [ ] Support atomic activation and rollback to retained compatible package blobs; package rollback never silently downgrades or rolls back canonical app data
+- [ ] Separate disable instance, remove instance configuration, uninstall code, remove cached package blobs, archive data, and delete data operations; uninstalling executable code never implicitly deletes canonical data
+- [ ] Garbage-collect unreferenced blobs only through an explicit bounded/recoverable maintenance workflow that respects active, rollback, migration, and audit references
+
+### 19.6 Instances, configuration, secrets, and data ownership
+
+- [ ] Allow multiple named instances of one app per vault and define stable instance IDs independent of display names; embeds/routes refer to an instance plus view rather than an ambiguous package name
+- [ ] Store non-secret shareable instance definitions as canonical validated vault objects in a reserved app namespace; store activation, trust, grants, local preferences, and runtime health device-locally
+- [ ] Store credentials through Phase 17's secret facilities and expose only opaque secret handles scoped to an instance and capability; never place secret values in manifests, instance files, URLs, browser storage, logs, or app-visible error details
+- [ ] Define explicit app data classes: canonical document, canonical artifact, device-local, secret, derived cache, and temporary; require every declared store/binding to select one
+- [ ] Let instances bind manifest capability requests and logical stores to narrower concrete path/tag/type selectors; validate both old and resulting selectors for configuration or data-moving mutations
+- [ ] Define package, instance-config, and data-schema versions separately; track migration state outside `cache.db` and make it reconstructible or durably journaled as appropriate
+- [ ] Require migration plans to name affected stores, backups/snapshots, resource ceilings, supported from/to versions, validation, rollback support, and whether downgrade is possible
+- [ ] Run data migrations only after explicit preview/approval, under the effective instance and caller authority, with interruption-safe journaling and post-migration validation
+- [ ] Ensure app-created canonical files are ordinary vault artifacts visible to history, backup, sync, permission filtering, storage accounting, and explicit export; app ownership must not make them invisible to users or administration
+
+### 19.7 Trust, capability grants, and policy composition
+
+- [ ] Bind installation trust and grants to `(AppId, AppContentId, instance or installation scope, grant lineage)` rather than app name/version alone
+- [ ] Resolve effective authority as caller/session grant ∩ installation grant ∩ instance grant ∩ manifest request ∩ runtime sandbox ∩ canonical policy ceilings; nested function/component/tool calls preserve or attenuate that result
+- [ ] Distinguish required and optional capability requests so an instance can operate in a reduced mode when optional access is denied
+- [ ] Reuse Phase 17 selectors and checks for note/artifact read, write, delete, refactor, query, graph, vector, config, Git, network, secret, execute, job, background-event, and publication capabilities
+- [ ] Treat annotations such as `read_only`, `background`, or `destructive` as review metadata only; authorization remains entirely capability-derived
+- [ ] Require separate approval for scheduled/background execution, lifecycle subscriptions, external network domains, secret use, host execution, Git operations, and publication
+- [ ] Filter reads, counts, errors, graph edges, search suggestions, subscriptions, and autocomplete before app code receives them so denied resources cannot be inferred through derived output
+- [ ] Never give browser code a daemon bearer token or raw grant. Use a host-controlled, instance/session-bound message channel with request IDs, origin/source validation, schema validation, cancellation, rate limits, and revocation
+- [ ] Make unsigned local packages possible under explicit local trust while supporting publisher keys, detached signatures, organization policy, revocation, and future transparency/OCI attestations without requiring a centralized app store
+- [ ] Reject or disable installed apps fail-closed when package integrity, signature policy, compatibility, grant lineage, reserved namespace, runtime feature, or data migration state is invalid
+
+### 19.8 Browser application host, routes, and note embeds
+
+- [ ] Serve each active app UI in a sandboxed iframe at an app/instance-specific route and origin boundary; do not grant same-origin access to the Vulcan WebUI or other apps
+- [ ] Generate a restrictive CSP from installed/granted capabilities, with no ambient network, navigation, popup, download, clipboard, camera/microphone, or embedding authority
+- [ ] Serve immutable assets through `AppContentId`-keyed URLs with correct media types, cache headers, ETags, range behavior for Stored entries, and no path-based access outside the validated VFS
+- [ ] Define a version-negotiated browser bridge for request/response calls, cancellation, progress, subscriptions, navigation, dialogs, notifications, theming, locale, and accessibility metadata
+- [ ] Add full-page routes such as `/w/{vault}/apps/{instance}/{route}` without allowing packages to claim arbitrary daemon or WebUI paths
+- [ ] Add declarative fenced `vulcan-app` embeds naming instance, view, and JSON-compatible props; never execute code contained in the note block itself
+- [ ] Provide a stable fallback/diagnostic rendering for absent, disabled, untrusted, incompatible, denied, or failed apps so Markdown remains readable outside Vulcan
+- [ ] Scope embed reads to both the viewer's grant and the instance grant; an author cannot make restricted content visible by embedding a more privileged app
+- [ ] Define iframe lifecycle, suspension, memory ceilings, crash isolation, reload/update behavior, unsaved-state prompts, keyboard/focus handling, and accessibility requirements
+- [ ] Treat browser WASM as a validated UI payload loaded through the package asset route; it receives no direct daemon/vault authority and initially calls Vulcan only through package JavaScript and the bridge
+
+### 19.9 Versioned Vulcan App API and mutation contract
+
+- [ ] Define a transport-neutral App API over shared domain request/report types rather than exposing CLI parsing, raw SQLite, internal Rust objects, unrestricted filesystem paths, or accidental daemon route shapes
+- [ ] Provide scoped namespaces for app/instance metadata, notes, canonical query AST, search, graph, properties/Bases/tasks, artifacts, state, mutation plans, jobs, events, network, secrets, typed tools, and UI integration
+- [ ] Make the same logical API available to the browser bridge, QuickJS host bindings, server-WASM imports, tests, and future native clients while permitting surface-specific serialization adapters
+- [ ] Require stable typed errors, protocol feature negotiation, request/trace IDs, cancellation, timeouts, pagination/streaming limits, and bounded structured logs with secret redaction
+- [ ] Require expected revisions/content hashes for direct mutations and return typed stale-state reports rather than last-writer-wins behavior
+- [ ] Route multi-file or consequential changes through a plan/preview/apply workflow with exact accepted inputs, permission checks against old and resulting state, application-level write locking, incremental rescan, and optional auto-commit
+- [ ] Expose app-owned state APIs according to declared data classification; never let an app relabel canonical data as cache to bypass history, sync, backup, or deletion review
+- [ ] Let apps call visible skill commands through the typed registry with input/output validation, recursion limits, and preserved effective permission ceilings; do not add arbitrary CLI/shell escape hatches
+- [ ] Keep App API schemas and daemon/OpenAPI/browser/WASM projections generated or conformance-tested from the same domain contracts
+
+### 19.10 Events, jobs, and background execution
+
+- [ ] Define explicit manifest entrypoints for user-invoked functions, retained jobs, scheduled work, and lifecycle events; importing a module must not register hidden side effects
+- [ ] Reuse daemon retained-job scheduling, cancellation, progress, restart, and bounded history rather than letting app runtimes own untracked background threads or timers
+- [ ] Scope every invocation to an initiating user grant or an explicit attenuated service grant; never silently promote a browser session into durable background authority
+- [ ] Require independent approval for each background/event capability and expose active schedules/subscriptions in admin/CLI surfaces
+- [ ] Filter event payloads before delivery, coalesce bursts, bound queues/retries, prevent self-trigger loops, and preserve causal/request identifiers across nested calls
+- [ ] Define update/disable/uninstall behavior for queued and running calls: cooperative cancellation at safe boundaries, no new claims after disablement, and retained typed terminal status
+- [ ] Prevent two mutating invocations for the same instance/store from violating Vulcan's write serialization while allowing bounded independent read/computation work
+- [ ] Add per-app/instance concurrency, CPU, memory, output, log, network, and job-duration ceilings enforced by the host rather than trusted runtime code
+
+### 19.11 QuickJS server functions and TypeScript authoring
+
+- [ ] Treat TypeScript as an authoring language: `apps pack` builds or consumes compiled ECMAScript modules, source maps, schemas, and declared entrypoints; production runtime does not compile TypeScript implicitly
+- [ ] Reuse rquickjs behind the existing `js_runtime` feature flag and strict resource limits; an app requiring QuickJS is incompatible rather than partially executed when the feature is disabled
+- [ ] Run named exported functions under a server-function model; apps cannot bind sockets, add arbitrary axum middleware, create unmanaged threads, or become independent servers
+- [ ] Provide no Node.js globals, CommonJS loader, ambient filesystem/process/environment access, native addons, or undeclared network module loading
+- [ ] Resolve imports only through the validated package VFS and declared built-in Vulcan modules; reject package escapes and dynamic unresolved imports
+- [ ] Inject a request-scoped context containing the attenuated App API, cancellation, progress, structured logging, caller/instance metadata safe to disclose, and direct calls to declared WASM components
+- [ ] Validate function input before instantiation/call and output afterward against declared schemas; bound serialized input/output, module graph depth, stack, heap, CPU time, and nested call depth
+- [ ] Run long operations as retained jobs instead of preserving unbounded QuickJS contexts; define context reuse/isolation policy so state cannot cross callers or grants accidentally
+- [ ] Add authoring templates and tests for UI-to-function RPC, pure functions, mutation planning, network-denied behavior, optional capabilities, nested tools, and JS-to-WASM calls
+
+### 19.12 Server-side WebAssembly runtime
+
+- [ ] Introduce a replaceable server-WASM runtime adapter, preferably in a dedicated optional crate/feature, without coupling package validation or the App API to one engine
+- [ ] Make server WASM a peer function/job runtime: daemon RPC or jobs may invoke it directly, QuickJS may call it as a declared component, and pure components may have no host imports
+- [ ] Define and version a Vulcan component ABI using an explicit interface description rather than an ad hoc raw-memory `alloc(pointer, length)` convention; begin with bounded canonical JSON values if needed while preserving a path to richer typed records/resources
+- [ ] Permit only declared Vulcan host imports for query, notes, mutation plans, artifacts, state, network, secrets, jobs/progress, time/randomness, and logging; do not enable ambient WASI filesystem, sockets, environment, process, or clocks
+- [ ] Instantiate only imports covered by the effective grant and fail closed on missing, unknown, or denied imports; a component cannot dynamically acquire broader host functions
+- [ ] Enforce fuel/epoch interruption or equivalent CPU limits, linear-memory/table/stack limits, component size limits, output limits, cancellation, and bounded instance pooling
+- [ ] Preserve effective authority and trace/causal identity across direct WASM calls and QuickJS-to-WASM nested calls; apply the shared recursion/concurrency ceilings
+- [ ] Support compiled-language server backends, deterministic parsers/converters, financial/scientific calculations, ranking, media processing, and other isolated computation without claiming that WASM is automatically faster than QuickJS
+- [ ] Keep browser-WASM and server-WASM targets explicit and separate in the manifest; browser modules use browser ABI/tooling and never inherit server host imports
+- [ ] Add conformance components in Rust plus at least one other supported toolchain, including denied-import, resource-exhaustion, cancellation, malformed-component, schema-mismatch, and deterministic-output cases
+
+### 19.13 Canonical artifacts, SQLite data, and synchronization
+
+- [ ] Allow apps to declare and bind canonical non-Markdown artifacts, including SQLite databases, without treating them as rebuildable merely because they use SQLite
+- [ ] Keep app data physically separate from immutable `.vapp` packages by default so package upgrades, signatures, rollback, distribution, sync, and backup do not become stateful code rewrites
+- [ ] Reserve self-modifying package-plus-data files for a future explicit portable-document mode with separate identity/migration semantics; v1 `.vapp` files remain immutable
+- [ ] For canonical SQLite stores, serialize writers through Vulcan, use safe connection settings, prevent extension loading, bound database/page/schema complexity, and ensure WAL/SHM sidecars cannot escape the captured mutation boundary
+- [ ] Materialize SQLite changes as an atomic canonical artifact replacement or a formally captured file set, then rescan/history/sync it like other user data
+- [ ] Treat concurrent cross-device SQLite artifact changes as required-review conflicts in v1; do not claim Git can semantically merge database bytes
+- [ ] Design a later optional deterministic artifact-merger contract over immutable base/local/remote inputs, declared schema/version, strict resource limits, exact output validation, and evidence reports; never execute arbitrary app merge code merely because sync discovered a conflict
+- [ ] Make canonical artifacts visible to permission filters, history, backup/export, conflict inspection, storage accounting, retention, and explicit deletion workflows without exposing their contents to unauthorized apps or users
+- [ ] Add crash/restart, concurrent mutation, sync conflict, migration, backup/restore, WAL cleanup, corrupt database, and package-uninstall-with-data-preserved integration tests
+
+### 19.14 Publication and distribution
+
+- [ ] Define per-app publication modes: `none`, read-only `static`, live `server`, and future explicit `standalone` export transform; default to `none`
+- [ ] Let static-capable apps declare export-safe UI entrypoints and data contracts; Phase 9.20 builds only filtered read-only data selected by the publisher grant and never bundles server functions, secrets, write grants, or private instance configuration
+- [ ] Reuse validated package assets and shared renderer/route/search contracts while assigning collision-free content-addressed publication paths
+- [ ] Make server-backed published apps resolve ordinary authenticated/limited share grants and the same App API filters rather than creating a public bypass
+- [ ] Define a catalog-independent install source abstraction for local files, URLs, and future catalogs; URL installation obeys normal network permissions, transport limits, digest/signature checks, and explicit install approval
+- [ ] Keep OCI as an optional future distribution envelope carrying an ordinary `.vapp` blob plus provenance/attestations; do not expose OCI layout or registry semantics to the runtime VFS
+- [ ] Support offline export/import of exact package blobs and detached metadata while preserving both content and blob identities
+- [ ] Add provenance, license, publisher, vulnerability/withdrawal, update-channel, and revocation fields without making a centralized Vulcan marketplace mandatory
+
+### 19.15 CLI, WebUI administration, and developer experience
+
+- [ ] Add `vulcan apps discover|inspect|validate|list|show|install|update|disable|uninstall|doctor` with stable JSON reports and `--dry-run` on every mutation
+- [ ] Add `vulcan apps instances list|show|create|set|enable|disable|remove` with explicit vault/instance selection, capability/data bindings, migration previews, and no interactive-only requirements
+- [ ] Add `vulcan apps grants show|plan|apply|revoke` over Phase 17 authority rather than a parallel ACL file; human output clearly separates requested, granted, denied, optional, and policy-ceiling capabilities
+- [ ] Add `vulcan apps pack|lint|test|unpack` developer commands and `describe`/help coverage for manifest, identities, ZIP profile, browser bridge, App API, QuickJS, WASM, data classes, signing, and publication
+- [ ] Add WebUI pages for discovered packages, exact identity/provenance, signatures, requested/granted capabilities, installed versions, instances, data stores, jobs/events, runtime health, updates, migrations, disablement, and uninstall/data-retention choices
+- [ ] Provide an explicit capability-delta review before install/update/instance enablement and an inspectable audit trail for approvals, invocations, migrations, and denied operations
+- [ ] Add a local development workflow with watch/repack/reload that remains visibly marked as development mode and never converts directory mutability into production trust
+- [ ] Avoid user-facing collision with the existing `vulcan-app` orchestration crate by naming Rust domain/runtime types `VaultApp*`/`AppRuntime*` while keeping the product and CLI group “Vulcan Apps”/`apps`
+
+### 19.16 Verification, hardening, and reference apps
+
+- [ ] Check in one canonical valid package with known manifest bytes, payload digests, `AppContentId`, `PackageBlobId`, and signature result plus hostile fixtures for every ZIP/path/JSON/manifest/resource-limit rejection
+- [ ] Cover duplicate ZIP entries, duplicate JSON keys, noncanonical JSON, incorrect hashes/sizes, missing/extra entries, traversal/absolute/backslash/case-collision paths, malformed/overlapping/prepended/trailing ZIPs, encryption, links, comments/extra fields, ZIP64, unsupported codecs/versions, bombs, and integer overflow
+- [ ] Fuzz the single raw-bytes-to-`ValidatedAppPackage` boundary and runtime module/component loaders; assert malformed input performs no extraction or filesystem writes and cannot reach execution
+- [ ] Add property tests showing repacks may change `PackageBlobId` while preserving `AppContentId`, any logical manifest/payload change changes `AppContentId`, and canonical builders reproduce the promised identity/output guarantees
+- [ ] Add authorization tests for discovery-without-execution, code-change trust invalidation, caller/installation/instance/runtime intersection, optional capabilities, path/query filtering, network-domain ceilings, secret redaction, nested JS/WASM/tool calls, and background grants
+- [ ] Add browser security tests for iframe origin isolation, CSP, forged/cross-instance messages, schema violations, revoked sessions, embed filtering, asset paths/ranges/media types, and denial of daemon credentials
+- [ ] Add lifecycle tests for interrupted install/update/migration, mutable source replacement, rollback, concurrent invocation, disable/uninstall during jobs, retained data, orphan blob cleanup, and daemon restart
+- [ ] Build `dev.vulcan.presenter` as the first-party conformance app: full-page and embedded views, Markdown-derived slides, speaker mode, static publication, browser-WASM-ready rendering, and no write capability in its initial release
+- [ ] Build a bounded finance prototype as the canonical-artifact stress test: transparent Markdown and/or explicit canonical SQLite data, transactional mutation plans, migrations, audit/history/export, conflict preservation, and no network access by default
+- [ ] Document when to choose an app, plugin, skill command, script, QuickJS function, browser WASM, or server WASM; do not advertise WASM as automatically faster
+- [ ] Perform the required bundled-skill impact review: extend existing plugin/tool/configuration skills when app discovery, permission review, or authoring changes agent workflows; add/register a new managed app-authoring skill only if it is a distinct reusable workflow
+- [ ] Review `docs/assistant/AGENTS.template.md`, assistant integration docs, static-site docs, security guidance, and daemon/WebUI API docs for app-aware selection, trust, and mutation rules
+
+### 19.17 Recommended delivery order and gates
+
+- [ ] **Gate A — normative format:** Complete 19.1–19.3's domain model, canonical manifest, BLAKE3 vectors, strict ZIP profile, signature envelope, format specification, hostile fixtures, and raw-package fuzz target before any package code may execute
+- [ ] **Gate B — package substrate:** Complete 19.4 plus the immutable installation/blob-store portion of 19.5; `inspect`, `validate`, `pack`, `lint`, install preview/apply, exact identity reporting, and no-extraction invariants work without enabling QuickJS, WASM, or the WebUI
+- [ ] **Gate C — static read-only MVP:** Complete instances, device-local trust/grants, the iframe host, content-addressed asset serving, read-only bridge/App API, full-page routes, note embeds, CLI/WebUI administration, and the presenter reference app; this is the first user-facing release
+- [ ] **Gate D — reviewed mutation and durable data:** Add optimistic concurrency, plan/preview/apply mutations, data classifications/bindings, migration journals, canonical artifact handling, retained jobs/events, and the finance prototype's non-networked storage path
+- [ ] **Gate E — QuickJS functions:** Add compiled-TypeScript authoring, VFS module loading, resource-limited request/job execution, nested typed tools, and JS-to-WASM-ready component calls behind `js_runtime`; static apps remain available without that feature
+- [ ] **Gate F — server WASM:** Select and pin the runtime, finalize the component ABI/host imports, add direct and nested invocation, resource enforcement, multi-toolchain conformance components, and a feature-disabled compatibility path
+- [ ] **Gate G — publication and distribution:** Add static/live publication modes, source/catalog abstraction, publisher policy and update/revocation UX, optional OCI transport, offline import/export, and complete security/lifecycle conformance
+- [ ] Parallelization rule: after Gate A freezes the format contracts, package tooling/VFS, browser-host prototyping, App API domain types, and runtime-adapter investigations may proceed independently; installation authority and runtime execution must converge on the same validated package and permission contracts before Gate C or later ships
+- [ ] Completion gate: validated immutable packages can be discovered, installed, granted, instantiated, embedded, updated, disabled, and uninstalled without extraction or authority expansion; presenter works end-to-end; package/runtime/data state survives restart and sync safely; all CLI/API outputs and security invariants have unit, integration, conformance, and fuzz coverage
+
+---
+
 ## Dependency graph
 
 ```
@@ -6363,6 +6599,11 @@ Phase 1 (Core indexing)
                                                         Phase 15 (Extensibility) ← Phase 10   Phase 16 (Wiki + live collab)
                                                                                                         ↓
                                                                                             16.6 (Local-first / WASM) [future]
+
+                            Phase 10 ─→ Phase 17 ─→ Phase 13 ─────────────────┐
+                                                        └→ Phase 14 (writes) ┤
+                            Phase 9.20 (publication) ────────────────────────┤
+                            Phase 9.24 (QuickJS/tools) ──────────────────────┴→ Phase 19 (Vulcan Apps)
 ```
 
 Phase 8 (Performance) is independent and can proceed in parallel with Phases 9 and 10 after Phase 7.
@@ -6376,6 +6617,7 @@ Phase 15 requires 10. Phase 16 requires 13, 14, 9.20, and 17.4–17.5 (document 
 Phase 17.6 (OIDC/SSO) is a future direction — deferred until local identity, rooted grants, delegation, and revocation are stable.
 Phase 16.6 (local-first/WASM) is a future direction beyond the current roadmap scope.
 Phase 18 (Canvas) core parsing/indexing/CLI (18.1–18.4) depends on Phase 7. WebUI read-only rendering (18.5) depends on Phase 13. Interactive canvas editor (18.6) depends on Phase 14. Canvas capability enforcement follows from Phase 17.
+Phase 19 (Vulcan Apps) requires Phase 10, Phase 13, and Phase 17.1–17.5 for its package installation, sandboxed browser host, identity/session, capability, secret, and share foundations. Write-enabled browser apps additionally require Phase 14's mutation/review surface. Static app publication uses Phase 9.20; QuickJS functions reuse Phase 9.18.5 and Phase 9.24. Server-side WASM is a supervised app-function runtime with its own ABI and does not depend on Phase 16.6's collaborative local-first investigation. Phase 19 does not block Phases 12, 15, 16, or 18.
 Phase 9.8 (Dataview) builds on Phase 4 (properties and Bases expression language) and Phase 9.6 (search operators, task search). Sub-phase 9.8.1 (inline fields + type inference) and 9.8.2 (list items and tasks) extend the parser pipeline. Sub-phase 9.8.3 (file.* metadata) synthesizes implicit fields from existing cache tables. Sub-phase 9.8.4 (type system and expression evaluator) extends the value representation with Date, Duration, Link types, ~60 built-in functions with auto-vectorization, lambda expressions, link indexing, swizzling, and null ordering. Sub-phases 9.8.5–9.8.7 (DQL parser, evaluation, inline expressions) build the query surface on top. Sub-phase 9.8.8 (DataviewJS) adds sandboxed JS evaluation with full dv API and DataArray behind a `js_runtime` compile-time feature flag. Sub-phase 9.8.9 imports Dataview plugin settings from `.obsidian/plugins/dataview/data.json`. Dataview metadata and queries are available to all later phases (daemon, web, wiki) as foundation infrastructure.
 Phase 9.9 (Templater) builds on Phase 9.7 (enhanced templates) and Phase 9.8.8 (DataviewJS sandbox for JS execution commands). Native tp.date/tp.file/tp.frontmatter modules need no JS; tp.web, user scripts, and execution commands reuse the DataviewJS sandbox.
 Phase 9.10 (Tasks plugin) builds on Phase 9.8.2 (task extraction) and provides the parsing and query layer for inline checkbox tasks: Tasks DSL parser, recurring task expansion (RRULE), dependency graph, and custom status types. This shared infrastructure is reused by 9.15 (TaskNotes). The CLI surface is unified under `vulcan tasks` (defined in 9.15.9).
@@ -7147,9 +7389,12 @@ The mdbase event/action interoperability, durable runtime, workflow execution, p
 | `vulcan-daemon` | lib | axum router, middleware, vault registry, daemon lifecycle |
 | `vulcan-auth` | lib | Canonical authorization-object parsing and mutation, rooted grant attenuation/revocation, reserved-path and Git-ingress validation, credential/session secret handling, audit lineage, and request-authority resolution |
 | `vulcan-sync` | lib | Sync backend trait and implementations (obsidian-headless, git remote, passive) |
+| `vulcan-app-package` | lib | Phase 19 canonical manifest, strict ZIP validation, read-only package VFS, BLAKE3 identities, deterministic builder, and signature evidence |
+| `vulcan-app-runtime` | lib | Phase 19 replaceable supervised QuickJS/server-WASM adapters and shared App API host bindings; feature-gated independently from package inspection |
 
 The `vulcan-cli` binary gains the `daemon` subcommand group by depending on `vulcan-daemon`.
 The `vulcan-daemon` crate depends on `vulcan-core` (for all vault operations) and `vulcan-sync` (for sync backends).
+Phase 19's package inspection and validation must remain usable without enabling an executable runtime. The existing `vulcan-app` crate continues to own reusable synchronous workflow orchestration; the user-facing “Vulcan Apps” model uses unambiguous `VaultApp*` domain names rather than redefining that crate's purpose.
 
 ## Key dependencies to add (Phases 8+)
 
@@ -7173,3 +7418,7 @@ The `vulcan-daemon` crate depends on `vulcan-core` (for all vault operations) an
 | `gix` (optional, exact-pinned) | Candidate embedded Git engine after the Phase 12 CLI baseline and conformance gate | 12 (post-MVP) |
 | `termimad` | Terminal markdown rendering for `help` command | 9.18.7 |
 | `rustyline` | REPL line editing, history, and tab completion | 9.18.5 |
+| RFC 8785 canonical JSON implementation (audited crate or bounded in-tree implementation) | Validate and emit canonical `.vapp` manifests without accepting duplicate keys or non-v1 number forms | 19 |
+| `wasmtime` or a conformance-equivalent replaceable engine (optional, exact-pinned) | Resource-limited server-side WebAssembly components behind the Phase 19 runtime adapter | 19.12 |
+
+Phase 19 reuses the existing `blake3`, `ed25519-dalek`, and narrowly featured `zip` dependencies. Re-audit and update the ZIP implementation before freezing the hostile-input parser boundary rather than assuming the currently pinned version exposes every structural check required by the v1 profile.
