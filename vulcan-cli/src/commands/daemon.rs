@@ -17,8 +17,8 @@ use vulcan_daemon::registry::{
 };
 use vulcan_daemon::semantic_worker::{load_semantic_worker_status, SemanticWorkerStatus};
 use vulcan_daemon::service::{
-    apply_daemon_service, plan_daemon_service, DaemonServiceAction, DaemonServicePlatform,
-    DaemonServiceReport,
+    apply_daemon_service, inspect_daemon_service, plan_daemon_service, DaemonServiceAction,
+    DaemonServicePlan, DaemonServicePlatform, DaemonServiceReport,
 };
 
 #[derive(Debug, Serialize)]
@@ -62,7 +62,11 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
             }
         }
         DaemonCommand::Status => {
-            let status = daemon_status(&context).map_err(CliError::operation)?;
+            let mut status = daemon_status(&context).map_err(CliError::operation)?;
+            if DaemonServicePlatform::native().is_ok() {
+                let plan = native_service_plan(&context, DaemonServiceAction::Install)?;
+                status.service = inspect_daemon_service(&plan).map_err(CliError::operation)?;
+            }
             print_status(cli.output, &status)
         }
         DaemonCommand::SemanticStatus => {
@@ -110,12 +114,21 @@ fn manage_service(
     action: DaemonServiceAction,
     dry_run: bool,
 ) -> Result<(), CliError> {
+    let plan = native_service_plan(context, action)?;
+    let report = apply_daemon_service(plan, dry_run).map_err(CliError::operation)?;
+    print_service_report(output, &report)
+}
+
+fn native_service_plan(
+    context: &DaemonProcessContext,
+    action: DaemonServiceAction,
+) -> Result<DaemonServicePlan, CliError> {
     let executable = std::env::current_exe().map_err(CliError::operation)?;
     let config_directory = context.registry.path().parent().ok_or_else(|| {
         CliError::operation("daemon registry path has no configuration directory")
     })?;
     let home_directory = service_home_directory()?;
-    let plan = plan_daemon_service(
+    plan_daemon_service(
         action,
         DaemonServicePlatform::native().map_err(CliError::operation)?,
         &executable,
@@ -124,9 +137,7 @@ fn manage_service(
         &home_directory,
         service_user_id()?,
     )
-    .map_err(CliError::operation)?;
-    let report = apply_daemon_service(plan, dry_run).map_err(CliError::operation)?;
-    print_service_report(output, &report)
+    .map_err(CliError::operation)
 }
 
 fn service_home_directory() -> Result<PathBuf, CliError> {
@@ -477,6 +488,14 @@ fn print_status(output: OutputFormat, status: &DaemonStatusReport) -> Result<(),
         );
     } else {
         println!("Vulcan daemon is stopped");
+    }
+    if let Some(service) = &status.service {
+        if let Some(repair) = &service.repair_command {
+            println!(
+                "Daemon service definition is missing or stale at {}; repair with `{repair}`",
+                service.definition_path.display()
+            );
+        }
     }
     Ok(())
 }

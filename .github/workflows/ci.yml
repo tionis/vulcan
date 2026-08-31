@@ -36,6 +36,31 @@ jobs:
       - name: Check workspace on MSRV
         run: cargo check --workspace --all-targets
 
+  release-tooling:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Install Python for release tooling
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Test archive and POSIX installer tooling
+        if: runner.os == 'Linux'
+        run: |
+          shellcheck scripts/install.sh
+          python -m unittest discover -s scripts/release/tests -v
+
+      - name: Test PowerShell installer dry run
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/install.ps1 -Version 0.1.0 -DryRun
+
   test:
     strategy:
       fail-fast: false

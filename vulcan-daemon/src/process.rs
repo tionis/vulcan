@@ -11,6 +11,7 @@ use crate::runtime::{
     run_sync_trigger_runtime_until, SyncTriggerRuntimeError, SyncTriggerRuntimeOptions,
 };
 use crate::semantic_worker::spawn_semantic_worker;
+use crate::service::DaemonServiceDiagnostic;
 use crate::supervisor::{SupervisorError, SyncSupervisor};
 use crate::sync::execute_next_sync_job_with_state_store;
 use fs2::FileExt;
@@ -55,6 +56,8 @@ pub struct DaemonStatusReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub uptime_ms: Option<u64>,
     pub registered_wikis: Vec<WikiRegistrationStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub service: Option<DaemonServiceDiagnostic>,
 }
 
 #[derive(Debug, Clone)]
@@ -482,6 +485,7 @@ pub fn daemon_status(
         }),
         runtime,
         registered_wikis,
+        service: None,
     })
 }
 

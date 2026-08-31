@@ -6994,6 +6994,23 @@ fn daemon_service_installation_is_native_and_mutation_free_in_dry_run() {
         .join("systemd/user/vulcan-daemon.service")
         .exists());
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    {
+        let status = parse_stdout_json(
+            &Command::cargo_bin("vulcan")
+                .expect("binary should build")
+                .env("XDG_CONFIG_HOME", &config_home)
+                .env("XDG_STATE_HOME", &state_home)
+                .env("HOME", temporary.path())
+                .args(["--output", "json", "daemon", "status"])
+                .assert()
+                .success(),
+        );
+        assert_eq!(status["service"]["installed"], false);
+        assert_eq!(status["service"]["definition_current"], false);
+        assert_eq!(status["service"]["repair_command"], "vulcan daemon install");
+    }
+
     let uninstall = parse_stdout_json(&daemon("uninstall").success());
     assert_eq!(uninstall["action"], "uninstall");
     assert!(uninstall.get("definition").is_none());
@@ -13583,6 +13600,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("--platform android-shared"));
     assert!(sync_skill.contains("vulcan daemon install --dry-run"));
     assert!(sync_skill.contains("vulcan daemon uninstall --dry-run"));
+    assert!(sync_skill.contains("macOS installs a restartable per-user LaunchAgent"));
+    assert!(sync_skill.contains("$XDG_CONFIG_HOME/vulcan/daemon.env"));
     assert!(sync_skill.contains("vulcan sync termux-install <wiki>"));
     assert!(sync_skill.contains("battery-not-low and storage-not-low"));
     assert!(sync_skill.contains("`file`, `change`, `hunk`, and"));
@@ -13652,6 +13671,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(configuration_skill.contains("must never be treated as permission to delete"));
     assert!(configuration_skill.contains("sync.merge_policy"));
     assert!(configuration_skill.contains("sync.merge_automation require_review --target local"));
+    assert!(configuration_skill.contains("mode-`0600` `$XDG_CONFIG_HOME/vulcan/daemon.env`"));
     let diagnostics_skill =
         fs::read_to_string(vault_root.join(".agents/skills/diagnostics-and-repair/SKILL.md"))
             .expect("diagnostics skill should be readable");
@@ -13669,6 +13689,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("state.apply-marker"));
     assert!(diagnostics_skill.contains("vulcan-sync/apply.json"));
     assert!(diagnostics_skill.contains("vulcan daemon start --detach"));
+    assert!(diagnostics_skill.contains("refresh the native service after moving or upgrading"));
     assert!(json["support_files"].as_array().is_some_and(|items| items
         .iter()
         .any(|item| item["path"] == "AGENTS.md")
@@ -29299,6 +29320,16 @@ fn complete_unknown_context_returns_empty() {
         .assert()
         .success()
         .stdout(predicate::str::is_empty());
+}
+
+#[test]
+fn version_uses_the_distributed_binary_name() {
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .arg("--version")
+        .assert()
+        .success()
+        .stdout(format!("vulcan {}\n", env!("CARGO_PKG_VERSION")));
 }
 
 fn fish_is_available() -> bool {

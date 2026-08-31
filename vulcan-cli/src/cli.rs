@@ -7060,6 +7060,7 @@ pub enum TrustCommand {
 
 #[derive(Debug, Clone, Parser)]
 #[command(
+    name = "vulcan",
     author,
     version,
     about = "Headless CLI for Obsidian-style vaults and Markdown directories",

@@ -5,5 +5,7 @@
 /.claude
 /.codex
 *.swp
+__pycache__/
+*.pyc
 /*.log
 /.envrc

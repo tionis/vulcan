@@ -8,80 +8,208 @@ on:
 permissions:
   contents: write
 
+env:
+  RUST_VERSION: "1.88.0"
+  CARGO_INCREMENTAL: "0"
+
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Validate release version
+        id: version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          workspace_version="$(python -c 'import tomllib; print(tomllib.load(open("Cargo.toml", "rb"))["workspace"]["package"]["version"])')"
+          test "$version" = "$workspace_version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          key: release-gate
+
+      - name: Test release tooling
+        run: python -m unittest discover -s scripts/release/tests -v
+
+      - name: Run release gate
+        run: cargo test --workspace --locked
+
+  assets:
+    needs: gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned Rust
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+
+      - name: Cache cargo registry
+        uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
+        with:
+          key: release-assets
+
+      - name: Build documentation generator binary
+        run: cargo build --locked -p vulcan-cli
+
+      - name: Generate completions and man page
+        run: >-
+          python scripts/release/generate_assets.py
+          --binary target/debug/vulcan
+          --version '${{ needs.gate.outputs.version }}'
+          --output release-assets
+
+      - name: Reject build-machine paths in generated assets
+        run: '! grep -R -E "(/home/runner|target/debug|D:\\\\a\\\\)" release-assets'
+
+      - name: Upload shared release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-assets
+          path: release-assets
+
   build:
+    needs: [gate, assets]
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            smoke: true
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
+            smoke: false
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-15-intel
+            smoke: true
           - target: aarch64-apple-darwin
             os: macos-latest
+            smoke: true
           - target: x86_64-pc-windows-msvc
             os: windows-latest
+            smoke: true
 
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
-      - name: Install Rust
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Install pinned Rust
         uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
         with:
-          toolchain: stable
+          toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
 
       - name: Install cross-compilation tools
         if: matrix.target == 'aarch64-unknown-linux-gnu'
+        shell: bash
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
-          # Rust 1.95/LLVM can segfault in the SLP vectorizer while cross-compiling
-          # vulcan-core for Linux aarch64 at release optimization.
           echo "RUSTFLAGS=-Cllvm-args=--vectorize-slp=false" >> "$GITHUB_ENV"
 
       - name: Cache cargo registry
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
         with:
-          key: ${{ matrix.target }}
+          key: release-${{ matrix.target }}
 
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p vulcan-cli
+      - name: Download shared release assets
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-assets
+          path: release-assets
 
-      - name: Rename binary
+      - name: Build locked release binary
+        run: cargo build --release --locked --target ${{ matrix.target }} -p vulcan-cli
+
+      - name: Build canonical archive
         shell: bash
+        env:
+          SOURCE_DATE_EPOCH: "0"
         run: |
-          src="target/${{ matrix.target }}/release/vulcan"
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            mv "${src}.exe" "vulcan-${{ matrix.target }}.exe"
-          else
-            mv "$src" "vulcan-${{ matrix.target }}"
-          fi
+          binary="target/${{ matrix.target }}/release/vulcan"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then binary="${binary}.exe"; fi
+          python scripts/release/package.py \
+            --binary "$binary" \
+            --assets release-assets \
+            --output dist \
+            --target '${{ matrix.target }}' \
+            --version '${{ needs.gate.outputs.version }}'
 
-      - name: Upload artifact
+      - name: Smoke-test native archive
+        if: matrix.smoke
+        shell: bash
+        run: >-
+          python scripts/release/smoke_archive.py
+          --directory dist
+          --target '${{ matrix.target }}'
+          --version '${{ needs.gate.outputs.version }}'
+
+      - name: Upload canonical archive
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: vulcan-${{ matrix.target }}
-          path: vulcan-${{ matrix.target }}*
+          path: dist/*
 
   release:
-    needs: build
+    needs: [gate, build]
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
-      - name: Download artifacts
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Download canonical archives
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
+          pattern: vulcan-*
           path: artifacts
           merge-multiple: true
+
+      - name: Verify and aggregate release manifest
+        run: >-
+          python scripts/release/manifest.py
+          --directory artifacts
+          --version '${{ needs.gate.outputs.version }}'
+
+      - name: Render package-channel metadata
+        run: >-
+          python scripts/release/channels.py
+          --manifest 'artifacts/vulcan-${{ needs.gate.outputs.version }}-manifest.json'
+          --base-url 'https://github.com/tionis/vulcan/releases/download/v${{ needs.gate.outputs.version }}'
+          --output artifacts
+
+      - name: Remove internal per-artifact records
+        run: rm artifacts/*.artifact.json artifacts/*.sha256
 
       - name: Create release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2

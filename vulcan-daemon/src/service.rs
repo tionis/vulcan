@@ -83,6 +83,8 @@ pub struct DaemonServicePlan {
     pub action: DaemonServiceAction,
     pub platform: DaemonServicePlatform,
     pub executable: PathBuf,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub directories: Vec<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub definition_path: Option<PathBuf>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -98,12 +100,27 @@ pub struct DaemonServiceReport {
     pub changed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DaemonServiceDiagnostic {
+    pub platform: DaemonServicePlatform,
+    pub installed: bool,
+    pub definition_path: PathBuf,
+    pub definition_current: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub configured_executable: Option<PathBuf>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub configured_executable_exists: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repair_command: Option<String>,
+}
+
 #[derive(Debug)]
 pub enum DaemonServiceError {
     UnsupportedPlatform(String),
     InvalidExecutable(PathBuf),
     InvalidConfigDirectory(PathBuf),
     UnsafeDefinitionPath(PathBuf),
+    UnsafeDirectoryPath(PathBuf),
     CommandFailed {
         program: String,
         arguments: Vec<String>,
@@ -133,6 +150,11 @@ impl Display for DaemonServiceError {
             Self::UnsafeDefinitionPath(path) => write!(
                 formatter,
                 "refusing to replace symlinked daemon service definition: {}",
+                path.display()
+            ),
+            Self::UnsafeDirectoryPath(path) => write!(
+                formatter,
+                "refusing to use symlinked or non-directory daemon service path: {}",
                 path.display()
             ),
             Self::CommandFailed {
@@ -188,6 +210,7 @@ pub fn plan_daemon_service(
         DaemonServicePlatform::LaunchdUser => Ok(plan_launchd_service(
             action,
             executable,
+            config_directory,
             state_directory,
             home_directory,
             user_id,
@@ -209,6 +232,9 @@ pub fn apply_daemon_service(
     }
     let changed = match plan.action {
         DaemonServiceAction::Install => {
+            for directory in &plan.directories {
+                ensure_directory(directory)?;
+            }
             if let (Some(path), Some(definition)) = (&plan.definition_path, &plan.definition) {
                 write_definition(path, definition)?;
             }
@@ -237,9 +263,68 @@ pub fn apply_daemon_service(
     })
 }
 
+pub fn inspect_daemon_service(
+    plan: &DaemonServicePlan,
+) -> Result<Option<DaemonServiceDiagnostic>, DaemonServiceError> {
+    let (Some(path), Some(expected)) = (&plan.definition_path, &plan.definition) else {
+        return Ok(None);
+    };
+    let actual = match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            return Err(DaemonServiceError::UnsafeDefinitionPath(path.clone()));
+        }
+        Ok(metadata) if metadata.is_file() => Some(fs::read_to_string(path)?),
+        Ok(_) => return Err(DaemonServiceError::UnsafeDefinitionPath(path.clone())),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error.into()),
+    };
+    let configured_executable = actual
+        .as_deref()
+        .and_then(|definition| configured_service_executable(plan.platform, definition));
+    let configured_executable_exists = configured_executable
+        .as_ref()
+        .map(|executable| executable.is_file());
+    let definition_current = actual.as_deref() == Some(expected.as_str());
+    let healthy = definition_current && configured_executable_exists.unwrap_or(true);
+    Ok(Some(DaemonServiceDiagnostic {
+        platform: plan.platform,
+        installed: actual.is_some(),
+        definition_path: path.clone(),
+        definition_current,
+        configured_executable,
+        configured_executable_exists,
+        repair_command: (!healthy).then(|| "vulcan daemon install".to_string()),
+    }))
+}
+
+fn configured_service_executable(
+    platform: DaemonServicePlatform,
+    definition: &str,
+) -> Option<PathBuf> {
+    match platform {
+        DaemonServicePlatform::LaunchdUser => {
+            let arguments = definition.split_once("<key>ProgramArguments</key>")?.1;
+            let value = arguments
+                .split_once("<string>")?
+                .1
+                .split_once("</string>")?
+                .0;
+            Some(PathBuf::from(xml_unescape(value)))
+        }
+        DaemonServicePlatform::SystemdUser => definition.lines().find_map(|line| {
+            line.strip_prefix("ExecStart=\"")
+                .and_then(|line| line.strip_suffix(" daemon start"))
+                .and_then(|line| line.strip_suffix('"'))
+                .map(|line| PathBuf::from(line.replace("\\\"", "\"").replace("\\\\", "\\")))
+        }),
+        DaemonServicePlatform::WindowsScheduledTask => None,
+    }
+}
+
 fn plan_launchd_service(
     action: DaemonServiceAction,
     executable: &Path,
+    config_directory: &Path,
     state_directory: &Path,
     home_directory: &Path,
     user_id: u32,
@@ -250,7 +335,13 @@ fn plan_launchd_service(
     let daemon_state = state_directory.join("daemon");
     let standard_out = daemon_state.join("daemon.log");
     let standard_error = daemon_state.join("daemon.error.log");
-    let definition = render_launchd_plist(executable, &standard_out, &standard_error);
+    let definition = render_launchd_plist(
+        executable,
+        config_directory,
+        state_directory,
+        &standard_out,
+        &standard_error,
+    );
     let domain = format!("gui/{user_id}");
     let service = format!("{domain}/{LAUNCHD_LABEL}");
     let definition_argument = definition_path.to_string_lossy().into_owned();
@@ -270,14 +361,33 @@ fn plan_launchd_service(
         action,
         platform: DaemonServicePlatform::LaunchdUser,
         executable: executable.to_path_buf(),
+        directories: vec![daemon_state],
         definition_path: Some(definition_path),
         definition: (action == DaemonServiceAction::Install).then_some(definition),
         commands,
     }
 }
 
-fn render_launchd_plist(executable: &Path, standard_out: &Path, standard_error: &Path) -> String {
+fn render_launchd_plist(
+    executable: &Path,
+    config_directory: &Path,
+    state_directory: &Path,
+    standard_out: &Path,
+    standard_error: &Path,
+) -> String {
     let executable = xml_escape(&executable.to_string_lossy());
+    let config_root = xml_escape(
+        &config_directory
+            .parent()
+            .unwrap_or(config_directory)
+            .to_string_lossy(),
+    );
+    let state_root = xml_escape(
+        &state_directory
+            .parent()
+            .unwrap_or(state_directory)
+            .to_string_lossy(),
+    );
     let standard_out = xml_escape(&standard_out.to_string_lossy());
     let standard_error = xml_escape(&standard_error.to_string_lossy());
     format!(
@@ -295,6 +405,13 @@ fn render_launchd_plist(executable: &Path, standard_out: &Path, standard_error: 
   </array>
   <key>RunAtLoad</key>
   <true/>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>XDG_CONFIG_HOME</key>
+    <string>{config_root}</string>
+    <key>XDG_STATE_HOME</key>
+    <string>{state_root}</string>
+  </dict>
   <key>KeepAlive</key>
   <dict>
     <key>SuccessfulExit</key>
@@ -321,6 +438,15 @@ fn xml_escape(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&apos;")
+}
+
+fn xml_unescape(value: &str) -> String {
+    value
+        .replace("&apos;", "'")
+        .replace("&quot;", "\"")
+        .replace("&gt;", ">")
+        .replace("&lt;", "<")
+        .replace("&amp;", "&")
 }
 
 fn plan_systemd_service(
@@ -354,6 +480,7 @@ fn plan_systemd_service(
         action,
         platform: DaemonServicePlatform::SystemdUser,
         executable: executable.to_path_buf(),
+        directories: Vec::new(),
         definition_path: Some(definition_path),
         definition: (action == DaemonServiceAction::Install).then_some(definition),
         commands,
@@ -390,6 +517,7 @@ fn plan_windows_task(action: DaemonServiceAction, executable: &Path) -> DaemonSe
         action,
         platform: DaemonServicePlatform::WindowsScheduledTask,
         executable: executable.to_path_buf(),
+        directories: Vec::new(),
         definition_path: None,
         definition: None,
         commands,
@@ -420,6 +548,20 @@ fn write_definition(path: &Path, contents: &str) -> Result<(), DaemonServiceErro
         .persist(path)
         .map_err(|error| DaemonServiceError::Io(error.error))?;
     Ok(())
+}
+
+fn ensure_directory(path: &Path) -> Result<(), DaemonServiceError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            Err(DaemonServiceError::UnsafeDirectoryPath(path.to_path_buf()))
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir_all(path)?;
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn remove_definition(path: &Path) -> Result<bool, DaemonServiceError> {
@@ -584,12 +726,17 @@ mod tests {
         assert!(definition.contains("<string>dev.tionis.vulcan.daemon</string>"));
         assert!(definition.contains("Vulcan &amp; Tools/vulcan</string>"));
         assert!(definition.contains("<key>RunAtLoad</key>\n  <true/>"));
+        assert!(definition.contains("<key>XDG_CONFIG_HOME</key>"));
+        assert!(definition.contains("config</string>"));
+        assert!(definition.contains("<key>XDG_STATE_HOME</key>"));
+        assert!(definition.contains("Library/Application Support</string>"));
         assert!(definition.contains("<key>SuccessfulExit</key>\n    <false/>"));
         assert!(definition.contains("<key>ThrottleInterval</key>\n  <integer>5</integer>"));
         assert!(definition.contains("<string>Background</string>"));
         assert!(definition.contains("daemon.error.log</string>"));
         assert!(!definition.contains("API_KEY"));
         assert_eq!(plan.commands.len(), 4);
+        assert_eq!(plan.directories, [state.join("daemon")]);
         assert!(plan
             .commands
             .iter()
@@ -653,6 +800,80 @@ mod tests {
         assert_eq!(
             error.to_string(),
             "daemon service command `launchctl bootstrap gui/501 \"/Users/Test User/Library/LaunchAgents/vulcan.plist\"` failed with exit code 5: input/output error"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn launchd_log_directory_rejects_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let temporary = tempdir().expect("temporary directory");
+        let target = temporary.path().join("target");
+        let link = temporary.path().join("daemon");
+        fs::create_dir(&target).expect("target");
+        symlink(&target, &link).expect("symlink");
+
+        assert!(matches!(
+            ensure_directory(&link),
+            Err(DaemonServiceError::UnsafeDirectoryPath(path)) if path == link
+        ));
+    }
+
+    #[test]
+    fn service_diagnostic_reports_missing_stale_and_current_definitions() {
+        let temporary = tempdir().expect("temporary directory");
+        let executable = temporary.path().join("bin/vulcan");
+        fs::create_dir_all(executable.parent().expect("binary parent")).expect("binary parent");
+        fs::write(&executable, "binary").expect("binary fixture");
+        let plan = plan_daemon_service(
+            DaemonServiceAction::Install,
+            DaemonServicePlatform::LaunchdUser,
+            &executable,
+            &temporary.path().join("config/vulcan"),
+            &temporary.path().join("state/vulcan"),
+            temporary.path(),
+            501,
+        )
+        .expect("launchd plan");
+        let path = plan.definition_path.as_ref().expect("definition path");
+
+        let missing = inspect_daemon_service(&plan)
+            .expect("missing diagnostic")
+            .expect("definition-backed service");
+        assert!(!missing.installed);
+        assert_eq!(
+            missing.repair_command.as_deref(),
+            Some("vulcan daemon install")
+        );
+
+        write_definition(path, plan.definition.as_deref().expect("definition"))
+            .expect("write definition");
+        let current = inspect_daemon_service(&plan)
+            .expect("current diagnostic")
+            .expect("definition-backed service");
+        assert!(current.installed);
+        assert!(current.definition_current);
+        assert_eq!(
+            current.configured_executable.as_deref(),
+            Some(executable.as_path())
+        );
+        assert_eq!(current.configured_executable_exists, Some(true));
+        assert!(current.repair_command.is_none());
+
+        let stale_definition = plan.definition.as_deref().expect("definition").replace(
+            &xml_escape(&executable.to_string_lossy()),
+            "/missing/versioned/vulcan",
+        );
+        write_definition(path, &stale_definition).expect("write stale definition");
+        let stale = inspect_daemon_service(&plan)
+            .expect("stale diagnostic")
+            .expect("definition-backed service");
+        assert!(!stale.definition_current);
+        assert_eq!(stale.configured_executable_exists, Some(false));
+        assert_eq!(
+            stale.repair_command.as_deref(),
+            Some("vulcan daemon install")
         );
     }
 

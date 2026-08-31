@@ -4,7 +4,7 @@
 
 Vulcan is a local-first Rust information hub for Obsidian-style vaults and plain Markdown directories. It indexes canonical Markdown into a rebuildable local SQLite cache, then exposes search, graph queries, Dataview/Bases-style metadata, TaskNotes workflows, publishing, scripting, MCP tools, and safe note mutations without requiring Obsidian to be running.
 
-The current implementation is a strong single-vault CLI and MCP server; the next major phase is a multi-vault daemon built on the shared `vulcan-core` and `vulcan-app` crates. Outline already has first-class named subtree routes and exact local-note/remote-document bindings. Later connector layers extend the same inspectable hub model to SilverBullet, Git wikis, and HedgeDoc without making their databases or Vulcan's cache authoritative.
+The current implementation includes the local CLI and MCP server plus a multi-vault synchronization daemon built on the shared `vulcan-core` and `vulcan-app` workflows. Outline already has first-class named subtree routes and exact local-note/remote-document bindings. Later connector layers extend the same inspectable hub model to SilverBullet, Git wikis, and HedgeDoc without making their databases or Vulcan's cache authoritative.
 
 ## What It Can Do
 
@@ -18,6 +18,19 @@ The current implementation is a strong single-vault CLI and MCP server; the next
 - **Integrate with agents**: `vulcan describe`, OpenAI tool schemas, MCP stdio/HTTP, ChatGPT-compatible OAuth/IndieAuth, tool packs, resources, prompts, and Agent Skills-compatible vault guidance.
 
 ## Quick Start
+
+Versioned release archives for Linux, macOS, and Windows include the binary, generated shell
+completions, a man page, install notes, checksums, and license files. The checksum-verifying
+installers require an explicit version and do not enable the daemon:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/tionis/vulcan/v0.1.0/scripts/install.sh | \
+  sh -s -- --version 0.1.0 --dry-run
+```
+
+On Windows, download `scripts/install.ps1` from the matching tag and run
+`./install.ps1 -Version 0.1.0 -DryRun`. Review [the installation guide](docs/installation.md) before
+removing `--dry-run`; Git remains a separate runtime dependency for synchronization.
 
 Vulcan requires Rust 1.88 or newer. With `rustup`, the checked-in `rust-toolchain.toml` installs and selects the supported toolchain automatically. Build the CLI:
 
@@ -98,6 +111,7 @@ For a private ChatGPT connector, see [docs/guide/chatgpt-mcp.md](docs/guide/chat
 - [Static sites](docs/guide/static-sites.md)
 - [Outline publishing](docs/guide/outline-publishing.md)
 - [Git-backed device synchronization](docs/guide/git-sync.md): direct Linux/Windows operation and detached Android/Termux setup
+- [Installation and daemon services](docs/installation.md): release archives, upgrades, native user services, and state-preserving removal
 - [Obsidian companion](integrations/obsidian-vulcan/README.md): authenticated status, sync triggers, and dry-run-first conflict review
 - [Local information hub and external wikis](docs/guide/information-hub.md): current integration baseline and planned binding/route/connector architecture
 - [Design document](docs/design_document.md): architecture and crate boundaries
@@ -121,8 +135,7 @@ vulcan help custom-tools
 | `vulcan-app` | Reusable synchronous workflows over `vulcan-core`: note/task/template/export/site/config/plugin/tool orchestration without terminal UI |
 | `vulcan-embed` | Embedding provider trait and vector store implementations |
 | `vulcan-cli` | The `vulcan` binary: `clap` surface, terminal output, TUI/editor integration, MCP stdio/HTTP server, completions |
-
-Planned crates start with `vulcan-daemon`, which will own async HTTP/WebSocket transport, multi-vault registry state, background scheduling, and daemon lifecycle. Core remains synchronous; daemon code will wrap shared workflows at the async boundary.
+| `vulcan-daemon` | Async HTTP/WebSocket transport, multi-vault registry state, background scheduling, and native service lifecycle |
 
 ## Development Checks
 

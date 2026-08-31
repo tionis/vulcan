@@ -233,10 +233,24 @@ fn shell_double_quote_literal(value: &str) -> String {
 }
 
 pub(crate) fn completion_command_path_literal() -> String {
-    std::env::current_exe().ok().map_or_else(
-        || "vulcan".to_string(),
-        |path| shell_double_quote_literal(&path.to_string_lossy()),
+    completion_command_path_literal_from(
+        std::env::var_os("VULCAN_COMPLETION_COMMAND"),
+        std::env::current_exe().ok().as_deref(),
     )
+}
+
+fn completion_command_path_literal_from(
+    command_override: Option<std::ffi::OsString>,
+    executable: Option<&std::path::Path>,
+) -> String {
+    command_override
+        .filter(|command| !command.is_empty())
+        .as_deref()
+        .or_else(|| executable.map(std::path::Path::as_os_str))
+        .map_or_else(
+            || "vulcan".to_string(),
+            |command| shell_double_quote_literal(&command.to_string_lossy()),
+        )
 }
 
 pub(crate) fn generate_fish_dynamic_completions() -> String {
@@ -261,7 +275,9 @@ pub(crate) fn generate_zsh_dynamic_completions() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::render_dynamic_completion_template;
+    use super::{completion_command_path_literal_from, render_dynamic_completion_template};
+    use std::ffi::OsString;
+    use std::path::Path;
 
     #[test]
     fn dynamic_completion_templates_normalize_windows_line_endings() {
@@ -270,5 +286,20 @@ mod tests {
         assert!(!rendered.contains('\r'));
         assert!(rendered.starts_with("first\n"));
         assert!(rendered.ends_with("\nlast"));
+    }
+
+    #[test]
+    fn release_generation_can_select_a_stable_completion_command() {
+        assert_eq!(
+            completion_command_path_literal_from(
+                Some(OsString::from("vulcan")),
+                Some(Path::new("/tmp/versioned/vulcan")),
+            ),
+            "vulcan"
+        );
+        assert_eq!(
+            completion_command_path_literal_from(None, Some(Path::new("/tmp/Vulcan Tools/vulcan")),),
+            "/tmp/Vulcan Tools/vulcan"
+        );
     }
 }
