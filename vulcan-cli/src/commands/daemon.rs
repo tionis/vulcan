@@ -321,13 +321,22 @@ fn start_detached(cli: &Cli, context: &DaemonProcessContext) -> Result<(), CliEr
         .map_err(CliError::operation)?;
     let error_log = log.try_clone().map_err(CliError::operation)?;
     let executable = std::env::current_exe().map_err(CliError::operation)?;
-    let mut child = Command::new(executable)
+    let mut command = Command::new(executable);
+    command
         .args(["daemon", "start", "--child"])
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
-        .stderr(Stdio::from(error_log))
-        .spawn()
-        .map_err(CliError::operation)?;
+        .stderr(Stdio::from(error_log));
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+
+        // Keep the long-running child independent of the invoking console and
+        // its captured process group. These are the Win32 DETACHED_PROCESS and
+        // CREATE_NEW_PROCESS_GROUP flags, respectively.
+        command.creation_flags(0x0000_0008 | 0x0000_0200);
+    }
+    let mut child = command.spawn().map_err(CliError::operation)?;
     let status = wait_until_ready_child(context, &mut child)?;
     print_start(cli.output, true, Some(child.id()), Some(&log_path), &status)
 }
