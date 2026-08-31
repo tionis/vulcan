@@ -1082,7 +1082,7 @@ impl GitCliEngine {
         let installation = self.installation()?;
         let mut command = self.command();
         command.args(["init", "--bare"]);
-        command.arg(&request.git_dir);
+        command.arg(git_cli_path(&request.git_dir));
         ensure_success(
             "initialize the replacement detached Git directory",
             self.execute(command)?,
@@ -1156,9 +1156,13 @@ impl GitCliEngine {
             let mut command = self.command();
             command
                 .arg("--git-dir")
-                .arg(&request.git_dir)
+                .arg(git_cli_path(&request.git_dir))
                 .args(["config", key])
-                .arg(value);
+                .arg(if key == "core.worktree" {
+                    git_cli_path(Path::new(value))
+                } else {
+                    value.to_os_string()
+                });
             ensure_success(
                 "configure the replacement detached repository",
                 self.execute(command)?,
@@ -1166,11 +1170,10 @@ impl GitCliEngine {
         }
         for setting in request.platform.policy().clone_config {
             let mut command = self.command();
-            command.arg("--git-dir").arg(&request.git_dir).args([
-                "config",
-                setting.key,
-                setting.value,
-            ]);
+            command
+                .arg("--git-dir")
+                .arg(git_cli_path(&request.git_dir))
+                .args(["config", setting.key, setting.value]);
             ensure_success(
                 "configure the replacement detached repository platform policy",
                 self.execute(command)?,
@@ -1199,7 +1202,7 @@ impl GitCliEngine {
     ) -> Result<Output, GitEngineError> {
         let mut command = self.command();
         if let Some(repository_path) = repository_path {
-            command.arg("-C").arg(repository_path);
+            command.arg("-C").arg(git_cli_path(repository_path));
         }
         command.args(arguments);
         let output = self.execute(command)?;
@@ -1221,9 +1224,11 @@ impl GitCliEngine {
 
     fn repository_command(&self, repository: &GitRepository) -> Command {
         let mut command = self.command();
-        command.arg("--git-dir").arg(&repository.git_dir);
+        command
+            .arg("--git-dir")
+            .arg(git_cli_path(&repository.git_dir));
         if let Some(work_tree) = &repository.work_tree {
-            command.arg("--work-tree").arg(work_tree);
+            command.arg("--work-tree").arg(git_cli_path(work_tree));
         }
         command
     }
@@ -1685,12 +1690,12 @@ impl GitEngine for GitCliEngine {
                 .arg(format!("{}={}", setting.key, setting.value));
         }
         if let Some(git_dir) = &request.git_dir {
-            command.arg("--separate-git-dir").arg(git_dir);
+            command.arg("--separate-git-dir").arg(git_cli_path(git_dir));
         }
         command
             .arg("--")
             .arg(&request.source)
-            .arg(&request.work_tree);
+            .arg(git_cli_path(&request.work_tree));
         let output = self.execute(command)?;
         if !output.status.success() {
             return Err(redact_clone_source(
@@ -3075,7 +3080,44 @@ fn prospective_absolute_path(path: &Path) -> Result<PathBuf, GitEngineError> {
     }
 }
 
+#[cfg(not(windows))]
+fn git_cli_path(path: &Path) -> OsString {
+    path.as_os_str().to_os_string()
+}
+
+#[cfg(windows)]
+fn git_cli_path(path: &Path) -> OsString {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    const VERBATIM_PREFIX: &[u16] = &[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
+    const UNC_PREFIX: &[u16] = &[b'U' as u16, b'N' as u16, b'C' as u16, b'\\' as u16];
+
+    let encoded = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    if !encoded.starts_with(VERBATIM_PREFIX) {
+        return path.as_os_str().to_os_string();
+    }
+    let remainder = &encoded[VERBATIM_PREFIX.len()..];
+    if remainder.starts_with(UNC_PREFIX) {
+        let normalized = [b'\\' as u16, b'\\' as u16]
+            .into_iter()
+            .chain(remainder[UNC_PREFIX.len()..].iter().copied())
+            .collect::<Vec<_>>();
+        return OsString::from_wide(&normalized);
+    }
+    let is_verbatim_disk = remainder.len() >= 3
+        && ((b'A' as u16..=b'Z' as u16).contains(&remainder[0])
+            || (b'a' as u16..=b'z' as u16).contains(&remainder[0]))
+        && remainder[1] == b':' as u16
+        && matches!(remainder[2], b'\\' as u16 | b'/' as u16);
+    if is_verbatim_disk {
+        OsString::from_wide(remainder)
+    } else {
+        path.as_os_str().to_os_string()
+    }
+}
+
 fn write_gitdir_pointer(work_tree: &Path, git_dir: &Path) -> Result<(), GitEngineError> {
+    let git_dir = git_cli_path(git_dir);
     let git_dir = git_dir
         .to_str()
         .ok_or_else(|| GitEngineError::UnsupportedRepository {
@@ -3898,6 +3940,29 @@ mod tests {
             &actual_parent.join("missing.git"),
             &alias_parent.join("other.git")
         ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn git_cli_paths_remove_windows_verbatim_prefixes() {
+        assert_eq!(
+            git_cli_path(Path::new(r"\\?\C:\Users\vulcan\wiki")),
+            OsString::from(r"C:\Users\vulcan\wiki")
+        );
+        assert_eq!(
+            git_cli_path(Path::new(r"\\?\UNC\server\share\wiki")),
+            OsString::from(r"\\server\share\wiki")
+        );
+        assert_eq!(
+            git_cli_path(Path::new(r"C:\Users\vulcan\wiki")),
+            OsString::from(r"C:\Users\vulcan\wiki")
+        );
+        assert_eq!(
+            git_cli_path(Path::new(
+                r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\wiki"
+            )),
+            OsString::from(r"\\?\Volume{01234567-89ab-cdef-0123-456789abcdef}\wiki")
+        );
     }
 
     #[test]
