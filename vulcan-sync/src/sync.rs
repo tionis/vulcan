@@ -2791,6 +2791,8 @@ mod tests {
         run_git(
             temporary.path(),
             &[
+                "-c",
+                "core.autocrlf=false",
                 "clone",
                 "--quiet",
                 writer.to_str().expect("writer path"),
@@ -2808,6 +2810,7 @@ mod tests {
         );
         run_git(&reader, &["config", "user.name", "Vulcan Test"]);
         run_git(&reader, &["config", "user.email", "vulcan@example.invalid"]);
+        run_git(&reader, &["config", "core.autocrlf", "false"]);
         reader
     }
 
