@@ -69,16 +69,6 @@ Examples:
   vulcan init --agent-files";
 
 const SKILL_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  list       enumerate visible bundled and vault-defined skills
-  get        read one skill's metadata plus Markdown body
-  show       read one skill's metadata plus SKILL.md body (alias for get)
-  commands   list Vulcan-declared commands exported by one skill
-  run        run a skill command with validated JSON input
-  exec       run a skill command script by path; this is the script shebang target
-  validate   validate skills, command metadata, schemas, scripts, and permission profile references
-  init       scaffold a new skill directory with optional starter command
-
 Notes:
   Skill visibility follows the active permission profile's read filter.
   External runtimes should call `skill list` up front and `skill get <name>` on demand.
@@ -107,18 +97,6 @@ Examples:
   vulcan skill init my-skill --starter-command hello";
 
 const TOOL_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  list       inspect exposed skill command tools
-  show       read one exposed skill command tool definition
-  help       show shell-friendly usage for one exposed skill command tool
-  init       scaffold a new skill-backed custom tool
-  lint       check exposed custom tools for authoring and packaging issues
-  test       run declared examples for one exposed skill command tool
-  compat     report custom tool compatibility across CLI, MCP, OpenAI, and JS surfaces
-  types      emit TypeScript declarations for exposed skill command tools
-  ci         run lint, examples, and compatibility checks for custom tools
-  run        validate JSON input and invoke one exposed skill command tool
-
 Notes:
   Tools are the callable registry view over Agent Skills-compatible commands declared
   in `SKILL.md` under `metadata.vulcan.commands` with `expose: true`.
@@ -309,15 +287,6 @@ Examples:
   vulcan rewrite --where 'file.path starts_with \"Projects/\"' --find alpha --replace beta";
 
 const BASES_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  eval         evaluate a .base file and print its current rows
-  tui          inspect a .base file interactively
-  create       create a note that matches the first Bases view context
-  view-add     add a validated view definition
-  view-delete  remove a view definition
-  view-rename  rename a view
-  view-edit    adjust filters, columns, sort, and grouping
-
 Notes:
   view-* commands rewrite the parsed .base model instead of patching YAML text blindly.
   Mutating bases commands support --dry-run and --no-commit.
@@ -379,21 +348,6 @@ Examples:
   vulcan edit --new Inbox/Idea";
 
 const NOTE_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  outline     inspect a note's section/block structure with semantic ids
-  get         read one note, optionally with heading, block, line, or regex selectors
-  set         replace one note's contents from stdin or --file
-  create      create a new note, optionally from a template and extra frontmatter
-  append      append text to the end of a note, at the top, or under a heading
-  checkbox    flip or set one markdown checkbox line
-  update      bulk-set a frontmatter property across filtered or piped notes
-  unset       bulk-remove a frontmatter property across filtered or piped notes
-  patch       perform a guarded single-note find/replace
-  delete      delete a note and report inbound links that would become unresolved
-  rename      rename a note in place and rewrite inbound links
-  info        show one note's summary metadata and graph stats
-  history     show git history scoped to one note
-
 Notes:
   `--check` runs non-blocking doctor-like diagnostics for the resulting note.
   Mutating note commands support --no-commit; `patch` also supports --dry-run.
@@ -546,13 +500,6 @@ Examples:
   vulcan note checkbox ./docs/ROADMAP.md --line 3309 --state unchecked --dry-run";
 
 const GIT_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  status       show staged, unstaged, and untracked vault files
-  log          show recent commits in the vault repository
-  diff         show the current diff for one path or the whole vault
-  commit       stage changed vault files and create a commit
-  blame        show per-line authorship for one tracked file
-
 Notes:
   `commit` stages vault files only and skips `.vulcan/`.
   `diff` accepts an optional vault-relative path; without one it prints the full working-tree diff for eligible files.
@@ -566,25 +513,6 @@ Examples:
   vulcan git blame Projects/Alpha.md";
 
 const SYNC_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  run          perform one finite capture, reconcile, push, and apply cycle
-  status       inspect local safety and remote live-ref state without mutating either
-  doctor       diagnose Git, refs, filters, recovery state, and cache coherence
-  conflicts    list preserved conflicts or show one immutable record
-  propose      ask an OpenAI-compatible provider for a review-only conflict proposal
-  reject       explicitly reject a retained conflict proposal
-  resolve      resolve with one explicit preserved side or approved proposal
-  checkpoint   retain the currently accepted live commit under a durable local ref
-  retention-plan inspect live-epoch and checkpoint retention without mutation
-  retention-apply apply reviewed checkpoint, rollover, and epoch-expiry decisions
-  semantic-plan build a reviewable deterministic or agent-organized history
-  semantic-apply apply a reviewed semantic history by compare-and-swap
-  semantic-publish publish an applied semantic history with an exact remote lease
-  semantic-auto debounce and run one finite semantic commit-and-publish cycle
-  semantic-reject reject a semantic proposal and release its retained ref
-  pause        disable future automatic sync for one registered wiki
-  resume       enable future automatic sync for one registered wiki
-
 Notes:
   Run/status/doctor work directly against the selected vault path and do not require a daemon or wiki registration.
   The default remote is `origin`; the default live ref is `refs/heads/__vulcan-sync/live`.
@@ -621,15 +549,6 @@ Examples:
   vulcan --vault ./wiki sync run --remote origin";
 
 const VAULT_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  clone        clone and register a Git-backed wiki
-  recover-git  recreate a registered missing detached Git directory safely
-  add          register an existing local wiki without changing its files
-  list         list registered wikis, optionally filtered by group
-  show         inspect one registration and its local availability
-  set          update groups or the permission profile
-  remove       unregister a wiki without deleting its worktree or Git data
-
 Notes:
   Registry state is device-local under the XDG Vulcan config directory.
   Registration is optional: ordinary `--vault <path>` commands continue to work directly.
@@ -645,16 +564,6 @@ Examples:
   vulcan vault remove personal --dry-run";
 
 const DAEMON_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  install      install and start the native per-user daemon service
-  uninstall    stop and remove the native per-user daemon service
-  start        run the multi-wiki sync daemon in the foreground or detach it
-  status       probe the authenticated loopback service and show runtime state
-  semantic-status show the latest debounced semantic-worker pass
-  stop         request graceful shutdown over the authenticated loopback service
-  companion    show connection details for a local companion client
-  config       configure bind, providers, and the semantic worker
-
 Notes:
   The daemon watches and periodically reconciles registered Git-backed wikis.
   Direct `vulcan sync run` remains available while the daemon is stopped.
@@ -673,10 +582,6 @@ Examples:
   vulcan daemon uninstall --dry-run";
 
 const WEB_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  search      query the configured web search backend
-  fetch       fetch one URL as markdown, html, or raw content
-
 Notes:
   `web search` reads backend settings from `[web.search]` in `.vulcan/config.toml`.
   `disabled` intentionally turns off `web search` and `web.search()` while leaving `web fetch` available.
@@ -791,14 +696,6 @@ Examples:
   cat query.js | vulcan run                      Pipe a script via stdin";
 
 const PLUGIN_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  list            list discovered and registered JS plugins
-  enable <name>   enable one plugin in shared or local config
-  disable <name>  disable one plugin in shared or local config
-  set <name>      update plugin path, events, sandbox, permissions, and description
-  delete <name>   remove one plugin registration override
-  run <name>      execute one plugin's `main(event, ctx)` entrypoint
-
 Notes:
   Plugin files live under `.vulcan/plugins/` by default and are registered under `[plugins.<name>]`.
   `plugin set` can create registrations without editing TOML directly.
@@ -859,12 +756,6 @@ Examples:
   vulcan completions fish > ~/.config/fish/completions/vulcan.fish";
 
 const DATAVIEW_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  inline      evaluate Dataview inline expressions from one note
-  query       evaluate a DQL query string directly
-  query-js    evaluate a DataviewJS snippet directly
-  eval        evaluate indexed ```dataview``` blocks from one note
-
 Examples:
   vulcan dataview inline Dashboard
   vulcan --output json dataview inline Projects/Alpha
@@ -873,23 +764,6 @@ Examples:
   vulcan dataview eval Dashboard --block 0";
 
 const TASKS_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  add         create one TaskNotes task file
-  show        display one TaskNotes task with structured properties
-  edit        open one TaskNotes task in $EDITOR
-  set         update one TaskNotes task property
-  complete    mark one task as completed
-  archive     archive one completed TaskNotes task
-  convert     convert a note, line, or heading into a TaskNotes task
-  create      append one inline task to a note
-  reschedule  change one task's due date
-  query       evaluate a Tasks plugin query string directly
-  eval        evaluate indexed ```tasks``` blocks from one note
-  list        list indexed tasks, optionally filtered
-  next        show upcoming recurring task instances
-  blocked     list currently blocked tasks with their blockers
-  graph       show the task dependency graph
-
 Notes:
   `tasks query` uses the Tasks DSL.
   `tasks list --filter` accepts either the Tasks DSL or a Dataview expression.
@@ -912,24 +786,6 @@ Examples:
   vulcan tasks graph";
 
 const CONFIG_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  show [section] print effective Vulcan config as TOML or JSON
-  list [section] list supported config keys from the schema registry
-  get <key>      read a single effective config value
-  edit           open the interactive settings editor for .vulcan/config.toml
-  set <key> <value> write one config value with type validation
-  unset <key>    remove one config override and prune empty tables
-  alias          manage command aliases under [aliases]
-  permissions    manage named permission profiles under [permissions.profiles]
-  import core    import Obsidian core settings into Vulcan config
-  import dataview import Obsidian Dataview plugin settings into .vulcan/config.toml
-  import kanban  import Obsidian Kanban plugin settings into .vulcan/config.toml
-  import periodic-notes import Obsidian Daily Notes + Periodic Notes settings into .vulcan/config.toml
-  import quickadd import Obsidian QuickAdd plugin settings into .vulcan/config.toml
-  import tasknotes import Obsidian TaskNotes plugin settings into .vulcan/config.toml
-  import templater import Obsidian Templater plugin settings into .vulcan/config.toml
-  import tasks   import Obsidian Tasks plugin settings into .vulcan/config.toml
-
 Notes:
   `config show` merges built-in defaults with `.vulcan/config.toml` and `.vulcan/config.local.toml` when present.
   `config list` is derived from the schema registry used by config mutation commands and the settings TUI.
@@ -971,13 +827,6 @@ Examples:
   vulcan --output json config import tasks";
 
 const SAVED_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  list        list saved query and report definitions
-  show        display one saved report definition
-  create      save a new search, notes, or Bases report definition
-  delete      remove one saved report definition
-  run         execute one saved report
-
 Notes:
   Saved report definitions live under .vulcan/reports.
   `saved run` uses the same execution path as the one-shot commands and supports the same export options.
@@ -992,10 +841,6 @@ Examples:
   vulcan automation run weekly --scan --doctor";
 
 const AUTOMATION_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  list        list saved reports that automation can run
-  run         execute saved reports plus optional checks and repairs
-
 Notes:
   `automation run` is intended for CI, cron jobs, and other non-interactive workflows.
   Pass saved report names positionally, or use --all / --all-reports to run everything in .vulcan/reports.
@@ -1011,13 +856,6 @@ See also:
   `vulcan help reports` — conceptual overview of the report system";
 
 const DAILY_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  today       open or create today's daily note
-  show        display one daily note's contents
-  list        list daily notes and extracted schedule events
-  export-ics  export extracted daily-note events as an ICS calendar
-  append      append text to one daily note
-
 Notes:
   `list --week` and `list --month` expand around the current date using the configured periodic week start.
   `show` defaults to today. `append` creates the daily note first when it does not exist.
@@ -1034,12 +872,6 @@ const PERIODIC_COMMAND_AFTER_HELP: &str = "\
 Behavior:
   `periodic <type> [date]` opens or creates the configured periodic note for that date.
   `periodic weekly [date]` and `periodic monthly [date]` open weekly and monthly notes.
-
-Subcommands:
-  list        list indexed periodic notes
-  gaps        show missing periodic notes across a date range
-  weekly      open or create the weekly note for a date
-  monthly     open or create the monthly note for a date
 
 Examples:
   vulcan periodic weekly
@@ -1058,14 +890,6 @@ Examples:
   vulcan today --no-edit";
 
 const KANBAN_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  list        list indexed Kanban boards
-  show        display one board by column
-  cards       list cards from one board with optional filters
-  archive     move one card into the archive column
-  move        move one card between active columns
-  add         add a new card to one active column
-
 Notes:
   `kanban show` defaults to column counts; add `--verbose` to include cards.
   `kanban show --include-archive` adds the parsed archive section back into the output.
@@ -1112,15 +936,6 @@ Examples:
   vulcan --output json properties --type";
 
 const GRAPH_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  path        Find the shortest resolved-link path between two notes
-  hubs        List notes with the highest combined link degree
-  moc         Report candidate map-of-content style notes
-  dead-ends   List notes without outbound resolved note links
-  components  Report weakly connected components of the note graph
-  stats       Summarize note-graph and vault analytics
-  trends      Show note-count, orphan, stale, and link trends over saved scans
-
 Examples:
   vulcan graph path Home Projects/Alpha
   vulcan graph hubs --limit 10
@@ -1131,10 +946,6 @@ Examples:
   vulcan --output json graph stats";
 
 const CHECKPOINT_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  create  Create or replace a named checkpoint from the current cache state
-  list    List saved scan and manual checkpoints
-
 Notes:
   Checkpoints capture a snapshot of the cache at a point in time.
   Use `vulcan diff --since <name>` to compare a note against a checkpoint.
@@ -1146,18 +957,6 @@ Examples:
   vulcan --output json checkpoint list";
 
 const EXPORT_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  profile       Run or manage named export profiles
-  markdown      Export matched notes as one combined Markdown document
-  json          Export matched notes with metadata and raw content as JSON
-  csv           Export note query results as CSV
-  graph         Export the resolved link graph for external tools
-  epub          Render matched notes as an EPUB book
-  zip           Export matched notes and linked attachments as a ZIP archive
-  outline-zip   Export an Outline-compatible Markdown hierarchy ZIP
-  sqlite        Export matched notes into a standalone SQLite database
-  search-index  Write the cached search corpus as a static JSON index
-
 Notes:
   Profiles live under `[export.profiles.<name>]` in `.vulcan/config.toml`.
   `export profile run <name>` resolves relative profile paths from the vault root.
@@ -1204,11 +1003,6 @@ Examples:
   vulcan export search-index --pretty > /tmp/search.json";
 
 const CACHE_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  inspect  Show cache sizes and row counts
-  verify   Check cache invariants against derived indexes
-  vacuum   Run SQLite VACUUM to reclaim space
-
 Notes:
   `verify` exits with code 2 when cache checks fail if `--fail-on-errors` is set.
   `vacuum` should be run periodically on large vaults to reclaim SQLite free-list space.
@@ -1242,18 +1036,6 @@ Examples:
   vulcan --output json doctor";
 
 const VECTORS_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  index       Embed pending chunks and update the vector index
-  repair      Repair stale or mismatched vector rows
-  rebuild     Rebuild the vector index from scratch
-  cluster     Group indexed chunks into semantic clusters
-  neighbors   Find nearest indexed chunks for text or a note
-  related     Recommend semantically related notes
-  duplicates  Report highly similar chunk pairs
-  models      List stored embedding models
-  drop-model  Drop a model and its vectors
-  queue       Inspect or run the explicit indexing queue
-
 Notes:
   Vectors require an embedding provider configured under [vectors] in .vulcan/config.toml.
   `index` embeds only chunks added or changed since the last run (incremental).
@@ -1290,11 +1072,6 @@ Examples:
   vulcan --output json changes --checkpoint pre-refactor";
 
 const TRUST_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  add     Mark the current vault as trusted
-  revoke  Remove trust from the current vault
-  list    List all currently trusted vault paths
-
 Notes:
   Trusted vaults may auto-load .vulcan/scripts/startup.js on CLI invocation.
   Plugin execution (Templater, QuickAdd) also checks vault trust.
@@ -1365,18 +1142,6 @@ Examples:
   vulcan mcp | jq .";
 
 const REFACTOR_COMMAND_AFTER_HELP: &str = "\
-Subcommands:
-  rename-alias     Rename an alias inside one note's frontmatter
-  rename-heading   Rename a heading and rewrite inbound heading links
-  rename-block-ref Rename a block reference and rewrite inbound block links
-  rename-property  Rename a frontmatter property key across notes
-  merge-tags       Merge one tag into another across frontmatter and note bodies
-  rewrite          Apply a literal find/replace across filtered notes
-  move             Move a note or attachment and rewrite inbound links
-  split-note       Materialize heading sections as a wiki-like note tree
-  folder-notes     Convert folder notes to another configured layout
-  link-mentions    Convert plain-text note mentions into links
-
 Notes:
   All refactor subcommands support `--dry-run` to preview changes without writing files.
   Mutating refactor commands participate in auto-commit when git integration is enabled.

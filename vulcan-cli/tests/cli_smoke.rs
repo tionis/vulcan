@@ -22281,7 +22281,13 @@ fn describe_json_output_exposes_runtime_command_schema() {
         .find(|command| command["name"] == "note")
         .and_then(|command| command["after_help"].as_str())
         .expect("note after_help should be present")
-        .contains("Subcommands:"));
+        .contains("Notes:"));
+    assert!(!json["commands"]
+        .as_array()
+        .expect("commands should be an array")
+        .iter()
+        .filter_map(|command| command["after_help"].as_str())
+        .any(|after_help| after_help.contains("Subcommands:")));
     assert!(json["commands"]
         .as_array()
         .expect("commands should be an array")
@@ -22398,6 +22404,29 @@ fn help_human_output_uses_grouped_overview_and_parent_subcommand_examples() {
                 .and(predicate::str::contains("e.g. vulcan note get Dashboard"))
                 .and(predicate::str::contains("- `note get`").not()),
         );
+}
+
+#[test]
+fn parent_command_help_does_not_duplicate_the_generated_command_list() {
+    for command_name in ["note", "config", "sync", "tasks"] {
+        let assert = Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .args([command_name, "--help"])
+            .assert()
+            .success();
+        let stdout = String::from_utf8(assert.get_output().stdout.clone())
+            .expect("help output should be UTF-8");
+
+        assert_eq!(
+            stdout.matches("Commands:").count(),
+            1,
+            "{command_name} help should contain one generated command list"
+        );
+        assert!(
+            !stdout.contains("Subcommands:"),
+            "{command_name} help should not repeat a hand-written subcommand list"
+        );
+    }
 }
 
 #[test]
