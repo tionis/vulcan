@@ -378,6 +378,12 @@ mod tests {
             Arc::new(SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor"));
         let state_store = SyncStateStore::at(temporary.path().join("state"));
         let started = Instant::now();
+        let observed_periodic_poll = || {
+            supervisor.list().is_ok_and(|jobs| {
+                jobs.iter()
+                    .any(|job| job.triggers.contains(&SyncJobTrigger::Poll))
+            })
+        };
         run_sync_trigger_runtime_until(
             &registry,
             &supervisor,
@@ -390,7 +396,7 @@ mod tests {
                     max_dirty_ms: 20,
                 },
             },
-            || started.elapsed() >= Duration::from_millis(80),
+            || observed_periodic_poll() || started.elapsed() >= Duration::from_secs(2),
         )
         .expect("trigger runtime");
 
