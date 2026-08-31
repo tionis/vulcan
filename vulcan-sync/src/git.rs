@@ -3089,8 +3089,8 @@ fn git_cli_path(path: &Path) -> OsString {
 fn git_cli_path(path: &Path) -> OsString {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
 
-    const VERBATIM_PREFIX: &[u16] = &[b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
-    const UNC_PREFIX: &[u16] = &[b'U' as u16, b'N' as u16, b'C' as u16, b'\\' as u16];
+    const VERBATIM_PREFIX: &[u16] = &[92, 92, 63, 92];
+    const UNC_PREFIX: &[u16] = &[85, 78, 67, 92];
 
     let encoded = path.as_os_str().encode_wide().collect::<Vec<_>>();
     if !encoded.starts_with(VERBATIM_PREFIX) {
@@ -3098,17 +3098,17 @@ fn git_cli_path(path: &Path) -> OsString {
     }
     let remainder = &encoded[VERBATIM_PREFIX.len()..];
     if remainder.starts_with(UNC_PREFIX) {
-        let normalized = [b'\\' as u16, b'\\' as u16]
+        let normalized = [u16::from(b'\\'), u16::from(b'\\')]
             .into_iter()
             .chain(remainder[UNC_PREFIX.len()..].iter().copied())
             .collect::<Vec<_>>();
         return OsString::from_wide(&normalized);
     }
     let is_verbatim_disk = remainder.len() >= 3
-        && ((b'A' as u16..=b'Z' as u16).contains(&remainder[0])
-            || (b'a' as u16..=b'z' as u16).contains(&remainder[0]))
-        && remainder[1] == b':' as u16
-        && (remainder[2] == b'\\' as u16 || remainder[2] == b'/' as u16);
+        && ((u16::from(b'A')..=u16::from(b'Z')).contains(&remainder[0])
+            || (u16::from(b'a')..=u16::from(b'z')).contains(&remainder[0]))
+        && remainder[1] == u16::from(b':')
+        && (remainder[2] == u16::from(b'\\') || remainder[2] == u16::from(b'/'));
     if is_verbatim_disk {
         OsString::from_wide(remainder)
     } else {
