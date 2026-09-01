@@ -8,6 +8,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -16,6 +17,7 @@ from io import BytesIO
 
 
 SCRIPT_ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(SCRIPT_ROOT))
 
 
 def load_script(name: str):
@@ -31,6 +33,8 @@ package_deb_script = load_script("package_deb")
 manifest_script = load_script("manifest")
 channels_script = load_script("channels")
 update_channel_script = load_script("update_channel")
+rolling_signer_script = load_script("sign_rolling_release")
+rolling_signer_installer = load_script("install_rolling_signer")
 
 
 def read_ar(path: pathlib.Path) -> dict[str, bytes]:
@@ -319,7 +323,6 @@ class ReleasePackagingTests(unittest.TestCase):
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
         )
-
         subprocess.run(
             ["openssl", "pkey", "-in", str(key), "-pubout", "-out", str(public)],
             check=True,
@@ -362,6 +365,143 @@ class ReleasePackagingTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
 
+    def rolling_release_fixture(self) -> tuple[dict, str, str]:
+        source_commit = "a" * 40
+        version = "1.2.4-dev.20260901.42.gaaaaaaaa"
+        for target in manifest_script.EXPECTED_TARGETS:
+            package_script.package(
+                self.binary,
+                self.assets,
+                self.source,
+                self.output,
+                target,
+                version,
+            )
+        for target in package_deb_script.TARGET_ARCHITECTURES:
+            self.write_fake_elf(target)
+            package_deb_script.package(
+                self.binary,
+                self.assets,
+                self.source,
+                self.output,
+                target,
+                version,
+            )
+        manifest, _ = manifest_script.aggregate(
+            self.output, version, manifest_script.EXPECTED_ARTIFACTS
+        )
+        update_channel_script.generate(
+            manifest,
+            "main",
+            "https://github.com/tionis/vulcan/releases/download/main",
+            source_commit,
+            "2026-09-01T12:00:00Z",
+            self.output,
+        )
+        for path in list(self.output.glob("*.artifact.json")) + list(
+            self.output.glob("*.sha256")
+        ):
+            path.unlink()
+        labels = {}
+        for path in list(self.output.glob("*.deb")):
+            sanitized = path.with_name(path.name.replace("~", "."))
+            labels[sanitized.name] = path.name
+            path.rename(sanitized)
+        release = {
+            "id": 123,
+            "tag_name": "main",
+            "draft": False,
+            "prerelease": True,
+            "assets": [
+                {
+                    "id": index,
+                    "name": path.name,
+                    "label": labels.get(path.name, ""),
+                    "size": path.stat().st_size,
+                    "updated_at": "2026-09-01T12:01:00Z",
+                }
+                for index, path in enumerate(
+                    sorted(self.output.iterdir()), start=1000
+                )
+                if path.is_file()
+            ],
+        }
+        return release, source_commit, version
+
+    def test_rolling_signer_validates_the_exact_published_artifact_set(self) -> None:
+        release, source_commit, version = self.rolling_release_fixture()
+        validated = rolling_signer_script.validate_downloaded_release(
+            self.output,
+            release,
+            source_commit,
+            "tionis/vulcan",
+            source_commit,
+        )
+        self.assertEqual(validated.version, version)
+        self.assertEqual(validated.source_commit, source_commit)
+
+        archive = next(self.output.glob("*.tar.gz"))
+        archive.write_bytes(archive.read_bytes() + b"tamper")
+        with self.assertRaisesRegex(ValueError, "asset size mismatch|integrity mismatch"):
+            rolling_signer_script.validate_downloaded_release(
+                self.output,
+                release,
+                source_commit,
+                "tionis/vulcan",
+                source_commit,
+            )
+
+    def test_rolling_signer_requires_success_for_the_exact_commit(self) -> None:
+        source_commit = "b" * 40
+        successful = [
+            {
+                "headSha": source_commit,
+                "headBranch": "main",
+                "status": "completed",
+                "conclusion": "success",
+                "event": "push",
+            }
+        ]
+        rolling_signer_script.validate_successful_runs(
+            successful,
+            source_commit,
+            workflow="CI",
+            required_event="push",
+        )
+        with self.assertRaisesRegex(ValueError, "no successful completed CI run"):
+            rolling_signer_script.validate_successful_runs(
+                successful,
+                "c" * 40,
+                workflow="CI",
+                required_event="push",
+            )
+
+    def test_rolling_signer_systemd_install_has_a_mutation_free_preview(self) -> None:
+        key = self.root / "main key.pem"
+        key.write_text("fixture only\n", encoding="utf-8")
+        unit_directory = self.root / "systemd user"
+        libexec_directory = self.root / "libexec"
+        report = rolling_signer_installer.install(
+            SCRIPT_ROOT,
+            unit_directory,
+            libexec_directory,
+            "tionis/vulcan",
+            key,
+            True,
+        )
+        self.assertTrue(report["dry_run"])
+        self.assertFalse(unit_directory.exists())
+        self.assertFalse(libexec_directory.exists())
+        service = rolling_signer_installer.render_service(
+            pathlib.Path("/usr/bin/python3"),
+            pathlib.Path('/tmp/path with "quotes"/sign.py'),
+            "tionis/vulcan",
+            key,
+        )
+        self.assertIn("ProtectHome=read-only", service)
+        self.assertIn('\\"quotes\\"', service)
+        self.assertIn("--signing-key", service)
+
     def test_release_workflows_publish_bounded_update_channels(self) -> None:
         workflows = SCRIPT_ROOT.parents[1] / ".github/workflows"
         stable = (workflows / "release.yml").read_text(encoding="utf-8")
@@ -380,6 +520,8 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("asset_label", rolling)
         self.assertIn("(.label // \"\")", rolling)
         self.assertIn('! -f "artifacts/$asset_label"', rolling)
+        self.assertIn("key-holding machine", rolling)
+        self.assertNotIn("--signing-key", rolling)
         self.assertNotIn("cargo test --workspace", rolling)
         self.assertLess(
             rolling.index("Publish rolling prerelease"),

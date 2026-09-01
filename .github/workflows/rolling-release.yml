@@ -316,7 +316,7 @@ jobs:
           body: |
             Automated development build from `${{ needs.gate.outputs.source_commit }}`.
 
-            This rolling release is replaced in place, is not a stable release, and is currently unsigned. Verify `SHA256SUMS`; `vulcan self-update --channel main` requires the explicit `--allow-unsigned` opt-in until a project signing identity is configured.
+            This rolling release is replaced in place and is not a stable release. GitHub Actions publishes a checksum-verified descriptor first; the key-holding machine validates the completed release and replaces only that descriptor with a `main-2026-09` signature. Inspect the descriptor's signatures if the local handoff has not completed yet.
           files: artifacts/*
 
       - name: Prune superseded rolling assets

@@ -1,7 +1,7 @@
 ---
 name: diagnostics-and-repair
 description: Diagnose vault health, broken links, parser diagnostics, suspicious state, synchronization pauses or conflicts, and repairable problems. Use when the user asks why something is broken, wants a health check, sees diagnostics, or needs safe repair steps before editing notes.
-version: 20
+version: 21
 tools:
   - doctor
   - cache_verify
@@ -36,7 +36,7 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 10. A mutating sync applies the same target-platform preflight as doctor. If a local tree is incompatible, its bytes and object ID are already captured and the journal remains at `captured`; no remote query occurred. If a fetched or merged tree is incompatible, Vulcan leaves the worktree and remote live ref unchanged. Fix or rename the reported paths on a platform that can represent them, then rerun sync rather than bypassing the profile.
 11. In detached Git-loss reports, `possibly_lost_hidden_ref_namespaces` is the complete version-1 local recovery inventory plus legacy development roots. The materialized vault can be recaptured, but unpushed candidates, old epochs, conflicts, checkpoints, proposals, or recovery objects that existed only in the deleted private Git directory cannot be reconstructed. `refs.namespace_version` identifies the ref contract used by ordinary sync reports.
 12. If `git.filters` is an error, inspect the typed `required_filters` entries. Every declared driver needs either `process_configured: true` or both `clean_configured` and `smudge_configured`; an LFS driver also needs `executable_available: true`. Install/configure the same round-trip driver used by ordinary Git before retrying. Sync deliberately stops before capture and remote access rather than committing unfiltered bytes.
-13. For a manually installed portable binary, use `vulcan self-update check` before `vulcan self-update apply --dry-run`. Signature verification and newer-version checks are safety boundaries; do not add `--allow-unsigned` or `--allow-downgrade` unless the user explicitly accepts that narrower trust or rollback decision. The rolling development stream additionally requires `--channel main`. Never run `self-update` for an APT, Homebrew, WinGet, or other package-managed installation; use its package manager, then refresh and restart the daemon service if needed.
+13. For a manually installed portable binary, use `vulcan self-update check` before `vulcan self-update apply --dry-run`. Signature verification and newer-version checks are safety boundaries; do not add `--allow-unsigned` or `--allow-downgrade` unless the user explicitly accepts that narrower trust or rollback decision. The rolling development stream additionally requires `--channel main` and normally verifies the channel-scoped `main-2026-09` signature without an unsigned exception. A pre-bootstrap binary may need one explicitly accepted checksum-only update; an unsigned descriptor from a newly completed rolling build normally means the machine-local signing handoff has not finished, so wait and retry. Never run `self-update` for an APT, Homebrew, WinGet, or other package-managed installation; use its package manager, then refresh and restart the daemon service if needed.
 
 ## Guardrails
 

@@ -43,22 +43,31 @@ verifies signed metadata against trusted keys, checks the archive's exact size a
 and atomically replaces the running executable. `--allow-downgrade` is the explicit exception for a
 reinstall or rollback. Restart a running daemon after applying an update.
 
-The update-channel format and verification path are implemented, but project signing keys have not
-yet been configured. Current descriptors therefore require an explicit checksum-only exception:
+The stable channel does not yet have its separate signing identity. Stable descriptors therefore
+require an explicit checksum-only exception:
 
 ```sh
 vulcan self-update check --allow-unsigned
 vulcan self-update apply --allow-unsigned --dry-run
 ```
 
-This exception trusts the forge/HTTPS endpoint and does not provide publisher authentication. The
-rolling build additionally requires `--channel main` when invoked from a stable binary:
+This exception trusts the forge/HTTPS endpoint and does not provide publisher authentication.
+
+Rolling descriptors are signed by the dedicated `main-2026-09` identity after the automated build
+completes. Release binaries embed its public key with `main`-only authority, so a portable binary
+can opt into the authenticated rolling stream without weakening stable-channel trust:
 
 ```sh
-vulcan self-update check --channel main --allow-unsigned
-vulcan self-update apply --channel main --allow-unsigned --dry-run
-vulcan self-update apply --channel main --allow-unsigned
+vulcan self-update check --channel main
+vulcan self-update apply --channel main --dry-run
+vulcan self-update apply --channel main
 ```
+
+A binary built before the `main-2026-09` public key was embedded cannot verify that signature. Give
+that old binary one explicitly accepted `--allow-unsigned` bootstrap update or install a checksummed
+current archive manually; subsequent rolling updates verify normally. If a newly published rolling
+descriptor is still in its short unsigned handoff window, wait for the local signer instead of
+normalizing `--allow-unsigned` as the ongoing update path.
 
 The fixed rolling release page and direct assets are at
 `https://github.com/tionis/vulcan/releases/tag/main`. It is checked at most daily, publishes only a

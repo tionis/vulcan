@@ -44,4 +44,6 @@ For the bounded rolling `main` prerelease, confirm the gate selected a new commi
 push CI, the embedded version uses the documented `-dev.<date>.<run>.g<commit>` form, the fixed
 release was updated only after all target/package smoke checks passed, and obsolete assets were
 pruned only after their replacements uploaded successfully. A no-change scheduled run must not
-build or publish artifacts.
+build or publish artifacts. Confirm the machine-local signer reports `signed` or `already_signed`
+for the same commit, its readback matches, and `vulcan self-update check --channel main` verifies
+`main-2026-09` without `--allow-unsigned` from a post-bootstrap portable build.

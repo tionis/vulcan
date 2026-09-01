@@ -143,7 +143,33 @@ only for its compiled channel, so `main-2026-09` cannot authorize `stable` even 
 signature is otherwise valid. Multiple entries and envelope signatures allow bounded overlap during
 future rotations.
 
-This trust bootstrap does not by itself make current releases signed. Rolling descriptors remain
-unsigned, and clients continue to require explicit `--allow-unsigned`, until the machine-local
-handoff validates and signs the completed release payload on the key-holding machine. No stable
-signing identity is configured yet.
+GitHub Actions deliberately publishes a checksum-only rolling descriptor and has no access to the
+private key. The key-holding machine runs `scripts/release/sign_rolling_release.py`, which fails
+closed unless both CI and the rolling workflow succeeded for the exact commit named by the `main`
+tag. It downloads the complete release and independently checks the release inventory, canonical
+manifest, exact five-archive/two-Debian artifact set, sizes, SHA-256 hashes, `SHA256SUMS`, rolling
+version, source commit, channel, timestamp, URLs, layouts, and canonical unsigned payload. It then
+rechecks the release for races, replaces only `vulcan-update-channel.json`, and reads the uploaded
+bytes back. An already-valid signature is an inexpensive idempotent no-op; any other existing
+signature fails closed.
+
+On the signing machine, preview and install the hourly systemd user timer with:
+
+```sh
+python scripts/release/sign_rolling_release.py \
+  --signing-key ~/.config/vulcan/release-signing/main-2026-09.pem --dry-run
+python scripts/release/install_rolling_signer.py install \
+  --signing-key ~/.config/vulcan/release-signing/main-2026-09.pem --dry-run
+python scripts/release/install_rolling_signer.py install \
+  --signing-key ~/.config/vulcan/release-signing/main-2026-09.pem
+```
+
+The installer copies the two required signer scripts into a private user libexec location, writes a
+hardened oneshot service and hourly timer, enables the timer, and immediately invokes the service.
+It stores only the key path in the unit, never key contents. The service uses the machine's existing
+GitHub CLI authentication. Inspect failures with
+`journalctl --user -u vulcan-rolling-signer.service`; they are visible and leave the descriptor
+unchanged. Uninstalling the timer preserves the signing key.
+
+No stable signing identity is configured yet. Stable descriptors therefore remain unsigned and
+require the explicit checksum-only exception until that separate identity and bootstrap exist.
