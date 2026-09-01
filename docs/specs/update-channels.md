@@ -124,8 +124,21 @@ rollback. They must not invoke portable self-replacement behind the package mana
 
 ## Current signing state
 
-The format, signer, verifier, and key-rotation envelope are implemented, but no project release
-identity is configured yet. Consequently current stable and rolling descriptors are unsigned and
-the client refuses them unless the user explicitly supplies `--allow-unsigned`. Production signing
-requires an offline-managed Ed25519 identity, an embedded trusted public key and key ID in release
-builds, protected CI signing access, documented rotation/revocation, and release-checklist evidence.
+The first dedicated rolling-channel identity was created on 2026-09-01. Its public identity is:
+
+- key ID: `main-2026-09`
+- raw Ed25519 public key (base64): `6gbtjy5nGZoT8kFAfYELB5x73S34kjv+/tPn8XEjrg0=`
+- SHA-256 fingerprint of the raw 32-byte public key:
+  `5486dec9f64d452becdcf091dca0e51ade004baf089cc31ece7ba180d8c7b7f3`
+- authority: `main` only; it must never authorize `stable` metadata
+
+The operational private key remains machine-local at
+`~/.config/vulcan/release-signing/main-2026-09.pem`. Its recovery copy is stored only as the
+SOPS-encrypted Grimoire admin secret
+`secrets/groups/admin/vulcan-update-main.sops.yaml`. Neither private representation belongs in this
+repository, build logs, workflow artifacts, or GitHub Actions secrets.
+
+This custody setup does not by itself make current releases signed. Rolling descriptors remain
+unsigned, and clients continue to require explicit `--allow-unsigned`, until Vulcan embeds a
+channel-scoped trusted-key ring and a local signing handoff validates and signs the completed
+release payload on the key-holding machine. No stable signing identity is configured yet.
