@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Validate and sign the published rolling release from a trusted local machine."""
+"""Validate and sign published releases from a trusted local machine.
+
+The executable surface in this file remains the rolling-channel signer. Stable
+releases reuse the validation core through ``sign_stable_release.py`` but have a
+separate key and an explicit tag/commit approval boundary.
+"""
 
 from __future__ import annotations
 
@@ -89,24 +94,30 @@ def debian_version(version: str) -> str:
 
 
 def validate_release_snapshot(
-    release: dict, tag_commit: str
+    release: dict,
+    tag_commit: str,
+    *,
+    tag: str = "main",
+    prerelease: bool = True,
+    release_kind: str = "rolling",
 ) -> dict[str, tuple[int, int, str, str]]:
-    if release.get("tag_name") != "main" or release.get("draft") is not False:
-        raise ValueError("rolling release must be the published `main` release")
-    if release.get("prerelease") is not True:
-        raise ValueError("rolling release must be marked as a prerelease")
+    if release.get("tag_name") != tag or release.get("draft") is not False:
+        raise ValueError(f"{release_kind} release must be the published `{tag}` release")
+    if release.get("prerelease") is not prerelease:
+        expected = "marked as a prerelease" if prerelease else "a non-prerelease"
+        raise ValueError(f"{release_kind} release must be {expected}")
     if not isinstance(release.get("id"), int):
-        raise ValueError("rolling release is missing its numeric release ID")
+        raise ValueError(f"{release_kind} release is missing its numeric release ID")
     if not re.fullmatch(r"[0-9a-f]{40}", tag_commit):
-        raise ValueError("rolling tag did not resolve to a full lowercase commit ID")
+        raise ValueError(f"{release_kind} tag did not resolve to a full lowercase commit ID")
     assets = release.get("assets")
     if not isinstance(assets, list):
-        raise ValueError("rolling release has no asset inventory")
+        raise ValueError(f"{release_kind} release has no asset inventory")
     inventory: dict[str, tuple[int, int, str, str]] = {}
     logical_names: set[str] = set()
     for asset in assets:
         if not isinstance(asset, dict):
-            raise ValueError("rolling release contains malformed asset metadata")
+            raise ValueError(f"{release_kind} release contains malformed asset metadata")
         name = asset.get("name")
         asset_id = asset.get("id")
         size = asset.get("size")
@@ -122,12 +133,14 @@ def validate_release_snapshot(
             or not isinstance(label, str)
             or (label and pathlib.PurePath(label).name != label)
         ):
-            raise ValueError("rolling release contains invalid asset metadata")
+            raise ValueError(f"{release_kind} release contains invalid asset metadata")
         if name in inventory:
-            raise ValueError(f"rolling release contains duplicate asset {name}")
+            raise ValueError(f"{release_kind} release contains duplicate asset {name}")
         logical_name = label or name
         if logical_name in logical_names:
-            raise ValueError(f"rolling release contains duplicate logical asset {logical_name}")
+            raise ValueError(
+                f"{release_kind} release contains duplicate logical asset {logical_name}"
+            )
         logical_names.add(logical_name)
         inventory[name] = (asset_id, size, updated_at, label)
     return inventory
@@ -139,6 +152,7 @@ def validate_successful_runs(
     *,
     workflow: str,
     required_event: str | None = None,
+    expected_head_branch: str = "main",
 ) -> None:
     if not isinstance(runs, list):
         raise ValueError(f"{workflow} workflow query returned malformed data")
@@ -147,7 +161,7 @@ def validate_successful_runs(
         for entry in runs
         if isinstance(entry, dict)
         and entry.get("headSha") == source_commit
-        and entry.get("headBranch") == "main"
+        and entry.get("headBranch") == expected_head_branch
         and entry.get("status") == "completed"
         and entry.get("conclusion") == "success"
         and (required_event is None or entry.get("event") == required_event)
@@ -156,7 +170,12 @@ def validate_successful_runs(
         raise ValueError(f"no successful completed {workflow} run names {source_commit}")
 
 
-def validate_key(signing_key: pathlib.Path) -> None:
+def validate_key(
+    signing_key: pathlib.Path,
+    *,
+    expected_public_key: str = MAIN_PUBLIC_KEY,
+    release_kind: str = "rolling",
+) -> None:
     if signing_key.is_symlink() or not signing_key.is_file():
         raise ValueError("signing key must be a regular, non-symlink file")
     if os.name != "nt" and stat.S_IMODE(signing_key.stat().st_mode) & 0o077:
@@ -176,10 +195,12 @@ def validate_key(signing_key: pathlib.Path) -> None:
         check=False,
     )
     if public_der.returncode != 0:
-        raise ValueError("OpenSSL could not read the rolling release signing key")
-    expected = base64.b64decode(MAIN_PUBLIC_KEY, validate=True)
+        raise ValueError(f"OpenSSL could not read the {release_kind} release signing key")
+    expected = base64.b64decode(expected_public_key, validate=True)
     if len(public_der.stdout) != 44 or public_der.stdout[-32:] != expected:
-        raise ValueError("signing key does not match the compiled main-channel public key")
+        raise ValueError(
+            f"signing key does not match the compiled {release_kind}-channel public key"
+        )
 
 
 def validate_artifact_record(record: object, version: str) -> tuple[str, str]:
@@ -248,8 +269,19 @@ def validate_downloaded_release(
     tag_commit: str,
     repo: str,
     expected_commit: str | None = None,
+    *,
+    tag: str = "main",
+    channel: str = "main",
+    prerelease: bool = True,
+    release_kind: str = "rolling",
 ) -> ValidatedRelease:
-    inventory = validate_release_snapshot(release, tag_commit)
+    inventory = validate_release_snapshot(
+        release,
+        tag_commit,
+        tag=tag,
+        prerelease=prerelease,
+        release_kind=release_kind,
+    )
     downloaded = {path.name: path for path in directory.iterdir() if path.is_file()}
     if set(downloaded) != set(inventory):
         raise ValueError("downloaded files do not match the release asset inventory")
@@ -264,7 +296,7 @@ def validate_downloaded_release(
 
     manifests = sorted(directory.glob("vulcan-*-manifest.json"))
     if len(manifests) != 1:
-        raise ValueError("rolling release must contain exactly one Vulcan manifest")
+        raise ValueError(f"{release_kind} release must contain exactly one Vulcan manifest")
     manifest_path = manifests[0]
     manifest = load_json(manifest_path, "release manifest")
     if set(manifest) != {"schema_version", "product", "version", "artifacts"}:
@@ -274,9 +306,15 @@ def validate_downloaded_release(
     version = manifest["version"]
     if not isinstance(version, str) or manifest_path.name != f"vulcan-{version}-manifest.json":
         raise ValueError("release manifest filename and version do not match")
-    version_match = ROLLING_VERSION.fullmatch(version)
-    if version_match is None or version_match.group(1) != tag_commit[:8]:
-        raise ValueError("release version does not identify the rolling tag commit")
+    if channel == "main":
+        version_match = ROLLING_VERSION.fullmatch(version)
+        if version_match is None or version_match.group(1) != tag_commit[:8]:
+            raise ValueError("release version does not identify the rolling tag commit")
+    elif channel == "stable":
+        if not re.fullmatch(r"[0-9]+\.[0-9]+\.[0-9]+", version) or tag != f"v{version}":
+            raise ValueError("stable release version and version tag do not match")
+    else:
+        raise ValueError(f"unsupported signing channel {channel}")
     if manifest_path.read_bytes() != canonical_pretty(manifest):
         raise ValueError("release manifest is not in canonical serialized form")
     artifacts = manifest["artifacts"]
@@ -330,15 +368,15 @@ def validate_downloaded_release(
     source_commit = payload.get("source_commit")
     if source_commit != tag_commit or (expected_commit and source_commit != expected_commit):
         raise ValueError("update-channel source commit does not match the rolling tag")
-    base_url = f"https://github.com/{repo}/releases/download/main"
+    base_url = f"https://github.com/{repo}/releases/download/{tag}"
     expected_payload = {
         "schema_version": 1,
         "product": "vulcan",
-        "channel": "main",
+        "channel": channel,
         "version": version,
         "source_commit": tag_commit,
         "published_at": payload.get("published_at"),
-        "prerelease": True,
+        "prerelease": prerelease,
         "artifacts": [
             {
                 "target": record["target"],
@@ -392,6 +430,10 @@ def already_signed_descriptor(
     tag_commit: str,
     signing_key: pathlib.Path,
     key_id: str,
+    *,
+    channel: str = "main",
+    prerelease: bool = True,
+    release_kind: str = "rolling",
 ) -> ValidatedRelease | None:
     envelope = load_json(descriptor, "update-channel envelope")
     if set(envelope) != {"schema_version", "payload", "signatures"}:
@@ -411,13 +453,15 @@ def already_signed_descriptor(
         or payload_bytes != update_channel.canonical_payload(payload)
         or payload.get("schema_version") != 1
         or payload.get("product") != "vulcan"
-        or payload.get("channel") != "main"
-        or payload.get("prerelease") is not True
+        or payload.get("channel") != channel
+        or payload.get("prerelease") is not prerelease
         or payload.get("source_commit") != tag_commit
         or not isinstance(payload.get("version"), str)
         or not isinstance(payload.get("published_at"), str)
     ):
-        raise ValueError("signed update-channel payload does not identify the rolling release")
+        raise ValueError(
+            f"signed update-channel payload does not identify the {release_kind} release"
+        )
     if descriptor.read_bytes() != signed_envelope(payload_bytes, signing_key, key_id):
         raise ValueError("refusing an update descriptor with unexpected signatures")
     return ValidatedRelease(
@@ -429,18 +473,41 @@ def already_signed_descriptor(
     )
 
 
-def release_snapshot(release: dict, tag_commit: str) -> tuple[int, str, dict]:
-    return release["id"], tag_commit, validate_release_snapshot(release, tag_commit)
+def release_snapshot(
+    release: dict,
+    tag_commit: str,
+    *,
+    tag: str = "main",
+    prerelease: bool = True,
+    release_kind: str = "rolling",
+) -> tuple[int, str, dict]:
+    return (
+        release["id"],
+        tag_commit,
+        validate_release_snapshot(
+            release,
+            tag_commit,
+            tag=tag,
+            prerelease=prerelease,
+            release_kind=release_kind,
+        ),
+    )
 
 
-def fetch_release(repo: str) -> tuple[dict, str]:
-    release = gh_json(["api", f"repos/{repo}/releases/tags/main"])
-    tag = gh_json(["api", f"repos/{repo}/git/ref/tags/main"])
-    if not isinstance(release, dict) or not isinstance(tag, dict):
+def fetch_release(
+    repo: str,
+    tag_name: str = "main",
+    *,
+    prerelease: bool = True,
+    release_kind: str = "rolling",
+) -> tuple[dict, str]:
+    release = gh_json(["api", f"repos/{repo}/releases/tags/{tag_name}"])
+    tag_ref = gh_json(["api", f"repos/{repo}/git/ref/tags/{tag_name}"])
+    if not isinstance(release, dict) or not isinstance(tag_ref, dict):
         raise ValueError("GitHub returned malformed release or tag data")
-    tag_object = tag.get("object")
+    tag_object = tag_ref.get("object")
     if not isinstance(tag_object, dict):
-        raise ValueError("GitHub did not resolve the rolling tag to a commit")
+        raise ValueError(f"GitHub did not resolve the {release_kind} tag to a commit")
     sha = tag_object.get("sha")
     object_type = tag_object.get("type")
     if object_type == "tag" and isinstance(sha, str):
@@ -450,8 +517,14 @@ def fetch_release(repo: str) -> tuple[dict, str]:
         sha = annotated["object"].get("sha")
         object_type = annotated["object"].get("type")
     if object_type != "commit" or not isinstance(sha, str):
-        raise ValueError("rolling tag does not point to a Git commit")
-    validate_release_snapshot(release, sha)
+        raise ValueError(f"{release_kind} tag does not point to a Git commit")
+    validate_release_snapshot(
+        release,
+        sha,
+        tag=tag_name,
+        prerelease=prerelease,
+        release_kind=release_kind,
+    )
     return release, sha
 
 
@@ -474,38 +547,59 @@ def fetch_runs(repo: str, workflow: str, source_commit: str) -> object:
     )
 
 
-def sign_rolling_release(
+def sign_published_release(
     repo: str,
     signing_key: pathlib.Path,
     key_id: str,
     expected_commit: str | None,
     dry_run: bool,
+    *,
+    tag: str,
+    channel: str,
+    prerelease: bool,
+    release_kind: str,
+    expected_key_id: str,
+    expected_public_key: str,
+    required_runs: list[tuple[str, str, str | None, str]],
+    fast_already_signed: bool,
 ) -> dict:
-    if key_id != MAIN_KEY_ID:
-        raise ValueError(f"rolling release signer requires key ID {MAIN_KEY_ID}")
-    validate_key(signing_key)
-    release, tag_commit = fetch_release(repo)
+    if key_id != expected_key_id:
+        raise ValueError(f"{release_kind} release signer requires key ID {expected_key_id}")
+    validate_key(
+        signing_key,
+        expected_public_key=expected_public_key,
+        release_kind=release_kind,
+    )
+    release, tag_commit = fetch_release(
+        repo,
+        tag,
+        prerelease=prerelease,
+        release_kind=release_kind,
+    )
     if expected_commit and tag_commit != expected_commit:
-        raise ValueError("rolling tag does not match --expected-commit")
-    validate_successful_runs(
-        fetch_runs(repo, "CI", tag_commit),
+        raise ValueError(f"{release_kind} tag does not match --expected-commit")
+    for workflow_file, workflow_label, required_event, expected_branch in required_runs:
+        validate_successful_runs(
+            fetch_runs(repo, workflow_file, tag_commit),
+            tag_commit,
+            workflow=workflow_label,
+            required_event=required_event,
+            expected_head_branch=expected_branch,
+        )
+    before = release_snapshot(
+        release,
         tag_commit,
-        workflow="CI",
-        required_event="push",
+        tag=tag,
+        prerelease=prerelease,
+        release_kind=release_kind,
     )
-    validate_successful_runs(
-        fetch_runs(repo, "rolling-release.yml", tag_commit),
-        tag_commit,
-        workflow="rolling release",
-    )
-    before = release_snapshot(release, tag_commit)
-    with tempfile.TemporaryDirectory(prefix="vulcan-rolling-probe-") as probe:
+    with tempfile.TemporaryDirectory(prefix=f"vulcan-{channel}-probe-") as probe:
         run(
             [
                 "gh",
                 "release",
                 "download",
-                "main",
+                tag,
                 "--repo",
                 repo,
                 "--pattern",
@@ -519,55 +613,90 @@ def sign_rolling_release(
             tag_commit,
             signing_key,
             key_id,
+            channel=channel,
+            prerelease=prerelease,
+            release_kind=release_kind,
         )
-    if existing is not None:
+    if existing is not None and fast_already_signed:
         return {
             "action": "already_signed",
             "repo": repo,
-            "tag": "main",
+            "tag": tag,
             "version": existing.version,
             "source_commit": existing.source_commit,
             "key_id": key_id,
             "dry_run": dry_run,
         }
-    with tempfile.TemporaryDirectory(prefix="vulcan-rolling-sign-") as temporary:
+    with tempfile.TemporaryDirectory(prefix=f"vulcan-{channel}-sign-") as temporary:
         directory = pathlib.Path(temporary)
-        run(["gh", "release", "download", "main", "--repo", repo, "--dir", str(directory)])
+        run(["gh", "release", "download", tag, "--repo", repo, "--dir", str(directory)])
         validated = validate_downloaded_release(
-            directory, release, tag_commit, repo, expected_commit
+            directory,
+            release,
+            tag_commit,
+            repo,
+            expected_commit,
+            tag=tag,
+            channel=channel,
+            prerelease=prerelease,
+            release_kind=release_kind,
         )
         signed = signed_envelope(validated.payload, signing_key, key_id)
         current = validated.descriptor.read_bytes()
         envelope = load_json(validated.descriptor, "update-channel envelope")
+        if current == signed:
+            return {
+                "action": "already_signed",
+                "repo": repo,
+                "tag": tag,
+                "version": validated.version,
+                "source_commit": validated.source_commit,
+                "key_id": key_id,
+                "dry_run": dry_run,
+            }
         if envelope["signatures"]:
             raise ValueError("refusing to replace an unexpected signed update descriptor")
         if current != canonical_pretty(envelope):
             raise ValueError("unsigned update-channel envelope is not canonical")
         action = "would_sign" if dry_run else "signed"
         if not dry_run:
-            latest_release, latest_commit = fetch_release(repo)
-            if release_snapshot(latest_release, latest_commit) != before:
-                raise ValueError("rolling release changed while it was being validated")
+            latest_release, latest_commit = fetch_release(
+                repo,
+                tag,
+                prerelease=prerelease,
+                release_kind=release_kind,
+            )
+            if (
+                release_snapshot(
+                    latest_release,
+                    latest_commit,
+                    tag=tag,
+                    prerelease=prerelease,
+                    release_kind=release_kind,
+                )
+                != before
+            ):
+                raise ValueError(f"{release_kind} release changed while it was being validated")
             validated.descriptor.write_bytes(signed)
             run(
                 [
                     "gh",
                     "release",
                     "upload",
-                    "main",
+                    tag,
                     str(validated.descriptor),
                     "--repo",
                     repo,
                     "--clobber",
                 ]
             )
-            with tempfile.TemporaryDirectory(prefix="vulcan-rolling-readback-") as readback:
+            with tempfile.TemporaryDirectory(prefix=f"vulcan-{channel}-readback-") as readback:
                 run(
                     [
                         "gh",
                         "release",
                         "download",
-                        "main",
+                        tag,
                         "--repo",
                         repo,
                         "--pattern",
@@ -581,12 +710,39 @@ def sign_rolling_release(
     return {
         "action": action,
         "repo": repo,
-        "tag": "main",
+        "tag": tag,
         "version": validated.version,
         "source_commit": validated.source_commit,
         "key_id": key_id,
         "dry_run": dry_run,
     }
+
+
+def sign_rolling_release(
+    repo: str,
+    signing_key: pathlib.Path,
+    key_id: str,
+    expected_commit: str | None,
+    dry_run: bool,
+) -> dict:
+    return sign_published_release(
+        repo,
+        signing_key,
+        key_id,
+        expected_commit,
+        dry_run,
+        tag="main",
+        channel="main",
+        prerelease=True,
+        release_kind="rolling",
+        expected_key_id=MAIN_KEY_ID,
+        expected_public_key=MAIN_PUBLIC_KEY,
+        required_runs=[
+            ("CI", "CI", "push", "main"),
+            ("rolling-release.yml", "rolling release", None, "main"),
+        ],
+        fast_already_signed=True,
+    )
 
 
 def main() -> None:
@@ -597,13 +753,16 @@ def main() -> None:
     parser.add_argument("--expected-commit")
     parser.add_argument("--dry-run", action="store_true")
     arguments = parser.parse_args()
-    report = sign_rolling_release(
-        arguments.repo,
-        arguments.signing_key.expanduser().resolve(),
-        arguments.key_id,
-        arguments.expected_commit,
-        arguments.dry_run,
-    )
+    try:
+        report = sign_rolling_release(
+            arguments.repo,
+            arguments.signing_key.expanduser().resolve(),
+            arguments.key_id,
+            arguments.expected_commit,
+            arguments.dry_run,
+        )
+    except ValueError as error:
+        parser.exit(1, f"error: {error}\n")
     print(json.dumps(report, sort_keys=True))
 
 

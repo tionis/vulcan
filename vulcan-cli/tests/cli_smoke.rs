@@ -13705,6 +13705,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("vulcan-sync/apply.json"));
     assert!(diagnostics_skill.contains("vulcan daemon start --detach"));
     assert!(diagnostics_skill.contains("refresh the native service after moving or upgrading"));
+    assert!(diagnostics_skill.contains("stable-2026-09"));
+    assert!(diagnostics_skill.contains("manually checksummed archive/package installation"));
     assert!(json["support_files"].as_array().is_some_and(|items| items
         .iter()
         .any(|item| item["path"] == "AGENTS.md")

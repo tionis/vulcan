@@ -43,15 +43,14 @@ verifies signed metadata against trusted keys, checks the archive's exact size a
 and atomically replaces the running executable. `--allow-downgrade` is the explicit exception for a
 reinstall or rollback. Restart a running daemon after applying an update.
 
-The stable channel does not yet have its separate signing identity. Stable descriptors therefore
-require an explicit checksum-only exception:
-
-```sh
-vulcan self-update check --allow-unsigned
-vulcan self-update apply --allow-unsigned --dry-run
-```
-
-This exception trusts the forge/HTTPS endpoint and does not provide publisher authentication.
+Current builds embed the separate `stable-2026-09` identity with stable-only authority. After the
+first post-bootstrap stable release is published and signed, the ordinary commands above verify it
+without an exception. A binary from before that trust bootstrap cannot authenticate the first
+signed stable descriptor; install that one release from a manually verified checksum/archive or
+package. Do not normalize `--allow-unsigned` as the stable update path. The currently published
+`v0.1.0` release predates the update-channel descriptor, so portable stable self-update remains
+unavailable until the first post-bootstrap stable release; install a current checksummed
+archive/package manually in the meantime.
 
 Rolling descriptors are signed by the dedicated `main-2026-09` identity after the automated build
 completes. Release binaries embed its public key with `main`-only authority, so a portable binary

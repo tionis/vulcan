@@ -171,5 +171,46 @@ GitHub CLI authentication. Inspect failures with
 `journalctl --user -u vulcan-rolling-signer.service`; they are visible and leave the descriptor
 unchanged. Uninstalling the timer preserves the signing key.
 
-No stable signing identity is configured yet. Stable descriptors therefore remain unsigned and
-require the explicit checksum-only exception until that separate identity and bootstrap exist.
+The separate stable-channel identity was created on 2026-09-02:
+
+- key ID: `stable-2026-09`
+- raw Ed25519 public key (base64): `sOrBt76ruZ2kSR+4glX9k/ZjSoS1YSvmK9yMSVCiWpE=`
+- SHA-256 fingerprint of the raw 32-byte public key:
+  `8a6aea759c18b6d82d1492fb83e6efcddb3562aeb8a60d9f054119b4bceceafd`
+- authority: `stable` only; it must never authorize `main` metadata
+
+The live private key is restricted to the signing machine at
+`~/.config/vulcan/release-signing/stable-2026-09.pem`. Its only Git-canonical recovery copy is the
+SOPS-encrypted Grimoire admin secret
+`secrets/groups/admin/vulcan-update-stable.sops.yaml`. Stable signing is approval-gated rather than
+scheduled: there is no service, timer, Actions secret, or unattended stable signer.
+
+After a version-tag workflow succeeds, an operator supplies both the exact immutable tag and its
+full commit ID. The signer requires the non-prerelease tag to be exactly `v<version>`, verifies the
+successful `release.yml` tag run for that commit, downloads and validates the complete release with
+the same canonical artifact checks as the rolling signer, rechecks the release for races, replaces
+only the descriptor, and verifies readback:
+
+```sh
+python scripts/release/sign_stable_release.py \
+  --tag v0.2.0 \
+  --expected-commit <full-40-character-commit> \
+  --signing-key ~/.config/vulcan/release-signing/stable-2026-09.pem \
+  --dry-run
+python scripts/release/sign_stable_release.py \
+  --tag v0.2.0 \
+  --expected-commit <full-40-character-commit> \
+  --signing-key ~/.config/vulcan/release-signing/stable-2026-09.pem
+```
+
+The first stable release containing this public key is the trust bootstrap. Older binaries cannot
+authenticate that release and need one out-of-band checksummed archive/package installation; do not
+teach them to accept the signature by weakening channel policy. After bootstrap, stable signatures
+are the default portable-update path. The currently published `v0.1.0` release predates this
+descriptor contract, so there is no existing stable descriptor to retrofit or sign.
+
+Rotation uses an overlap release whose envelope carries signatures from both the retiring and new
+stable keys while clients embed both public keys. A later out-of-band release removes the retiring
+key. If the old private key is lost before overlap, or suspected compromised, stop signing with it,
+remove its trust in a manually verified release, install that release through checksums/packages,
+and resume with a new identity. A compromised key cannot securely authorize its own revocation.

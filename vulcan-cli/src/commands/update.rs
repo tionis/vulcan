@@ -19,11 +19,18 @@ const STABLE_CHANNEL_URL: &str =
 const MAIN_CHANNEL_URL: &str =
     "https://github.com/tionis/vulcan/releases/download/main/vulcan-update-channel.json";
 #[cfg(feature = "web")]
-const TRUSTED_UPDATE_KEYS: &[(&str, &str, &str)] = &[(
-    "main-2026-09",
-    "main",
-    "6gbtjy5nGZoT8kFAfYELB5x73S34kjv+/tPn8XEjrg0=",
-)];
+const TRUSTED_UPDATE_KEYS: &[(&str, &str, &str)] = &[
+    (
+        "stable-2026-09",
+        "stable",
+        "sOrBt76ruZ2kSR+4glX9k/ZjSoS1YSvmK9yMSVCiWpE=",
+    ),
+    (
+        "main-2026-09",
+        "main",
+        "6gbtjy5nGZoT8kFAfYELB5x73S34kjv+/tPn8XEjrg0=",
+    ),
+];
 
 pub(crate) fn handle_update_command(
     cli: &Cli,
@@ -193,12 +200,15 @@ mod tests {
     use super::trusted_update_keys;
 
     #[test]
-    fn embedded_update_key_is_scoped_to_main() {
+    fn embedded_update_keys_are_scoped_to_independent_channels() {
         let keys = trusted_update_keys().expect("decode trusted update keys");
-        assert_eq!(keys.len(), 1);
-        assert_eq!(keys[0].key_id, "main-2026-09");
-        assert_eq!(keys[0].channel, "main");
-        assert_eq!(keys[0].public_key.len(), 32);
+        assert_eq!(keys.len(), 2);
+        assert_eq!(keys[0].key_id, "stable-2026-09");
+        assert_eq!(keys[0].channel, "stable");
+        assert_eq!(keys[1].key_id, "main-2026-09");
+        assert_eq!(keys[1].channel, "main");
+        assert!(keys.iter().all(|key| key.public_key.len() == 32));
+        assert_ne!(keys[0].public_key, keys[1].public_key);
     }
 }
 

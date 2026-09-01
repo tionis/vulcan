@@ -817,6 +817,56 @@ mod tests {
     }
 
     #[test]
+    fn stable_key_overlap_and_revocation_have_an_out_of_band_recovery_path() {
+        let old_key = SigningKey::from_bytes(&[13; 32]);
+        let new_key = SigningKey::from_bytes(&[17; 32]);
+        let payload = b"immutable stable payload";
+        let overlap = [
+            UpdateSignature {
+                algorithm: "ed25519".to_string(),
+                key_id: "stable-old".to_string(),
+                signature: BASE64.encode(old_key.sign(payload).to_bytes()),
+            },
+            UpdateSignature {
+                algorithm: "ed25519".to_string(),
+                key_id: "stable-new".to_string(),
+                signature: BASE64.encode(new_key.sign(payload).to_bytes()),
+            },
+        ];
+        let old_client = [TrustedUpdateKey {
+            key_id: "stable-old".to_string(),
+            channel: "stable".to_string(),
+            public_key: old_key.verifying_key().to_bytes(),
+        }];
+        let recovered_client = [TrustedUpdateKey {
+            key_id: "stable-new".to_string(),
+            channel: "stable".to_string(),
+            public_key: new_key.verifying_key().to_bytes(),
+        }];
+
+        assert_eq!(
+            verify_signatures(payload, &overlap, &old_client, "stable")
+                .expect("old client accepts overlap"),
+            Some("stable-old".to_string())
+        );
+        assert_eq!(
+            verify_signatures(payload, &overlap, &recovered_client, "stable")
+                .expect("new client accepts overlap"),
+            Some("stable-new".to_string())
+        );
+        assert_eq!(
+            verify_signatures(payload, &overlap[..1], &recovered_client, "stable")
+                .expect("revoked key is no longer trusted"),
+            None
+        );
+        assert_eq!(
+            verify_signatures(payload, &overlap[1..], &recovered_client, "stable")
+                .expect("replacement key remains trusted"),
+            Some("stable-new".to_string())
+        );
+    }
+
+    #[test]
     fn trusted_update_keys_cannot_authorize_another_channel() {
         let signing_key = SigningKey::from_bytes(&[11; 32]);
         let payload = b"exact payload bytes";

@@ -13,9 +13,15 @@ workspace test gate and every archive build succeed.
   `SHA256SUMS` verifies every archive and both Debian packages.
 - [ ] Decode `vulcan-update-channel.json`, verify its exact payload signature against a documented
   trusted key, and confirm the stable channel, version, source commit, timestamp, five archive URLs,
-  sizes, hashes, formats, and top-level directories match the canonical manifest. If no project
-  signing identity is configured, leave signatures empty and clearly label the release and
-  `--allow-unsigned` requirement instead of implying authenticity.
+  sizes, hashes, formats, and top-level directories match the canonical manifest.
+- [ ] After the version-tag workflow succeeds, independently resolve the immutable tag to its full
+  commit ID. Run `scripts/release/sign_stable_release.py` first with `--dry-run`, then without it,
+  supplying that exact `--tag`, `--expected-commit`, and the protected `stable-2026-09` key. Require
+  `signed` or `already_signed` plus exact readback; never copy the private key into Actions.
+- [ ] From a post-bootstrap portable build, run `vulcan self-update check` without
+  `--allow-unsigned` and require `signature_verified: true` with
+  `verified_key_id: stable-2026-09`. For the first bootstrap release only, separately verify and
+  install the checksummed archive/package because older binaries do not contain the stable key.
 - [ ] Inspect both Debian packages with `dpkg-deb --info` and `dpkg-deb --contents`. On a clean
   amd64 Debian-family environment, install through `apt`, verify the binary/man page/completions,
   confirm no daemon service was enabled implicitly, upgrade once, and remove the package while

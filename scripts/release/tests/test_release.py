@@ -34,6 +34,7 @@ manifest_script = load_script("manifest")
 channels_script = load_script("channels")
 update_channel_script = load_script("update_channel")
 rolling_signer_script = load_script("sign_rolling_release")
+stable_signer_script = load_script("sign_stable_release")
 rolling_signer_installer = load_script("install_rolling_signer")
 
 
@@ -428,6 +429,63 @@ class ReleasePackagingTests(unittest.TestCase):
         }
         return release, source_commit, version
 
+    def stable_release_fixture(self) -> tuple[dict, str, str, str]:
+        source_commit = "b" * 40
+        version = "1.2.3"
+        tag = f"v{version}"
+        for target in manifest_script.EXPECTED_TARGETS:
+            package_script.package(
+                self.binary,
+                self.assets,
+                self.source,
+                self.output,
+                target,
+                version,
+            )
+        for target in package_deb_script.TARGET_ARCHITECTURES:
+            self.write_fake_elf(target)
+            package_deb_script.package(
+                self.binary,
+                self.assets,
+                self.source,
+                self.output,
+                target,
+                version,
+            )
+        manifest, _ = manifest_script.aggregate(
+            self.output, version, manifest_script.EXPECTED_ARTIFACTS
+        )
+        update_channel_script.generate(
+            manifest,
+            "stable",
+            f"https://github.com/tionis/vulcan/releases/download/{tag}",
+            source_commit,
+            "2026-09-02T12:00:00Z",
+            self.output,
+        )
+        for path in list(self.output.glob("*.artifact.json")) + list(
+            self.output.glob("*.sha256")
+        ):
+            path.unlink()
+        release = {
+            "id": 456,
+            "tag_name": tag,
+            "draft": False,
+            "prerelease": False,
+            "assets": [
+                {
+                    "id": index,
+                    "name": path.name,
+                    "label": "",
+                    "size": path.stat().st_size,
+                    "updated_at": "2026-09-02T12:01:00Z",
+                }
+                for index, path in enumerate(sorted(self.output.iterdir()), start=2000)
+                if path.is_file()
+            ],
+        }
+        return release, source_commit, version, tag
+
     def test_rolling_signer_validates_the_exact_published_artifact_set(self) -> None:
         release, source_commit, version = self.rolling_release_fixture()
         validated = rolling_signer_script.validate_downloaded_release(
@@ -476,6 +534,86 @@ class ReleasePackagingTests(unittest.TestCase):
                 required_event="push",
             )
 
+    def test_stable_signer_validates_an_exact_immutable_release(self) -> None:
+        release, source_commit, version, tag = self.stable_release_fixture()
+        validated = rolling_signer_script.validate_downloaded_release(
+            self.output,
+            release,
+            source_commit,
+            "tionis/vulcan",
+            source_commit,
+            tag=tag,
+            channel="stable",
+            prerelease=False,
+            release_kind="stable",
+        )
+        self.assertEqual(validated.version, version)
+        self.assertEqual(validated.source_commit, source_commit)
+
+        with self.assertRaisesRegex(ValueError, "version and version tag"):
+            rolling_signer_script.validate_downloaded_release(
+                self.output,
+                {**release, "tag_name": "v1.2.4"},
+                source_commit,
+                "tionis/vulcan",
+                source_commit,
+                tag="v1.2.4",
+                channel="stable",
+                prerelease=False,
+                release_kind="stable",
+            )
+
+    def test_stable_signer_requires_explicit_tag_commit_approval(self) -> None:
+        update_command = (
+            SCRIPT_ROOT.parents[1] / "vulcan-cli/src/commands/update.rs"
+        ).read_text(encoding="utf-8")
+        self.assertIn(stable_signer_script.STABLE_KEY_ID, update_command)
+        self.assertIn(stable_signer_script.STABLE_PUBLIC_KEY, update_command)
+
+        with self.assertRaisesRegex(ValueError, "exactly v"):
+            stable_signer_script.sign_stable_release(
+                "tionis/vulcan",
+                "main",
+                "a" * 40,
+                self.root / "unused.pem",
+                stable_signer_script.STABLE_KEY_ID,
+                True,
+            )
+        with self.assertRaisesRegex(ValueError, "full lowercase"):
+            stable_signer_script.sign_stable_release(
+                "tionis/vulcan",
+                "v1.2.3",
+                "abc123",
+                self.root / "unused.pem",
+                stable_signer_script.STABLE_KEY_ID,
+                True,
+            )
+
+        successful = [
+            {
+                "headSha": "c" * 40,
+                "headBranch": "v1.2.3",
+                "status": "completed",
+                "conclusion": "success",
+                "event": "push",
+            }
+        ]
+        rolling_signer_script.validate_successful_runs(
+            successful,
+            "c" * 40,
+            workflow="stable release",
+            required_event="push",
+            expected_head_branch="v1.2.3",
+        )
+        with self.assertRaisesRegex(ValueError, "no successful completed"):
+            rolling_signer_script.validate_successful_runs(
+                successful,
+                "c" * 40,
+                workflow="stable release",
+                required_event="push",
+                expected_head_branch="main",
+            )
+
     def test_rolling_signer_systemd_install_has_a_mutation_free_preview(self) -> None:
         key = self.root / "main key.pem"
         key.write_text("fixture only\n", encoding="utf-8")
@@ -509,6 +647,7 @@ class ReleasePackagingTests(unittest.TestCase):
 
         self.assertIn("scripts/release/update_channel.py", stable)
         self.assertIn("--channel stable", stable)
+        self.assertNotIn("--signing-key", stable)
         self.assertIn('cron: "17 3 * * *"', rolling)
         self.assertIn("workflow_dispatch:", rolling)
         self.assertIn("--workflow CI", rolling)
