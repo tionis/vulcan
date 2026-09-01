@@ -29,6 +29,7 @@ const SUPPORTED_UPDATE_TARGETS: &[(&str, &str)] = &[
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustedUpdateKey {
     pub key_id: String,
+    pub channel: String,
     pub public_key: [u8; 32],
 }
 
@@ -146,8 +147,12 @@ pub fn check_for_update(
             "update channel payload exceeds the size limit",
         ));
     }
-    let verified_key_id =
-        verify_signatures(&payload_bytes, &envelope.signatures, request.trusted_keys)?;
+    let verified_key_id = verify_signatures(
+        &payload_bytes,
+        &envelope.signatures,
+        request.trusted_keys,
+        request.expected_channel,
+    )?;
     if request.require_signature && verified_key_id.is_none() {
         return Err(AppError::operation(
             "update channel is not signed by a trusted key; refusing the update",
@@ -447,31 +452,32 @@ fn verify_signatures(
     payload: &[u8],
     signatures: &[UpdateSignature],
     trusted_keys: &[TrustedUpdateKey],
+    expected_channel: &str,
 ) -> Result<Option<String>, AppError> {
     let mut matching_signature_failed = false;
     for signature_record in signatures {
         if signature_record.algorithm != "ed25519" {
             continue;
         }
-        let Some(trusted) = trusted_keys
+        let matching_keys = trusted_keys
             .iter()
-            .find(|key| key.key_id == signature_record.key_id)
-        else {
-            continue;
-        };
-        let verifying_key = VerifyingKey::from_bytes(&trusted.public_key)
-            .map_err(|error| AppError::operation(format!("invalid trusted update key: {error}")))?;
-        let signature_bytes = BASE64.decode(&signature_record.signature).ok();
-        let signature = signature_bytes
-            .as_deref()
-            .and_then(|bytes| Signature::from_slice(bytes).ok());
-        if signature
-            .as_ref()
-            .is_some_and(|signature| verifying_key.verify_strict(payload, signature).is_ok())
-        {
-            return Ok(Some(trusted.key_id.clone()));
+            .filter(|key| key.key_id == signature_record.key_id && key.channel == expected_channel);
+        for trusted in matching_keys {
+            let verifying_key = VerifyingKey::from_bytes(&trusted.public_key).map_err(|error| {
+                AppError::operation(format!("invalid trusted update key: {error}"))
+            })?;
+            let signature_bytes = BASE64.decode(&signature_record.signature).ok();
+            let signature = signature_bytes
+                .as_deref()
+                .and_then(|bytes| Signature::from_slice(bytes).ok());
+            if signature
+                .as_ref()
+                .is_some_and(|signature| verifying_key.verify_strict(payload, signature).is_ok())
+            {
+                return Ok(Some(trusted.key_id.clone()));
+            }
+            matching_signature_failed = true;
         }
-        matching_signature_failed = true;
     }
     if matching_signature_failed {
         return Err(AppError::operation(
@@ -737,6 +743,7 @@ mod tests {
         ]));
         let keys = Box::leak(Box::new([TrustedUpdateKey {
             key_id: "test-2026".to_string(),
+            channel: "stable".to_string(),
             public_key: signing_key.verifying_key().to_bytes(),
         }]));
         let request = UpdateCheckRequest {
@@ -798,12 +805,41 @@ mod tests {
         ];
         let keys = [TrustedUpdateKey {
             key_id: "rotation".to_string(),
+            channel: "stable".to_string(),
             public_key: signing_key.verifying_key().to_bytes(),
         }];
 
         assert_eq!(
-            verify_signatures(payload, &signatures, &keys).expect("verify rotated signature"),
+            verify_signatures(payload, &signatures, &keys, "stable")
+                .expect("verify rotated signature"),
             Some("rotation".to_string())
+        );
+    }
+
+    #[test]
+    fn trusted_update_keys_cannot_authorize_another_channel() {
+        let signing_key = SigningKey::from_bytes(&[11; 32]);
+        let payload = b"exact payload bytes";
+        let signatures = [UpdateSignature {
+            algorithm: "ed25519".to_string(),
+            key_id: "main-only".to_string(),
+            signature: BASE64.encode(signing_key.sign(payload).to_bytes()),
+        }];
+        let keys = [TrustedUpdateKey {
+            key_id: "main-only".to_string(),
+            channel: "main".to_string(),
+            public_key: signing_key.verifying_key().to_bytes(),
+        }];
+
+        assert_eq!(
+            verify_signatures(payload, &signatures, &keys, "main")
+                .expect("main signature should verify"),
+            Some("main-only".to_string())
+        );
+        assert_eq!(
+            verify_signatures(payload, &signatures, &keys, "stable")
+                .expect("another channel should ignore the key"),
+            None
         );
     }
 

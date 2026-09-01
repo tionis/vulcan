@@ -18,6 +18,12 @@ const STABLE_CHANNEL_URL: &str =
 #[cfg(feature = "web")]
 const MAIN_CHANNEL_URL: &str =
     "https://github.com/tionis/vulcan/releases/download/main/vulcan-update-channel.json";
+#[cfg(feature = "web")]
+const TRUSTED_UPDATE_KEYS: &[(&str, &str, &str)] = &[(
+    "main-2026-09",
+    "main",
+    "6gbtjy5nGZoT8kFAfYELB5x73S34kjv+/tPn8XEjrg0=",
+)];
 
 pub(crate) fn handle_update_command(
     cli: &Cli,
@@ -162,22 +168,38 @@ fn print_check(output: OutputFormat, report: &UpdateCheckReport) -> Result<(), C
 
 #[cfg(feature = "web")]
 fn trusted_update_keys() -> Result<Vec<TrustedUpdateKey>, CliError> {
-    let Some(encoded) = option_env!("VULCAN_UPDATE_PUBLIC_KEY") else {
-        return Ok(Vec::new());
-    };
-    let key_id = option_env!("VULCAN_UPDATE_KEY_ID").ok_or_else(|| {
-        CliError::operation("build embeds an update public key without VULCAN_UPDATE_KEY_ID")
-    })?;
-    let decoded = BASE64.decode(encoded).map_err(|error| {
-        CliError::operation(format!("invalid embedded update public key: {error}"))
-    })?;
-    let public_key: [u8; 32] = decoded.try_into().map_err(|_| {
-        CliError::operation("embedded Ed25519 update public key must contain exactly 32 bytes")
-    })?;
-    Ok(vec![TrustedUpdateKey {
-        key_id: key_id.to_string(),
-        public_key,
-    }])
+    TRUSTED_UPDATE_KEYS
+        .iter()
+        .map(|(key_id, channel, encoded)| {
+            let decoded = BASE64.decode(encoded).map_err(|error| {
+                CliError::operation(format!("invalid embedded update public key: {error}"))
+            })?;
+            let public_key: [u8; 32] = decoded.try_into().map_err(|_| {
+                CliError::operation(
+                    "embedded Ed25519 update public key must contain exactly 32 bytes",
+                )
+            })?;
+            Ok(TrustedUpdateKey {
+                key_id: (*key_id).to_string(),
+                channel: (*channel).to_string(),
+                public_key,
+            })
+        })
+        .collect()
+}
+
+#[cfg(all(test, feature = "web"))]
+mod tests {
+    use super::trusted_update_keys;
+
+    #[test]
+    fn embedded_update_key_is_scoped_to_main() {
+        let keys = trusted_update_keys().expect("decode trusted update keys");
+        assert_eq!(keys.len(), 1);
+        assert_eq!(keys[0].key_id, "main-2026-09");
+        assert_eq!(keys[0].channel, "main");
+        assert_eq!(keys[0].public_key.len(), 32);
+    }
 }
 
 #[cfg(feature = "web")]

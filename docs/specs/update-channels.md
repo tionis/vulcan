@@ -138,7 +138,12 @@ SOPS-encrypted Grimoire admin secret
 `secrets/groups/admin/vulcan-update-main.sops.yaml`. Neither private representation belongs in this
 repository, build logs, workflow artifacts, or GitHub Actions secrets.
 
-This custody setup does not by itself make current releases signed. Rolling descriptors remain
-unsigned, and clients continue to require explicit `--allow-unsigned`, until Vulcan embeds a
-channel-scoped trusted-key ring and a local signing handoff validates and signs the completed
-release payload on the key-holding machine. No stable signing identity is configured yet.
+Release builds now embed the public identity in a channel-scoped trusted-key ring. A key is eligible
+only for its compiled channel, so `main-2026-09` cannot authorize `stable` even when a cryptographic
+signature is otherwise valid. Multiple entries and envelope signatures allow bounded overlap during
+future rotations.
+
+This trust bootstrap does not by itself make current releases signed. Rolling descriptors remain
+unsigned, and clients continue to require explicit `--allow-unsigned`, until the machine-local
+handoff validates and signs the completed release payload on the key-holding machine. No stable
+signing identity is configured yet.
