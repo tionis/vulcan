@@ -66,11 +66,12 @@ use partial::{
 
 use obsidian::{
     ObsidianAppConfig, ObsidianDailyNotesConfig, ObsidianDataviewConfig, ObsidianKanbanConfig,
-    ObsidianPeriodicNoteSettings, ObsidianPeriodicNotesConfig, ObsidianQuickAddAiConfig,
-    ObsidianQuickAddAiProviderConfig, ObsidianQuickAddChoice, ObsidianQuickAddConfig,
-    ObsidianQuickAddFormatConfig, ObsidianTaskNotesConfig, ObsidianTaskNotesCreationDefaults,
-    ObsidianTaskNotesDefaultReminder, ObsidianTaskNotesFieldMapping, ObsidianTasksConfig,
-    ObsidianTemplaterConfig, ObsidianTemplaterFolderTemplateConfig, ObsidianTemplatesConfig,
+    ObsidianPeriodicCalendarSet, ObsidianPeriodicNoteSettings, ObsidianPeriodicNotesConfig,
+    ObsidianQuickAddAiConfig, ObsidianQuickAddAiProviderConfig, ObsidianQuickAddChoice,
+    ObsidianQuickAddConfig, ObsidianQuickAddFormatConfig, ObsidianTaskNotesConfig,
+    ObsidianTaskNotesCreationDefaults, ObsidianTaskNotesDefaultReminder,
+    ObsidianTaskNotesFieldMapping, ObsidianTasksConfig, ObsidianTemplaterConfig,
+    ObsidianTemplaterFolderTemplateConfig, ObsidianTemplaterHotkey, ObsidianTemplatesConfig,
 };
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -3061,13 +3062,6 @@ fn load_obsidian_periodic_notes_config(
     load_json_file(&path, diagnostics)
 }
 
-fn load_explicit_obsidian_property_types(
-    path: &Path,
-) -> Result<BTreeMap<String, String>, ConfigImportError> {
-    let value = serde_json::from_str::<Value>(&fs::read_to_string(path)?)?;
-    parse_obsidian_property_types_value(value).map_err(ConfigImportError::InvalidConfig)
-}
-
 fn parse_obsidian_property_types_value(value: Value) -> Result<BTreeMap<String, String>, String> {
     if let Value::Object(entries) = value {
         Ok(entries
@@ -3365,8 +3359,13 @@ fn apply_obsidian_templater_defaults(config: &mut VaultConfig, obsidian: Obsidia
     if let Some(syntax_highlighting_mobile) = obsidian.syntax_highlighting_mobile {
         config.templates.syntax_highlighting_mobile = syntax_highlighting_mobile;
     }
-    config.templates.enabled_templates_hotkeys =
-        normalize_string_list(obsidian.enabled_templates_hotkeys);
+    config.templates.enabled_templates_hotkeys = normalize_string_list(
+        obsidian
+            .enabled_templates_hotkeys
+            .into_iter()
+            .map(ObsidianTemplaterHotkey::template)
+            .collect(),
+    );
     config.templates.startup_templates = normalize_string_list(obsidian.startup_templates);
     if let Some(intellisense_render) = obsidian.intellisense_render {
         config.templates.intellisense_render = intellisense_render;
@@ -3374,7 +3373,7 @@ fn apply_obsidian_templater_defaults(config: &mut VaultConfig, obsidian: Obsidia
 }
 
 fn apply_obsidian_quickadd_defaults(config: &mut VaultConfig, obsidian: ObsidianQuickAddConfig) {
-    if let Some(folder) = obsidian.template_folder_path {
+    if let Some(folder) = obsidian.template_folder_paths.into_iter().next() {
         config.quickadd.template_folder = normalize_template_path(Some(folder));
     }
     config.quickadd.global_variables =
@@ -3507,7 +3506,12 @@ fn quickadd_template_choice_from_obsidian(
             .as_ref()
             .and_then(normalize_quickadd_format_value),
         open_file: choice.open_file.unwrap_or(false),
-        file_exists_behavior: normalize_optional_text(choice.file_exists_behavior.clone()),
+        file_exists_behavior: normalize_optional_text(
+            choice
+                .file_exists_behavior
+                .as_ref()
+                .map(|behavior| behavior.kind().to_string()),
+        ),
     })
 }
 

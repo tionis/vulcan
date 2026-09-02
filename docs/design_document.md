@@ -1152,7 +1152,7 @@ This is Vulcan's primary configuration file, stored in the `.vulcan/` directory 
 - Versioned deterministic synchronization merge policy (`[sync.merge_policy]`), including its ordered portable path/type rules, plus whole-tree link and mass-deletion safety limits (`[sync.tree_validation]`). Device-local automation ceilings do not belong in this shared file.
 - Implemented named Outline content-route topology/policy (`[integrations.routes.<name>]`) plus future connector-neutral profiles and route extensions
 
-Configuration sections and keys are named after native Vulcan capabilities, not the plugin that originally inspired them. For example, generated navigation, typed relationships, asset localization, and language checking receive capability-oriented sections even when a Waypoint, Wikilink Types, Local Images Plus, or LanguageTool importer seeds them. Importers translate reviewed source settings explicitly, report ignored or lossy mappings, and never make the source plugin configuration a second runtime authority.
+Configuration sections and keys are named after native Vulcan capabilities, not the plugin that originally inspired them. For example, generated navigation, typed relationships, asset localization, and language checking receive capability-oriented sections even when a Waypoint, Wikilink Types, Local Images Plus, or LanguageTool importer seeds them. Importers translate reviewed source settings explicitly, apply only source fields that are actually present and valid, report ignored, incompatible, or lossy mappings without blocking valid sibling fields, and never make the source plugin configuration a second runtime authority.
 
 ### `.vulcan/config.local.toml` (optional device-local override)
 

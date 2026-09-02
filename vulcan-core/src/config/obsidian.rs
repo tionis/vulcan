@@ -54,10 +54,32 @@ pub(super) struct ObsidianPeriodicNotesConfig {
     pub(super) monthly: Option<ObsidianPeriodicNoteSettings>,
     pub(super) quarterly: Option<ObsidianPeriodicNoteSettings>,
     pub(super) yearly: Option<ObsidianPeriodicNoteSettings>,
+    #[serde(rename = "calendarSets", default)]
+    pub(super) calendar_sets: Vec<ObsidianPeriodicCalendarSet>,
+    #[serde(rename = "activeCalendarSet")]
+    pub(super) active_calendar_set: Option<String>,
+    #[serde(
+        rename = "weekStart",
+        default,
+        deserialize_with = "deserialize_optional_week_start"
+    )]
+    pub(super) week_start: Option<PeriodicStartOfWeek>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+pub(super) struct ObsidianPeriodicCalendarSet {
+    pub(super) id: Option<String>,
+    pub(super) name: Option<String>,
+    pub(super) day: Option<ObsidianPeriodicNoteSettings>,
+    pub(super) week: Option<ObsidianPeriodicNoteSettings>,
+    pub(super) month: Option<ObsidianPeriodicNoteSettings>,
+    pub(super) quarter: Option<ObsidianPeriodicNoteSettings>,
+    pub(super) year: Option<ObsidianPeriodicNoteSettings>,
 }
 
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct ObsidianTemplaterConfig {
+    #[serde(default, deserialize_with = "deserialize_optional_usize")]
     pub(super) command_timeout: Option<usize>,
     pub(super) templates_folder: Option<String>,
     #[serde(default)]
@@ -79,11 +101,32 @@ pub(super) struct ObsidianTemplaterConfig {
     pub(super) syntax_highlighting: Option<bool>,
     pub(super) syntax_highlighting_mobile: Option<bool>,
     #[serde(default)]
-    pub(super) enabled_templates_hotkeys: Vec<String>,
+    pub(super) enabled_templates_hotkeys: Vec<ObsidianTemplaterHotkey>,
     #[serde(default)]
     pub(super) startup_templates: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_optional_usize")]
     pub(super) intellisense_render: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(super) enum ObsidianTemplaterHotkey {
+    Template(String),
+    Commands {
+        template: String,
+        #[serde(rename = "insert_enabled")]
+        _insert_enabled: Option<bool>,
+        #[serde(rename = "create_enabled")]
+        _create_enabled: Option<bool>,
+    },
+}
+
+impl ObsidianTemplaterHotkey {
+    pub(super) fn template(self) -> String {
+        match self {
+            Self::Template(template) | Self::Commands { template, .. } => template,
+        }
+    }
 }
 
 fn deserialize_optional_usize<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
@@ -108,6 +151,65 @@ where
         .transpose()
 }
 
+fn deserialize_string_or_vec<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum StringOrVec {
+        String(String),
+        Vec(Vec<String>),
+    }
+
+    Ok(match StringOrVec::deserialize(deserializer)? {
+        StringOrVec::String(value) => vec![value],
+        StringOrVec::Vec(values) => values,
+    })
+}
+
+fn deserialize_optional_archive_size<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<i64>::deserialize(deserializer)?;
+    match value {
+        None | Some(-1) => Ok(None),
+        Some(value) if value >= 0 => usize::try_from(value)
+            .map(Some)
+            .map_err(serde::de::Error::custom),
+        Some(value) => Err(serde::de::Error::custom(format!(
+            "expected -1 (unlimited) or a non-negative archive size, got {value}"
+        ))),
+    }
+}
+
+fn deserialize_optional_week_start<'de, D>(
+    deserializer: D,
+) -> Result<Option<PeriodicStartOfWeek>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum WeekStart {
+        Name(PeriodicStartOfWeek),
+        Index(u8),
+    }
+
+    Option::<WeekStart>::deserialize(deserializer)?
+        .map(|value| match value {
+            WeekStart::Name(value) => Ok(value),
+            WeekStart::Index(0) => Ok(PeriodicStartOfWeek::Sunday),
+            WeekStart::Index(1) => Ok(PeriodicStartOfWeek::Monday),
+            WeekStart::Index(6) => Ok(PeriodicStartOfWeek::Saturday),
+            WeekStart::Index(value) => Err(serde::de::Error::custom(format!(
+                "unsupported week start index {value}"
+            ))),
+        })
+        .transpose()
+}
+
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct ObsidianTemplaterFolderTemplateConfig {
     pub(super) folder: String,
@@ -116,8 +218,13 @@ pub(super) struct ObsidianTemplaterFolderTemplateConfig {
 
 #[derive(Debug, Deserialize, Default)]
 pub(super) struct ObsidianQuickAddConfig {
-    #[serde(rename = "templateFolderPath")]
-    pub(super) template_folder_path: Option<String>,
+    #[serde(
+        rename = "templateFolderPaths",
+        alias = "templateFolderPath",
+        default,
+        deserialize_with = "deserialize_string_or_vec"
+    )]
+    pub(super) template_folder_paths: Vec<String>,
     #[serde(rename = "globalVariables", default)]
     pub(super) global_variables: BTreeMap<String, String>,
     #[serde(default)]
@@ -157,7 +264,22 @@ pub(super) struct ObsidianQuickAddChoice {
     #[serde(rename = "fileNameFormat")]
     pub(super) file_name_format: Option<ObsidianQuickAddFormatConfig>,
     #[serde(rename = "fileExistsBehavior")]
-    pub(super) file_exists_behavior: Option<String>,
+    pub(super) file_exists_behavior: Option<ObsidianQuickAddFileExistsBehavior>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(super) enum ObsidianQuickAddFileExistsBehavior {
+    Kind(String),
+    Settings { kind: String },
+}
+
+impl ObsidianQuickAddFileExistsBehavior {
+    pub(super) fn kind(&self) -> &str {
+        match self {
+            Self::Kind(kind) | Self::Settings { kind } => kind,
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -495,6 +617,7 @@ pub(super) struct ObsidianKanbanConfig {
     #[serde(rename = "list-collapse")]
     pub(super) list_collapse: Option<Vec<bool>>,
     #[serde(rename = "max-archive-size")]
+    #[serde(default, deserialize_with = "deserialize_optional_archive_size")]
     pub(super) max_archive_size: Option<usize>,
     #[serde(rename = "show-checkboxes")]
     pub(super) show_checkboxes: Option<bool>,

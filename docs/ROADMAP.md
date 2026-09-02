@@ -2395,6 +2395,18 @@ Parity with the other plugin importers. Dataview settings are currently auto-loa
 - [x] `vulcan init --no-import` — suppress the detection summary (for scripted use)
 - [x] Default behavior (no flag): detect and print the suggestion, do not auto-import
 
+#### 9.17.8 Schema-drift hardening
+
+- [x] Make registered JSON settings importers presence-aware so missing source fields never reset
+  existing Vulcan settings to defaults.
+- [x] Decode supported top-level fields independently, import valid fields when a sibling has an
+  unsupported value, and surface each rejected field through `ConfigImportReport.skipped`.
+- [x] Track current Templater structured hotkeys, QuickAdd template-folder arrays and structured
+  file-exists behavior, Kanban's `-1` unlimited archive size, and Periodic Notes calendar sets while
+  retaining legacy source aliases.
+- [x] Add regression coverage for schema drift, partial failure, lossy mappings, and preservation of
+  existing settings.
+
 ### 9.18 CLI redesign — command reorganization, note CRUD, JS runtime, and agent tools
 
 **Goal:** Restructure the CLI command surface into a clean two-level hierarchy, add single-note CRUD operations, extend the query system, implement a general-purpose JS runtime with REPL, add web/git tools for agent use, and embed integrated documentation. The public help/describe surface now follows the grouped hierarchy; hidden migration aliases may remain temporarily while the cutover finishes.

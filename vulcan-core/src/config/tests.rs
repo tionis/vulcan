@@ -3549,6 +3549,54 @@ fn import_templater_plugin_config_errors_when_source_is_missing() {
 }
 
 #[test]
+fn templater_import_accepts_current_hotkeys_and_preserves_absent_settings() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/templater-obsidian"))
+        .expect("templater plugin dir should be created");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/plugins/templater-obsidian/data.json"),
+        r#"{
+            "command_timeout": "12",
+            "enabled_templates_hotkeys": [
+                "Templates/Legacy.md",
+                {
+                    "template": "Templates/Current.md",
+                    "insert_enabled": true,
+                    "create_enabled": false
+                }
+            ]
+        }"#,
+    )
+    .expect("templater config should be written");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[templates]\nauto_jump_to_cursor = true\nsyntax_highlighting_mobile = true\n",
+    )
+    .expect("existing config should be written");
+
+    let report = import_templater_plugin_config(&VaultPaths::new(vault_root))
+        .expect("current Templater settings should import");
+
+    assert!(report.skipped.is_empty());
+    assert!(report
+        .mappings
+        .iter()
+        .all(|mapping| mapping.source != "auto_jump_to_cursor"));
+    let rendered = fs::read_to_string(vault_root.join(".vulcan/config.toml"))
+        .expect("config should be readable");
+    assert!(rendered.contains("command_timeout = 12"));
+    assert!(rendered.contains("auto_jump_to_cursor = true"));
+    assert!(rendered.contains("syntax_highlighting_mobile = true"));
+    let config = load_vault_config(&VaultPaths::new(vault_root)).config;
+    assert_eq!(
+        config.templates.enabled_templates_hotkeys,
+        ["Templates/Legacy.md", "Templates/Current.md"]
+    );
+}
+
+#[test]
 #[allow(clippy::too_many_lines)]
 fn import_quickadd_plugin_config_preserves_existing_sections_and_is_idempotent() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -3705,6 +3753,58 @@ fn import_quickadd_plugin_config_errors_when_source_is_missing() {
 }
 
 #[test]
+fn quickadd_import_accepts_current_folder_paths_and_file_exists_behavior() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/quickadd"))
+        .expect("quickadd plugin dir should be created");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[[quickadd.capture_choices]]\nid = \"existing-capture\"\nname = \"Existing Capture\"\n",
+    )
+    .expect("existing config should be written");
+    fs::write(
+        vault_root.join(".obsidian/plugins/quickadd/data.json"),
+        r#"{
+            "templateFolderPaths": ["Templates/Primary", "Templates/Secondary"],
+            "choices": [{
+                "id": "current-template",
+                "name": "Current Template",
+                "type": "Template",
+                "templatePath": "Templates/Note.md",
+                "fileExistsBehavior": { "kind": "increment" }
+            }]
+        }"#,
+    )
+    .expect("quickadd config should be written");
+
+    let report = import_quickadd_plugin_config(&VaultPaths::new(vault_root))
+        .expect("current QuickAdd settings should import");
+
+    assert!(report
+        .skipped
+        .iter()
+        .any(|item| item.source == "templateFolderPaths[1..]"));
+    assert!(report
+        .mappings
+        .iter()
+        .all(|mapping| mapping.target != "quickadd.capture_choices"));
+    let config = load_vault_config(&VaultPaths::new(vault_root)).config;
+    assert_eq!(
+        config.quickadd.template_folder,
+        Some(PathBuf::from("Templates/Primary"))
+    );
+    assert_eq!(
+        config.quickadd.template_choices[0]
+            .file_exists_behavior
+            .as_deref(),
+        Some("increment")
+    );
+    assert_eq!(config.quickadd.capture_choices[0].id, "existing-capture");
+}
+
+#[test]
 fn import_dataview_plugin_config_preserves_existing_sections_and_is_idempotent() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path();
@@ -3769,6 +3869,40 @@ fn import_dataview_plugin_config_errors_when_source_is_missing() {
 }
 
 #[test]
+fn plugin_import_skips_one_malformed_field_without_losing_valid_or_existing_settings() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/dataview"))
+        .expect("dataview plugin dir should be created");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/plugins/dataview/data.json"),
+        r#"{
+            "inlineQueryPrefix": "current:",
+            "maxRecursiveRenderDepth": "not-a-number"
+        }"#,
+    )
+    .expect("dataview config should be written");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[dataview]\nmax_recursive_render_depth = 44\nenable_dataview_js = false\n",
+    )
+    .expect("existing config should be written");
+
+    let report = import_dataview_plugin_config(&VaultPaths::new(vault_root))
+        .expect("valid fields should still import");
+
+    assert!(report.skipped.iter().any(|item| {
+        item.source == "maxRecursiveRenderDepth" && item.reason.contains("unsupported value")
+    }));
+    assert_eq!(report.mappings.len(), 1);
+    let config = load_vault_config(&VaultPaths::new(vault_root)).config;
+    assert_eq!(config.dataview.inline_query_prefix, "current:");
+    assert_eq!(config.dataview.max_recursive_render_depth, 44);
+    assert!(!config.dataview.enable_dataview_js);
+}
+
+#[test]
 fn import_folder_notes_plugin_config_maps_name_and_storage_location() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path();
@@ -3815,6 +3949,30 @@ fn import_folder_notes_plugin_config_rejects_ambiguous_outside_literal_name() {
     assert!(error
         .to_string()
         .contains("outside folder notes require {{folder_name}}"));
+}
+
+#[test]
+fn folder_notes_import_reports_invalid_field_and_imports_valid_sibling() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/folder-notes"))
+        .expect("folder-notes plugin dir should be created");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/plugins/folder-notes/data.json"),
+        r#"{"folderNoteName":"Index","storageLocation":42}"#,
+    )
+    .expect("folder-notes config should be written");
+
+    let report = import_folder_notes_plugin_config(&VaultPaths::new(vault_root))
+        .expect("valid sibling setting should import");
+
+    assert!(report
+        .skipped
+        .iter()
+        .any(|item| item.source == "storageLocation"));
+    assert_eq!(report.mappings.len(), 1);
+    assert_eq!(report.mappings[0].target, "folder_notes.name");
 }
 
 #[test]
@@ -3980,6 +4138,38 @@ fn import_kanban_plugin_config_errors_when_source_is_missing() {
 }
 
 #[test]
+fn kanban_import_treats_negative_one_archive_size_as_unlimited() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/obsidian-kanban"))
+        .expect("kanban plugin dir should be created");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/plugins/obsidian-kanban/data.json"),
+        r#"{ "date-trigger": "DUE", "max-archive-size": -1 }"#,
+    )
+    .expect("kanban config should be written");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[kanban]\nmax_archive_size = 50\n",
+    )
+    .expect("existing config should be written");
+
+    let report = import_kanban_plugin_config(&VaultPaths::new(vault_root))
+        .expect("unlimited archive size should import");
+
+    assert!(report.skipped.is_empty());
+    assert!(report.mappings.iter().any(|mapping| {
+        mapping.source == "max-archive-size"
+            && mapping.target == "kanban.max_archive_size"
+            && mapping.value.is_null()
+    }));
+    let config = load_vault_config(&VaultPaths::new(vault_root)).config;
+    assert_eq!(config.kanban.max_archive_size, None);
+    assert_eq!(config.kanban.date_trigger, "DUE");
+}
+
+#[test]
 fn import_periodic_notes_plugin_config_preserves_existing_sections_and_is_idempotent() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path();
@@ -4035,6 +4225,56 @@ fn import_periodic_notes_plugin_config_errors_when_sources_are_missing() {
 
     let error = import_periodic_notes_plugin_config(&paths).expect_err("import should fail");
     assert!(matches!(error, ConfigImportError::MissingSource(_)));
+}
+
+#[test]
+fn periodic_notes_import_accepts_current_calendar_set_schema() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".obsidian/plugins/periodic-notes"))
+        .expect("periodic plugin dir should be created");
+    fs::create_dir_all(vault_root.join(".vulcan")).expect("vulcan dir should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        "[periodic.weekly]\ntemplate = \"Existing Weekly\"\n",
+    )
+    .expect("existing config should be written");
+    fs::write(
+        vault_root.join(".obsidian/plugins/periodic-notes/data.json"),
+        r#"{
+            "activeCalendarSet": "work",
+            "weekStart": 0,
+            "calendarSets": [{
+                "id": "work",
+                "name": "Work",
+                "day": {
+                    "enabled": true,
+                    "folder": "Journal/Days",
+                    "format": "YYYY-MM-DD",
+                    "template": "Templates/Daily"
+                },
+                "week": {
+                    "enabled": true,
+                    "folder": "Journal/Weeks",
+                    "format": "gggg-[W]ww"
+                }
+            }]
+        }"#,
+    )
+    .expect("periodic plugin config should be written");
+
+    let report = import_periodic_notes_plugin_config(&VaultPaths::new(vault_root))
+        .expect("current Periodic Notes settings should import");
+
+    assert!(report.skipped.is_empty());
+    let config = load_vault_config(&VaultPaths::new(vault_root)).config;
+    let daily = config.periodic.note("daily").expect("daily config");
+    assert_eq!(daily.folder, PathBuf::from("Journal/Days"));
+    assert_eq!(daily.template.as_deref(), Some("Templates/Daily"));
+    let weekly = config.periodic.note("weekly").expect("weekly config");
+    assert_eq!(weekly.folder, PathBuf::from("Journal/Weeks"));
+    assert_eq!(weekly.start_of_week, PeriodicStartOfWeek::Sunday);
+    assert_eq!(weekly.template.as_deref(), Some("Existing Weekly"));
 }
 
 #[test]
@@ -4636,6 +4876,37 @@ fn core_importer_supports_partial_sources_and_local_target() {
     assert!(rendered.contains("strict_line_breaks = true"));
     assert!(!rendered.contains("[templates]"));
     assert!(!rendered.contains("[property_types]"));
+}
+
+#[test]
+fn core_importer_reports_invalid_fields_without_blocking_valid_siblings() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path();
+    fs::create_dir_all(vault_root.join(".vulcan")).expect(".vulcan dir should be created");
+    fs::create_dir_all(vault_root.join(".obsidian")).expect("obsidian dir should be created");
+    fs::write(
+        vault_root.join(".obsidian/app.json"),
+        r#"{"useMarkdownLinks":true,"newLinkFormat":99}"#,
+    )
+    .expect("app config should be written");
+    fs::write(
+        vault_root.join(".obsidian/types.json"),
+        r#"{"valid":"text","invalid":{"type":17}}"#,
+    )
+    .expect("types config should be written");
+
+    let report = import_core_plugin_config(&VaultPaths::new(vault_root))
+        .expect("valid core settings should import");
+
+    assert_eq!(report.mappings.len(), 2);
+    assert!(report
+        .skipped
+        .iter()
+        .any(|item| item.source == "app.json.newLinkFormat"));
+    assert!(report
+        .skipped
+        .iter()
+        .any(|item| item.source == "types.json.invalid"));
 }
 
 #[test]

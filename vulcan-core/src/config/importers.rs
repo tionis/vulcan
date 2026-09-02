@@ -289,6 +289,113 @@ fn importer_source_path(paths: &VaultPaths, relative: &str) -> PathBuf {
     paths.vault_root().join(relative)
 }
 
+fn source_root(source: &str) -> &str {
+    source.split(['.', '[', ' ']).next().unwrap_or(source)
+}
+
+fn source_path_exists(raw: &Value, source: &str) -> bool {
+    source.split(" + ").any(|candidate| {
+        let mut value = raw;
+        for segment in candidate.split('.') {
+            let (key, selector) = segment
+                .split_once('[')
+                .map_or((segment, None), |(key, selector)| {
+                    (key, Some(selector.trim_end_matches(']')))
+                });
+            let Some(next) = value.get(key) else {
+                return false;
+            };
+            if let Some((selector_key, selector_value)) =
+                selector.and_then(|selector| selector.split_once('='))
+            {
+                if !next.as_array().is_some_and(|items| {
+                    items.iter().any(|item| {
+                        item.get(selector_key)
+                            .and_then(Value::as_str)
+                            .is_some_and(|value| value.eq_ignore_ascii_case(selector_value))
+                    })
+                }) {
+                    return false;
+                }
+            }
+            value = next;
+        }
+        true
+    })
+}
+
+fn retain_present_mappings(raw: &Value, mappings: &mut Vec<ConfigImportMapping>) {
+    mappings.retain(|mapping| source_path_exists(raw, &mapping.source));
+}
+
+fn tolerant_plugin_config<T>(
+    raw: &Value,
+    mapping_sources: &[ConfigImportMapping],
+) -> Result<(T, Value, Vec<ImportSkippedSetting>), ConfigImportError>
+where
+    T: serde::de::DeserializeOwned + Default,
+{
+    let roots = mapping_sources
+        .iter()
+        .flat_map(|mapping| mapping.source.split(" + ").map(source_root))
+        .collect::<BTreeSet<_>>();
+    tolerant_plugin_config_for_roots(raw, roots)
+}
+
+fn tolerant_plugin_config_for_roots<'a, T>(
+    raw: &Value,
+    roots: impl IntoIterator<Item = &'a str>,
+) -> Result<(T, Value, Vec<ImportSkippedSetting>), ConfigImportError>
+where
+    T: serde::de::DeserializeOwned + Default,
+{
+    let Some(source) = raw.as_object() else {
+        return Err(ConfigImportError::InvalidConfig(
+            "expected plugin settings to contain a JSON object".to_string(),
+        ));
+    };
+    let mut accepted = serde_json::Map::new();
+    let mut skipped = Vec::new();
+
+    for root in roots {
+        let Some(value) = source.get(root) else {
+            continue;
+        };
+        let candidate = Value::Object(serde_json::Map::from_iter([(
+            root.to_string(),
+            value.clone(),
+        )]));
+        match serde_json::from_value::<T>(candidate) {
+            Ok(_) => {
+                accepted.insert(root.to_string(), value.clone());
+            }
+            Err(error) => skipped.push(ImportSkippedSetting {
+                source: root.to_string(),
+                reason: format!("unsupported value: {error}"),
+            }),
+        }
+    }
+
+    let accepted = Value::Object(accepted);
+    let config = serde_json::from_value::<T>(accepted.clone())?;
+    Ok((config, accepted, skipped))
+}
+
+fn canonicalize_alias(raw: &mut Value, canonical: &str, aliases: &[&str]) {
+    let Some(settings) = raw.as_object_mut() else {
+        return;
+    };
+    if settings.contains_key(canonical) {
+        return;
+    }
+    if let Some(value) = aliases
+        .iter()
+        .find_map(|alias| settings.get(*alias).cloned())
+    {
+        settings.insert(canonical.to_string(), value);
+    }
+}
+
 fn import_settings_from_mappings(mappings: Vec<ConfigImportMapping>) -> Vec<ImportSetting> {
     mappings
         .into_iter()
@@ -541,12 +648,16 @@ impl PluginImporter for TasksImporter {
             return Err(ConfigImportError::MissingSource(source_path));
         }
 
-        let obsidian =
-            serde_json::from_str::<ObsidianTasksConfig>(&fs::read_to_string(&source_path)?)?;
+        let raw = serde_json::from_str::<Value>(&fs::read_to_string(&source_path)?)?;
+        let schema_mappings =
+            tasks_config_import_mappings(&imported_tasks_config(ObsidianTasksConfig::default()))?;
+        let (obsidian, accepted, skipped) =
+            tolerant_plugin_config::<ObsidianTasksConfig>(&raw, &schema_mappings)?;
         let imported_tasks = imported_tasks_config(obsidian);
-        let settings =
-            import_settings_from_mappings(tasks_config_import_mappings(&imported_tasks)?);
-        apply_import_settings(
+        let mut mappings = tasks_config_import_mappings(&imported_tasks)?;
+        retain_present_mappings(&accepted, &mut mappings);
+        let settings = import_settings_from_mappings(mappings);
+        let mut report = apply_import_settings(
             paths,
             self.name(),
             source_path.clone(),
@@ -554,7 +665,9 @@ impl PluginImporter for TasksImporter {
             &settings,
             target,
             dry_run,
-        )
+        )?;
+        report.skipped = skipped;
+        Ok(report)
     }
 }
 
@@ -589,12 +702,17 @@ impl PluginImporter for TemplaterImporter {
             return Err(ConfigImportError::MissingSource(source_path));
         }
 
-        let obsidian =
-            serde_json::from_str::<ObsidianTemplaterConfig>(&fs::read_to_string(&source_path)?)?;
+        let raw = serde_json::from_str::<Value>(&fs::read_to_string(&source_path)?)?;
+        let schema_mappings = templater_config_import_mappings(&imported_templater_config(
+            ObsidianTemplaterConfig::default(),
+        ))?;
+        let (obsidian, accepted, skipped) =
+            tolerant_plugin_config::<ObsidianTemplaterConfig>(&raw, &schema_mappings)?;
         let imported_templates = imported_templater_config(obsidian);
-        let settings =
-            import_settings_from_mappings(templater_config_import_mappings(&imported_templates)?);
-        apply_import_settings(
+        let mut mappings = templater_config_import_mappings(&imported_templates)?;
+        retain_present_mappings(&accepted, &mut mappings);
+        let settings = import_settings_from_mappings(mappings);
+        let mut report = apply_import_settings(
             paths,
             self.name(),
             source_path.clone(),
@@ -602,7 +720,9 @@ impl PluginImporter for TemplaterImporter {
             &settings,
             target,
             dry_run,
-        )
+        )?;
+        report.skipped = skipped;
+        Ok(report)
     }
 }
 
@@ -638,11 +758,26 @@ impl PluginImporter for QuickAddImporter {
         }
 
         let source = fs::read_to_string(&source_path)?;
-        let raw = serde_json::from_str::<Value>(&source)?;
-        let obsidian = serde_json::from_value::<ObsidianQuickAddConfig>(raw.clone())?;
+        let mut raw = serde_json::from_str::<Value>(&source)?;
+        canonicalize_alias(&mut raw, "templateFolderPaths", &["templateFolderPath"]);
+        let schema_mappings = quickadd_config_import_mappings(&imported_quickadd_config(
+            ObsidianQuickAddConfig::default(),
+        ))?;
+        let (obsidian, accepted, mut skipped) =
+            tolerant_plugin_config::<ObsidianQuickAddConfig>(&raw, &schema_mappings)?;
+        if let Some(paths) = raw.get("templateFolderPaths").and_then(Value::as_array) {
+            if paths.len() > 1 {
+                skipped.push(ImportSkippedSetting {
+                    source: "templateFolderPaths[1..]".to_string(),
+                    reason: "Vulcan currently has one QuickAdd template folder; imported the first configured path"
+                        .to_string(),
+                });
+            }
+        }
         let imported_quickadd = imported_quickadd_config(obsidian);
-        let settings =
-            import_settings_from_mappings(quickadd_config_import_mappings(&imported_quickadd)?);
+        let mut mappings = quickadd_config_import_mappings(&imported_quickadd)?;
+        retain_present_mappings(&accepted, &mut mappings);
+        let settings = import_settings_from_mappings(mappings);
         let mut report = apply_import_settings(
             paths,
             self.name(),
@@ -652,7 +787,8 @@ impl PluginImporter for QuickAddImporter {
             target,
             dry_run,
         )?;
-        report.skipped = quickadd_skipped_settings(&raw);
+        report.skipped = skipped;
+        report.skipped.extend(quickadd_skipped_settings(&raw));
         Ok(report)
     }
 }
@@ -688,12 +824,18 @@ impl PluginImporter for KanbanImporter {
             return Err(ConfigImportError::MissingSource(source_path));
         }
 
-        let obsidian =
-            serde_json::from_str::<ObsidianKanbanConfig>(&fs::read_to_string(&source_path)?)?;
+        let mut raw = serde_json::from_str::<Value>(&fs::read_to_string(&source_path)?)?;
+        canonicalize_alias(&mut raw, "append-archive-date", &["prepend-archive-date"]);
+        let schema_mappings = kanban_config_import_mappings(&imported_kanban_config(
+            ObsidianKanbanConfig::default(),
+        ))?;
+        let (obsidian, accepted, skipped) =
+            tolerant_plugin_config::<ObsidianKanbanConfig>(&raw, &schema_mappings)?;
         let imported_kanban = imported_kanban_config(obsidian);
-        let settings =
-            import_settings_from_mappings(kanban_config_import_mappings(&imported_kanban)?);
-        apply_import_settings(
+        let mut mappings = kanban_config_import_mappings(&imported_kanban)?;
+        retain_present_mappings(&accepted, &mut mappings);
+        let settings = import_settings_from_mappings(mappings);
+        let mut report = apply_import_settings(
             paths,
             self.name(),
             source_path.clone(),
@@ -701,7 +843,9 @@ impl PluginImporter for KanbanImporter {
             &settings,
             target,
             dry_run,
-        )
+        )?;
+        report.skipped = skipped;
+        Ok(report)
     }
 }
 
@@ -740,25 +884,58 @@ impl PluginImporter for PeriodicNotesImporter {
         }
 
         let mut mappings = Vec::new();
+        let mut skipped = Vec::new();
         let daily_path = importer_source_path(paths, ".obsidian/daily-notes.json");
         if daily_path.exists() {
-            let daily = serde_json::from_str::<ObsidianDailyNotesConfig>(&fs::read_to_string(
-                &daily_path,
-            )?)?;
+            let raw = serde_json::from_str::<Value>(&fs::read_to_string(&daily_path)?)?;
+            let (daily, _, daily_skipped) = tolerant_plugin_config_for_roots::<
+                ObsidianDailyNotesConfig,
+            >(&raw, ["folder", "format", "template"])?;
+            skipped.extend(daily_skipped.into_iter().map(|item| ImportSkippedSetting {
+                source: format!("daily-notes.{}", item.source),
+                reason: item.reason,
+            }));
             mappings.extend(periodic_daily_notes_import_mappings(&daily)?);
         }
 
         let periodic_path =
             importer_source_path(paths, ".obsidian/plugins/periodic-notes/data.json");
         if periodic_path.exists() {
-            let periodic = serde_json::from_str::<ObsidianPeriodicNotesConfig>(
-                &fs::read_to_string(&periodic_path)?,
-            )?;
+            let raw = serde_json::from_str::<Value>(&fs::read_to_string(&periodic_path)?)?;
+            let (periodic, _, periodic_skipped) =
+                tolerant_plugin_config_for_roots::<ObsidianPeriodicNotesConfig>(
+                    &raw,
+                    [
+                        "daily",
+                        "weekly",
+                        "monthly",
+                        "quarterly",
+                        "yearly",
+                        "calendarSets",
+                        "activeCalendarSet",
+                        "weekStart",
+                    ],
+                )?;
+            skipped.extend(periodic_skipped);
+            if let Some(active) = periodic.active_calendar_set.as_deref() {
+                if !periodic
+                    .calendar_sets
+                    .iter()
+                    .any(|calendar| calendar.id.as_deref() == Some(active))
+                {
+                    skipped.push(ImportSkippedSetting {
+                        source: "activeCalendarSet".to_string(),
+                        reason: format!(
+                            "calendar set `{active}` was not found; imported the first calendar set"
+                        ),
+                    });
+                }
+            }
             mappings.extend(periodic_plugin_import_mappings(&periodic)?);
         }
 
         let settings = import_settings_from_mappings(mappings);
-        apply_import_settings(
+        let mut report = apply_import_settings(
             paths,
             self.name(),
             source_paths[0].clone(),
@@ -766,7 +943,9 @@ impl PluginImporter for PeriodicNotesImporter {
             &settings,
             target,
             dry_run,
-        )
+        )?;
+        report.skipped = skipped;
+        Ok(report)
     }
 }
 
@@ -803,10 +982,15 @@ impl PluginImporter for TaskNotesImporter {
 
         let source = fs::read_to_string(&source_path)?;
         let raw = serde_json::from_str::<Value>(&source)?;
-        let obsidian = serde_json::from_value::<ObsidianTaskNotesConfig>(raw.clone())?;
+        let schema_mappings = tasknotes_config_import_mappings(&imported_tasknotes_config(
+            ObsidianTaskNotesConfig::default(),
+        ))?;
+        let (obsidian, accepted, mut skipped) =
+            tolerant_plugin_config::<ObsidianTaskNotesConfig>(&raw, &schema_mappings)?;
         let imported_tasknotes = imported_tasknotes_config(obsidian);
-        let settings =
-            import_settings_from_mappings(tasknotes_config_import_mappings(&imported_tasknotes)?);
+        let mut mappings = tasknotes_config_import_mappings(&imported_tasknotes)?;
+        retain_present_mappings(&accepted, &mut mappings);
+        let settings = import_settings_from_mappings(mappings);
         let mut report = apply_import_settings(
             paths,
             self.name(),
@@ -821,7 +1005,8 @@ impl PluginImporter for TaskNotesImporter {
         report.source_paths.sort();
         report.source_paths.dedup();
         report.migrated_files = migration.migrated_files;
-        report.skipped = tasknotes_skipped_settings(&raw);
+        report.skipped.append(&mut skipped);
+        report.skipped.extend(tasknotes_skipped_settings(&raw));
         report.skipped.extend(migration.skipped);
         if report
             .migrated_files
@@ -867,8 +1052,8 @@ impl PluginImporter for CoreImporter {
             return Err(ConfigImportError::MissingSource(source_root));
         }
 
-        let settings = core_import_settings(paths)?;
-        apply_import_settings(
+        let (settings, skipped) = core_import_settings(paths)?;
+        let mut report = apply_import_settings(
             paths,
             self.name(),
             paths.vault_root().join(".obsidian"),
@@ -876,7 +1061,9 @@ impl PluginImporter for CoreImporter {
             &settings,
             target,
             dry_run,
-        )
+        )?;
+        report.skipped = skipped;
+        Ok(report)
     }
 }
 
@@ -911,12 +1098,20 @@ impl PluginImporter for DataviewImporter {
             return Err(ConfigImportError::MissingSource(source_path));
         }
 
-        let obsidian =
-            serde_json::from_str::<ObsidianDataviewConfig>(&fs::read_to_string(&source_path)?)?;
+        let mut raw = serde_json::from_str::<Value>(&fs::read_to_string(&source_path)?)?;
+        canonicalize_alias(&mut raw, "displayResultCount", &["showResultCount"]);
+        canonicalize_alias(&mut raw, "primaryColumnName", &["tableIdColumnName"]);
+        canonicalize_alias(&mut raw, "groupColumnName", &["tableGroupColumnName"]);
+        let schema_mappings = dataview_config_import_mappings(&imported_dataview_config(
+            ObsidianDataviewConfig::default(),
+        ))?;
+        let (obsidian, accepted, skipped) =
+            tolerant_plugin_config::<ObsidianDataviewConfig>(&raw, &schema_mappings)?;
         let imported_dataview = imported_dataview_config(obsidian);
-        let settings =
-            import_settings_from_mappings(dataview_config_import_mappings(&imported_dataview)?);
-        apply_import_settings(
+        let mut mappings = dataview_config_import_mappings(&imported_dataview)?;
+        retain_present_mappings(&accepted, &mut mappings);
+        let settings = import_settings_from_mappings(mappings);
+        let mut report = apply_import_settings(
             paths,
             self.name(),
             source_path.clone(),
@@ -924,7 +1119,9 @@ impl PluginImporter for DataviewImporter {
             &settings,
             target,
             dry_run,
-        )
+        )?;
+        report.skipped = skipped;
+        Ok(report)
     }
 }
 
@@ -965,44 +1162,62 @@ impl PluginImporter for FolderNotesImporter {
             return Err(ConfigImportError::MissingSource(source_path));
         }
         let raw = serde_json::from_str::<Value>(&fs::read_to_string(&source_path)?)?;
-        let name = raw
-            .get("folderNoteName")
-            .and_then(Value::as_str)
-            .unwrap_or(crate::folder_notes::FOLDER_NAME_TOKEN);
-        let placement = match raw
-            .get("storageLocation")
-            .and_then(Value::as_str)
-            .unwrap_or("insideFolder")
-        {
-            "insideFolder" => FolderNotePlacement::Inside,
-            "parentFolder" => FolderNotePlacement::Outside,
-            value => {
-                return Err(ConfigImportError::InvalidConfig(format!(
-                    "unsupported Folder Notes storageLocation `{value}`"
-                )))
+        let mut skipped = Vec::new();
+        let name = match raw.get("folderNoteName") {
+            Some(Value::String(name)) => Some(name.clone()),
+            Some(_) => {
+                skipped.push(ImportSkippedSetting {
+                    source: "folderNoteName".to_string(),
+                    reason: "unsupported value: expected a string".to_string(),
+                });
+                None
             }
+            None => None,
+        };
+        let placement = match raw.get("storageLocation") {
+            Some(Value::String(value)) if value == "insideFolder" => {
+                Some(FolderNotePlacement::Inside)
+            }
+            Some(Value::String(value)) if value == "parentFolder" => {
+                Some(FolderNotePlacement::Outside)
+            }
+            Some(value) => {
+                skipped.push(ImportSkippedSetting {
+                    source: "storageLocation".to_string(),
+                    reason: format!(
+                        "unsupported value: expected `insideFolder` or `parentFolder`, got {value}"
+                    ),
+                });
+                None
+            }
+            None => None,
         };
         let config = FolderNotesConfig {
-            placement,
-            name: name.to_string(),
+            placement: placement.unwrap_or(FolderNotePlacement::Inside),
+            name: name
+                .clone()
+                .unwrap_or_else(|| crate::folder_notes::FOLDER_NAME_TOKEN.to_string()),
         };
         config
             .validate()
             .map_err(ConfigImportError::InvalidConfig)?;
-        let mappings = vec![
-            ConfigImportMapping {
+        let mut mappings = Vec::new();
+        if let Some(placement) = placement {
+            mappings.push(ConfigImportMapping {
                 source: "storageLocation".to_string(),
                 target: "folder_notes.placement".to_string(),
-                value: serde_json::to_value(config.placement)?,
-            },
-            ConfigImportMapping {
+                value: serde_json::to_value(placement)?,
+            });
+        }
+        if let Some(name) = name {
+            mappings.push(ConfigImportMapping {
                 source: "folderNoteName".to_string(),
                 target: "folder_notes.name".to_string(),
-                value: Value::String(config.name),
-            },
-        ];
+                value: Value::String(name),
+            });
+        }
         let settings = import_settings_from_mappings(mappings);
-        apply_import_settings(
+        let mut report = apply_import_settings(
             paths,
             self.name(),
             source_path.clone(),
@@ -1010,18 +1225,37 @@ impl PluginImporter for FolderNotesImporter {
             &settings,
             target,
             dry_run,
-        )
+        )?;
+        report.skipped = skipped;
+        Ok(report)
     }
 }
 
-fn core_import_settings(paths: &VaultPaths) -> Result<Vec<ImportSetting>, ConfigImportError> {
+#[allow(clippy::too_many_lines)]
+fn core_import_settings(
+    paths: &VaultPaths,
+) -> Result<(Vec<ImportSetting>, Vec<ImportSkippedSetting>), ConfigImportError> {
     let app_path = importer_source_path(paths, ".obsidian/app.json");
     let templates_path = importer_source_path(paths, ".obsidian/templates.json");
     let types_path = importer_source_path(paths, ".obsidian/types.json");
     let mut settings = Vec::new();
+    let mut skipped = Vec::new();
 
     if app_path.exists() {
-        let app = serde_json::from_str::<ObsidianAppConfig>(&fs::read_to_string(&app_path)?)?;
+        let raw = serde_json::from_str::<Value>(&fs::read_to_string(&app_path)?)?;
+        let (app, _, app_skipped) = tolerant_plugin_config_for_roots::<ObsidianAppConfig>(
+            &raw,
+            [
+                "useMarkdownLinks",
+                "newLinkFormat",
+                "attachmentFolderPath",
+                "strictLineBreaks",
+            ],
+        )?;
+        skipped.extend(app_skipped.into_iter().map(|item| ImportSkippedSetting {
+            source: format!("app.json.{}", item.source),
+            reason: item.reason,
+        }));
         if let Some(use_markdown_links) = app.use_markdown_links {
             let link_style = if use_markdown_links {
                 LinkStylePreference::Markdown
@@ -1063,8 +1297,25 @@ fn core_import_settings(paths: &VaultPaths) -> Result<Vec<ImportSetting>, Config
     }
 
     if templates_path.exists() {
-        let templates =
-            serde_json::from_str::<ObsidianTemplatesConfig>(&fs::read_to_string(&templates_path)?)?;
+        let mut raw = serde_json::from_str::<Value>(&fs::read_to_string(&templates_path)?)?;
+        canonicalize_alias(
+            &mut raw,
+            "folder",
+            &["templateFolder", "folderPath", "templateFolderPath"],
+        );
+        let (templates, _, templates_skipped) = tolerant_plugin_config_for_roots::<
+            ObsidianTemplatesConfig,
+        >(
+            &raw, ["dateFormat", "timeFormat", "folder"]
+        )?;
+        skipped.extend(
+            templates_skipped
+                .into_iter()
+                .map(|item| ImportSkippedSetting {
+                    source: format!("templates.json.{}", item.source),
+                    reason: item.reason,
+                }),
+        );
         if let Some(date_format) = templates.date_format {
             import_setting(
                 &mut settings,
@@ -1093,17 +1344,34 @@ fn core_import_settings(paths: &VaultPaths) -> Result<Vec<ImportSetting>, Config
     }
 
     if types_path.exists() {
-        for (property, value_type) in load_explicit_obsidian_property_types(&types_path)? {
-            import_setting_path(
-                &mut settings,
-                "types.json",
-                vec!["property_types".to_string(), property],
-                &value_type,
-            )?;
+        let raw = serde_json::from_str::<Value>(&fs::read_to_string(&types_path)?)?;
+        let Some(types) = raw.as_object() else {
+            return Err(ConfigImportError::InvalidConfig(
+                "expected types.json to contain a JSON object".to_string(),
+            ));
+        };
+        for (property, value) in types {
+            let value_type = value
+                .as_str()
+                .or_else(|| value.get("type").and_then(Value::as_str));
+            if let Some(value_type) = value_type {
+                import_setting_path(
+                    &mut settings,
+                    "types.json",
+                    vec!["property_types".to_string(), property.clone()],
+                    &value_type,
+                )?;
+            } else {
+                skipped.push(ImportSkippedSetting {
+                    source: format!("types.json.{property}"),
+                    reason: "unsupported value: expected a type string or an object with a string `type`"
+                        .to_string(),
+                });
+            }
         }
     }
 
-    Ok(settings)
+    Ok((settings, skipped))
 }
 
 fn imported_tasks_config(obsidian: ObsidianTasksConfig) -> TasksConfig {
@@ -1198,7 +1466,7 @@ fn tasks_config_import_mappings(
             value: Value::Bool(config.set_created_date),
         },
         ConfigImportMapping {
-            source: "recurrenceOnCompletion".to_string(),
+            source: "recurrenceOnCompletion + recurrenceOnNextLine".to_string(),
             target: "tasks.recurrence_on_completion".to_string(),
             value: serde_json::to_value(&config.recurrence_on_completion)?,
         },
@@ -1347,7 +1615,7 @@ fn quickadd_config_import_mappings(
     let mut mappings = Vec::new();
     push_config_import_mapping(
         &mut mappings,
-        "templateFolderPath",
+        "templateFolderPaths",
         "quickadd.template_folder",
         &config.template_folder,
     )?;
@@ -2507,24 +2775,30 @@ fn periodic_daily_notes_import_mappings(
     config: &ObsidianDailyNotesConfig,
 ) -> Result<Vec<ConfigImportMapping>, ConfigImportError> {
     let mut mappings = Vec::new();
-    push_config_import_mapping(
-        &mut mappings,
-        "daily-notes.folder",
-        "periodic.daily.folder",
-        &normalize_optional_text(config.folder.clone()).map(normalize_periodic_folder),
-    )?;
-    push_config_import_mapping(
-        &mut mappings,
-        "daily-notes.format",
-        "periodic.daily.format",
-        &normalize_optional_text(config.format.clone()),
-    )?;
-    push_config_import_mapping(
-        &mut mappings,
-        "daily-notes.template",
-        "periodic.daily.template",
-        &normalize_optional_text(config.template.clone()),
-    )?;
+    if config.folder.is_some() {
+        push_config_import_mapping(
+            &mut mappings,
+            "daily-notes.folder",
+            "periodic.daily.folder",
+            &normalize_optional_text(config.folder.clone()).map(normalize_periodic_folder),
+        )?;
+    }
+    if config.format.is_some() {
+        push_config_import_mapping(
+            &mut mappings,
+            "daily-notes.format",
+            "periodic.daily.format",
+            &normalize_optional_text(config.format.clone()),
+        )?;
+    }
+    if config.template.is_some() {
+        push_config_import_mapping(
+            &mut mappings,
+            "daily-notes.template",
+            "periodic.daily.template",
+            &normalize_optional_text(config.template.clone()),
+        )?;
+    }
     Ok(mappings)
 }
 
@@ -2532,53 +2806,154 @@ fn periodic_plugin_import_mappings(
     config: &ObsidianPeriodicNotesConfig,
 ) -> Result<Vec<ConfigImportMapping>, ConfigImportError> {
     let mut mappings = Vec::new();
-    push_periodic_plugin_mappings(&mut mappings, "daily", config.daily.as_ref())?;
-    push_periodic_plugin_mappings(&mut mappings, "weekly", config.weekly.as_ref())?;
-    push_periodic_plugin_mappings(&mut mappings, "monthly", config.monthly.as_ref())?;
-    push_periodic_plugin_mappings(&mut mappings, "quarterly", config.quarterly.as_ref())?;
-    push_periodic_plugin_mappings(&mut mappings, "yearly", config.yearly.as_ref())?;
+    push_periodic_plugin_mappings(&mut mappings, "daily", "daily", config.daily.as_ref(), None)?;
+    push_periodic_plugin_mappings(
+        &mut mappings,
+        "weekly",
+        "weekly",
+        config.weekly.as_ref(),
+        None,
+    )?;
+    push_periodic_plugin_mappings(
+        &mut mappings,
+        "monthly",
+        "monthly",
+        config.monthly.as_ref(),
+        None,
+    )?;
+    push_periodic_plugin_mappings(
+        &mut mappings,
+        "quarterly",
+        "quarterly",
+        config.quarterly.as_ref(),
+        None,
+    )?;
+    push_periodic_plugin_mappings(
+        &mut mappings,
+        "yearly",
+        "yearly",
+        config.yearly.as_ref(),
+        None,
+    )?;
+
+    if let Some(calendar) = active_periodic_calendar_set(config) {
+        let label = calendar
+            .id
+            .as_deref()
+            .or(calendar.name.as_deref())
+            .unwrap_or("active");
+        let prefix = format!("calendarSets[{label}]");
+        push_periodic_plugin_mappings(
+            &mut mappings,
+            &format!("{prefix}.day"),
+            "daily",
+            calendar.day.as_ref(),
+            None,
+        )?;
+        push_periodic_plugin_mappings(
+            &mut mappings,
+            &format!("{prefix}.week"),
+            "weekly",
+            calendar.week.as_ref(),
+            config.week_start,
+        )?;
+        push_periodic_plugin_mappings(
+            &mut mappings,
+            &format!("{prefix}.month"),
+            "monthly",
+            calendar.month.as_ref(),
+            None,
+        )?;
+        push_periodic_plugin_mappings(
+            &mut mappings,
+            &format!("{prefix}.quarter"),
+            "quarterly",
+            calendar.quarter.as_ref(),
+            None,
+        )?;
+        push_periodic_plugin_mappings(
+            &mut mappings,
+            &format!("{prefix}.year"),
+            "yearly",
+            calendar.year.as_ref(),
+            None,
+        )?;
+    }
     Ok(mappings)
+}
+
+fn active_periodic_calendar_set(
+    config: &ObsidianPeriodicNotesConfig,
+) -> Option<&ObsidianPeriodicCalendarSet> {
+    config
+        .active_calendar_set
+        .as_deref()
+        .and_then(|active| {
+            config
+                .calendar_sets
+                .iter()
+                .find(|calendar| calendar.id.as_deref() == Some(active))
+        })
+        .or_else(|| config.calendar_sets.first())
 }
 
 fn push_periodic_plugin_mappings(
     mappings: &mut Vec<ConfigImportMapping>,
+    source_prefix: &str,
     period_type: &str,
     config: Option<&ObsidianPeriodicNoteSettings>,
+    fallback_start_of_week: Option<PeriodicStartOfWeek>,
 ) -> Result<(), ConfigImportError> {
     let Some(config) = config else {
         return Ok(());
     };
 
-    push_config_import_mapping(
-        mappings,
-        &format!("{period_type}.enabled"),
-        &format!("periodic.{period_type}.enabled"),
-        &config.enabled,
-    )?;
-    push_config_import_mapping(
-        mappings,
-        &format!("{period_type}.folder"),
-        &format!("periodic.{period_type}.folder"),
-        &normalize_optional_text(config.folder.clone()).map(normalize_periodic_folder),
-    )?;
-    push_config_import_mapping(
-        mappings,
-        &format!("{period_type}.format"),
-        &format!("periodic.{period_type}.format"),
-        &normalize_optional_text(config.format.clone()),
-    )?;
-    push_config_import_mapping(
-        mappings,
-        &format!("{period_type}.templatePath"),
-        &format!("periodic.{period_type}.template"),
-        &normalize_optional_text(config.template_path.clone()),
-    )?;
-    push_config_import_mapping(
-        mappings,
-        &format!("{period_type}.startOfWeek"),
-        &format!("periodic.{period_type}.start_of_week"),
-        &config.start_of_week,
-    )?;
+    if config.enabled.is_some() {
+        push_config_import_mapping(
+            mappings,
+            &format!("{source_prefix}.enabled"),
+            &format!("periodic.{period_type}.enabled"),
+            &config.enabled,
+        )?;
+    }
+    if config.folder.is_some() {
+        push_config_import_mapping(
+            mappings,
+            &format!("{source_prefix}.folder"),
+            &format!("periodic.{period_type}.folder"),
+            &normalize_optional_text(config.folder.clone()).map(normalize_periodic_folder),
+        )?;
+    }
+    if config.format.is_some() {
+        push_config_import_mapping(
+            mappings,
+            &format!("{source_prefix}.format"),
+            &format!("periodic.{period_type}.format"),
+            &normalize_optional_text(config.format.clone()),
+        )?;
+    }
+    if config.template_path.is_some() {
+        push_config_import_mapping(
+            mappings,
+            &format!("{source_prefix}.templatePath"),
+            &format!("periodic.{period_type}.template"),
+            &normalize_optional_text(config.template_path.clone()),
+        )?;
+    }
+    if config.start_of_week.is_some() || fallback_start_of_week.is_some() {
+        let nested_source = format!("{source_prefix}.startOfWeek");
+        let source = if config.start_of_week.is_some() {
+            nested_source.as_str()
+        } else {
+            "weekStart"
+        };
+        push_config_import_mapping(
+            mappings,
+            source,
+            &format!("periodic.{period_type}.start_of_week"),
+            &config.start_of_week.or(fallback_start_of_week),
+        )?;
+    }
 
     Ok(())
 }

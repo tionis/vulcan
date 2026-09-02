@@ -14106,7 +14106,8 @@ fn skill_list_and_get_surface_bundled_skills() {
     let configuration =
         fs::read_to_string(installed_skills.join("configuration-and-permissions/SKILL.md"))
             .expect("configuration skill should be installed");
-    assert!(configuration.contains("vulcan config import folder-notes --preview"));
+    assert!(configuration.contains("vulcan config import <source> --preview"));
+    assert!(configuration.contains("unsupported values are reported as skipped"));
     assert!(configuration.contains("vulcan daemon companion --output json"));
     assert!(configuration.contains("native `SecretStorage`"));
 }
