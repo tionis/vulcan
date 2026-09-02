@@ -2989,8 +2989,8 @@ mod tests {
             "steady verification should reuse the capture stat cache: {commands}"
         );
         assert!(
-            lines.len() <= 30,
-            "steady sync exceeded its 30-process budget ({}): {commands}",
+            lines.len() <= 28,
+            "steady sync exceeded its 28-process budget ({}): {commands}",
             lines.len()
         );
     }

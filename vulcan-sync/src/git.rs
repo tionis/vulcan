@@ -1790,25 +1790,21 @@ impl GitEngine for GitCliEngine {
     }
 
     fn discover_repository(&self, path: &Path) -> Result<GitRepository, GitEngineError> {
-        let git_dir = absolute_path(self.rev_parse(
-            path,
-            "discover the repository Git directory",
-            "--absolute-git-dir",
-        )?)?;
-        let common_dir = absolute_path(
-            self.capture(
-                "discover the repository common directory",
-                Some(path),
-                ["rev-parse", "--path-format=absolute", "--git-common-dir"],
-            )
-            .map(|value| value.trim().to_string())?,
-        )?;
         let properties = self.capture(
-            "inspect repository properties",
+            "discover the repository Git directory",
             Some(path),
-            ["rev-parse", "--is-bare-repository", "--show-object-format"],
+            [
+                "rev-parse",
+                "--path-format=absolute",
+                "--absolute-git-dir",
+                "--git-common-dir",
+                "--is-bare-repository",
+                "--show-object-format",
+            ],
         )?;
         let mut properties = properties.lines();
+        let git_dir = absolute_path(properties.next().unwrap_or_default().to_string())?;
+        let common_dir = absolute_path(properties.next().unwrap_or_default().to_string())?;
         let is_bare = parse_git_bool(
             properties.next().unwrap_or_default(),
             "determine whether the repository is bare",
@@ -1820,8 +1816,8 @@ impl GitEngine for GitCliEngine {
         };
         if properties.next().is_some() {
             return Err(GitEngineError::InvalidOutput {
-                operation: "inspect repository properties",
-                detail: "expected exactly a bare flag and object format".to_string(),
+                operation: "discover repository paths",
+                detail: "expected exactly two paths, a bare flag, and an object format".to_string(),
             });
         }
 
