@@ -11,6 +11,7 @@ pub mod companion;
 pub mod credentials;
 pub mod environment;
 pub mod http;
+pub mod notification_router;
 pub mod notifications;
 pub mod process;
 pub mod registry;

@@ -421,11 +421,11 @@ fn validate_cloud_event(event: &CloudEvent) -> Result<(), ValidationError> {
             "expected CloudEvents 1.0",
         ));
     }
-    if event.id.trim().is_empty() {
+    if event.id.trim().is_empty() || event.id.len() > 512 {
         return Err(ValidationError::new(
             "cloudevents.missing-id",
             "id",
-            "event id must not be empty",
+            "event id must contain between 1 and 512 bytes",
         ));
     }
     validate_uri("source", &event.source)?;
