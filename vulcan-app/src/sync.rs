@@ -928,6 +928,29 @@ pub fn sync_git_vault_with_observer(
     cancellation: &SyncCancellationToken,
     delegate: &mut dyn GitSyncObserver,
 ) -> Result<VaultSyncReport, AppError> {
+    let engine = vulcan_sync::GitCliEngine::default().with_command_timeout(options.command_timeout);
+    sync_git_vault_with_observer_and_engine(
+        &engine,
+        paths,
+        options,
+        state_store,
+        cancellation,
+        delegate,
+    )
+}
+
+/// Runs one finite Git synchronization cycle with a caller-owned engine.
+///
+/// Long-running callers can reuse a cloned engine across cycles so immutable
+/// installation metadata remains cached while each clone keeps its own timeout.
+pub fn sync_git_vault_with_observer_and_engine(
+    engine: &dyn GitEngine,
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    state_store: &SyncStateStore,
+    cancellation: &SyncCancellationToken,
+    delegate: &mut dyn GitSyncObserver,
+) -> Result<VaultSyncReport, AppError> {
     check_sync_start(cancellation)?;
     let options = configured_git_sync_options(paths, options)?;
     let mut journal = SyncJournal::preparing(
@@ -941,7 +964,6 @@ pub fn sync_git_vault_with_observer(
         .as_ref()
         .filter(|journal| journal.phase.requires_recovery())
         .cloned();
-    let engine = vulcan_sync::GitCliEngine::default().with_command_timeout(options.command_timeout);
     let mut effective_options = options.clone();
     effective_options.device_id = state_store
         .load_or_create_device_id(!options.dry_run)?
@@ -958,7 +980,7 @@ pub fn sync_git_vault_with_observer(
         tree_validator: VaultTreeValidator::new(validation_config),
     };
     let sync = match vulcan_sync::sync_git_once_with_control(
-        &engine,
+        engine,
         paths.vault_root(),
         &effective_options,
         cancellation,
@@ -978,7 +1000,7 @@ pub fn sync_git_vault_with_observer(
         }
     };
     let conflict_record =
-        persist_sync_conflict(&engine, &sync, &mut journal, state_store, !options.dry_run)?;
+        persist_sync_conflict(engine, &sync, &mut journal, state_store, !options.dry_run)?;
     journal.git_dir = Some(sync.repository.git_dir.clone());
     journal.local_snapshot = sync.local_snapshot.as_ref().map(ToString::to_string);
     journal.accepted = sync.accepted.as_ref().map(ToString::to_string);

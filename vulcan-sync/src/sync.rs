@@ -3028,6 +3028,24 @@ mod tests {
         reader
     }
 
+    #[cfg(unix)]
+    fn assert_reused_engine_process_budget(engine: &GitCliEngine, writer: &Path, trace: &Path) {
+        fs::write(trace, "").expect("reset shared-engine invocation trace");
+        sync_git_once(engine, writer, &GitSyncOptions::default())
+            .expect("steady sync through reused engine");
+        let commands = fs::read_to_string(trace).expect("shared-engine invocation trace");
+        let lines = commands.lines().collect::<Vec<_>>();
+        assert!(
+            lines.iter().all(|line| *line != "--version"),
+            "a reused engine should retain its validated installation: {commands}"
+        );
+        assert!(
+            lines.len() <= 23,
+            "reused-engine sync exceeded its 23-process budget ({}): {commands}",
+            lines.len()
+        );
+    }
+
     #[test]
     fn first_sync_bootstraps_the_remote_live_ref() {
         let (_temporary, _remote, writer) = setup_remote_and_writer();
@@ -3104,7 +3122,8 @@ mod tests {
         sync_git_once(&engine, &writer, &GitSyncOptions::default())
             .expect("bootstrap through wrapper");
         fs::write(&trace, "").expect("reset invocation trace");
-        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+        let fresh_engine = GitCliEngine::new(&wrapper);
+        let report = sync_git_once(&fresh_engine, &writer, &GitSyncOptions::default())
             .expect("steady sync through wrapper");
         assert_eq!(report.outcome, GitSyncOutcome::UpToDate);
 
@@ -3171,6 +3190,13 @@ mod tests {
             "steady sync exceeded its 24-process budget ({}): {commands}",
             lines.len()
         );
+        assert_eq!(
+            lines.iter().filter(|line| **line == "--version").count(),
+            1,
+            "a fresh direct engine should probe Git once: {commands}"
+        );
+
+        assert_reused_engine_process_budget(&engine, &writer, &trace);
     }
 
     #[test]

@@ -9,15 +9,17 @@ use serde::Serialize;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use vulcan_app::sync::{
-    sync_git_vault, sync_git_vault_with_observer, GitPlatformProfile, GitSyncObserverError,
-    GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress, VaultSyncReport,
+    sync_git_vault, sync_git_vault_with_observer_and_engine, GitPlatformProfile,
+    GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress,
+    VaultSyncReport,
 };
 use vulcan_app::sync_state::{same_work_tree, SyncStateStore};
 use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
 use vulcan_sync::{
-    GitSyncObserver, SyncError, SyncErrorCategory, SyncJobState, SyncState, SyncStatus,
+    GitCliEngine, GitSyncObserver, SyncError, SyncErrorCategory, SyncJobState, SyncState,
+    SyncStatus,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -45,6 +47,22 @@ pub fn execute_next_sync_job_with_state_store(
     options: &GitSyncOptions,
     state_store: &SyncStateStore,
 ) -> Result<Option<DaemonSyncExecution>, SupervisorError> {
+    execute_next_sync_job_with_state_store_and_engine(
+        supervisor,
+        registry,
+        options,
+        state_store,
+        &GitCliEngine::default(),
+    )
+}
+
+pub fn execute_next_sync_job_with_state_store_and_engine(
+    supervisor: &SyncSupervisor,
+    registry: &WikiRegistry,
+    options: &GitSyncOptions,
+    state_store: &SyncStateStore,
+    engine: &GitCliEngine,
+) -> Result<Option<DaemonSyncExecution>, SupervisorError> {
     let Some(claimed) = supervisor.claim_next()? else {
         return Ok(None);
     };
@@ -53,6 +71,7 @@ pub fn execute_next_sync_job_with_state_store(
         registry,
         options,
         state_store,
+        engine,
         &claimed,
     )?))
 }
@@ -62,6 +81,7 @@ fn execute_claimed_job(
     registry: &WikiRegistry,
     options: &GitSyncOptions,
     state_store: &SyncStateStore,
+    engine: &GitCliEngine,
     claimed: &ClaimedSyncJob,
 ) -> Result<DaemonSyncExecution, SupervisorError> {
     let id = claimed.job.job.id.clone();
@@ -96,12 +116,14 @@ fn execute_claimed_job(
         Ok(options) => options,
         Err(error) => return complete_execution_error(supervisor, &id, error),
     };
+    let engine = engine.clone().with_command_timeout(options.command_timeout);
     let mut observer = SupervisorProgressObserver {
         supervisor,
         job_id: &id,
         vault: &registration.path,
     };
-    match sync_git_vault_with_observer(
+    match sync_git_vault_with_observer_and_engine(
+        &engine,
         &paths,
         &options,
         state_store,
@@ -702,12 +724,14 @@ mod tests {
             .enqueue("alpha", &vault, SyncJobTrigger::Manual)
             .expect("enqueue");
         let state_store = SyncStateStore::at(temporary.path().join("sync-state"));
+        let engine = GitCliEngine::default();
 
-        let execution = execute_next_sync_job_with_state_store(
+        let execution = execute_next_sync_job_with_state_store_and_engine(
             &supervisor,
             &registry,
             &GitSyncOptions::default(),
             &state_store,
+            &engine,
         )
         .expect("execute")
         .expect("job");

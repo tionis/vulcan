@@ -13,7 +13,7 @@ use crate::runtime::{
 use crate::semantic_worker::spawn_semantic_worker;
 use crate::service::DaemonServiceDiagnostic;
 use crate::supervisor::{SupervisorError, SyncSupervisor};
-use crate::sync::execute_next_sync_job_with_state_store;
+use crate::sync::execute_next_sync_job_with_state_store_and_engine;
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -442,12 +442,14 @@ fn spawn_job_worker(
 ) -> thread::JoinHandle<Result<(), DaemonProcessError>> {
     thread::spawn(move || {
         let result = (|| {
+            let engine = vulcan_sync::GitCliEngine::default();
             while !stop.load(Ordering::Acquire) {
-                let execution = execute_next_sync_job_with_state_store(
+                let execution = execute_next_sync_job_with_state_store_and_engine(
                     &supervisor,
                     &registry,
                     &GitSyncOptions::default(),
                     &state_store,
+                    &engine,
                 )?;
                 if execution.is_none() {
                     thread::sleep(JOB_POLL);

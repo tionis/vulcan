@@ -8,7 +8,7 @@ use std::fmt::{Display, Formatter};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 use tempfile::{NamedTempFile, TempDir};
 use ulid::Ulid;
@@ -1120,6 +1120,7 @@ impl From<std::io::Error> for GitEngineError {
 pub struct GitCliEngine {
     executable: PathBuf,
     command_timeout: Duration,
+    installation: Arc<OnceLock<GitInstallation>>,
     pending_requirements: Arc<Mutex<BTreeMap<PathBuf, GitRequirementsCache>>>,
 }
 
@@ -1143,6 +1144,7 @@ impl GitCliEngine {
         Self {
             executable: executable.into(),
             command_timeout: DEFAULT_GIT_COMMAND_TIMEOUT,
+            installation: Arc::new(OnceLock::new()),
             pending_requirements: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
@@ -1810,12 +1812,17 @@ impl GitEngine for GitCliEngine {
     }
 
     fn installation(&self) -> Result<GitInstallation, GitEngineError> {
+        if let Some(installation) = self.installation.get() {
+            return Ok(installation.clone());
+        }
         let stdout = self.capture("inspect Git installation", None, ["--version"])?;
-        Ok(GitInstallation {
+        let installation = GitInstallation {
             engine: self.kind(),
             executable: self.executable.clone(),
             version: GitVersion::parse(&stdout)?,
-        })
+        };
+        let _ = self.installation.set(installation.clone());
+        Ok(installation)
     }
 
     fn discover_repository(&self, path: &Path) -> Result<GitRepository, GitEngineError> {
@@ -4423,6 +4430,18 @@ mod tests {
         assert_eq!(installation.engine, GitEngineKind::Cli);
         assert_eq!(installation.executable, PathBuf::from("git"));
         assert!(installation.version.major >= 2);
+    }
+
+    #[test]
+    fn cloned_engines_share_successful_installation_probe() {
+        let engine = GitCliEngine::default();
+        let installation = engine.installation().expect("first installation probe");
+        let mut clone = engine.clone().with_command_timeout(Duration::from_secs(1));
+        clone.executable = PathBuf::from("definitely-not-a-vulcan-git-executable");
+        assert_eq!(
+            clone.installation().expect("shared installation result"),
+            installation
+        );
     }
 
     #[test]
