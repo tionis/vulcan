@@ -809,6 +809,7 @@ pub fn sync_git_once_with_control(
         return Ok(report);
     }
     let _lock = RepositoryLock::acquire(&report.repository)?;
+    engine.persist_repository_requirements_cache(&report.repository)?;
     let attempts = options.max_retries.max(1);
     for attempt in 0..attempts {
         cancellation.check()?;
@@ -2956,6 +2957,10 @@ mod tests {
             "accepted refs should use one batch transaction: {commands}"
         );
         assert!(
+            lines.iter().all(|line| !line.contains(" check-attr ")),
+            "steady requirements should reuse the validated attribute cache: {commands}"
+        );
+        assert!(
             lines
                 .iter()
                 .all(|line| !line.contains(" update-index --refresh")),
@@ -3448,6 +3453,14 @@ mod tests {
                 .remote_ref(&report.repository, &options.remote, &options.live_ref)
                 .expect("remote ref"),
             None
+        );
+        assert!(
+            !report
+                .repository
+                .git_dir
+                .join("vulcan-sync/requirements-cache-v1.json")
+                .exists(),
+            "dry-run requirements inspection must remain mutation-free"
         );
     }
 

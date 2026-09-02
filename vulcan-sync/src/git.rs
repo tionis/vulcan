@@ -1,5 +1,5 @@
 use crate::{detached_recovery_ref, local_recovery_ref_namespaces};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
@@ -8,6 +8,7 @@ use std::fmt::{Display, Formatter};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tempfile::{NamedTempFile, TempDir};
 use ulid::Ulid;
@@ -17,6 +18,7 @@ const MAX_DIAGNOSTIC_PATH_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONFLICT_BLOB_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 const COMMAND_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const REQUIREMENTS_CACHE_VERSION: u32 = 1;
 const DEVICE_LOCAL_VULCAN_PATHS: [&str; 4] = [
     ".vulcan/config.local.toml",
     ".vulcan/cache.db",
@@ -330,6 +332,13 @@ pub trait GitEngine: Send + Sync {
         &self,
         repository: &GitRepository,
     ) -> Result<GitRepositoryRequirements, GitEngineError>;
+
+    fn persist_repository_requirements_cache(
+        &self,
+        _repository: &GitRepository,
+    ) -> Result<(), GitEngineError> {
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -968,6 +977,13 @@ pub struct GitRepositoryRequirements {
     pub git_lfs_available: Option<bool>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct GitRequirementsCache {
+    version: u32,
+    key: String,
+    filters: BTreeMap<String, usize>,
+}
+
 #[derive(Debug)]
 pub enum GitEngineError {
     ExecutableUnavailable {
@@ -1064,11 +1080,20 @@ impl From<std::io::Error> for GitEngineError {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct GitCliEngine {
     executable: PathBuf,
     command_timeout: Duration,
+    pending_requirements: Arc<Mutex<BTreeMap<PathBuf, GitRequirementsCache>>>,
 }
+
+impl PartialEq for GitCliEngine {
+    fn eq(&self, other: &Self) -> bool {
+        self.executable == other.executable && self.command_timeout == other.command_timeout
+    }
+}
+
+impl Eq for GitCliEngine {}
 
 impl Default for GitCliEngine {
     fn default() -> Self {
@@ -1082,6 +1107,7 @@ impl GitCliEngine {
         Self {
             executable: executable.into(),
             command_timeout: DEFAULT_GIT_COMMAND_TIMEOUT,
+            pending_requirements: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
@@ -2966,35 +2992,29 @@ impl GitEngine for GitCliEngine {
             });
         }
         let tracked_paths = nul_fields("list tracked paths for sync diagnostics", &tracked.stdout)?;
-
-        let mut command = self.repository_command(repository);
-        command.args(["check-attr", "-z", "--stdin", "filter"]);
-        let attributes =
-            self.execute_with_input(command, "inspect configured Git filters", &tracked.stdout)?;
-        let attributes = ensure_success("inspect configured Git filters", attributes)?;
-        if attributes.stdout.len() > MAX_DIAGNOSTIC_PATH_BYTES.saturating_mul(4) {
-            return Err(GitEngineError::InvalidOutput {
-                operation: "inspect configured Git filters",
-                detail: "Git filter diagnostic output exceeds the bounded response limit"
-                    .to_string(),
-            });
-        }
-        let fields = nul_fields("inspect configured Git filters", &attributes.stdout)?;
-        if fields.len() % 3 != 0 {
-            return Err(GitEngineError::InvalidOutput {
-                operation: "inspect configured Git filters",
-                detail: "expected NUL-delimited path/attribute/value triples".to_string(),
-            });
-        }
-        let mut filters = BTreeMap::<String, usize>::new();
-        for triple in fields.chunks_exact(3) {
-            let value = triple[2];
-            if !matches!(value, "unspecified" | "unset" | "set" | "") {
-                *filters.entry(value.to_string()).or_default() += 1;
-            }
-        }
-        let mut required_filters = Vec::with_capacity(filters.len());
         let configured_filter_keys = self.configured_filter_keys(repository)?;
+        let cache_key = self.requirements_cache_key(
+            repository,
+            &tracked.stdout,
+            &tracked_paths,
+            &configured_filter_keys,
+        )?;
+        let filters = if let Some(filters) = Self::load_requirements_cache(repository, &cache_key) {
+            self.clear_staged_requirements_cache(repository)?;
+            filters
+        } else {
+            let filters = self.inspect_path_filters(repository, &tracked.stdout)?;
+            self.stage_requirements_cache(
+                repository,
+                GitRequirementsCache {
+                    version: REQUIREMENTS_CACHE_VERSION,
+                    key: cache_key,
+                    filters: filters.clone(),
+                },
+            )?;
+            filters
+        };
+        let mut required_filters = Vec::with_capacity(filters.len());
         for (name, path_count) in filters {
             let configured = |direction: &str| {
                 configured_filter_keys
@@ -3032,9 +3052,204 @@ impl GitEngine for GitCliEngine {
             git_lfs_available,
         })
     }
+
+    fn persist_repository_requirements_cache(
+        &self,
+        repository: &GitRepository,
+    ) -> Result<(), GitEngineError> {
+        let cache = self
+            .pending_requirements
+            .lock()
+            .map_err(|_| GitEngineError::InvalidOutput {
+                operation: "cache Git repository requirements",
+                detail: "the requirements cache lock is poisoned".to_string(),
+            })?
+            .remove(&repository.git_dir);
+        if let Some(cache) = cache {
+            Self::save_requirements_cache(repository, &cache)?;
+        }
+        Ok(())
+    }
 }
 
 impl GitCliEngine {
+    fn inspect_path_filters(
+        &self,
+        repository: &GitRepository,
+        tracked_paths: &[u8],
+    ) -> Result<BTreeMap<String, usize>, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command.args(["check-attr", "-z", "--stdin", "filter"]);
+        let attributes =
+            self.execute_with_input(command, "inspect configured Git filters", tracked_paths)?;
+        let attributes = ensure_success("inspect configured Git filters", attributes)?;
+        if attributes.stdout.len() > MAX_DIAGNOSTIC_PATH_BYTES.saturating_mul(4) {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect configured Git filters",
+                detail: "Git filter diagnostic output exceeds the bounded response limit"
+                    .to_string(),
+            });
+        }
+        let fields = nul_fields("inspect configured Git filters", &attributes.stdout)?;
+        if fields.len() % 3 != 0 {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect configured Git filters",
+                detail: "expected NUL-delimited path/attribute/value triples".to_string(),
+            });
+        }
+        let mut filters = BTreeMap::<String, usize>::new();
+        for triple in fields.chunks_exact(3) {
+            let value = triple[2];
+            if !matches!(value, "unspecified" | "unset" | "set" | "") {
+                *filters.entry(value.to_string()).or_default() += 1;
+            }
+        }
+        Ok(filters)
+    }
+
+    fn requirements_cache_key(
+        &self,
+        repository: &GitRepository,
+        tracked_bytes: &[u8],
+        tracked_paths: &[&str],
+        configured_filter_keys: &BTreeSet<String>,
+    ) -> Result<String, GitEngineError> {
+        let work_tree = repository.require_work_tree()?;
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(b"vulcan-git-requirements-cache-v1\0");
+        hasher.update(tracked_bytes);
+        for key in configured_filter_keys {
+            hasher.update(key.as_bytes());
+            hasher.update(b"\0");
+        }
+
+        let mut sources = BTreeSet::new();
+        sources.insert(repository.common_dir.join("info/attributes"));
+        for path in tracked_paths {
+            validate_repository_path(path)?;
+            let mut parent = Path::new(path).parent();
+            while let Some(directory) = parent {
+                sources.insert(work_tree.join(directory).join(".gitattributes"));
+                parent = directory.parent();
+            }
+        }
+
+        let variables =
+            self.repository_output(repository, "inspect Git attribute sources", ["var", "-l"])?;
+        if variables.stdout.len() > MAX_DIAGNOSTIC_PATH_BYTES {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect Git attribute sources",
+                detail: "Git variable output exceeds the bounded response limit".to_string(),
+            });
+        }
+        let variables = decode_stdout("inspect Git attribute sources", variables.stdout)?;
+        for line in variables.lines() {
+            let Some((name, value)) = line.split_once('=') else {
+                continue;
+            };
+            if matches!(name, "GIT_ATTR_SYSTEM" | "GIT_ATTR_GLOBAL") {
+                hasher.update(line.as_bytes());
+                hasher.update(b"\0");
+                if !value.is_empty() {
+                    sources.insert(PathBuf::from(value));
+                }
+            }
+        }
+        for source in sources {
+            hash_attribute_source(&mut hasher, &source)?;
+        }
+        Ok(hasher.finalize().to_hex().to_string())
+    }
+
+    fn requirements_cache_path(repository: &GitRepository) -> PathBuf {
+        repository
+            .git_dir
+            .join("vulcan-sync/requirements-cache-v1.json")
+    }
+
+    fn load_requirements_cache(
+        repository: &GitRepository,
+        key: &str,
+    ) -> Option<BTreeMap<String, usize>> {
+        let path = Self::requirements_cache_path(repository);
+        let Ok(metadata) = std::fs::symlink_metadata(&path) else {
+            return None;
+        };
+        if !metadata.file_type().is_file() || metadata.len() > MAX_ERROR_BYTES as u64 {
+            return None;
+        }
+        let Ok(bytes) = std::fs::read(path) else {
+            return None;
+        };
+        let Ok(cache) = serde_json::from_slice::<GitRequirementsCache>(&bytes) else {
+            return None;
+        };
+        if cache.version != REQUIREMENTS_CACHE_VERSION
+            || cache.key != key
+            || cache
+                .filters
+                .keys()
+                .any(|name| name.is_empty() || name.chars().any(char::is_control))
+        {
+            return None;
+        }
+        Some(cache.filters)
+    }
+
+    fn stage_requirements_cache(
+        &self,
+        repository: &GitRepository,
+        cache: GitRequirementsCache,
+    ) -> Result<(), GitEngineError> {
+        self.pending_requirements
+            .lock()
+            .map_err(|_| GitEngineError::InvalidOutput {
+                operation: "cache Git repository requirements",
+                detail: "the requirements cache lock is poisoned".to_string(),
+            })?
+            .insert(repository.git_dir.clone(), cache);
+        Ok(())
+    }
+
+    fn clear_staged_requirements_cache(
+        &self,
+        repository: &GitRepository,
+    ) -> Result<(), GitEngineError> {
+        self.pending_requirements
+            .lock()
+            .map_err(|_| GitEngineError::InvalidOutput {
+                operation: "cache Git repository requirements",
+                detail: "the requirements cache lock is poisoned".to_string(),
+            })?
+            .remove(&repository.git_dir);
+        Ok(())
+    }
+
+    fn save_requirements_cache(
+        repository: &GitRepository,
+        cache: &GitRequirementsCache,
+    ) -> Result<(), GitEngineError> {
+        let path = Self::requirements_cache_path(repository);
+        let parent = path
+            .parent()
+            .expect("the requirements cache path always has a parent");
+        std::fs::create_dir_all(parent)?;
+        if std::fs::symlink_metadata(&path).is_ok_and(|metadata| !metadata.file_type().is_file()) {
+            remove_file_if_present(&path)?;
+        }
+        let bytes = serde_json::to_vec(cache).map_err(|error| GitEngineError::InvalidOutput {
+            operation: "cache Git repository requirements",
+            detail: error.to_string(),
+        })?;
+        let mut temporary = NamedTempFile::new_in(parent)?;
+        temporary.write_all(&bytes)?;
+        temporary.as_file().sync_all()?;
+        temporary
+            .persist(path)
+            .map_err(|error| GitEngineError::Io(error.error))?;
+        Ok(())
+    }
+
     fn ignored_internal_paths(
         &self,
         repository: &GitRepository,
@@ -3109,6 +3324,52 @@ fn join_reader(
             detail: format!("Git {stream} reader panicked"),
         })?
         .map_err(GitEngineError::from)
+}
+
+fn hash_attribute_source(hasher: &mut blake3::Hasher, path: &Path) -> Result<(), GitEngineError> {
+    hash_path(hasher, path);
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        hasher.update(b"missing\0");
+        return Ok(());
+    };
+    if metadata.file_type().is_symlink() {
+        hasher.update(b"symlink\0");
+        hash_path(hasher, &std::fs::read_link(path)?);
+        return Ok(());
+    }
+    if !metadata.file_type().is_file() {
+        hasher.update(b"other\0");
+        return Ok(());
+    }
+    if metadata.len() > MAX_DIAGNOSTIC_PATH_BYTES as u64 {
+        return Err(GitEngineError::InvalidOutput {
+            operation: "hash Git attribute sources",
+            detail: format!(
+                "attribute file exceeds the {MAX_DIAGNOSTIC_PATH_BYTES} byte limit: {}",
+                path.display()
+            ),
+        });
+    }
+    hasher.update(b"file\0");
+    hasher.update(&std::fs::read(path)?);
+    hasher.update(b"\0");
+    Ok(())
+}
+
+#[cfg(unix)]
+fn hash_path(hasher: &mut blake3::Hasher, path: &Path) {
+    use std::os::unix::ffi::OsStrExt;
+    hasher.update(path.as_os_str().as_bytes());
+    hasher.update(b"\0");
+}
+
+#[cfg(windows)]
+fn hash_path(hasher: &mut blake3::Hasher, path: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    for unit in path.as_os_str().encode_wide() {
+        hasher.update(&unit.to_le_bytes());
+    }
+    hasher.update(b"\0");
 }
 
 #[cfg(unix)]
@@ -5533,6 +5794,33 @@ mod tests {
         assert_eq!(lfs.path_count, 1);
         assert_eq!(lfs.executable_available, requirements.git_lfs_available);
         assert!(requirements.git_lfs_available.is_some());
+
+        let cache_path = GitCliEngine::requirements_cache_path(&repository);
+        assert!(
+            !cache_path.exists(),
+            "read-only inspection must not persist its cache"
+        );
+        engine
+            .persist_repository_requirements_cache(&repository)
+            .expect("persist requirements cache");
+        assert!(cache_path.is_file());
+        assert_eq!(
+            engine
+                .repository_requirements(&repository)
+                .expect("cached requirements"),
+            requirements
+        );
+
+        fs::write(
+            temporary.path().join(".gitattributes"),
+            "*.bin filter=replacement\n",
+        )
+        .expect("changed attributes");
+        let changed = engine
+            .repository_requirements(&repository)
+            .expect("changed requirements");
+        assert_eq!(changed.required_filters.len(), 1);
+        assert_eq!(changed.required_filters[0].name, "replacement");
     }
 
     #[test]
