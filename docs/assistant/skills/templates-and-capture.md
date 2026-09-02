@@ -28,6 +28,8 @@ compatibility matter.
 - Use `vulcan inbox` or `note append` for quick additive capture.
 - Use `template preview` when variables, Templater tags, or QuickAdd tokens may produce surprising output.
 - Import Obsidian template/QuickAdd/Templater settings before expecting compatibility defaults.
+- Check `templates.trigger_on_file_creation` and its mode before assuming a newly created note is empty. `note create` applies configured creation triggers automatically; an explicit `--template` takes precedence.
+- Keep `vulcan watch` running when creation triggers must also apply to Markdown files created by editors or other filesystem tools.
 
 ## Guardrails
 
@@ -35,6 +37,7 @@ compatibility matter.
 - Preview templates that include JS, dates, or user variables.
 - Keep capture append-only unless the user explicitly asks to reorganize captured material.
 - Mutating Templater helpers may require sandbox/permission checks and should not be assumed safe.
+- Creation triggers are mutations and may execute Templater JS. Keep them disabled unless requested, and inspect folder/regex mappings plus ignored folders before enabling them.
 
 ## Example Moves
 

@@ -8,13 +8,17 @@ use crate::{
 };
 use serde::Serialize;
 use std::io::{self, IsTerminal};
+use std::path::Path;
 use vulcan_app::templates::{
-    apply_template_create_with_filter, apply_template_insert_with_filter,
-    build_template_list_report, build_template_preview_report_with_filter,
-    build_template_show_report, parse_template_var_bindings, TemplateCreateRequest,
-    TemplateEngineKind, TemplateInsertMode, TemplateInsertRequest, TemplatePreviewRequest,
+    apply_template_create_with_filter, apply_template_creation_trigger,
+    apply_template_insert_with_filter, build_template_list_report,
+    build_template_preview_report_with_filter, build_template_show_report,
+    parse_template_var_bindings, TemplateCreateRequest, TemplateEngineKind, TemplateInsertMode,
+    TemplateInsertRequest, TemplatePreviewRequest,
 };
-use vulcan_core::{PermissionFilter, VaultPaths};
+use vulcan_core::{
+    load_vault_config, PermissionFilter, PermissionGuard, ProfilePermissionGuard, VaultPaths,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct TemplateListReport {
@@ -67,6 +71,45 @@ pub(crate) enum TemplateCommandResult {
     Create(TemplateCreateReport),
     Insert(TemplateInsertReport),
     Preview(TemplatePreviewReport),
+}
+
+pub(crate) fn run_template_creation_triggers(
+    paths: &VaultPaths,
+    created_paths: &[String],
+    permission_profile: Option<&str>,
+    quiet: bool,
+    guard: &ProfilePermissionGuard,
+) -> Result<Vec<String>, CliError> {
+    if !load_vault_config(paths)
+        .config
+        .templates
+        .trigger_on_file_creation
+    {
+        return Ok(Vec::new());
+    }
+    let read_filter = guard.read_filter();
+    let read_filter = (!read_filter.path_permission().is_unrestricted()).then_some(&read_filter);
+    let mut changed_paths = Vec::new();
+
+    for path in created_paths {
+        if !Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"))
+            || !paths.vault_root().join(path).is_file()
+        {
+            continue;
+        }
+        guard.check_read_path(path).map_err(CliError::operation)?;
+        guard.check_write_path(path).map_err(CliError::operation)?;
+        let report =
+            apply_template_creation_trigger(paths, path, permission_profile, quiet, read_filter)?;
+        changed_paths.extend(report.changed_paths);
+    }
+
+    changed_paths.sort();
+    changed_paths.dedup();
+    Ok(changed_paths)
 }
 
 #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]

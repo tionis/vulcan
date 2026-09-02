@@ -4,8 +4,8 @@ use crate::{
     IndexCommand, PermissionGuard, RepairCommand, ServeOptions,
 };
 use vulcan_core::{
-    rebuild_vault_with_progress, repair_fts, scan_vault_with_progress, watch_vault, PluginEvent,
-    RebuildQuery, RepairFtsQuery, ScanMode, VaultPaths, WatchOptions,
+    rebuild_vault_with_progress, repair_fts, scan_vault, scan_vault_with_progress, watch_vault,
+    PluginEvent, RebuildQuery, RepairFtsQuery, ScanMode, VaultPaths, WatchOptions,
 };
 
 #[allow(clippy::too_many_lines)]
@@ -88,6 +88,7 @@ pub(crate) fn handle_index_command(
             no_commit,
         } => {
             let auto_commit = AutoCommitPolicy::for_scan(paths, *no_commit);
+            let trigger_guard = selected_permission_guard(cli, paths)?;
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             if cli.output == crate::OutputFormat::Human && stdout_is_tty {
                 println!(
@@ -102,16 +103,30 @@ pub(crate) fn handle_index_command(
                     debounce_ms: *debounce_ms,
                 },
                 |report| {
+                    let triggered_paths = crate::run_template_creation_triggers(
+                        paths,
+                        &report.created_paths,
+                        cli.permissions.as_deref(),
+                        cli.quiet,
+                        &trigger_guard,
+                    )?;
+                    if !triggered_paths.is_empty() {
+                        scan_vault(paths, ScanMode::Incremental).map_err(CliError::operation)?;
+                    }
                     crate::print_watch_report(cli.output, &report)?;
                     if !report.startup
                         && report.summary.added + report.summary.updated + report.summary.deleted
                             > 0
                     {
+                        let mut changed_paths = report.paths.clone();
+                        changed_paths.extend(triggered_paths);
+                        changed_paths.sort();
+                        changed_paths.dedup();
                         auto_commit
                             .commit(
                                 paths,
                                 "scan",
-                                &report.paths,
+                                &changed_paths,
                                 cli.permissions.as_deref(),
                                 cli.quiet,
                             )

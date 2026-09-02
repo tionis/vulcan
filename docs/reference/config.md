@@ -264,6 +264,9 @@ Template folders, triggers, and Templater-compatible defaults.
 - `templates.folder_templates` — type: `array`; target: `shared|local`; default: `[0 items]`
   Template discovery, file triggers, folder mappings, and shell integration.
   Example: `vulcan config set templates.folder_templates <value>`
+- `templates.ignore_folders_on_creation` — type: `array`; target: `shared|local`; default: `[0 items]`
+  Template discovery, file triggers, folder mappings, and shell integration.
+  Example: `vulcan config set templates.ignore_folders_on_creation <value>`
 - `templates.intellisense_render` — type: `integer`; target: `shared|local`; default: `1`
   Template discovery, file triggers, folder mappings, and shell integration.
   Example: `vulcan config set templates.intellisense_render <value>`
@@ -294,6 +297,9 @@ Template folders, triggers, and Templater-compatible defaults.
 - `templates.trigger_on_file_creation` — type: `boolean`; target: `shared|local`; default: `false`
   Template discovery, file triggers, folder mappings, and shell integration.
   Example: `vulcan config set templates.trigger_on_file_creation <value>`
+- `templates.trigger_on_file_creation_mode` — type: `enum`; target: `shared|local`; default: `none`; values: `none`, `folder`, `regex`
+  Template discovery, file triggers, folder mappings, and shell integration.
+  Example: `vulcan config set templates.trigger_on_file_creation_mode <value>`
 - `templates.user_scripts_folder` — type: `string`; target: `shared|local`; default: `Scripts`
   Template discovery, file triggers, folder mappings, and shell integration.
   Example: `vulcan config set templates.user_scripts_folder <value>`

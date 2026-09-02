@@ -1,11 +1,12 @@
 use super::{
-    apply_right_trim, apply_template_create, apply_template_insert, build_template_list_report,
-    build_template_preview_report, build_template_show_report, parse_native_expression,
-    parse_template_var_bindings, parse_templater_tag, random_picture_markdown,
-    render_template_request, render_template_request_with_filter, template_value_to_string,
-    TemplateCandidate, TemplateCreateRequest, TemplateEngineKind, TemplateInsertMode,
-    TemplateInsertRequest, TemplatePreviewRequest, TemplateRenderRequest, TemplateRunMode,
-    TemplateSession, TemplateTimestamp, TemplateValue, TrimMode,
+    apply_right_trim, apply_template_create, apply_template_creation_trigger,
+    apply_template_insert, build_template_list_report, build_template_preview_report,
+    build_template_show_report, parse_native_expression, parse_template_var_bindings,
+    parse_templater_tag, random_picture_markdown, render_template_request,
+    render_template_request_with_filter, template_value_to_string, TemplateCandidate,
+    TemplateCreateRequest, TemplateEngineKind, TemplateInsertMode, TemplateInsertRequest,
+    TemplatePreviewRequest, TemplateRenderRequest, TemplateRunMode, TemplateSession,
+    TemplateTimestamp, TemplateValue, TrimMode,
 };
 use std::collections::HashMap;
 use std::fs;
@@ -728,6 +729,103 @@ fn apply_template_create_writes_note_and_reports_changed_paths() {
         fs::read_to_string(root.join("Projects/Alpha.md")).expect("created note"),
         "# Alpha\n"
     );
+}
+
+#[test]
+fn disabled_template_creation_trigger_does_not_read_the_target() {
+    let temp_dir = tempdir().expect("temp dir");
+    let paths = VaultPaths::new(temp_dir.path());
+
+    let report = apply_template_creation_trigger(&paths, "Missing.md", None, true, None)
+        .expect("disabled trigger should be a no-op");
+
+    assert!(!report.triggered);
+    assert!(report.changed_paths.is_empty());
+}
+
+#[test]
+fn apply_template_creation_trigger_updates_an_externally_created_note() {
+    let temp_dir = tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+    fs::create_dir_all(root.join("Projects")).expect("projects dir");
+    fs::write(
+        root.join(".vulcan/config.toml"),
+        r#"[templates]
+trigger_on_file_creation = true
+trigger_on_file_creation_mode = "regex"
+file_templates = [
+  { regex = "^Projects/.*\\.md$", template = "project" },
+  { regex = ".*", template = "fallback" },
+]
+ignore_folders_on_creation = [{ folder = "Projects/Archive" }]
+"#,
+    )
+    .expect("config");
+    fs::write(root.join(".vulcan/templates/project.md"), "# {{title}}\n").expect("template");
+    fs::write(root.join(".vulcan/templates/fallback.md"), "# Fallback\n").expect("fallback");
+    fs::write(root.join("Projects/Alpha.md"), "").expect("created note");
+
+    let report = apply_template_creation_trigger(
+        &VaultPaths::new(root),
+        "Projects/Alpha.md",
+        None,
+        true,
+        None,
+    )
+    .expect("trigger report");
+
+    assert!(report.triggered);
+    assert_eq!(report.template.as_deref(), Some("project"));
+    assert_eq!(report.engine.as_deref(), Some("native"));
+    assert_eq!(report.changed_paths, ["Projects/Alpha.md"]);
+    assert_eq!(
+        fs::read_to_string(root.join("Projects/Alpha.md")).expect("rendered note"),
+        "# Alpha\n"
+    );
+
+    fs::create_dir_all(root.join("Projects/Archive")).expect("archive dir");
+    fs::write(root.join("Projects/Archive/Old.md"), "").expect("ignored note");
+    let ignored = apply_template_creation_trigger(
+        &VaultPaths::new(root),
+        "Projects/Archive/Old.md",
+        None,
+        true,
+        None,
+    )
+    .expect("ignored report");
+    assert!(!ignored.triggered);
+}
+
+#[test]
+fn template_creation_trigger_rejects_an_invalid_file_regex() {
+    let temp_dir = tempdir().expect("temp dir");
+    let root = temp_dir.path();
+    fs::create_dir_all(root.join(".vulcan")).expect("config dir");
+    fs::create_dir_all(root.join("Projects")).expect("projects dir");
+    fs::write(
+        root.join(".vulcan/config.toml"),
+        r#"[templates]
+trigger_on_file_creation = true
+trigger_on_file_creation_mode = "regex"
+file_templates = [{ regex = "[", template = "project" }]
+"#,
+    )
+    .expect("config");
+    fs::write(root.join("Projects/Alpha.md"), "").expect("created note");
+
+    let error = apply_template_creation_trigger(
+        &VaultPaths::new(root),
+        "Projects/Alpha.md",
+        None,
+        true,
+        None,
+    )
+    .expect_err("invalid regex should fail");
+
+    assert!(error
+        .to_string()
+        .contains("invalid template file-creation regex `[`"));
 }
 
 #[test]

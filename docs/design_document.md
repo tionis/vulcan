@@ -1189,6 +1189,8 @@ If an `.obsidian` directory is present, the following files are read to provide 
 
 Template insertion into an existing note is a vault mutation, not a cache rewrite. The inserted template is first rendered against the target note context, then any template frontmatter is merged into the target note frontmatter by adding missing keys, preserving existing scalar values, and union-merging list properties such as `tags`.
 
+Template execution on file creation is an explicit, default-off vault mutation. When `templates.trigger_on_file_creation` is enabled, the reusable application workflow runs for notes created through Vulcan and for Markdown create events observed by the explicit `watch` command. An explicit creation template always wins. Otherwise, `trigger_on_file_creation_mode = "folder"` selects the nearest configured ancestor-folder mapping, `"regex"` selects the first matching file rule, and `"none"` only evaluates template commands already present in the new file. Folder and regex templates replace only an otherwise empty note body while preserving and merging frontmatter. Template-source folders and `ignore_folders_on_creation` are excluded, invalid regexes surface as diagnostics, modification events never retrigger creation processing, and watcher-driven execution rechecks read/write permissions before rendering. Templater's older `enable_folder_templates` and `enable_file_templates` settings remain migration fallbacks when no explicit creation mode is configured.
+
 **Low priority but useful:**
 
 - **`.obsidian/bookmarks.json`** — Bookmarked notes, searches, and graphs. Useful for diagnostics and reporting.

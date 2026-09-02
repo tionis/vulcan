@@ -70,6 +70,7 @@ mod contract_tests {
     use crate::browse::VaultStatusReport;
     use crate::notes::NoteAppendReport;
     use crate::tasks::TaskMutationReport;
+    use crate::templates::TemplateCreationTriggerReport;
     use serde_json::json;
 
     #[test]
@@ -149,6 +150,28 @@ mod contract_tests {
                 "moved_from": null,
                 "moved_to": null,
                 "changes": []
+            })
+        );
+
+        let trigger = TemplateCreationTriggerReport {
+            path: "Projects/Alpha.md".to_string(),
+            triggered: true,
+            template: Some("project".to_string()),
+            engine: Some("native".to_string()),
+            warnings: Vec::new(),
+            diagnostics: Vec::new(),
+            changed_paths: vec!["Projects/Alpha.md".to_string()],
+        };
+
+        assert_eq!(
+            serde_json::to_value(&trigger).expect("template creation trigger report serializes"),
+            json!({
+                "path": "Projects/Alpha.md",
+                "triggered": true,
+                "template": "project",
+                "engine": "native",
+                "warnings": [],
+                "diagnostics": []
             })
         );
     }

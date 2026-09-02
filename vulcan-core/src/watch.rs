@@ -67,6 +67,7 @@ pub struct WatchReport {
     pub startup: bool,
     pub event_count: usize,
     pub paths: Vec<String>,
+    pub created_paths: Vec<String>,
     pub summary: ScanSummary,
 }
 
@@ -74,6 +75,7 @@ pub struct WatchReport {
 struct WatchBatch {
     event_count: usize,
     paths: BTreeSet<String>,
+    created_paths: BTreeSet<String>,
 }
 
 pub fn watch_vault<F, E>(
@@ -185,6 +187,7 @@ where
         startup: true,
         event_count: 0,
         paths: Vec::new(),
+        created_paths: Vec::new(),
         summary: startup_summary,
     })
     .map_err(|error| WatchError::Callback(error.to_string()))?;
@@ -274,11 +277,15 @@ impl WatchBatch {
             return false;
         }
 
+        let created = matches!(event.kind, EventKind::Create(_));
         let mut added = false;
         for path in event.paths {
             let Some(relative_path) = normalize_watch_path(paths, &path) else {
                 continue;
             };
+            if created {
+                self.created_paths.insert(relative_path.clone());
+            }
             self.paths.insert(relative_path);
             added = true;
         }
@@ -295,6 +302,7 @@ impl WatchBatch {
             startup: false,
             event_count: self.event_count,
             paths: self.paths.into_iter().collect(),
+            created_paths: self.created_paths.into_iter().collect(),
             summary,
         }
     }
@@ -370,6 +378,7 @@ mod tests {
         ));
         assert_eq!(batch.event_count, 0);
         assert!(batch.paths.is_empty());
+        assert!(batch.created_paths.is_empty());
     }
 
     #[test]
@@ -396,6 +405,7 @@ mod tests {
         ));
 
         assert_eq!(batch.event_count, 2);
+        assert_eq!(batch.created_paths, ["Notes/Alpha.md".to_string()].into());
         assert_eq!(
             batch.paths.into_iter().collect::<Vec<_>>(),
             vec!["Notes/Alpha.md".to_string()]
@@ -489,6 +499,51 @@ mod tests {
         writer.join().expect("writer should stop");
 
         assert_eq!(changed_paths, ["Home.md"]);
+    }
+
+    #[test]
+    fn polling_fallback_identifies_created_paths() {
+        let temp_dir = TempDir::new().expect("temp dir should be created");
+        std::fs::create_dir_all(temp_dir.path().join(".vulcan"))
+            .expect(".vulcan dir should be created");
+        let paths = VaultPaths::new(temp_dir.path());
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let created_note = temp_dir.path().join("New.md");
+        let (startup_sender, startup_receiver) = mpsc::channel();
+        let writer_stop = std::sync::Arc::clone(&stop);
+        let writer = std::thread::spawn(move || {
+            startup_receiver
+                .recv()
+                .expect("startup scan should complete before creation");
+            std::fs::write(created_note, "# New\n").expect("note should be created");
+            while !writer_stop.load(std::sync::atomic::Ordering::Acquire) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        });
+        let should_stop = std::sync::Arc::clone(&stop);
+        let on_report_stop = std::sync::Arc::clone(&stop);
+        let mut created_paths = Vec::new();
+
+        watch_vault_until_polling(
+            &paths,
+            WatchOptions { debounce_ms: 10 },
+            || should_stop.load(std::sync::atomic::Ordering::Acquire),
+            |report| {
+                if report.startup {
+                    startup_sender
+                        .send(())
+                        .expect("writer should await startup scan");
+                } else {
+                    created_paths.extend(report.created_paths);
+                    on_report_stop.store(true, std::sync::atomic::Ordering::Release);
+                }
+                Ok::<_, std::convert::Infallible>(())
+            },
+        )
+        .expect("polling watch should stop cleanly");
+        writer.join().expect("writer should stop");
+
+        assert_eq!(created_paths, ["New.md"]);
     }
 
     #[test]

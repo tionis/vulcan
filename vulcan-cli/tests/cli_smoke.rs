@@ -3938,6 +3938,50 @@ fn note_create_uses_template_and_frontmatter_bindings() {
 }
 
 #[test]
+fn note_create_applies_configured_file_creation_template() {
+    let temp_dir = TempDir::new().expect("temp dir should be created");
+    let vault_root = temp_dir.path().join("vault");
+    fs::create_dir_all(vault_root.join(".vulcan/templates"))
+        .expect("template directory should be created");
+    fs::write(
+        vault_root.join(".vulcan/config.toml"),
+        r#"[templates]
+trigger_on_file_creation = true
+trigger_on_file_creation_mode = "regex"
+file_templates = [{ regex = "^Projects/.*\\.md$", template = "project" }]
+"#,
+    )
+    .expect("config should be written");
+    fs::write(
+        vault_root.join(".vulcan/templates/project.md"),
+        "# {{title}}\n",
+    )
+    .expect("template should be written");
+
+    let assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("vault path should be utf-8"),
+            "--output",
+            "json",
+            "note",
+            "create",
+            "Projects/Alpha",
+        ])
+        .assert()
+        .success();
+    let json = parse_stdout_json(&assert);
+
+    assert_eq!(json["template"], "project");
+    assert_eq!(json["engine"], "native");
+    assert_eq!(
+        fs::read_to_string(vault_root.join("Projects/Alpha.md")).expect("created note"),
+        "# Alpha\n"
+    );
+}
+
+#[test]
 fn note_append_under_heading_reports_check_diagnostics() {
     let temp_dir = TempDir::new().expect("temp dir should be created");
     let vault_root = temp_dir.path().join("vault");
@@ -13909,6 +13953,24 @@ fn skill_list_and_get_surface_bundled_skills() {
     assert!(get_json["body"]
         .as_str()
         .is_some_and(|body| body.contains("note outline")));
+
+    let template_skill_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "skill",
+            "get",
+            "templates-and-capture",
+        ])
+        .assert()
+        .success();
+    let template_skill_json = parse_stdout_json(&template_skill_assert);
+    assert!(template_skill_json["body"].as_str().is_some_and(|body| {
+        body.contains("templates.trigger_on_file_creation") && body.contains("vulcan watch")
+    }));
 
     let get_creator_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")

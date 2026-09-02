@@ -1,8 +1,9 @@
 use crate::plugins;
 use crate::templates::{
     find_frontmatter_block, load_named_template, parse_frontmatter_document,
-    render_loaded_template, render_note_from_parts, LoadedTemplateRenderRequest,
-    TemplateEngineKind, TemplateRunMode, TemplateTimestamp, YamlMapping, YamlValue,
+    render_creation_trigger, render_loaded_template, render_note_from_parts,
+    LoadedTemplateRenderRequest, TemplateEngineKind, TemplateRunMode, TemplateTimestamp,
+    YamlMapping, YamlValue,
 };
 use crate::AppError;
 use regex::Regex;
@@ -224,6 +225,7 @@ pub fn apply_note_create(
     let mut template = None;
     let mut engine = None;
     let mut changed_paths = Vec::new();
+    let mut triggered_content = None;
 
     if let Some(template_name) = request.template.as_deref() {
         let loaded = load_named_template(paths, &config, template_name)?;
@@ -252,6 +254,20 @@ pub fn apply_note_create(
         changed_paths.extend(rendered.changed_paths);
         template = Some(template_name.to_string());
         engine = Some(rendered.engine.as_str().to_string());
+    } else {
+        let initial_content =
+            render_note_from_parts(frontmatter.as_ref(), &body).map_err(AppError::operation)?;
+        if let Some(rendered) =
+            render_creation_trigger(paths, &config, &requested_path, &initial_content, None)?
+        {
+            final_path.clone_from(&rendered.target_path);
+            template = rendered.template;
+            engine = Some(rendered.engine.as_str().to_string());
+            warnings.extend(rendered.warnings);
+            warnings.extend(rendered.diagnostics);
+            changed_paths.extend(rendered.changed_paths);
+            triggered_content = Some(rendered.content);
+        }
     }
 
     let absolute_path = paths.vault_root().join(&final_path);
@@ -261,8 +277,11 @@ pub fn apply_note_create(
         )));
     }
 
-    let content =
-        render_note_from_parts(frontmatter.as_ref(), &body).map_err(AppError::operation)?;
+    let content = if let Some(content) = triggered_content {
+        content
+    } else {
+        render_note_from_parts(frontmatter.as_ref(), &body).map_err(AppError::operation)?
+    };
     dispatch_note_write_plugin_hooks(
         paths,
         permission_profile,
@@ -1541,6 +1560,102 @@ mod tests {
         assert!(rendered.contains("reviewed: true"));
         assert!(rendered.contains("# Idea"));
         assert!(rendered.contains("Template body\n\nExtra details\n"));
+    }
+
+    #[test]
+    fn apply_note_create_uses_inherited_folder_creation_template() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan/templates")).expect("template dir");
+        fs::write(
+            root.join(".vulcan/config.toml"),
+            r#"[templates]
+trigger_on_file_creation = true
+trigger_on_file_creation_mode = "folder"
+folder_templates = [{ folder = "Projects", template = "project" }]
+"#,
+        )
+        .expect("config");
+        fs::write(
+            root.join(".vulcan/templates/project.md"),
+            "---\nstatus: active\n---\n# {{title}}\n",
+        )
+        .expect("template");
+        fs::write(
+            root.join(".vulcan/templates/manual.md"),
+            "# Manual {{title}}\n",
+        )
+        .expect("manual template");
+
+        let report = apply_note_create(
+            &VaultPaths::new(root),
+            &NoteCreateRequest {
+                path: "Projects/Active/Idea".to_string(),
+                template: None,
+                frontmatter: None,
+                body: String::new(),
+            },
+            None,
+            true,
+        )
+        .expect("create report");
+
+        assert_eq!(report.template.as_deref(), Some("project"));
+        assert_eq!(report.engine.as_deref(), Some("native"));
+        assert_eq!(
+            fs::read_to_string(root.join("Projects/Active/Idea.md")).expect("created note"),
+            "---\nstatus: active\n---\n# Idea\n"
+        );
+
+        let explicit = apply_note_create(
+            &VaultPaths::new(root),
+            &NoteCreateRequest {
+                path: "Projects/Active/Explicit".to_string(),
+                template: Some("manual".to_string()),
+                frontmatter: None,
+                body: String::new(),
+            },
+            None,
+            true,
+        )
+        .expect("explicit create report");
+        assert_eq!(explicit.template.as_deref(), Some("manual"));
+        assert_eq!(
+            fs::read_to_string(root.join("Projects/Active/Explicit.md")).expect("explicit note"),
+            "# Manual Explicit\n"
+        );
+    }
+
+    #[test]
+    fn apply_note_create_renders_inline_commands_when_creation_trigger_is_enabled() {
+        let temp_dir = tempdir().expect("temp dir");
+        let root = temp_dir.path();
+        fs::create_dir_all(root.join(".vulcan")).expect("config dir");
+        fs::write(
+            root.join(".vulcan/config.toml"),
+            "[templates]\ntrigger_on_file_creation = true\ntrigger_on_file_creation_mode = \"none\"\n",
+        )
+        .expect("config");
+
+        let report = apply_note_create(
+            &VaultPaths::new(root),
+            &NoteCreateRequest {
+                path: "Inbox/Idea".to_string(),
+                template: None,
+                frontmatter: None,
+                body: "# {{title}}\n".to_string(),
+            },
+            None,
+            true,
+        )
+        .expect("create report");
+
+        assert_eq!(report.template, None);
+        assert_eq!(report.engine.as_deref(), Some("native"));
+        assert_eq!(
+            fs::read_to_string(root.join("Inbox/Idea.md")).expect("created note"),
+            "# Idea\n"
+        );
     }
 
     #[test]

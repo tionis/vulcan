@@ -1530,11 +1530,14 @@ These require the sandboxed JS runtime and are only available when `--features j
   | `enable_system_commands` | Enable/disable `tp.system` command execution |
   | `shell_path` | Shell path for system commands |
   | `folder_templates` | Auto-apply templates on folder-based note creation |
+  | `trigger_on_file_creation_mode` | Select none, folder, or regex creation behavior |
+  | `ignore_folders_on_creation` | Exclude configured folders from creation triggers |
   | `startup_templates` | Templates to run on vault open (map to `vulcan template run-startup`) |
   | `trigger_on_file_creation` | Auto-template on new file creation |
   | `syntax_highlighting` | Informational only (no CLI equivalent) |
   | `auto_jump_to_cursor` | Informational only (no CLI equivalent) |
 - [x] `vulcan config import templater` — import Templater settings and report mapping
+- [x] Accept both numeric and current string-encoded `intellisense_render` values during Templater import
 - Refactor to implement `PluginImporter` trait when 9.17.1 lands
 
 #### 9.9.5 CLI integration
@@ -1545,6 +1548,20 @@ These require the sandboxed JS runtime and are only available when `--features j
 - [x] Template preview: `vulcan template preview <name>` — show expanded template without creating a file
 - [x] Error diagnostics for Templater syntax that requires unavailable features (e.g., `tp.web` without `js_runtime` feature)
 - [x] Integration test: Templater-syntax templates produce expected output, including `tp.file`, `tp.date`, `tp.frontmatter` access
+
+#### 9.9.6 File-creation trigger execution
+
+- [x] Apply configured folder mappings to notes created through the reusable `vulcan-app` note workflow; inherit the nearest ancestor mapping and let an explicit `--template` win
+- [x] Apply ordered file-regex mappings and surface invalid patterns as diagnostics
+- [x] Evaluate inline Templater/native commands on creation when no mapping replaces the note body
+- [x] Track create paths separately from modifications in the file watcher and apply triggers from `vulcan watch` / `vulcan index watch` before refreshing the cache
+- [x] Exclude configured template and ignored folders, preserve existing frontmatter, enforce watcher read/write permissions, and prevent modify-event trigger loops
+- [x] Add config, note-creation, external-file, and watcher regression tests
+
+#### 9.9.7 Startup-template execution follow-up
+
+- [ ] Implement the documented `vulcan template run-startup` command as an explicit trusted workflow; startup templates execute for side effects without rewriting the template source
+- [ ] Decide which long-lived daemon/serve entrypoints may invoke startup templates, keeping execution default-off and permission-gated
 
 ### 9.10 Tasks plugin compatibility (parsing and query layer)
 

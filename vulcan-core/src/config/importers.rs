@@ -1250,6 +1250,12 @@ fn templater_config_import_mappings(
     )?;
     push_config_import_mapping(
         &mut mappings,
+        "trigger_on_file_creation_mode",
+        "templates.trigger_on_file_creation_mode",
+        &config.trigger_on_file_creation_mode,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
         "auto_jump_to_cursor",
         "templates.auto_jump_to_cursor",
         &config.auto_jump_to_cursor,
@@ -1295,6 +1301,12 @@ fn templater_config_import_mappings(
         "file_templates",
         "templates.file_templates",
         &config.file_templates,
+    )?;
+    push_config_import_mapping(
+        &mut mappings,
+        "ignore_folders_on_creation",
+        "templates.ignore_folders_on_creation",
+        &config.ignore_folders_on_creation,
     )?;
     push_config_import_mapping(
         &mut mappings,

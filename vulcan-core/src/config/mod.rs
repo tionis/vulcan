@@ -339,6 +339,19 @@ pub struct TemplaterFileTemplateConfig {
     pub template: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TemplaterFileCreationMode {
+    None,
+    Folder,
+    Regex,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TemplaterIgnoredFolderConfig {
+    pub folder: PathBuf,
+}
+
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TemplatesConfig {
@@ -352,6 +365,8 @@ pub struct TemplatesConfig {
     pub templates_pairs: Vec<TemplaterCommandPairConfig>,
     #[serde(default)]
     pub trigger_on_file_creation: bool,
+    #[serde(default)]
+    pub trigger_on_file_creation_mode: Option<TemplaterFileCreationMode>,
     #[serde(default)]
     pub auto_jump_to_cursor: bool,
     #[serde(default)]
@@ -370,6 +385,8 @@ pub struct TemplatesConfig {
     pub enable_file_templates: bool,
     #[serde(default)]
     pub file_templates: Vec<TemplaterFileTemplateConfig>,
+    #[serde(default)]
+    pub ignore_folders_on_creation: Vec<TemplaterIgnoredFolderConfig>,
     #[serde(default = "default_templater_syntax_highlighting")]
     pub syntax_highlighting: bool,
     #[serde(default)]
@@ -392,6 +409,7 @@ impl Default for TemplatesConfig {
             command_timeout: default_templater_command_timeout(),
             templates_pairs: Vec::new(),
             trigger_on_file_creation: false,
+            trigger_on_file_creation_mode: None,
             auto_jump_to_cursor: false,
             enable_system_commands: false,
             shell_path: None,
@@ -401,6 +419,7 @@ impl Default for TemplatesConfig {
             folder_templates: Vec::new(),
             enable_file_templates: false,
             file_templates: Vec::new(),
+            ignore_folders_on_creation: Vec::new(),
             syntax_highlighting: default_templater_syntax_highlighting(),
             syntax_highlighting_mobile: false,
             enabled_templates_hotkeys: Vec::new(),
@@ -3316,6 +3335,7 @@ fn apply_obsidian_templater_defaults(config: &mut VaultConfig, obsidian: Obsidia
     if let Some(trigger_on_file_creation) = obsidian.trigger_on_file_creation {
         config.templates.trigger_on_file_creation = trigger_on_file_creation;
     }
+    config.templates.trigger_on_file_creation_mode = obsidian.trigger_on_file_creation_mode;
     if let Some(auto_jump_to_cursor) = obsidian.auto_jump_to_cursor {
         config.templates.auto_jump_to_cursor = auto_jump_to_cursor;
     }
@@ -3337,6 +3357,8 @@ fn apply_obsidian_templater_defaults(config: &mut VaultConfig, obsidian: Obsidia
         config.templates.enable_file_templates = enable_file_templates;
     }
     config.templates.file_templates = normalize_templater_file_templates(obsidian.file_templates);
+    config.templates.ignore_folders_on_creation =
+        normalize_templater_ignored_folders(obsidian.ignore_folders_on_creation);
     if let Some(syntax_highlighting) = obsidian.syntax_highlighting {
         config.templates.syntax_highlighting = syntax_highlighting;
     }
@@ -4678,6 +4700,9 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         if let Some(trigger_on_file_creation) = templates.trigger_on_file_creation {
             config.templates.trigger_on_file_creation = trigger_on_file_creation;
         }
+        if let Some(trigger_on_file_creation_mode) = templates.trigger_on_file_creation_mode {
+            config.templates.trigger_on_file_creation_mode = Some(trigger_on_file_creation_mode);
+        }
         if let Some(auto_jump_to_cursor) = templates.auto_jump_to_cursor {
             config.templates.auto_jump_to_cursor = auto_jump_to_cursor;
         }
@@ -4706,6 +4731,10 @@ fn apply_vulcan_overrides(config: &mut VaultConfig, overrides: PartialVulcanConf
         if let Some(file_templates) = templates.file_templates {
             config.templates.file_templates =
                 normalize_templater_file_templates_from_config(file_templates);
+        }
+        if let Some(ignore_folders_on_creation) = templates.ignore_folders_on_creation {
+            config.templates.ignore_folders_on_creation =
+                normalize_templater_ignored_folders(ignore_folders_on_creation);
         }
         if let Some(syntax_highlighting) = templates.syntax_highlighting {
             config.templates.syntax_highlighting = syntax_highlighting;
@@ -5349,6 +5378,26 @@ fn normalize_templater_file_templates_from_config(
                 regex,
                 template: template_name,
             });
+        }
+    }
+
+    normalized
+}
+
+fn normalize_templater_ignored_folders(
+    raw_folders: Vec<TemplaterIgnoredFolderConfig>,
+) -> Vec<TemplaterIgnoredFolderConfig> {
+    let mut normalized = Vec::new();
+
+    for ignored in raw_folders {
+        let Some(folder) = normalize_template_pathbuf(&ignored.folder) else {
+            continue;
+        };
+        if !normalized
+            .iter()
+            .any(|existing: &TemplaterIgnoredFolderConfig| existing.folder == folder)
+        {
+            normalized.push(TemplaterIgnoredFolderConfig { folder });
         }
     }
 

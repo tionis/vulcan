@@ -273,6 +273,7 @@ const TEMPLATER_PLUGIN_DEFAULTS_JSON: &str = r#"{
         ["", ""]
       ],
       "trigger_on_file_creation": true,
+      "trigger_on_file_creation_mode": "folder",
       "auto_jump_to_cursor": true,
       "enable_system_commands": true,
       "shell_path": "/bin/zsh",
@@ -287,6 +288,7 @@ const TEMPLATER_PLUGIN_DEFAULTS_JSON: &str = r#"{
         { "regex": "^Projects/.*\\\\.md$", "template": "Project Template" },
         { "regex": "", "template": "" }
       ],
+      "ignore_folders_on_creation": [{ "folder": "Archive" }, { "folder": "" }],
       "syntax_highlighting": false,
       "syntax_highlighting_mobile": true,
       "enabled_templates_hotkeys": ["Daily", ""],
@@ -393,6 +395,7 @@ templater_folder = "Shared/Templater"
 command_timeout = 12
 templates_pairs = [{ name = "slugify", command = "bun run slugify" }]
 trigger_on_file_creation = true
+trigger_on_file_creation_mode = "regex"
 auto_jump_to_cursor = true
 enable_system_commands = true
 shell_path = "/usr/bin/fish"
@@ -401,6 +404,7 @@ enable_folder_templates = false
 folder_templates = [{ folder = "Projects", template = "Project Template" }]
 enable_file_templates = true
 file_templates = [{ regex = "^Daily/.*\\.md$", template = "Daily Template" }]
+ignore_folders_on_creation = [{ folder = "Private" }]
 syntax_highlighting = false
 syntax_highlighting_mobile = true
 enabled_templates_hotkeys = ["Shared Daily"]
@@ -984,6 +988,10 @@ fn assert_templater_precedence(config: &VaultConfig) {
         }]
     );
     assert!(config.templates.trigger_on_file_creation);
+    assert_eq!(
+        config.templates.trigger_on_file_creation_mode,
+        Some(TemplaterFileCreationMode::Regex)
+    );
     assert!(config.templates.auto_jump_to_cursor);
     assert!(config.templates.enable_system_commands);
     assert_eq!(config.templates.shell_path, Some(PathBuf::from("/bin/zsh")));
@@ -1005,6 +1013,12 @@ fn assert_templater_precedence(config: &VaultConfig) {
         vec![TemplaterFileTemplateConfig {
             regex: "^Daily/.*\\.md$".to_string(),
             template: "Daily Template".to_string(),
+        }]
+    );
+    assert_eq!(
+        config.templates.ignore_folders_on_creation,
+        vec![TemplaterIgnoredFolderConfig {
+            folder: PathBuf::from("Private"),
         }]
     );
     assert!(!config.templates.syntax_highlighting);
@@ -1832,6 +1846,10 @@ fn templater_plugin_settings_seed_defaults() {
         }]
     );
     assert!(loaded.config.templates.trigger_on_file_creation);
+    assert_eq!(
+        loaded.config.templates.trigger_on_file_creation_mode,
+        Some(TemplaterFileCreationMode::Folder)
+    );
     assert!(loaded.config.templates.auto_jump_to_cursor);
     assert!(loaded.config.templates.enable_system_commands);
     assert_eq!(
@@ -1856,6 +1874,12 @@ fn templater_plugin_settings_seed_defaults() {
         vec![TemplaterFileTemplateConfig {
             regex: "^Projects/.*\\\\.md$".to_string(),
             template: "Project Template".to_string(),
+        }]
+    );
+    assert_eq!(
+        loaded.config.templates.ignore_folders_on_creation,
+        vec![TemplaterIgnoredFolderConfig {
+            folder: PathBuf::from("Archive"),
         }]
     );
     assert!(!loaded.config.templates.syntax_highlighting);
@@ -3435,6 +3459,7 @@ fn import_templater_plugin_config_preserves_existing_sections_and_is_idempotent(
               "templates_folder": "Templater/Templates",
               "templates_pairs": [["slugify", "bun run slugify"], ["", ""]],
               "trigger_on_file_creation": true,
+              "trigger_on_file_creation_mode": "regex",
               "auto_jump_to_cursor": true,
               "enable_system_commands": true,
               "shell_path": "/bin/zsh",
@@ -3448,6 +3473,10 @@ fn import_templater_plugin_config_preserves_existing_sections_and_is_idempotent(
               "file_templates": [
                 { "regex": "^Projects/.*\\\\.md$", "template": "Project Template" },
                 { "regex": "", "template": "" }
+              ],
+              "ignore_folders_on_creation": [
+                { "folder": "Archive" },
+                { "folder": "" }
               ],
               "syntax_highlighting": false,
               "syntax_highlighting_mobile": true,
@@ -3485,6 +3514,7 @@ fn import_templater_plugin_config_preserves_existing_sections_and_is_idempotent(
     assert!(rendered.contains("name = \"slugify\""));
     assert!(rendered.contains("command = \"bun run slugify\""));
     assert!(rendered.contains("trigger_on_file_creation = true"));
+    assert!(rendered.contains("trigger_on_file_creation_mode = \"regex\""));
     assert!(rendered.contains("auto_jump_to_cursor = true"));
     assert!(rendered.contains("enable_system_commands = true"));
     assert!(rendered.contains("shell_path = \"/bin/zsh\""));
@@ -3496,6 +3526,8 @@ fn import_templater_plugin_config_preserves_existing_sections_and_is_idempotent(
     assert!(rendered.contains("enable_file_templates = true"));
     assert!(rendered.contains("[[templates.file_templates]]"));
     assert!(rendered.contains("template = \"Project Template\""));
+    assert!(rendered.contains("[[templates.ignore_folders_on_creation]]"));
+    assert!(rendered.contains("folder = \"Archive\""));
     assert!(rendered.contains("syntax_highlighting = false"));
     assert!(rendered.contains("syntax_highlighting_mobile = true"));
     assert!(rendered.contains("enabled_templates_hotkeys = [\"Daily\"]"));

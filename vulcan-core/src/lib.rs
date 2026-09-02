@@ -147,8 +147,9 @@ pub use config::{
     TaskNotesSavedViewFilterValue, TaskNotesSavedViewGroup, TaskNotesSavedViewNode,
     TaskNotesSavedViewOptionValue, TaskNotesSavedViewQuery, TaskNotesStatusConfig,
     TaskNotesTaskCreationDefaults, TaskNotesUserFieldConfig, TaskNotesUserFieldType, TasksImporter,
-    TemplaterCommandPairConfig, TemplaterFileTemplateConfig, TemplaterFolderTemplateConfig,
-    TemplaterImporter, TemplatesConfig, VaultConfig,
+    TemplaterCommandPairConfig, TemplaterFileCreationMode, TemplaterFileTemplateConfig,
+    TemplaterFolderTemplateConfig, TemplaterIgnoredFolderConfig, TemplaterImporter,
+    TemplatesConfig, VaultConfig,
 };
 pub use content_transforms::apply_content_transforms;
 pub use dataview_js::{

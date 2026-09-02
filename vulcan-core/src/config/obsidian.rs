@@ -63,6 +63,7 @@ pub(super) struct ObsidianTemplaterConfig {
     #[serde(default)]
     pub(super) templates_pairs: Vec<[String; 2]>,
     pub(super) trigger_on_file_creation: Option<bool>,
+    pub(super) trigger_on_file_creation_mode: Option<TemplaterFileCreationMode>,
     pub(super) auto_jump_to_cursor: Option<bool>,
     pub(super) enable_system_commands: Option<bool>,
     pub(super) shell_path: Option<String>,
@@ -73,6 +74,8 @@ pub(super) struct ObsidianTemplaterConfig {
     pub(super) enable_file_templates: Option<bool>,
     #[serde(default)]
     pub(super) file_templates: Vec<TemplaterFileTemplateConfig>,
+    #[serde(default)]
+    pub(super) ignore_folders_on_creation: Vec<TemplaterIgnoredFolderConfig>,
     pub(super) syntax_highlighting: Option<bool>,
     pub(super) syntax_highlighting_mobile: Option<bool>,
     #[serde(default)]

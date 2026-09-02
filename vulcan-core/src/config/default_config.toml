@@ -252,6 +252,7 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # templater_folder = "Templates"        # Templater plugin templates_folder
 # command_timeout = 5
 # trigger_on_file_creation = false
+# trigger_on_file_creation_mode = "none"  # none | folder | regex
 # auto_jump_to_cursor = false
 # enable_system_commands = false
 # shell_path = "/bin/bash"
@@ -267,6 +268,7 @@ name = "{{folder_name}}"   # note stem; examples: index, README, readme, {{folde
 # templates_pairs = [{ name = "slugify", command = "node scripts/slugify.js" }]
 # folder_templates = [{ folder = "Daily", template = "Daily Template" }]
 # file_templates = [{ regex = "^Projects/.*\\.md$", template = "Project Template" }]
+# ignore_folders_on_creation = [{ folder = "Archive" }]
 
 # [quickadd]
 # template_folder = "QuickAdd/Templates"

@@ -1,7 +1,7 @@
 use crate::AppError;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_json::{Map as JsonMap, Value as JsonValue};
+use serde_json::{json, Map as JsonMap, Value as JsonValue};
 use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -13,10 +13,11 @@ use vulcan_core::expression::functions::{
 use vulcan_core::move_note;
 use vulcan_core::parser::parse_document;
 use vulcan_core::paths::{
-    normalize_relative_input_path, secure_read_to_string, RelativePathOptions,
+    normalize_relative_input_path, secure_read_to_string, secure_write, RelativePathOptions,
 };
 use vulcan_core::{
-    load_vault_config, resolve_note_reference, PermissionFilter, VaultConfig, VaultPaths,
+    load_vault_config, resolve_note_reference, PermissionFilter, PluginEvent,
+    TemplaterFileCreationMode, VaultConfig, VaultPaths,
 };
 
 mod frontmatter;
@@ -33,6 +34,7 @@ pub type YamlValue = serde_yaml::Value;
 
 const MAX_TEMPLATE_INCLUDE_DEPTH: usize = 10;
 const MAX_QUICKADD_EXPANSION_DEPTH: usize = 10;
+const MAX_FILE_CREATION_TRIGGER_BYTES: usize = 100_000;
 const DEFAULT_FILE_DATE_FORMAT: &str = "YYYY-MM-DD HH:mm";
 const DAY_MS: i64 = 86_400_000;
 
@@ -164,6 +166,31 @@ pub struct TemplateCreateReport {
     #[serde(skip)]
     pub absolute_path: PathBuf,
     #[serde(skip)]
+    pub changed_paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TemplateCreationTriggerReport {
+    pub path: String,
+    pub triggered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub template: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub engine: Option<String>,
+    pub warnings: Vec<String>,
+    pub diagnostics: Vec<String>,
+    #[serde(skip)]
+    pub changed_paths: Vec<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct RenderedCreationTrigger {
+    pub content: String,
+    pub target_path: String,
+    pub template: Option<String>,
+    pub engine: TemplateEngineKind,
+    pub warnings: Vec<String>,
+    pub diagnostics: Vec<String>,
     pub changed_paths: Vec<String>,
 }
 
@@ -340,6 +367,253 @@ pub fn render_loaded_template_with_filter(
         },
         read_filter,
     )
+}
+
+pub fn apply_template_creation_trigger(
+    paths: &VaultPaths,
+    relative_path: &str,
+    permission_profile: Option<&str>,
+    quiet: bool,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<TemplateCreationTriggerReport, AppError> {
+    let relative_path = template_output_path(
+        relative_path,
+        Some(relative_path),
+        &TemplateTimestamp::current(),
+    )?;
+    let config = load_vault_config(paths).config;
+    if !config.templates.trigger_on_file_creation {
+        return Ok(TemplateCreationTriggerReport {
+            path: relative_path,
+            triggered: false,
+            template: None,
+            engine: None,
+            warnings: Vec::new(),
+            diagnostics: Vec::new(),
+            changed_paths: Vec::new(),
+        });
+    }
+    let previous = secure_read_to_string(paths.vault_root(), Path::new(&relative_path))
+        .map_err(AppError::operation)?;
+    let Some(rendered) =
+        render_creation_trigger(paths, &config, &relative_path, &previous, read_filter)?
+    else {
+        return Ok(TemplateCreationTriggerReport {
+            path: relative_path,
+            triggered: false,
+            template: None,
+            engine: None,
+            warnings: Vec::new(),
+            diagnostics: Vec::new(),
+            changed_paths: Vec::new(),
+        });
+    };
+
+    crate::plugins::dispatch_plugin_event(
+        paths,
+        permission_profile,
+        PluginEvent::OnNoteWrite,
+        &json!({
+            "kind": PluginEvent::OnNoteWrite,
+            "path": rendered.target_path,
+            "operation": "template-trigger",
+            "existed_before": true,
+            "previous_content": previous,
+            "content": rendered.content,
+        }),
+        quiet,
+    )?;
+    secure_write(
+        paths.vault_root(),
+        Path::new(&rendered.target_path),
+        &rendered.content,
+    )
+    .map_err(AppError::operation)?;
+
+    let mut changed_paths = rendered.changed_paths;
+    changed_paths.push(rendered.target_path.clone());
+    changed_paths.sort();
+    changed_paths.dedup();
+    Ok(TemplateCreationTriggerReport {
+        path: rendered.target_path,
+        triggered: true,
+        template: rendered.template,
+        engine: Some(rendered.engine.as_str().to_string()),
+        warnings: rendered.warnings,
+        diagnostics: rendered.diagnostics,
+        changed_paths,
+    })
+}
+
+pub(crate) fn render_creation_trigger(
+    paths: &VaultPaths,
+    config: &VaultConfig,
+    relative_path: &str,
+    contents: &str,
+    read_filter: Option<&PermissionFilter>,
+) -> Result<Option<RenderedCreationTrigger>, AppError> {
+    if !config.templates.trigger_on_file_creation
+        || creation_trigger_path_is_excluded(config, relative_path)
+    {
+        return Ok(None);
+    }
+
+    let mode = effective_file_creation_mode(&config.templates);
+    let body_is_empty = find_frontmatter_block(contents)
+        .map_or(contents, |(_, _, body_start)| &contents[body_start..])
+        .is_empty();
+    let template_name = if body_is_empty {
+        creation_template_for_path(&config.templates, relative_path, mode)?
+    } else {
+        None
+    };
+
+    if let Some(template_name) = template_name {
+        let loaded = load_named_template(paths, config, template_name)?;
+        let vars = HashMap::new();
+        let rendered = render_loaded_template_with_filter(
+            paths,
+            config,
+            &loaded,
+            &LoadedTemplateRenderRequest {
+                target_path: relative_path,
+                target_contents: Some(contents),
+                engine: TemplateEngineKind::Auto,
+                vars: &vars,
+                allow_mutations: true,
+                run_mode: TemplateRunMode::Create,
+            },
+            read_filter,
+        )?;
+        let (target_frontmatter, _) =
+            parse_frontmatter_document(contents, false).map_err(AppError::operation)?;
+        let (template_frontmatter, template_body) =
+            parse_frontmatter_document(&rendered.content, true).map_err(AppError::operation)?;
+        let content = render_note_from_parts(
+            merge_template_frontmatter(target_frontmatter, template_frontmatter).as_ref(),
+            &template_body,
+        )
+        .map_err(AppError::operation)?;
+        let mut warnings = loaded.template.warning.into_iter().collect::<Vec<_>>();
+        warnings.extend(rendered.warnings);
+        return Ok(Some(RenderedCreationTrigger {
+            content,
+            target_path: rendered.target_path,
+            template: Some(template_name.to_string()),
+            engine: rendered.engine,
+            warnings,
+            diagnostics: rendered.diagnostics,
+            changed_paths: rendered.changed_paths,
+        }));
+    }
+
+    if contents.len() > MAX_FILE_CREATION_TRIGGER_BYTES
+        || (!contents.contains("<%") && !contents.contains("{{"))
+    {
+        return Ok(None);
+    }
+
+    let discovery = discover_templates(
+        paths,
+        config.templates.obsidian_folder.as_deref(),
+        config.templates.templater_folder.as_deref(),
+    )?;
+    let vars = HashMap::new();
+    let rendered = render_template_request_with_filter(
+        TemplateRenderRequest {
+            paths,
+            vault_config: config,
+            templates: &discovery.templates,
+            template_path: None,
+            template_text: contents,
+            target_path: relative_path,
+            target_contents: Some(contents),
+            engine: TemplateEngineKind::Auto,
+            vars: &vars,
+            allow_mutations: true,
+            run_mode: TemplateRunMode::Create,
+        },
+        read_filter,
+    )?;
+    Ok(Some(RenderedCreationTrigger {
+        content: rendered.content,
+        target_path: rendered.target_path,
+        template: None,
+        engine: rendered.engine,
+        warnings: discovery
+            .warnings
+            .into_iter()
+            .chain(rendered.warnings)
+            .collect(),
+        diagnostics: rendered.diagnostics,
+        changed_paths: rendered.changed_paths,
+    }))
+}
+
+fn effective_file_creation_mode(config: &TemplatesConfig) -> TemplaterFileCreationMode {
+    config.trigger_on_file_creation_mode.unwrap_or({
+        if config.enable_folder_templates {
+            TemplaterFileCreationMode::Folder
+        } else if config.enable_file_templates {
+            TemplaterFileCreationMode::Regex
+        } else {
+            TemplaterFileCreationMode::None
+        }
+    })
+}
+
+fn creation_template_for_path<'a>(
+    config: &'a TemplatesConfig,
+    relative_path: &str,
+    mode: TemplaterFileCreationMode,
+) -> Result<Option<&'a str>, AppError> {
+    match mode {
+        TemplaterFileCreationMode::None => Ok(None),
+        TemplaterFileCreationMode::Folder => {
+            let mut folder = Path::new(relative_path).parent();
+            while let Some(candidate) = folder {
+                if let Some(mapping) = config
+                    .folder_templates
+                    .iter()
+                    .find(|mapping| mapping.folder == candidate)
+                {
+                    return Ok(Some(mapping.template.as_str()));
+                }
+                folder = candidate.parent();
+            }
+            Ok(None)
+        }
+        TemplaterFileCreationMode::Regex => {
+            for mapping in &config.file_templates {
+                let regex = Regex::new(&mapping.regex).map_err(|error| {
+                    AppError::operation(format!(
+                        "invalid template file-creation regex `{}`: {error}",
+                        mapping.regex
+                    ))
+                })?;
+                if regex.is_match(relative_path) {
+                    return Ok(Some(mapping.template.as_str()));
+                }
+            }
+            Ok(None)
+        }
+    }
+}
+
+fn creation_trigger_path_is_excluded(config: &VaultConfig, relative_path: &str) -> bool {
+    let path = Path::new(relative_path);
+    path.starts_with(Path::new(".vulcan/templates"))
+        || config
+            .templates
+            .templater_folder
+            .iter()
+            .chain(config.templates.obsidian_folder.iter())
+            .any(|folder| path.starts_with(folder))
+        || config
+            .templates
+            .ignore_folders_on_creation
+            .iter()
+            .any(|ignored| path.starts_with(&ignored.folder))
 }
 
 pub fn build_template_show_report(

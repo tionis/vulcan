@@ -53,8 +53,9 @@ pub(crate) use commands::status::run_status_command;
 pub(crate) use commands::template::TemplateSummary;
 pub(crate) use commands::template::{
     print_template_create_report, print_template_insert_report, print_template_list_report,
-    print_template_preview_report, run_template_command, run_template_insert_command,
-    run_template_preview_command, run_template_show_command, TemplateCommandResult,
+    print_template_preview_report, run_template_command, run_template_creation_triggers,
+    run_template_insert_command, run_template_preview_command, run_template_show_command,
+    TemplateCommandResult,
 };
 pub(crate) use vulcan_app::notes::NoteAppendMode;
 
@@ -568,7 +569,7 @@ use vulcan_core::{
     list_checkpoints, list_saved_reports, load_saved_report, load_vault_config, merge_tags,
     move_note, plan_base_note_create, query_change_report, query_notes_with_filter,
     rebuild_vault_with_progress, rename_alias, rename_block_ref, rename_heading, rename_property,
-    repair_fts, resolve_note_reference, resolve_permission_profile, save_saved_report,
+    repair_fts, resolve_note_reference, resolve_permission_profile, save_saved_report, scan_vault,
     scan_vault_with_progress, search_vault_with_filter, verify_cache, watch_vault, AutoScanMode,
     BacklinkRecord, BacklinksReport, BasesCreateContext, BasesEvalReport, BulkMutationReport,
     CacheDatabase, CacheVerifyReport, ChangeAnchor, ChangeItem, ChangeKind, ChangeReport,
@@ -5468,6 +5469,7 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 .check_index()
                 .map_err(CliError::operation)?;
             let auto_commit = AutoCommitPolicy::for_scan(&paths, no_commit);
+            let trigger_guard = selected_permission_guard(cli, &paths)?;
             warn_auto_commit_if_needed(&auto_commit, cli.quiet);
             if cli.output == OutputFormat::Human && stdout_is_tty {
                 println!(
@@ -5477,15 +5479,29 @@ fn dispatch(cli: &Cli) -> Result<(), CliError> {
                 );
             }
             watch_vault(&paths, &WatchOptions { debounce_ms }, |report| {
+                let triggered_paths = run_template_creation_triggers(
+                    &paths,
+                    &report.created_paths,
+                    cli.permissions.as_deref(),
+                    cli.quiet,
+                    &trigger_guard,
+                )?;
+                if !triggered_paths.is_empty() {
+                    scan_vault(&paths, ScanMode::Incremental).map_err(CliError::operation)?;
+                }
                 print_watch_report(cli.output, &report)?;
                 if !report.startup
                     && report.summary.added + report.summary.updated + report.summary.deleted > 0
                 {
+                    let mut changed_paths = report.paths.clone();
+                    changed_paths.extend(triggered_paths);
+                    changed_paths.sort();
+                    changed_paths.dedup();
                     auto_commit
                         .commit(
                             &paths,
                             "scan",
-                            &report.paths,
+                            &changed_paths,
                             cli.permissions.as_deref(),
                             cli.quiet,
                         )

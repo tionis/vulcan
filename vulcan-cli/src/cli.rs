@@ -1484,7 +1484,9 @@ pub enum IndexCommand {
         #[command(subcommand)]
         command: RepairCommand,
     },
-    #[command(about = "Watch the vault for filesystem changes and keep the cache fresh")]
+    #[command(
+        about = "Watch filesystem changes, run configured creation triggers, and refresh the cache"
+    )]
     Watch {
         #[arg(
             long,
@@ -5666,7 +5668,9 @@ pub enum NoteCommand {
         #[arg(long, help = "Suppress auto-commit for this invocation")]
         no_commit: bool,
     },
-    #[command(about = "Create a new note from optional stdin content and template context")]
+    #[command(
+        about = "Create a new note from optional stdin, explicit template, or configured creation trigger"
+    )]
     Create {
         #[arg(help = "New relative note path to create")]
         path: String,
@@ -5962,7 +5966,7 @@ pub enum Command {
         command: RepairCommand,
     },
     #[command(
-        about = "Watch the vault for filesystem changes and keep the cache fresh",
+        about = "Watch filesystem changes, run configured creation triggers, and refresh the cache",
         hide = true
     )]
     Watch {
