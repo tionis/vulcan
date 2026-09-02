@@ -991,6 +991,11 @@ struct GitRequirementsCache {
     filters: BTreeMap<String, usize>,
 }
 
+struct GitRequirementsEnvironment {
+    configured_filter_keys: BTreeSet<String>,
+    attribute_sources: Vec<(String, String)>,
+}
+
 #[derive(Debug)]
 pub enum GitEngineError {
     ExecutableUnavailable {
@@ -3033,12 +3038,12 @@ impl GitEngine for GitCliEngine {
             });
         }
         let tracked_paths = nul_fields("list tracked paths for sync diagnostics", &tracked.stdout)?;
-        let configured_filter_keys = self.configured_filter_keys(repository)?;
-        let cache_key = self.requirements_cache_key(
+        let environment = self.requirements_environment(repository)?;
+        let cache_key = Self::requirements_cache_key(
             repository,
             &tracked.stdout,
             &tracked_paths,
-            &configured_filter_keys,
+            &environment,
         )?;
         let filters = if let Some(filters) = Self::load_requirements_cache(repository, &cache_key) {
             self.clear_staged_requirements_cache(repository)?;
@@ -3058,7 +3063,8 @@ impl GitEngine for GitCliEngine {
         let mut required_filters = Vec::with_capacity(filters.len());
         for (name, path_count) in filters {
             let configured = |direction: &str| {
-                configured_filter_keys
+                environment
+                    .configured_filter_keys
                     .contains(&format!("filter.{name}.{direction}").to_ascii_lowercase())
             };
             let clean_configured = configured("clean");
@@ -3149,17 +3155,16 @@ impl GitCliEngine {
     }
 
     fn requirements_cache_key(
-        &self,
         repository: &GitRepository,
         tracked_bytes: &[u8],
         tracked_paths: &[&str],
-        configured_filter_keys: &BTreeSet<String>,
+        environment: &GitRequirementsEnvironment,
     ) -> Result<String, GitEngineError> {
         let work_tree = repository.require_work_tree()?;
         let mut hasher = blake3::Hasher::new();
         hasher.update(b"vulcan-git-requirements-cache-v1\0");
         hasher.update(tracked_bytes);
-        for key in configured_filter_keys {
+        for key in &environment.configured_filter_keys {
             hasher.update(key.as_bytes());
             hasher.update(b"\0");
         }
@@ -3175,25 +3180,13 @@ impl GitCliEngine {
             }
         }
 
-        let variables =
-            self.repository_output(repository, "inspect Git attribute sources", ["var", "-l"])?;
-        if variables.stdout.len() > MAX_DIAGNOSTIC_PATH_BYTES {
-            return Err(GitEngineError::InvalidOutput {
-                operation: "inspect Git attribute sources",
-                detail: "Git variable output exceeds the bounded response limit".to_string(),
-            });
-        }
-        let variables = decode_stdout("inspect Git attribute sources", variables.stdout)?;
-        for line in variables.lines() {
-            let Some((name, value)) = line.split_once('=') else {
-                continue;
-            };
-            if matches!(name, "GIT_ATTR_SYSTEM" | "GIT_ATTR_GLOBAL") {
-                hasher.update(line.as_bytes());
-                hasher.update(b"\0");
-                if !value.is_empty() {
-                    sources.insert(PathBuf::from(value));
-                }
+        for (name, value) in &environment.attribute_sources {
+            hasher.update(name.as_bytes());
+            hasher.update(b"=");
+            hasher.update(value.as_bytes());
+            hasher.update(b"\0");
+            if !value.is_empty() {
+                sources.insert(PathBuf::from(value));
             }
         }
         for source in sources {
@@ -3324,32 +3317,45 @@ impl GitCliEngine {
             .collect())
     }
 
-    fn configured_filter_keys(
+    fn requirements_environment(
         &self,
         repository: &GitRepository,
-    ) -> Result<BTreeSet<String>, GitEngineError> {
-        let mut command = self.repository_command(repository);
-        command.args([
-            "config",
-            "--null",
-            "--name-only",
-            "--get-regexp",
-            r"^filter\..*\.(clean|smudge|process)$",
-        ]);
-        let output = self.execute(command)?;
-        match output.status.code() {
-            Some(0) => Ok(
-                nul_fields("inspect configured Git filter drivers", &output.stdout)?
-                    .into_iter()
-                    .map(str::to_ascii_lowercase)
-                    .collect(),
-            ),
-            Some(1) => Ok(BTreeSet::new()),
-            _ => Err(command_failed(
-                "inspect configured Git filter drivers",
-                &output,
-            )),
+    ) -> Result<GitRequirementsEnvironment, GitEngineError> {
+        let variables = self.repository_output(
+            repository,
+            "inspect Git requirement environment",
+            ["var", "-l"],
+        )?;
+        if variables.stdout.len() > MAX_DIAGNOSTIC_PATH_BYTES {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect Git requirement environment",
+                detail: "Git variable output exceeds the bounded response limit".to_string(),
+            });
         }
+        let variables = decode_stdout("inspect Git requirement environment", variables.stdout)?;
+        let mut configured_filter_keys = BTreeSet::new();
+        let mut attribute_sources = Vec::new();
+        for line in variables.lines() {
+            let Some((name, value)) = line.split_once('=') else {
+                continue;
+            };
+            let lower_name = name.to_ascii_lowercase();
+            if lower_name.starts_with("filter.")
+                && matches!(
+                    lower_name.rsplit_once('.').map(|(_, suffix)| suffix),
+                    Some("clean" | "smudge" | "process")
+                )
+            {
+                configured_filter_keys.insert(lower_name);
+            }
+            if matches!(name, "GIT_ATTR_SYSTEM" | "GIT_ATTR_GLOBAL") {
+                attribute_sources.push((name.to_string(), value.to_string()));
+            }
+        }
+        Ok(GitRequirementsEnvironment {
+            configured_filter_keys,
+            attribute_sources,
+        })
     }
 }
 
