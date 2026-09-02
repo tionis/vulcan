@@ -977,22 +977,14 @@ fn run_attempt(
 
     control.check()?;
     control.emit(GitSyncPhase::Verifying, report, None)?;
-    let verification = engine.capture_worktree(
-        &report.repository,
-        &GitCaptureRequest {
-            base: Some(capture.commit.clone()),
-            target_ref: report.refs.local.clone(),
-            message: snapshot_message(&report.refs, options, Some(&capture.commit)),
-        },
-    )?;
-    if verification.commit != capture.commit {
+    if !engine.worktree_matches_tree(&report.repository, &capture.commit)? {
         return Ok(AttemptResult::Retry);
     }
     if pushed {
         report.actions.push(GitSyncAction::Pushed);
     }
     report.accepted = Some(accepted.clone());
-    if verification.tree != engine.tree_oid(&report.repository, &accepted)? {
+    if capture.tree != engine.tree_oid(&report.repository, &accepted)? {
         if let Some(pause) = sync_pause(engine, report)? {
             engine.update_ref(&report.repository, &report.refs.pending, &accepted)?;
             report.pause = Some(pause);
@@ -1003,7 +995,7 @@ fn run_attempt(
         control.check()?;
         control.emit(GitSyncPhase::Applying, report, None)?;
         report.application =
-            Some(engine.apply_tree(&report.repository, &verification.commit, &accepted)?);
+            Some(engine.apply_tree(&report.repository, &capture.commit, &accepted)?);
         report.actions.push(GitSyncAction::WorktreeApplied);
     }
     if outcome == GitSyncOutcome::Conflicted {
@@ -1624,7 +1616,9 @@ fn captured_worktree_is_current(
     repository: &GitRepository,
     capture: &crate::GitCapture,
 ) -> Result<bool, GitSyncError> {
-    Ok(engine.snapshot_worktree_tree(repository, Some(&capture.commit))? == capture.tree)
+    engine
+        .worktree_matches_tree(repository, &capture.commit)
+        .map_err(GitSyncError::from)
 }
 
 fn publish_materialized_conflict(
@@ -2471,6 +2465,11 @@ mod tests {
         remote_was_absent_on_retry: bool,
     }
 
+    struct EditDuringVerificationObserver {
+        repository: PathBuf,
+        fired: bool,
+    }
+
     impl GitSyncObserver for EditBeforePushObserver {
         fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
             if progress.phase == GitSyncPhase::Pushing && !self.fired {
@@ -2493,6 +2492,20 @@ mod tests {
                     .status()
                     .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
                 self.remote_was_absent_on_retry = !status.success();
+            }
+            Ok(())
+        }
+    }
+
+    impl GitSyncObserver for EditDuringVerificationObserver {
+        fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
+            if progress.phase == GitSyncPhase::Verifying && !self.fired {
+                self.fired = true;
+                fs::write(
+                    self.repository.join("Home.md"),
+                    "edited during verification\n",
+                )
+                .map_err(|error| GitSyncObserverError::new(error.to_string()))?;
             }
             Ok(())
         }
@@ -3191,6 +3204,33 @@ mod tests {
         assert_eq!(
             fs::read_to_string(writer.join("Home.md")).expect("current note"),
             "edited during pre-push validation\n"
+        );
+    }
+
+    #[test]
+    fn worktree_change_during_verification_is_recaptured() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let cancellation = SyncCancellationToken::default();
+        let mut observer = EditDuringVerificationObserver {
+            repository: writer.clone(),
+            fired: false,
+        };
+
+        let report = sync_git_once_with_control(
+            &GitCliEngine::default(),
+            &writer,
+            &GitSyncOptions::default(),
+            &cancellation,
+            &mut observer,
+        )
+        .expect("changed worktree should be recaptured");
+
+        assert!(observer.fired);
+        assert_eq!(report.retries, 1);
+        assert_eq!(report.outcome, GitSyncOutcome::Pushed);
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("current note"),
+            "edited during verification\n"
         );
     }
 
