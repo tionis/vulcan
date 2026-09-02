@@ -3,6 +3,7 @@ use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
+use std::fmt::Write as _;
 use std::fmt::{Display, Formatter};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -88,6 +89,17 @@ pub trait GitEngine: Send + Sync {
         reference: &GitRefName,
         target: &GitOid,
     ) -> Result<(), GitEngineError>;
+
+    fn update_refs(
+        &self,
+        repository: &GitRepository,
+        updates: &[(&GitRefName, &GitOid)],
+    ) -> Result<(), GitEngineError> {
+        for (reference, target) in updates {
+            self.update_ref(repository, reference, target)?;
+        }
+        Ok(())
+    }
 
     fn create_ref(
         &self,
@@ -1837,6 +1849,25 @@ impl GitEngine for GitCliEngine {
             repository,
             "update a local Git ref",
             ["update-ref", reference.as_str(), target.as_str()],
+        )?;
+        Ok(())
+    }
+
+    fn update_refs(
+        &self,
+        repository: &GitRepository,
+        updates: &[(&GitRefName, &GitOid)],
+    ) -> Result<(), GitEngineError> {
+        let mut input = String::new();
+        for (reference, target) in updates {
+            writeln!(input, "update {reference} {target}")
+                .expect("writing validated refs and object IDs to a String cannot fail");
+        }
+        let mut command = self.repository_command(repository);
+        command.args(["update-ref", "--stdin"]);
+        ensure_success(
+            "update Git refs",
+            self.execute_with_input(command, "update Git refs", input.as_bytes())?,
         )?;
         Ok(())
     }
@@ -4772,6 +4803,48 @@ mod tests {
             engine
                 .read_ref(&repository, &checkpoint)
                 .expect("checkpoint read"),
+            Some(initial)
+        );
+    }
+
+    #[test]
+    fn batch_ref_updates_are_atomic() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Home.md"), "initial\n").expect("initial note");
+        let initial = commit_all(temporary.path(), "initial");
+        fs::write(temporary.path().join("Home.md"), "changed\n").expect("changed note");
+        let changed = commit_all(temporary.path(), "changed");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let first = GitRefName::parse("refs/vulcan/sync/test/first").expect("first ref");
+        let second = GitRefName::parse("refs/vulcan/sync/test/second").expect("second ref");
+
+        engine
+            .update_refs(&repository, &[(&first, &initial), (&second, &initial)])
+            .expect("batch update");
+        assert_eq!(
+            engine.read_ref(&repository, &first).expect("first ref"),
+            Some(initial.clone())
+        );
+        assert_eq!(
+            engine.read_ref(&repository, &second).expect("second ref"),
+            Some(initial.clone())
+        );
+
+        let missing = GitOid::parse("1111111111111111111111111111111111111111")
+            .expect("syntactically valid missing object");
+        assert!(engine
+            .update_refs(&repository, &[(&first, &changed), (&second, &missing)])
+            .is_err());
+        assert_eq!(
+            engine.read_ref(&repository, &first).expect("first ref"),
+            Some(initial.clone())
+        );
+        assert_eq!(
+            engine.read_ref(&repository, &second).expect("second ref"),
             Some(initial)
         );
     }

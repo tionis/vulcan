@@ -978,7 +978,9 @@ fn run_attempt(
         report.actions.push(GitSyncAction::Pushed);
     }
     report.accepted = Some(accepted.clone());
-    if capture.tree != engine.tree_oid(&report.repository, &accepted)? {
+    if accepted != capture.commit
+        && capture.tree != engine.tree_oid(&report.repository, &accepted)?
+    {
         if let Some(pause) = sync_pause(engine, report)? {
             engine.update_ref(&report.repository, &report.refs.pending, &accepted)?;
             report.pause = Some(pause);
@@ -1002,9 +1004,14 @@ fn run_attempt(
             materialization.applied = true;
         }
     }
-    engine.update_ref(&report.repository, &report.refs.local, &accepted)?;
-    engine.update_ref(&report.repository, &report.refs.fetched, &accepted)?;
-    engine.update_ref(&report.repository, &report.refs.pending, &accepted)?;
+    engine.update_refs(
+        &report.repository,
+        &[
+            (&report.refs.local, &accepted),
+            (&report.refs.fetched, &accepted),
+            (&report.refs.pending, &accepted),
+        ],
+    )?;
     report.outcome = outcome;
     report.accepted = Some(accepted);
     control.emit(GitSyncPhase::Completed, report, None)?;
@@ -1076,6 +1083,14 @@ fn require_accepted_platform(
         .as_ref()
         .is_some_and(|preflight| preflight.revision == *revision)
     {
+        return Ok(());
+    }
+    if let Some(preflight) = report
+        .local_platform_preflight
+        .as_ref()
+        .filter(|preflight| preflight.revision == *revision)
+    {
+        report.accepted_platform_preflight = Some(preflight.clone());
         return Ok(());
     }
     let preflight = platform_preflight(engine, &report.repository, revision, options.platform)?;
