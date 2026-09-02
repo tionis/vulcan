@@ -2956,8 +2956,14 @@ mod tests {
             "accepted refs should use one batch transaction: {commands}"
         );
         assert!(
-            lines.len() <= 35,
-            "steady sync exceeded its 35-process budget ({}): {commands}",
+            lines
+                .iter()
+                .all(|line| !line.contains(" update-index --refresh")),
+            "steady verification should reuse the capture stat cache: {commands}"
+        );
+        assert!(
+            lines.len() <= 34,
+            "steady sync exceeded its 34-process budget ({}): {commands}",
             lines.len()
         );
     }

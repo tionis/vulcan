@@ -2372,28 +2372,27 @@ impl GitEngine for GitCliEngine {
         expected: &GitOid,
     ) -> Result<bool, GitEngineError> {
         repository.require_work_tree()?;
-        let private_index_directory = tempfile::Builder::new()
-            .prefix("worktree-match-")
-            .tempdir()?;
-        let index_path = private_index_directory.path().join("index");
-        self.index_output(
+        let index_path = repository.sync_index();
+        let reused = self.prepare_sync_index(
             repository,
             &index_path,
+            Some(expected),
             "seed the worktree comparison index",
-            ["read-tree", expected.as_str()],
         )?;
 
-        let mut command = self.index_command(repository, &index_path)?;
-        command.arg("update-index").arg("--refresh");
-        let refreshed = self.execute(command)?;
-        if !refreshed.status.success() {
-            if refreshed.status.code() == Some(1) {
-                return Ok(false);
+        if !reused {
+            let mut command = self.index_command(repository, &index_path)?;
+            command.arg("update-index").arg("--refresh");
+            let refreshed = self.execute(command)?;
+            if !refreshed.status.success() {
+                if refreshed.status.code() == Some(1) {
+                    return Ok(false);
+                }
+                return Err(command_failed(
+                    "refresh the worktree comparison",
+                    &refreshed,
+                ));
             }
-            return Err(command_failed(
-                "refresh the worktree comparison",
-                &refreshed,
-            ));
         }
 
         let mut command = self.index_command(repository, &index_path)?;
