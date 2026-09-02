@@ -5,15 +5,18 @@ use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fmt::Write as _;
 use std::fmt::{Display, Formatter};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
 use tempfile::{NamedTempFile, TempDir};
 use ulid::Ulid;
 
 const MAX_ERROR_BYTES: usize = 16 * 1024;
 const MAX_DIAGNOSTIC_PATH_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONFLICT_BLOB_BYTES: usize = 64 * 1024 * 1024;
+const DEFAULT_GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
+const COMMAND_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const DEVICE_LOCAL_VULCAN_PATHS: [&str; 4] = [
     ".vulcan/config.local.toml",
     ".vulcan/cache.db",
@@ -976,6 +979,10 @@ pub enum GitEngineError {
         exit_code: Option<i32>,
         stderr: String,
     },
+    CommandTimedOut {
+        operation: &'static str,
+        timeout: Duration,
+    },
     InvalidOutput {
         operation: &'static str,
         detail: String,
@@ -1012,6 +1019,11 @@ impl Display for GitEngineError {
                 }
                 Ok(())
             }
+            Self::CommandTimedOut { operation, timeout } => write!(
+                formatter,
+                "Git timed out while trying to {operation} after {:.3} seconds",
+                timeout.as_secs_f64()
+            ),
             Self::InvalidOutput { operation, detail } => {
                 write!(
                     formatter,
@@ -1035,6 +1047,7 @@ impl Error for GitEngineError {
         match self {
             Self::ExecutableUnavailable { source, .. } | Self::Io(source) => Some(source),
             Self::CommandFailed { .. }
+            | Self::CommandTimedOut { .. }
             | Self::InvalidOutput { .. }
             | Self::InvalidObjectId(_)
             | Self::InvalidRefName(_)
@@ -1054,6 +1067,7 @@ impl From<std::io::Error> for GitEngineError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GitCliEngine {
     executable: PathBuf,
+    command_timeout: Duration,
 }
 
 impl Default for GitCliEngine {
@@ -1067,12 +1081,24 @@ impl GitCliEngine {
     pub fn new(executable: impl Into<PathBuf>) -> Self {
         Self {
             executable: executable.into(),
+            command_timeout: DEFAULT_GIT_COMMAND_TIMEOUT,
         }
     }
 
     #[must_use]
     pub fn executable(&self) -> &Path {
         &self.executable
+    }
+
+    #[must_use]
+    pub fn command_timeout(&self) -> Duration {
+        self.command_timeout
+    }
+
+    #[must_use]
+    pub fn with_command_timeout(mut self, timeout: Duration) -> Self {
+        self.command_timeout = timeout.max(Duration::from_millis(1));
+        self
     }
 
     /// Recreates a registered detached Git directory without checking remote
@@ -1222,16 +1248,7 @@ impl GitCliEngine {
     }
 
     fn execute(&self, mut command: Command) -> Result<Output, GitEngineError> {
-        command.output().map_err(|source| {
-            if source.kind() == std::io::ErrorKind::NotFound {
-                GitEngineError::ExecutableUnavailable {
-                    executable: self.executable.clone(),
-                    source,
-                }
-            } else {
-                GitEngineError::Io(source)
-            }
-        })
+        self.execute_command(&mut command, "run a Git command", None)
     }
 
     fn execute_with_input(
@@ -1240,10 +1257,24 @@ impl GitCliEngine {
         operation: &'static str,
         input: &[u8],
     ) -> Result<Output, GitEngineError> {
+        self.execute_command(&mut command, operation, Some(input))
+    }
+
+    fn execute_command(
+        &self,
+        command: &mut Command,
+        operation: &'static str,
+        input: Option<&[u8]>,
+    ) -> Result<Output, GitEngineError> {
         command
-            .stdin(Stdio::piped())
+            .stdin(if input.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
+        configure_process_group(command);
         let mut child = command.spawn().map_err(|source| {
             if source.kind() == std::io::ErrorKind::NotFound {
                 GitEngineError::ExecutableUnavailable {
@@ -1254,27 +1285,72 @@ impl GitCliEngine {
                 GitEngineError::Io(source)
             }
         })?;
-        let mut stdin = child
-            .stdin
+        let mut stdout = child
+            .stdout
             .take()
-            .ok_or_else(|| GitEngineError::InvalidOutput {
-                operation,
-                detail: "Git command did not expose stdin".to_string(),
-            })?;
-        let (output, write_result) = std::thread::scope(|scope| {
-            let writer = scope.spawn(move || stdin.write_all(input));
-            let output = child.wait_with_output();
-            (output, writer.join())
-        });
-        let output = output?;
-        let write_result = write_result.map_err(|_| GitEngineError::InvalidOutput {
-            operation,
-            detail: "Git stdin writer panicked".to_string(),
-        })?;
-        if output.status.success() {
-            write_result?;
-        }
-        Ok(output)
+            .expect("piped Git stdout must be available");
+        let mut stderr = child
+            .stderr
+            .take()
+            .expect("piped Git stderr must be available");
+        let stdin = input
+            .map(|_| {
+                child
+                    .stdin
+                    .take()
+                    .ok_or_else(|| GitEngineError::InvalidOutput {
+                        operation,
+                        detail: "Git command did not expose stdin".to_string(),
+                    })
+            })
+            .transpose()?;
+
+        std::thread::scope(|scope| {
+            let stdout_reader = scope.spawn(move || {
+                let mut bytes = Vec::new();
+                stdout.read_to_end(&mut bytes).map(|_| bytes)
+            });
+            let stderr_reader = scope.spawn(move || {
+                let mut bytes = Vec::new();
+                stderr.read_to_end(&mut bytes).map(|_| bytes)
+            });
+            let stdin_writer = input
+                .zip(stdin)
+                .map(|(input, mut stdin)| scope.spawn(move || stdin.write_all(input)));
+            let started = Instant::now();
+            let (status, timed_out) = loop {
+                if let Some(status) = child.try_wait()? {
+                    break (status, false);
+                }
+                if started.elapsed() >= self.command_timeout {
+                    terminate_process_group(&mut child);
+                    break (child.wait()?, true);
+                }
+                std::thread::sleep(COMMAND_WAIT_POLL_INTERVAL);
+            };
+            let stdout = join_reader(stdout_reader, operation, "stdout")?;
+            let stderr = join_reader(stderr_reader, operation, "stderr")?;
+            if let Some(writer) = stdin_writer {
+                let write_result = writer.join().map_err(|_| GitEngineError::InvalidOutput {
+                    operation,
+                    detail: "Git stdin writer panicked".to_string(),
+                })?;
+                if status.success() {
+                    write_result?;
+                }
+            }
+            if timed_out {
+                return Err(GitEngineError::CommandTimedOut {
+                    operation,
+                    timeout: self.command_timeout,
+                });
+            }
+            Ok(Output {
+                status,
+                stdout,
+                stderr,
+            })
+        })
     }
 
     fn repository_command(&self, repository: &GitRepository) -> Command {
@@ -3021,6 +3097,47 @@ impl GitCliEngine {
     }
 }
 
+fn join_reader(
+    reader: std::thread::ScopedJoinHandle<'_, std::io::Result<Vec<u8>>>,
+    operation: &'static str,
+    stream: &str,
+) -> Result<Vec<u8>, GitEngineError> {
+    reader
+        .join()
+        .map_err(|_| GitEngineError::InvalidOutput {
+            operation,
+            detail: format!("Git {stream} reader panicked"),
+        })?
+        .map_err(GitEngineError::from)
+}
+
+#[cfg(unix)]
+fn configure_process_group(command: &mut Command) {
+    use std::os::unix::process::CommandExt;
+    command.process_group(0);
+}
+
+#[cfg(not(unix))]
+fn configure_process_group(_command: &mut Command) {}
+
+#[cfg(unix)]
+fn terminate_process_group(child: &mut Child) {
+    if let Ok(process_group) = i32::try_from(child.id()) {
+        // SAFETY: the child was placed into a new process group whose ID is
+        // its validated positive PID; sending SIGKILL does not dereference
+        // memory and is followed by `Child::wait` by the caller.
+        unsafe {
+            libc::kill(-process_group, libc::SIGKILL);
+        }
+    }
+    let _ = child.kill();
+}
+
+#[cfg(not(unix))]
+fn terminate_process_group(child: &mut Child) {
+    let _ = child.kill();
+}
+
 fn validate_git_source(source: &str) -> Result<(), GitEngineError> {
     if source.is_empty() || source.starts_with('-') || source.chars().any(char::is_control) {
         return Err(GitEngineError::UnsupportedRepository {
@@ -4339,6 +4456,43 @@ mod tests {
         let rendered = bounded_lossy(&vec![b'x'; MAX_ERROR_BYTES + 10]);
         assert!(rendered.ends_with("… [truncated]"));
         assert!(rendered.len() < MAX_ERROR_BYTES + 32);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_timeout_terminates_the_spawned_process_group() {
+        let timeout = Duration::from_millis(50);
+        let engine = GitCliEngine::default().with_command_timeout(timeout);
+        let mut command = Command::new("sh");
+        command.args(["-c", "sleep 10"]);
+        let started = Instant::now();
+
+        let error = engine
+            .execute(command)
+            .expect_err("the command should time out");
+
+        assert!(matches!(
+            error,
+            GitEngineError::CommandTimedOut {
+                operation: "run a Git command",
+                timeout: observed,
+            } if observed == timeout
+        ));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn command_timeout_has_a_bounded_default_and_nonzero_floor() {
+        assert_eq!(
+            GitCliEngine::default().command_timeout(),
+            Duration::from_secs(300)
+        );
+        assert_eq!(
+            GitCliEngine::default()
+                .with_command_timeout(Duration::ZERO)
+                .command_timeout(),
+            Duration::from_millis(1)
+        );
     }
 
     #[test]

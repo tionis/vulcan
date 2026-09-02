@@ -69,6 +69,7 @@ pub struct GitSyncOptions {
     pub remote: GitRemote,
     pub live_ref: GitRefName,
     pub max_retries: usize,
+    pub command_timeout: Duration,
     pub dry_run: bool,
     pub device_id: GitSyncDeviceId,
     pub merge_policy: MergePolicy,
@@ -83,6 +84,7 @@ impl Default for GitSyncOptions {
             live_ref: GitRefName::parse(DEFAULT_REMOTE_LIVE_REF)
                 .expect("the default live ref is valid"),
             max_retries: 4,
+            command_timeout: Duration::from_secs(300),
             dry_run: false,
             device_id: GitSyncDeviceId::anonymous(),
             merge_policy: MergePolicy::default(),
@@ -709,9 +711,10 @@ fn git_report_to_backend_report(report: GitSyncReport) -> SyncReport {
 
 fn sync_error_from_git(error: &GitSyncError) -> SyncError {
     let (category, retryable) = match error {
-        GitSyncError::Locked | GitSyncError::Git(GitEngineError::WorktreeChanged) => {
-            (SyncErrorCategory::Busy, true)
-        }
+        GitSyncError::Locked
+        | GitSyncError::Git(
+            GitEngineError::WorktreeChanged | GitEngineError::CommandTimedOut { .. },
+        ) => (SyncErrorCategory::Busy, true),
         GitSyncError::Cancelled => (SyncErrorCategory::Cancelled, false),
         GitSyncError::Observer(_) => (SyncErrorCategory::Observer, false),
         GitSyncError::PlatformIncompatible(_) => (SyncErrorCategory::Unsupported, false),

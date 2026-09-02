@@ -3768,6 +3768,13 @@ pub enum SyncCommand {
         max_retries: usize,
         #[arg(
             long,
+            default_value_t = 300,
+            value_parser = clap::value_parser!(u64).range(1..),
+            help = "Maximum seconds allowed for any Git or Git LFS subprocess"
+        )]
+        git_timeout_seconds: u64,
+        #[arg(
+            long,
             help = "Inspect and plan without creating refs, objects, or files"
         )]
         dry_run: bool,

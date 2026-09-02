@@ -155,7 +155,7 @@ fn doctor_git_vault_with_optional_state(
     platform: GitPlatformProfile,
     state_store: Option<&SyncStateStore>,
 ) -> SyncDoctorReport {
-    let engine = vulcan_sync::GitCliEngine::default();
+    let engine = vulcan_sync::GitCliEngine::default().with_command_timeout(options.command_timeout);
     let (effective_options, policy_severity, policy_detail) =
         configured_options_for_doctor(paths, options);
     let options = &effective_options;
@@ -925,7 +925,7 @@ pub fn sync_git_vault_with_observer(
         .as_ref()
         .filter(|journal| journal.phase.requires_recovery())
         .cloned();
-    let engine = vulcan_sync::GitCliEngine::default();
+    let engine = vulcan_sync::GitCliEngine::default().with_command_timeout(options.command_timeout);
     let mut effective_options = options.clone();
     effective_options.device_id = state_store
         .load_or_create_device_id(!options.dry_run)?

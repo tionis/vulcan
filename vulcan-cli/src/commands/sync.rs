@@ -5,6 +5,7 @@ use crate::{
     SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncSelectionArgs, TermuxNetworkArg,
 };
 use serde::Serialize;
+use std::time::Duration;
 use vulcan_app::sync::{
     doctor_git_vault_for_platform, sync_git_vault, GitPlatformProfile, GitRefName, GitRemote,
     GitSyncAction, GitSyncOptions, SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
@@ -68,12 +69,14 @@ pub(crate) fn handle_sync_command(
             selection,
             target,
             max_retries,
+            git_timeout_seconds,
             dry_run,
         } => (
             GitSyncOptions {
                 remote: GitRemote::parse(&target.remote).map_err(CliError::operation)?,
                 live_ref: GitRefName::parse(&target.live_ref).map_err(CliError::operation)?,
                 max_retries: *max_retries,
+                command_timeout: Duration::from_secs(*git_timeout_seconds),
                 dry_run: *dry_run,
                 ..GitSyncOptions::default()
             },

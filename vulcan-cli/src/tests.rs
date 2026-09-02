@@ -2164,6 +2164,8 @@ fn parses_sync_commands() {
         "refs/heads/live",
         "--max-retries",
         "7",
+        "--git-timeout-seconds",
+        "42",
         "--dry-run",
     ])
     .expect("sync run should parse");
@@ -2181,6 +2183,7 @@ fn parses_sync_commands() {
                     live_ref: "refs/heads/live".to_string(),
                 },
                 max_retries: 7,
+                git_timeout_seconds: 42,
                 dry_run: true,
             },
         }

@@ -4564,6 +4564,7 @@ dependencies = [
  "blake3",
  "fs2",
  "globset",
+ "libc",
  "serde",
  "serde_json",
  "serde_yaml",

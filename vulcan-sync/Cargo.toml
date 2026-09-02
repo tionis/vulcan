@@ -9,6 +9,7 @@ license.workspace = true
 blake3.workspace = true
 fs2.workspace = true
 globset.workspace = true
+libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_yaml.workspace = true

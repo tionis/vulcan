@@ -34,6 +34,10 @@ both execute the same application workflow.
    platform compatibility, locks, journals, apply markers, or cache coherence may be involved.
 3. Preview a finite transaction with `vulcan sync run [<wiki>] --dry-run`; apply it by omitting
    `--dry-run` only after the target remote/live ref and diagnostics are understood.
+4. Every Git and Git LFS subprocess is bounded to 300 seconds by default. For a known slower
+   transport, set `--git-timeout-seconds <seconds>` on `sync run`; do not raise it merely to hide a
+   stuck credential helper, filter, or remote. A timeout preserves the captured snapshot and
+   recovery journal, so diagnose the named phase and rerun safely.
 
 Interpret `paused` as preserved work, not failure: staged normal-index changes, an in-progress Git
 operation, or unexplained HEAD movement were captured before reconciliation stopped. Resolve that
