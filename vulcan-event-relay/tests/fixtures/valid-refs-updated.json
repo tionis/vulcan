@@ -1,0 +1,19 @@
+{
+  "specversion": "1.0",
+  "id": "01K00000000000000000000000",
+  "source": "urn:git-repository:01K00000000000000000000000",
+  "type": "dev.tionis.git.refs.updated.v1",
+  "time": "2026-09-02T20:00:00Z",
+  "datacontenttype": "application/json",
+  "data": {
+    "object_format": "sha1",
+    "atomic": false,
+    "updates": [
+      {
+        "ref": "refs/heads/main",
+        "before": null,
+        "after": "89abcdef0123456789abcdef0123456789abcdef"
+      }
+    ]
+  }
+}

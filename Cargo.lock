@@ -4558,6 +4558,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "vulcan-event-relay"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "vulcan-sync"
 version = "0.1.0"
 dependencies = [

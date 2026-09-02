@@ -1,0 +1,35 @@
+{
+  "spec": "event-relay-subscription/1",
+  "descriptor": {
+    "spec": "event-relay/1",
+    "id": "urn:event-relay-channel:01K00000000000000000000000",
+    "profiles": ["https://tionis.dev/spec/git-realtime/1"],
+    "bindings": [
+      {
+        "type": "nats",
+        "endpoint": "tls://events.example.net:4222",
+        "subject_filter": "events.channels.01K00000000000000000000000.>"
+      }
+    ],
+    "authorization": ["bearer_capability"],
+    "retention": [
+      {
+        "id": "git-updates",
+        "types": ["dev.tionis.git.refs.updated.v1"],
+        "class": "bounded_log",
+        "max_age_seconds": 86400
+      },
+      {
+        "id": "git-state",
+        "types": ["dev.tionis.git.ref.state.v1"],
+        "class": "latest_by_subject"
+      }
+    ],
+    "limits": { "event_bytes": 65536 },
+    "future_field": true
+  },
+  "credential": {
+    "scheme": "bearer_capability",
+    "token": "er1.client.0123456789abcdefghijklmnopqrstuvwxyzABCDEFG"
+  }
+}
