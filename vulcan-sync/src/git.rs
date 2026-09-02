@@ -1353,6 +1353,41 @@ impl GitCliEngine {
         Ok(())
     }
 
+    fn prepare_sync_index(
+        &self,
+        repository: &GitRepository,
+        index_path: &Path,
+        base: Option<&GitOid>,
+        operation: &'static str,
+    ) -> Result<bool, GitEngineError> {
+        std::fs::create_dir_all(
+            index_path
+                .parent()
+                .expect("the sync index path always has a parent"),
+        )?;
+        let regular_index = std::fs::symlink_metadata(index_path)
+            .map(|metadata| metadata.file_type().is_file())
+            .unwrap_or(false);
+        if let Some(base) = base.filter(|_| regular_index) {
+            let mut command = self.index_command(repository, index_path)?;
+            command
+                .args(["diff-index", "--cached", "--quiet"])
+                .arg(base.as_str())
+                .arg("--");
+            if self.execute(command)?.status.success() {
+                return Ok(true);
+            }
+        }
+
+        remove_file_if_present(index_path)?;
+        let arguments = match base {
+            Some(base) => vec![OsString::from("read-tree"), OsString::from(base.as_str())],
+            None => vec![OsString::from("read-tree"), OsString::from("--empty")],
+        };
+        self.index_output(repository, index_path, operation, arguments)?;
+        Ok(false)
+    }
+
     fn patch_command(
         &self,
         repository: &GitRepository,
@@ -1477,27 +1512,7 @@ impl GitCliEngine {
     ) -> Result<GitOid, GitEngineError> {
         repository.require_work_tree()?;
         let index_path = repository.sync_index();
-        std::fs::create_dir_all(
-            index_path
-                .parent()
-                .expect("the sync index path always has a parent"),
-        )?;
-        remove_file_if_present(&index_path)?;
-        if let Some(base) = base {
-            self.index_output(
-                repository,
-                &index_path,
-                "seed the sync index",
-                ["read-tree", base.as_str()],
-            )?;
-        } else {
-            self.index_output(
-                repository,
-                &index_path,
-                "initialize the sync index",
-                ["read-tree", "--empty"],
-            )?;
-        }
+        self.prepare_sync_index(repository, &index_path, base, "seed the sync index")?;
         for _ in 0..3 {
             self.add_worktree_to_index(repository, &index_path, "capture the working tree")?;
             let first = GitOid::parse(
@@ -2736,17 +2751,11 @@ impl GitEngine for GitCliEngine {
         repository.require_work_tree()?;
         let plan = self.plan_tree_application(repository, expected_worktree, target)?;
         let index_path = repository.sync_index();
-        std::fs::create_dir_all(
-            index_path
-                .parent()
-                .expect("the sync index path always has a parent"),
-        )?;
-        remove_file_if_present(&index_path)?;
-        self.index_output(
+        self.prepare_sync_index(
             repository,
             &index_path,
+            Some(expected_worktree),
             "seed the worktree application index",
-            ["read-tree", expected_worktree.as_str()],
         )?;
         self.add_worktree_to_index(
             repository,
@@ -4361,6 +4370,45 @@ mod tests {
             .expect("unchanged capture should succeed");
         assert!(!second.created);
         assert_eq!(second.commit, capture.commit);
+    }
+
+    #[test]
+    fn sync_index_reuses_matching_stat_cache_and_reseeds_stale_trees() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Home.md"), "initial\n").expect("initial note");
+        let first = commit_all(temporary.path(), "initial");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let index_path = repository.sync_index();
+
+        engine
+            .snapshot_worktree_tree(&repository, Some(&first))
+            .expect("initial snapshot");
+        assert!(engine
+            .prepare_sync_index(&repository, &index_path, Some(&first), "prepare test index",)
+            .expect("matching index"));
+
+        fs::write(temporary.path().join("Home.md"), "updated\n").expect("updated note");
+        let second = commit_all(temporary.path(), "updated");
+        assert!(!engine
+            .prepare_sync_index(
+                &repository,
+                &index_path,
+                Some(&second),
+                "prepare test index",
+            )
+            .expect("stale index should be rebuilt"));
+        assert!(engine
+            .prepare_sync_index(
+                &repository,
+                &index_path,
+                Some(&second),
+                "prepare test index",
+            )
+            .expect("rebuilt index should be reusable"));
     }
 
     #[test]
