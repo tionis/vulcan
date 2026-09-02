@@ -1222,6 +1222,49 @@ impl GitCliEngine {
         })
     }
 
+    fn execute_with_input(
+        &self,
+        mut command: Command,
+        operation: &'static str,
+        input: &[u8],
+    ) -> Result<Output, GitEngineError> {
+        command
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = command.spawn().map_err(|source| {
+            if source.kind() == std::io::ErrorKind::NotFound {
+                GitEngineError::ExecutableUnavailable {
+                    executable: self.executable.clone(),
+                    source,
+                }
+            } else {
+                GitEngineError::Io(source)
+            }
+        })?;
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| GitEngineError::InvalidOutput {
+                operation,
+                detail: "Git command did not expose stdin".to_string(),
+            })?;
+        let (output, write_result) = std::thread::scope(|scope| {
+            let writer = scope.spawn(move || stdin.write_all(input));
+            let output = child.wait_with_output();
+            (output, writer.join())
+        });
+        let output = output?;
+        let write_result = write_result.map_err(|_| GitEngineError::InvalidOutput {
+            operation,
+            detail: "Git stdin writer panicked".to_string(),
+        })?;
+        if output.status.success() {
+            write_result?;
+        }
+        Ok(output)
+    }
+
     fn repository_command(&self, repository: &GitRepository) -> Command {
         let mut command = self.command();
         command
@@ -1319,30 +1362,11 @@ impl GitCliEngine {
         patch: &[u8],
     ) -> Result<Output, GitEngineError> {
         let mut command = self.index_command(repository, index_path)?;
-        command
-            .args(arguments)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = command.spawn().map_err(|source| {
-            if source.kind() == std::io::ErrorKind::NotFound {
-                GitEngineError::ExecutableUnavailable {
-                    executable: self.executable.clone(),
-                    source,
-                }
-            } else {
-                GitEngineError::Io(source)
-            }
-        })?;
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| GitEngineError::InvalidOutput {
-                operation,
-                detail: "Git patch command did not expose stdin".to_string(),
-            })?
-            .write_all(patch)?;
-        ensure_success(operation, child.wait_with_output()?)
+        command.args(arguments);
+        ensure_success(
+            operation,
+            self.execute_with_input(command, operation, patch)?,
+        )
     }
 
     fn path_object_metadata(
@@ -1519,64 +1543,24 @@ impl GitCliEngine {
             .env("GIT_AUTHOR_NAME", "Vulcan Sync")
             .env("GIT_AUTHOR_EMAIL", "sync@vulcan.invalid")
             .env("GIT_COMMITTER_NAME", "Vulcan Sync")
-            .env("GIT_COMMITTER_EMAIL", "sync@vulcan.invalid")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+            .env("GIT_COMMITTER_EMAIL", "sync@vulcan.invalid");
         if reproducible {
             command
                 .env("GIT_AUTHOR_DATE", "@0 +0000")
                 .env("GIT_COMMITTER_DATE", "@0 +0000");
         }
-        let mut child = command.spawn().map_err(|source| {
-            if source.kind() == std::io::ErrorKind::NotFound {
-                GitEngineError::ExecutableUnavailable {
-                    executable: self.executable.clone(),
-                    source,
-                }
-            } else {
-                GitEngineError::Io(source)
-            }
-        })?;
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| GitEngineError::InvalidOutput {
-                operation: "create a commit",
-                detail: "Git stdin was unavailable".to_string(),
-            })?
-            .write_all(message.as_bytes())?;
-        let output = child.wait_with_output()?;
+        let output = self.execute_with_input(command, "create a commit", message.as_bytes())?;
         let output = ensure_success("create a commit", output)?;
         GitOid::parse(decode_stdout("create a commit", output.stdout)?.trim())
     }
 
     fn hash_blob(&self, repository: &GitRepository, data: &[u8]) -> Result<GitOid, GitEngineError> {
         let mut command = self.repository_command(repository);
-        command
-            .args(["hash-object", "-w", "--stdin"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = command.spawn().map_err(|source| {
-            if source.kind() == std::io::ErrorKind::NotFound {
-                GitEngineError::ExecutableUnavailable {
-                    executable: self.executable.clone(),
-                    source,
-                }
-            } else {
-                GitEngineError::Io(source)
-            }
-        })?;
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| GitEngineError::InvalidOutput {
-                operation: "write a structured merge blob",
-                detail: "Git stdin was unavailable".to_string(),
-            })?
-            .write_all(data)?;
-        let output = ensure_success("write a structured merge blob", child.wait_with_output()?)?;
+        command.args(["hash-object", "-w", "--stdin"]);
+        let output = ensure_success(
+            "write a structured merge blob",
+            self.execute_with_input(command, "write a structured merge blob", data)?,
+        )?;
         GitOid::parse(decode_stdout("write a structured merge blob", output.stdout)?.trim())
     }
 
@@ -2868,21 +2852,9 @@ impl GitEngine for GitCliEngine {
         let tracked_paths = nul_fields("list tracked paths for sync diagnostics", &tracked.stdout)?;
 
         let mut command = self.repository_command(repository);
-        command
-            .args(["check-attr", "-z", "--stdin", "filter"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
-        let mut child = command.spawn().map_err(GitEngineError::Io)?;
-        child
-            .stdin
-            .take()
-            .ok_or_else(|| GitEngineError::InvalidOutput {
-                operation: "inspect configured Git filters",
-                detail: "Git diagnostic command did not expose stdin".to_string(),
-            })?
-            .write_all(&tracked.stdout)?;
-        let attributes = child.wait_with_output()?;
+        command.args(["check-attr", "-z", "--stdin", "filter"]);
+        let attributes =
+            self.execute_with_input(command, "inspect configured Git filters", &tracked.stdout)?;
         let attributes = ensure_success("inspect configured Git filters", attributes)?;
         if attributes.stdout.len() > MAX_DIAGNOSTIC_PATH_BYTES.saturating_mul(4) {
             return Err(GitEngineError::InvalidOutput {
@@ -5254,6 +5226,41 @@ mod tests {
         assert_eq!(lfs.path_count, 1);
         assert_eq!(lfs.executable_available, requirements.git_lfs_available);
         assert!(requirements.git_lfs_available.is_some());
+    }
+
+    #[test]
+    fn repository_requirements_do_not_deadlock_on_large_path_sets() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("seed"), "fixture\n").expect("seed file");
+        let blob = run_git_capture(temporary.path(), &["hash-object", "-w", "seed"]);
+        let mut index_input = Vec::new();
+        for index in 0..4_000 {
+            write!(
+                index_input,
+                "100644 {blob}\tlarge-path-set/{index:04}-a-deliberately-long-note-name.md\0"
+            )
+            .expect("index entry");
+        }
+        let engine = GitCliEngine::default();
+        let mut command = Command::new("git");
+        command
+            .current_dir(temporary.path())
+            .args(["update-index", "-z", "--index-info"]);
+        let output = engine
+            .execute_with_input(command, "populate a large test index", &index_input)
+            .expect("Git should populate the index");
+        ensure_success("populate a large test index", output).expect("valid index entries");
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+
+        let requirements = engine
+            .repository_requirements(&repository)
+            .expect("requirements should not deadlock");
+
+        assert_eq!(requirements.tracked_paths, 4_000);
+        assert!(requirements.required_filters.is_empty());
     }
 
     #[test]
