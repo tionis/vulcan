@@ -43,7 +43,7 @@ pub use merge_policy::{
 };
 pub use platform::{
     inspect_git_tree_platform, GitPlatformDiagnostic, GitPlatformDiagnosticSeverity,
-    GitPlatformPreflight,
+    GitPlatformPreflight, GIT_PLATFORM_PREFLIGHT_VERSION,
 };
 pub use refs::{
     checkpoint_ref, conflict_proposal_resolution_ref, conflict_recovery_ref, conflict_ref,

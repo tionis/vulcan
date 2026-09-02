@@ -7,20 +7,32 @@ use crate::{
     MergeResolution, SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncConflict,
     SyncContext, SyncError, SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome,
     SyncPlan, SyncProgress, SyncReport, SyncResolutionState, SyncState, SyncStatus,
-    DEFAULT_REMOTE_LIVE_REF, SYNC_CONTRACT_VERSION, VULCAN_REF_NAMESPACE_VERSION,
+    DEFAULT_REMOTE_LIVE_REF, GIT_PLATFORM_PREFLIGHT_VERSION, SYNC_CONTRACT_VERSION,
+    VULCAN_REF_NAMESPACE_VERSION,
 };
 use fs2::FileExt;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt::{Display, Formatter, Write as _};
 use std::fs::{self, File, OpenOptions};
+use std::io::Write as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
+use tempfile::NamedTempFile;
 
 const SYNC_PROTOCOL_VERSION: u32 = 1;
+const PLATFORM_PREFLIGHT_CACHE_VERSION: u32 = 1;
+const MAX_PLATFORM_PREFLIGHT_CACHE_BYTES: u64 = 256 * 1024;
+
+#[derive(Debug, Serialize, Deserialize)]
+struct PlatformPreflightCache {
+    version: u32,
+    policy_key: String,
+    preflight: GitPlatformPreflight,
+}
 
 #[must_use]
 pub fn git_live_epoch_id(profile: &str, previous: &GitOid) -> String {
@@ -803,6 +815,7 @@ pub fn sync_git_once_with_control(
                 &report.repository,
                 revision,
                 options.platform,
+                false,
             )?);
         }
         emit_progress(observer, GitSyncPhase::Completed, 0, &report, None)?;
@@ -1141,13 +1154,96 @@ fn platform_preflight(
     repository: &GitRepository,
     revision: &GitOid,
     platform: GitPlatformProfile,
+    persist_cache: bool,
 ) -> Result<GitPlatformPreflight, GitSyncError> {
+    let policy = platform.policy();
+    let policy_key = platform_policy_cache_key(&policy);
+    if let Some(mut preflight) = load_platform_preflight_cache(repository, revision, &policy_key) {
+        preflight.policy = policy;
+        return Ok(preflight);
+    }
     let entries = engine.tree_entries(repository, revision)?;
-    Ok(crate::inspect_git_tree_platform(
-        revision.clone(),
-        &entries,
-        platform.policy(),
-    ))
+    let preflight = crate::inspect_git_tree_platform(revision.clone(), &entries, policy);
+    if persist_cache {
+        save_platform_preflight_cache(repository, &policy_key, &preflight)?;
+    }
+    Ok(preflight)
+}
+
+fn platform_policy_cache_key(policy: &crate::GitPlatformPolicy) -> String {
+    let encoded = serde_json::to_vec(policy)
+        .expect("the fixed Git platform policy representation is always serializable");
+    blake3::hash(&encoded).to_hex().to_string()
+}
+
+fn platform_preflight_cache_path(repository: &GitRepository) -> std::path::PathBuf {
+    repository
+        .git_dir
+        .join("vulcan-sync/platform-preflight-cache-v1.json")
+}
+
+fn load_platform_preflight_cache(
+    repository: &GitRepository,
+    revision: &GitOid,
+    policy_key: &str,
+) -> Option<GitPlatformPreflight> {
+    let path = platform_preflight_cache_path(repository);
+    let metadata = fs::symlink_metadata(&path).ok()?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_PLATFORM_PREFLIGHT_CACHE_BYTES {
+        return None;
+    }
+    let bytes = fs::read(path).ok()?;
+    let cache = serde_json::from_slice::<PlatformPreflightCache>(&bytes).ok()?;
+    let diagnostics_compatible = cache
+        .preflight
+        .diagnostics
+        .iter()
+        .all(|item| item.severity != crate::GitPlatformDiagnosticSeverity::Error);
+    if cache.version != PLATFORM_PREFLIGHT_CACHE_VERSION
+        || cache.policy_key != policy_key
+        || cache.preflight.version != GIT_PLATFORM_PREFLIGHT_VERSION
+        || cache.preflight.revision != *revision
+        || cache.preflight.compatible != diagnostics_compatible
+    {
+        return None;
+    }
+    Some(cache.preflight)
+}
+
+fn save_platform_preflight_cache(
+    repository: &GitRepository,
+    policy_key: &str,
+    preflight: &GitPlatformPreflight,
+) -> Result<(), GitSyncError> {
+    let path = platform_preflight_cache_path(repository);
+    let parent = path
+        .parent()
+        .expect("the platform preflight cache path always has a parent");
+    fs::create_dir_all(parent)?;
+    if fs::symlink_metadata(&path).is_ok_and(|metadata| !metadata.file_type().is_file()) {
+        fs::remove_file(&path)?;
+    }
+    let bytes = serde_json::to_vec(&PlatformPreflightCache {
+        version: PLATFORM_PREFLIGHT_CACHE_VERSION,
+        policy_key: policy_key.to_string(),
+        preflight: preflight.clone(),
+    })
+    .map_err(|error| {
+        GitSyncError::Git(GitEngineError::InvalidOutput {
+            operation: "cache Git platform preflight",
+            detail: error.to_string(),
+        })
+    })?;
+    if bytes.len() as u64 > MAX_PLATFORM_PREFLIGHT_CACHE_BYTES {
+        return Ok(());
+    }
+    let mut temporary = NamedTempFile::new_in(parent)?;
+    temporary.write_all(&bytes)?;
+    temporary.as_file().sync_all()?;
+    temporary
+        .persist(path)
+        .map_err(|error| GitSyncError::Io(error.error))?;
+    Ok(())
 }
 
 fn require_accepted_platform(
@@ -1171,7 +1267,8 @@ fn require_accepted_platform(
         report.accepted_platform_preflight = Some(preflight.clone());
         return Ok(());
     }
-    let preflight = platform_preflight(engine, &report.repository, revision, options.platform)?;
+    let preflight =
+        platform_preflight(engine, &report.repository, revision, options.platform, true)?;
     if !preflight.compatible {
         return Err(GitSyncError::PlatformIncompatible(preflight));
     }
@@ -1185,7 +1282,8 @@ fn require_local_platform(
     report: &mut GitSyncReport,
     revision: &GitOid,
 ) -> Result<(), GitSyncError> {
-    let preflight = platform_preflight(engine, &report.repository, revision, options.platform)?;
+    let preflight =
+        platform_preflight(engine, &report.repository, revision, options.platform, true)?;
     if !preflight.compatible {
         return Err(GitSyncError::PlatformIncompatible(preflight));
     }
@@ -3044,6 +3142,10 @@ mod tests {
             lines.iter().all(|line| !line.contains(" check-attr ")),
             "steady requirements should reuse the validated attribute cache: {commands}"
         );
+        assert!(
+            lines.iter().all(|line| !line.contains(" ls-tree -r -z ")),
+            "steady platform validation should reuse its immutable-tree cache: {commands}"
+        );
         assert_eq!(
             lines
                 .iter()
@@ -3065,8 +3167,8 @@ mod tests {
             "steady verification should reuse the capture stat cache: {commands}"
         );
         assert!(
-            lines.len() <= 25,
-            "steady sync exceeded its 25-process budget ({}): {commands}",
+            lines.len() <= 24,
+            "steady sync exceeded its 24-process budget ({}): {commands}",
             lines.len()
         );
     }
@@ -3145,6 +3247,53 @@ mod tests {
             fs::read_to_string(writer.join("CON.txt")).expect("preserved local bytes"),
             "reserved on portable targets\n"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn platform_preflight_cache_is_scoped_to_the_exact_policy() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        fs::write(writer.join("CON.txt"), "reserved on portable targets\n")
+            .expect("reserved fixture");
+        commit_all(&writer, "add platform-specific path");
+        let engine = GitCliEngine::default();
+        let linux_options = GitSyncOptions {
+            platform: GitPlatformProfile::LinuxNative,
+            ..GitSyncOptions::default()
+        };
+        let linux_report = sync_git_once(&engine, &writer, &linux_options).expect("Linux sync");
+        let revision = linux_report.accepted.as_ref().expect("accepted revision");
+        let policy_key = platform_policy_cache_key(&linux_options.platform.policy());
+        let cache_bytes = fs::read(platform_preflight_cache_path(&linux_report.repository))
+            .expect("persisted platform cache");
+        serde_json::from_slice::<PlatformPreflightCache>(&cache_bytes)
+            .expect("valid persisted platform cache");
+        assert!(
+            load_platform_preflight_cache(&linux_report.repository, revision, &policy_key)
+                .is_some(),
+            "the exact revision and policy should reuse the persisted preflight"
+        );
+        fs::write(
+            platform_preflight_cache_path(&linux_report.repository),
+            b"not valid JSON",
+        )
+        .expect("corrupt platform cache fixture");
+        sync_git_once(&engine, &writer, &linux_options)
+            .expect("a malformed platform cache should be rebuilt");
+        assert!(
+            load_platform_preflight_cache(&linux_report.repository, revision, &policy_key)
+                .is_some(),
+            "the rebuilt cache should be reusable"
+        );
+
+        let android_options = GitSyncOptions {
+            platform: GitPlatformProfile::AndroidShared,
+            ..GitSyncOptions::default()
+        };
+        let error = sync_git_once(&engine, &writer, &android_options)
+            .expect_err("a different platform policy must be evaluated independently");
+
+        assert!(matches!(error, GitSyncError::PlatformIncompatible(_)));
     }
 
     #[cfg(unix)]
@@ -3559,6 +3708,10 @@ mod tests {
                 .join("vulcan-sync/requirements-cache-v1.json")
                 .exists(),
             "dry-run requirements inspection must remain mutation-free"
+        );
+        assert!(
+            !platform_preflight_cache_path(&report.repository).exists(),
+            "dry-run platform inspection must remain mutation-free"
         );
     }
 

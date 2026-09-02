@@ -4,7 +4,7 @@ use crate::{
     GitCaseRenamePolicy, GitExecutableBitsPolicy, GitOid, GitPlatformPolicy,
     GitReservedNamesPolicy, GitSymlinkPolicy, GitTreeEntry,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use unicode_normalization::UnicodeNormalization;
 
@@ -13,7 +13,7 @@ const MAX_EXAMPLE_PATHS: usize = 20;
 const LONG_PATH_WARNING_BYTES: usize = 240;
 const LONG_COMPONENT_WARNING_BYTES: usize = 240;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GitPlatformDiagnosticSeverity {
     Pass,
@@ -22,17 +22,17 @@ pub enum GitPlatformDiagnosticSeverity {
     Error,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitPlatformDiagnostic {
     pub code: String,
     pub severity: GitPlatformDiagnosticSeverity,
     pub count: usize,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub paths: Vec<String>,
     pub message: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GitPlatformPreflight {
     pub version: u32,
     pub revision: GitOid,
