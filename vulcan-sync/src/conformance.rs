@@ -125,6 +125,7 @@ pub fn run_git_engine_conformance(
             &GitCaptureRequest {
                 base: Some(base.clone()),
                 target_ref: candidate_ref,
+                target_before: None,
                 message: "Vulcan engine conformance capture\n".to_string(),
             },
         )
@@ -258,6 +259,7 @@ pub fn run_git_engine_conformance(
             &GitCaptureRequest {
                 base: Some(candidate.commit.clone()),
                 target_ref: parse_ref("refs/vulcan/conformance/v1/remote")?,
+                target_before: None,
                 message: "Vulcan engine conformance remote\n".to_string(),
             },
         )
@@ -274,6 +276,7 @@ pub fn run_git_engine_conformance(
             &GitCaptureRequest {
                 base: Some(candidate.commit.clone()),
                 target_ref: parse_ref("refs/vulcan/conformance/v1/local")?,
+                target_before: None,
                 message: "Vulcan engine conformance local\n".to_string(),
             },
         )

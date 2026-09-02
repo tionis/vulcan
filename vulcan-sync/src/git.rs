@@ -795,6 +795,8 @@ impl Display for GitRemote {
 pub struct GitCaptureRequest {
     pub base: Option<GitOid>,
     pub target_ref: GitRefName,
+    /// Exact target value observed by a serialized caller, if it already equals `base`.
+    pub target_before: Option<GitOid>,
     pub message: String,
 }
 
@@ -1173,6 +1175,7 @@ impl GitCliEngine {
             &GitCaptureRequest {
                 base: None,
                 target_ref: recovery_ref.clone(),
+                target_before: None,
                 message: "vulcan sync recovery: capture materialized worktree after detached Git directory loss\n"
                     .to_string(),
             },
@@ -2365,7 +2368,9 @@ impl GitEngine for GitCliEngine {
 
         if let Some(base) = &request.base {
             if self.tree_oid(repository, base)? == tree {
-                self.update_ref(repository, &request.target_ref, base)?;
+                if request.target_before.as_ref() != Some(base) {
+                    self.update_ref(repository, &request.target_ref, base)?;
+                }
                 return Ok(GitCapture {
                     commit: base.clone(),
                     tree,
@@ -4822,6 +4827,7 @@ mod tests {
                 &GitCaptureRequest {
                     base: Some(head),
                     target_ref: local_ref.clone(),
+                    target_before: None,
                     message: "vulcan sync snapshot\n".to_string(),
                 },
             )
@@ -4842,6 +4848,7 @@ mod tests {
                 &GitCaptureRequest {
                     base: Some(capture.commit.clone()),
                     target_ref: local_ref,
+                    target_before: None,
                     message: "vulcan sync snapshot\n".to_string(),
                 },
             )
@@ -5566,6 +5573,7 @@ mod tests {
                 &GitCaptureRequest {
                     base: Some(head.clone()),
                     target_ref: local_ref,
+                    target_before: None,
                     message: "accepted\n".to_string(),
                 },
             )
@@ -5629,6 +5637,7 @@ mod tests {
                 &GitCaptureRequest {
                     base: Some(head.clone()),
                     target_ref: GitRefName::parse("refs/vulcan/sync/local/live").expect("ref"),
+                    target_before: None,
                     message: "accepted\n".to_string(),
                 },
             )

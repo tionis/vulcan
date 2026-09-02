@@ -1909,6 +1909,7 @@ fn apply_approved_proposal(
             &GitCaptureRequest {
                 base: Some(local.clone()),
                 target_ref: recovery_ref,
+                target_before: None,
                 message: format!(
                     "vulcan proposal recovery snapshot\n\nVulcan-Conflict: {}\nVulcan-Proposal: {}\nVulcan-Sync-Version: 1\nVulcan-Sync-Device: {}\nVulcan-Sync-Source: {local}\nVulcan-Sync-Semantic: false\n",
                     context.record.id,

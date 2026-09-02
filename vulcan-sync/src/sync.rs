@@ -927,14 +927,16 @@ fn run_attempt(
 ) -> Result<AttemptResult, GitSyncError> {
     control.check()?;
     control.emit(GitSyncPhase::Capturing, report, None)?;
-    let base = engine
-        .read_ref(&report.repository, &report.refs.local)?
+    let target_before = engine.read_ref(&report.repository, &report.refs.local)?;
+    let base = target_before
+        .clone()
         .or(engine.head_commit(&report.repository)?);
     let capture = engine.capture_worktree(
         &report.repository,
         &GitCaptureRequest {
             base: base.clone(),
             target_ref: report.refs.local.clone(),
+            target_before,
             message: snapshot_message(&report.refs, options, base.as_ref()),
         },
     )?;
@@ -2902,12 +2904,18 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
 
         let (temporary, _remote, writer) = setup_remote_and_writer();
+        run_git(&writer, &["config", "filter.lfs.clean", "cat"]);
+        run_git(&writer, &["config", "filter.lfs.smudge", "cat"]);
+        fs::write(writer.join(".gitattributes"), "*.bin filter=lfs\n").expect("LFS attributes");
+        fs::write(writer.join("asset.bin"), "representative filtered bytes\n")
+            .expect("filtered asset");
+        commit_all(&writer, "add representative LFS paths");
         let trace = temporary.path().join("git-invocations.log");
         let wrapper = temporary.path().join("git-wrapper");
         fs::write(
             &wrapper,
             format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"\n",
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\ncase \" $* \" in\n  *\" lfs version \"*) printf '%s\\n' 'git-lfs/3.0.0'; exit 0 ;;\nesac\nexec git \"$@\"\n",
                 trace.display()
             ),
         )
@@ -2959,6 +2967,20 @@ mod tests {
         assert!(
             lines.iter().all(|line| !line.contains(" check-attr ")),
             "steady requirements should reuse the validated attribute cache: {commands}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains(" lfs version"))
+                .count(),
+            1,
+            "LFS readiness must remain fresh while path analysis is cached: {commands}"
+        );
+        assert!(
+            lines.iter().all(|line| {
+                !line.contains(&format!(" update-ref {} ", report.refs.local.as_str()))
+            }),
+            "an unchanged capture must not rewrite its existing local ref: {commands}"
         );
         assert!(
             lines

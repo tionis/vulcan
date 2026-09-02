@@ -368,6 +368,7 @@ fn resolve_sync_conflict_locked(
             &GitCaptureRequest {
                 base: Some(local.clone()),
                 target_ref: recovery_ref,
+                target_before: None,
                 message: format!(
                     "vulcan conflict recovery snapshot\n\nVulcan-Conflict: {}\nVulcan-Sync-Version: 1\nVulcan-Sync-Device: {}\nVulcan-Sync-Source: {}\nVulcan-Sync-Semantic: false\n",
                     context.conflict_id,
