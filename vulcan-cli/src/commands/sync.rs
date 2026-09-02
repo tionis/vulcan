@@ -7,8 +7,9 @@ use crate::{
 use serde::Serialize;
 use std::time::Duration;
 use vulcan_app::sync::{
-    doctor_git_vault_for_platform, sync_git_vault, GitPlatformProfile, GitRefName, GitRemote,
-    GitSyncAction, GitSyncOptions, SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
+    doctor_git_vault_for_platform, sync_git_vault_with_progress, GitPlatformProfile, GitRefName,
+    GitRemote, GitSyncAction, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncPhase,
+    GitSyncProgress, SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
 };
 use vulcan_app::sync_checkpoints::{
     create_sync_checkpoint, SyncCheckpointKind, SyncCheckpointOptions, SyncCheckpointReport,
@@ -110,8 +111,78 @@ pub(crate) fn handle_sync_command(
     selected_permission_guard(cli, paths)?
         .check_git()
         .map_err(CliError::operation)?;
-    let report = sync_git_vault(paths, &options).map_err(CliError::operation)?;
+    let mut observer = CliSyncProgress {
+        max_attempts: options.max_retries.max(1),
+    };
+    let report = sync_git_vault_with_progress(paths, &options, &mut observer)
+        .map_err(CliError::operation)?;
     print_sync_report(cli.output, &report)
+}
+
+struct CliSyncProgress {
+    max_attempts: usize,
+}
+
+impl GitSyncObserver for CliSyncProgress {
+    fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
+        eprintln!(
+            "Sync [{}/{}]: {}",
+            progress.attempt + 1,
+            self.max_attempts,
+            sync_phase_message(progress.phase)
+        );
+        Ok(())
+    }
+}
+
+fn sync_phase_message(phase: GitSyncPhase) -> &'static str {
+    match phase {
+        GitSyncPhase::Preparing => "preparing repository",
+        GitSyncPhase::Capturing => "capturing local worktree",
+        GitSyncPhase::Captured => "local snapshot captured",
+        GitSyncPhase::Fetching => "querying remote",
+        GitSyncPhase::Fetched => "remote revision ready",
+        GitSyncPhase::Merging => "merging revisions",
+        GitSyncPhase::Pushing => "publishing with exact lease",
+        GitSyncPhase::Applying => "applying accepted tree",
+        GitSyncPhase::Verifying => "verifying current worktree",
+        GitSyncPhase::Paused => "paused with recovery state preserved",
+        GitSyncPhase::Conflicted => "conflict preserved for review",
+        GitSyncPhase::Completed => "cycle complete",
+    }
+}
+
+#[cfg(test)]
+mod progress_tests {
+    use super::*;
+
+    #[test]
+    fn sync_phase_messages_are_specific_and_nonempty() {
+        let phases = [
+            GitSyncPhase::Preparing,
+            GitSyncPhase::Capturing,
+            GitSyncPhase::Captured,
+            GitSyncPhase::Fetching,
+            GitSyncPhase::Fetched,
+            GitSyncPhase::Merging,
+            GitSyncPhase::Pushing,
+            GitSyncPhase::Applying,
+            GitSyncPhase::Verifying,
+            GitSyncPhase::Paused,
+            GitSyncPhase::Conflicted,
+            GitSyncPhase::Completed,
+        ];
+        let messages = phases.map(sync_phase_message);
+
+        assert!(messages.iter().all(|message| !message.is_empty()));
+        assert_eq!(
+            messages
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            phases.len()
+        );
+    }
 }
 
 fn handle_non_cycle_sync_command(

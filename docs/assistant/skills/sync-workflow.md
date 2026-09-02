@@ -39,6 +39,10 @@ both execute the same application workflow.
    stuck credential helper, filter, or remote. A timeout preserves the captured snapshot and
    recovery journal, so diagnose the named phase and rerun safely.
 
+Direct `sync run` reports durable phase progress on stderr, including retries; structured JSON
+remains isolated on stdout. A long capture or remote operation should therefore show its current
+phase instead of appearing idle.
+
 Interpret `paused` as preserved work, not failure: staged normal-index changes, an in-progress Git
 operation, or unexplained HEAD movement were captured before reconciliation stopped. Resolve that
 ordinary Git state and rerun. `offline` likewise retains the local candidate. Never delete journals,

@@ -12,15 +12,15 @@ use vulcan_core::{
     load_vault_config, parse_document, LinkResolutionProblem, ResolverDocument, ResolverIndex,
     ResolverLink, ScanSummary, VaultConfig, VaultPaths,
 };
-use vulcan_sync::{GitAutomaticMergeValidation, GitEngine, GitSyncObserver};
+use vulcan_sync::{GitAutomaticMergeValidation, GitEngine};
 
 pub use vulcan_sync::{
     GitCloneRequest, GitDetachedRecoveryReport, GitDetachedRecoveryRequest, GitInstallation,
     GitObjectFormat, GitPlatformPolicy, GitPlatformPreflight, GitPlatformProfile, GitRefName,
     GitRemote, GitRepository, GitRepositoryLayout, GitRepositoryRequirements, GitSyncAction,
-    GitSyncConflict, GitSyncDeviceId, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
-    GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
-    SyncCancellationToken,
+    GitSyncConflict, GitSyncDeviceId, GitSyncObserver, GitSyncObserverError, GitSyncOptions,
+    GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs,
+    GitSyncReport, SyncCancellationToken,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -874,6 +874,22 @@ pub fn sync_git_vault(
 ) -> Result<VaultSyncReport, AppError> {
     let state_store = SyncStateStore::user_default()?;
     sync_git_vault_with_state_store(paths, options, &state_store)
+}
+
+/// Runs one direct finite cycle while forwarding durable progress to a caller.
+pub fn sync_git_vault_with_progress(
+    paths: &VaultPaths,
+    options: &GitSyncOptions,
+    observer: &mut dyn GitSyncObserver,
+) -> Result<VaultSyncReport, AppError> {
+    let state_store = SyncStateStore::user_default()?;
+    sync_git_vault_with_observer(
+        paths,
+        options,
+        &state_store,
+        &SyncCancellationToken::default(),
+        observer,
+    )
 }
 
 /// Runs one finite Git synchronization cycle using an explicit state store.
