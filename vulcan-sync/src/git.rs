@@ -1719,26 +1719,27 @@ impl GitEngine for GitCliEngine {
             )
             .map(|value| value.trim().to_string())?,
         )?;
+        let properties = self.capture(
+            "inspect repository properties",
+            Some(path),
+            ["rev-parse", "--is-bare-repository", "--show-object-format"],
+        )?;
+        let mut properties = properties.lines();
         let is_bare = parse_git_bool(
-            &self.rev_parse(
-                path,
-                "determine whether the repository is bare",
-                "--is-bare-repository",
-            )?,
+            properties.next().unwrap_or_default(),
             "determine whether the repository is bare",
         )?;
-        let object_format = match self
-            .rev_parse(
-                path,
-                "discover the repository object format",
-                "--show-object-format",
-            )?
-            .as_str()
-        {
+        let object_format = match properties.next().unwrap_or_default() {
             "sha1" => GitObjectFormat::Sha1,
             "sha256" => GitObjectFormat::Sha256,
             other => GitObjectFormat::Other(other.to_string()),
         };
+        if properties.next().is_some() {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect repository properties",
+                detail: "expected exactly a bare flag and object format".to_string(),
+            });
+        }
 
         let work_tree = if is_bare {
             None

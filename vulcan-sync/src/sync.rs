@@ -2895,6 +2895,73 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn unchanged_sync_has_a_bounded_git_process_budget() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (temporary, _remote, writer) = setup_remote_and_writer();
+        let trace = temporary.path().join("git-invocations.log");
+        let wrapper = temporary.path().join("git-wrapper");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"\n",
+                trace.display()
+            ),
+        )
+        .expect("Git wrapper");
+        let mut permissions = fs::metadata(&wrapper)
+            .expect("wrapper metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&wrapper, permissions).expect("executable wrapper");
+        let engine = GitCliEngine::new(&wrapper);
+
+        sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("bootstrap through wrapper");
+        fs::write(&trace, "").expect("reset invocation trace");
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("steady sync through wrapper");
+        assert_eq!(report.outcome, GitSyncOutcome::UpToDate);
+
+        let commands = fs::read_to_string(&trace).expect("invocation trace");
+        let lines = commands.lines().collect::<Vec<_>>();
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains(" add -A -- ."))
+                .count(),
+            2,
+            "steady capture must retain exactly one stable two-pass scan: {commands}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains(" ls-remote "))
+                .count(),
+            1,
+            "steady sync should query the remote once: {commands}"
+        );
+        assert!(
+            lines.iter().all(|line| !line.contains(" fetch ")),
+            "an exact cached remote tip must not be fetched again: {commands}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains(" update-ref --stdin"))
+                .count(),
+            1,
+            "accepted refs should use one batch transaction: {commands}"
+        );
+        assert!(
+            lines.len() <= 35,
+            "steady sync exceeded its 35-process budget ({}): {commands}",
+            lines.len()
+        );
+    }
+
     #[test]
     fn unavailable_filter_driver_blocks_capture_and_remote_access() {
         let (_temporary, remote, writer) = setup_remote_and_writer();
