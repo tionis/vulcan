@@ -4542,6 +4542,7 @@ dependencies = [
  "ulid",
  "vulcan-app",
  "vulcan-core",
+ "vulcan-event-relay",
  "vulcan-sync",
 ]
 

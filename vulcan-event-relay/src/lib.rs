@@ -343,7 +343,14 @@ impl SubscriptionBundle {
                 "descriptor does not advertise the supplied credential scheme",
             ));
         }
-        if self.credential.token.expose_secret().len() < 43 {
+        if self.credential.token.expose_secret().len() < 43
+            || self
+                .credential
+                .token
+                .expose_secret()
+                .bytes()
+                .any(|byte| byte.is_ascii_control())
+        {
             return Err(ValidationError::new(
                 "relay.invalid-capability",
                 "credential.token",
@@ -387,6 +394,23 @@ pub fn validate_git_event(event: &CloudEvent) -> Result<ValidatedGitEvent, Valid
         source: event.source.clone(),
         event: parsed,
     })
+}
+
+pub fn validate_git_source(source: &str) -> Result<(), ValidationError> {
+    validate_uri("source", source)?;
+    let source = Url::parse(source).expect("validated URI parses consistently");
+    if !source.username().is_empty()
+        || source.password().is_some()
+        || source.query().is_some()
+        || source.fragment().is_some()
+    {
+        return Err(ValidationError::new(
+            "git.invalid-source",
+            "source",
+            "repository source must not contain credentials, a query, or a fragment",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_cloud_event(event: &CloudEvent) -> Result<(), ValidationError> {
@@ -670,6 +694,24 @@ mod tests {
         assert_eq!(
             bundle.validate().expect_err("short token").code,
             "relay.invalid-capability"
+        );
+    }
+
+    #[test]
+    fn git_sources_reject_credential_bearing_or_ambiguous_uris() {
+        validate_git_source("urn:git-repository:01K00000000000000000000000")
+            .expect("opaque repository URN");
+        assert_eq!(
+            validate_git_source("https://secret@example.com/repository")
+                .expect_err("credential-bearing source")
+                .code,
+            "git.invalid-source"
+        );
+        assert_eq!(
+            validate_git_source("https://example.com/repository?token=secret")
+                .expect_err("query-bearing source")
+                .code,
+            "git.invalid-source"
         );
     }
 
