@@ -807,6 +807,11 @@ pub struct GitCapture {
     pub created: bool,
 }
 
+struct GitWorktreeTreeCapture {
+    tree: GitOid,
+    reused_base: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitPathObject {
     pub oid: GitOid,
@@ -1627,9 +1632,30 @@ impl GitCliEngine {
         repository: &GitRepository,
         base: Option<&GitOid>,
     ) -> Result<GitOid, GitEngineError> {
+        self.capture_worktree_tree_inner(repository, base, false)
+            .map(|capture| capture.tree)
+    }
+
+    fn capture_worktree_tree_inner(
+        &self,
+        repository: &GitRepository,
+        base: Option<&GitOid>,
+        reuse_clean_base: bool,
+    ) -> Result<GitWorktreeTreeCapture, GitEngineError> {
         repository.require_work_tree()?;
         let index_path = repository.sync_index();
-        self.prepare_sync_index(repository, &index_path, base, "seed the sync index")?;
+        let reused =
+            self.prepare_sync_index(repository, &index_path, base, "seed the sync index")?;
+        if reuse_clean_base
+            && reused
+            && self.prepared_index_matches_worktree(repository, &index_path)?
+        {
+            let base = base.expect("a reusable sync index has a base revision");
+            return Ok(GitWorktreeTreeCapture {
+                tree: self.tree_oid(repository, base)?,
+                reused_base: true,
+            });
+        }
         for _ in 0..3 {
             self.add_worktree_to_index(repository, &index_path, "capture the working tree")?;
             let first = GitOid::parse(
@@ -1652,10 +1678,39 @@ impl GitCliEngine {
                 .trim(),
             )?;
             if first == second {
-                return Ok(second);
+                return Ok(GitWorktreeTreeCapture {
+                    tree: second,
+                    reused_base: false,
+                });
             }
         }
         Err(GitEngineError::WorktreeChanged)
+    }
+
+    fn prepared_index_matches_worktree(
+        &self,
+        repository: &GitRepository,
+        index_path: &Path,
+    ) -> Result<bool, GitEngineError> {
+        let mut command = self.index_command(repository, index_path)?;
+        command.args(["diff-files", "--quiet", "--"]);
+        command.args(WORKTREE_CAPTURE_PATHS);
+        let tracked = self.execute(command)?;
+        if !tracked.status.success() {
+            if tracked.status.code() == Some(1) {
+                return Ok(false);
+            }
+            return Err(command_failed("compare the working tree", &tracked));
+        }
+        let mut command = self.index_command(repository, index_path)?;
+        command.args(["ls-files", "--others", "--exclude-standard", "--"]);
+        command.args(WORKTREE_CAPTURE_PATHS);
+        let output = ensure_success("list untracked worktree paths", self.execute(command)?)?;
+        Ok(
+            decode_stdout("list untracked worktree paths", output.stdout)?
+                .trim()
+                .is_empty(),
+        )
     }
 
     fn commit_tree_with_reproducible_identity(
@@ -2364,10 +2419,13 @@ impl GitEngine for GitCliEngine {
         repository: &GitRepository,
         request: &GitCaptureRequest,
     ) -> Result<GitCapture, GitEngineError> {
-        let tree = self.snapshot_worktree_tree_inner(repository, request.base.as_ref())?;
+        let reuse_clean_base = request.base.is_some() && request.base == request.target_before;
+        let tree_capture =
+            self.capture_worktree_tree_inner(repository, request.base.as_ref(), reuse_clean_base)?;
+        let tree = tree_capture.tree;
 
         if let Some(base) = &request.base {
-            if self.tree_oid(repository, base)? == tree {
+            if tree_capture.reused_base || self.tree_oid(repository, base)? == tree {
                 if request.target_before.as_ref() != Some(base) {
                     self.update_ref(repository, &request.target_ref, base)?;
                 }
@@ -2426,25 +2484,7 @@ impl GitEngine for GitCliEngine {
             }
         }
 
-        let mut command = self.index_command(repository, &index_path)?;
-        command.args(["diff-files", "--quiet", "--"]);
-        command.args(WORKTREE_CAPTURE_PATHS);
-        let tracked = self.execute(command)?;
-        if !tracked.status.success() {
-            if tracked.status.code() == Some(1) {
-                return Ok(false);
-            }
-            return Err(command_failed("compare the working tree", &tracked));
-        }
-        let mut command = self.index_command(repository, &index_path)?;
-        command.args(["ls-files", "--others", "--exclude-standard", "--"]);
-        command.args(WORKTREE_CAPTURE_PATHS);
-        let output = ensure_success("list untracked worktree paths", self.execute(command)?)?;
-        Ok(
-            decode_stdout("list untracked worktree paths", output.stdout)?
-                .trim()
-                .is_empty(),
-        )
+        self.prepared_index_matches_worktree(repository, &index_path)
     }
 
     fn remote_ref(
@@ -4847,14 +4887,30 @@ mod tests {
                 &repository,
                 &GitCaptureRequest {
                     base: Some(capture.commit.clone()),
-                    target_ref: local_ref,
-                    target_before: None,
+                    target_ref: local_ref.clone(),
+                    target_before: Some(capture.commit.clone()),
                     message: "vulcan sync snapshot\n".to_string(),
                 },
             )
             .expect("unchanged capture should succeed");
         assert!(!second.created);
-        assert_eq!(second.commit, capture.commit);
+        assert_eq!(second.commit, capture.commit.clone());
+
+        fs::write(temporary.path().join("Home.md"), "updated again\n")
+            .expect("second worktree update");
+        let third = engine
+            .capture_worktree(
+                &repository,
+                &GitCaptureRequest {
+                    base: Some(capture.commit.clone()),
+                    target_ref: local_ref,
+                    target_before: Some(capture.commit.clone()),
+                    message: "vulcan sync changed snapshot\n".to_string(),
+                },
+            )
+            .expect("changed capture should fall back to a full snapshot");
+        assert!(third.created);
+        assert_ne!(third.commit, capture.commit);
     }
 
     #[test]

@@ -2941,8 +2941,8 @@ mod tests {
                 .iter()
                 .filter(|line| line.contains(" add -A -- ."))
                 .count(),
-            2,
-            "steady capture must retain exactly one stable two-pass scan: {commands}"
+            0,
+            "a clean steady capture must bypass the full two-pass scan: {commands}"
         );
         assert_eq!(
             lines
@@ -2989,8 +2989,8 @@ mod tests {
             "steady verification should reuse the capture stat cache: {commands}"
         );
         assert!(
-            lines.len() <= 34,
-            "steady sync exceeded its 34-process budget ({}): {commands}",
+            lines.len() <= 30,
+            "steady sync exceeded its 30-process budget ({}): {commands}",
             lines.len()
         );
     }
