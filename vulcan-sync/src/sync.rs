@@ -919,6 +919,76 @@ impl AttemptControl<'_> {
     }
 }
 
+struct AttemptRefs {
+    local: Option<GitOid>,
+    fetched: Option<GitOid>,
+    pending: Option<GitOid>,
+}
+
+fn read_attempt_refs(
+    engine: &dyn GitEngine,
+    report: &GitSyncReport,
+) -> Result<AttemptRefs, GitSyncError> {
+    let targets = engine.read_refs(
+        &report.repository,
+        &[
+            &report.refs.local,
+            &report.refs.fetched,
+            &report.refs.pending,
+        ],
+    )?;
+    Ok(AttemptRefs {
+        local: targets.get(&report.refs.local).cloned(),
+        fetched: targets.get(&report.refs.fetched).cloned(),
+        pending: targets.get(&report.refs.pending).cloned(),
+    })
+}
+
+fn update_accepted_refs_if_needed(
+    engine: &dyn GitEngine,
+    report: &GitSyncReport,
+    capture: &crate::GitCapture,
+    remote_tip: Option<&GitOid>,
+    pending_before: Option<&GitOid>,
+    accepted: &GitOid,
+) -> Result<(), GitSyncError> {
+    if capture.commit == *accepted
+        && remote_tip == Some(accepted)
+        && pending_before == Some(accepted)
+    {
+        return Ok(());
+    }
+    engine.update_refs(
+        &report.repository,
+        &[
+            (&report.refs.local, accepted),
+            (&report.refs.fetched, accepted),
+            (&report.refs.pending, accepted),
+        ],
+    )?;
+    Ok(())
+}
+
+fn capture_local_worktree(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &GitSyncReport,
+    target_before: Option<GitOid>,
+) -> Result<crate::GitCapture, GitSyncError> {
+    let base = target_before
+        .clone()
+        .or(engine.head_commit(&report.repository)?);
+    Ok(engine.capture_worktree(
+        &report.repository,
+        &GitCaptureRequest {
+            base: base.clone(),
+            target_ref: report.refs.local.clone(),
+            target_before,
+            message: snapshot_message(&report.refs, options, base.as_ref()),
+        },
+    )?)
+}
+
 fn run_attempt(
     engine: &dyn GitEngine,
     options: &GitSyncOptions,
@@ -927,19 +997,8 @@ fn run_attempt(
 ) -> Result<AttemptResult, GitSyncError> {
     control.check()?;
     control.emit(GitSyncPhase::Capturing, report, None)?;
-    let target_before = engine.read_ref(&report.repository, &report.refs.local)?;
-    let base = target_before
-        .clone()
-        .or(engine.head_commit(&report.repository)?);
-    let capture = engine.capture_worktree(
-        &report.repository,
-        &GitCaptureRequest {
-            base: base.clone(),
-            target_ref: report.refs.local.clone(),
-            target_before,
-            message: snapshot_message(&report.refs, options, base.as_ref()),
-        },
-    )?;
+    let refs_before = read_attempt_refs(engine, report)?;
+    let capture = capture_local_worktree(engine, options, report, refs_before.local)?;
     report.local_snapshot = Some(capture.commit.clone());
     if capture.created {
         report.actions.push(GitSyncAction::SnapshotCreated);
@@ -955,7 +1014,13 @@ fn run_attempt(
     }
     if let Some(pause) = sync_pause(engine, report)? {
         if let Some(remote_tip) = remote_tip.as_ref() {
-            ensure_remote_tip(engine, options, report, remote_tip)?;
+            ensure_remote_tip(
+                engine,
+                options,
+                report,
+                refs_before.fetched.as_ref(),
+                remote_tip,
+            )?;
             control.emit(GitSyncPhase::Fetched, report, None)?;
         }
         report.pause = Some(pause);
@@ -963,8 +1028,15 @@ fn run_attempt(
         control.emit(GitSyncPhase::Paused, report, None)?;
         return Ok(AttemptResult::Finished);
     }
-    let Some((accepted, outcome, pushed)) =
-        reconcile(engine, options, report, &capture, remote_tip, control)?
+    let Some((accepted, outcome, pushed)) = reconcile(
+        engine,
+        options,
+        report,
+        &capture,
+        remote_tip.clone(),
+        refs_before.fetched.as_ref(),
+        control,
+    )?
     else {
         return Ok(if report.outcome == GitSyncOutcome::Conflicted {
             AttemptResult::Finished
@@ -1010,13 +1082,13 @@ fn run_attempt(
             materialization.applied = true;
         }
     }
-    engine.update_refs(
-        &report.repository,
-        &[
-            (&report.refs.local, &accepted),
-            (&report.refs.fetched, &accepted),
-            (&report.refs.pending, &accepted),
-        ],
+    update_accepted_refs_if_needed(
+        engine,
+        report,
+        &capture,
+        remote_tip.as_ref(),
+        refs_before.pending.as_ref(),
+        &accepted,
     )?;
     report.outcome = outcome;
     report.accepted = Some(accepted);
@@ -1127,6 +1199,7 @@ fn reconcile(
     report: &mut GitSyncReport,
     capture: &crate::GitCapture,
     remote_tip: Option<GitOid>,
+    fetched_before: Option<&GitOid>,
     control: &mut AttemptControl<'_>,
 ) -> Result<Option<(GitOid, GitSyncOutcome, bool)>, GitSyncError> {
     let Some(remote_tip) = remote_tip else {
@@ -1150,7 +1223,7 @@ fn reconcile(
             },
         );
     };
-    let remote = ensure_remote_tip(engine, options, report, &remote_tip)?;
+    let remote = ensure_remote_tip(engine, options, report, fetched_before, &remote_tip)?;
     control.emit(GitSyncPhase::Fetched, report, None)?;
     if capture.commit == remote {
         return Ok(Some((remote, GitSyncOutcome::UpToDate, false)));
@@ -1192,13 +1265,10 @@ fn ensure_remote_tip(
     engine: &dyn GitEngine,
     options: &GitSyncOptions,
     report: &GitSyncReport,
+    fetched_before: Option<&GitOid>,
     remote_tip: &GitOid,
 ) -> Result<GitOid, GitSyncError> {
-    if engine
-        .read_ref(&report.repository, &report.refs.fetched)?
-        .as_ref()
-        == Some(remote_tip)
-    {
+    if fetched_before == Some(remote_tip) {
         return Ok(remote_tip.clone());
     }
     engine
@@ -2892,8 +2962,14 @@ mod tests {
         };
 
         assert_eq!(
-            ensure_remote_tip(&engine, &offline_options, &report, &remote_tip)
-                .expect("the exact cached tip should not fetch"),
+            ensure_remote_tip(
+                &engine,
+                &offline_options,
+                &report,
+                Some(&remote_tip),
+                &remote_tip,
+            )
+            .expect("the exact cached tip should not fetch"),
             remote_tip
         );
     }
@@ -2961,8 +3037,8 @@ mod tests {
                 .iter()
                 .filter(|line| line.contains(" update-ref --stdin"))
                 .count(),
-            1,
-            "accepted refs should use one batch transaction: {commands}"
+            0,
+            "already accepted refs should not be rewritten: {commands}"
         );
         assert!(
             lines.iter().all(|line| !line.contains(" check-attr ")),
@@ -2989,8 +3065,8 @@ mod tests {
             "steady verification should reuse the capture stat cache: {commands}"
         );
         assert!(
-            lines.len() <= 27,
-            "steady sync exceeded its 27-process budget ({}): {commands}",
+            lines.len() <= 25,
+            "steady sync exceeded its 25-process budget ({}): {commands}",
             lines.len()
         );
     }

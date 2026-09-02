@@ -58,6 +58,20 @@ pub trait GitEngine: Send + Sync {
         reference: &GitRefName,
     ) -> Result<Option<GitOid>, GitEngineError>;
 
+    fn read_refs(
+        &self,
+        repository: &GitRepository,
+        references: &[&GitRefName],
+    ) -> Result<BTreeMap<GitRefName, GitOid>, GitEngineError> {
+        let mut targets = BTreeMap::new();
+        for reference in references {
+            if let Some(target) = self.read_ref(repository, reference)? {
+                targets.insert((*reference).clone(), target);
+            }
+        }
+        Ok(targets)
+    }
+
     /// Lists direct refs beneath one validated namespace without resolving or
     /// following symbolic refs.
     fn list_refs(
@@ -1920,6 +1934,30 @@ impl GitEngine for GitCliEngine {
         Err(command_failed("read a Git ref", &output))
     }
 
+    fn read_refs(
+        &self,
+        repository: &GitRepository,
+        references: &[&GitRefName],
+    ) -> Result<BTreeMap<GitRefName, GitOid>, GitEngineError> {
+        if references.is_empty() {
+            return Ok(BTreeMap::new());
+        }
+        let requested = references
+            .iter()
+            .map(|reference| reference.as_str())
+            .collect::<BTreeSet<_>>();
+        let mut command = self.repository_command(repository);
+        command.args([
+            "for-each-ref",
+            "--format=%(refname)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)%00",
+        ]);
+        for reference in references {
+            command.arg(reference.as_str());
+        }
+        let output = ensure_success("read Git refs", self.execute(command)?)?;
+        parse_ref_targets(&output.stdout, &requested)
+    }
+
     fn list_refs(
         &self,
         repository: &GitRepository,
@@ -3657,6 +3695,61 @@ fn parse_reference_list(stdout: &[u8]) -> Result<Vec<GitReference>, GitEngineErr
     Ok(references)
 }
 
+fn parse_ref_targets(
+    stdout: &[u8],
+    requested: &BTreeSet<&str>,
+) -> Result<BTreeMap<GitRefName, GitOid>, GitEngineError> {
+    const OPERATION: &str = "read Git refs";
+    let mut targets = BTreeMap::new();
+    for line in stdout.split(|byte| *byte == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let fields = line.split(|byte| *byte == 0).collect::<Vec<_>>();
+        if fields.len() != 6 || !fields[5].is_empty() {
+            return Err(GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: "expected ref, object, and peeled object as NUL-delimited fields"
+                    .to_string(),
+            });
+        }
+        let decode = |field: &[u8]| {
+            std::str::from_utf8(field)
+                .map(str::to_string)
+                .map_err(|error| GitEngineError::InvalidOutput {
+                    operation: OPERATION,
+                    detail: error.to_string(),
+                })
+        };
+        let name = decode(fields[0])?;
+        if !requested.contains(name.as_str()) {
+            continue;
+        }
+        let object_type = decode(fields[1])?;
+        let object = decode(fields[2])?;
+        let peeled_type = decode(fields[3])?;
+        let peeled = decode(fields[4])?;
+        let target = match (object_type.as_str(), peeled_type.as_str()) {
+            ("commit", "") => GitOid::parse(object)?,
+            ("tag", "commit") => GitOid::parse(peeled)?,
+            _ => {
+                return Err(GitEngineError::InvalidOutput {
+                    operation: OPERATION,
+                    detail: format!("{name} does not resolve to a readable commit object"),
+                });
+            }
+        };
+        let name = GitRefName::parse(name)?;
+        if targets.insert(name, target).is_some() {
+            return Err(GitEngineError::InvalidOutput {
+                operation: OPERATION,
+                detail: "Git returned a requested ref more than once".to_string(),
+            });
+        }
+    }
+    Ok(targets)
+}
+
 fn parse_commit_metadata(source: &[u8]) -> Result<GitCommitMetadata, GitEngineError> {
     let separator = source
         .windows(2)
@@ -5374,6 +5467,42 @@ mod tests {
         assert!(references
             .iter()
             .all(|reference| reference.target == commit));
+    }
+
+    #[test]
+    fn batch_ref_reads_preserve_missing_and_peeled_commit_semantics() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Home.md"), "initial\n").expect("note");
+        let commit = commit_all(temporary.path(), "initial");
+        run_git(
+            temporary.path(),
+            &["tag", "-a", "batch-ref-tag", "-m", "annotated tag"],
+        );
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let direct = GitRefName::parse("refs/vulcan/test/direct").expect("direct ref");
+        let annotated = GitRefName::parse("refs/vulcan/test/annotated").expect("annotated ref");
+        let missing = GitRefName::parse("refs/vulcan/test/missing").expect("missing ref");
+        run_git(
+            temporary.path(),
+            &["update-ref", direct.as_str(), commit.as_str()],
+        );
+        run_git(
+            temporary.path(),
+            &["update-ref", annotated.as_str(), "refs/tags/batch-ref-tag"],
+        );
+
+        let targets = engine
+            .read_refs(&repository, &[&missing, &annotated, &direct])
+            .expect("batch refs");
+
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets.get(&direct), Some(&commit));
+        assert_eq!(targets.get(&annotated), Some(&commit));
+        assert!(!targets.contains_key(&missing));
     }
 
     #[test]
