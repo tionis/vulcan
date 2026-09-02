@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
 description: Synchronize one or more Vulcan wikis safely, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 2
+version: 3
 metadata:
   vulcan:
     managed: true
@@ -39,9 +39,11 @@ both execute the same application workflow.
    stuck credential helper, filter, or remote. A timeout preserves the captured snapshot and
    recovery journal, so diagnose the named phase and rerun safely.
 
-Direct `sync run` reports durable phase progress on stderr, including retries; structured JSON
-remains isolated on stdout. A long capture or remote operation should therefore show its current
-phase instead of appearing idle.
+Interactive human `sync run` uses one transient phase line and clears it before printing the compact
+result. Add `--verbose` for durable phase-by-phase diagnostics, including retries. `--quiet`,
+structured output, and redirected runs suppress progress chatter; JSON remains isolated on stdout.
+Every Git subprocess still has the configured timeout, so a stuck phase fails with a named,
+recoverable diagnostic instead of waiting forever.
 
 Interpret `paused` as preserved work, not failure: staged normal-index changes, an in-progress Git
 operation, or unexplained HEAD movement were captured before reconciliation stopped. Resolve that

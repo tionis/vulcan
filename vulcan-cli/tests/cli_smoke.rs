@@ -100,6 +100,82 @@ fn commit_all(vault_root: &Path, message: &str) {
     run_git_ok(vault_root, &["commit", "-m", message]);
 }
 
+#[test]
+fn sync_run_defaults_to_a_compact_result_and_keeps_durable_progress_opt_in() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let remote = temporary.path().join("remote.git");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    let vault = temporary.path().join("vault");
+    fs::create_dir(&vault).expect("vault directory");
+    init_git_repo(&vault);
+    run_git_ok(
+        &vault,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    fs::write(vault.join("Home.md"), "home\n").expect("home note");
+    commit_all(&vault, "initial");
+
+    let state_home = temporary.path().join("state");
+    let config_home = temporary.path().join("config");
+    let run_sync = |extra: &[&str]| {
+        let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"));
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .args([
+                "--vault",
+                vault.to_str().expect("vault path"),
+                "sync",
+                "run",
+            ])
+            .args(extra);
+        command.output().expect("sync command should run")
+    };
+
+    let bootstrap = run_sync(&[]);
+    assert!(bootstrap.status.success());
+    assert_eq!(
+        String::from_utf8(bootstrap.stdout).expect("bootstrap stdout"),
+        "Sync: initialized origin\n"
+    );
+    assert!(bootstrap.stderr.is_empty());
+
+    let steady = run_sync(&[]);
+    assert!(steady.status.success());
+    assert_eq!(
+        String::from_utf8(steady.stdout).expect("steady stdout"),
+        "Sync: up to date with origin\n"
+    );
+    assert!(steady.stderr.is_empty());
+
+    let verbose = run_sync(&["--verbose"]);
+    assert!(verbose.status.success());
+    let stdout = String::from_utf8(verbose.stdout).expect("verbose stdout");
+    let stderr = String::from_utf8(verbose.stderr).expect("verbose stderr");
+    assert!(stdout.starts_with("Sync: up to date with origin\nRemote ref: refs/heads/"));
+    assert!(stdout.contains("\nAccepted: "));
+    assert!(stderr.contains("Sync attempt 1/4: preparing repository"));
+    assert!(stderr.contains("Sync attempt 1/4: cycle complete"));
+
+    let json = run_sync(&["--verbose", "--output", "json"]);
+    assert!(json.status.success());
+    serde_json::from_slice::<Value>(&json.stdout).expect("JSON sync report");
+    assert!(json.stderr.is_empty());
+}
+
 fn run_daemon_test_command(
     config_home: &Path,
     state_home: &Path,

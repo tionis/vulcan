@@ -5,11 +5,13 @@ use crate::{
     SyncCheckpointKindArg, SyncCommand, SyncConflictSideArg, SyncSelectionArgs, TermuxNetworkArg,
 };
 use serde::Serialize;
+use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 use vulcan_app::sync::{
     doctor_git_vault_for_platform, sync_git_vault_with_progress, GitPlatformProfile, GitRefName,
-    GitRemote, GitSyncAction, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncPhase,
-    GitSyncProgress, SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
+    GitRemote, GitSyncAction, GitSyncObserver, GitSyncObserverError, GitSyncOptions,
+    GitSyncOutcome, GitSyncPhase, GitSyncProgress, SyncDoctorReport, SyncDoctorSeverity,
+    VaultSyncReport,
 };
 use vulcan_app::sync_checkpoints::{
     create_sync_checkpoint, SyncCheckpointKind, SyncCheckpointOptions, SyncCheckpointReport,
@@ -111,27 +113,106 @@ pub(crate) fn handle_sync_command(
     selected_permission_guard(cli, paths)?
         .check_git()
         .map_err(CliError::operation)?;
-    let mut observer = CliSyncProgress {
-        max_attempts: options.max_retries.max(1),
-    };
-    let report = sync_git_vault_with_progress(paths, &options, &mut observer)
-        .map_err(CliError::operation)?;
-    print_sync_report(cli.output, &report)
+    let mut observer = CliSyncProgress::new(
+        options.max_retries.max(1),
+        progress_mode(
+            cli.output,
+            cli.quiet,
+            cli.verbose,
+            io::stderr().is_terminal(),
+        ),
+    );
+    let result = sync_git_vault_with_progress(paths, &options, &mut observer);
+    observer.finish();
+    let report = result.map_err(CliError::operation)?;
+    print_sync_report(cli.output, cli.verbose, &report)
 }
 
 struct CliSyncProgress {
     max_attempts: usize,
+    mode: CliSyncProgressMode,
+    transient_active: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CliSyncProgressMode {
+    Silent,
+    Transient,
+    Verbose,
+}
+
+impl CliSyncProgress {
+    fn new(max_attempts: usize, mode: CliSyncProgressMode) -> Self {
+        Self {
+            max_attempts,
+            mode,
+            transient_active: false,
+        }
+    }
+
+    fn finish(&mut self) {
+        if self.transient_active {
+            let mut stderr = io::stderr().lock();
+            let _ = write!(stderr, "\r\x1b[2K");
+            let _ = stderr.flush();
+            self.transient_active = false;
+        }
+    }
 }
 
 impl GitSyncObserver for CliSyncProgress {
     fn progress(&mut self, progress: &GitSyncProgress) -> Result<(), GitSyncObserverError> {
-        eprintln!(
-            "Sync [{}/{}]: {}",
-            progress.attempt + 1,
-            self.max_attempts,
-            sync_phase_message(progress.phase)
-        );
+        match self.mode {
+            CliSyncProgressMode::Silent => {}
+            CliSyncProgressMode::Transient => {
+                let mut stderr = io::stderr().lock();
+                if progress.attempt == 0 {
+                    let _ = write!(
+                        stderr,
+                        "\r\x1b[2KSync: {}",
+                        sync_phase_message(progress.phase)
+                    );
+                } else {
+                    let _ = write!(
+                        stderr,
+                        "\r\x1b[2KSync retry {}/{}: {}",
+                        progress.attempt + 1,
+                        self.max_attempts,
+                        sync_phase_message(progress.phase)
+                    );
+                }
+                let _ = stderr.flush();
+                self.transient_active = true;
+            }
+            CliSyncProgressMode::Verbose => {
+                let mut stderr = io::stderr().lock();
+                let _ = writeln!(
+                    stderr,
+                    "Sync attempt {}/{}: {}",
+                    progress.attempt + 1,
+                    self.max_attempts,
+                    sync_phase_message(progress.phase)
+                );
+            }
+        }
         Ok(())
+    }
+}
+
+fn progress_mode(
+    output: OutputFormat,
+    quiet: bool,
+    verbose: bool,
+    stderr_is_terminal: bool,
+) -> CliSyncProgressMode {
+    if quiet || output != OutputFormat::Human {
+        CliSyncProgressMode::Silent
+    } else if verbose {
+        CliSyncProgressMode::Verbose
+    } else if stderr_is_terminal {
+        CliSyncProgressMode::Transient
+    } else {
+        CliSyncProgressMode::Silent
     }
 }
 
@@ -182,6 +263,26 @@ mod progress_tests {
                 .len(),
             phases.len()
         );
+    }
+
+    #[test]
+    fn progress_is_transient_only_for_normal_interactive_human_output() {
+        assert_eq!(
+            progress_mode(OutputFormat::Human, false, false, true),
+            CliSyncProgressMode::Transient
+        );
+        assert_eq!(
+            progress_mode(OutputFormat::Human, false, true, true),
+            CliSyncProgressMode::Verbose
+        );
+        for mode in [
+            progress_mode(OutputFormat::Human, true, true, true),
+            progress_mode(OutputFormat::Human, false, false, false),
+            progress_mode(OutputFormat::Json, false, true, true),
+            progress_mode(OutputFormat::Markdown, false, true, true),
+        ] {
+            assert_eq!(mode, CliSyncProgressMode::Silent);
+        }
     }
 }
 
@@ -1969,16 +2070,23 @@ fn print_registered_sync_report(
     Ok(())
 }
 
-fn print_sync_report(output: OutputFormat, report: &VaultSyncReport) -> Result<(), CliError> {
+fn print_sync_report(
+    output: OutputFormat,
+    verbose: bool,
+    report: &VaultSyncReport,
+) -> Result<(), CliError> {
     match output {
         OutputFormat::Json => print_json(report),
         OutputFormat::Human | OutputFormat::Markdown => {
             println!(
-                "Sync {:?}: {} -> {}",
-                report.sync.outcome, report.sync.remote, report.sync.refs.live
+                "{}",
+                sync_outcome_message(report.sync.outcome, report.sync.remote.as_str())
             );
-            if let Some(accepted) = &report.sync.accepted {
-                println!("Accepted: {accepted}");
+            if verbose {
+                println!("Remote ref: {}", report.sync.refs.live);
+                if let Some(accepted) = &report.sync.accepted {
+                    println!("Accepted: {accepted}");
+                }
             }
             if report
                 .sync
@@ -2041,5 +2149,41 @@ fn print_sync_report(output: OutputFormat, report: &VaultSyncReport) -> Result<(
             }
             Ok(())
         }
+    }
+}
+
+fn sync_outcome_message(outcome: GitSyncOutcome, remote: &str) -> String {
+    match outcome {
+        GitSyncOutcome::Planned => {
+            format!("Sync: inspected {remote} (no changes applied)")
+        }
+        GitSyncOutcome::Paused => format!("Sync: paused before reconciling with {remote}"),
+        GitSyncOutcome::UpToDate => format!("Sync: up to date with {remote}"),
+        GitSyncOutcome::Bootstrapped => format!("Sync: initialized {remote}"),
+        GitSyncOutcome::Pushed => format!("Sync: pushed to {remote}"),
+        GitSyncOutcome::Pulled => format!("Sync: pulled from {remote}"),
+        GitSyncOutcome::Merged => format!("Sync: merged with {remote}"),
+        GitSyncOutcome::Conflicted => format!("Sync: conflict with {remote} requires review"),
+    }
+}
+
+#[cfg(test)]
+mod sync_report_tests {
+    use super::*;
+
+    #[test]
+    fn sync_outcome_messages_are_compact_and_human_readable() {
+        assert_eq!(
+            sync_outcome_message(GitSyncOutcome::UpToDate, "origin"),
+            "Sync: up to date with origin"
+        );
+        assert_eq!(
+            sync_outcome_message(GitSyncOutcome::Pushed, "backup"),
+            "Sync: pushed to backup"
+        );
+        assert_eq!(
+            sync_outcome_message(GitSyncOutcome::Conflicted, "origin"),
+            "Sync: conflict with origin requires review"
+        );
     }
 }
