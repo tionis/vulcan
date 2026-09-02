@@ -8528,6 +8528,17 @@
                 ]
               },
               {
+                "help": "Maximum seconds allowed for any Git or Git LFS subprocess",
+                "id": "git_timeout_seconds",
+                "long": "git-timeout-seconds",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "GIT_TIMEOUT_SECONDS"
+                ]
+              },
+              {
                 "help": "Inspect and plan without creating refs, objects, or files",
                 "id": "dry_run",
                 "long": "dry-run",
