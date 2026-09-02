@@ -947,15 +947,9 @@ fn run_attempt(
     if control.attempt == 0 {
         report.remote_before.clone_from(&remote_tip);
     }
-    let has_remote = remote_tip.is_some();
     if let Some(pause) = sync_pause(engine, report)? {
-        if has_remote {
-            engine.fetch_ref(
-                &report.repository,
-                &options.remote,
-                &report.refs.live,
-                &report.refs.fetched,
-            )?;
+        if let Some(remote_tip) = remote_tip.as_ref() {
+            ensure_remote_tip(engine, options, report, remote_tip)?;
             control.emit(GitSyncPhase::Fetched, report, None)?;
         }
         report.pause = Some(pause);
@@ -964,7 +958,7 @@ fn run_attempt(
         return Ok(AttemptResult::Finished);
     }
     let Some((accepted, outcome, pushed)) =
-        reconcile(engine, options, report, &capture, has_remote, control)?
+        reconcile(engine, options, report, &capture, remote_tip, control)?
     else {
         return Ok(if report.outcome == GitSyncOutcome::Conflicted {
             AttemptResult::Finished
@@ -1111,10 +1105,10 @@ fn reconcile(
     options: &GitSyncOptions,
     report: &mut GitSyncReport,
     capture: &crate::GitCapture,
-    has_remote: bool,
+    remote_tip: Option<GitOid>,
     control: &mut AttemptControl<'_>,
 ) -> Result<Option<(GitOid, GitSyncOutcome, bool)>, GitSyncError> {
-    if !has_remote {
+    let Some(remote_tip) = remote_tip else {
         control.check()?;
         control.emit(GitSyncPhase::Pushing, report, None)?;
         if !captured_worktree_is_current(engine, &report.repository, capture)? {
@@ -1134,13 +1128,8 @@ fn reconcile(
                 GitPushResult::Rejected => None,
             },
         );
-    }
-    let remote = engine.fetch_ref(
-        &report.repository,
-        &options.remote,
-        &report.refs.live,
-        &report.refs.fetched,
-    )?;
+    };
+    let remote = ensure_remote_tip(engine, options, report, &remote_tip)?;
     control.emit(GitSyncPhase::Fetched, report, None)?;
     if capture.commit == remote {
         return Ok(Some((remote, GitSyncOutcome::UpToDate, false)));
@@ -1176,6 +1165,29 @@ fn reconcile(
         return reconcile_epoch_root(engine, options, report, capture, remote, &epoch, control);
     }
     merge_divergence(engine, options, report, capture, &remote, control)
+}
+
+fn ensure_remote_tip(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &GitSyncReport,
+    remote_tip: &GitOid,
+) -> Result<GitOid, GitSyncError> {
+    if engine
+        .read_ref(&report.repository, &report.refs.fetched)?
+        .as_ref()
+        == Some(remote_tip)
+    {
+        return Ok(remote_tip.clone());
+    }
+    engine
+        .fetch_ref(
+            &report.repository,
+            &options.remote,
+            &report.refs.live,
+            &report.refs.fetched,
+        )
+        .map_err(GitSyncError::from)
 }
 
 const MAX_EPOCH_DISCOVERY_COMMITS: usize = 100_001;
@@ -2844,6 +2856,25 @@ mod tests {
         assert!(!report.actions.contains(&GitSyncAction::WorktreeApplied));
         assert_eq!(report.accepted, report.local_snapshot);
         assert!(report.requirements.required_filters.is_empty());
+    }
+
+    #[test]
+    fn exact_cached_remote_tip_does_not_open_a_fetch_connection() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("initial sync should succeed");
+        let remote_tip = report.accepted.clone().expect("accepted revision");
+        let offline_options = GitSyncOptions {
+            remote: GitRemote::parse("missing-remote").expect("remote name"),
+            ..GitSyncOptions::default()
+        };
+
+        assert_eq!(
+            ensure_remote_tip(&engine, &offline_options, &report, &remote_tip)
+                .expect("the exact cached tip should not fetch"),
+            remote_tip
+        );
     }
 
     #[test]
