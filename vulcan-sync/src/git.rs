@@ -1,6 +1,6 @@
 use crate::{detached_recovery_ref, local_recovery_ref_namespaces};
 use serde::Serialize;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{Display, Formatter};
@@ -2887,10 +2887,15 @@ impl GitEngine for GitCliEngine {
             }
         }
         let mut required_filters = Vec::with_capacity(filters.len());
+        let configured_filter_keys = self.configured_filter_keys(repository)?;
         for (name, path_count) in filters {
-            let clean_configured = self.filter_configured(repository, &name, "clean")?;
-            let smudge_configured = self.filter_configured(repository, &name, "smudge")?;
-            let process_configured = self.filter_configured(repository, &name, "process")?;
+            let configured = |direction: &str| {
+                configured_filter_keys
+                    .contains(&format!("filter.{name}.{direction}").to_ascii_lowercase())
+            };
+            let clean_configured = configured("clean");
+            let smudge_configured = configured("smudge");
+            let process_configured = configured("process");
             let executable_available = (name == "lfs").then(|| {
                 let mut command = self.repository_command(repository);
                 command.args(["lfs", "version"]);
@@ -2911,21 +2916,7 @@ impl GitEngine for GitCliEngine {
             .find(|filter| filter.name == "lfs")
             .and_then(|filter| filter.executable_available);
 
-        let mut ignored_internal_paths = Vec::new();
-        for path in [
-            ".vulcan/cache.db",
-            ".vulcan/cache.db-wal",
-            ".vulcan/cache.db-shm",
-        ] {
-            let mut command = self.repository_command(repository);
-            command.args(["check-ignore", "--quiet", "--", path]);
-            let output = self.execute(command)?;
-            match output.status.code() {
-                Some(0) => ignored_internal_paths.push(path.to_string()),
-                Some(1) => {}
-                _ => return Err(command_failed("inspect ignored Vulcan state", &output)),
-            }
-        }
+        let ignored_internal_paths = self.ignored_internal_paths(repository)?;
 
         Ok(GitRepositoryRequirements {
             tracked_paths: tracked_paths.len(),
@@ -2937,21 +2928,62 @@ impl GitEngine for GitCliEngine {
 }
 
 impl GitCliEngine {
-    fn filter_configured(
+    fn ignored_internal_paths(
         &self,
         repository: &GitRepository,
-        filter: &str,
-        direction: &str,
-    ) -> Result<bool, GitEngineError> {
-        let key = format!("filter.{filter}.{direction}");
+    ) -> Result<Vec<String>, GitEngineError> {
+        let internal_paths = [
+            ".vulcan/cache.db",
+            ".vulcan/cache.db-wal",
+            ".vulcan/cache.db-shm",
+        ];
+        let mut input = internal_paths.join("\0").into_bytes();
+        input.push(0);
         let mut command = self.repository_command(repository);
-        command.args(["config", "--get", &key]);
+        command.args(["check-ignore", "-z", "--stdin"]);
+        let output = self.execute_with_input(command, "inspect ignored Vulcan state", &input)?;
+        if !matches!(output.status.code(), Some(0 | 1)) {
+            return Err(command_failed("inspect ignored Vulcan state", &output));
+        }
+        let ignored = nul_fields("inspect ignored Vulcan state", &output.stdout)?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        if ignored.iter().any(|path| !internal_paths.contains(path)) {
+            return Err(GitEngineError::InvalidOutput {
+                operation: "inspect ignored Vulcan state",
+                detail: "Git returned an unexpected ignored path".to_string(),
+            });
+        }
+        Ok(internal_paths
+            .into_iter()
+            .filter(|path| ignored.contains(path))
+            .map(str::to_string)
+            .collect())
+    }
+
+    fn configured_filter_keys(
+        &self,
+        repository: &GitRepository,
+    ) -> Result<BTreeSet<String>, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command.args([
+            "config",
+            "--null",
+            "--name-only",
+            "--get-regexp",
+            r"^filter\..*\.(clean|smudge|process)$",
+        ]);
         let output = self.execute(command)?;
         match output.status.code() {
-            Some(0) => Ok(!output.stdout.is_empty()),
-            Some(1) => Ok(false),
+            Some(0) => Ok(
+                nul_fields("inspect configured Git filter drivers", &output.stdout)?
+                    .into_iter()
+                    .map(str::to_ascii_lowercase)
+                    .collect(),
+            ),
+            Some(1) => Ok(BTreeSet::new()),
             _ => Err(command_failed(
-                "inspect configured Git filter driver",
+                "inspect configured Git filter drivers",
                 &output,
             )),
         }
