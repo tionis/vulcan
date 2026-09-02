@@ -176,6 +176,132 @@ fn sync_run_defaults_to_a_compact_result_and_keeps_durable_progress_opt_in() {
     assert!(json.stderr.is_empty());
 }
 
+#[test]
+fn sync_notification_commands_import_redact_validate_and_remove_device_state() {
+    let temporary = TempDir::new().expect("temporary directory");
+    let config_home = temporary.path().join("config");
+    let state_home = temporary.path().join("state");
+    let vault = temporary.path().join("vault");
+    fs::create_dir(&vault).expect("vault directory");
+    fs::write(vault.join("Home.md"), "home\n").expect("home note");
+    let bundle = temporary.path().join("subscription.json");
+    let token = "er1.client.0123456789abcdefghijklmnopqrstuvwxyzABCDEFG";
+    fs::write(
+        &bundle,
+        format!(
+            r#"{{
+              "spec":"event-relay-subscription/1",
+              "descriptor":{{
+                "spec":"event-relay/1",
+                "id":"urn:event-relay-channel:01K00000000000000000000000",
+                "profiles":["https://tionis.dev/spec/git-realtime/1"],
+                "bindings":[{{"type":"nats","endpoint":"tls://events.example.test:4222","subject_filter":"events.channels.01K00000000000000000000000.>"}}],
+                "authorization":["bearer_capability"],
+                "retention":[{{"id":"all","types":["*"],"class":"ephemeral"}}],
+                "limits":{{"event_bytes":65536}}
+              }},
+              "credential":{{"scheme":"bearer_capability","token":"{token}"}}
+            }}"#
+        ),
+    )
+    .expect("subscription bundle");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&bundle, fs::Permissions::from_mode(0o600))
+            .expect("private bundle permissions");
+    }
+    let command = |arguments: &[&str]| {
+        let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("vulcan"));
+        command
+            .env("XDG_CONFIG_HOME", &config_home)
+            .env("XDG_STATE_HOME", &state_home)
+            .args(["--output", "json", "--vault"])
+            .arg(&vault)
+            .args(arguments);
+        command.output().expect("Vulcan command")
+    };
+
+    let added = command(&["vault", "add", "notes", vault.to_str().expect("vault path")]);
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+
+    let import_arguments = [
+        "sync",
+        "notifications",
+        "import",
+        "notes",
+        "--bundle",
+        bundle.to_str().expect("bundle path"),
+        "--source",
+        "urn:git-repository:01K00000000000000000000000",
+    ];
+    let preview = command(&[import_arguments.as_slice(), &["--dry-run"]].concat());
+    assert!(preview.status.success());
+    let preview_json: Value = serde_json::from_slice(&preview.stdout).expect("preview JSON");
+    assert_eq!(preview_json["dry_run"], true);
+    assert!(!state_home.join("vulcan/notifications").exists());
+    assert!(!String::from_utf8_lossy(&preview.stdout).contains(token));
+
+    let imported = command(&import_arguments);
+    assert!(
+        imported.status.success(),
+        "{}",
+        String::from_utf8_lossy(&imported.stderr)
+    );
+    let imported_json: Value = serde_json::from_slice(&imported.stdout).expect("import JSON");
+    let id = imported_json["subscription"]["id"]
+        .as_str()
+        .expect("subscription ID");
+    assert_eq!(
+        imported_json["subscription"]["refs"],
+        serde_json::json!(["refs/heads/__vulcan-sync/live"])
+    );
+    assert!(!String::from_utf8_lossy(&imported.stdout).contains(token));
+
+    let listed = command(&["sync", "notifications", "list", "notes"]);
+    assert!(listed.status.success());
+    let listed_json: Value = serde_json::from_slice(&listed.stdout).expect("list JSON");
+    assert_eq!(listed_json["subscriptions"][0]["id"], id);
+    assert!(listed_json["subscriptions"][0].get("token").is_none());
+
+    let tested = command(&["sync", "notifications", "test", id]);
+    assert!(tested.status.success());
+    let tested_json: Value = serde_json::from_slice(&tested.stdout).expect("test JSON");
+    assert_eq!(tested_json["configuration_valid"], true);
+    assert_eq!(tested_json["transport_tested"], false);
+
+    let status = command(&["sync", "notifications", "status", "notes"]);
+    assert!(status.status.success());
+    let status_json: Value = serde_json::from_slice(&status.stdout).expect("status JSON");
+    assert_eq!(status_json["configured"], 1);
+    assert_eq!(status_json["listening"], false);
+    assert_eq!(status_json["state"], "daemon_required");
+
+    let removal_preview = command(&["sync", "notifications", "remove", id, "--dry-run"]);
+    assert!(removal_preview.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&removal_preview.stdout).expect("removal preview")
+            ["dry_run"],
+        true
+    );
+    assert!(command(&["sync", "notifications", "show", id])
+        .status
+        .success());
+    assert!(command(&["sync", "notifications", "remove", id])
+        .status
+        .success());
+    let empty = command(&["sync", "notifications", "list", "--all"]);
+    assert!(empty.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&empty.stdout).expect("empty list")["subscriptions"],
+        serde_json::json!([])
+    );
+}
+
 fn run_daemon_test_command(
     config_home: &Path,
     state_home: &Path,
@@ -13736,6 +13862,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("macOS installs a restartable per-user LaunchAgent"));
     assert!(sync_skill.contains("$XDG_CONFIG_HOME/vulcan/daemon.env"));
     assert!(sync_skill.contains("vulcan sync termux-install <wiki>"));
+    assert!(sync_skill.contains("vulcan sync notifications import <wiki>"));
+    assert!(sync_skill.contains("Notifications are untrusted hints"));
     assert!(sync_skill.contains("battery-not-low and storage-not-low"));
     assert!(sync_skill.contains("`file`, `change`, `hunk`, and"));
     assert!(sync_skill.contains("never replace a rejected push with unconditional force"));

@@ -4479,6 +4479,7 @@ dependencies = [
  "vulcan-app",
  "vulcan-core",
  "vulcan-daemon",
+ "vulcan-event-relay",
  "zip",
 ]
 

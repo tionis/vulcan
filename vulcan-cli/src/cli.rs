@@ -3786,6 +3786,11 @@ pub enum SyncCommand {
         #[command(flatten)]
         target: SyncTargetArgs,
     },
+    #[command(about = "Manage realtime Git ref-change notifications")]
+    Notifications {
+        #[command(subcommand)]
+        command: SyncNotificationsCommand,
+    },
     #[command(about = "Install an energy-aware Android/Termux periodic sync job")]
     TermuxInstall {
         #[arg(help = "Registered Android-shared wiki ID")]
@@ -4147,6 +4152,58 @@ pub enum SyncCommand {
         wiki: Option<String>,
         #[arg(long, help = "Validate and report without writing registry state")]
         dry_run: bool,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
+pub enum SyncNotificationsCommand {
+    #[command(about = "Import and bind a confidential relay subscription bundle")]
+    Import {
+        #[arg(help = "Registered Git wiki ID")]
+        wiki: String,
+        #[arg(long, help = "Bundle file, or `-` to read it from standard input")]
+        bundle: String,
+        #[arg(long, help = "Exact opaque Git repository source URI")]
+        source: String,
+        #[arg(
+            long = "ref",
+            action = ArgAction::Append,
+            help = "Bound full Git ref; defaults to the Vulcan live ref"
+        )]
+        refs: Vec<String>,
+        #[arg(long, help = "Validate and report without storing the subscription")]
+        dry_run: bool,
+    },
+    #[command(about = "List configured notification subscriptions")]
+    List {
+        #[arg(help = "Optional registered wiki ID", conflicts_with = "all")]
+        wiki: Option<String>,
+        #[arg(long, help = "Explicitly list subscriptions for every wiki")]
+        all: bool,
+    },
+    #[command(about = "Show one redacted notification subscription")]
+    Show {
+        #[arg(help = "Notification subscription ID")]
+        subscription: String,
+    },
+    #[command(about = "Remove a notification subscription and its local credential")]
+    Remove {
+        #[arg(help = "Notification subscription ID")]
+        subscription: String,
+        #[arg(long, help = "Report without removing notification state")]
+        dry_run: bool,
+    },
+    #[command(about = "Validate one stored notification subscription")]
+    Test {
+        #[arg(help = "Notification subscription ID")]
+        subscription: String,
+    },
+    #[command(about = "Report configured notification listener state")]
+    Status {
+        #[arg(help = "Optional registered wiki ID", conflicts_with = "all")]
+        wiki: Option<String>,
+        #[arg(long, help = "Explicitly report subscriptions for every wiki")]
+        all: bool,
     },
 }
 

@@ -291,6 +291,11 @@ fn handle_non_cycle_sync_command(
     paths: &VaultPaths,
     command: &SyncCommand,
 ) -> Option<Result<(), CliError>> {
+    if let SyncCommand::Notifications { command } = command {
+        return Some(
+            crate::commands::sync_notifications::handle_notifications_command(cli, command),
+        );
+    }
     if let Some(result) = handle_retention_command(cli, paths, command) {
         return Some(result);
     }
@@ -364,6 +369,9 @@ fn handle_non_cycle_sync_command(
             unreachable!("semantic commands are dispatched before the general sync match")
         }
         SyncCommand::Run { .. } | SyncCommand::Status { .. } => return None,
+        SyncCommand::Notifications { .. } => {
+            unreachable!("notification commands are dispatched before the general sync match")
+        }
         SyncCommand::TermuxInstall { .. } | SyncCommand::TermuxUninstall { .. } => {
             unreachable!("Termux commands are dispatched before the general sync match")
         }

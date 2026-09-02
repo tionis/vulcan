@@ -1,7 +1,7 @@
 ---
 name: sync-workflow
-description: Synchronize one or more Vulcan wikis safely, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
-version: 3
+description: Synchronize one or more Vulcan wikis safely, configure realtime ref-change notifications, inspect daemon or direct-mode state, diagnose Git-backed sync, review preserved conflicts, recover detached Android layouts, manage retention, or build semantic history. Use this whenever a user asks about `vulcan sync`, multi-device vault updates, event-relay subscriptions, the Vulcan daemon or Obsidian companion, Termux sync, sync conflicts, hidden live refs, or interrupted synchronization. Do not use it for ordinary human-authored Git commits with no device-sync concern; use git-workflow for that.
+version: 4
 metadata:
   vulcan:
     managed: true
@@ -68,6 +68,24 @@ apply markers, or `refs/vulcan/**` to make a status look clean.
   reviewed Vulcan resolution removes it atomically.
 
 ## Daemon and Obsidian companion
+
+### Realtime ref-change notifications
+
+- Treat a relay subscription bundle as a credential. Accept it only through an owner-only file or
+  standard input; never put its token in a command argument, note, log, vault, or source control.
+- Import only after confirming the exact registered Git wiki, opaque repository source URI, and
+  full ref binding: `vulcan sync notifications import <wiki> --bundle <file|-> --source <uri>
+  [--ref <full-ref>] --dry-run`. Review the redacted plan, then omit `--dry-run` deliberately.
+- Use `sync notifications list [<wiki>|--all]` and `show <subscription>` for redacted inspection.
+  `test <subscription>` validates stored state but reports that transport testing requires the
+  daemon until the listener runtime is active. `status` must never imply that configured means
+  connected or listening.
+- Preview removal with `sync notifications remove <subscription> --dry-run`. Removal deletes only
+  the device-local binding and subscriber credential; it does not revoke the capability at the
+  relay, alter the Git remote, or remove vault files.
+- Notifications are untrusted hints. They may enqueue only the ordinary finite synchronization
+  transaction for an explicitly bound source and ref; Git remains authoritative and periodic
+  polling remains the repair path.
 
 - Prefer `vulcan daemon install --dry-run` followed by `vulcan daemon install` for a persistent
   per-user service on Linux, macOS, or Windows. Linux installs a restartable `systemd --user` unit,

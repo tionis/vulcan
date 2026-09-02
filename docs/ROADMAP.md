@@ -5539,8 +5539,8 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 #### 12.13.3 Vulcan client
 
 - [x] Add dependency-light strict models and validators for descriptors, subscription bundles, CloudEvents, and the Git profile. Secret wrappers must redact debug/serialization output by default and perform no network I/O.
-- [ ] Add atomic device-local subscription storage and explicit repository-source/ref-to-wiki bindings outside the vault and `cache.db`; store tokens only through a platform credential store or permission-restricted secret file.
-- [ ] Add `vulcan sync notifications import/list/show/remove/test/status` with JSON output, dry-run for mutations, stdin/file bundle import rather than command-line secrets, complete pre-storage validation, and truthful daemon-required listening status.
+- [x] Add atomic device-local subscription storage and explicit repository-source/ref-to-wiki bindings outside the vault and `cache.db`; store tokens only through a platform credential store or permission-restricted secret file.
+- [x] Add `vulcan sync notifications import/list/show/remove/test/status` with JSON output, dry-run for mutations, stdin/file bundle import rather than command-line secrets, complete pre-storage validation, and truthful daemon-required listening status.
 - [ ] Add a daemon-owned NATS connection manager that multiplexes only compatible endpoint/TLS/credential groups, uses bounded exponential reconnect with jitter, exposes health without credentials, and shuts down cooperatively with the existing runtime.
 - [ ] Validate and route events by the configured channel, repository `source`, and full ref binding. Invalid, unknown, unauthorized, oversized, or mismatched events must never invoke Git; permanent poison events must not redeliver forever.
 - [ ] A valid event may only enqueue `SyncJobTrigger::RemoteNotification` for matching active registrations. Acknowledge after durable routing, rely on supervisor coalescing for work deduplication, and never wait for or duplicate the finite sync transaction in the event client.
