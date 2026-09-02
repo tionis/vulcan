@@ -79,7 +79,30 @@ pub(super) struct ObsidianTemplaterConfig {
     pub(super) enabled_templates_hotkeys: Vec<String>,
     #[serde(default)]
     pub(super) startup_templates: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_usize")]
     pub(super) intellisense_render: Option<usize>,
+}
+
+fn deserialize_optional_usize<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum NumberOrString {
+        Number(usize),
+        String(String),
+    }
+
+    let value = Option::<NumberOrString>::deserialize(deserializer)?;
+    value
+        .map(|value| match value {
+            NumberOrString::Number(value) => Ok(value),
+            NumberOrString::String(value) => {
+                value.parse::<usize>().map_err(serde::de::Error::custom)
+            }
+        })
+        .transpose()
 }
 
 #[derive(Debug, Deserialize, Default)]

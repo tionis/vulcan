@@ -3453,7 +3453,7 @@ fn import_templater_plugin_config_preserves_existing_sections_and_is_idempotent(
               "syntax_highlighting_mobile": true,
               "enabled_templates_hotkeys": ["Daily", ""],
               "startup_templates": ["Startup", ""],
-              "intellisense_render": 4
+              "intellisense_render": "4"
             }"#,
     )
     .expect("templater config should be written");
