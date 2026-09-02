@@ -87,6 +87,7 @@ pub struct GitSyncOptions {
     pub merge_policy: MergePolicy,
     pub merge_automation: MergeAutomation,
     pub platform: GitPlatformProfile,
+    pub remote_observation: GitRemoteObservation,
 }
 
 impl Default for GitSyncOptions {
@@ -102,8 +103,15 @@ impl Default for GitSyncOptions {
             merge_policy: MergePolicy::default(),
             merge_automation: MergeAutomation::default(),
             platform: GitPlatformProfile::native(),
+            remote_observation: GitRemoteObservation::Query,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitRemoteObservation {
+    Query,
+    Fetch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -1022,19 +1030,18 @@ fn run_attempt(
 
     control.check()?;
     control.emit(GitSyncPhase::Fetching, report, None)?;
-    let remote_tip = engine.remote_ref(&report.repository, &options.remote, &report.refs.live)?;
+    let (remote_tip, fetched_during_observation) = observe_remote_tip(engine, options, report)?;
+    let fetched_before = if fetched_during_observation {
+        remote_tip.as_ref()
+    } else {
+        refs_before.fetched.as_ref()
+    };
     if control.attempt == 0 {
         report.remote_before.clone_from(&remote_tip);
     }
     if let Some(pause) = sync_pause(engine, report)? {
         if let Some(remote_tip) = remote_tip.as_ref() {
-            ensure_remote_tip(
-                engine,
-                options,
-                report,
-                refs_before.fetched.as_ref(),
-                remote_tip,
-            )?;
+            ensure_remote_tip(engine, options, report, fetched_before, remote_tip)?;
             control.emit(GitSyncPhase::Fetched, report, None)?;
         }
         report.pause = Some(pause);
@@ -1048,7 +1055,7 @@ fn run_attempt(
         report,
         &capture,
         remote_tip.clone(),
-        refs_before.fetched.as_ref(),
+        fetched_before,
         control,
     )?
     else {
@@ -1108,6 +1115,36 @@ fn run_attempt(
     report.accepted = Some(accepted);
     control.emit(GitSyncPhase::Completed, report, None)?;
     Ok(AttemptResult::Finished)
+}
+
+fn observe_remote_tip(
+    engine: &dyn GitEngine,
+    options: &GitSyncOptions,
+    report: &GitSyncReport,
+) -> Result<(Option<GitOid>, bool), GitSyncError> {
+    match options.remote_observation {
+        GitRemoteObservation::Query => Ok((
+            engine.remote_ref(&report.repository, &options.remote, &report.refs.live)?,
+            false,
+        )),
+        GitRemoteObservation::Fetch => match engine.fetch_ref(
+            &report.repository,
+            &options.remote,
+            &report.refs.live,
+            &report.refs.fetched,
+        ) {
+            Ok(revision) => Ok((Some(revision), true)),
+            Err(fetch_error) => {
+                let observed =
+                    engine.remote_ref(&report.repository, &options.remote, &report.refs.live)?;
+                if observed.is_none() {
+                    Ok((None, false))
+                } else {
+                    Err(fetch_error.into())
+                }
+            }
+        },
+    }
 }
 
 fn sync_pause(
@@ -3241,6 +3278,57 @@ mod tests {
         assert_direct_engine_probes(&lines, &commands);
 
         assert_reused_engine_process_budget(&engine, &writer, &trace);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn notification_observation_fetches_without_a_preliminary_remote_query() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (temporary, _remote, writer) = setup_remote_and_writer();
+        let trace = temporary.path().join("git-invocations.log");
+        let wrapper = temporary.path().join("git-wrapper");
+        fs::write(
+            &wrapper,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '{}'\nexec git \"$@\"\n",
+                trace.display()
+            ),
+        )
+        .expect("Git wrapper");
+        let mut permissions = fs::metadata(&wrapper)
+            .expect("wrapper metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&wrapper, permissions).expect("executable wrapper");
+        let engine = GitCliEngine::new(&wrapper);
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap");
+
+        fs::write(&trace, "").expect("reset notification invocation trace");
+        let notification_report = sync_git_once(
+            &engine,
+            &writer,
+            &GitSyncOptions {
+                remote_observation: GitRemoteObservation::Fetch,
+                ..GitSyncOptions::default()
+            },
+        )
+        .expect("notification-triggered verification");
+        assert_eq!(notification_report.outcome, GitSyncOutcome::UpToDate);
+        let notification_commands =
+            fs::read_to_string(&trace).expect("notification invocation trace");
+        assert!(
+            !notification_commands.contains(" ls-remote "),
+            "fetch-first verification must skip the preliminary remote query: {notification_commands}"
+        );
+        assert_eq!(
+            notification_commands
+                .lines()
+                .filter(|line| line.contains(" fetch "))
+                .count(),
+            1,
+            "fetch-first verification should use one remote operation: {notification_commands}"
+        );
     }
 
     #[test]

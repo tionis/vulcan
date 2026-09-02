@@ -56,8 +56,9 @@ pub use sync::{
     find_git_live_epoch, git_live_epoch_id, sync_git_once, sync_git_once_with_control,
     GitAutomaticMergeValidation, GitAutomaticResolution, GitAutomaticResolutionValidation,
     GitAutomaticValidationCheck, GitConflictClass, GitConflictClassification, GitConflictCopy,
-    GitConflictMaterialization, GitConflictRefs, GitLiveEpoch, GitSyncAction, GitSyncBackend,
-    GitSyncConflict, GitSyncDeviceId, GitSyncError, GitSyncObserver, GitSyncObserverError,
-    GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase,
-    GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress, SyncCancellationToken,
+    GitConflictMaterialization, GitConflictRefs, GitLiveEpoch, GitRemoteObservation, GitSyncAction,
+    GitSyncBackend, GitSyncConflict, GitSyncDeviceId, GitSyncError, GitSyncObserver,
+    GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason,
+    GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport, IgnoreGitSyncProgress,
+    SyncCancellationToken,
 };

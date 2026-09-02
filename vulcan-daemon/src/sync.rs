@@ -18,8 +18,8 @@ use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
 use vulcan_sync::{
-    GitCliEngine, GitSyncObserver, SyncError, SyncErrorCategory, SyncJobState, SyncState,
-    SyncStatus,
+    GitCliEngine, GitRemoteObservation, GitSyncObserver, SyncError, SyncErrorCategory,
+    SyncJobState, SyncState, SyncStatus,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -112,10 +112,11 @@ fn execute_claimed_job(
     if let Err(error) = check_registration_permission(&paths, &registration) {
         return complete_execution_error(supervisor, &id, error);
     }
-    let options = match options_for_registration(options, &registration) {
+    let mut options = match options_for_registration(options, &registration) {
         Ok(options) => options,
         Err(error) => return complete_execution_error(supervisor, &id, error),
     };
+    options.remote_observation = remote_observation_for_triggers(&claimed.job.triggers);
     let engine = engine.clone().with_command_timeout(options.command_timeout);
     let mut observer = SupervisorProgressObserver {
         supervisor,
@@ -152,6 +153,16 @@ fn execute_claimed_job(
                 SyncError::new(SyncErrorCategory::Unknown, error.to_string(), true)
             },
         ),
+    }
+}
+
+fn remote_observation_for_triggers(
+    triggers: &[vulcan_sync::SyncJobTrigger],
+) -> GitRemoteObservation {
+    if triggers.contains(&vulcan_sync::SyncJobTrigger::RemoteNotification) {
+        GitRemoteObservation::Fetch
+    } else {
+        GitRemoteObservation::Query
     }
 }
 
@@ -543,6 +554,25 @@ mod tests {
             .status()
             .expect("Git should launch");
         assert!(status.success(), "Git failed: {arguments:?}");
+    }
+
+    #[test]
+    fn only_remote_notification_jobs_select_fetch_first_observation() {
+        assert_eq!(
+            remote_observation_for_triggers(&[SyncJobTrigger::RemoteNotification]),
+            GitRemoteObservation::Fetch
+        );
+        assert_eq!(
+            remote_observation_for_triggers(&[SyncJobTrigger::Poll, SyncJobTrigger::Watch]),
+            GitRemoteObservation::Query
+        );
+        assert_eq!(
+            remote_observation_for_triggers(&[
+                SyncJobTrigger::Watch,
+                SyncJobTrigger::RemoteNotification,
+            ]),
+            GitRemoteObservation::Fetch
+        );
     }
 
     #[test]
