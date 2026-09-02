@@ -205,7 +205,7 @@ Behavior:
 
 Shared behavior:
 
-- `config edit` is backed by the same schema registry as `config list` and the non-interactive config mutation commands, exposes shared/local target switching, can create schema-defined dynamic entries such as aliases, permission profiles, and plugin registrations even when they are absent from both config files, and includes dedicated enum/list/map editors for common settings so plugin events, allowlists, and simple key-value maps do not require raw TOML typing.
+- `config edit` is backed by the same schema registry as `config list` and the non-interactive config mutation commands, exposes shared/local target switching, can create schema-defined dynamic entries such as aliases, permission profiles, and plugin registrations even when they are absent from both config files, and includes dedicated enum/list/map editors for common settings. Templater folder, regex, and ignored-folder creation rules use structured row editors; folder fields suggest existing vault directories while continuing to accept manual paths.
 - `--preview` and `--dry-run` are equivalent: they print the mapping plus a diff of the target config file without writing either `.vulcan/config.toml` or `.vulcan/config.local.toml`.
 - `--apply` is the explicit write path; omitting both `--preview` and `--apply` still applies the import for backwards compatibility.
 - `--target local` writes to `.vulcan/config.local.toml`; the default target is the shared `.vulcan/config.toml`.

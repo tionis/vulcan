@@ -13972,6 +13972,26 @@ fn skill_list_and_get_surface_bundled_skills() {
         body.contains("templates.trigger_on_file_creation") && body.contains("vulcan watch")
     }));
 
+    let config_skill_assert = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault_root.to_str().expect("utf-8"),
+            "--output",
+            "json",
+            "skill",
+            "get",
+            "configuration-and-permissions",
+        ])
+        .assert()
+        .success();
+    let config_skill_json = parse_stdout_json(&config_skill_assert);
+    assert!(config_skill_json["body"].as_str().is_some_and(|body| {
+        body.contains("vulcan config edit")
+            && body.contains("folder fields suggest current vault directories")
+            && body.contains("manually entered paths")
+    }));
+
     let get_creator_assert = Command::cargo_bin("vulcan")
         .expect("binary should build")
         .args([

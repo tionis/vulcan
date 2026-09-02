@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 15
+version: 16
 tools:
   - config_show
   - config_get
@@ -36,6 +36,7 @@ permission profiles, or diagnoses permission and trust failures.
 10. Use `vulcan daemon config show` for process-owned settings. Preview `set-bind`, `set-agent resolution|semantic --base-url <url> --model <model> [--api-key-env <name>]`, or `clear-agent` with `--dry-run` before applying it. Restart the daemon after changing provider configuration; startup reads any named credential from the inherited environment or the protected device-local `daemon.env`, with inherited values taking precedence, and capabilities advertise only providers that were constructed successfully.
 11. Use `vulcan daemon companion --output json` for non-secret local-client connection metadata. `--reveal-token` is an explicit bearer-authority transfer and its output belongs only in device-local client storage, never shared configuration or synchronized plugin data.
 12. The reference Obsidian companion requires Obsidian 1.11.4+ and stores the bearer token through native `SecretStorage`; its ordinary plugin data contains only allowlisted non-secret endpoint/wiki/trigger preferences. Keep the daemon loopback-only and use the registration's permission profile as the authority boundary.
+13. For interactive Templater creation-rule setup, use `vulcan config edit`: its structured folder and regex rule editors can add/remove rows, and folder fields suggest current vault directories without rejecting manually entered paths.
 
 ## Guardrails
 
@@ -56,6 +57,7 @@ permission profiles, or diagnoses permission and trust failures.
 - Explain why an MCP tool is hidden under `--permissions readonly`.
 - Add a local web search backend key without changing shared vault config.
 - Preview and import a shared folder-note convention, then separately plan any required layout conversion.
+- Configure Templater folder or regex creation rules interactively, selecting an existing vault folder when appropriate or entering a planned path manually.
 - Create a profile for a daily wiki agent with notes/tasks/search access but no shell or git mutation.
 - Register personal and work wikis in separate local groups, then inspect their availability with `vulcan vault list`.
 - Clone an Obsidian-visible Android worktree with a Termux-private `--git-dir` and `--platform android-shared`, then confirm the recorded paths with `vulcan vault show <id>`.

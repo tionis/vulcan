@@ -10,12 +10,16 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph, Wrap};
 use ratatui::{Frame, Terminal};
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 use toml::Value as TomlValue;
 use vulcan_core::{ConfigDiagnostic, VaultPaths};
 
 const FOOTER_HEIGHT: u16 = 7;
+const MAX_FOLDER_SUGGESTIONS: usize = 2_000;
+const VISIBLE_FOLDER_SUGGESTIONS: usize = 5;
 
 pub fn run_config_tui(paths: &VaultPaths, no_commit: bool, quiet: bool) -> Result<(), io::Error> {
     let mut state = ConfigTuiState::load(paths.clone()).map_err(io::Error::other)?;
@@ -339,7 +343,18 @@ fn draw_footer(frame: &mut Frame<'_>, state: &ConfigTuiState, area: Rect) {
 }
 
 fn draw_input_overlay(frame: &mut Frame<'_>, state: &ConfigTuiState) {
-    let area = centered_rect(70, 35, frame.area());
+    let structured_rules = matches!(
+        &state.input_mode,
+        ConfigInputMode::Edit {
+            editor: ValueEditorMode::TemplateRules(_),
+            ..
+        }
+    );
+    let area = if structured_rules {
+        centered_rect(82, 65, frame.area())
+    } else {
+        centered_rect(70, 35, frame.area())
+    };
     frame.render_widget(Clear, area);
     let entry = state.selected_entry();
     let lines = state.overlay_lines(entry);
@@ -409,6 +424,232 @@ enum ValueEditorMode {
     },
     StringList,
     ScalarMap,
+    TemplateRules(TemplateRulesEditor),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateRuleKind {
+    FolderTemplate,
+    FileTemplate,
+    IgnoredFolder,
+}
+
+impl TemplateRuleKind {
+    fn for_config_key(key: &str) -> Option<Self> {
+        match key {
+            "templates.folder_templates" => Some(Self::FolderTemplate),
+            "templates.file_templates" => Some(Self::FileTemplate),
+            "templates.ignore_folders_on_creation" => Some(Self::IgnoredFolder),
+            _ => None,
+        }
+    }
+
+    fn field_labels(self) -> &'static [&'static str] {
+        match self {
+            Self::FolderTemplate => &["folder", "template"],
+            Self::FileTemplate => &["regex", "template"],
+            Self::IgnoredFolder => &["folder"],
+        }
+    }
+
+    fn has_folder_field(self) -> bool {
+        matches!(self, Self::FolderTemplate | Self::IgnoredFolder)
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TemplateRuleRow {
+    selector: String,
+    template: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TemplateRulesEditor {
+    kind: TemplateRuleKind,
+    rows: Vec<TemplateRuleRow>,
+    selected_row: usize,
+    selected_field: usize,
+    folder_suggestions: Vec<String>,
+    selected_suggestion: usize,
+}
+
+impl TemplateRulesEditor {
+    fn from_toml(
+        kind: TemplateRuleKind,
+        current: Option<&TomlValue>,
+        folder_suggestions: Vec<String>,
+    ) -> Self {
+        let mut rows = current
+            .and_then(TomlValue::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(|value| value.as_table())
+            .map(|table| TemplateRuleRow {
+                selector: table
+                    .get(if kind == TemplateRuleKind::FileTemplate {
+                        "regex"
+                    } else {
+                        "folder"
+                    })
+                    .and_then(TomlValue::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+                template: table
+                    .get("template")
+                    .and_then(TomlValue::as_str)
+                    .unwrap_or_default()
+                    .to_string(),
+            })
+            .collect::<Vec<_>>();
+        if rows.is_empty() {
+            rows.push(TemplateRuleRow::default());
+        }
+        Self {
+            kind,
+            rows,
+            selected_row: 0,
+            selected_field: 0,
+            folder_suggestions,
+            selected_suggestion: 0,
+        }
+    }
+
+    fn active_value(&self) -> &str {
+        let Some(row) = self.rows.get(self.selected_row) else {
+            return "";
+        };
+        if self.selected_field == 0 {
+            &row.selector
+        } else {
+            &row.template
+        }
+    }
+
+    fn active_value_mut(&mut self) -> Option<&mut String> {
+        let row = self.rows.get_mut(self.selected_row)?;
+        Some(if self.selected_field == 0 {
+            &mut row.selector
+        } else {
+            &mut row.template
+        })
+    }
+
+    fn active_field_is_folder(&self) -> bool {
+        self.kind.has_folder_field() && self.selected_field == 0
+    }
+
+    fn filtered_folder_suggestions(&self) -> Vec<&str> {
+        if !self.active_field_is_folder() {
+            return Vec::new();
+        }
+        let needle = self.active_value().trim().to_ascii_lowercase();
+        self.folder_suggestions
+            .iter()
+            .filter(|folder| needle.is_empty() || folder.to_ascii_lowercase().contains(&needle))
+            .map(String::as_str)
+            .collect()
+    }
+
+    fn reset_suggestion(&mut self) {
+        self.selected_suggestion = 0;
+    }
+
+    fn move_suggestion(&mut self, delta: isize) {
+        let count = self.filtered_folder_suggestions().len();
+        if count > 0 {
+            self.selected_suggestion =
+                wrap_index(self.selected_suggestion.min(count - 1), count, delta);
+        }
+    }
+
+    fn accept_suggestion(&mut self) {
+        let suggestion = self
+            .filtered_folder_suggestions()
+            .get(self.selected_suggestion)
+            .map(|value| (*value).to_string());
+        if let (Some(suggestion), Some(value)) = (suggestion, self.active_value_mut()) {
+            *value = suggestion;
+            self.reset_suggestion();
+        }
+    }
+
+    fn move_row(&mut self, delta: isize) {
+        if !self.rows.is_empty() {
+            self.selected_row = wrap_index(self.selected_row, self.rows.len(), delta);
+            self.reset_suggestion();
+        }
+    }
+
+    fn reorder_row(&mut self, delta: isize) {
+        if self.rows.len() < 2 {
+            return;
+        }
+        let target = if delta < 0 {
+            self.selected_row.saturating_sub(1)
+        } else {
+            self.selected_row.saturating_add(1).min(self.rows.len() - 1)
+        };
+        if target != self.selected_row {
+            self.rows.swap(self.selected_row, target);
+            self.selected_row = target;
+            self.reset_suggestion();
+        }
+    }
+
+    fn move_field(&mut self, delta: isize) {
+        self.selected_field =
+            wrap_index(self.selected_field, self.kind.field_labels().len(), delta);
+        self.reset_suggestion();
+    }
+
+    fn add_row(&mut self) {
+        let insert_at = self.selected_row.saturating_add(1).min(self.rows.len());
+        self.rows.insert(insert_at, TemplateRuleRow::default());
+        self.selected_row = insert_at;
+        self.selected_field = 0;
+        self.reset_suggestion();
+    }
+
+    fn delete_row(&mut self) {
+        if self.rows.is_empty() {
+            return;
+        }
+        self.rows.remove(self.selected_row);
+        self.selected_row = self.selected_row.min(self.rows.len().saturating_sub(1));
+        self.selected_field = 0;
+        self.reset_suggestion();
+    }
+
+    fn to_toml(&self) -> Result<TomlValue, String> {
+        let mut values = Vec::with_capacity(self.rows.len());
+        for (index, row) in self.rows.iter().enumerate() {
+            let selector = row.selector.trim();
+            if selector.is_empty() {
+                return Err(format!(
+                    "Row {} requires a {}.",
+                    index + 1,
+                    self.kind.field_labels()[0]
+                ));
+            }
+            if self.kind != TemplateRuleKind::IgnoredFolder && row.template.trim().is_empty() {
+                return Err(format!("Row {} requires a template.", index + 1));
+            }
+
+            let mut table = toml::map::Map::new();
+            table.insert(
+                self.kind.field_labels()[0].to_string(),
+                TomlValue::String(selector.to_string()),
+            );
+            if self.kind != TemplateRuleKind::IgnoredFolder {
+                table.insert(
+                    "template".to_string(),
+                    TomlValue::String(row.template.trim().to_string()),
+                );
+            }
+            values.push(TomlValue::Table(table));
+        }
+        Ok(TomlValue::Array(values))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -439,6 +680,7 @@ enum ConfigTuiAction {
 
 struct ConfigTuiState {
     paths: VaultPaths,
+    folder_suggestions: Vec<String>,
     diagnostics: Vec<ConfigDiagnostic>,
     effective_toml: TomlValue,
     shared_toml: TomlValue,
@@ -457,6 +699,7 @@ struct ConfigTuiState {
 
 impl ConfigTuiState {
     fn load(paths: VaultPaths) -> Result<Self, String> {
+        let folder_suggestions = discover_vault_folders(paths.vault_root());
         let shared_toml = crate::app_config::load_config_file_toml(paths.config_file())
             .map_err(|error| error.to_string())?;
         let local_toml = crate::app_config::load_config_file_toml(paths.local_config_file())
@@ -474,6 +717,7 @@ impl ConfigTuiState {
         };
         Ok(Self {
             paths,
+            folder_suggestions,
             diagnostics,
             effective_toml,
             shared_toml: shared_toml.clone(),
@@ -565,6 +809,82 @@ impl ConfigTuiState {
                     }
                     _ => {}
                 },
+                ValueEditorMode::TemplateRules(editor) => match key.code {
+                    KeyCode::Esc => cancel_edit = true,
+                    KeyCode::Enter => apply_buffer = Some(String::new()),
+                    KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        apply_buffer = Some(String::new());
+                    }
+                    KeyCode::Char('n') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        editor.add_row();
+                        *error = None;
+                    }
+                    KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        editor.delete_row();
+                        *error = None;
+                    }
+                    KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if let Some(value) = editor.active_value_mut() {
+                            value.clear();
+                        }
+                        editor.reset_suggestion();
+                        *error = None;
+                    }
+                    KeyCode::Tab => {
+                        editor.move_field(1);
+                        *error = None;
+                    }
+                    KeyCode::BackTab => {
+                        editor.move_field(-1);
+                        *error = None;
+                    }
+                    KeyCode::Up if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        editor.move_suggestion(-1);
+                        *error = None;
+                    }
+                    KeyCode::Down if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        editor.move_suggestion(1);
+                        *error = None;
+                    }
+                    KeyCode::Up if key.modifiers.contains(KeyModifiers::ALT) => {
+                        editor.reorder_row(-1);
+                        *error = None;
+                    }
+                    KeyCode::Down if key.modifiers.contains(KeyModifiers::ALT) => {
+                        editor.reorder_row(1);
+                        *error = None;
+                    }
+                    KeyCode::Up => {
+                        editor.move_row(-1);
+                        *error = None;
+                    }
+                    KeyCode::Down => {
+                        editor.move_row(1);
+                        *error = None;
+                    }
+                    KeyCode::Right if editor.active_field_is_folder() => {
+                        editor.accept_suggestion();
+                        *error = None;
+                    }
+                    KeyCode::Backspace => {
+                        if let Some(value) = editor.active_value_mut() {
+                            value.pop();
+                        }
+                        editor.reset_suggestion();
+                        *error = None;
+                    }
+                    KeyCode::Char(character)
+                        if !key.modifiers.contains(KeyModifiers::CONTROL)
+                            && !key.modifiers.contains(KeyModifiers::ALT) =>
+                    {
+                        if let Some(value) = editor.active_value_mut() {
+                            value.push(character);
+                        }
+                        editor.reset_suggestion();
+                        *error = None;
+                    }
+                    _ => {}
+                },
             },
             ConfigInputMode::CreateDynamic {
                 name,
@@ -640,8 +960,19 @@ impl ConfigTuiState {
 
     fn handle_paste(&mut self, text: &str) {
         match &mut self.input_mode {
-            ConfigInputMode::Edit { buffer, error, .. } => {
-                buffer.push_str(text);
+            ConfigInputMode::Edit {
+                buffer,
+                editor,
+                error,
+            } => {
+                if let ValueEditorMode::TemplateRules(editor) = editor {
+                    if let Some(value) = editor.active_value_mut() {
+                        value.push_str(text);
+                    }
+                    editor.reset_suggestion();
+                } else {
+                    buffer.push_str(text);
+                }
                 *error = None;
             }
             ConfigInputMode::CreateDynamic {
@@ -721,7 +1052,8 @@ impl ConfigTuiState {
             .cloned()
             .or_else(|| self.effective_value(&entry))
             .or_else(|| entry.default_value.clone());
-        let editor = editor_mode_for_entry(&entry, current.as_ref());
+        let editor =
+            editor_mode_for_entry(&entry, current.as_ref(), self.folder_suggestions.clone());
         let buffer = editor_buffer(&editor, current.as_ref());
         self.input_mode = ConfigInputMode::Edit {
             buffer,
@@ -1134,6 +1466,10 @@ impl ConfigTuiState {
                     "Edit comma-separated key=value pairs for a simple scalar map."
                         .to_string()
                 }
+                ValueEditorMode::TemplateRules(_) => {
+                    "Edit structured template rules. Tab changes fields, arrows change rows, and folder suggestions never replace manual input."
+                        .to_string()
+                }
             },
             ConfigInputMode::CreateDynamic { editing_value, .. } => {
                 if *editing_value {
@@ -1312,6 +1648,7 @@ impl ConfigTuiState {
                 ValueEditorMode::Enum { .. } => "Pick Value",
                 ValueEditorMode::StringList => "Edit List",
                 ValueEditorMode::ScalarMap => "Edit Map",
+                ValueEditorMode::TemplateRules(_) => "Edit Template Rules",
             },
             ConfigInputMode::CreateDynamic { .. } => {
                 if entry.key.starts_with("export.profiles.") {
@@ -1436,6 +1773,12 @@ impl ConfigTuiState {
                     }
                     lines
                 }
+                ValueEditorMode::TemplateRules(editor) => template_rules_overlay_lines(
+                    entry,
+                    self.selected_target_label(),
+                    editor,
+                    error.as_ref(),
+                ),
             },
             ConfigInputMode::CreateDynamic {
                 name,
@@ -1498,10 +1841,117 @@ impl ConfigTuiState {
                     .cloned()
                     .or_else(|| self.effective_value(entry))
                     .or_else(|| entry.default_value.clone());
-                editor_mode_for_entry(entry, current.as_ref())
+                editor_mode_for_entry(entry, current.as_ref(), self.folder_suggestions.clone())
             }
         }
     }
+}
+
+fn template_rules_overlay_lines(
+    entry: &ConfigEntry,
+    target_label: &str,
+    editor: &TemplateRulesEditor,
+    error: Option<&String>,
+) -> Vec<Line<'static>> {
+    let mut lines = vec![
+        Line::from(format!("Edit {} in {target_label}", entry.display_path)),
+        Line::from("Tab fields  Up/Down rows  Alt-Up/Down reorder  Ctrl-N add  Ctrl-D delete"),
+        Line::from("Type/paste edit  Backspace removes  Ctrl-U clears  Enter/Ctrl-S applies"),
+        Line::from(""),
+    ];
+
+    if editor.rows.is_empty() {
+        lines.push(Line::from("No rules. Press Ctrl-N to add one."));
+    } else {
+        let start = editor.selected_row.saturating_sub(3);
+        let end = (start + 7).min(editor.rows.len());
+        for (index, row) in editor.rows[start..end].iter().enumerate() {
+            let row_index = start + index;
+            let selected = row_index == editor.selected_row;
+            let selector_label = editor.kind.field_labels()[0];
+            let mut spans = vec![
+                Span::styled(
+                    if selected { "> " } else { "  " },
+                    Style::default().fg(Color::Cyan),
+                ),
+                Span::raw(format!("{}  {selector_label}: ", row_index + 1)),
+                Span::styled(
+                    if row.selector.is_empty() {
+                        "<empty>".to_string()
+                    } else {
+                        row.selector.clone()
+                    },
+                    if selected && editor.selected_field == 0 {
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    },
+                ),
+            ];
+            if editor.kind != TemplateRuleKind::IgnoredFolder {
+                spans.push(Span::raw("  template: "));
+                spans.push(Span::styled(
+                    if row.template.is_empty() {
+                        "<empty>".to_string()
+                    } else {
+                        row.template.clone()
+                    },
+                    if selected && editor.selected_field == 1 {
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    },
+                ));
+            }
+            lines.push(Line::from(spans));
+        }
+    }
+
+    if editor.active_field_is_folder() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(
+            "Matching vault folders (Ctrl-Up/Down select, Right accepts; manual input is allowed):",
+        ));
+        let suggestions = editor.filtered_folder_suggestions();
+        if suggestions.is_empty() {
+            lines.push(Line::from("  <no matching folders>"));
+        } else {
+            let selected = editor
+                .selected_suggestion
+                .min(suggestions.len().saturating_sub(1));
+            let start = selected.saturating_sub(VISIBLE_FOLDER_SUGGESTIONS / 2);
+            let end = (start + VISIBLE_FOLDER_SUGGESTIONS).min(suggestions.len());
+            for (index, suggestion) in suggestions[start..end].iter().enumerate() {
+                let suggestion_index = start + index;
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        if suggestion_index == selected {
+                            "> "
+                        } else {
+                            "  "
+                        },
+                        Style::default().fg(Color::Yellow),
+                    ),
+                    Span::raw((*suggestion).to_string()),
+                ]));
+            }
+        }
+    }
+
+    lines.push(Line::from(""));
+    if let Some(error) = error {
+        lines.push(Line::from(vec![Span::styled(
+            error.clone(),
+            Style::default().fg(Color::Red),
+        )]));
+    } else {
+        lines.push(Line::from("Esc cancels without changing the working copy."));
+    }
+    lines
 }
 
 fn build_categories(entries: &[crate::app_config::ConfigListEntry]) -> Vec<ConfigCategory> {
@@ -1650,7 +2100,66 @@ fn get_toml_value<'a>(value: &'a TomlValue, path: &[String]) -> Option<&'a TomlV
     Some(current)
 }
 
-fn editor_mode_for_entry(entry: &ConfigEntry, current: Option<&TomlValue>) -> ValueEditorMode {
+fn discover_vault_folders(vault_root: &Path) -> Vec<String> {
+    let mut discovered = BTreeSet::new();
+    let mut pending = vec![PathBuf::from(vault_root)];
+
+    while let Some(directory) = pending.pop() {
+        let Ok(entries) = fs::read_dir(&directory) else {
+            continue;
+        };
+        let mut entries = entries
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_type()
+                    .is_ok_and(|file_type| file_type.is_dir() && !file_type.is_symlink())
+            })
+            .collect::<Vec<_>>();
+        entries.sort_by_key(fs::DirEntry::file_name);
+        for entry in entries.into_iter().rev() {
+            let path = entry.path();
+            let Ok(relative) = path.strip_prefix(vault_root) else {
+                continue;
+            };
+            if relative
+                .components()
+                .any(|component| component.as_os_str().to_string_lossy().starts_with('.'))
+            {
+                continue;
+            }
+            let normalized = relative
+                .components()
+                .map(|component| component.as_os_str().to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join("/");
+            if normalized.is_empty() {
+                continue;
+            }
+            discovered.insert(normalized);
+            if discovered.len() >= MAX_FOLDER_SUGGESTIONS {
+                return discovered.into_iter().collect();
+            }
+            pending.push(path);
+        }
+    }
+
+    discovered.into_iter().collect()
+}
+
+fn editor_mode_for_entry(
+    entry: &ConfigEntry,
+    current: Option<&TomlValue>,
+    folder_suggestions: Vec<String>,
+) -> ValueEditorMode {
+    if let Some(kind) = TemplateRuleKind::for_config_key(&entry.display_path) {
+        return ValueEditorMode::TemplateRules(TemplateRulesEditor::from_toml(
+            kind,
+            current,
+            folder_suggestions,
+        ));
+    }
+
     if !entry.enum_values.is_empty() {
         let selected = current
             .and_then(|value| value.as_str())
@@ -1738,6 +2247,7 @@ fn editor_buffer(editor: &ValueEditorMode, current: Option<&TomlValue>) -> Strin
                     .join(", ")
             })
             .unwrap_or_default(),
+        ValueEditorMode::TemplateRules(_) => String::new(),
     }
 }
 
@@ -1767,6 +2277,7 @@ fn parse_editor_input(
         }
         ValueEditorMode::StringList => parse_string_list_input(raw),
         ValueEditorMode::ScalarMap => parse_scalar_map_input(raw),
+        ValueEditorMode::TemplateRules(editor) => editor.to_toml(),
     }
 }
 
@@ -2109,6 +2620,12 @@ mod tests {
         let temp_dir = TempDir::new().expect("temp dir should be created");
         let vault_root = temp_dir.path().join("vault");
         std::fs::create_dir_all(vault_root.join(".vulcan")).expect("config dir should exist");
+        std::fs::create_dir_all(vault_root.join("Projects/Active"))
+            .expect("active projects dir should exist");
+        std::fs::create_dir_all(vault_root.join("Projects/Archive"))
+            .expect("archive projects dir should exist");
+        std::fs::create_dir_all(vault_root.join(".hidden/Internal"))
+            .expect("hidden dir should exist");
         std::fs::write(
             vault_root.join(".vulcan/config.toml"),
             concat!(
@@ -2471,6 +2988,176 @@ mod tests {
                 ("env".to_string(), TomlValue::String("prod".to_string())),
             ])))
         );
+    }
+
+    #[test]
+    fn template_folder_rule_editor_suggests_vault_folders() {
+        let mut state = sample_state();
+        let (category_index, entry_index) = state
+            .find_entry("templates.ignore_folders_on_creation")
+            .expect("ignored folders entry should exist");
+        state.selected_category = category_index;
+        state.selected_entry = entry_index;
+
+        state.open_edit();
+        match &state.input_mode {
+            ConfigInputMode::Edit {
+                editor: ValueEditorMode::TemplateRules(editor),
+                ..
+            } => {
+                assert_eq!(editor.kind, TemplateRuleKind::IgnoredFolder);
+                assert_eq!(
+                    editor.folder_suggestions,
+                    ["Projects", "Projects/Active", "Projects/Archive"]
+                );
+            }
+            mode => panic!("expected template rules editor, got {mode:?}"),
+        }
+
+        state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::CONTROL));
+        state.handle_key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let entry = state.selected_entry().clone();
+        assert_eq!(
+            state.shared_value(&entry),
+            Some(&TomlValue::Array(vec![TomlValue::Table(
+                toml::map::Map::from_iter([(
+                    "folder".to_string(),
+                    TomlValue::String("Projects/Active".to_string()),
+                )])
+            )]))
+        );
+    }
+
+    #[test]
+    fn template_rule_editor_round_trips_existing_rows_and_clears_explicitly() {
+        let current = TomlValue::Array(vec![TomlValue::Table(toml::map::Map::from_iter([
+            (
+                "folder".to_string(),
+                TomlValue::String("Projects".to_string()),
+            ),
+            (
+                "template".to_string(),
+                TomlValue::String("project".to_string()),
+            ),
+        ]))]);
+        let mut editor = TemplateRulesEditor::from_toml(
+            TemplateRuleKind::FolderTemplate,
+            Some(&current),
+            vec!["Projects".to_string()],
+        );
+
+        assert_eq!(editor.to_toml().expect("rules should serialize"), current);
+        editor.delete_row();
+        assert_eq!(
+            editor.to_toml().expect("empty rules should serialize"),
+            TomlValue::Array(Vec::new())
+        );
+
+        editor.add_row();
+        assert!(editor.to_toml().is_err());
+    }
+
+    #[test]
+    fn template_folder_rule_editor_always_accepts_manual_paths() {
+        let mut state = sample_state();
+        let (category_index, entry_index) = state
+            .find_entry("templates.folder_templates")
+            .expect("folder templates entry should exist");
+        state.selected_category = category_index;
+        state.selected_entry = entry_index;
+        state.open_edit();
+
+        for character in "Wrong".chars() {
+            state.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        state.handle_key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+        for character in "External/Manual".chars() {
+            state.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        state.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        for character in "manual-template".chars() {
+            state.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let entry = state.selected_entry().clone();
+        let row = state
+            .shared_value(&entry)
+            .and_then(TomlValue::as_array)
+            .and_then(|rows| rows.first())
+            .and_then(TomlValue::as_table)
+            .expect("manual folder rule should be stored");
+        assert_eq!(
+            row.get("folder").and_then(TomlValue::as_str),
+            Some("External/Manual")
+        );
+        assert_eq!(
+            row.get("template").and_then(TomlValue::as_str),
+            Some("manual-template")
+        );
+    }
+
+    #[test]
+    fn template_regex_rule_editor_adds_and_removes_structured_rows() {
+        let mut state = sample_state();
+        let (category_index, entry_index) = state
+            .find_entry("templates.file_templates")
+            .expect("file templates entry should exist");
+        state.selected_category = category_index;
+        state.selected_entry = entry_index;
+        state.open_edit();
+
+        for character in "^Projects/.*\\.md$".chars() {
+            state.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        state.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        for character in "project".chars() {
+            state.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        state.handle_key(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        for character in ".*".chars() {
+            state.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        state.handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        for character in "fallback".chars() {
+            state.handle_key(KeyEvent::new(KeyCode::Char(character), KeyModifiers::NONE));
+        }
+        state.handle_key(KeyEvent::new(KeyCode::Up, KeyModifiers::ALT));
+        state.handle_key(KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
+        state.handle_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+
+        let entry = state.selected_entry().clone();
+        let rows = state
+            .shared_value(&entry)
+            .and_then(TomlValue::as_array)
+            .expect("regex rules should be stored");
+        assert_eq!(rows.len(), 1);
+        let row = rows[0].as_table().expect("regex rule should be a table");
+        assert_eq!(row.get("regex").and_then(TomlValue::as_str), Some(".*"));
+        assert_eq!(
+            row.get("template").and_then(TomlValue::as_str),
+            Some("fallback")
+        );
+    }
+
+    #[test]
+    fn template_rule_overlay_documents_suggestions_and_manual_input() {
+        let mut state = sample_state();
+        let (category_index, entry_index) = state
+            .find_entry("templates.ignore_folders_on_creation")
+            .expect("ignored folders entry should exist");
+        state.selected_category = category_index;
+        state.selected_entry = entry_index;
+        state.open_edit();
+
+        let rendered = render_text(&state, 120, 40);
+        assert!(rendered.contains("Edit Template Rules"));
+        assert!(rendered.contains("Matching vault folders"));
+        assert!(rendered.contains("Projects/Active"));
+        assert!(rendered.contains("manual input is allowed"));
     }
 
     #[test]

@@ -3890,6 +3890,7 @@ The current Linux x86\_64 release binary is about 31.3MB unstripped and 26.0MB s
   - new plugin registration
   - existing export profile discovery/edit handoff
 - [x] Add richer editors for arrays/maps/enum values so users do not need to type raw TOML literals for common operations such as adding an event hook or appending an allowlist domain.
+- [x] Add structured row editors for Templater folder, regex, and ignored-folder creation rules, with bounded existing-vault folder suggestions that never prevent manual path entry.
 - [x] Show value provenance in the UI (`default`, `Obsidian import`, `shared override`, `local override`) so users understand why an effective value looks the way it does.
 - [x] Reuse the same descriptors, validators, and examples as the non-interactive CLI and help system. The TUI must not grow its own private config schema.
 

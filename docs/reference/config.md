@@ -6,6 +6,7 @@ Notes:
   `config show` merges built-in defaults with `.vulcan/config.toml` and `.vulcan/config.local.toml` when present.
   `config list` is derived from the schema registry used by config mutation commands and the settings TUI.
   `config edit` requires an interactive terminal, is schema-driven, and can edit shared or local overrides before saving.
+  Templater creation-rule rows have structured editors; folder fields suggest vault directories and still accept manual paths.
   `config set` and `config unset` accept `--target <shared|local>`; quote strings when the shell would otherwise strip them.
   Use `config alias ...`, `config permissions profile ...`, `plugin set`, and `export profile ...` when a dedicated command is available.
   Import commands preserve unrelated config sections and overwrite the mapped target keys.
