@@ -988,9 +988,10 @@ fn capture_local_worktree(
     report: &GitSyncReport,
     target_before: Option<GitOid>,
 ) -> Result<crate::GitCapture, GitSyncError> {
-    let base = target_before
-        .clone()
-        .or(engine.head_commit(&report.repository)?);
+    let base = match target_before.as_ref() {
+        Some(target) => Some(target.clone()),
+        None => engine.head_commit(&report.repository)?,
+    };
     Ok(engine.capture_worktree(
         &report.repository,
         &GitCaptureRequest {
@@ -3040,9 +3041,26 @@ mod tests {
             "a reused engine should retain its validated installation: {commands}"
         );
         assert!(
-            lines.len() <= 23,
-            "reused-engine sync exceeded its 23-process budget ({}): {commands}",
+            lines.len() <= 22,
+            "reused-engine sync exceeded its 22-process budget ({}): {commands}",
             lines.len()
+        );
+    }
+
+    #[cfg(unix)]
+    fn assert_direct_engine_probes(lines: &[&str], commands: &str) {
+        assert_eq!(
+            lines.iter().filter(|line| **line == "--version").count(),
+            1,
+            "a fresh direct engine should probe Git once: {commands}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.ends_with(" rev-parse --verify --quiet HEAD^{commit}"))
+                .count(),
+            2,
+            "an existing local sync ref should avoid a redundant capture-base lookup: {commands}"
         );
     }
 
@@ -3063,6 +3081,36 @@ mod tests {
         assert!(!report.actions.contains(&GitSyncAction::WorktreeApplied));
         assert_eq!(report.accepted, report.local_snapshot);
         assert!(report.requirements.required_filters.is_empty());
+    }
+
+    #[test]
+    fn uploaded_uncommitted_worktree_reuses_the_hidden_snapshot() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let head = engine
+            .head_commit(&repository)
+            .expect("HEAD")
+            .expect("initial commit");
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap");
+        fs::write(writer.join("Home.md"), "uploaded but not committed\n")
+            .expect("uncommitted edit");
+
+        let uploaded = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("upload uncommitted worktree");
+        assert_eq!(uploaded.outcome, GitSyncOutcome::Pushed);
+        assert!(uploaded.actions.contains(&GitSyncAction::SnapshotCreated));
+        assert_ne!(uploaded.accepted, Some(head.clone()));
+        assert_eq!(
+            engine.head_commit(&repository).expect("unchanged HEAD"),
+            Some(head)
+        );
+
+        let repeated = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("repeat already uploaded worktree");
+        assert_eq!(repeated.outcome, GitSyncOutcome::UpToDate);
+        assert_eq!(repeated.accepted, uploaded.accepted);
+        assert!(!repeated.actions.contains(&GitSyncAction::SnapshotCreated));
     }
 
     #[test]
@@ -3186,15 +3234,11 @@ mod tests {
             "steady verification should reuse the capture stat cache: {commands}"
         );
         assert!(
-            lines.len() <= 24,
-            "steady sync exceeded its 24-process budget ({}): {commands}",
+            lines.len() <= 23,
+            "steady sync exceeded its 23-process budget ({}): {commands}",
             lines.len()
         );
-        assert_eq!(
-            lines.iter().filter(|line| **line == "--version").count(),
-            1,
-            "a fresh direct engine should probe Git once: {commands}"
-        );
+        assert_direct_engine_probes(&lines, &commands);
 
         assert_reused_engine_process_budget(&engine, &writer, &trace);
     }
