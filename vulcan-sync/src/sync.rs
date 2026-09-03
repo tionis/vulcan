@@ -1,15 +1,15 @@
 use crate::{
     conflict_ref, local_epoch_ref, local_sync_ref, remote_epoch_ref, sync_profile_key,
-    BranchPullConfig, FastForwardOutcome, GitCaptureRequest, GitContentMergeResolutionRequest,
-    GitEngine, GitEngineError, GitInstallation, GitOid, GitPathObject, GitPlatformPreflight,
-    GitPlatformProfile, GitPushResult, GitRefName, GitRemote, GitRepository,
-    GitRepositoryRequirements, GitResolvedPath, GitSafetyState, GitTreeApplyPlan, MergeAutomation,
-    MergeBranchOutcome, MergeFileKind, MergePolicy, MergeResolution, PullFastForward, PullRebase,
-    RebaseOutcome, SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncConflict,
-    SyncContext, SyncError, SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome,
-    SyncPlan, SyncProgress, SyncReport, SyncResolutionState, SyncState, SyncStatus,
-    DEFAULT_REMOTE_LIVE_REF, GIT_PLATFORM_PREFLIGHT_VERSION, SYNC_CONTRACT_VERSION,
-    VULCAN_REF_NAMESPACE_VERSION,
+    BranchPullConfig, FastForwardOutcome, GitBranchUpstream, GitCaptureRequest,
+    GitContentMergeResolutionRequest, GitEngine, GitEngineError, GitInstallation, GitOid,
+    GitPathObject, GitPlatformPreflight, GitPlatformProfile, GitPushResult, GitRefName, GitRemote,
+    GitRepository, GitRepositoryRequirements, GitResolvedPath, GitSafetyState, GitTreeApplyPlan,
+    MergeAutomation, MergeBranchOutcome, MergeFileKind, MergePolicy, MergeResolution,
+    PullFastForward, PullRebase, RebaseOutcome, SyncAction, SyncBackend, SyncCapabilities,
+    SyncCapability, SyncConflict, SyncContext, SyncError, SyncErrorCategory, SyncOperation,
+    SyncOperationMode, SyncOutcome, SyncPlan, SyncProgress, SyncReport, SyncResolutionState,
+    SyncState, SyncStatus, DEFAULT_REMOTE_LIVE_REF, GIT_PLATFORM_PREFLIGHT_VERSION,
+    SYNC_CONTRACT_VERSION, VULCAN_REF_NAMESPACE_VERSION,
 };
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
@@ -1066,16 +1066,77 @@ fn capture_local_worktree(
 /// outcome is recorded on the report and reconciliation proceeds. A pull that
 /// moves HEAD refreshes the expected head tracked by the pause checks; the
 /// repository lock guarantees nothing else moved it.
+/// Builds an inert branch report: no fetch, no mutation, only facts.
+fn inert_branch_lane(
+    branch: GitRefName,
+    before: Option<GitOid>,
+    action: GitBranchSyncAction,
+    detail: &str,
+) -> GitBranchSync {
+    GitBranchSync {
+        branch,
+        remote: None,
+        upstream: None,
+        tracking: None,
+        before,
+        after: None,
+        action,
+        detail: Some(detail.to_string()),
+        pushed: false,
+        push_detail: None,
+    }
+}
+
+/// Resolves the branch pull target, recording Skipped/Failed on the report.
+/// Returns None when the lane is complete without fetching. The head ref was
+/// read at transaction start and refreshed after our own pulls; the lock
+/// guarantees nothing else moved it, so no re-read is needed.
+fn resolve_pull_target(
+    engine: &dyn GitEngine,
+    report: &mut GitSyncReport,
+) -> Option<(GitRefName, GitBranchUpstream)> {
+    let repository = &report.repository;
+    let branch = report.head_ref_before.clone()?;
+    if repository.work_tree.is_none() {
+        report.branch = Some(inert_branch_lane(
+            branch,
+            None,
+            GitBranchSyncAction::Skipped,
+            "bare repository has no worktree",
+        ));
+        return None;
+    }
+    match engine.branch_upstream(repository, &branch) {
+        Ok(Some(upstream)) => Some((branch, upstream)),
+        Ok(None) => {
+            report.branch = Some(inert_branch_lane(
+                branch,
+                None,
+                GitBranchSyncAction::Skipped,
+                "no upstream is configured for the branch",
+            ));
+            None
+        }
+        // Unresolvable branch configuration (unknown remote, malformed ref)
+        // fails only the branch lane; the file lane proceeds.
+        Err(error) => {
+            let before = engine.head_commit(repository).ok().flatten();
+            report.branch = Some(inert_branch_lane(
+                branch,
+                before,
+                GitBranchSyncAction::Failed,
+                &error.to_string(),
+            ));
+            None
+        }
+    }
+}
+
 fn pull_branch_lane(
     engine: &dyn GitEngine,
     report: &mut GitSyncReport,
 ) -> Result<(), GitSyncError> {
     let repository = &report.repository;
-    // The head ref was read at transaction start and refreshed after our own
-    // pulls; the lock guarantees nothing else moved it. No re-read needed.
-    let Some(branch) = report.head_ref_before.clone() else {
-        return Ok(());
-    };
     if let Some(existing) = report.branch.as_ref() {
         if matches!(
             existing.action,
@@ -1087,36 +1148,10 @@ fn pull_branch_lane(
             return Ok(());
         }
     }
-    if repository.work_tree.is_none() {
-        report.branch = Some(GitBranchSync {
-            branch,
-            remote: None,
-            upstream: None,
-            tracking: None,
-            before: None,
-            after: None,
-            action: GitBranchSyncAction::Skipped,
-            detail: Some("bare repository has no worktree".to_string()),
-            pushed: false,
-            push_detail: None,
-        });
-        return Ok(());
-    }
-    let Some(upstream) = engine.branch_upstream(repository, &branch)? else {
-        report.branch = Some(GitBranchSync {
-            branch,
-            remote: None,
-            upstream: None,
-            tracking: None,
-            before: None,
-            after: None,
-            action: GitBranchSyncAction::Skipped,
-            detail: Some("no upstream is configured for the branch".to_string()),
-            pushed: false,
-            push_detail: None,
-        });
+    let Some((branch, upstream)) = resolve_pull_target(engine, report) else {
         return Ok(());
     };
+    let repository = &report.repository;
     let mut lane = GitBranchSync {
         branch: branch.clone(),
         remote: Some(upstream.remote.clone()),
@@ -1161,7 +1196,26 @@ fn pull_branch_lane(
             return Ok(());
         }
     }
-    let config = engine.branch_pull_config(repository, &branch)?;
+    let config = match engine.branch_pull_config(repository, &branch) {
+        Ok(config) => config,
+        // An unreadable pull strategy (e.g. a typo'd pull.ff value) fails
+        // only the branch lane; the file lane proceeds.
+        Err(error) => {
+            report.branch = Some(GitBranchSync {
+                branch: branch.clone(),
+                remote: Some(upstream.remote.clone()),
+                upstream: Some(upstream.merge_ref.clone()),
+                tracking: Some(upstream.tracking_ref.clone()),
+                before: engine.head_commit(repository).ok().flatten(),
+                after: None,
+                action: GitBranchSyncAction::Failed,
+                detail: Some(error.to_string()),
+                pushed: false,
+                push_detail: None,
+            });
+            return Ok(());
+        }
+    };
     if try_branch_fast_forward(engine, report, &branch, &fetched, config, &mut lane)? {
         report.branch = Some(lane);
         return Ok(());
@@ -1318,7 +1372,24 @@ fn preview_branch_pull(
             )),
         ),
         _ => {
-            let config = engine.branch_pull_config(repository, &branch)?;
+            let config = match engine.branch_pull_config(repository, &branch) {
+                Ok(config) => config,
+                Err(error) => {
+                    report.branch = Some(GitBranchSync {
+                        branch: branch.clone(),
+                        remote: Some(upstream.remote.clone()),
+                        upstream: Some(upstream.merge_ref.clone()),
+                        tracking: Some(upstream.tracking_ref.clone()),
+                        before: before.clone(),
+                        after: None,
+                        action: GitBranchSyncAction::Failed,
+                        detail: Some(error.to_string()),
+                        pushed: false,
+                        push_detail: None,
+                    });
+                    return Ok(());
+                }
+            };
             let strategy = match (config.fast_forward, config.rebase) {
                 (_, PullRebase::Interactive) => "manual rebase (pull.rebase=interactive)",
                 (_, PullRebase::Yes) => "rebase",
@@ -4549,6 +4620,39 @@ mod tests {
             detail.is_some_and(|detail| detail.contains("absent")),
             "skip detail should explain the missing upstream"
         );
+    }
+
+    #[test]
+    fn branch_lane_records_bad_configuration_without_failing_sync() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        advance_remote_branch(&temporary, &remote, "advanced\n");
+        run_git(&writer, &["config", "pull.ff", "bogus"]);
+
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("sync with bad pull config reports normally");
+
+        assert_ne!(report.outcome, GitSyncOutcome::Paused);
+        let (action, detail) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Failed);
+        assert!(
+            detail.is_some_and(|detail| detail.contains("pull.ff")),
+            "failure detail should name the bad value"
+        );
+    }
+
+    #[test]
+    fn branch_lane_records_unresolvable_upstream_without_failing_sync() {
+        let (_temporary, _remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        run_git(&writer, &["config", "branch.main.merge", "not-a-ref"]);
+
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("sync with bad upstream config reports normally");
+
+        assert_ne!(report.outcome, GitSyncOutcome::Paused);
+        let (action, _) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Failed);
     }
 
     #[test]
