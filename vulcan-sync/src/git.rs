@@ -309,6 +309,20 @@ pub trait GitEngine: Send + Sync {
         message: &str,
     ) -> Result<GitOid, GitEngineError>;
 
+    /// Writes blob bytes directly to the object store without touching the
+    /// worktree, the user's index, or any temporary files.
+    fn write_blob(&self, repository: &GitRepository, data: &[u8])
+        -> Result<GitOid, GitEngineError>;
+
+    /// Creates a single-file `100644` tree for one blob without touching the
+    /// worktree, the user's index, or any temporary files.
+    fn create_single_file_tree(
+        &self,
+        repository: &GitRepository,
+        path: &str,
+        blob: &GitOid,
+    ) -> Result<GitOid, GitEngineError>;
+
     fn push_ref(
         &self,
         repository: &GitRepository,
@@ -1771,16 +1785,6 @@ impl GitCliEngine {
         GitOid::parse(decode_stdout("create a commit", output.stdout)?.trim())
     }
 
-    fn hash_blob(&self, repository: &GitRepository, data: &[u8]) -> Result<GitOid, GitEngineError> {
-        let mut command = self.repository_command(repository);
-        command.args(["hash-object", "-w", "--stdin"]);
-        let output = ensure_success(
-            "write a structured merge blob",
-            self.execute_with_input(command, "write a structured merge blob", data)?,
-        )?;
-        GitOid::parse(decode_stdout("write a structured merge blob", output.stdout)?.trim())
-    }
-
     fn capture(
         &self,
         operation: &'static str,
@@ -2794,7 +2798,7 @@ impl GitEngine for GitCliEngine {
             match (&resolved.mode, &resolved.data) {
                 (Some(mode), Some(data)) => {
                     validate_resolved_blob(mode, data)?;
-                    let oid = self.hash_blob(repository, data)?;
+                    let oid = self.write_blob(repository, data)?;
                     let mut command = self.index_command(repository, &index_path)?;
                     command
                         .args(["update-index", "--add", "--cacheinfo"])
@@ -2852,6 +2856,37 @@ impl GitEngine for GitCliEngine {
         message: &str,
     ) -> Result<GitOid, GitEngineError> {
         self.commit_tree_with_reproducible_identity(repository, tree, parents, message, true)
+    }
+
+    fn write_blob(
+        &self,
+        repository: &GitRepository,
+        data: &[u8],
+    ) -> Result<GitOid, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command.args(["hash-object", "-w", "--stdin"]);
+        let output = ensure_success(
+            "write a Git blob",
+            self.execute_with_input(command, "write a Git blob", data)?,
+        )?;
+        GitOid::parse(decode_stdout("write a Git blob", output.stdout)?.trim())
+    }
+
+    fn create_single_file_tree(
+        &self,
+        repository: &GitRepository,
+        path: &str,
+        blob: &GitOid,
+    ) -> Result<GitOid, GitEngineError> {
+        validate_repository_path(path)?;
+        let mut command = self.repository_command(repository);
+        command.arg("mktree");
+        let input = format!("100644 blob {}\t{path}\n", blob.as_str());
+        let output = ensure_success(
+            "create a single-file tree",
+            self.execute_with_input(command, "create a single-file tree", input.as_bytes())?,
+        )?;
+        GitOid::parse(decode_stdout("create a single-file tree", output.stdout)?.trim())
     }
 
     fn push_ref(

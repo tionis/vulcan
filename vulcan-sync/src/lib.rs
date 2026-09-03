@@ -43,7 +43,8 @@ pub use merge_policy::{
     MergePolicyError, MergePolicyRule, MergeResolution, MERGE_POLICY_SCHEMA_VERSION,
 };
 pub use notifications::{
-    refresh_notification_advertisement, DiscoveredNotificationAdvertisement,
+    publish_notification_advertisement, refresh_notification_advertisement,
+    remove_notification_advertisement, DiscoveredNotificationAdvertisement,
     NotificationAdvertisement, NotificationAdvertisementError, NotificationEndpoint,
     NotificationTransport, NOTIFICATION_ADVERTISEMENT_FILE, NOTIFICATION_ADVERTISEMENT_REF,
 };

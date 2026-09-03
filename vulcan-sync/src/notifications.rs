@@ -1,5 +1,6 @@
 use crate::{
-    GitEngine, GitEngineError, GitOid, GitRefDeleteResult, GitRefName, GitRemote, GitRepository,
+    GitEngine, GitEngineError, GitOid, GitPushResult, GitRefDeleteResult, GitRefName, GitRemote,
+    GitRepository,
 };
 use serde::Deserialize;
 use std::error::Error;
@@ -9,6 +10,8 @@ use url::{Host, Url};
 pub const NOTIFICATION_ADVERTISEMENT_REF: &str = "refs/vulcan/notifications";
 pub const NOTIFICATION_ADVERTISEMENT_FILE: &str = "notification.json";
 const NOTIFICATION_ADVERTISEMENT_VERSION: u32 = 1;
+const NOTIFICATION_ADVERTISEMENT_TRANSPORT: &str = "http_long_poll";
+const NOTIFICATION_ADVERTISEMENT_COMMIT_MESSAGE: &str = "vulcan sync notification advertisement\n";
 const MAX_ADVERTISEMENT_BYTES: usize = 16 * 1024;
 const MAX_ENDPOINT_BYTES: usize = 4 * 1024;
 
@@ -115,7 +118,7 @@ impl NotificationAdvertisement {
                 raw.version
             )));
         }
-        if raw.transport != "http_long_poll" {
+        if raw.transport != NOTIFICATION_ADVERTISEMENT_TRANSPORT {
             return Err(NotificationAdvertisementError::Invalid(
                 "unsupported notification transport".to_string(),
             ));
@@ -201,6 +204,73 @@ fn is_loopback_host(host: &Host<&str>) -> bool {
         Host::Ipv4(address) => address.is_loopback(),
         Host::Ipv6(address) => address.is_loopback(),
     }
+}
+
+/// Publishes a version 1 notification advertisement as a parentless commit
+/// carrying only `notification.json`, using pure object-store plumbing
+/// (`hash-object`, `mktree`, `commit-tree`) without touching the worktree, the
+/// user's index, or any temporary files.
+///
+/// The candidate URL is validated with the same policy as discovery before any
+/// Git object is created, so invalid input never mutates the repository. With
+/// `expected: None`, the current remote revision is read first and used as the
+/// compare-and-swap lease, so concurrent publishers fail with a stale error
+/// instead of silently overwriting each other; only a genuinely absent ref
+/// pushes without a lease. Pass an explicit revision for a strict lease.
+pub fn publish_notification_advertisement(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    remote: &GitRemote,
+    subscribe_url: &str,
+    expected: Option<&GitOid>,
+) -> Result<DiscoveredNotificationAdvertisement, NotificationAdvertisementError> {
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "version": NOTIFICATION_ADVERTISEMENT_VERSION,
+        "transport": NOTIFICATION_ADVERTISEMENT_TRANSPORT,
+        "subscribe_url": subscribe_url,
+    }))
+    .map_err(|error| {
+        NotificationAdvertisementError::Invalid(format!(
+            "notification advertisement is not valid JSON: {error}"
+        ))
+    })?;
+    let advertisement = NotificationAdvertisement::parse(&payload)?;
+    let advertisement_ref = GitRefName::parse(NOTIFICATION_ADVERTISEMENT_REF)?;
+    let lease = match expected {
+        Some(revision) => Some(revision.clone()),
+        None => engine.remote_ref(repository, remote, &advertisement_ref)?,
+    };
+    let blob = engine.write_blob(repository, &payload)?;
+    let tree =
+        engine.create_single_file_tree(repository, NOTIFICATION_ADVERTISEMENT_FILE, &blob)?;
+    let revision = engine.create_commit(
+        repository,
+        &tree,
+        &[],
+        NOTIFICATION_ADVERTISEMENT_COMMIT_MESSAGE,
+    )?;
+    match engine.push_ref(repository, remote, &revision, &advertisement_ref, lease.as_ref())? {
+        GitPushResult::Updated => Ok(DiscoveredNotificationAdvertisement {
+            revision,
+            advertisement,
+        }),
+        GitPushResult::Rejected => Err(NotificationAdvertisementError::Invalid(
+            "notification advertisement changed while it was being published; read the current revision and retry".to_string(),
+        )),
+    }
+}
+
+/// Deletes the remote notification advertisement with an exact lease. A
+/// missing remote ref reports `Missing` and a diverged one reports `Stale`
+/// without mutation.
+pub fn remove_notification_advertisement(
+    engine: &dyn GitEngine,
+    repository: &GitRepository,
+    remote: &GitRemote,
+    expected: &GitOid,
+) -> Result<GitRefDeleteResult, NotificationAdvertisementError> {
+    let advertisement_ref = GitRefName::parse(NOTIFICATION_ADVERTISEMENT_REF)?;
+    Ok(engine.delete_remote_ref(repository, remote, &advertisement_ref, expected)?)
 }
 
 #[derive(Debug)]
@@ -394,6 +464,194 @@ mod tests {
             ),
         )
         .expect("write advertisement");
+    }
+
+    fn init_publish_fixture() -> (tempfile::TempDir, GitCliEngine, GitRepository, GitRemote) {
+        let temporary = tempdir().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        let repository_path = temporary.path().join("repository");
+        run_git(
+            temporary.path(),
+            &["init", "--bare", remote.to_str().expect("remote")],
+        );
+        fs::create_dir(&repository_path).expect("repository directory");
+        run_git(&repository_path, &["init"]);
+        run_git(&repository_path, &["config", "user.name", "Vulcan Tests"]);
+        run_git(
+            &repository_path,
+            &["config", "user.email", "vulcan@example.invalid"],
+        );
+        run_git(
+            &repository_path,
+            &["remote", "add", "origin", remote.to_str().expect("remote")],
+        );
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(&repository_path)
+            .expect("discover repository");
+        let remote_name = GitRemote::parse("origin").expect("remote name");
+        (temporary, engine, repository, remote_name)
+    }
+
+    fn publish(
+        engine: &GitCliEngine,
+        repository: &GitRepository,
+        remote: &GitRemote,
+        channel: &str,
+        expected: Option<&GitOid>,
+    ) -> DiscoveredNotificationAdvertisement {
+        publish_notification_advertisement(
+            engine,
+            repository,
+            remote,
+            &format!("https://patch.example/h/{channel}?pubsub=true"),
+            expected,
+        )
+        .expect("publish advertisement")
+    }
+
+    #[test]
+    fn publishes_parentless_advertisement_without_touching_the_worktree() {
+        let (_temporary, engine, repository, remote) = init_publish_fixture();
+        let published = publish(&engine, &repository, &remote, "plumbing", None);
+        assert_eq!(published.advertisement.version, 1);
+        assert_eq!(
+            published.advertisement.transport,
+            NotificationTransport::HttpLongPoll
+        );
+        assert!(published
+            .advertisement
+            .endpoint
+            .expose_url()
+            .as_str()
+            .contains("plumbing"));
+        assert!(!format!("{published:?}").contains("plumbing"));
+
+        let metadata = engine
+            .commit_metadata(&repository, &published.revision)
+            .expect("commit metadata");
+        assert!(metadata.parents.is_empty());
+        assert!(!metadata.message.contains("plumbing"));
+
+        let entries = engine
+            .tree_entries(&repository, &published.revision)
+            .expect("tree entries");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path, NOTIFICATION_ADVERTISEMENT_FILE);
+        assert_eq!(entries[0].mode, "100644");
+        assert_eq!(entries[0].kind, "blob");
+
+        let work_tree = repository
+            .work_tree
+            .as_ref()
+            .expect("publishing repository has a worktree");
+        let leftovers = fs::read_dir(work_tree)
+            .expect("read worktree")
+            .map(|entry| {
+                entry
+                    .expect("worktree entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(leftovers, [".git".to_string()]);
+
+        let refreshed = refresh_notification_advertisement(&engine, &repository, &remote)
+            .expect("refresh advertisement")
+            .expect("advertisement should exist");
+        assert_eq!(refreshed.revision, published.revision);
+        assert_eq!(refreshed.advertisement, published.advertisement);
+    }
+
+    #[test]
+    fn rotates_with_exact_lease_and_rejects_stale_leases() {
+        let (_temporary, engine, repository, remote) = init_publish_fixture();
+        let first = publish(&engine, &repository, &remote, "first", None);
+        let second = publish(
+            &engine,
+            &repository,
+            &remote,
+            "second",
+            Some(&first.revision),
+        );
+        assert_ne!(first.revision, second.revision);
+        assert!(second
+            .advertisement
+            .endpoint
+            .expose_url()
+            .as_str()
+            .contains("second"));
+
+        let stale = publish_notification_advertisement(
+            &engine,
+            &repository,
+            &remote,
+            "https://patch.example/h/stale?pubsub=true",
+            Some(&first.revision),
+        )
+        .expect_err("stale lease should be rejected");
+        assert!(stale.to_string().contains("changed"));
+        assert!(!stale.to_string().contains("stale"));
+
+        let opportunistic = publish(&engine, &repository, &remote, "third", None);
+        assert_ne!(opportunistic.revision, second.revision);
+        let refreshed = refresh_notification_advertisement(&engine, &repository, &remote)
+            .expect("refresh advertisement")
+            .expect("advertisement should exist");
+        assert_eq!(refreshed.revision, opportunistic.revision);
+    }
+
+    #[test]
+    fn rejects_invalid_subscribe_url_before_git_mutation() {
+        let (_temporary, engine, repository, remote) = init_publish_fixture();
+        let error = publish_notification_advertisement(
+            &engine,
+            &repository,
+            &remote,
+            "http://patch.example/h/insecure?pubsub=true",
+            None,
+        )
+        .expect_err("insecure endpoint should be rejected");
+        assert!(!error.to_string().contains("insecure"));
+        assert_eq!(
+            engine
+                .remote_ref(
+                    &repository,
+                    &remote,
+                    &GitRefName::parse(NOTIFICATION_ADVERTISEMENT_REF).expect("ref")
+                )
+                .expect("read remote ref"),
+            None
+        );
+    }
+
+    #[test]
+    fn removes_advertisement_with_exact_lease() {
+        let (_temporary, engine, repository, remote) = init_publish_fixture();
+        let published = publish(&engine, &repository, &remote, "ephemeral", None);
+        let other = GitOid::parse("0".repeat(40)).expect("other revision");
+        assert_ne!(other, published.revision);
+        assert_eq!(
+            remove_notification_advertisement(&engine, &repository, &remote, &other)
+                .expect("stale removal"),
+            GitRefDeleteResult::Stale
+        );
+        assert!(
+            refresh_notification_advertisement(&engine, &repository, &remote)
+                .expect("refresh advertisement")
+                .is_some()
+        );
+        assert_eq!(
+            remove_notification_advertisement(&engine, &repository, &remote, &published.revision)
+                .expect("leased removal"),
+            GitRefDeleteResult::Deleted
+        );
+        assert!(
+            refresh_notification_advertisement(&engine, &repository, &remote)
+                .expect("refresh after removal")
+                .is_none()
+        );
     }
 
     fn run_git(directory: &Path, arguments: &[&str]) {
