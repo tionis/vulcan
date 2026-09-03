@@ -382,11 +382,13 @@ pub trait GitEngine: Send + Sync {
 
     /// Merges a revision into the checked-out branch with `--no-edit`,
     /// leaving conflicts in place for the caller to detect. Requires a
-    /// worktree and never opens an editor.
+    /// worktree and never opens an editor. Pass `no_ff` to honor
+    /// `pull.ff=false` with an explicit merge commit.
     fn merge_branch(
         &self,
         repository: &GitRepository,
         target: &GitOid,
+        no_ff: bool,
     ) -> Result<MergeBranchOutcome, GitEngineError>;
 
     /// Rebases the checked-out branch onto a revision, leaving conflicts in
@@ -1985,27 +1987,31 @@ impl GitCliEngine {
             .map(|value| value.trim().to_string())
     }
 
-    /// Reads one Git configuration value, returning `None` when unset (exit
-    /// code 1) rather than failing.
-    fn git_config_value(
+    /// Reads branch-upstream and pull-strategy configuration in one process.
+    /// Keys are matched exactly in code, so branch names with pattern
+    /// characters need no escaping.
+    fn git_pull_config_map(
         &self,
         repository: &GitRepository,
-        key: &str,
-    ) -> Result<Option<String>, GitEngineError> {
+    ) -> Result<BTreeMap<String, String>, GitEngineError> {
         let mut command = self.repository_command(repository);
-        command.args(["config", "--get", key]);
+        command.args([
+            "config",
+            "--get-regexp",
+            r"^(branch\..+\.(remote|merge|rebase)|pull\.(ff|rebase))$",
+        ]);
         let output = self.execute(command)?;
-        if output.status.success() {
-            return Ok(Some(
-                decode_stdout("read Git configuration", output.stdout)?
-                    .trim()
-                    .to_string(),
-            ));
+        if !output.status.success() && output.status.code() != Some(1) {
+            return Err(command_failed("read Git configuration", &output));
         }
-        if output.status.code() == Some(1) {
-            return Ok(None);
+        let stdout = decode_stdout("read Git configuration", output.stdout)?;
+        let mut values = BTreeMap::new();
+        for line in stdout.lines() {
+            if let Some((key, value)) = line.split_once(' ') {
+                values.insert(key.to_string(), value.to_string());
+            }
         }
-        Err(command_failed("read Git configuration", &output))
+        Ok(values)
     }
 }
 
@@ -3209,17 +3215,17 @@ impl GitEngine for GitCliEngine {
         let Some(short) = short else {
             return Ok(None);
         };
-        let remote = match self.git_config_value(repository, &format!("branch.{short}.remote"))? {
+        let config = self.git_pull_config_map(repository)?;
+        let remote = match config.get(&format!("branch.{short}.remote")) {
             Some(remote) => {
-                GitRemote::parse(remote).map_err(|value| GitEngineError::InvalidOutput {
+                GitRemote::parse(remote.clone()).map_err(|value| GitEngineError::InvalidOutput {
                     operation: "resolve the branch upstream",
                     detail: format!("invalid configured remote `{value}`"),
                 })?
             }
             None => return Ok(None),
         };
-        let Some(merge) = self.git_config_value(repository, &format!("branch.{short}.merge"))?
-        else {
+        let Some(merge) = config.get(&format!("branch.{short}.merge")) else {
             return Ok(None);
         };
         let tracked =
@@ -3256,19 +3262,20 @@ impl GitEngine for GitCliEngine {
             .as_str()
             .strip_prefix("refs/heads/")
             .unwrap_or(branch.as_str());
-        let rebase = match self
-            .git_config_value(repository, &format!("branch.{short}.rebase"))?
-            .as_deref()
+        let config = self.git_pull_config_map(repository)?;
+        let rebase = match config
+            .get(&format!("branch.{short}.rebase"))
+            .map(String::as_str)
         {
             Some(value) => parse_rebase_value(&value.to_ascii_lowercase(), OPERATION)?,
-            None => match self.git_config_value(repository, "pull.rebase")?.as_deref() {
+            None => match config.get("pull.rebase").map(String::as_str) {
                 Some(value) => parse_rebase_value(&value.to_ascii_lowercase(), OPERATION)?,
                 None => PullRebase::Never,
             },
         };
-        let fast_forward = match self
-            .git_config_value(repository, "pull.ff")?
-            .as_deref()
+        let fast_forward = match config
+            .get("pull.ff")
+            .map(String::as_str)
             .map(str::to_ascii_lowercase)
         {
             None => PullFastForward::Always,
@@ -3332,10 +3339,15 @@ impl GitEngine for GitCliEngine {
         &self,
         repository: &GitRepository,
         target: &GitOid,
+        no_ff: bool,
     ) -> Result<MergeBranchOutcome, GitEngineError> {
         repository.require_work_tree()?;
         let mut command = self.repository_command(repository);
-        command.args(["merge", "--no-edit", target.as_str()]);
+        command.arg("merge").arg("--no-edit");
+        if no_ff {
+            command.arg("--no-ff");
+        }
+        command.arg(target.as_str());
         let output = self.execute(command)?;
         if output.status.success() {
             return Ok(
@@ -5121,7 +5133,9 @@ mod tests {
             )
             .expect("fetch branch");
         assert_eq!(
-            engine.merge_branch(&repository, &fetched).expect("merge"),
+            engine
+                .merge_branch(&repository, &fetched, false)
+                .expect("merge"),
             MergeBranchOutcome::Merged
         );
         assert!(writer.join("Local.md").exists());
@@ -5143,7 +5157,7 @@ mod tests {
             .expect("fetch branch");
         assert_eq!(
             engine
-                .merge_branch(&repository, &conflicted)
+                .merge_branch(&repository, &conflicted, false)
                 .expect("conflicting merge"),
             MergeBranchOutcome::Conflicted
         );

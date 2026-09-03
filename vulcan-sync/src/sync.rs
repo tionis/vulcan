@@ -1,10 +1,11 @@
 use crate::{
     conflict_ref, local_epoch_ref, local_sync_ref, remote_epoch_ref, sync_profile_key,
-    GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine, GitEngineError,
-    GitInstallation, GitOid, GitPathObject, GitPlatformPreflight, GitPlatformProfile,
-    GitPushResult, GitRefName, GitRemote, GitRepository, GitRepositoryRequirements,
-    GitResolvedPath, GitSafetyState, GitTreeApplyPlan, MergeAutomation, MergeFileKind, MergePolicy,
-    MergeResolution, SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncConflict,
+    BranchPullConfig, FastForwardOutcome, GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine,
+    GitEngineError, GitInstallation, GitOid, GitPathObject, GitPlatformPreflight,
+    GitPlatformProfile, GitPushResult, GitRefName, GitRemote, GitRepository,
+    GitRepositoryRequirements, GitResolvedPath, GitSafetyState, GitTreeApplyPlan, MergeAutomation,
+    MergeBranchOutcome, MergeFileKind, MergePolicy, MergeResolution, PullFastForward, PullRebase,
+    RebaseOutcome, SyncAction, SyncBackend, SyncCapabilities, SyncCapability, SyncConflict,
     SyncContext, SyncError, SyncErrorCategory, SyncOperation, SyncOperationMode, SyncOutcome,
     SyncPlan, SyncProgress, SyncReport, SyncResolutionState, SyncState, SyncStatus,
     DEFAULT_REMOTE_LIVE_REF, GIT_PLATFORM_PREFLIGHT_VERSION, SYNC_CONTRACT_VERSION,
@@ -378,6 +379,51 @@ pub struct GitSyncPause {
     pub operation: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GitBranchSyncAction {
+    UpToDate,
+    FastForwarded,
+    Merged,
+    Rebased,
+    /// Nothing to do or nothing known: no upstream, detached HEAD, or a bare
+    /// repository without a worktree. The detail names the reason.
+    Skipped,
+    /// The branch lane stopped while the file lane proceeded: diverged past
+    /// `pull.ff=only`, interactive rebase requested, or a merge/rebase
+    /// conflict left in place. The detail names the reason.
+    Paused,
+    /// Deferred to a later cycle, e.g. a dirty worktree the pull must not
+    /// overwrite. The file lane still proceeded.
+    Deferred,
+    /// Branch fetch or strategy resolution failed. The file lane still
+    /// proceeded; its own fetch surfaces transport errors.
+    Failed,
+    /// Dry-run plan without mutation.
+    Planned,
+}
+
+/// The outcome of pulling the checked-out branch from its upstream inside one
+/// finite synchronization cycle. This lane moves ordinary branch refs with
+/// the user's own pull configuration; the hidden live refs move separately.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitBranchSync {
+    pub branch: GitRefName,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote: Option<GitRemote>,
+    /// The branch ref as known on the remote (e.g. `refs/heads/main`).
+    /// Absent when no upstream could be resolved.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub upstream: Option<GitRefName>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<GitOid>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<GitOid>,
+    pub action: GitBranchSyncAction,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct GitSyncReport {
     pub dry_run: bool,
@@ -410,6 +456,8 @@ pub struct GitSyncReport {
     pub pause: Option<GitSyncPause>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub application: Option<GitTreeApplyPlan>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<GitBranchSync>,
 }
 
 impl GitSyncReport {
@@ -446,6 +494,7 @@ impl GitSyncReport {
             conflict: None,
             pause: None,
             application: None,
+            branch: None,
         }
     }
 }
@@ -818,6 +867,7 @@ pub fn sync_git_once_with_control(
                 false,
             )?);
         }
+        preview_branch_pull(engine, &mut report)?;
         emit_progress(observer, GitSyncPhase::Completed, 0, &report, None)?;
         return Ok(report);
     }
@@ -1003,6 +1053,273 @@ fn capture_local_worktree(
     )?)
 }
 
+/// Pulls the checked-out branch from its upstream inside one attempt, before
+/// the hidden live refs move. Branch failures never fail the file lane: the
+/// outcome is recorded on the report and reconciliation proceeds. A pull that
+/// moves HEAD refreshes the expected head tracked by the pause checks; the
+/// repository lock guarantees nothing else moved it.
+fn pull_branch_lane(
+    engine: &dyn GitEngine,
+    report: &mut GitSyncReport,
+) -> Result<(), GitSyncError> {
+    let repository = &report.repository;
+    // The head ref was read at transaction start and refreshed after our own
+    // pulls; the lock guarantees nothing else moved it. No re-read needed.
+    let Some(branch) = report.head_ref_before.clone() else {
+        return Ok(());
+    };
+    if let Some(existing) = report.branch.as_ref() {
+        if matches!(
+            existing.action,
+            GitBranchSyncAction::FastForwarded
+                | GitBranchSyncAction::Merged
+                | GitBranchSyncAction::Rebased
+        ) && existing.after == engine.head_commit(repository)?
+        {
+            return Ok(());
+        }
+    }
+    if repository.work_tree.is_none() {
+        report.branch = Some(GitBranchSync {
+            branch,
+            remote: None,
+            upstream: None,
+            before: None,
+            after: None,
+            action: GitBranchSyncAction::Skipped,
+            detail: Some("bare repository has no worktree".to_string()),
+        });
+        return Ok(());
+    }
+    let Some(upstream) = engine.branch_upstream(repository, &branch)? else {
+        report.branch = Some(GitBranchSync {
+            branch,
+            remote: None,
+            upstream: None,
+            before: None,
+            after: None,
+            action: GitBranchSyncAction::Skipped,
+            detail: Some("no upstream is configured for the branch".to_string()),
+        });
+        return Ok(());
+    };
+    let mut lane = GitBranchSync {
+        branch: branch.clone(),
+        remote: Some(upstream.remote.clone()),
+        upstream: Some(upstream.merge_ref.clone()),
+        before: engine.head_commit(repository)?,
+        after: None,
+        action: GitBranchSyncAction::UpToDate,
+        detail: None,
+    };
+    let fetched = match engine.fetch_ref(
+        repository,
+        &upstream.remote,
+        &upstream.merge_ref,
+        &upstream.tracking_ref,
+    ) {
+        Ok(tip) => tip,
+        Err(error) => {
+            lane.action = GitBranchSyncAction::Failed;
+            lane.detail = Some(error.to_string());
+            report.branch = Some(lane);
+            return Ok(());
+        }
+    };
+    if lane.before.as_ref() == Some(&fetched) {
+        report.branch = Some(lane);
+        return Ok(());
+    }
+    if let Some(head) = lane.before.clone() {
+        if engine.is_ancestor(repository, &fetched, &head)? {
+            report.branch = Some(lane);
+            return Ok(());
+        }
+    }
+    let config = engine.branch_pull_config(repository, &branch)?;
+    if try_branch_fast_forward(engine, report, &branch, &fetched, config, &mut lane)? {
+        report.branch = Some(lane);
+        return Ok(());
+    }
+    pull_branch_with_strategy(engine, report, &fetched, config, &mut lane)?;
+    report.branch = Some(lane);
+    Ok(())
+}
+
+/// Records a branch move on the lane and refreshes the expected head tracked
+/// by the pause checks; the repository lock guarantees nothing else moved it.
+fn record_branch_move(
+    engine: &dyn GitEngine,
+    report: &mut GitSyncReport,
+    lane: &mut GitBranchSync,
+    action: GitBranchSyncAction,
+) -> Result<(), GitSyncError> {
+    lane.action = action;
+    lane.after = engine.head_commit(&report.repository)?;
+    report.head_before.clone_from(&lane.after);
+    report.head_ref_before = engine.head_reference(&report.repository)?;
+    Ok(())
+}
+
+/// Attempts the fast-forward step of a branch pull. Returns true when the
+/// lane is complete and the caller should record it.
+fn try_branch_fast_forward(
+    engine: &dyn GitEngine,
+    report: &mut GitSyncReport,
+    branch: &GitRefName,
+    fetched: &GitOid,
+    config: BranchPullConfig,
+    lane: &mut GitBranchSync,
+) -> Result<bool, GitSyncError> {
+    if config.fast_forward == PullFastForward::Never {
+        return Ok(false);
+    }
+    let ancestor = match &lane.before {
+        Some(head) => engine.is_ancestor(&report.repository, head, fetched)?,
+        None => false,
+    };
+    if !ancestor && lane.before.is_some() {
+        return Ok(false);
+    }
+    match engine.fast_forward_branch(&report.repository, branch, fetched)? {
+        FastForwardOutcome::UpToDate => Ok(true),
+        FastForwardOutcome::Advanced => {
+            record_branch_move(engine, report, lane, GitBranchSyncAction::FastForwarded)?;
+            Ok(true)
+        }
+        FastForwardOutcome::NotFastForwardable => Ok(false),
+        FastForwardOutcome::BlockedDirty => {
+            lane.action = GitBranchSyncAction::Deferred;
+            lane.detail =
+                Some("dirty worktree would be overwritten; retrying next cycle".to_string());
+            Ok(true)
+        }
+    }
+}
+
+/// Applies the configured rebase-or-merge strategy after fast-forward was
+/// impossible or disabled. Conflicts pause the lane; the live pause check
+/// then pauses the attempt on the resulting operation state.
+fn pull_branch_with_strategy(
+    engine: &dyn GitEngine,
+    report: &mut GitSyncReport,
+    fetched: &GitOid,
+    config: BranchPullConfig,
+    lane: &mut GitBranchSync,
+) -> Result<(), GitSyncError> {
+    match config.rebase {
+        PullRebase::Interactive => {
+            lane.action = GitBranchSyncAction::Paused;
+            lane.detail = Some(
+                "pull.rebase=interactive requires a manual rebase; branch lane paused".to_string(),
+            );
+        }
+        PullRebase::Yes | PullRebase::Merges => {
+            let merges = config.rebase == PullRebase::Merges;
+            match engine.rebase_branch(&report.repository, fetched, merges)? {
+                RebaseOutcome::UpToDate => {}
+                RebaseOutcome::Rebased => {
+                    record_branch_move(engine, report, lane, GitBranchSyncAction::Rebased)?;
+                }
+                RebaseOutcome::Conflicted => {
+                    lane.action = GitBranchSyncAction::Paused;
+                    lane.detail =
+                        Some("branch rebase conflicted; resolve with ordinary Git".to_string());
+                }
+                RebaseOutcome::BlockedDirty => {
+                    lane.action = GitBranchSyncAction::Deferred;
+                    lane.detail = Some(
+                        "dirty worktree would be overwritten; retrying next cycle".to_string(),
+                    );
+                }
+            }
+        }
+        PullRebase::Never => {
+            if config.fast_forward == PullFastForward::Only {
+                lane.action = GitBranchSyncAction::Paused;
+                lane.detail =
+                    Some("branch diverged and pull.ff=only refuses non-fast-forward".to_string());
+            } else {
+                let no_ff = config.fast_forward == PullFastForward::Never;
+                match engine.merge_branch(&report.repository, fetched, no_ff)? {
+                    MergeBranchOutcome::UpToDate => {}
+                    MergeBranchOutcome::Merged => {
+                        record_branch_move(engine, report, lane, GitBranchSyncAction::Merged)?;
+                    }
+                    MergeBranchOutcome::Conflicted => {
+                        lane.action = GitBranchSyncAction::Paused;
+                        lane.detail =
+                            Some("branch merge conflicted; resolve with ordinary Git".to_string());
+                    }
+                    MergeBranchOutcome::BlockedDirty => {
+                        lane.action = GitBranchSyncAction::Deferred;
+                        lane.detail = Some(
+                            "dirty worktree would be overwritten; retrying next cycle".to_string(),
+                        );
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Previews the branch lane without mutation for dry runs: resolves the
+/// upstream, compares tips by object id, and reports the configured strategy.
+fn preview_branch_pull(
+    engine: &dyn GitEngine,
+    report: &mut GitSyncReport,
+) -> Result<(), GitSyncError> {
+    let repository = &report.repository;
+    let Some(branch) = report.head_ref_before.clone() else {
+        return Ok(());
+    };
+    if repository.work_tree.is_none() {
+        return Ok(());
+    }
+    let Some(upstream) = engine.branch_upstream(repository, &branch)? else {
+        return Ok(());
+    };
+    let before = engine.head_commit(repository)?;
+    let tip = engine.remote_ref(repository, &upstream.remote, &upstream.merge_ref)?;
+    let (action, detail) = match (&before, &tip) {
+        (Some(head), Some(tip)) if head == tip => (GitBranchSyncAction::UpToDate, None),
+        (_, None) => (
+            GitBranchSyncAction::Skipped,
+            Some("upstream ref is absent on the remote".to_string()),
+        ),
+        _ => {
+            let config = engine.branch_pull_config(repository, &branch)?;
+            let strategy = match (config.fast_forward, config.rebase) {
+                (_, PullRebase::Interactive) => "manual rebase (pull.rebase=interactive)",
+                (_, PullRebase::Yes) => "rebase",
+                (_, PullRebase::Merges) => "rebase with merges",
+                (PullFastForward::Only, PullRebase::Never) => "fast-forward only",
+                (PullFastForward::Never, PullRebase::Never) => "merge commit",
+                (PullFastForward::Always, PullRebase::Never) => "fast-forward or merge",
+            };
+            (
+                GitBranchSyncAction::Planned,
+                Some(format!(
+                    "would pull {} into {} via {strategy}",
+                    upstream.merge_ref.as_str(),
+                    branch.as_str(),
+                )),
+            )
+        }
+    };
+    report.branch = Some(GitBranchSync {
+        branch,
+        remote: Some(upstream.remote.clone()),
+        upstream: Some(upstream.merge_ref.clone()),
+        before,
+        after: None,
+        action,
+        detail,
+    });
+    Ok(())
+}
+
 fn run_attempt(
     engine: &dyn GitEngine,
     options: &GitSyncOptions,
@@ -1019,6 +1336,8 @@ fn run_attempt(
     }
     control.emit(GitSyncPhase::Captured, report, Some(capture.tree.clone()))?;
     require_local_platform(engine, options, report, &capture.commit)?;
+
+    pull_branch_lane(engine, report)?;
 
     control.check()?;
     control.emit(GitSyncPhase::Fetching, report, None)?;
@@ -3059,9 +3378,17 @@ mod tests {
             lines.iter().all(|line| *line != "--version"),
             "a reused engine should retain its validated installation: {commands}"
         );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains(" config --get-regexp"))
+                .count(),
+            1,
+            "the branch lane should resolve upstream and pull strategy in one config read: {commands}"
+        );
         assert!(
-            lines.len() <= 22,
-            "reused-engine sync exceeded its 22-process budget ({}): {commands}",
+            lines.len() <= 23,
+            "reused-engine sync exceeded its 23-process budget ({}): {commands}",
             lines.len()
         );
     }
@@ -3080,6 +3407,14 @@ mod tests {
                 .count(),
             2,
             "an existing local sync ref should avoid a redundant capture-base lookup: {commands}"
+        );
+        assert_eq!(
+            lines
+                .iter()
+                .filter(|line| line.contains(" config --get-regexp"))
+                .count(),
+            1,
+            "the branch lane should resolve upstream and pull strategy in one config read: {commands}"
         );
     }
 
@@ -3253,8 +3588,8 @@ mod tests {
             "steady verification should reuse the capture stat cache: {commands}"
         );
         assert!(
-            lines.len() <= 23,
-            "steady sync exceeded its 23-process budget ({}): {commands}",
+            lines.len() <= 24,
+            "steady sync exceeded its 24-process budget ({}): {commands}",
             lines.len()
         );
         assert_direct_engine_probes(&lines, &commands);
@@ -3926,6 +4261,214 @@ mod tests {
             git_stdout(&reader, &["rev-parse", ":Home.md"]),
             staged_before,
             "the normal index entry must survive reconciliation untouched"
+        );
+    }
+
+    fn setup_tracked_branch() -> (TempDir, PathBuf, PathBuf) {
+        let (temporary, remote, writer) = setup_remote_and_writer();
+        run_git(&writer, &["push", "--quiet", "-u", "origin", "main"]);
+        (temporary, remote, writer)
+    }
+
+    fn advance_remote_branch(temporary: &TempDir, remote: &Path, contents: &str) {
+        let other = temporary.path().join("upstream-work");
+        let _ = std::fs::remove_dir_all(&other);
+        run_git(
+            temporary.path(),
+            &[
+                "clone",
+                "--quiet",
+                "-b",
+                "main",
+                remote.to_str().expect("remote path"),
+                other.to_str().expect("clone path"),
+            ],
+        );
+        run_git(&other, &["config", "user.name", "Vulcan Test"]);
+        run_git(&other, &["config", "user.email", "vulcan@example.invalid"]);
+        fs::write(other.join("Home.md"), contents).expect("upstream note");
+        commit_all(&other, "upstream advance");
+        run_git(&other, &["push", "--quiet", "origin", "main"]);
+    }
+
+    fn branch_action(report: &GitSyncReport) -> (GitBranchSyncAction, Option<String>) {
+        let lane = report.branch.as_ref().expect("branch lane report");
+        (lane.action, lane.detail.clone())
+    }
+
+    #[test]
+    fn branch_pull_fast_forwards_the_checked_out_branch() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        advance_remote_branch(&temporary, &remote, "advanced\n");
+
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("sync with remote branch movement");
+
+        let (action, _) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::FastForwarded);
+        let lane = report.branch.as_ref().expect("branch lane report");
+        assert_eq!(lane.branch.as_str(), "refs/heads/main");
+        assert_eq!(
+            lane.upstream.as_ref().map(GitRefName::as_str),
+            Some("refs/heads/main")
+        );
+        let after = lane.after.clone().expect("advanced head");
+        let repository = engine.discover_repository(&writer).expect("repository");
+        assert_eq!(engine.head_commit(&repository).expect("head"), Some(after));
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("pulled note"),
+            "advanced\n"
+        );
+        assert!(report.pause.is_none());
+    }
+
+    #[test]
+    fn branch_pull_merges_divergence_with_default_configuration() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        advance_remote_branch(&temporary, &remote, "advanced\n");
+
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("sync with diverged branch");
+
+        let (action, _) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Merged);
+        let parents = git_stdout(&writer, &["rev-list", "--parents", "-n", "1", "HEAD"]);
+        assert_eq!(
+            parents.split_whitespace().count(),
+            3,
+            "diverged pull should merge with default configuration"
+        );
+        assert!(report.pause.is_none());
+    }
+
+    #[test]
+    fn branch_pull_rebases_with_explicit_configuration() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        run_git(&writer, &["config", "pull.rebase", "true"]);
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        advance_remote_branch(&temporary, &remote, "advanced\n");
+
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("sync with rebase configuration");
+
+        let (action, _) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Rebased);
+        let parents = git_stdout(&writer, &["rev-list", "--parents", "-n", "1", "HEAD"]);
+        assert_eq!(
+            parents.split_whitespace().count(),
+            2,
+            "rebased pull should keep history linear"
+        );
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("rebased note"),
+            "advanced\n"
+        );
+        assert!(report.pause.is_none());
+    }
+
+    #[test]
+    fn branch_pull_pauses_divergence_under_ff_only() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
+        run_git(&writer, &["config", "pull.ff", "only"]);
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        advance_remote_branch(&temporary, &remote, "advanced\n");
+
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("sync with ff-only divergence");
+
+        let (action, detail) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Paused);
+        assert!(
+            detail.is_some_and(|detail| detail.contains("pull.ff=only")),
+            "pause detail should name the blocking configuration"
+        );
+        assert_ne!(report.outcome, GitSyncOutcome::Paused);
+    }
+
+    #[test]
+    fn branch_pull_conflict_pauses_the_attempt() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
+        fs::write(writer.join("Home.md"), "local conflict\n").expect("conflict note");
+        commit_all(&writer, "local conflict");
+        advance_remote_branch(&temporary, &remote, "remote conflict\n");
+
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("sync with branch conflict reports normally");
+
+        let (action, _) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Paused);
+        assert_eq!(report.outcome, GitSyncOutcome::Paused);
+        assert_eq!(
+            report.pause.as_ref().map(|pause| pause.reason),
+            Some(GitSyncPauseReason::OperationInProgress)
+        );
+        let repository = engine.discover_repository(&writer).expect("repository");
+        assert!(repository.git_dir.join("MERGE_HEAD").exists());
+    }
+
+    #[test]
+    fn branch_lane_skips_repositories_without_an_upstream() {
+        let (_temporary, _remote, writer) = setup_remote_and_writer();
+        let engine = GitCliEngine::default();
+
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("sync without an upstream");
+
+        let (action, detail) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Skipped);
+        assert!(
+            detail.is_some_and(|detail| detail.contains("no upstream")),
+            "skip detail should explain itself"
+        );
+    }
+
+    #[test]
+    fn branch_lane_previews_without_mutation() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        advance_remote_branch(&temporary, &remote, "advanced\n");
+        let head_before = git_stdout(&writer, &["rev-parse", "HEAD"]);
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let tracking_before = engine
+            .read_ref(
+                &repository,
+                &GitRefName::parse("refs/remotes/origin/main").expect("tracking ref"),
+            )
+            .expect("tracking ref");
+
+        let report = sync_git_once(
+            &engine,
+            &writer,
+            &GitSyncOptions {
+                dry_run: true,
+                ..GitSyncOptions::default()
+            },
+        )
+        .expect("dry-run sync");
+
+        let (action, _) = branch_action(&report);
+        assert_eq!(action, GitBranchSyncAction::Planned);
+        assert_eq!(git_stdout(&writer, &["rev-parse", "HEAD"]), head_before);
+        assert_eq!(
+            engine
+                .read_ref(
+                    &repository,
+                    &GitRefName::parse("refs/remotes/origin/main").expect("tracking ref"),
+                )
+                .expect("tracking ref"),
+            tracking_before,
+            "dry run must not fetch the branch"
         );
     }
 
