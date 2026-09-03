@@ -934,14 +934,10 @@ fn blob_to_vector(bytes: &[u8]) -> Result<Vec<f32>, String> {
     }
 
     Ok(bytes
-        .chunks_exact(std::mem::size_of::<f32>())
-        .map(|chunk| {
-            f32::from_le_bytes(
-                chunk
-                    .try_into()
-                    .expect("chunks_exact should always yield 4-byte chunks"),
-            )
-        })
+        .as_chunks::<{ std::mem::size_of::<f32>() }>()
+        .0
+        .iter()
+        .map(|chunk| f32::from_le_bytes(*chunk))
         .collect())
 }
 

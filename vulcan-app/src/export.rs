@@ -3265,15 +3265,15 @@ fn validate_content_replacement_rule(
 fn parse_content_replacement_rules(
     values: &[String],
 ) -> Result<Vec<ContentReplacementRuleConfig>, AppError> {
-    let chunks = values.chunks_exact(3);
-    if !chunks.remainder().is_empty() {
+    let (chunks, remainder) = values.as_chunks::<3>();
+    if !remainder.is_empty() {
         return Err(AppError::operation(
             "content transform replacement rules must be provided as MODE PATTERN REPLACEMENT triples",
         ));
     }
 
     let mut rules = Vec::new();
-    for (index, chunk) in values.chunks_exact(3).enumerate() {
+    for (index, chunk) in chunks.iter().enumerate() {
         let mode = chunk[0].trim().to_ascii_lowercase();
         let regex = match mode.as_str() {
             "literal" => false,

@@ -1625,7 +1625,8 @@ mod tests {
         let records = SyncConflictStore::from_state_store(store)
             .list(&record.repository_key)
             .expect("list conflict records");
-        assert_eq!(records, [record.clone()]);
+        assert_eq!(records.len(), 1);
+        assert_eq!(&records[0], record);
     }
 
     fn assert_overlapping_text_classification(record: &SyncConflictRecord) {

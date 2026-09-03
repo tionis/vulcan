@@ -1772,16 +1772,13 @@ fn rename_components(renames: &[GitChange]) -> Vec<Vec<GitChange>> {
     while let Some(seed) = remaining.pop() {
         let mut component = vec![seed];
         let mut paths = component_paths(&component);
-        loop {
-            let Some(index) = remaining.iter().position(|change| {
-                paths.contains(&change.path)
-                    || change
-                        .source_path
-                        .as_ref()
-                        .is_some_and(|source| paths.contains(source))
-            }) else {
-                break;
-            };
+        while let Some(index) = remaining.iter().position(|change| {
+            paths.contains(&change.path)
+                || change
+                    .source_path
+                    .as_ref()
+                    .is_some_and(|source| paths.contains(source))
+        }) {
             component.push(remaining.remove(index));
             paths = component_paths(&component);
         }

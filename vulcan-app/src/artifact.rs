@@ -662,7 +662,7 @@ fn text_quote_selectors_overlap(left: &MdafSelector, right: &MdafSelector) -> bo
 
 fn apply_edits(source: &str, edits: &[TextEdit], path: &str) -> Result<String, AppError> {
     let mut edits = edits.to_vec();
-    edits.sort_by(|left, right| right.start.cmp(&left.start));
+    edits.sort_by_key(|edit| std::cmp::Reverse(edit.start));
     let mut previous_start = source.len();
     let mut updated = source.to_string();
     for edit in edits {
