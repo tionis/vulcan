@@ -206,6 +206,31 @@ fn is_loopback_host(host: &Host<&str>) -> bool {
     }
 }
 
+/// Validates a candidate subscribe URL with the discovery policy and returns
+/// the parsed advertisement without creating Git objects or contacting a
+/// remote. Used to preview publication and to validate input before mutation.
+pub fn preview_notification_advertisement(
+    subscribe_url: &str,
+) -> Result<NotificationAdvertisement, NotificationAdvertisementError> {
+    Ok(advertisement_payload(subscribe_url)?.1)
+}
+
+fn advertisement_payload(
+    subscribe_url: &str,
+) -> Result<(Vec<u8>, NotificationAdvertisement), NotificationAdvertisementError> {
+    let payload = serde_json::to_vec(&serde_json::json!({
+        "version": NOTIFICATION_ADVERTISEMENT_VERSION,
+        "transport": NOTIFICATION_ADVERTISEMENT_TRANSPORT,
+        "subscribe_url": subscribe_url,
+    }))
+    .map_err(|error| {
+        NotificationAdvertisementError::Invalid(format!(
+            "notification advertisement is not valid JSON: {error}"
+        ))
+    })?;
+    let advertisement = NotificationAdvertisement::parse(&payload)?;
+    Ok((payload, advertisement))
+}
 /// Publishes a version 1 notification advertisement as a parentless commit
 /// carrying only `notification.json`, using pure object-store plumbing
 /// (`hash-object`, `mktree`, `commit-tree`) without touching the worktree, the
@@ -224,17 +249,7 @@ pub fn publish_notification_advertisement(
     subscribe_url: &str,
     expected: Option<&GitOid>,
 ) -> Result<DiscoveredNotificationAdvertisement, NotificationAdvertisementError> {
-    let payload = serde_json::to_vec(&serde_json::json!({
-        "version": NOTIFICATION_ADVERTISEMENT_VERSION,
-        "transport": NOTIFICATION_ADVERTISEMENT_TRANSPORT,
-        "subscribe_url": subscribe_url,
-    }))
-    .map_err(|error| {
-        NotificationAdvertisementError::Invalid(format!(
-            "notification advertisement is not valid JSON: {error}"
-        ))
-    })?;
-    let advertisement = NotificationAdvertisement::parse(&payload)?;
+    let (payload, advertisement) = advertisement_payload(subscribe_url)?;
     let advertisement_ref = GitRefName::parse(NOTIFICATION_ADVERTISEMENT_REF)?;
     let lease = match expected {
         Some(revision) => Some(revision.clone()),

@@ -4148,6 +4148,44 @@ pub enum SyncCommand {
         #[arg(long, help = "Validate and report without writing registry state")]
         dry_run: bool,
     },
+    #[command(about = "Publish the realtime sync notification advertisement")]
+    Advertise {
+        #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
+        wiki: Option<String>,
+        #[arg(long, help = "HTTPS long-poll subscribe URL to advertise")]
+        subscribe_url: String,
+        #[arg(
+            long,
+            default_value = "origin",
+            help = "Git remote carrying the advertisement ref"
+        )]
+        remote: String,
+        #[arg(
+            long,
+            help = "Exact advertised revision to replace; omit to lease the current one"
+        )]
+        expected: Option<String>,
+        #[arg(long, help = "Validate and report without creating objects or pushing")]
+        dry_run: bool,
+    },
+    #[command(about = "Remove the realtime sync notification advertisement")]
+    Unadvertise {
+        #[arg(help = "Optional registered wiki ID; omit to use the selected vault path")]
+        wiki: Option<String>,
+        #[arg(
+            long,
+            default_value = "origin",
+            help = "Git remote carrying the advertisement ref"
+        )]
+        remote: String,
+        #[arg(
+            long,
+            help = "Exact advertised revision to delete; omit to lease the current one"
+        )]
+        expected: Option<String>,
+        #[arg(long, help = "Validate and report without deleting the remote ref")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]

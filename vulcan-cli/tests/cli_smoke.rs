@@ -5231,6 +5231,202 @@ fn sync_checkpoint_cli_retains_the_accepted_commit_without_new_objects() {
 }
 
 #[test]
+fn sync_advertise_publishes_parentless_advertisement_and_unadvertise_removes_it() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let remote = temporary.path().join("remote.git");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    let vault = temporary.path().join("wiki");
+    fs::create_dir(&vault).expect("vault directory");
+    init_git_repo(&vault);
+    run_git_ok(
+        &vault,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    fs::write(vault.join("Home.md"), "home\n").expect("home note");
+
+    let subscribe_url = |channel: &str| format!("https://patch.example/h/{channel}?pubsub=true");
+    let advertised_ref = |revision: &str| {
+        run_git_stdout(
+            &vault,
+            &["ls-remote", "origin", "refs/vulcan/notifications"],
+        )
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().next())
+        .is_some_and(|advertised| advertised == revision)
+    };
+
+    let dry_run = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault.to_str().expect("vault path"),
+            "--output",
+            "json",
+            "sync",
+            "advertise",
+            "--subscribe-url",
+            &subscribe_url("cli-smoke-advertise-dry"),
+            "--dry-run",
+        ])
+        .assert()
+        .success();
+    let dry_run = parse_stdout_json(&dry_run);
+    assert_eq!(dry_run["dry_run"], true);
+    assert!(dry_run["revision"].is_null());
+    assert!(dry_run["previous_revision"].is_null());
+    assert_eq!(dry_run["origin"], "https://patch.example");
+    assert!(run_git_stdout(
+        &vault,
+        &["ls-remote", "origin", "refs/vulcan/notifications"]
+    )
+    .is_empty());
+
+    let published = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault.to_str().expect("vault path"),
+            "--output",
+            "json",
+            "sync",
+            "advertise",
+            "--subscribe-url",
+            &subscribe_url("cli-smoke-advertise-1"),
+        ])
+        .assert()
+        .success();
+    let redacted = String::from_utf8_lossy(&published.get_output().stdout).into_owned()
+        + &String::from_utf8_lossy(&published.get_output().stderr);
+    assert!(
+        !redacted.contains("cli-smoke-advertise-1"),
+        "advertise output must redact the subscribe URL"
+    );
+    let published = parse_stdout_json(&published);
+    let first = published["revision"]
+        .as_str()
+        .expect("published revision")
+        .to_string();
+    assert!(published["fingerprint"]
+        .as_str()
+        .is_some_and(|fingerprint| fingerprint.len() == 16));
+    assert!(advertised_ref(&first));
+    assert_eq!(
+        run_git_stdout(&remote, &["log", "--format=%P", "-n", "1", &first]),
+        "",
+        "advertisement commit should be parentless"
+    );
+    assert_eq!(
+        run_git_stdout(&remote, &["ls-tree", "--name-only", &first]),
+        "notification.json"
+    );
+
+    let rotated = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault.to_str().expect("vault path"),
+            "--output",
+            "json",
+            "sync",
+            "advertise",
+            "--subscribe-url",
+            &subscribe_url("cli-smoke-advertise-2"),
+            "--expected",
+            &first,
+        ])
+        .assert()
+        .success();
+    let rotated = parse_stdout_json(&rotated);
+    let second = rotated["revision"]
+        .as_str()
+        .expect("rotated revision")
+        .to_string();
+    assert_ne!(second, first);
+    assert_eq!(rotated["previous_revision"], first.as_str());
+    assert!(advertised_ref(&second));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault.to_str().expect("vault path"),
+            "sync",
+            "advertise",
+            "--subscribe-url",
+            &subscribe_url("cli-smoke-advertise-3"),
+            "--expected",
+            &first,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("changed"));
+
+    Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault.to_str().expect("vault path"),
+            "sync",
+            "unadvertise",
+            "--expected",
+            &first,
+        ])
+        .assert()
+        .failure();
+
+    let removed = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault.to_str().expect("vault path"),
+            "--output",
+            "json",
+            "sync",
+            "unadvertise",
+        ])
+        .assert()
+        .success();
+    let removed = parse_stdout_json(&removed);
+    assert_eq!(removed["deleted"], true);
+    assert_eq!(removed["previous_revision"], second.as_str());
+    assert!(run_git_stdout(
+        &vault,
+        &["ls-remote", "origin", "refs/vulcan/notifications"]
+    )
+    .is_empty());
+
+    let absent = Command::cargo_bin("vulcan")
+        .expect("binary should build")
+        .args([
+            "--vault",
+            vault.to_str().expect("vault path"),
+            "--output",
+            "json",
+            "sync",
+            "unadvertise",
+        ])
+        .assert()
+        .success();
+    let absent = parse_stdout_json(&absent);
+    assert_eq!(absent["deleted"], false);
+    assert!(absent["previous_revision"].is_null());
+}
+
+#[test]
 fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_ancestry() {
     let temporary = TempDir::new().expect("temp dir");
     let state_home = temporary.path().join("state");
@@ -22476,7 +22672,15 @@ fn describe_json_output_exposes_runtime_command_schema() {
         .iter()
         .find(|command| command["name"] == "sync")
         .expect("sync command should be described");
-    for subcommand in ["run", "status", "doctor", "conflicts", "semantic-plan"] {
+    for subcommand in [
+        "run",
+        "status",
+        "doctor",
+        "conflicts",
+        "semantic-plan",
+        "advertise",
+        "unadvertise",
+    ] {
         assert!(sync["subcommands"]
             .as_array()
             .expect("sync subcommands should be described")

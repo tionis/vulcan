@@ -21,6 +21,11 @@ use vulcan_app::sync_conflicts::{
     ResolveSyncConflictReport, SyncConflictDetailReport, SyncConflictListReport,
     SyncConflictResolutionSide,
 };
+use vulcan_app::sync_notifications::{
+    publish_sync_notification_advertisement, remove_sync_notification_advertisement,
+    SyncNotificationPublishOptions, SyncNotificationPublishReport, SyncNotificationRemoveOptions,
+    SyncNotificationRemoveReport,
+};
 use vulcan_app::sync_proposals::{
     approve_resolution_proposal, create_resolution_proposal, prepare_editor_resolution,
     preview_patch_resolution, preview_supplied_resolution, reject_resolution_proposal,
@@ -297,6 +302,9 @@ fn handle_non_cycle_sync_command(
     if let Some(result) = handle_semantic_sync_command(cli, paths, command) {
         return Some(result);
     }
+    if let Some(result) = handle_notification_sync_command(cli, paths, command) {
+        return Some(result);
+    }
     if let Some(result) = handle_termux_sync_command(cli, command) {
         return Some(result);
     }
@@ -306,6 +314,9 @@ fn handle_non_cycle_sync_command(
         }
         SyncCommand::Resume { wiki, dry_run } => {
             set_automatic_sync(cli.output, paths, wiki.as_deref(), false, *dry_run)
+        }
+        SyncCommand::Advertise { .. } | SyncCommand::Unadvertise { .. } => {
+            unreachable!("notification commands are dispatched before the general sync match")
         }
         SyncCommand::Doctor { wiki, target } => {
             run_sync_doctor(cli, paths, wiki.as_deref(), target)
@@ -372,6 +383,44 @@ fn handle_non_cycle_sync_command(
         }
     };
     Some(result)
+}
+
+fn handle_notification_sync_command(
+    cli: &Cli,
+    paths: &VaultPaths,
+    command: &SyncCommand,
+) -> Option<Result<(), CliError>> {
+    match command {
+        SyncCommand::Advertise {
+            wiki,
+            subscribe_url,
+            remote,
+            expected,
+            dry_run,
+        } => Some(run_sync_advertise(
+            cli,
+            paths,
+            wiki.as_deref(),
+            subscribe_url,
+            remote,
+            expected.as_deref(),
+            *dry_run,
+        )),
+        SyncCommand::Unadvertise {
+            wiki,
+            remote,
+            expected,
+            dry_run,
+        } => Some(run_sync_unadvertise(
+            cli,
+            paths,
+            wiki.as_deref(),
+            remote,
+            expected.as_deref(),
+            *dry_run,
+        )),
+        _ => None,
+    }
 }
 
 fn handle_termux_sync_command(cli: &Cli, command: &SyncCommand) -> Option<Result<(), CliError>> {
@@ -1229,6 +1278,134 @@ fn print_sync_checkpoint(
         "Sync checkpoint: {} -> {} ({:?})",
         report.checkpoint_ref, report.revision, report.kind
     );
+    Ok(())
+}
+
+fn run_sync_advertise(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    subscribe_url: &str,
+    remote: &str,
+    expected: Option<&str>,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let report = publish_sync_notification_advertisement(
+        &paths,
+        &SyncNotificationPublishOptions {
+            subscribe_url: subscribe_url.to_string(),
+            remote: GitRemote::parse(remote).map_err(CliError::operation)?,
+            expected: expected.map(str::to_string),
+            dry_run,
+        },
+    )
+    .map_err(CliError::operation)?;
+    print_sync_advertise(cli.output, &report)
+}
+
+fn print_sync_advertise(
+    output: OutputFormat,
+    report: &SyncNotificationPublishReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    if report.dry_run {
+        println!(
+            "Would advertise {} ({}) on {} {}; currently {}.",
+            report.origin,
+            report.fingerprint,
+            report.remote.as_str(),
+            report.advertisement_ref,
+            report
+                .previous_revision
+                .as_deref()
+                .map_or("nothing is advertised".to_string(), |revision| format!(
+                    "revision {revision} is advertised"
+                )),
+        );
+        return Ok(());
+    }
+    println!(
+        "Advertised {} ({}) on {} {} at revision {}.",
+        report.origin,
+        report.fingerprint,
+        report.remote.as_str(),
+        report.advertisement_ref,
+        report.revision.as_deref().unwrap_or("unknown"),
+    );
+    if let Some(previous) = &report.previous_revision {
+        println!("Replaced revision {previous}.");
+    }
+    Ok(())
+}
+
+fn run_sync_unadvertise(
+    cli: &Cli,
+    selected_paths: &VaultPaths,
+    wiki: Option<&str>,
+    remote: &str,
+    expected: Option<&str>,
+    dry_run: bool,
+) -> Result<(), CliError> {
+    let (paths, registration_profile, _) = resolve_sync_paths(selected_paths, wiki)?;
+    check_sync_permission(cli, &paths, registration_profile.as_deref())?;
+    let report = remove_sync_notification_advertisement(
+        &paths,
+        &SyncNotificationRemoveOptions {
+            remote: GitRemote::parse(remote).map_err(CliError::operation)?,
+            expected: expected.map(str::to_string),
+            dry_run,
+        },
+    )
+    .map_err(CliError::operation)?;
+    if !report.dry_run && !report.deleted && report.previous_revision.is_some() {
+        return Err(CliError::issues(format!(
+            "Notification advertisement {} on {} changed while it was being removed; retry with --expected {}",
+            report.advertisement_ref,
+            report.remote.as_str(),
+            report.previous_revision.as_deref().unwrap_or("unknown"),
+        )));
+    }
+    print_sync_unadvertise(cli.output, &report)
+}
+
+fn print_sync_unadvertise(
+    output: OutputFormat,
+    report: &SyncNotificationRemoveReport,
+) -> Result<(), CliError> {
+    if output == OutputFormat::Json {
+        return print_json(report);
+    }
+    if report.dry_run {
+        println!(
+            "Would remove {} on {}; currently {}.",
+            report.advertisement_ref,
+            report.remote.as_str(),
+            report
+                .previous_revision
+                .as_deref()
+                .map_or("nothing is advertised".to_string(), |revision| format!(
+                    "revision {revision} is advertised"
+                )),
+        );
+        return Ok(());
+    }
+    if report.deleted {
+        println!(
+            "Removed {} on {} (was revision {}).",
+            report.advertisement_ref,
+            report.remote.as_str(),
+            report.previous_revision.as_deref().unwrap_or("unknown"),
+        );
+    } else {
+        println!(
+            "No notification advertisement on {}; nothing removed.",
+            report.remote.as_str(),
+        );
+    }
     Ok(())
 }
 
