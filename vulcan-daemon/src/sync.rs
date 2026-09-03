@@ -49,14 +49,39 @@ pub fn format_sync_execution(execution: &DaemonSyncExecution) -> String {
         .join(",");
     match execution.report.as_ref() {
         Some(report) => format!(
-            "sync job: wiki `{wiki}` [{triggers}] -> {:?} ({:?})",
-            execution.job.job.state, report.sync.outcome,
+            "sync job: wiki `{wiki}` [{triggers}] -> {:?} ({:?}){}",
+            execution.job.job.state,
+            report.sync.outcome,
+            format_watch_summary(&execution.job),
         ),
         None => format!(
-            "sync job: wiki `{wiki}` [{triggers}] -> {:?}",
+            "sync job: wiki `{wiki}` [{triggers}] -> {:?}{}",
             execution.job.job.state,
+            format_watch_summary(&execution.job),
         ),
     }
+}
+
+/// Renders the watcher trigger metadata of a supervised job, so a repeating
+/// trigger explains itself: churning paths versus rescan/error conditions.
+fn format_watch_summary(job: &SupervisedSyncJob) -> String {
+    let Some(watch) = job.watch.as_ref() else {
+        return String::new();
+    };
+    let mut summary = format!(
+        " watch events={} untagged={} paths={} rescan={} errors={}",
+        watch.event_count,
+        watch.untagged_events,
+        watch.paths.len(),
+        watch.safety_rescan,
+        watch.watcher_errors.len(),
+    );
+    if let Some(first) = watch.watcher_errors.first() {
+        use std::fmt::Write;
+        let truncated: String = first.chars().take(200).collect();
+        write!(summary, " first_error={truncated:?}").expect("write to a String");
+    }
+    summary
 }
 
 /// Claims and executes one queued daemon job through the same cancellable
@@ -624,6 +649,33 @@ mod tests {
             anonymous.contains("<unregistered>"),
             "line should mark missing wiki identity: {anonymous}"
         );
+
+        let mut watched = job(Some("alpha"), SyncJobState::Succeeded);
+        watched.watch = Some(crate::supervisor::SyncWatchMetadata {
+            event_count: 3,
+            untagged_events: 1,
+            paths: vec!["Notes/todo.md".to_string()],
+            self_generated_transactions: Vec::new(),
+            safety_rescan: true,
+            watcher_errors: vec!["polling watcher: access denied".to_string()],
+        });
+        let with_watch = format_sync_execution(&DaemonSyncExecution {
+            job: watched,
+            report: None,
+        });
+        for fragment in [
+            "watch events=3",
+            "untagged=1",
+            "paths=1",
+            "rescan=true",
+            "errors=1",
+            "access denied",
+        ] {
+            assert!(
+                with_watch.contains(fragment),
+                "line should explain the watch trigger ({fragment}): {with_watch}"
+            );
+        }
     }
 
     #[test]
