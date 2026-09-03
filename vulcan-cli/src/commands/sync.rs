@@ -2425,6 +2425,11 @@ fn print_sync_report(
                     refresh.added, refresh.updated, refresh.deleted
                 );
             }
+            if let Some(error) = &report.cache_refresh_error {
+                println!(
+                    "Warning: the vault synchronized, but refreshing the rebuildable cache failed: {error}"
+                );
+            }
             if let Some(recovered) = &report.state.recovered_from {
                 println!(
                     "Recovery: recaptured after interrupted transaction {} in {:?} state.",

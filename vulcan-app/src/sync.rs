@@ -60,6 +60,8 @@ pub struct VaultSyncReport {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cache_refresh: Option<ScanSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_refresh_error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub conflict_record: Option<SyncConflictRecord>,
     pub state: VaultSyncStateReport,
 }
@@ -1023,16 +1025,16 @@ pub fn sync_git_vault_with_observer_and_engine(
     let should_refresh = !options.dry_run
         && sync.actions.contains(&GitSyncAction::WorktreeApplied)
         && paths.cache_db().is_file();
-    let cache_refresh = match should_refresh
+    // The vault tree is already applied and verified; a cache refresh
+    // failure must not report the successful sync as failed or retain a
+    // misleading recovery journal. The rebuildable cache stays stale until
+    // the next refresh and the warning rides the report.
+    let (cache_refresh, cache_refresh_error) = match should_refresh
         .then(|| refresh_cache_incrementally(paths))
         .transpose()
     {
-        Ok(report) => report,
-        Err(error) => {
-            journal.error = Some(error.to_string());
-            state_store.save(&journal)?;
-            return Err(error);
-        }
+        Ok(report) => (report, None),
+        Err(error) => (None, Some(error.to_string())),
     };
     let repository_key = journal.repository_key.clone();
     let retained = if options.dry_run {
@@ -1049,6 +1051,7 @@ pub fn sync_git_vault_with_observer_and_engine(
     Ok(VaultSyncReport {
         sync,
         cache_refresh,
+        cache_refresh_error,
         conflict_record,
         state: VaultSyncStateReport {
             repository_key,
@@ -2060,6 +2063,95 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             .expect("reader index")
             .values()
             .any(|note| note.document_path == "Remote.md"));
+    }
+
+    #[test]
+    fn cache_refresh_failure_does_not_fail_a_successful_sync() {
+        let temporary = tempdir().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        let writer = temporary.path().join("writer");
+        fs::create_dir(&writer).expect("writer directory");
+        git(
+            &writer,
+            &["-c", "init.defaultBranch=main", "init", "--quiet"],
+        );
+        git(&writer, &["config", "user.name", "Vulcan Test"]);
+        git(&writer, &["config", "user.email", "vulcan@example.invalid"]);
+        git(
+            &writer,
+            &[
+                "remote",
+                "add",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        fs::write(writer.join("Home.md"), "initial\n").expect("initial note");
+        git(&writer, &["add", "Home.md"]);
+        git(&writer, &["commit", "--quiet", "-m", "initial"]);
+        let writer_paths = VaultPaths::new(&writer);
+        let state_store = SyncStateStore::at(temporary.path().join("state"));
+        sync_git_vault_with_state_store(&writer_paths, &GitSyncOptions::default(), &state_store)
+            .expect("bootstrap sync");
+
+        let reader = temporary.path().join("reader");
+        git(
+            temporary.path(),
+            &[
+                "clone",
+                "--quiet",
+                writer.to_str().expect("writer path"),
+                reader.to_str().expect("reader path"),
+            ],
+        );
+        git(
+            &reader,
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        let reader_paths = VaultPaths::new(&reader);
+        initialize_vulcan_dir(&reader_paths).expect("initialize reader cache");
+        scan_vault(&reader_paths, ScanMode::Full).expect("initial reader scan");
+        // Corrupt the rebuildable cache; the sync itself must still succeed.
+        fs::write(reader_paths.cache_db(), b"not a sqlite database").expect("corrupt cache");
+
+        fs::write(writer.join("Remote.md"), "remote note\n").expect("remote note");
+        sync_git_vault_with_state_store(&writer_paths, &GitSyncOptions::default(), &state_store)
+            .expect("writer push");
+        let report = sync_git_vault_with_state_store(
+            &reader_paths,
+            &GitSyncOptions::default(),
+            &state_store,
+        )
+        .expect("reader synchronization succeeds despite the cache failure");
+
+        assert!(matches!(
+            report.sync.outcome,
+            GitSyncOutcome::Pulled | GitSyncOutcome::Merged
+        ));
+        assert!(report.cache_refresh.is_none());
+        assert!(report.cache_refresh_error.is_some());
+        assert_eq!(
+            fs::read_to_string(reader.join("Remote.md")).expect("applied note"),
+            "remote note\n"
+        );
+        assert!(state_store
+            .load(&report.state.repository_key)
+            .expect("load cleared journal")
+            .is_none());
     }
 
     #[test]
