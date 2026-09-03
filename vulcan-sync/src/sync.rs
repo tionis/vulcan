@@ -415,6 +415,9 @@ pub struct GitBranchSync {
     /// Absent when no upstream could be resolved.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub upstream: Option<GitRefName>,
+    /// The local remote-tracking ref leased by the push.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tracking: Option<GitRefName>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub before: Option<GitOid>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -422,6 +425,11 @@ pub struct GitBranchSync {
     pub action: GitBranchSyncAction,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    /// Whether the branch tip was published to the upstream in this cycle.
+    pub pushed: bool,
+    /// Push detail: rejection or transport/policy failure summary.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub push_detail: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -1084,10 +1092,13 @@ fn pull_branch_lane(
             branch,
             remote: None,
             upstream: None,
+            tracking: None,
             before: None,
             after: None,
             action: GitBranchSyncAction::Skipped,
             detail: Some("bare repository has no worktree".to_string()),
+            pushed: false,
+            push_detail: None,
         });
         return Ok(());
     }
@@ -1096,10 +1107,13 @@ fn pull_branch_lane(
             branch,
             remote: None,
             upstream: None,
+            tracking: None,
             before: None,
             after: None,
             action: GitBranchSyncAction::Skipped,
             detail: Some("no upstream is configured for the branch".to_string()),
+            pushed: false,
+            push_detail: None,
         });
         return Ok(());
     };
@@ -1107,10 +1121,13 @@ fn pull_branch_lane(
         branch: branch.clone(),
         remote: Some(upstream.remote.clone()),
         upstream: Some(upstream.merge_ref.clone()),
+        tracking: Some(upstream.tracking_ref.clone()),
         before: engine.head_commit(repository)?,
         after: None,
         action: GitBranchSyncAction::UpToDate,
         detail: None,
+        pushed: false,
+        push_detail: None,
     };
     let fetched = match engine.fetch_ref(
         repository,
@@ -1285,8 +1302,12 @@ fn preview_branch_pull(
     let (action, detail) = match (&before, &tip) {
         (Some(head), Some(tip)) if head == tip => (GitBranchSyncAction::UpToDate, None),
         (_, None) => (
-            GitBranchSyncAction::Skipped,
-            Some("upstream ref is absent on the remote".to_string()),
+            GitBranchSyncAction::Planned,
+            Some(format!(
+                "would publish {} to {}",
+                branch.as_str(),
+                upstream.remote.as_str(),
+            )),
         ),
         _ => {
             let config = engine.branch_pull_config(repository, &branch)?;
@@ -1312,11 +1333,74 @@ fn preview_branch_pull(
         branch,
         remote: Some(upstream.remote.clone()),
         upstream: Some(upstream.merge_ref.clone()),
+        tracking: Some(upstream.tracking_ref.clone()),
         before,
         after: None,
         action,
         detail,
+        pushed: false,
+        push_detail: None,
     });
+    Ok(())
+}
+
+/// Pushes the checked-out branch tip to its upstream after a successful file
+/// lane, leasing the tracking ref observed during this attempt. Never
+/// force-pushes: a remote that moved first reports Rejected for the next
+/// cycle's pull to incorporate. Push transport or policy failures record a
+/// detail instead of failing the converged file lane.
+fn push_branch_lane(
+    engine: &dyn GitEngine,
+    report: &mut GitSyncReport,
+) -> Result<(), GitSyncError> {
+    let healthy = report.branch.as_ref().is_some_and(|lane| {
+        matches!(
+            lane.action,
+            GitBranchSyncAction::UpToDate
+                | GitBranchSyncAction::FastForwarded
+                | GitBranchSyncAction::Merged
+                | GitBranchSyncAction::Rebased
+        )
+    });
+    if !healthy {
+        return Ok(());
+    }
+    let lane = report.branch.as_mut().expect("healthy branch lane");
+    let (Some(remote), Some(merge_ref), Some(tracking)) = (
+        lane.remote.clone(),
+        lane.upstream.clone(),
+        lane.tracking.clone(),
+    ) else {
+        return Ok(());
+    };
+    // The lane refreshed the expected head after its own moves and the lock
+    // rules out external moves; no re-read needed.
+    let head = lane.after.clone().or_else(|| report.head_before.clone());
+    let Some(head) = head else {
+        return Ok(());
+    };
+    let current = engine.read_ref(&report.repository, &tracking)?;
+    if current.as_ref() == Some(&head) {
+        return Ok(());
+    }
+    match engine.push_ref(
+        &report.repository,
+        &remote,
+        &head,
+        &merge_ref,
+        current.as_ref(),
+    ) {
+        Ok(GitPushResult::Updated) => {
+            lane.pushed = true;
+        }
+        Ok(GitPushResult::Rejected) => {
+            lane.push_detail =
+                Some("remote advanced first; will pull then push next cycle".to_string());
+        }
+        Err(error) => {
+            lane.push_detail = Some(format!("failed to push {}: {error}", lane.branch.as_str()));
+        }
+    }
     Ok(())
 }
 
@@ -1424,6 +1508,7 @@ fn run_attempt(
     )?;
     report.outcome = outcome;
     report.accepted = Some(accepted);
+    push_branch_lane(engine, report)?;
     control.emit(GitSyncPhase::Completed, report, None)?;
     Ok(AttemptResult::Finished)
 }
@@ -4308,6 +4393,7 @@ mod tests {
         let (action, _) = branch_action(&report);
         assert_eq!(action, GitBranchSyncAction::FastForwarded);
         let lane = report.branch.as_ref().expect("branch lane report");
+        assert!(!lane.pushed, "nothing remains to publish after a pull");
         assert_eq!(lane.branch.as_str(), "refs/heads/main");
         assert_eq!(
             lane.upstream.as_ref().map(GitRefName::as_str),
@@ -4409,6 +4495,10 @@ mod tests {
         let (action, _) = branch_action(&report);
         assert_eq!(action, GitBranchSyncAction::Paused);
         assert_eq!(report.outcome, GitSyncOutcome::Paused);
+        assert!(
+            !report.branch.as_ref().expect("branch lane report").pushed,
+            "a conflicted branch must not publish"
+        );
         assert_eq!(
             report.pause.as_ref().map(|pause| pause.reason),
             Some(GitSyncPauseReason::OperationInProgress)
@@ -4469,6 +4559,95 @@ mod tests {
                 .expect("tracking ref"),
             tracking_before,
             "dry run must not fetch the branch"
+        );
+    }
+
+    #[test]
+    fn branch_push_publishes_local_commits() {
+        let (_temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("sync with unpublished commits");
+
+        let lane = report.branch.as_ref().expect("branch lane report");
+        assert_eq!(lane.action, GitBranchSyncAction::UpToDate);
+        assert!(lane.pushed);
+        let head = git_stdout(&writer, &["rev-parse", "HEAD"]);
+        let remote_tip = git_stdout(
+            &writer,
+            &[
+                "ls-remote",
+                remote.to_str().expect("remote path"),
+                "refs/heads/main",
+            ],
+        );
+        assert!(
+            remote_tip.starts_with(&head),
+            "remote main should equal the published head"
+        );
+    }
+
+    #[test]
+    fn branch_pull_then_push_propagates_both_directions() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        advance_remote_branch(&temporary, &remote, "advanced\n");
+
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("sync with diverged branch");
+
+        let lane = report.branch.as_ref().expect("branch lane report");
+        assert_eq!(lane.action, GitBranchSyncAction::Merged);
+        assert!(lane.pushed);
+        let head = git_stdout(&writer, &["rev-parse", "HEAD"]);
+        let remote_tip = git_stdout(
+            &writer,
+            &[
+                "ls-remote",
+                remote.to_str().expect("remote path"),
+                "refs/heads/main",
+            ],
+        );
+        assert!(
+            remote_tip.starts_with(&head),
+            "remote main should equal the merged head"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn branch_push_decline_records_detail_without_failing_sync() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        let hook = remote.join("hooks").join("pre-receive");
+        fs::write(
+            &hook,
+            "#!/bin/sh\nwhile read old new ref; do\n  case \"$ref\" in refs/heads/main) echo \"branch main is protected\" >&2; exit 1;; esac\ndone\nexit 0\n",
+        )
+        .expect("declining hook");
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).expect("hook executable");
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("sync with declined push reports normally");
+
+        assert_ne!(report.outcome, GitSyncOutcome::Paused);
+        let lane = report.branch.as_ref().expect("branch lane report");
+        assert!(!lane.pushed);
+        assert!(
+            lane.push_detail.as_deref().is_some_and(
+                |detail| detail.contains("refs/heads/main") && detail.contains("protected")
+            ),
+            "push detail should name the branch and the decline: {:?}",
+            lane.push_detail
         );
     }
 

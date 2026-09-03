@@ -2373,6 +2373,9 @@ fn print_sync_report(
                 if let Some(line) = branch_lane_message(branch) {
                     println!("{line}");
                 }
+                if let Some(line) = branch_push_message(branch) {
+                    println!("{line}");
+                }
             }
             if verbose {
                 println!("Remote ref: {}", report.sync.refs.live);
@@ -2498,6 +2501,22 @@ fn branch_lane_message(branch: &GitBranchSync) -> Option<String> {
     }
 }
 
+/// Renders the branch publication line, if the branch tip was pushed.
+fn branch_push_message(branch: &GitBranchSync) -> Option<String> {
+    if !branch.pushed {
+        return None;
+    }
+    Some(format!(
+        "Pushed branch {} to {}.",
+        branch
+            .branch
+            .as_str()
+            .strip_prefix("refs/heads/")
+            .unwrap_or(branch.branch.as_str()),
+        branch.remote.as_ref().map_or("unknown", GitRemote::as_str),
+    ))
+}
+
 #[cfg(test)]
 mod sync_report_tests {
     use super::*;
@@ -2521,12 +2540,15 @@ mod sync_report_tests {
     fn branch_lane(action: GitBranchSyncAction, detail: Option<&str>) -> GitBranchSync {
         GitBranchSync {
             branch: GitRefName::parse("refs/heads/main").expect("branch"),
-            remote: None,
+            remote: Some(GitRemote::parse("origin").expect("remote")),
             upstream: None,
+            tracking: None,
             before: None,
             after: None,
             action,
             detail: detail.map(str::to_string),
+            pushed: false,
+            push_detail: None,
         }
     }
 
@@ -2549,5 +2571,12 @@ mod sync_report_tests {
             Some("branch diverged and pull.ff=only refuses non-fast-forward"),
         ))
         .is_some_and(|line| line.contains("paused") && line.contains("pull.ff=only")));
+        let mut pushed = branch_lane(GitBranchSyncAction::UpToDate, None);
+        assert_eq!(branch_push_message(&pushed), None);
+        pushed.pushed = true;
+        assert_eq!(
+            branch_push_message(&pushed),
+            Some("Pushed branch main to origin.".to_string())
+        );
     }
 }
