@@ -214,8 +214,8 @@ fn doctor_git_vault_with_optional_state(
         Ok(safety) if safety.staged_changes => doctor_check(
             &mut report,
             "git.safety",
-            SyncDoctorSeverity::Warning,
-            "the normal Git index has staged changes; worktree application will pause",
+            SyncDoctorSeverity::Info,
+            "the normal Git index has staged changes; sync captures worktree bytes and never touches the index",
         ),
         Ok(safety) if safety.operation.is_some() => doctor_check(
             &mut report,
@@ -2193,7 +2193,7 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
     }
 
     #[test]
-    fn staged_sync_retains_a_paused_journal_after_capture() {
+    fn staged_sync_proceeds_without_touching_the_normal_index() {
         let temporary = tempdir().expect("temporary directory");
         let remote = temporary.path().join("remote.git");
         git(
@@ -2231,24 +2231,13 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
         let store = SyncStateStore::at(temporary.path().join("state"));
 
         let report = sync_git_vault_with_state_store(&paths, &GitSyncOptions::default(), &store)
-            .expect("paused sync");
+            .expect("sync with staged changes");
 
-        assert_eq!(report.sync.outcome, GitSyncOutcome::Paused);
-        assert_eq!(
-            report.sync.pause.as_ref().map(|pause| pause.reason),
-            Some(GitSyncPauseReason::StagedChanges)
-        );
-        let journal = report.state.retained.expect("retained paused journal");
-        assert_eq!(journal.phase, SyncJournalPhase::Paused);
-        assert_eq!(
-            journal.local_snapshot,
-            report.sync.local_snapshot.as_ref().map(ToString::to_string)
-        );
-        assert_eq!(
-            store
-                .load(&report.state.repository_key)
-                .expect("stored journal"),
-            Some(journal)
+        assert_ne!(report.sync.outcome, GitSyncOutcome::Paused);
+        assert!(report.sync.pause.is_none());
+        assert!(
+            git_stdout(&vault, &["diff", "--cached", "--name-only"]).contains("Home.md"),
+            "the staged index entry must survive synchronization untouched"
         );
     }
 

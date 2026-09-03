@@ -2408,9 +2408,6 @@ fn print_sync_report(
                         "Git {} operation is in progress",
                         pause.operation.as_deref().unwrap_or("unknown")
                     ),
-                    vulcan_app::sync::GitSyncPauseReason::StagedChanges => {
-                        "the normal Git index contains staged changes".to_string()
-                    }
                 };
                 println!("Paused: {detail}. Captured work remains reachable.");
             }

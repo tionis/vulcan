@@ -361,7 +361,6 @@ pub enum GitAutomaticValidationCheck {
 pub enum GitSyncPauseReason {
     HeadMoved,
     OperationInProgress,
-    StagedChanges,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -659,11 +658,7 @@ fn git_report_to_backend_report(report: GitSyncReport) -> SyncReport {
     let state = match report.outcome {
         GitSyncOutcome::Paused => SyncState::Paused,
         GitSyncOutcome::Conflicted => SyncState::Conflicted,
-        GitSyncOutcome::Planned
-            if report.safety.staged_changes || report.safety.operation.is_some() =>
-        {
-            SyncState::Dirty
-        }
+        GitSyncOutcome::Planned if report.safety.operation.is_some() => SyncState::Dirty,
         _ => SyncState::Clean,
     };
     let status = SyncStatus {
@@ -691,9 +686,6 @@ fn git_report_to_backend_report(report: GitSyncReport) -> SyncReport {
                 "Git {} operation is in progress",
                 pause.operation.as_deref().unwrap_or("unknown")
             ),
-            GitSyncPauseReason::StagedChanges => {
-                "the normal Git index contains staged changes".to_string()
-            }
         }),
     };
     SyncReport {
@@ -1172,16 +1164,6 @@ fn sync_pause(
             expected_head_ref: report.head_ref_before.clone(),
             actual_head_ref,
             operation: Some(operation),
-        }));
-    }
-    if safety.staged_changes {
-        return Ok(Some(GitSyncPause {
-            reason: GitSyncPauseReason::StagedChanges,
-            expected_head: report.head_before.clone(),
-            actual_head,
-            expected_head_ref: report.head_ref_before.clone(),
-            actual_head_ref,
-            operation: None,
         }));
     }
     Ok(None)
@@ -3874,39 +3856,53 @@ mod tests {
     }
 
     #[test]
-    fn staged_changes_are_captured_before_reconciliation_pauses() {
+    fn staged_changes_sync_as_filesystem_state_without_touching_the_index() {
         let (_temporary, remote, writer) = setup_remote_and_writer();
         fs::write(writer.join("Home.md"), "staged\n").expect("staged note");
         run_git(&writer, &["add", "Home.md"]);
+        let staged_before = git_stdout(&writer, &["rev-parse", ":Home.md"]);
 
         let report = sync_git_once(
             &GitCliEngine::default(),
             &writer,
             &GitSyncOptions::default(),
         )
-        .expect("paused sync should report normally");
+        .expect("sync with staged changes should report normally");
 
-        assert_eq!(report.outcome, GitSyncOutcome::Paused);
+        assert_eq!(report.outcome, GitSyncOutcome::Bootstrapped);
         assert!(report.safety.staged_changes);
-        assert!(report.local_snapshot.is_some());
+        assert!(report.pause.is_none());
         assert_eq!(
-            report.pause.as_ref().map(|pause| pause.reason),
-            Some(GitSyncPauseReason::StagedChanges)
+            git_stdout(&writer, &["rev-parse", ":Home.md"]),
+            staged_before,
+            "the normal index entry must survive synchronization untouched"
+        );
+        let accepted = report.accepted.expect("accepted snapshot");
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let object = engine
+            .path_object(&repository, &accepted, "Home.md")
+            .expect("path object")
+            .expect("accepted snapshot contains the staged file");
+        assert_eq!(
+            object.data.expect("staged file bytes"),
+            b"staged\n",
+            "staged worktree bytes sync as ordinary filesystem state"
         );
         assert_eq!(
-            GitCliEngine::default()
+            engine
                 .remote_ref(
-                    &report.repository,
+                    &repository,
                     &GitRemote::parse(remote.to_string_lossy()).expect("remote"),
                     &report.refs.live,
                 )
                 .expect("remote query"),
-            None
+            Some(accepted)
         );
     }
 
     #[test]
-    fn staged_changes_still_fetch_the_remote_before_pausing() {
+    fn staged_changes_do_not_block_remote_reconciliation() {
         let (temporary, remote, writer) = setup_remote_and_writer();
         let engine = GitCliEngine::default();
         sync_git_once(&engine, &writer, &GitSyncOptions::default()).expect("bootstrap sync");
@@ -3917,23 +3913,20 @@ mod tests {
         let remote_tip = pushed.accepted.expect("accepted remote update");
         fs::write(reader.join("Home.md"), "staged locally\n").expect("local staged edit");
         run_git(&reader, &["add", "Home.md"]);
+        let staged_before = git_stdout(&reader, &["rev-parse", ":Home.md"]);
 
         let report = sync_git_once(&engine, &reader, &GitSyncOptions::default())
-            .expect("paused sync should report normally");
+            .expect("sync with staged changes should report normally");
 
-        assert_eq!(report.outcome, GitSyncOutcome::Paused);
-        assert!(report.local_snapshot.is_some());
+        assert_eq!(report.outcome, GitSyncOutcome::Merged);
+        assert!(report.pause.is_none());
+        assert_eq!(report.remote_before, Some(remote_tip));
+        assert!(reader.join("Remote.md").exists());
         assert_eq!(
-            report.pause.as_ref().map(|pause| pause.reason),
-            Some(GitSyncPauseReason::StagedChanges)
+            git_stdout(&reader, &["rev-parse", ":Home.md"]),
+            staged_before,
+            "the normal index entry must survive reconciliation untouched"
         );
-        assert_eq!(
-            engine
-                .read_ref(&report.repository, &report.refs.fetched)
-                .expect("fetched ref"),
-            Some(remote_tip)
-        );
-        assert!(!reader.join("Remote.md").exists());
     }
 
     #[test]
