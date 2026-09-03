@@ -21,6 +21,11 @@ use vulcan_sync::{
 pub const SYNC_CONFLICT_RECORD_VERSION: u32 = 1;
 pub const SYNC_CONFLICT_RESOLUTION_VERSION: u32 = 1;
 const MAX_CONFLICT_RECORD_BYTES: u64 = 1024 * 1024;
+/// Fully resolved conflicts keep their records and resolution metadata
+/// forever, but only the newest few resolved conflicts retain the
+/// device-local artifact copies; the immutable Git refs remain the durable
+/// byte archive.
+const MAX_RETAINED_RESOLVED_ARTIFACT_SETS: usize = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SyncConflictRecord {
@@ -1035,7 +1040,54 @@ impl SyncConflictStore {
             diagnostics: conflict.diagnostics.clone(),
         };
         write_json_noclobber(&record_path, &record)?;
+        self.prune_resolved_artifacts(repository_key)?;
         Ok(record)
+    }
+
+    /// Removes artifact copies of fully applied conflict resolutions beyond
+    /// the newest retained sets. Records and resolution metadata are small
+    /// and permanent; unresolved and in-progress resolutions are never
+    /// pruned.
+    pub fn prune_resolved_artifacts(&self, repository_key: &str) -> Result<usize, AppError> {
+        validate_hex_id("repository key", repository_key)?;
+        let root = self.root.join(repository_key).join("conflicts");
+        let entries = match fs::read_dir(&root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(error) => return Err(AppError::operation(error)),
+        };
+        let mut resolved = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(AppError::operation)?;
+            if !entry.file_type().map_err(AppError::operation)?.is_dir() {
+                continue;
+            }
+            let id = entry.file_name().to_string_lossy().to_string();
+            let Some(resolution) = self.get_resolution(repository_key, &id)? else {
+                continue;
+            };
+            if !resolution.applied {
+                continue;
+            }
+            let artifacts = entry.path().join("artifacts");
+            if !artifacts.is_dir() {
+                continue;
+            }
+            let modified = fs::metadata(entry.path().join("resolution.json"))
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            resolved.push((modified, artifacts));
+        }
+        resolved.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+        let mut pruned = 0;
+        for (_, artifacts) in resolved
+            .into_iter()
+            .skip(MAX_RETAINED_RESOLVED_ARTIFACT_SETS)
+        {
+            fs::remove_dir_all(&artifacts).map_err(AppError::operation)?;
+            pruned += 1;
+        }
+        Ok(pruned)
     }
 
     pub fn list(&self, repository_key: &str) -> Result<Vec<SyncConflictRecord>, AppError> {
@@ -1370,5 +1422,82 @@ fn validate_hex_id(label: &str, value: &str) -> Result<(), AppError> {
         Ok(())
     } else {
         Err(AppError::operation(format!("invalid {label} `{value}`")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, SystemTime};
+
+    fn resolved_conflict(store: &SyncConflictStore, key: &str, id: &str, age_seconds: u64) {
+        let directory = store.conflict_directory(key, id).expect("directory");
+        fs::create_dir_all(directory.join("artifacts")).expect("artifacts");
+        fs::write(directory.join("record.json"), b"{}").expect("record");
+        let resolution = SyncConflictResolutionRecord {
+            version: SYNC_CONFLICT_RESOLUTION_VERSION,
+            conflict_id: id.to_string(),
+            side: Some(SyncConflictResolutionSide::Local),
+            proposal_id: None,
+            base_revision: "base".to_string(),
+            local_revision: "local".to_string(),
+            remote_revision: "remote".to_string(),
+            live_input_revision: None,
+            recovery_revision: "recovery".to_string(),
+            resolved_tree: "tree".to_string(),
+            resolution_commit: "commit".to_string(),
+            published: true,
+            applied: true,
+        };
+        let resolution_path = directory.join("resolution.json");
+        fs::write(
+            &resolution_path,
+            serde_json::to_vec(&resolution).expect("resolution"),
+        )
+        .expect("resolution file");
+        fs::write(directory.join("artifacts/0000-local.bin"), b"bytes").expect("artifact");
+        fs::File::open(&resolution_path)
+            .expect("resolution handle")
+            .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(age_seconds))
+            .expect("resolution mtime");
+    }
+
+    #[test]
+    fn resolved_conflict_artifacts_are_pruned_beyond_the_retention_bound() {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let key = "a".repeat(32);
+        let store = SyncConflictStore::at(temporary.path().to_path_buf());
+        let total = MAX_RETAINED_RESOLVED_ARTIFACT_SETS + 4;
+        for index in 0..total {
+            // Distinct ascending hex IDs: 00...00, 00...01, ...
+            let id = format!("{index:032x}");
+            resolved_conflict(&store, &key, &id, index as u64);
+        }
+        // An unresolved conflict must keep its artifacts forever.
+        let unresolved = "f".repeat(32);
+        let directory = store
+            .conflict_directory(&key, &unresolved)
+            .expect("directory");
+        fs::create_dir_all(directory.join("artifacts")).expect("artifacts");
+        fs::write(directory.join("artifacts/0000-local.bin"), b"bytes").expect("artifact");
+
+        let pruned = store.prune_resolved_artifacts(&key).expect("prune");
+
+        assert_eq!(pruned, 4);
+        for index in 0..total {
+            let id = format!("{index:032x}");
+            let artifacts = store
+                .conflict_directory(&key, &id)
+                .expect("directory")
+                .join("artifacts");
+            if index < 4 {
+                assert!(!artifacts.exists(), "oldest {id} should be pruned");
+            } else {
+                assert!(artifacts.exists(), "newest {id} should be retained");
+            }
+        }
+        assert!(directory.join("artifacts").exists());
+        // Re-running is a no-op.
+        assert_eq!(store.prune_resolved_artifacts(&key).expect("re-prune"), 0);
     }
 }
