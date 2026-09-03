@@ -65,8 +65,8 @@ vulcan self-update apply --channel main
 A binary built before the `main-2026-09` public key was embedded cannot verify that signature. Give
 that old binary one explicitly accepted `--allow-unsigned` bootstrap update or install a checksummed
 current archive manually; subsequent rolling updates verify normally. If a newly published rolling
-descriptor is still in its short unsigned handoff window, wait for the local signer instead of
-normalizing `--allow-unsigned` as the ongoing update path.
+descriptor is still in its short unsigned handoff window, wait for the hosted signing workflow
+instead of normalizing `--allow-unsigned` as the ongoing update path.
 
 The fixed rolling release page and direct assets are at
 `https://github.com/tionis/vulcan/releases/tag/main`. It is checked at most daily, publishes only a

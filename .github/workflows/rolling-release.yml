@@ -316,7 +316,7 @@ jobs:
           body: |
             Automated development build from `${{ needs.gate.outputs.source_commit }}`.
 
-            This rolling release is replaced in place and is not a stable release. GitHub Actions publishes a checksum-verified descriptor first; the key-holding machine validates the completed release and replaces only that descriptor with a `main-2026-09` signature. Inspect the descriptor's signatures if the local handoff has not completed yet.
+            This rolling release is replaced in place and is not a stable release. The build workflow publishes a checksum-verified descriptor first; a separate hosted signing workflow validates the completed release and replaces only that descriptor with a `main-2026-09` signature. Inspect the descriptor's signatures if that bounded handoff has not completed yet.
           files: artifacts/*
 
       - name: Prune superseded rolling assets

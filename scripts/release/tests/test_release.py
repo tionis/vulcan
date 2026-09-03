@@ -35,7 +35,6 @@ channels_script = load_script("channels")
 update_channel_script = load_script("update_channel")
 rolling_signer_script = load_script("sign_rolling_release")
 stable_signer_script = load_script("sign_stable_release")
-rolling_signer_installer = load_script("install_rolling_signer")
 
 
 def read_ar(path: pathlib.Path) -> dict[str, bytes]:
@@ -614,36 +613,11 @@ class ReleasePackagingTests(unittest.TestCase):
                 expected_head_branch="main",
             )
 
-    def test_rolling_signer_systemd_install_has_a_mutation_free_preview(self) -> None:
-        key = self.root / "main key.pem"
-        key.write_text("fixture only\n", encoding="utf-8")
-        unit_directory = self.root / "systemd user"
-        libexec_directory = self.root / "libexec"
-        report = rolling_signer_installer.install(
-            SCRIPT_ROOT,
-            unit_directory,
-            libexec_directory,
-            "tionis/vulcan",
-            key,
-            True,
-        )
-        self.assertTrue(report["dry_run"])
-        self.assertFalse(unit_directory.exists())
-        self.assertFalse(libexec_directory.exists())
-        service = rolling_signer_installer.render_service(
-            pathlib.Path("/usr/bin/python3"),
-            pathlib.Path('/tmp/path with "quotes"/sign.py'),
-            "tionis/vulcan",
-            key,
-        )
-        self.assertIn("ProtectHome=read-only", service)
-        self.assertIn('\\"quotes\\"', service)
-        self.assertIn("--signing-key", service)
-
     def test_release_workflows_publish_bounded_update_channels(self) -> None:
         workflows = SCRIPT_ROOT.parents[1] / ".github/workflows"
         stable = (workflows / "release.yml").read_text(encoding="utf-8")
         rolling = (workflows / "rolling-release.yml").read_text(encoding="utf-8")
+        signer = (workflows / "sign-rolling-release.yml").read_text(encoding="utf-8")
 
         self.assertIn("scripts/release/update_channel.py", stable)
         self.assertIn("--channel stable", stable)
@@ -659,9 +633,23 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("asset_label", rolling)
         self.assertIn("(.label // \"\")", rolling)
         self.assertIn('! -f "artifacts/$asset_label"', rolling)
-        self.assertIn("key-holding machine", rolling)
+        self.assertIn("hosted signing workflow", rolling)
         self.assertNotIn("--signing-key", rolling)
         self.assertNotIn("cargo test --workspace", rolling)
+        self.assertIn("workflow_run:", signer)
+        self.assertIn("Rolling main release", signer)
+        self.assertIn("environment: rolling-release-signing", signer)
+        self.assertIn("VULCAN_MAIN_UPDATE_SIGNING_KEY_PEM", signer)
+        self.assertIn("github.event.workflow_run.conclusion == 'success'", signer)
+        self.assertIn('test "$WORKFLOW_BRANCH" = "main"', signer)
+        self.assertIn("ref: ${{ steps.source.outputs.source_commit }}", signer)
+        self.assertIn("$RUNNER_TEMP/vulcan-main-update-signing-key.pem", signer)
+        self.assertIn("unset VULCAN_MAIN_UPDATE_SIGNING_KEY_PEM", signer)
+        self.assertIn("trap 'rm -f", signer)
+        self.assertIn("--expected-commit", signer)
+        self.assertIn("scripts/release/sign_rolling_release.py", signer)
+        self.assertNotIn("systemctl", signer)
+        self.assertNotIn("main-2026-09.pem", signer)
         self.assertLess(
             rolling.index("Publish rolling prerelease"),
             rolling.index("Prune superseded rolling assets"),

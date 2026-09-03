@@ -132,44 +132,33 @@ The first dedicated rolling-channel identity was created on 2026-09-01. Its publ
   `5486dec9f64d452becdcf091dca0e51ade004baf089cc31ece7ba180d8c7b7f3`
 - authority: `main` only; it must never authorize `stable` metadata
 
-The operational private key remains machine-local at
-`~/.config/vulcan/release-signing/main-2026-09.pem`. Its recovery copy is stored only as the
+The operational private key is stored as the `VULCAN_MAIN_UPDATE_SIGNING_KEY_PEM` secret in the
+dedicated GitHub Actions environment `rolling-release-signing`. A protected operator copy remains
+at `~/.config/vulcan/release-signing/main-2026-09.pem`, and the Git-canonical recovery copy is the
 SOPS-encrypted Grimoire admin secret
-`secrets/groups/admin/vulcan-update-main.sops.yaml`. Neither private representation belongs in this
-repository, build logs, workflow artifacts, or GitHub Actions secrets.
+`secrets/groups/admin/vulcan-update-main.sops.yaml`. Private material must never enter this
+repository, ordinary repository-level secrets, build logs, or workflow artifacts.
 
 Release builds now embed the public identity in a channel-scoped trusted-key ring. A key is eligible
 only for its compiled channel, so `main-2026-09` cannot authorize `stable` even when a cryptographic
 signature is otherwise valid. Multiple entries and envelope signatures allow bounded overlap during
 future rotations.
 
-GitHub Actions deliberately publishes a checksum-only rolling descriptor and has no access to the
-private key. The key-holding machine runs `scripts/release/sign_rolling_release.py`, which fails
-closed unless both CI and the rolling workflow succeeded for the exact commit named by the `main`
-tag. It downloads the complete release and independently checks the release inventory, canonical
-manifest, exact five-archive/two-Debian artifact set, sizes, SHA-256 hashes, `SHA256SUMS`, rolling
-version, source commit, channel, timestamp, URLs, layouts, and canonical unsigned payload. It then
-rechecks the release for races, replaces only `vulcan-update-channel.json`, and reads the uploaded
-bytes back. An already-valid signature is an inexpensive idempotent no-op; any other existing
-signature fails closed.
+The rolling build workflow deliberately publishes a checksum-only descriptor first. Its successful
+completion triggers the separate `sign-rolling-release.yml` workflow, whose only signing job uses
+the protected `rolling-release-signing` environment. The job checks out the exact source commit,
+materializes the environment secret into a mode-restricted ephemeral runner file, invokes
+`scripts/release/sign_rolling_release.py --expected-commit <sha>`, and deletes that file when the
+step exits. A manual dispatch with an explicit full commit ID provides an idempotent repair path.
 
-On the signing machine, preview and install the hourly systemd user timer with:
-
-```sh
-python scripts/release/sign_rolling_release.py \
-  --signing-key ~/.config/vulcan/release-signing/main-2026-09.pem --dry-run
-python scripts/release/install_rolling_signer.py install \
-  --signing-key ~/.config/vulcan/release-signing/main-2026-09.pem --dry-run
-python scripts/release/install_rolling_signer.py install \
-  --signing-key ~/.config/vulcan/release-signing/main-2026-09.pem
-```
-
-The installer copies the two required signer scripts into a private user libexec location, writes a
-hardened oneshot service and hourly timer, enables the timer, and immediately invokes the service.
-It stores only the key path in the unit, never key contents. The service uses the machine's existing
-GitHub CLI authentication. Inspect failures with
-`journalctl --user -u vulcan-rolling-signer.service`; they are visible and leave the descriptor
-unchanged. Uninstalling the timer preserves the signing key.
+The signer fails closed unless both CI and the rolling workflow succeeded for the exact commit
+named by the `main` tag. It downloads the complete published release and independently checks the
+release inventory, canonical manifest, exact five-archive/two-Debian artifact set, sizes, SHA-256
+hashes, `SHA256SUMS`, rolling version, source commit, channel, timestamp, URLs, layouts, and
+canonical unsigned payload. It then rechecks the release for races, replaces only
+`vulcan-update-channel.json`, and reads the uploaded bytes back. An already-valid signature is an
+inexpensive idempotent no-op; any other existing signature fails closed. No developer workstation,
+resident process, or systemd timer participates in the normal rolling release path.
 
 The separate stable-channel identity was created on 2026-09-02:
 

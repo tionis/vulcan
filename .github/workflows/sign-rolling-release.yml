@@ -1,0 +1,73 @@
+name: Sign rolling main release
+
+on:
+  workflow_run:
+    workflows:
+      - Rolling main release
+    types:
+      - completed
+  workflow_dispatch:
+    inputs:
+      expected_commit:
+        description: Full commit ID currently named by the rolling main release
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: rolling-main-signing
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: rolling-release-signing
+    steps:
+      - name: Resolve the approved source commit
+        id: source
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_COMMIT: ${{ inputs.expected_commit }}
+          WORKFLOW_COMMIT: ${{ github.event.workflow_run.head_sha }}
+          WORKFLOW_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            source_commit="$MANUAL_COMMIT"
+          else
+            test "$WORKFLOW_BRANCH" = "main"
+            source_commit="$WORKFLOW_COMMIT"
+          fi
+          [[ "$source_commit" =~ ^[0-9a-f]{40}$ ]]
+          echo "source_commit=$source_commit" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          ref: ${{ steps.source.outputs.source_commit }}
+
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+
+      - name: Validate and sign the published rolling release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VULCAN_MAIN_UPDATE_SIGNING_KEY_PEM: ${{ secrets.VULCAN_MAIN_UPDATE_SIGNING_KEY_PEM }}
+        run: |
+          test -n "$VULCAN_MAIN_UPDATE_SIGNING_KEY_PEM"
+          umask 077
+          signing_key="$RUNNER_TEMP/vulcan-main-update-signing-key.pem"
+          trap 'rm -f "$signing_key"' EXIT
+          printf '%s\n' "$VULCAN_MAIN_UPDATE_SIGNING_KEY_PEM" > "$signing_key"
+          unset VULCAN_MAIN_UPDATE_SIGNING_KEY_PEM
+          python scripts/release/sign_rolling_release.py \
+            --signing-key "$signing_key" \
+            --expected-commit '${{ steps.source.outputs.source_commit }}'
