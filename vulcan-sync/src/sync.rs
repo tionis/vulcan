@@ -1,7 +1,7 @@
 use crate::{
     conflict_ref, local_epoch_ref, local_sync_ref, remote_epoch_ref, sync_profile_key,
-    BranchPullConfig, FastForwardOutcome, GitCaptureRequest, GitContentMergeResolutionRequest, GitEngine,
-    GitEngineError, GitInstallation, GitOid, GitPathObject, GitPlatformPreflight,
+    BranchPullConfig, FastForwardOutcome, GitCaptureRequest, GitContentMergeResolutionRequest,
+    GitEngine, GitEngineError, GitInstallation, GitOid, GitPathObject, GitPlatformPreflight,
     GitPlatformProfile, GitPushResult, GitRefName, GitRemote, GitRepository,
     GitRepositoryRequirements, GitResolvedPath, GitSafetyState, GitTreeApplyPlan, MergeAutomation,
     MergeBranchOutcome, MergeFileKind, MergePolicy, MergeResolution, PullFastForward, PullRebase,
