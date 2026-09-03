@@ -643,6 +643,67 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn dangling_symlink_never_schedules_recovery() {
+        use std::sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        };
+
+        let temporary = tempdir().expect("temporary directory");
+        let vault = temporary.path().join("vault");
+        std::fs::create_dir(&vault).expect("vault directory");
+        let output = Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&vault)
+            .output()
+            .expect("run git init");
+        assert!(output.status.success());
+        std::os::unix::fs::symlink("/nonexistent-target", vault.join("dead-link"))
+            .expect("symlink");
+        let registration = WikiRegistration {
+            id: WikiId::parse("alpha").expect("wiki id"),
+            registration_id: Ulid::new(),
+            path: vault.clone(),
+            groups: Vec::new(),
+            git_dir: None,
+            permissions_profile: None,
+            sync_backend: Some("git".to_string()),
+            platform_profile: None,
+            sync_paused: false,
+        };
+        let supervisor = std::sync::Arc::new(
+            SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor"),
+        );
+        let state_store = SyncStateStore::at(temporary.path().join("state"));
+        let stop = Arc::new(AtomicBool::new(false));
+        let task_stop = Arc::clone(&stop);
+        let task_supervisor = Arc::clone(&supervisor);
+        let watcher = std::thread::spawn(move || {
+            watch_registered_wiki_until(
+                &registration,
+                &task_supervisor,
+                &state_store,
+                &DaemonWatchOptions::default(),
+                || task_stop.load(Ordering::Acquire),
+            )
+            .expect("watcher runs");
+        });
+        // Several poll scans elapse here; each one trips on the dead link.
+        std::thread::sleep(Duration::from_secs(5));
+        stop.store(true, Ordering::Release);
+        watcher.join().expect("watcher thread");
+
+        let jobs = supervisor.list().expect("jobs");
+        assert!(
+            jobs.iter()
+                .all(|job| !job.triggers.contains(&SyncJobTrigger::Recovery)),
+            "dangling symlink must not schedule recovery: {jobs:?}"
+        );
+        assert_eq!(jobs.len(), 1, "only the startup job should exist");
+    }
+
+    #[test]
     fn rescan_and_callback_errors_force_recovery_metadata() {
         let temporary = tempdir().expect("temporary directory");
         let paths = VaultPaths::new(temporary.path());
