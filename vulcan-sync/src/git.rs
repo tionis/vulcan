@@ -354,6 +354,50 @@ pub trait GitEngine: Send + Sync {
         expected: &GitOid,
     ) -> Result<GitRefDeleteResult, GitEngineError>;
 
+    /// Resolves the configured upstream of a local branch from
+    /// `branch.<name>.remote` and `branch.<name>.merge`. Returns `None` when
+    /// the branch tracks nothing or the tracking ref cannot be derived.
+    fn branch_upstream(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+    ) -> Result<Option<GitBranchUpstream>, GitEngineError>;
+
+    /// Reads the pull strategy for a branch exactly as `git pull` resolves
+    /// it: `branch.<name>.rebase` overrides `pull.rebase`, plus `pull.ff`.
+    fn branch_pull_config(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+    ) -> Result<BranchPullConfig, GitEngineError>;
+
+    /// Fast-forwards a branch with `git merge --ff-only`, refusing to
+    /// overwrite dirty worktree content. Requires a worktree.
+    fn fast_forward_branch(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+        target: &GitOid,
+    ) -> Result<FastForwardOutcome, GitEngineError>;
+
+    /// Merges a revision into the checked-out branch with `--no-edit`,
+    /// leaving conflicts in place for the caller to detect. Requires a
+    /// worktree and never opens an editor.
+    fn merge_branch(
+        &self,
+        repository: &GitRepository,
+        target: &GitOid,
+    ) -> Result<MergeBranchOutcome, GitEngineError>;
+
+    /// Rebases the checked-out branch onto a revision, leaving conflicts in
+    /// place for the caller to detect. Requires a worktree.
+    fn rebase_branch(
+        &self,
+        repository: &GitRepository,
+        upstream: &GitOid,
+        merges: bool,
+    ) -> Result<RebaseOutcome, GitEngineError>;
+
     fn plan_tree_application(
         &self,
         repository: &GitRepository,
@@ -841,6 +885,76 @@ impl Display for GitRemote {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.0)
     }
+}
+
+/// A local branch and its configured upstream tracking ref.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct GitBranchUpstream {
+    pub branch: GitRefName,
+    pub remote: GitRemote,
+    /// The branch ref as known on the remote (e.g. `refs/heads/main`).
+    pub merge_ref: GitRefName,
+    /// The local remote-tracking ref (e.g. `refs/remotes/origin/main`).
+    pub tracking_ref: GitRefName,
+}
+
+/// How `pull.ff` resolves for a branch pull.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PullFastForward {
+    /// Fast-forward when possible, merge otherwise.
+    Always,
+    /// Never fast-forward; always create a merge commit.
+    Never,
+    /// Fast-forward or refuse when diverged.
+    Only,
+}
+
+/// How `pull.rebase` / `branch.<name>.rebase` resolves for a branch pull.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PullRebase {
+    Never,
+    Yes,
+    Merges,
+    Interactive,
+}
+
+/// The pull strategy of one branch, resolved exactly as `git pull` reads it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct BranchPullConfig {
+    pub fast_forward: PullFastForward,
+    pub rebase: PullRebase,
+}
+
+/// Outcome of `git merge --ff-only` on a branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FastForwardOutcome {
+    UpToDate,
+    Advanced,
+    NotFastForwardable,
+    BlockedDirty,
+}
+
+/// Outcome of `git merge --no-edit` on the checked-out branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeBranchOutcome {
+    UpToDate,
+    Merged,
+    Conflicted,
+    BlockedDirty,
+}
+
+/// Outcome of `git rebase` on the checked-out branch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RebaseOutcome {
+    UpToDate,
+    Rebased,
+    Conflicted,
+    BlockedDirty,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1869,6 +1983,29 @@ impl GitCliEngine {
     ) -> Result<String, GitEngineError> {
         self.capture(operation, Some(path), ["rev-parse", argument])
             .map(|value| value.trim().to_string())
+    }
+
+    /// Reads one Git configuration value, returning `None` when unset (exit
+    /// code 1) rather than failing.
+    fn git_config_value(
+        &self,
+        repository: &GitRepository,
+        key: &str,
+    ) -> Result<Option<String>, GitEngineError> {
+        let mut command = self.repository_command(repository);
+        command.args(["config", "--get", key]);
+        let output = self.execute(command)?;
+        if output.status.success() {
+            return Ok(Some(
+                decode_stdout("read Git configuration", output.stdout)?
+                    .trim()
+                    .to_string(),
+            ));
+        }
+        if output.status.code() == Some(1) {
+            return Ok(None);
+        }
+        Err(command_failed("read Git configuration", &output))
     }
 }
 
@@ -3058,6 +3195,217 @@ impl GitEngine for GitCliEngine {
             "delete a remote Git ref with lease",
             &output,
         ))
+    }
+
+    fn branch_upstream(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+    ) -> Result<Option<GitBranchUpstream>, GitEngineError> {
+        let short = branch
+            .as_str()
+            .strip_prefix("refs/heads/")
+            .filter(|short| !short.is_empty() && !short.contains(".."));
+        let Some(short) = short else {
+            return Ok(None);
+        };
+        let remote = match self.git_config_value(repository, &format!("branch.{short}.remote"))? {
+            Some(remote) => {
+                GitRemote::parse(remote).map_err(|value| GitEngineError::InvalidOutput {
+                    operation: "resolve the branch upstream",
+                    detail: format!("invalid configured remote `{value}`"),
+                })?
+            }
+            None => return Ok(None),
+        };
+        let Some(merge) = self.git_config_value(repository, &format!("branch.{short}.merge"))?
+        else {
+            return Ok(None);
+        };
+        let tracked =
+            merge
+                .strip_prefix("refs/heads/")
+                .ok_or_else(|| GitEngineError::InvalidOutput {
+                    operation: "resolve the branch upstream",
+                    detail: format!("unsupported merge ref `{merge}`"),
+                })?;
+        Ok(Some(GitBranchUpstream {
+            branch: branch.clone(),
+            remote: remote.clone(),
+            merge_ref: GitRefName::parse(merge.clone()).map_err(|value| {
+                GitEngineError::InvalidOutput {
+                    operation: "resolve the branch upstream",
+                    detail: format!("invalid merge ref `{value}`"),
+                }
+            })?,
+            tracking_ref: GitRefName::parse(format!("refs/remotes/{}/{tracked}", remote.as_str()))
+                .map_err(|value| GitEngineError::InvalidOutput {
+                    operation: "resolve the branch upstream",
+                    detail: format!("invalid tracking ref `{value}`"),
+                })?,
+        }))
+    }
+
+    fn branch_pull_config(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+    ) -> Result<BranchPullConfig, GitEngineError> {
+        const OPERATION: &str = "resolve the branch pull strategy";
+        let short = branch
+            .as_str()
+            .strip_prefix("refs/heads/")
+            .unwrap_or(branch.as_str());
+        let rebase = match self
+            .git_config_value(repository, &format!("branch.{short}.rebase"))?
+            .as_deref()
+        {
+            Some(value) => parse_rebase_value(&value.to_ascii_lowercase(), OPERATION)?,
+            None => match self.git_config_value(repository, "pull.rebase")?.as_deref() {
+                Some(value) => parse_rebase_value(&value.to_ascii_lowercase(), OPERATION)?,
+                None => PullRebase::Never,
+            },
+        };
+        let fast_forward = match self
+            .git_config_value(repository, "pull.ff")?
+            .as_deref()
+            .map(str::to_ascii_lowercase)
+        {
+            None => PullFastForward::Always,
+            Some(value) => match value.as_str() {
+                "false" | "no" | "off" | "0" => PullFastForward::Never,
+                "only" => PullFastForward::Only,
+                "true" | "yes" | "on" | "1" => PullFastForward::Always,
+                _ => {
+                    return Err(GitEngineError::InvalidOutput {
+                        operation: OPERATION,
+                        detail: format!("unsupported pull.ff value `{value}`"),
+                    });
+                }
+            },
+        };
+        Ok(BranchPullConfig {
+            fast_forward,
+            rebase,
+        })
+    }
+
+    fn fast_forward_branch(
+        &self,
+        repository: &GitRepository,
+        branch: &GitRefName,
+        target: &GitOid,
+    ) -> Result<FastForwardOutcome, GitEngineError> {
+        repository.require_work_tree()?;
+        if self.head_reference(repository)?.as_ref() != Some(branch) {
+            return Err(GitEngineError::UnsupportedRepository {
+                detail: "the checked-out branch changed while pulling".to_string(),
+            });
+        }
+        let mut command = self.repository_command(repository);
+        command.args(["merge", "--ff-only", target.as_str()]);
+        let output = self.execute(command)?;
+        if output.status.success() {
+            return Ok(
+                if bounded_lossy(&output.stdout).contains("Already up to date.") {
+                    FastForwardOutcome::UpToDate
+                } else {
+                    FastForwardOutcome::Advanced
+                },
+            );
+        }
+        let combined = format!(
+            "{}\n{}",
+            bounded_lossy(&output.stdout),
+            bounded_lossy(&output.stderr)
+        );
+        if combined.contains("Not possible to fast-forward") {
+            return Ok(FastForwardOutcome::NotFastForwardable);
+        }
+        if combined.contains("would be overwritten by merge") {
+            return Ok(FastForwardOutcome::BlockedDirty);
+        }
+        Err(command_failed("fast-forward the branch", &output))
+    }
+
+    fn merge_branch(
+        &self,
+        repository: &GitRepository,
+        target: &GitOid,
+    ) -> Result<MergeBranchOutcome, GitEngineError> {
+        repository.require_work_tree()?;
+        let mut command = self.repository_command(repository);
+        command.args(["merge", "--no-edit", target.as_str()]);
+        let output = self.execute(command)?;
+        if output.status.success() {
+            return Ok(
+                if bounded_lossy(&output.stdout).contains("Already up to date.") {
+                    MergeBranchOutcome::UpToDate
+                } else {
+                    MergeBranchOutcome::Merged
+                },
+            );
+        }
+        let combined = format!(
+            "{}\n{}",
+            bounded_lossy(&output.stdout),
+            bounded_lossy(&output.stderr)
+        );
+        if repository.git_dir.join("MERGE_HEAD").exists()
+            || combined.contains("Automatic merge failed")
+            || combined.contains("CONFLICT")
+        {
+            return Ok(MergeBranchOutcome::Conflicted);
+        }
+        if combined.contains("would be overwritten by merge")
+            || combined.contains("Your local changes")
+        {
+            return Ok(MergeBranchOutcome::BlockedDirty);
+        }
+        Err(command_failed("merge the branch", &output))
+    }
+
+    fn rebase_branch(
+        &self,
+        repository: &GitRepository,
+        upstream: &GitOid,
+        merges: bool,
+    ) -> Result<RebaseOutcome, GitEngineError> {
+        repository.require_work_tree()?;
+        let mut command = self.repository_command(repository);
+        command.arg("rebase");
+        if merges {
+            command.arg("--rebase-merges");
+        }
+        command.arg(upstream.as_str());
+        let output = self.execute(command)?;
+        if output.status.success() {
+            return Ok(if bounded_lossy(&output.stdout).contains("is up to date") {
+                RebaseOutcome::UpToDate
+            } else {
+                RebaseOutcome::Rebased
+            });
+        }
+        let combined = format!(
+            "{}\n{}",
+            bounded_lossy(&output.stdout),
+            bounded_lossy(&output.stderr)
+        );
+        if repository.git_dir.join("rebase-merge").exists()
+            || repository.git_dir.join("rebase-apply").exists()
+            || combined.contains("Resolve all conflicts")
+            || combined.contains("could not apply")
+            || combined.contains("CONFLICT")
+        {
+            return Ok(RebaseOutcome::Conflicted);
+        }
+        if combined.contains("unstaged changes")
+            || combined.contains("Please commit or stash")
+            || combined.contains("Your local changes")
+        {
+            return Ok(RebaseOutcome::BlockedDirty);
+        }
+        Err(command_failed("rebase the branch", &output))
     }
 
     fn plan_tree_application(
@@ -4375,6 +4723,19 @@ fn raw_diff_object(mode: &str, oid: &str) -> Result<Option<GitPathObject>, GitEn
     }))
 }
 
+fn parse_rebase_value(value: &str, operation: &'static str) -> Result<PullRebase, GitEngineError> {
+    match value {
+        "false" | "no" | "off" | "0" => Ok(PullRebase::Never),
+        "true" | "yes" | "on" | "1" => Ok(PullRebase::Yes),
+        "merges" | "preserve" => Ok(PullRebase::Merges),
+        "interactive" => Ok(PullRebase::Interactive),
+        _ => Err(GitEngineError::InvalidOutput {
+            operation,
+            detail: format!("unsupported pull rebase value `{value}`"),
+        }),
+    }
+}
+
 fn validate_repository_path(path: &str) -> Result<(), GitEngineError> {
     if path.is_empty()
         || path.starts_with('/')
@@ -4516,6 +4877,324 @@ mod tests {
         run_git(path, &["commit", "--quiet", "-m", message]);
         GitOid::parse(run_git_capture(path, &["rev-parse", "HEAD"]))
             .expect("HEAD should be an object ID")
+    }
+
+    fn init_branch_remote() -> (tempfile::TempDir, PathBuf, PathBuf) {
+        let temporary = tempfile::TempDir::new().expect("temporary directory");
+        let remote = temporary.path().join("remote.git");
+        run_git(
+            temporary.path(),
+            &[
+                "init",
+                "--quiet",
+                "--bare",
+                remote.to_str().expect("remote path"),
+            ],
+        );
+        let writer = temporary.path().join("writer");
+        fs::create_dir(&writer).expect("writer directory");
+        init_repo(&writer);
+        run_git(
+            &writer,
+            &["remote", "add", "origin", remote.to_str().expect("remote")],
+        );
+        fs::write(writer.join("Home.md"), "base\n").expect("base note");
+        commit_all(&writer, "base");
+        run_git(&writer, &["push", "--quiet", "-u", "origin", "main"]);
+        (temporary, remote, writer)
+    }
+
+    fn advance_remote(temporary: &tempfile::TempDir, remote: &Path, name: &str, contents: &str) {
+        let other = temporary.path().join(name);
+        run_git(
+            temporary.path(),
+            &[
+                "clone",
+                "--quiet",
+                "-b",
+                "main",
+                remote.to_str().expect("remote path"),
+                other.to_str().expect("clone path"),
+            ],
+        );
+        run_git(&other, &["config", "user.name", "Vulcan Test"]);
+        run_git(&other, &["config", "user.email", "vulcan@example.invalid"]);
+        fs::write(other.join("Home.md"), contents).expect("remote note");
+        commit_all(&other, "remote advance");
+        run_git(&other, &["push", "--quiet", "origin", "main"]);
+    }
+
+    fn branch_fixture(writer: &Path) -> (GitCliEngine, GitRepository, GitRemote, GitRefName) {
+        let engine = GitCliEngine::default();
+        let repository = engine.discover_repository(writer).expect("repository");
+        let branch = engine
+            .head_reference(&repository)
+            .expect("head reference")
+            .expect("checked-out branch");
+        assert_eq!(branch.as_str(), "refs/heads/main");
+        (
+            engine,
+            repository,
+            GitRemote::parse("origin").expect("remote"),
+            branch,
+        )
+    }
+
+    #[test]
+    fn branch_upstream_resolves_configured_tracking() {
+        let (temporary, _remote, writer) = init_branch_remote();
+        let (engine, repository, remote, branch) = branch_fixture(&writer);
+        let upstream = engine
+            .branch_upstream(&repository, &branch)
+            .expect("upstream")
+            .expect("tracking upstream");
+        assert_eq!(upstream.remote, remote);
+        assert_eq!(upstream.branch, branch);
+        assert_eq!(upstream.merge_ref.as_str(), "refs/heads/main");
+        assert_eq!(upstream.tracking_ref.as_str(), "refs/remotes/origin/main");
+
+        let lonely = temporary.path().join("lonely");
+        fs::create_dir(&lonely).expect("lonely directory");
+        init_repo(&lonely);
+        fs::write(lonely.join("Home.md"), "lonely\n").expect("lonely note");
+        commit_all(&lonely, "lonely");
+        let lonely_repo = engine.discover_repository(&lonely).expect("repository");
+        let lonely_branch = engine
+            .head_reference(&lonely_repo)
+            .expect("head reference")
+            .expect("checked-out branch");
+        assert_eq!(
+            engine
+                .branch_upstream(&lonely_repo, &lonely_branch)
+                .expect("upstream query"),
+            None
+        );
+    }
+
+    #[test]
+    fn branch_pull_config_honors_branch_over_global() {
+        let (_temporary, _remote, writer) = init_branch_remote();
+        let (engine, repository, _remote, branch) = branch_fixture(&writer);
+        assert_eq!(
+            engine
+                .branch_pull_config(&repository, &branch)
+                .expect("pull config"),
+            BranchPullConfig {
+                fast_forward: PullFastForward::Always,
+                rebase: PullRebase::Never,
+            }
+        );
+        run_git(&writer, &["config", "pull.rebase", "true"]);
+        run_git(&writer, &["config", "pull.ff", "only"]);
+        assert_eq!(
+            engine
+                .branch_pull_config(&repository, &branch)
+                .expect("pull config"),
+            BranchPullConfig {
+                fast_forward: PullFastForward::Only,
+                rebase: PullRebase::Yes,
+            }
+        );
+        run_git(&writer, &["config", "branch.main.rebase", "false"]);
+        run_git(&writer, &["config", "branch.main.rebase", "merges"]);
+        assert_eq!(
+            engine
+                .branch_pull_config(&repository, &branch)
+                .expect("pull config")
+                .rebase,
+            PullRebase::Merges
+        );
+        run_git(&writer, &["config", "pull.ff", "bogus"]);
+        assert!(engine.branch_pull_config(&repository, &branch).is_err());
+    }
+
+    #[test]
+    fn fast_forward_advances_and_reports_state() {
+        let (temporary, remote, writer) = init_branch_remote();
+        let (engine, repository, remote_name, branch) = branch_fixture(&writer);
+        let upstream = engine
+            .branch_upstream(&repository, &branch)
+            .expect("upstream")
+            .expect("tracking upstream");
+        advance_remote(&temporary, &remote, "other", "advanced\n");
+        let fetched = engine
+            .fetch_ref(
+                &repository,
+                &remote_name,
+                &upstream.merge_ref,
+                &upstream.tracking_ref,
+            )
+            .expect("fetch branch");
+        assert_eq!(
+            engine
+                .fast_forward_branch(&repository, &branch, &fetched)
+                .expect("fast-forward"),
+            FastForwardOutcome::Advanced
+        );
+        assert_eq!(
+            engine.head_commit(&repository).expect("head"),
+            Some(fetched.clone())
+        );
+        assert_eq!(
+            engine
+                .fast_forward_branch(&repository, &branch, &fetched)
+                .expect("repeat fast-forward"),
+            FastForwardOutcome::UpToDate
+        );
+    }
+
+    #[test]
+    fn fast_forward_refuses_divergence_and_dirty_overlap() {
+        let (temporary, remote, writer) = init_branch_remote();
+        let (engine, repository, remote_name, branch) = branch_fixture(&writer);
+        let upstream = engine
+            .branch_upstream(&repository, &branch)
+            .expect("upstream")
+            .expect("tracking upstream");
+        fs::write(writer.join("Home.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        advance_remote(&temporary, &remote, "other", "advanced\n");
+        let fetched = engine
+            .fetch_ref(
+                &repository,
+                &remote_name,
+                &upstream.merge_ref,
+                &upstream.tracking_ref,
+            )
+            .expect("fetch branch");
+        assert_eq!(
+            engine
+                .fast_forward_branch(&repository, &branch, &fetched)
+                .expect("diverged fast-forward"),
+            FastForwardOutcome::NotFastForwardable
+        );
+        assert_ne!(
+            engine.head_commit(&repository).expect("head"),
+            Some(fetched)
+        );
+
+        let (temporary, remote, clean) = init_branch_remote();
+        let (engine, repository, remote_name, branch) = branch_fixture(&clean);
+        let upstream = engine
+            .branch_upstream(&repository, &branch)
+            .expect("upstream")
+            .expect("tracking upstream");
+        advance_remote(&temporary, &remote, "other", "advanced\n");
+        fs::write(clean.join("Home.md"), "dirty\n").expect("dirty note");
+        let fetched = engine
+            .fetch_ref(
+                &repository,
+                &remote_name,
+                &upstream.merge_ref,
+                &upstream.tracking_ref,
+            )
+            .expect("fetch branch");
+        assert_eq!(
+            engine
+                .fast_forward_branch(&repository, &branch, &fetched)
+                .expect("dirty fast-forward"),
+            FastForwardOutcome::BlockedDirty
+        );
+        assert_ne!(
+            engine.head_commit(&repository).expect("head"),
+            Some(fetched)
+        );
+    }
+
+    #[test]
+    fn merge_branch_merges_cleanly_and_reports_conflicts() {
+        let (temporary, remote, writer) = init_branch_remote();
+        let (engine, repository, remote_name, branch) = branch_fixture(&writer);
+        let upstream = engine
+            .branch_upstream(&repository, &branch)
+            .expect("upstream")
+            .expect("tracking upstream");
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        advance_remote(&temporary, &remote, "other", "advanced\n");
+        let fetched = engine
+            .fetch_ref(
+                &repository,
+                &remote_name,
+                &upstream.merge_ref,
+                &upstream.tracking_ref,
+            )
+            .expect("fetch branch");
+        assert_eq!(
+            engine.merge_branch(&repository, &fetched).expect("merge"),
+            MergeBranchOutcome::Merged
+        );
+        assert!(writer.join("Local.md").exists());
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("merged note"),
+            "advanced\n"
+        );
+
+        fs::write(writer.join("Home.md"), "local conflict\n").expect("conflict note");
+        commit_all(&writer, "local conflict");
+        advance_remote(&temporary, &remote, "second", "remote conflict\n");
+        let conflicted = engine
+            .fetch_ref(
+                &repository,
+                &remote_name,
+                &upstream.merge_ref,
+                &upstream.tracking_ref,
+            )
+            .expect("fetch branch");
+        assert_eq!(
+            engine
+                .merge_branch(&repository, &conflicted)
+                .expect("conflicting merge"),
+            MergeBranchOutcome::Conflicted
+        );
+        assert!(repository.git_dir.join("MERGE_HEAD").exists());
+    }
+
+    #[test]
+    fn rebase_branch_replays_and_reports_conflicts() {
+        let (temporary, remote, writer) = init_branch_remote();
+        let (engine, repository, remote_name, branch) = branch_fixture(&writer);
+        let upstream = engine
+            .branch_upstream(&repository, &branch)
+            .expect("upstream")
+            .expect("tracking upstream");
+        let base = engine
+            .head_commit(&repository)
+            .expect("head")
+            .expect("base commit");
+        fs::write(writer.join("Local.md"), "local\n").expect("local note");
+        commit_all(&writer, "local");
+        advance_remote(&temporary, &remote, "other", "advanced\n");
+        let fetched = engine
+            .fetch_ref(
+                &repository,
+                &remote_name,
+                &upstream.merge_ref,
+                &upstream.tracking_ref,
+            )
+            .expect("fetch branch");
+        assert_eq!(
+            engine
+                .rebase_branch(&repository, &fetched, false)
+                .expect("rebase"),
+            RebaseOutcome::Rebased
+        );
+        let rebased = engine
+            .head_commit(&repository)
+            .expect("head")
+            .expect("head commit");
+        assert_ne!(rebased, base);
+        assert!(writer.join("Local.md").exists());
+        assert_eq!(
+            fs::read_to_string(writer.join("Home.md")).expect("rebased note"),
+            "advanced\n"
+        );
+        assert_eq!(
+            engine
+                .rebase_branch(&repository, &rebased, false)
+                .expect("repeat rebase"),
+            RebaseOutcome::UpToDate
+        );
     }
 
     #[test]

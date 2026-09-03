@@ -27,16 +27,17 @@ pub use contracts::{
 };
 
 pub use git::{
-    CommitSigning, GitCapture, GitCaptureRequest, GitCaseRenamePolicy, GitChange, GitChangeKind,
-    GitCliEngine, GitCloneRequest, GitCommitMetadata, GitConflictSide,
-    GitContentMergeResolutionRequest, GitDetachedRecoveryReport, GitDetachedRecoveryRequest,
-    GitEngine, GitEngineError, GitEngineKind, GitExecutableBitsPolicy, GitFilterRequirement,
-    GitInstallation, GitMerge, GitMergeResolutionRequest, GitObjectFormat, GitOid,
-    GitPathLengthPolicy, GitPathObject, GitPlatformPolicy, GitPlatformProfile, GitPushResult,
-    GitRefCreateResult, GitRefDeleteResult, GitRefName, GitRefUpdateResult, GitReference,
-    GitRemote, GitRepository, GitRepositoryLayout, GitRepositoryRequirements,
-    GitReservedNamesPolicy, GitResolvedPath, GitSafetyState, GitSymlinkPolicy, GitTimestampPolicy,
-    GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan, GitTreeEntry, GitVersion,
+    BranchPullConfig, CommitSigning, FastForwardOutcome, GitBranchUpstream, GitCapture,
+    GitCaptureRequest, GitCaseRenamePolicy, GitChange, GitChangeKind, GitCliEngine,
+    GitCloneRequest, GitCommitMetadata, GitConflictSide, GitContentMergeResolutionRequest,
+    GitDetachedRecoveryReport, GitDetachedRecoveryRequest, GitEngine, GitEngineError,
+    GitEngineKind, GitExecutableBitsPolicy, GitFilterRequirement, GitInstallation, GitMerge,
+    GitMergeResolutionRequest, GitObjectFormat, GitOid, GitPathLengthPolicy, GitPathObject,
+    GitPlatformPolicy, GitPlatformProfile, GitPushResult, GitRefCreateResult, GitRefDeleteResult,
+    GitRefName, GitRefUpdateResult, GitReference, GitRemote, GitRepository, GitRepositoryLayout,
+    GitRepositoryRequirements, GitReservedNamesPolicy, GitResolvedPath, GitSafetyState,
+    GitSymlinkPolicy, GitTimestampPolicy, GitTreeApplyAction, GitTreeApplyPath, GitTreeApplyPlan,
+    GitTreeEntry, GitVersion, MergeBranchOutcome, PullFastForward, PullRebase, RebaseOutcome,
 };
 pub use merge_policy::{
     MergeAutomation, MergeFileKind, MergePathSelector, MergePolicy, MergePolicyDecision,
