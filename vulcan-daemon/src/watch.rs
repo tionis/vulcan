@@ -15,6 +15,11 @@ use vulcan_sync::{GitCliEngine, GitEngine, GitEngineError, SyncJobTrigger};
 
 const WATCH_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const WATCH_SAFETY_POLL_INTERVAL: Duration = Duration::from_secs(1);
+/// Minimum interval between Recovery wake-ups for an unchanged watcher error
+/// set. A persistently failing path (dangling symlink, denied file) must not
+/// schedule a full sync on every poll scan; one retry per cooldown preserves
+/// eventual safety while the failure persists.
+const WATCH_ERROR_COOLDOWN: Duration = Duration::from_secs(300);
 const MAX_REPORTED_PATHS: usize = 256;
 const MAX_REPORTED_ERRORS: usize = 16;
 
@@ -157,6 +162,7 @@ where
     let debounce = Duration::from_millis(options.debounce_ms);
     let max_dirty = Duration::from_millis(options.max_dirty_ms);
     let mut batch = WatchBatch::default();
+    let mut last_error_only: Option<(BTreeSet<String>, Instant)> = None;
     loop {
         if should_stop() {
             return Ok(());
@@ -189,9 +195,35 @@ where
         }
         if batch.is_ready(Instant::now(), debounce, max_dirty) {
             let metadata = batch.take_metadata();
+            if suppress_unchanged_error_batch(&metadata, &mut last_error_only, Instant::now()) {
+                continue;
+            }
             supervisor.enqueue_watch(registration.id.as_str(), &registration.path, metadata)?;
         }
     }
+}
+
+/// Returns true when an error-only batch repeats the last reported error set
+/// within cooldown and must not schedule another sync. Batches carrying paths
+/// or events always schedule and reset the suppression, as does a changed
+/// error set; an expired cooldown schedules one retry and restarts the wait.
+fn suppress_unchanged_error_batch(
+    metadata: &SyncWatchMetadata,
+    last_reported: &mut Option<(BTreeSet<String>, Instant)>,
+    now: Instant,
+) -> bool {
+    let errors: BTreeSet<String> = metadata.watcher_errors.iter().cloned().collect();
+    if metadata.paths.is_empty() && metadata.event_count == 0 && !errors.is_empty() {
+        if let Some((previous, at)) = last_reported {
+            if *previous == errors && now.duration_since(*at) < WATCH_ERROR_COOLDOWN {
+                return true;
+            }
+        }
+        *last_reported = Some((errors, now));
+        return false;
+    }
+    *last_reported = None;
+    false
 }
 
 fn register_watchers(
@@ -426,6 +458,84 @@ mod tests {
 
     fn change(path: PathBuf) -> Event {
         Event::new(EventKind::Modify(ModifyKind::Any)).add_path(path)
+    }
+
+    fn error_only_batch(errors: &[&str]) -> SyncWatchMetadata {
+        SyncWatchMetadata {
+            event_count: 0,
+            untagged_events: 0,
+            paths: Vec::new(),
+            self_generated_transactions: Vec::new(),
+            safety_rescan: true,
+            watcher_errors: errors.iter().map(ToString::to_string).collect(),
+        }
+    }
+
+    #[test]
+    fn unchanged_error_batches_cool_down_while_new_signals_schedule() {
+        let now = Instant::now();
+        let mut last_reported = None;
+
+        // First occurrence always schedules and records the signature.
+        assert!(!suppress_unchanged_error_batch(
+            &error_only_batch(&["polling watcher: dangling symlink"]),
+            &mut last_reported,
+            now,
+        ));
+        // Identical errors within cooldown suppress the wake-up.
+        assert!(suppress_unchanged_error_batch(
+            &error_only_batch(&["polling watcher: dangling symlink"]),
+            &mut last_reported,
+            now,
+        ));
+        // A changed error set schedules again and becomes the signature.
+        assert!(!suppress_unchanged_error_batch(
+            &error_only_batch(&[
+                "polling watcher: dangling symlink",
+                "native watcher: denied"
+            ]),
+            &mut last_reported,
+            now,
+        ));
+        assert!(suppress_unchanged_error_batch(
+            &error_only_batch(&[
+                "polling watcher: dangling symlink",
+                "native watcher: denied"
+            ]),
+            &mut last_reported,
+            now,
+        ));
+        // An expired cooldown schedules one retry.
+        let expired = now
+            .checked_sub(WATCH_ERROR_COOLDOWN + Duration::from_secs(1))
+            .map(|at| {
+                (
+                    ["polling watcher: dangling symlink"]
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                    at,
+                )
+            });
+        let mut last_expired = expired;
+        assert!(!suppress_unchanged_error_batch(
+            &error_only_batch(&["polling watcher: dangling symlink"]),
+            &mut last_expired,
+            now,
+        ));
+        // Real paths or events always schedule and clear the suppression.
+        let mut with_paths = error_only_batch(&["polling watcher: dangling symlink"]);
+        with_paths.paths.push("Notes/todo.md".to_string());
+        assert!(!suppress_unchanged_error_batch(
+            &with_paths,
+            &mut last_reported,
+            now,
+        ));
+        assert!(!suppress_unchanged_error_batch(
+            &error_only_batch(&["polling watcher: dangling symlink"]),
+            &mut last_reported,
+            now,
+        ));
     }
 
     #[test]
