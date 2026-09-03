@@ -222,6 +222,7 @@ async fn reconcile_listeners(
                 Arc::clone(supervisor),
                 options,
                 client.clone(),
+                options.verbose,
             )
         });
     }
@@ -243,7 +244,11 @@ fn spawn_listener(
     supervisor: Arc<SyncSupervisor>,
     options: NotificationRuntimeOptions,
     client: reqwest::Client,
+    verbose: bool,
 ) -> ListenerTask {
+    if verbose {
+        eprintln!("{}", listener_line(registration.id.as_str()));
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let task_stop = Arc::clone(&stop);
     let task_registration = registration.clone();
@@ -457,6 +462,13 @@ fn report_diagnostic_once(wiki_id: &str, detail: &str, previous: &mut Option<Str
     }
 }
 
+/// Renders a listener start as a verbose log line. Fires before advertisement
+/// discovery, so it only states that the wiki has a listener.
+#[must_use]
+fn listener_line(wiki_id: &str) -> String {
+    format!("sync notification: listener started for wiki `{wiki_id}`")
+}
+
 /// Renders an advertisement discovery as a verbose log line. Identifies the
 /// endpoint by origin and fingerprint only — never the subscribe URL.
 #[must_use]
@@ -594,6 +606,14 @@ mod tests {
         assert!(wake.contains("alpha"));
         assert!(wake.contains("https://relay.example"));
         assert!(!wake.contains("secret-channel"));
+    }
+
+    #[test]
+    fn verbose_listener_line_names_the_wiki() {
+        assert_eq!(
+            listener_line("alpha"),
+            "sync notification: listener started for wiki `alpha`"
+        );
     }
 
     #[test]

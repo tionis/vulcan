@@ -253,6 +253,12 @@ async fn run_daemon(
     let supervisor = Arc::new(SyncSupervisor::at(
         state_store.root().join("daemon/jobs.json"),
     )?);
+    if context.verbose {
+        eprintln!(
+            "daemon started on {bind} with {} registered wiki(s)",
+            config.vaults.len(),
+        );
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let workers = DaemonWorkers::spawn(
         context,
