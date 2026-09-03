@@ -1136,6 +1136,15 @@ fn pull_branch_lane(
     engine: &dyn GitEngine,
     report: &mut GitSyncReport,
 ) -> Result<(), GitSyncError> {
+    // Branch operations must not start while another Git operation owns the
+    // worktree; the live pause check then reports it with guidance. Pure
+    // filesystem check against the shared marker list, no subprocess.
+    if crate::git::GIT_OPERATION_MARKERS.iter().any(|(marker, _)| {
+        report.repository.git_dir.join(marker).exists()
+            || report.repository.common_dir.join(marker).exists()
+    }) {
+        return Ok(());
+    }
     let repository = &report.repository;
     if let Some(existing) = report.branch.as_ref() {
         if matches!(
@@ -4584,6 +4593,32 @@ mod tests {
         );
         let repository = engine.discover_repository(&writer).expect("repository");
         assert!(repository.git_dir.join("MERGE_HEAD").exists());
+    }
+
+    #[test]
+    fn branch_lane_yields_to_in_progress_operations() {
+        let (temporary, remote, writer) = setup_tracked_branch();
+        let engine = GitCliEngine::default();
+        advance_remote_branch(&temporary, &remote, "advanced\n");
+        let repository = engine.discover_repository(&writer).expect("repository");
+        let head = engine
+            .head_commit(&repository)
+            .expect("head query")
+            .expect("head");
+        fs::write(repository.git_dir.join("MERGE_HEAD"), format!("{head}\n")).expect("merge state");
+
+        let report = sync_git_once(&engine, &writer, &GitSyncOptions::default())
+            .expect("sync with merge state reports normally");
+
+        assert_eq!(report.outcome, GitSyncOutcome::Paused);
+        assert_eq!(
+            report.pause.as_ref().map(|pause| pause.reason),
+            Some(GitSyncPauseReason::OperationInProgress)
+        );
+        assert!(
+            report.branch.is_none(),
+            "the branch lane must not start, let alone error, mid-operation"
+        );
     }
 
     #[test]

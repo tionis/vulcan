@@ -2015,6 +2015,17 @@ impl GitCliEngine {
     }
 }
 
+/// Git directory markers for an in-progress operation, shared by the safety
+/// state and the branch lane gate so both recognize the same states.
+pub(crate) const GIT_OPERATION_MARKERS: &[(&str, &str)] = &[
+    ("MERGE_HEAD", "merge"),
+    ("CHERRY_PICK_HEAD", "cherry-pick"),
+    ("REVERT_HEAD", "revert"),
+    ("BISECT_LOG", "bisect"),
+    ("rebase-merge", "rebase"),
+    ("rebase-apply", "rebase"),
+];
+
 impl GitEngine for GitCliEngine {
     fn kind(&self) -> GitEngineKind {
         GitEngineKind::Cli
@@ -3531,15 +3542,7 @@ impl GitEngine for GitCliEngine {
             Some(1) => true,
             _ => return Err(command_failed("inspect staged changes", &output)),
         };
-        let operations = [
-            ("MERGE_HEAD", "merge"),
-            ("CHERRY_PICK_HEAD", "cherry-pick"),
-            ("REVERT_HEAD", "revert"),
-            ("BISECT_LOG", "bisect"),
-            ("rebase-merge", "rebase"),
-            ("rebase-apply", "rebase"),
-        ];
-        let operation = operations
+        let operation = GIT_OPERATION_MARKERS
             .iter()
             .find(|(path, _)| {
                 repository.git_dir.join(path).exists() || repository.common_dir.join(path).exists()
