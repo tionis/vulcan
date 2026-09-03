@@ -839,6 +839,112 @@ mod tests {
     }
 
     #[test]
+    fn foreground_daemon_pulls_the_tracked_branch_on_startup() {
+        fn rev_parse(directory: &Path, revision: &str) -> String {
+            let output = Command::new("git")
+                .current_dir(directory)
+                .args(["rev-parse", revision])
+                .output()
+                .expect("run git rev-parse");
+            assert!(output.status.success(), "rev-parse should succeed");
+            String::from_utf8(output.stdout)
+                .expect("rev-parse output should be UTF-8")
+                .trim()
+                .to_string()
+        }
+
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let registry_path = temporary.path().join("daemon.toml");
+        let registry = WikiRegistry::at(registry_path.clone());
+        let config = git_sync_config(&temporary);
+        let remote = temporary.path().join("remote.git");
+        let vault = config.vaults[0].path.clone();
+        assert!(git(&vault, &["push", "--quiet", "-u", "origin", "main"]));
+        let upstream = temporary.path().join("upstream-work");
+        assert!(git(
+            temporary.path(),
+            &[
+                "clone",
+                "--quiet",
+                "-b",
+                "main",
+                remote.to_str().expect("remote"),
+                upstream.to_str().expect("upstream worktree"),
+            ]
+        ));
+        fs::write(upstream.join("Home.md"), "daemon sync advanced\n").expect("note");
+        assert!(git(&upstream, &["add", "--all"]));
+        assert!(git(
+            &upstream,
+            &[
+                "-c",
+                "user.name=Vulcan Test",
+                "-c",
+                "user.email=vulcan@example.invalid",
+                "commit",
+                "--quiet",
+                "-m",
+                "advanced",
+            ]
+        ));
+        assert!(git(&upstream, &["push", "--quiet", "origin", "main"]));
+        let expected = rev_parse(&remote, "refs/heads/main");
+        assert_ne!(
+            rev_parse(&vault, "HEAD"),
+            expected,
+            "fixture should start behind the remote"
+        );
+        fs::write(
+            &registry_path,
+            toml::to_string_pretty(&config).expect("serialize config"),
+        )
+        .expect("write registry");
+        let context = DaemonProcessContext {
+            registry,
+            state_root: temporary.path().join("state"),
+            verbose: false,
+        };
+        let child_context = context.clone();
+        let (result_sender, result_receiver) = std::sync::mpsc::channel();
+        let daemon = thread::spawn(move || {
+            let result = run_daemon_foreground(&child_context);
+            result_sender.send(result).expect("send daemon result");
+        });
+
+        let status = (0..100)
+            .find_map(|_| {
+                if let Ok(result) = result_receiver.try_recv() {
+                    panic!("daemon stopped before readiness: {result:?}");
+                }
+                let status = daemon_status(&context).ok()?;
+                if status.running {
+                    Some(status)
+                } else {
+                    thread::sleep(Duration::from_millis(25));
+                    None
+                }
+            })
+            .expect("daemon becomes ready");
+        assert_eq!(status.registered_wikis.len(), 1);
+        let pulled = (0..200).any(|_| {
+            if rev_parse(&vault, "HEAD") == expected {
+                true
+            } else {
+                thread::sleep(Duration::from_millis(50));
+                false
+            }
+        });
+        assert!(pulled, "daemon startup should pull the tracked branch");
+        let stopped = request_daemon_shutdown(&context).expect("request shutdown");
+        assert!(!stopped.running);
+        daemon.join().expect("daemon thread");
+        result_receiver
+            .recv()
+            .expect("daemon result channel")
+            .expect("daemon result");
+    }
+
+    #[test]
     fn foreground_process_reports_status_and_stops_over_authenticated_http() {
         let temporary = tempfile::tempdir().expect("temporary directory");
         let registry_path = temporary.path().join("daemon.toml");
