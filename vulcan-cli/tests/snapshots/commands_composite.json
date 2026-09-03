@@ -9868,6 +9868,125 @@
               }
             ],
             "subcommands": []
+          },
+          {
+            "about": "Publish the realtime sync notification advertisement",
+            "name": "advertise",
+            "options": [
+              {
+                "help": "Optional registered wiki ID; omit to use the selected vault path",
+                "id": "wiki",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WIKI"
+                ]
+              },
+              {
+                "help": "HTTPS long-poll subscribe URL to advertise",
+                "id": "subscribe_url",
+                "long": "subscribe-url",
+                "possible_values": [],
+                "required": true,
+                "short": null,
+                "value_names": [
+                  "SUBSCRIBE_URL"
+                ]
+              },
+              {
+                "help": "Git remote carrying the advertisement ref",
+                "id": "remote",
+                "long": "remote",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOTE"
+                ]
+              },
+              {
+                "help": "Exact advertised revision to replace; omit to lease the current one",
+                "id": "expected",
+                "long": "expected",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPECTED"
+                ]
+              },
+              {
+                "help": "Validate and report without creating objects or pushing",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
+          },
+          {
+            "about": "Remove the realtime sync notification advertisement",
+            "name": "unadvertise",
+            "options": [
+              {
+                "help": "Optional registered wiki ID; omit to use the selected vault path",
+                "id": "wiki",
+                "long": null,
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "WIKI"
+                ]
+              },
+              {
+                "help": "Git remote carrying the advertisement ref",
+                "id": "remote",
+                "long": "remote",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "REMOTE"
+                ]
+              },
+              {
+                "help": "Exact advertised revision to delete; omit to lease the current one",
+                "id": "expected",
+                "long": "expected",
+                "possible_values": [],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "EXPECTED"
+                ]
+              },
+              {
+                "help": "Validate and report without deleting the remote ref",
+                "id": "dry_run",
+                "long": "dry-run",
+                "possible_values": [
+                  "true",
+                  "false"
+                ],
+                "required": false,
+                "short": null,
+                "value_names": [
+                  "DRY_RUN"
+                ]
+              }
+            ],
+            "subcommands": []
           }
         ]
       },
