@@ -29,6 +29,9 @@ pub struct NotificationRuntimeOptions {
     pub initial_backoff_ms: u64,
     pub maximum_backoff_ms: u64,
     pub connect_timeout_ms: u64,
+    /// Enables operational stderr lines for advertisement discovery and
+    /// wake-up enqueueing. Off by default; set from `--verbose`.
+    pub verbose: bool,
 }
 
 impl Default for NotificationRuntimeOptions {
@@ -39,6 +42,7 @@ impl Default for NotificationRuntimeOptions {
             initial_backoff_ms: 1_000,
             maximum_backoff_ms: 60_000,
             connect_timeout_ms: 15_000,
+            verbose: false,
         }
     }
 }
@@ -290,6 +294,15 @@ async fn run_listener(
             match refresh_for_registration_interruptible(&registration, &stop).await {
                 RefreshResult::Stopped => return Ok(()),
                 RefreshResult::Advertisement(discovered) => {
+                    if options.verbose {
+                        eprintln!(
+                            "{}",
+                            advertisement_line(
+                                registration.id.as_str(),
+                                &discovered.advertisement.endpoint
+                            )
+                        );
+                    }
                     endpoint = Some(discovered.advertisement.endpoint);
                     refresh_at = Instant::now() + advertisement_refresh;
                     backoff.reset();
@@ -322,6 +335,12 @@ async fn run_listener(
             result = poll_endpoint(&client, current) => {
                 match result {
                     PollResult::Wake => {
+                        if options.verbose {
+                            eprintln!(
+                                "{}",
+                                wake_line(registration.id.as_str(), current)
+                            );
+                        }
                         supervisor.enqueue(
                             registration.id.as_str(),
                             &registration.path,
@@ -438,6 +457,28 @@ fn report_diagnostic_once(wiki_id: &str, detail: &str, previous: &mut Option<Str
     }
 }
 
+/// Renders an advertisement discovery as a verbose log line. Identifies the
+/// endpoint by origin and fingerprint only — never the subscribe URL.
+#[must_use]
+fn advertisement_line(wiki_id: &str, endpoint: &NotificationEndpoint) -> String {
+    format!(
+        "sync notification: wiki `{wiki_id}` discovered {} ({})",
+        endpoint.origin(),
+        endpoint.fingerprint(),
+    )
+}
+
+/// Renders a wake-up enqueue as a verbose log line. Identifies the endpoint
+/// by origin and fingerprint only — never the subscribe URL.
+#[must_use]
+fn wake_line(wiki_id: &str, endpoint: &NotificationEndpoint) -> String {
+    format!(
+        "sync notification: wiki `{wiki_id}` wake-up from {} ({}) enqueued",
+        endpoint.origin(),
+        endpoint.fingerprint(),
+    )
+}
+
 async fn wait_until_stopped(stop: &Arc<AtomicBool>) {
     while !stop.load(Ordering::Acquire) {
         tokio::time::sleep(STOP_POLL).await;
@@ -538,6 +579,24 @@ mod tests {
     }
 
     #[test]
+    fn verbose_notification_lines_redact_the_subscribe_url() {
+        let advertisement = vulcan_sync::NotificationAdvertisement::parse(
+            br#"{"version":1,"transport":"http_long_poll","subscribe_url":"https://relay.example/h/secret-channel?pubsub=true"}"#,
+        )
+        .expect("advertisement");
+        let endpoint = &advertisement.endpoint;
+        let discovered = advertisement_line("alpha", endpoint);
+        assert!(discovered.contains("alpha"));
+        assert!(discovered.contains("https://relay.example"));
+        assert!(discovered.contains(endpoint.fingerprint()));
+        assert!(!discovered.contains("secret-channel"));
+        let wake = wake_line("alpha", endpoint);
+        assert!(wake.contains("alpha"));
+        assert!(wake.contains("https://relay.example"));
+        assert!(!wake.contains("secret-channel"));
+    }
+
+    #[test]
     fn exponential_backoff_is_bounded_and_jittered() {
         assert_eq!(
             jittered_delay(Duration::from_millis(1_000), 0),
@@ -612,6 +671,7 @@ mod tests {
                 initial_backoff_ms: 10,
                 maximum_backoff_ms: 50,
                 connect_timeout_ms: 100,
+                verbose: true,
             },
             Arc::clone(&stop),
         ));
@@ -705,6 +765,7 @@ mod tests {
                 initial_backoff_ms: 10,
                 maximum_backoff_ms: 50,
                 connect_timeout_ms: 100,
+                verbose: true,
             },
             Arc::clone(&stop),
         ));

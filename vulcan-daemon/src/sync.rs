@@ -29,6 +29,36 @@ pub struct DaemonSyncExecution {
     pub report: Option<VaultSyncReport>,
 }
 
+/// Renders one completed daemon sync execution as a single verbose log line.
+/// Contains only wiki identity, triggers, and outcome — never repository
+/// credentials or notification endpoint URLs.
+#[must_use]
+pub fn format_sync_execution(execution: &DaemonSyncExecution) -> String {
+    let wiki = execution
+        .job
+        .job
+        .wiki_id
+        .as_deref()
+        .unwrap_or("<unregistered>");
+    let triggers = execution
+        .job
+        .triggers
+        .iter()
+        .map(|trigger| format!("{trigger:?}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    match execution.report.as_ref() {
+        Some(report) => format!(
+            "sync job: wiki `{wiki}` [{triggers}] -> {:?} ({:?})",
+            execution.job.job.state, report.sync.outcome,
+        ),
+        None => format!(
+            "sync job: wiki `{wiki}` [{triggers}] -> {:?}",
+            execution.job.job.state,
+        ),
+    }
+}
+
 /// Claims and executes one queued daemon job through the same cancellable
 /// application transaction used by direct CLI synchronization.
 pub fn execute_next_sync_job(
@@ -545,7 +575,7 @@ mod tests {
     use std::process::Command;
     use tempfile::tempdir;
     use vulcan_app::sync_state::SyncStateStore;
-    use vulcan_sync::{SyncJobState, SyncJobTrigger};
+    use vulcan_sync::{SyncJob, SyncJobState, SyncJobTrigger};
 
     fn git(path: &Path, arguments: &[&str]) {
         let status = Command::new("git")
@@ -554,6 +584,46 @@ mod tests {
             .status()
             .expect("Git should launch");
         assert!(status.success(), "Git failed: {arguments:?}");
+    }
+
+    #[test]
+    fn verbose_execution_line_reports_wiki_triggers_and_state() {
+        let job = |wiki_id: Option<&str>, state: SyncJobState| SupervisedSyncJob {
+            job: SyncJob {
+                version: vulcan_sync::SYNC_CONTRACT_VERSION,
+                id: "job-1".to_string(),
+                wiki_id: wiki_id.map(str::to_string),
+                backend: "git".to_string(),
+                vault: Path::new("/vault").to_path_buf(),
+                trigger: SyncJobTrigger::RemoteNotification,
+                state,
+                status: None,
+                error: None,
+            },
+            triggers: vec![SyncJobTrigger::RemoteNotification],
+            watch: None,
+        };
+        let line = format_sync_execution(&DaemonSyncExecution {
+            job: job(Some("alpha"), SyncJobState::Succeeded),
+            report: None,
+        });
+        assert!(line.contains("alpha"), "line should name the wiki: {line}");
+        assert!(
+            line.contains("RemoteNotification"),
+            "line should name the trigger: {line}"
+        );
+        assert!(
+            line.contains("Succeeded"),
+            "line should name the state: {line}"
+        );
+        let anonymous = format_sync_execution(&DaemonSyncExecution {
+            job: job(None, SyncJobState::Failed),
+            report: None,
+        });
+        assert!(
+            anonymous.contains("<unregistered>"),
+            "line should mark missing wiki identity: {anonymous}"
+        );
     }
 
     #[test]

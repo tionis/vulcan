@@ -16,7 +16,7 @@ use crate::runtime::{
 use crate::semantic_worker::spawn_semantic_worker;
 use crate::service::DaemonServiceDiagnostic;
 use crate::supervisor::{SupervisorError, SyncSupervisor};
-use crate::sync::execute_next_sync_job_with_state_store_and_engine;
+use crate::sync::{execute_next_sync_job_with_state_store_and_engine, format_sync_execution};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::error::Error;
@@ -67,6 +67,9 @@ pub struct DaemonStatusReport {
 pub struct DaemonProcessContext {
     pub registry: WikiRegistry,
     pub state_root: PathBuf,
+    /// Enables operational stderr lines (sync executions, notification
+    /// wake-ups). Off by default; set from the global `--verbose` flag.
+    pub verbose: bool,
 }
 
 impl DaemonProcessContext {
@@ -80,6 +83,7 @@ impl DaemonProcessContext {
         Ok(Self {
             registry: WikiRegistry::user_default()?,
             state_root,
+            verbose: false,
         })
     }
 
@@ -315,11 +319,13 @@ impl DaemonWorkers {
                 Arc::clone(supervisor),
                 Arc::clone(state_store),
                 Arc::clone(stop),
+                context.verbose,
             ),
             notifications: spawn_notification_runtime(
                 context.registry.clone(),
                 Arc::clone(supervisor),
                 Arc::clone(stop),
+                context.verbose,
             ),
             semantic: config.semantic_worker.clone().map(|worker_config| {
                 spawn_semantic_worker(
@@ -361,12 +367,16 @@ fn spawn_notification_runtime(
     registry: WikiRegistry,
     supervisor: Arc<SyncSupervisor>,
     stop: Arc<AtomicBool>,
+    verbose: bool,
 ) -> tokio::task::JoinHandle<Result<(), DaemonProcessError>> {
     tokio::spawn(async move {
         let result = run_notification_runtime_until(
             registry,
             supervisor,
-            NotificationRuntimeOptions::default(),
+            NotificationRuntimeOptions {
+                verbose,
+                ..NotificationRuntimeOptions::default()
+            },
             Arc::clone(&stop),
         )
         .await
@@ -474,20 +484,25 @@ fn spawn_job_worker(
     supervisor: Arc<SyncSupervisor>,
     state_store: Arc<SyncStateStore>,
     stop: Arc<AtomicBool>,
+    verbose: bool,
 ) -> thread::JoinHandle<Result<(), DaemonProcessError>> {
     thread::spawn(move || {
         let result = (|| {
             let engine = vulcan_sync::GitCliEngine::default();
             while !stop.load(Ordering::Acquire) {
-                let execution = execute_next_sync_job_with_state_store_and_engine(
+                match execute_next_sync_job_with_state_store_and_engine(
                     &supervisor,
                     &registry,
                     &GitSyncOptions::default(),
                     &state_store,
                     &engine,
-                )?;
-                if execution.is_none() {
-                    thread::sleep(JOB_POLL);
+                )? {
+                    Some(execution) => {
+                        if verbose {
+                            eprintln!("{}", format_sync_execution(&execution));
+                        }
+                    }
+                    None => thread::sleep(JOB_POLL),
                 }
             }
             Ok(())
@@ -795,6 +810,7 @@ mod tests {
         let context = DaemonProcessContext {
             registry,
             state_root: temporary.path().join("state"),
+            verbose: false,
         };
         let child_context = context.clone();
         let (result_sender, result_receiver) = std::sync::mpsc::channel();

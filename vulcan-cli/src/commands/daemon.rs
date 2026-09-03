@@ -55,6 +55,8 @@ pub(crate) fn handle_daemon_command(cli: &Cli, command: &DaemonCommand) -> Resul
             *dry_run,
         ),
         DaemonCommand::Start { detach, child } => {
+            let mut context = context.clone();
+            context.verbose = cli.verbose;
             if *detach {
                 start_detached(cli, &context)
             } else {
@@ -372,7 +374,7 @@ fn start_detached(cli: &Cli, context: &DaemonProcessContext) -> Result<(), CliEr
     let executable = std::env::current_exe().map_err(CliError::operation)?;
     let mut command = Command::new(executable);
     command
-        .args(["daemon", "start", "--child"])
+        .args(detached_child_args(context.verbose))
         .stdin(Stdio::null())
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(error_log));
@@ -498,4 +500,28 @@ fn print_status(output: OutputFormat, status: &DaemonStatusReport) -> Result<(),
         }
     }
     Ok(())
+}
+
+/// Arguments for the detached daemon child. The global `--verbose` flag must
+/// precede the subcommand so the child enables the same operational logging.
+fn detached_child_args(verbose: bool) -> Vec<&'static str> {
+    if verbose {
+        vec!["--verbose", "daemon", "start", "--child"]
+    } else {
+        vec!["daemon", "start", "--child"]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detached_child_preserves_verbose_logging() {
+        assert_eq!(detached_child_args(false), ["daemon", "start", "--child"]);
+        assert_eq!(
+            detached_child_args(true),
+            ["--verbose", "daemon", "start", "--child"]
+        );
+    }
 }

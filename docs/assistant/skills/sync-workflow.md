@@ -108,6 +108,11 @@ apply markers, or `refs/vulcan/**` to make a status look clean.
 - Start the daemon explicitly with `vulcan daemon start` or `--detach`. On Linux, macOS, and
   Windows the running daemon owns advertised long-poll listeners; watcher, notification, startup,
   poll, and companion triggers coalesce through one per-wiki supervisor.
+- The daemon is quiet by default. Run `vulcan --verbose daemon start` (or with `--detach`,
+  which carries the flag to the background child and its `daemon.log`) for operational stderr
+  lines: one per completed sync job with wiki, triggers, and state/outcome, plus notification
+  advertisement discovery and wake-up enqueueing identified by endpoint origin and fingerprint
+  only. Installed services run at the default quiet level.
 - Provision a companion only from a running daemon. `vulcan daemon companion --output json` is
   non-secret; `--reveal-token` transfers bearer authority and must never be copied into a note,
   synchronized plugin settings, logs, or source control.
