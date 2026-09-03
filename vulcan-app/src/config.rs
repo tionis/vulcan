@@ -9,7 +9,8 @@ use vulcan_core::paths::secure_write;
 use vulcan_core::{
     default_config_template, ensure_vulcan_dir, load_permission_profiles,
     load_permission_profiles_with_overrides, load_vault_config, load_vault_config_with_overrides,
-    validate_vulcan_overrides_toml, ConfigDiagnostic, PermissionProfile, VaultConfig, VaultPaths,
+    validate_vulcan_overrides_toml, ConfigDiagnostic, ConfigDiagnosticKind, PermissionProfile,
+    VaultConfig, VaultPaths,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -695,6 +696,7 @@ fn normalize_config_diagnostics(
     diagnostics
         .iter()
         .map(|diagnostic| ConfigDiagnostic {
+            kind: ConfigDiagnosticKind::Message,
             path: relativize_config_path(paths, &diagnostic.path),
             message: diagnostic.message.clone(),
         })

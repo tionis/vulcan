@@ -36,8 +36,8 @@ use vulcan_core::resolver::{ResolverDocument, ResolverIndex, ResolverLink};
 use vulcan_core::{
     ensure_vulcan_dir, execute_query_report_with_filter, execute_selection_plan, load_vault_config,
     parse_document, selection_report_as_query_report, validate_selection_plan,
-    validate_vulcan_overrides_toml, ConfigDiagnostic, GraphExportReport, NoteRecord,
-    ParsedDocument, QueryAst, QueryReport, SelectionPlan, VaultPaths,
+    validate_vulcan_overrides_toml, ConfigDiagnostic, ConfigDiagnosticKind, GraphExportReport,
+    NoteRecord, ParsedDocument, QueryAst, QueryReport, SelectionPlan, VaultPaths,
 };
 use zip::write::FileOptions;
 
@@ -3772,6 +3772,7 @@ fn normalize_config_diagnostics(
     diagnostics
         .iter()
         .map(|diagnostic| ConfigDiagnostic {
+            kind: ConfigDiagnosticKind::Message,
             path: relativize_path(paths, &diagnostic.path),
             message: diagnostic.message.clone(),
         })

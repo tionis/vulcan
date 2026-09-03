@@ -2581,6 +2581,45 @@ fn builtin_command_aliases() -> BTreeMap<String, String> {
 pub struct ConfigDiagnostic {
     pub path: PathBuf,
     pub message: String,
+    #[serde(default, skip_serializing_if = "ConfigDiagnosticKind::is_message")]
+    pub kind: ConfigDiagnosticKind,
+}
+
+/// Whether a diagnostic reports unparseable Vulcan configuration (which
+/// callers like synchronization must treat as fail-closed) or an ignorable
+/// content/loading issue.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigDiagnosticKind {
+    #[default]
+    Message,
+    ParseFailure,
+}
+
+impl ConfigDiagnosticKind {
+    // serde's skip_serializing_if requires a &-receiver.
+    #[allow(clippy::trivially_copy_pass_by_ref)]
+    fn is_message(&self) -> bool {
+        *self == Self::Message
+    }
+}
+
+impl ConfigDiagnostic {
+    pub fn message(path: &Path, message: impl Into<String>) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            message: message.into(),
+            kind: ConfigDiagnosticKind::Message,
+        }
+    }
+
+    pub fn parse_failure(path: &Path, message: impl Into<String>) -> Self {
+        Self {
+            path: path.to_path_buf(),
+            message: message.into(),
+            kind: ConfigDiagnosticKind::ParseFailure,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2686,6 +2725,7 @@ pub fn load_vault_config(paths: &VaultPaths) -> ConfigLoadResult {
     ) {
         if local_config.folder_notes.take().is_some() {
             loaded.diagnostics.push(ConfigDiagnostic {
+                kind: ConfigDiagnosticKind::Message,
                 path: paths.local_config_file().to_path_buf(),
                 message: "ignored local [folder_notes]: folder-note conventions are repository-level shared configuration".to_string(),
             });
@@ -2711,12 +2751,14 @@ fn remove_shared_local_sync_ceiling(
     };
     if sync.merge_automation.take().is_some() {
         diagnostics.push(ConfigDiagnostic {
+            kind: ConfigDiagnosticKind::Message,
             path: path.to_path_buf(),
             message: "ignored shared sync.merge_automation: the automation ceiling is device-local configuration".to_string(),
         });
     }
     if sync.agent_auto_accept.take().is_some() {
         diagnostics.push(ConfigDiagnostic {
+            kind: ConfigDiagnosticKind::Message,
             path: path.to_path_buf(),
             message: "ignored shared sync.agent_auto_accept: agent acceptance is device-local configuration".to_string(),
         });
@@ -2736,12 +2778,14 @@ fn remove_local_shared_sync_policy(
     });
     if policy {
         diagnostics.push(ConfigDiagnostic {
+            kind: ConfigDiagnosticKind::Message,
             path: path.to_path_buf(),
             message: "ignored local sync.merge_policy: merge policy is repository-level shared configuration".to_string(),
         });
     }
     if validation {
         diagnostics.push(ConfigDiagnostic {
+            kind: ConfigDiagnosticKind::Message,
             path: path.to_path_buf(),
             message: "ignored local sync.tree_validation: whole-tree validation policy is repository-level shared configuration".to_string(),
         });
@@ -2762,6 +2806,7 @@ fn remove_untrusted_executable_overrides(
     }
     if !removed.is_empty() {
         diagnostics.push(ConfigDiagnostic {
+            kind: ConfigDiagnosticKind::Message,
             path: path.to_path_buf(),
             message: format!(
                 "ignored untrusted shared executable configuration: {}; move these settings to config.local.toml or trust the vault",
@@ -2790,6 +2835,7 @@ fn remove_untrusted_network_overrides(
     }
     if !removed.is_empty() {
         diagnostics.push(ConfigDiagnostic {
+            kind: ConfigDiagnosticKind::Message,
             path: path.to_path_buf(),
             message: format!(
                 "ignored untrusted shared network configuration: {}; move these settings to config.local.toml or trust the vault",
@@ -2999,18 +3045,18 @@ fn parse_in_memory_vulcan_override(
         Ok(rendered) => match toml::from_str::<PartialVulcanConfig>(&rendered) {
             Ok(config) => Some(config),
             Err(error) => {
-                diagnostics.push(ConfigDiagnostic {
-                    path: path.to_path_buf(),
-                    message: format!("failed to parse {description}: {error}"),
-                });
+                diagnostics.push(ConfigDiagnostic::parse_failure(
+                    path,
+                    format!("failed to parse {description}: {error}"),
+                ));
                 None
             }
         },
         Err(error) => {
-            diagnostics.push(ConfigDiagnostic {
-                path: path.to_path_buf(),
-                message: format!("failed to serialize {description}: {error}"),
-            });
+            diagnostics.push(ConfigDiagnostic::message(
+                path,
+                format!("failed to serialize {description}: {error}"),
+            ));
             None
         }
     }
@@ -3036,7 +3082,11 @@ fn load_obsidian_property_types(
     match parse_obsidian_property_types_value(value) {
         Ok(types) => types,
         Err(message) => {
-            diagnostics.push(ConfigDiagnostic { path, message });
+            diagnostics.push(ConfigDiagnostic {
+                kind: ConfigDiagnosticKind::Message,
+                path,
+                message,
+            });
             BTreeMap::new()
         }
     }
@@ -3173,23 +3223,24 @@ fn load_vulcan_overrides(
             Ok(config) => match validate_partial_vulcan_config(&config) {
                 Ok(()) => Some(config),
                 Err(error) => {
-                    diagnostics.push(ConfigDiagnostic {
-                        path: path.to_path_buf(),
-                        message: format!("failed to parse {description}: {error}"),
-                    });
+                    diagnostics.push(ConfigDiagnostic::parse_failure(
+                        path,
+                        format!("failed to parse {description}: {error}"),
+                    ));
                     None
                 }
             },
             Err(error) => {
-                diagnostics.push(ConfigDiagnostic {
-                    path: path.to_path_buf(),
-                    message: format!("failed to parse {description}: {error}"),
-                });
+                diagnostics.push(ConfigDiagnostic::parse_failure(
+                    path,
+                    format!("failed to parse {description}: {error}"),
+                ));
                 None
             }
         },
         Err(error) => {
             diagnostics.push(ConfigDiagnostic {
+                kind: ConfigDiagnosticKind::Message,
                 path: path.to_path_buf(),
                 message: format!("failed to read {description}: {error}"),
             });
@@ -3211,6 +3262,7 @@ fn load_json_file<T: serde::de::DeserializeOwned>(
             Ok(value) => Some(value),
             Err(error) => {
                 diagnostics.push(ConfigDiagnostic {
+                    kind: ConfigDiagnosticKind::Message,
                     path: path.to_path_buf(),
                     message: format!("failed to parse JSON config: {error}"),
                 });
@@ -3219,6 +3271,7 @@ fn load_json_file<T: serde::de::DeserializeOwned>(
         },
         Err(error) => {
             diagnostics.push(ConfigDiagnostic {
+                kind: ConfigDiagnosticKind::Message,
                 path: path.to_path_buf(),
                 message: format!("failed to read config: {error}"),
             });

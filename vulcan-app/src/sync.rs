@@ -1109,14 +1109,11 @@ pub fn configured_git_sync_options(
 
 pub(crate) fn load_validated_sync_config(paths: &VaultPaths) -> Result<VaultConfig, AppError> {
     let loaded = load_vault_config(paths);
-    if let Some(diagnostic) = loaded.diagnostics.iter().find(|diagnostic| {
-        diagnostic
-            .message
-            .starts_with("failed to parse Vulcan config")
-            || diagnostic
-                .message
-                .starts_with("failed to parse local Vulcan config")
-    }) {
+    if let Some(diagnostic) = loaded
+        .diagnostics
+        .iter()
+        .find(|diagnostic| diagnostic.kind == vulcan_core::ConfigDiagnosticKind::ParseFailure)
+    {
         return Err(AppError::operation(format!(
             "cannot synchronize with malformed configuration at {}: {}",
             diagnostic.path.display(),
@@ -1821,6 +1818,18 @@ rules = [{ id = "review-all", selector = { glob = "**", kinds = [] }, resolution
             &GitSyncOptions::default()
         )
         .is_err());
+
+        // Unrelated device-state parse failures must not block sync.
+        fs::write(temporary.path().join(".vulcan/config.toml"), "[sync]\n")
+            .expect("valid shared config");
+        fs::create_dir(temporary.path().join(".obsidian")).expect("Obsidian directory");
+        fs::write(temporary.path().join(".obsidian/app.json"), "{ not json\n")
+            .expect("malformed Obsidian config");
+        assert!(configured_git_sync_options(
+            &VaultPaths::new(temporary.path()),
+            &GitSyncOptions::default()
+        )
+        .is_ok());
     }
 
     #[test]
