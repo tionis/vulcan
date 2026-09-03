@@ -58,7 +58,7 @@ jobs:
 
           previous_commit=""
           temporary="$(mktemp -d)"
-          if gh release download main \
+          if gh release download rolling-main \
             --pattern vulcan-update-channel.json \
             --dir "$temporary" >/dev/null 2>&1; then
             previous_commit="$(python - "$temporary/vulcan-update-channel.json" <<'PY'
@@ -283,7 +283,7 @@ jobs:
         run: >-
           python scripts/release/channels.py
           --manifest 'artifacts/vulcan-${{ needs.gate.outputs.version }}-manifest.json'
-          --base-url 'https://github.com/tionis/vulcan/releases/download/main'
+          --base-url 'https://github.com/tionis/vulcan/releases/download/rolling-main'
           --output artifacts
 
       - name: Render main update channel
@@ -291,7 +291,7 @@ jobs:
           python scripts/release/update_channel.py
           --manifest 'artifacts/vulcan-${{ needs.gate.outputs.version }}-manifest.json'
           --channel main
-          --base-url 'https://github.com/tionis/vulcan/releases/download/main'
+          --base-url 'https://github.com/tionis/vulcan/releases/download/rolling-main'
           --source-commit '${{ needs.gate.outputs.source_commit }}'
           --published-at '${{ needs.gate.outputs.published_at }}'
           --output artifacts
@@ -302,13 +302,13 @@ jobs:
       - name: Move the rolling tag
         shell: bash
         run: |
-          git tag --force main '${{ needs.gate.outputs.source_commit }}'
-          git push origin refs/tags/main --force
+          git tag --force rolling-main '${{ needs.gate.outputs.source_commit }}'
+          git push origin refs/tags/rolling-main --force
 
       - name: Publish rolling prerelease
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: main
+          tag_name: rolling-main
           name: Rolling main build
           prerelease: true
           make_latest: false
@@ -330,5 +330,12 @@ jobs:
             if [[ ! -f "artifacts/$asset_name" && ! -f "artifacts/$asset_label" ]]; then
               gh api --method DELETE "/repos/${GITHUB_REPOSITORY}/releases/assets/$asset_id"
             fi
-          done < <(gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/main" \
+          done < <(gh api "/repos/${GITHUB_REPOSITORY}/releases/tags/rolling-main" \
             --jq '.assets[] | [.id, .name, (.label // "")] | @tsv')
+
+      - name: Remove the legacy branch-colliding tag
+        shell: bash
+        run: |
+          if git ls-remote --exit-code --tags origin refs/tags/main >/dev/null 2>&1; then
+            git push origin :refs/tags/main
+          fi

@@ -20,7 +20,7 @@ The canonical descriptors are named `vulcan-update-channel.json`:
 | Channel | Descriptor |
 | --- | --- |
 | `stable` | `https://github.com/tionis/vulcan/releases/latest/download/vulcan-update-channel.json` |
-| `main` | `https://github.com/tionis/vulcan/releases/download/main/vulcan-update-channel.json` |
+| `main` | `https://github.com/tionis/vulcan/releases/download/rolling-main/vulcan-update-channel.json` |
 
 A client may use an explicit HTTPS descriptor URL for mirrors and tests, but still supplies the
 expected channel independently. Redirects remain HTTPS and are bounded.
@@ -114,8 +114,12 @@ release title derive from that one version.
 
 The scheduled rolling workflow runs at most once per day, does nothing when `main` has not advanced,
 and publishes only a commit whose required push CI succeeded. It reuses the canonical builders and
-one fixed `main` prerelease/tag, uploads the replacement before pruning superseded assets, and does
-not repeat the complete test suite.
+one fixed `rolling-main` prerelease/tag, uploads the replacement before pruning superseded assets,
+and does not repeat the complete test suite. The release tag deliberately differs from the `main`
+branch name so ordinary Git fetches do not create an ambiguous local ref or reject later forced tag
+updates as clobbering an existing tag. Once the replacement release is published successfully, the
+workflow removes the historical `refs/tags/main` ref if it still exists; it never removes that ref
+before the replacement is available.
 
 Future Homebrew, WinGet, APT, or other registries should map their stable/default stream to `stable`
 and expose `main` only through an explicit development opt-in. Registries consume the same artifact
@@ -152,7 +156,7 @@ materializes the environment secret into a mode-restricted ephemeral runner file
 step exits. A manual dispatch with an explicit full commit ID provides an idempotent repair path.
 
 The signer fails closed unless both CI and the rolling workflow succeeded for the exact commit
-named by the `main` tag. It downloads the complete published release and independently checks the
+named by the `rolling-main` tag. It downloads the complete published release and independently checks the
 release inventory, canonical manifest, exact five-archive/two-Debian artifact set, sizes, SHA-256
 hashes, `SHA256SUMS`, rolling version, source commit, channel, timestamp, URLs, layouts, and
 canonical unsigned payload. It then rechecks the release for races, replaces only

@@ -17,7 +17,7 @@ const STABLE_CHANNEL_URL: &str =
     "https://github.com/tionis/vulcan/releases/latest/download/vulcan-update-channel.json";
 #[cfg(feature = "web")]
 const MAIN_CHANNEL_URL: &str =
-    "https://github.com/tionis/vulcan/releases/download/main/vulcan-update-channel.json";
+    "https://github.com/tionis/vulcan/releases/download/rolling-main/vulcan-update-channel.json";
 #[cfg(feature = "web")]
 const TRUSTED_UPDATE_KEYS: &[(&str, &str, &str)] = &[
     (
@@ -197,7 +197,15 @@ fn trusted_update_keys() -> Result<Vec<TrustedUpdateKey>, CliError> {
 
 #[cfg(all(test, feature = "web"))]
 mod tests {
-    use super::trusted_update_keys;
+    use super::{trusted_update_keys, MAIN_CHANNEL_URL};
+
+    #[test]
+    fn main_channel_uses_a_tag_distinct_from_the_main_branch() {
+        assert_eq!(
+            MAIN_CHANNEL_URL,
+            "https://github.com/tionis/vulcan/releases/download/rolling-main/vulcan-update-channel.json"
+        );
+    }
 
     #[test]
     fn embedded_update_keys_are_scoped_to_independent_channels() {

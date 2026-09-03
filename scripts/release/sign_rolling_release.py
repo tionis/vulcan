@@ -25,6 +25,7 @@ import update_channel
 
 MAIN_KEY_ID = "main-2026-09"
 MAIN_PUBLIC_KEY = "6gbtjy5nGZoT8kFAfYELB5x73S34kjv+/tPn8XEjrg0="
+ROLLING_TAG = "rolling-main"
 TARGET_FORMATS = update_channel.TARGET_FORMATS
 DEBIAN_TARGETS = {
     "aarch64-unknown-linux-gnu": "arm64",
@@ -97,7 +98,7 @@ def validate_release_snapshot(
     release: dict,
     tag_commit: str,
     *,
-    tag: str = "main",
+    tag: str = ROLLING_TAG,
     prerelease: bool = True,
     release_kind: str = "rolling",
 ) -> dict[str, tuple[int, int, str, str]]:
@@ -270,7 +271,7 @@ def validate_downloaded_release(
     repo: str,
     expected_commit: str | None = None,
     *,
-    tag: str = "main",
+    tag: str = ROLLING_TAG,
     channel: str = "main",
     prerelease: bool = True,
     release_kind: str = "rolling",
@@ -477,7 +478,7 @@ def release_snapshot(
     release: dict,
     tag_commit: str,
     *,
-    tag: str = "main",
+    tag: str = ROLLING_TAG,
     prerelease: bool = True,
     release_kind: str = "rolling",
 ) -> tuple[int, str, dict]:
@@ -496,7 +497,7 @@ def release_snapshot(
 
 def fetch_release(
     repo: str,
-    tag_name: str = "main",
+    tag_name: str = ROLLING_TAG,
     *,
     prerelease: bool = True,
     release_kind: str = "rolling",
@@ -731,7 +732,7 @@ def sign_rolling_release(
         key_id,
         expected_commit,
         dry_run,
-        tag="main",
+        tag=ROLLING_TAG,
         channel="main",
         prerelease=True,
         release_kind="rolling",

@@ -69,16 +69,16 @@ descriptor is still in its short unsigned handoff window, wait for the hosted si
 instead of normalizing `--allow-unsigned` as the ongoing update path.
 
 The fixed rolling release page and direct assets are at
-`https://github.com/tionis/vulcan/releases/tag/main`. It is checked at most daily, publishes only a
-new `main` commit whose push CI passed, and keeps one prerelease instead of accumulating nightly
-releases.
+`https://github.com/tionis/vulcan/releases/tag/rolling-main`. It is checked at most daily, publishes
+only a new `main` commit whose push CI passed, and keeps one prerelease instead of accumulating
+nightly releases.
 
 The browser can download any archive or Debian package from that page. With GitHub CLI, for example:
 
 ```sh
-gh release download main --repo tionis/vulcan \
+gh release download rolling-main --repo tionis/vulcan \
   --pattern 'vulcan-*-x86_64-unknown-linux-gnu.tar.gz' --pattern SHA256SUMS
-gh release download main --repo tionis/vulcan \
+gh release download rolling-main --repo tionis/vulcan \
   --pattern 'vulcan_*-1_amd64.deb' --pattern SHA256SUMS
 ```
 

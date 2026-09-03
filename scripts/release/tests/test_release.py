@@ -393,7 +393,7 @@ class ReleasePackagingTests(unittest.TestCase):
         update_channel_script.generate(
             manifest,
             "main",
-            "https://github.com/tionis/vulcan/releases/download/main",
+            "https://github.com/tionis/vulcan/releases/download/rolling-main",
             source_commit,
             "2026-09-01T12:00:00Z",
             self.output,
@@ -409,7 +409,7 @@ class ReleasePackagingTests(unittest.TestCase):
             path.rename(sanitized)
         release = {
             "id": 123,
-            "tag_name": "main",
+            "tag_name": "rolling-main",
             "draft": False,
             "prerelease": True,
             "assets": [
@@ -629,6 +629,13 @@ class ReleasePackagingTests(unittest.TestCase):
         self.assertIn("-dev.", rolling)
         self.assertIn("VULCAN_UPDATE_CHANNEL: main", rolling)
         self.assertIn("--channel main", rolling)
+        self.assertIn("refs/tags/rolling-main", rolling)
+        self.assertIn("tag_name: rolling-main", rolling)
+        self.assertIn("releases/download/rolling-main", rolling)
+        self.assertIn("git push origin :refs/tags/main", rolling)
+        self.assertNotIn("git tag --force main", rolling)
+        self.assertNotIn("git push origin refs/tags/main --force", rolling)
+        self.assertNotIn("tag_name: main", rolling)
         self.assertIn("retention-days: 1", rolling)
         self.assertIn("asset_label", rolling)
         self.assertIn("(.label // \"\")", rolling)
