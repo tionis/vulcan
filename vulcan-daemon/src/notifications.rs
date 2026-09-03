@@ -95,6 +95,10 @@ struct ListenerTask {
 /// Reconciles one interruptible long-poll listener per active Git wiki with the
 /// device-local registry. Notifications enqueue the existing finite sync job;
 /// this runtime never performs synchronization itself.
+///
+/// All listeners share one HTTP client and connection pool, so subscriptions
+/// against the same relay origin multiplex over HTTP/2 when the relay
+/// negotiates it and otherwise reuse HTTP/1.1 keep-alive connections.
 pub async fn run_notification_runtime_until(
     registry: WikiRegistry,
     supervisor: Arc<SyncSupervisor>,
@@ -102,6 +106,7 @@ pub async fn run_notification_runtime_until(
     should_stop: Arc<AtomicBool>,
 ) -> Result<(), NotificationRuntimeError> {
     validate_options(&options)?;
+    let client = build_notification_client(Duration::from_millis(options.connect_timeout_ms))?;
     let registry_refresh = Duration::from_millis(options.registry_refresh_ms);
     let mut listeners = BTreeMap::<String, ListenerTask>::new();
 
@@ -111,7 +116,7 @@ pub async fn run_notification_runtime_until(
             return Ok(());
         }
         if let Err(error) =
-            reconcile_listeners(&registry, &supervisor, options, &mut listeners).await
+            reconcile_listeners(&registry, &supervisor, options, &client, &mut listeners).await
         {
             stop_all_listeners(&mut listeners).await;
             return Err(error);
@@ -121,6 +126,20 @@ pub async fn run_notification_runtime_until(
             return Ok(());
         }
     }
+}
+
+fn build_notification_client(
+    connect_timeout: Duration,
+) -> Result<reqwest::Client, NotificationRuntimeError> {
+    reqwest::Client::builder()
+        .redirect(Policy::none())
+        .connect_timeout(connect_timeout)
+        .build()
+        .map_err(|_| {
+            NotificationRuntimeError::HttpClient(
+                "failed to initialize the notification HTTP client".to_string(),
+            )
+        })
 }
 
 fn validate_options(options: &NotificationRuntimeOptions) -> Result<(), NotificationRuntimeError> {
@@ -156,6 +175,7 @@ async fn reconcile_listeners(
     registry: &WikiRegistry,
     supervisor: &Arc<SyncSupervisor>,
     options: NotificationRuntimeOptions,
+    client: &reqwest::Client,
     listeners: &mut BTreeMap<String, ListenerTask>,
 ) -> Result<(), NotificationRuntimeError> {
     let desired = desired_listeners(registry.load()?.vaults);
@@ -192,9 +212,14 @@ async fn reconcile_listeners(
     stop_listeners(stale_tasks).await;
 
     for (id, registration) in desired {
-        listeners
-            .entry(id)
-            .or_insert_with(|| spawn_listener(registration, Arc::clone(supervisor), options));
+        listeners.entry(id).or_insert_with(|| {
+            spawn_listener(
+                registration,
+                Arc::clone(supervisor),
+                options,
+                client.clone(),
+            )
+        });
     }
     Ok(())
 }
@@ -213,12 +238,13 @@ fn spawn_listener(
     registration: WikiRegistration,
     supervisor: Arc<SyncSupervisor>,
     options: NotificationRuntimeOptions,
+    client: reqwest::Client,
 ) -> ListenerTask {
     let stop = Arc::new(AtomicBool::new(false));
     let task_stop = Arc::clone(&stop);
     let task_registration = registration.clone();
     let handle = tokio::spawn(async move {
-        run_listener(task_registration, supervisor, options, task_stop).await
+        run_listener(task_registration, supervisor, options, client, task_stop).await
     });
     ListenerTask {
         registration,
@@ -244,17 +270,9 @@ async fn run_listener(
     registration: WikiRegistration,
     supervisor: Arc<SyncSupervisor>,
     options: NotificationRuntimeOptions,
+    client: reqwest::Client,
     stop: Arc<AtomicBool>,
 ) -> Result<(), NotificationRuntimeError> {
-    let client = reqwest::Client::builder()
-        .redirect(Policy::none())
-        .connect_timeout(Duration::from_millis(options.connect_timeout_ms))
-        .build()
-        .map_err(|_| {
-            NotificationRuntimeError::HttpClient(
-                "failed to initialize the notification HTTP client".to_string(),
-            )
-        })?;
     let advertisement_refresh = Duration::from_millis(options.advertisement_refresh_ms);
     let mut endpoint = None;
     let mut refresh_at = Instant::now();
@@ -627,6 +645,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn two_wikis_share_one_client_against_the_same_relay() {
+        let requests = Arc::new(AtomicUsize::new(0));
+        let handler_requests = Arc::clone(&requests);
+        let app = Router::new().route(
+            "/{*path}",
+            get(move || {
+                let requests = Arc::clone(&handler_requests);
+                async move {
+                    if requests.fetch_add(1, Ordering::AcqRel) < 4 {
+                        StatusCode::NO_CONTENT
+                    } else {
+                        pending::<StatusCode>().await
+                    }
+                }
+            }),
+        );
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("notification listener");
+        let address = listener.local_addr().expect("listener address");
+        let server = tokio::spawn(axum::serve(listener, app).into_future());
+
+        let temporary = tempdir().expect("temporary directory");
+        let endpoint = format!("http://{address}/shared?pubsub=true");
+        let first = temporary.path().join("first");
+        let second = temporary.path().join("second");
+        std::fs::create_dir(&first).expect("first fixture directory");
+        std::fs::create_dir(&second).expect("second fixture directory");
+        let vault_alpha = create_advertised_repository(&first, &endpoint);
+        let vault_beta = create_advertised_repository(&second, &endpoint);
+
+        let registry = WikiRegistry::at(temporary.path().join("daemon.toml"));
+        for (id, vault) in [("alpha", vault_alpha), ("beta", vault_beta)] {
+            registry
+                .add(
+                    &AddWikiRequest {
+                        id: WikiId::parse(id).expect("wiki id"),
+                        path: vault,
+                        groups: Vec::new(),
+                        git_dir: None,
+                        permissions_profile: None,
+                        sync_backend: Some("git".to_string()),
+                        platform_profile: None,
+                    },
+                    false,
+                )
+                .expect("register wiki");
+        }
+        let supervisor =
+            Arc::new(SyncSupervisor::at(temporary.path().join("jobs.json")).expect("supervisor"));
+        let stop = Arc::new(AtomicBool::new(false));
+        let runtime = tokio::spawn(run_notification_runtime_until(
+            registry,
+            Arc::clone(&supervisor),
+            NotificationRuntimeOptions {
+                registry_refresh_ms: 10,
+                advertisement_refresh_ms: 60_000,
+                initial_backoff_ms: 10,
+                maximum_backoff_ms: 50,
+                connect_timeout_ms: 100,
+            },
+            Arc::clone(&stop),
+        ));
+
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if requests.load(Ordering::Acquire) >= 5
+                    && supervisor.list().is_ok_and(|jobs| {
+                        jobs.len() == 2
+                            && jobs.iter().all(|job| {
+                                job.triggers.contains(&SyncJobTrigger::RemoteNotification)
+                            })
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("remote notification jobs for both wikis");
+        stop.store(true, Ordering::Release);
+        tokio::time::timeout(Duration::from_secs(2), runtime)
+            .await
+            .expect("bounded runtime shutdown")
+            .expect("runtime task")
+            .expect("notification runtime");
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn notification_http_client_does_not_follow_redirects() {
         let target_requests = Arc::new(AtomicUsize::new(0));
         let handler_requests = Arc::clone(&target_requests);
@@ -660,10 +769,7 @@ mod tests {
             .as_bytes(),
         )
         .expect("advertisement");
-        let client = reqwest::Client::builder()
-            .redirect(Policy::none())
-            .build()
-            .expect("client");
+        let client = build_notification_client(Duration::from_secs(5)).expect("client");
         let result = poll_endpoint(&client, &advertisement.endpoint).await;
         assert!(
             matches!(result, PollResult::Unavailable(ref detail) if detail.ends_with("HTTP 307"))
