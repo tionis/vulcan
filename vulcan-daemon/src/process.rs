@@ -4,6 +4,9 @@ use crate::companion::{CompanionResolutionAgent, CompanionSemanticAgent};
 use crate::credentials::{CompanionCredential, CompanionCredentialStore, CredentialError};
 use crate::environment::{load_daemon_environment, DaemonEnvironmentError};
 use crate::http::{serve_companion_with_shutdown, CompanionHttpState};
+use crate::notifications::{
+    run_notification_runtime_until, NotificationRuntimeError, NotificationRuntimeOptions,
+};
 #[cfg(feature = "web")]
 use crate::registry::DaemonAgentConfig;
 use crate::registry::{RegistryError, WikiRegistrationStatus, WikiRegistry};
@@ -99,6 +102,7 @@ pub enum DaemonProcessError {
     Environment(DaemonEnvironmentError),
     Supervisor(SupervisorError),
     Runtime(SyncTriggerRuntimeError),
+    Notifications(NotificationRuntimeError),
     Io(std::io::Error),
     Json(serde_json::Error),
     Worker(String),
@@ -114,6 +118,7 @@ impl Display for DaemonProcessError {
             Self::Environment(error) => Display::fmt(error, formatter),
             Self::Supervisor(error) => Display::fmt(error, formatter),
             Self::Runtime(error) => Display::fmt(error, formatter),
+            Self::Notifications(error) => Display::fmt(error, formatter),
             Self::Io(error) => Display::fmt(error, formatter),
             Self::Json(error) => Display::fmt(error, formatter),
         }
@@ -275,7 +280,7 @@ async fn run_daemon(
     })
     .await;
     stop.store(true, Ordering::Release);
-    let workers_result = workers.join();
+    let workers_result = workers.join().await;
     drop(runtime_guard);
     serve?;
     workers_result?;
@@ -285,6 +290,7 @@ async fn run_daemon(
 struct DaemonWorkers {
     trigger: thread::JoinHandle<Result<(), DaemonProcessError>>,
     sync: thread::JoinHandle<Result<(), DaemonProcessError>>,
+    notifications: tokio::task::JoinHandle<Result<(), DaemonProcessError>>,
     semantic: Option<thread::JoinHandle<Result<(), String>>>,
 }
 
@@ -310,6 +316,11 @@ impl DaemonWorkers {
                 Arc::clone(state_store),
                 Arc::clone(stop),
             ),
+            notifications: spawn_notification_runtime(
+                context.registry.clone(),
+                Arc::clone(supervisor),
+                Arc::clone(stop),
+            ),
             semantic: config.semantic_worker.clone().map(|worker_config| {
                 spawn_semantic_worker(
                     worker_config,
@@ -324,13 +335,16 @@ impl DaemonWorkers {
         }
     }
 
-    fn join(self) -> Result<(), DaemonProcessError> {
+    async fn join(self) -> Result<(), DaemonProcessError> {
         self.trigger.join().map_err(|_| {
             DaemonProcessError::Worker("daemon trigger runtime panicked".to_string())
         })??;
         self.sync
             .join()
             .map_err(|_| DaemonProcessError::Worker("daemon sync worker panicked".to_string()))??;
+        self.notifications.await.map_err(|error| {
+            DaemonProcessError::Worker(format!("daemon notification runtime panicked: {error}"))
+        })??;
         if let Some(worker) = self.semantic {
             worker
                 .join()
@@ -341,6 +355,27 @@ impl DaemonWorkers {
         }
         Ok(())
     }
+}
+
+fn spawn_notification_runtime(
+    registry: WikiRegistry,
+    supervisor: Arc<SyncSupervisor>,
+    stop: Arc<AtomicBool>,
+) -> tokio::task::JoinHandle<Result<(), DaemonProcessError>> {
+    tokio::spawn(async move {
+        let result = run_notification_runtime_until(
+            registry,
+            supervisor,
+            NotificationRuntimeOptions::default(),
+            Arc::clone(&stop),
+        )
+        .await
+        .map_err(DaemonProcessError::Notifications);
+        if result.is_err() {
+            stop.store(true, Ordering::Release);
+        }
+        result
+    })
 }
 
 fn configured_agents(

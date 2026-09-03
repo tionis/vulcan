@@ -1,7 +1,7 @@
 ---
 name: configuration-and-permissions
 description: Configure Vulcan safely, manage device-local wiki registrations and groups, inspect settings, manage permission profiles, and understand trust boundaries. Use when the user asks about registered vaults, config, permissions, profiles, access control, sandboxing, trust, setup, or why a command/tool is denied.
-version: 17
+version: 18
 tools:
   - config_show
   - config_get
@@ -37,12 +37,20 @@ permission profiles, or diagnoses permission and trust failures.
 11. Use `vulcan daemon companion --output json` for non-secret local-client connection metadata. `--reveal-token` is an explicit bearer-authority transfer and its output belongs only in device-local client storage, never shared configuration or synchronized plugin data.
 12. The reference Obsidian companion requires Obsidian 1.11.4+ and stores the bearer token through native `SecretStorage`; its ordinary plugin data contains only allowlisted non-secret endpoint/wiki/trigger preferences. Keep the daemon loopback-only and use the registration's permission profile as the authority boundary.
 13. For interactive Templater creation-rule setup, use `vulcan config edit`: its structured folder and regex rule editors can add/remove rows, and folder fields suggest current vault directories without rejecting manually entered paths.
+14. Realtime sync notification setup has no device-local import command or daemon setting. The
+    daemon discovers `notification.json` from the repository's exact
+    `refs/vulcan/notifications` ref. The registration's effective profile must allow Git and
+    network access to the advertised endpoint origin before the daemon connects.
 
 ## Guardrails
 
 - Do not put private credentials in shared `.vulcan/config.toml`; use local config or environment variables.
 - Never put a provider key in `daemon.toml` or a CLI argument. `daemon config set-agent --api-key-env` accepts the environment-variable name only. For an installed Linux/macOS service, use a mode-`0600` `$XDG_CONFIG_HOME/vulcan/daemon.env` containing literal `NAME=value` records when ordinary environment inheritance is unavailable; never put this file in a vault.
 - Never copy a revealed companion token into vault content, `.obsidian/plugins/*/data.json`, logs, shell history, or source control.
+- Treat the complete advertised notification subscribe URL as a repository-scoped read capability.
+  It may exist only in the dedicated Git advertisement, not in ordinary vault content, CLI
+  arguments, logs, or device registration state. Configure the separate publish-only webhook URL
+  directly in the forge.
 - Keep assistant-facing profiles narrow. Add only the read/write/network/execute capabilities required by the workflow.
 - A skill command can narrow authority with `permission_profile`; it cannot widen the caller's profile.
 - Trust is an execution gate, not a permission profile. A trusted vault can still be denied by a profile.

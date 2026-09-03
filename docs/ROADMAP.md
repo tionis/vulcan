@@ -5528,19 +5528,19 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 #### 12.13.2 Vulcan client
 
 - [x] Replace the generic relay crate, imported bundle store, CloudEvent router, and notification-management CLI with a dependency-light advertisement parser and exact Git-ref reader.
-- [ ] Add a daemon-owned interruptible HTTP long-poll listener per active advertised Git wiki, with bounded reconnect/backoff, no redirects, endpoint redaction, and cooperative shutdown.
-- [ ] Route every successful response directly to one coalesced `SyncJobTrigger::RemoteNotification`; retain the fetch-first remote observation optimization and the ordinary finite sync/conflict path.
-- [ ] Refresh advertisements at startup, after wake-up, and during periodic reconciliation so rotation and missed ephemeral events repair automatically.
-- [ ] Apply each registration's Git and network permission profile before discovery/connection. Keep endpoint data from selecting repository paths, remotes, or refs.
-- [ ] Add parser, Git discovery, mock HTTP, reconnect, coalescing, shutdown, missing/malformed advertisement, rotation, and secret-redaction tests.
-- [ ] Document Linux/Windows daemon behavior and Android's finite JobScheduler fallback. A persistent Termux listener remains an optional latency optimization over the same finite sync trigger.
-- [ ] Review and update the bundled `sync-workflow`, `configuration-and-permissions`, and `diagnostics-and-repair` skills when the listener ships; roadmap-only planning does not yet change their executable guidance.
+- [x] Add a daemon-owned interruptible HTTP long-poll listener per active advertised Git wiki, with bounded reconnect/backoff, no redirects, endpoint redaction, and cooperative shutdown.
+- [x] Route every successful response directly to one coalesced `SyncJobTrigger::RemoteNotification`; retain the fetch-first remote observation optimization and the ordinary finite sync/conflict path.
+- [x] Refresh advertisements at startup, after wake-up, and during periodic reconciliation so rotation and missed ephemeral events repair automatically.
+- [x] Apply each registration's Git and network permission profile before discovery/connection. Keep endpoint data from selecting repository paths, remotes, or refs.
+- [x] Add parser, Git discovery, mock HTTP, reconnect, coalescing, shutdown, missing/malformed advertisement, rotation, and secret-redaction tests.
+- [x] Document Linux/Windows daemon behavior and Android's finite JobScheduler fallback. A persistent Termux listener remains an optional latency optimization over the same finite sync trigger.
+- [x] Review and update the bundled `sync-workflow`, `configuration-and-permissions`, and `diagnostics-and-repair` skills when the listener ships; roadmap-only planning does not yet change their executable guidance.
 
 ### 12.14 macOS daemon lifecycle and release packaging
 
 **Goal:** Make the existing same-binary daemon and CLI straightforward to install, upgrade, and run on Linux, Windows, and macOS without changing direct local-vault behavior. macOS gains native per-user service parity; release archives remain the canonical distribution input, and package-manager channels project those same artifacts rather than defining a second runtime or configuration model.
 
-**Depends on:** The completed daemon lifecycle and Linux/Windows service installer in 12.8. Realtime relay work in 12.13 is independent: a packaged daemon must remain useful with polling and local watching alone.
+**Depends on:** The completed daemon lifecycle and Linux/Windows service installer in 12.8. Realtime notification work in 12.13 is independent: a packaged daemon must remain useful with polling and local watching alone.
 
 **Boundaries:** Installation is user-scoped by default and never starts or enables the daemon implicitly. Package removal and `daemon uninstall` remove only packaging/service projections, never registered wikis, vault files, credentials, conflict records, journals, or other durable state. Git remains an explicit runtime dependency for the initial sync backend; packaging Vulcan does not silently bundle or replace it.
 

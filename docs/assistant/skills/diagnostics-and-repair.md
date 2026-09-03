@@ -1,7 +1,7 @@
 ---
 name: diagnostics-and-repair
 description: Diagnose vault health, broken links, parser diagnostics, suspicious state, synchronization pauses or conflicts, and repairable problems. Use when the user asks why something is broken, wants a health check, sees diagnostics, or needs safe repair steps before editing notes.
-version: 23
+version: 24
 tools:
   - doctor
   - cache_verify
@@ -30,6 +30,11 @@ diagnostics, orphaned assets, search mismatches, and unexpected graph/query resu
 4. Only patch source notes after identifying the smallest concrete fix.
 5. For Git-backed device sync, run `vulcan sync doctor [<wiki>]` before mutation, then `vulcan sync status` for the proposed finite cycle. Doctor distinguishes unavailable Git, unsupported layout, unreadable or divergent refs, offline remotes, active locks, retained journals, missing ignore rules, filter/LFS requirements, cache drift, and target-platform incompatibilities. A registered wiki uses its recorded platform profile even when doctor runs on another host. Case-fold, canonical-Unicode, and Windows-reserved-name errors mean the tree cannot be represented safely; executable-bit, link-file symlink, and long-path warnings require target-device review. A paused status identifies staged or in-progress Git state; a conflicted result preserves both candidate commits and local bytes for review.
 6. For missing background updates, run `vulcan daemon status`. It authenticates a live loopback capability request and reports the runtime address, PID, uptime, and registrations; a stale runtime record is reported as stopped. Review `vulcan daemon install --dry-run` and refresh the native service after moving or upgrading the executable. Restart with `vulcan daemon start --detach` only after confirming no service is live, and use `vulcan daemon stop` for graceful watcher/worker shutdown. Direct `vulcan sync run` remains a valid diagnostic and recovery path without the daemon.
+   Realtime wake-up is optional: a missing, malformed, permission-denied, or unavailable advertised
+   endpoint produces a redacted daemon diagnostic and falls back to startup/periodic polling. Check
+   only the exact `refs/vulcan/notifications` remote ref and never print `notification.json` or its
+   complete subscribe URL while collecting diagnostics; the logged origin and fingerprint are
+   sufficient to correlate an endpoint safely.
 7. Inspect `state.recovered_from` and `state.retained` in JSON sync output. The retained phase and captured object IDs distinguish an offline/cancelled cycle from an uncaptured failure. Recovery journals are authoritative device-local operational state outside `.vulcan/cache.db`; do not remove them as a cache repair.
 8. `vulcan sync doctor` reports whether a stable device identity already exists but never creates one. Missing identity before the first mutating sync is informational; malformed or unsupported identity state is an error requiring preservation and review.
 9. Treat `state.apply-marker` as an interrupted worktree application, not cache damage. Preserve the private-Git-directory marker and device-local journal, avoid manual ref cleanup, and rerun sync so current bytes are recaptured and the accepted revision is verified before the marker is cleared.

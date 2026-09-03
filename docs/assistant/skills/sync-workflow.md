@@ -98,8 +98,9 @@ apply markers, or `refs/vulcan/**` to make a status look clean.
   `$XDG_CONFIG_HOME/vulcan/daemon.env` file (normally `~/.config/vulcan/daemon.env`). Keep it mode
   `0600` on Unix, use literal `NAME=value` entries, and never place it in a vault. Existing process
   environment variables take precedence, and the file does not execute or expand shell syntax.
-- Start the daemon explicitly with `vulcan daemon start` or `--detach`. Watcher, startup, poll, and
-  companion triggers coalesce through one per-wiki supervisor.
+- Start the daemon explicitly with `vulcan daemon start` or `--detach`. On Linux, macOS, and
+  Windows the running daemon owns advertised long-poll listeners; watcher, notification, startup,
+  poll, and companion triggers coalesce through one per-wiki supervisor.
 - Provision a companion only from a running daemon. `vulcan daemon companion --output json` is
   non-secret; `--reveal-token` transfers bearer authority and must never be copied into a note,
   synchronized plugin settings, logs, or source control.
@@ -127,8 +128,10 @@ apply markers, or `refs/vulcan/**` to make a status look clean.
   `--charging` when requested. Preview `sync termux-uninstall <wiki> --dry-run` before removal.
 - Treat Android JobScheduler timing as approximate. Use the periodic job as an energy-efficient
   safety net; a shortcut or future save/resume bridge may invoke the same finite `sync run` for
-  lower latency. Verify unattended Git credentials manually and never embed secrets in the managed
-  wrapper or vault.
+  lower latency. A foreground or persistently supervised Termux daemon may use the same advertised
+  listener as an optional latency optimization, but it never replaces JobScheduler reconciliation.
+  Verify unattended Git credentials manually and never embed secrets in the managed wrapper or
+  vault.
 - If private Git data is lost, preview `vulcan vault recover-git <wiki> <remote> --dry-run`.
   Recovery captures the untouched materialized vault before fetching, but cannot reconstruct
   unpushed objects that existed only in the deleted Git directory.

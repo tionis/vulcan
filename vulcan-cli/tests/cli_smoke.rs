@@ -13749,6 +13749,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(diagnostics_skill.contains("unpushed candidates, old epochs, conflicts"));
     assert!(diagnostics_skill.contains("vulcan self-update apply --dry-run"));
     assert!(diagnostics_skill.contains("Never run `self-update` for an APT"));
+    assert!(diagnostics_skill.contains("falls back to startup/periodic polling"));
+    assert!(diagnostics_skill.contains("origin and fingerprint"));
     let mcp_skill = fs::read_to_string(vault_root.join(".agents/skills/mcp-setup/SKILL.md"))
         .expect("MCP skill should be readable");
     assert!(mcp_skill.contains("`--tool-pack sync`"));
@@ -13764,6 +13766,8 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(permission_skill.contains("synchronized plugin data"));
     assert!(permission_skill.contains("native `SecretStorage`"));
     assert!(permission_skill.contains("Never put a provider key in `daemon.toml`"));
+    assert!(permission_skill.contains("no device-local import command"));
+    assert!(permission_skill.contains("repository-scoped read capability"));
     let index_skill =
         fs::read_to_string(vault_root.join(".agents/skills/index-maintenance/SKILL.md"))
             .expect("index maintenance skill should be readable");

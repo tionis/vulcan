@@ -4531,6 +4531,7 @@ dependencies = [
  "fs2",
  "getrandom 0.3.4",
  "notify",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",

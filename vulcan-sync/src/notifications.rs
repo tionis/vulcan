@@ -116,10 +116,9 @@ impl NotificationAdvertisement {
             )));
         }
         if raw.transport != "http_long_poll" {
-            return Err(NotificationAdvertisementError::Invalid(format!(
-                "unsupported notification transport `{}`",
-                raw.transport
-            )));
+            return Err(NotificationAdvertisementError::Invalid(
+                "unsupported notification transport".to_string(),
+            ));
         }
         Ok(Self {
             version: raw.version,
@@ -290,10 +289,13 @@ mod tests {
             r#"{"version":2,"transport":"http_long_poll","subscribe_url":"https://patch.example/wake"}"#
         )
         .is_err());
-        assert!(parse(
-            r#"{"version":1,"transport":"nats","subscribe_url":"https://patch.example/wake"}"#
+        let transport_error = parse(
+            r#"{"version":1,"transport":"secret-transport-token","subscribe_url":"https://patch.example/wake"}"#,
         )
-        .is_err());
+        .expect_err("unsupported transport");
+        assert!(!transport_error
+            .to_string()
+            .contains("secret-transport-token"));
         assert!(
             NotificationAdvertisement::parse(&vec![b' '; MAX_ADVERTISEMENT_BYTES + 1]).is_err()
         );
