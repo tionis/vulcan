@@ -86,6 +86,13 @@ apply markers, or `refs/vulcan/**` to make a status look clean.
   opportunistically; with it, a diverged ref fails instead of overwriting. Remove it with
   `vulcan sync unadvertise [--expected <rev>]`. Publication builds a parentless commit with
   object-store plumbing only, so the worktree and user index are never touched.
+- Check whether Vulcan would use a notification server with
+  `vulcan sync notifications [--wiki <id>]`: it fetches the advertisement through the
+  configured remote (the same device-local fetch the daemon performs, never a publish),
+  validates it, applies the effective Git and network permission checks, and reports stable
+  reason codes (`missing-advertisement`, `invalid-advertisement`, `git-denied`,
+  `network-denied`, `paused`, `non-git-backend`, `daemon-stopped`) plus the `would_listen`
+  verdict. Endpoint identity stays origin plus fingerprint.
 - The daemon starts one listener per active advertised Git wiki. A stopped daemon, missing ref,
   malformed advertisement, or unavailable endpoint only increases latency; direct and periodic
   synchronization continue normally.
