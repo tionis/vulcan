@@ -84,7 +84,10 @@ polling. Pausing or unregistering a wiki stops its listener.
 
 ## Deferred extensions
 
-Connection aggregation, retained delivery, structured events, client registration, mobile push,
-OIDC administration, and forge-native streams are intentionally outside version 1. They require a
-new transport or a later additive advertisement version only after measured deployments justify
-the additional control plane.
+Protocol-level subscription aggregation (fewer long-polls than wikis), retained delivery,
+structured events, client registration, mobile push, OIDC administration, and forge-native
+streams are intentionally outside version 1. They require a new transport or a later additive
+advertisement version only after measured deployments justify the additional control plane.
+Transport-level pooling is not aggregation in this sense: the daemon shares one HTTP client
+across listeners so same-origin subscriptions multiplex over HTTP/2 when negotiated. HTTP/3
+remains future evaluation (see ROADMAP 12.13.3).

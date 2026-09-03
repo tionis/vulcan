@@ -5535,6 +5535,12 @@ Use this subphase only when an entire SilverBullet Space should behave as a file
 - [x] Add parser, Git discovery, mock HTTP, reconnect, coalescing, shutdown, missing/malformed advertisement, rotation, and secret-redaction tests.
 - [x] Document Linux/Windows daemon behavior and Android's finite JobScheduler fallback. A persistent Termux listener remains an optional latency optimization over the same finite sync trigger.
 - [x] Review and update the bundled `sync-workflow`, `configuration-and-permissions`, and `diagnostics-and-repair` skills when the listener ships; roadmap-only planning does not yet change their executable guidance.
+- [x] Share one HTTP client and connection pool across all listeners so same-origin subscriptions multiplex over HTTP/2 when the relay negotiates it (HTTP/1.1 keep-alive otherwise).
+
+#### 12.13.3 Realtime transport evolution (future evaluation)
+
+- [ ] Evaluate HTTP/3 (QUIC) for notification long-polls only after a measured HTTP/2 deployment: connection migration across network changes, 0-RTT reconnects, and relay support. Requires the reqwest `http3` feature plus the QUIC runtime; keep HTTP/2 multiplexing as the baseline until measurements justify the dependency cost.
+- [ ] Keep the wire contract unchanged through any transport work: content-free wake-ups, Git-authoritative state, no redirects, endpoint redaction, and polling fallback.
 
 ### 12.14 macOS daemon lifecycle and release packaging
 
