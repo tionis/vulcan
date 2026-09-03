@@ -87,7 +87,9 @@ apply markers, or `refs/vulcan/**` to make a status look clean.
   `vulcan sync unadvertise [--expected <rev>]`. Publication builds a parentless commit with
   object-store plumbing only, so the worktree and user index are never touched. The commit
   attributes the publisher's Git identity (repository configuration over global), so rotation
-  history shows who advertised each endpoint.
+  history shows who advertised each endpoint. Add `--sign` (or `--signing-key <keyid>`) for a
+  GPG/SSH signature from the publisher's own configuration; this needs a working agent or
+  cached credentials and fails loudly otherwise. Signatures are not verified by discovery.
 - Check whether Vulcan would use a notification server with
   `vulcan sync notifications [--wiki <id>]`: it fetches the advertisement through the
   configured remote (the same device-local fetch the daemon performs, never a publish),
