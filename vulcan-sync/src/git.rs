@@ -2377,7 +2377,8 @@ impl GitEngine for GitCliEngine {
         if detail.contains("cannot lock ref")
             && (detail.contains("is at")
                 || detail.contains("reference already exists")
-                || detail.contains("reference is missing"))
+                || detail.contains("reference is missing")
+                || detail.contains("unable to resolve reference"))
         {
             Ok(GitRefUpdateResult::Stale)
         } else {
@@ -2410,7 +2411,9 @@ impl GitEngine for GitCliEngine {
             bounded_lossy(&output.stderr)
         );
         if detail.contains("cannot lock ref")
-            && (detail.contains("is at") || detail.contains("reference is missing"))
+            && (detail.contains("is at")
+                || detail.contains("reference is missing")
+                || detail.contains("unable to resolve reference"))
         {
             Ok(GitRefDeleteResult::Stale)
         } else {
@@ -6594,6 +6597,40 @@ mod tests {
                 .delete_ref(&repository, &proposal, &initial)
                 .expect("missing deletion"),
             GitRefDeleteResult::Missing
+        );
+    }
+
+    #[test]
+    fn compare_and_swap_reports_stale_for_missing_refs() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Home.md"), "initial\n").expect("initial note");
+        let commit = commit_all(temporary.path(), "initial");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let reference = GitRefName::parse("refs/vulcan/test/cas").expect("cas ref");
+
+        // CAS with an expected value against a never-created ref: stale, not
+        // a hard error.
+        assert_eq!(
+            engine
+                .compare_and_swap_ref(&repository, &reference, &commit, Some(&commit))
+                .expect("missing-ref compare and swap"),
+            GitRefUpdateResult::Stale
+        );
+
+        // The create -> external delete -> CAS race must also report stale.
+        engine
+            .create_ref(&repository, &reference, &commit)
+            .expect("create ref");
+        run_git(temporary.path(), &["update-ref", "-d", reference.as_str()]);
+        assert_eq!(
+            engine
+                .compare_and_swap_ref(&repository, &reference, &commit, Some(&commit))
+                .expect("raced compare and swap"),
+            GitRefUpdateResult::Stale
         );
     }
 
