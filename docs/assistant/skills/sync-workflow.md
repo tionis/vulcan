@@ -45,10 +45,22 @@ structured output, and redirected runs suppress progress chatter; JSON remains i
 Every Git subprocess still has the configured timeout, so a stuck phase fails with a named,
 recoverable diagnostic instead of waiting forever.
 
-Interpret `paused` as preserved work, not failure: staged normal-index changes, an in-progress Git
-operation, or unexplained HEAD movement were captured before reconciliation stopped. Resolve that
-ordinary Git state and rerun. `offline` likewise retains the local candidate. Never delete journals,
+Interpret `paused` as preserved work, not failure: an in-progress Git
+operation or unexplained HEAD movement was captured before reconciliation stopped. Resolve that
+ordinary Git state and rerun. Staged changes are not a pause condition: they sync as ordinary
+worktree bytes while the normal index is left untouched. `offline` likewise retains the local
+candidate. Never delete journals,
 apply markers, or `refs/vulcan/**` to make a status look clean.
+
+## Branch lane
+
+Every finite cycle also pulls the checked-out branch from its upstream before the hidden live
+refs move, following the repository's own pull configuration (`pull.ff`, `pull.rebase`,
+`branch.<name>.rebase`) with `--no-edit` and no implicit autostash. Watch the human output or
+the JSON `branch` report for `fast-forwarded`, `merged`, `rebased`, `paused` (diverged past
+`pull.ff=only`, interactive rebase, or a merge/rebase conflict left for ordinary Git),
+`deferred` (dirty worktree, retried next cycle), or `skipped` (no upstream, detached HEAD, or
+bare repository). The branch is never pushed; publication stays in the semantic lane.
 
 ## Review preserved conflicts
 
@@ -180,7 +192,8 @@ apply markers, or `refs/vulcan/**` to make a status look clean.
 
 - Current local bytes must be captured before remote application or publication.
 - A remote update uses an exact lease; never replace a rejected push with unconditional force.
-- The user's normal index, staged state, and semantic branch are not sync scratch space.
+- The user's normal index and semantic branch are not sync scratch space; staged entries sync
+  as worktree bytes without pausing and are never staged, reset, or rewritten by sync.
 - Scan only after the complete accepted tree has been applied and verified.
 - Treat policy, platform, link-validation, deletion-limit, stale-input, and worktree-drift failures as
   reasons to preserve and stop. Do not bypass them to make synchronization appear seamless.

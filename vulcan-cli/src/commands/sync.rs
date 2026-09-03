@@ -8,10 +8,10 @@ use serde::Serialize;
 use std::io::{self, IsTerminal, Write};
 use std::time::Duration;
 use vulcan_app::sync::{
-    doctor_git_vault_for_platform, sync_git_vault_with_progress, GitPlatformProfile, GitRefName,
-    GitRemote, GitSyncAction, GitSyncObserver, GitSyncObserverError, GitSyncOptions,
-    GitSyncOutcome, GitSyncPhase, GitSyncProgress, SyncDoctorReport, SyncDoctorSeverity,
-    VaultSyncReport,
+    doctor_git_vault_for_platform, sync_git_vault_with_progress, GitBranchSync,
+    GitBranchSyncAction, GitPlatformProfile, GitRefName, GitRemote, GitSyncAction, GitSyncObserver,
+    GitSyncObserverError, GitSyncOptions, GitSyncOutcome, GitSyncPhase, GitSyncProgress,
+    SyncDoctorReport, SyncDoctorSeverity, VaultSyncReport,
 };
 use vulcan_app::sync_checkpoints::{
     create_sync_checkpoint, SyncCheckpointKind, SyncCheckpointOptions, SyncCheckpointReport,
@@ -2369,6 +2369,11 @@ fn print_sync_report(
                 "{}",
                 sync_outcome_message(report.sync.outcome, report.sync.remote.as_str())
             );
+            if let Some(branch) = &report.sync.branch {
+                if let Some(line) = branch_lane_message(branch) {
+                    println!("{line}");
+                }
+            }
             if verbose {
                 println!("Remote ref: {}", report.sync.refs.live);
                 if let Some(accepted) = &report.sync.accepted {
@@ -2451,6 +2456,48 @@ fn sync_outcome_message(outcome: GitSyncOutcome, remote: &str) -> String {
     }
 }
 
+/// Renders the branch lane for human output. Steady states (up to date,
+/// skipped for lack of upstream) stay quiet; everything else gets one line.
+fn branch_lane_message(branch: &GitBranchSync) -> Option<String> {
+    let name = branch
+        .branch
+        .as_str()
+        .strip_prefix("refs/heads/")
+        .unwrap_or(branch.branch.as_str());
+    let revision = branch.after.as_ref().map(ToString::to_string);
+    match branch.action {
+        GitBranchSyncAction::UpToDate | GitBranchSyncAction::Skipped => None,
+        GitBranchSyncAction::FastForwarded => Some(format!(
+            "Branch {name} fast-forwarded to {}.",
+            revision.as_deref().unwrap_or("unknown"),
+        )),
+        GitBranchSyncAction::Merged => Some(format!(
+            "Branch {name} merged at {}.",
+            revision.as_deref().unwrap_or("unknown"),
+        )),
+        GitBranchSyncAction::Rebased => Some(format!(
+            "Branch {name} rebased at {}.",
+            revision.as_deref().unwrap_or("unknown"),
+        )),
+        GitBranchSyncAction::Paused => Some(format!(
+            "Branch {name} paused: {}.",
+            branch.detail.as_deref().unwrap_or("unknown reason"),
+        )),
+        GitBranchSyncAction::Deferred => Some(format!(
+            "Branch {name} deferred: {}.",
+            branch.detail.as_deref().unwrap_or("unknown reason"),
+        )),
+        GitBranchSyncAction::Failed => Some(format!(
+            "Branch {name} failed: {}.",
+            branch.detail.as_deref().unwrap_or("unknown reason"),
+        )),
+        GitBranchSyncAction::Planned => Some(format!(
+            "Branch {name} would pull: {}.",
+            branch.detail.as_deref().unwrap_or("unknown plan"),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod sync_report_tests {
     use super::*;
@@ -2469,5 +2516,38 @@ mod sync_report_tests {
             sync_outcome_message(GitSyncOutcome::Conflicted, "origin"),
             "Sync: conflict with origin requires review"
         );
+    }
+
+    fn branch_lane(action: GitBranchSyncAction, detail: Option<&str>) -> GitBranchSync {
+        GitBranchSync {
+            branch: GitRefName::parse("refs/heads/main").expect("branch"),
+            remote: None,
+            upstream: None,
+            before: None,
+            after: None,
+            action,
+            detail: detail.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn branch_lane_messages_stay_quiet_when_steady() {
+        assert_eq!(
+            branch_lane_message(&branch_lane(GitBranchSyncAction::UpToDate, None)),
+            None
+        );
+        assert_eq!(
+            branch_lane_message(&branch_lane(GitBranchSyncAction::Skipped, None)),
+            None
+        );
+        assert!(
+            branch_lane_message(&branch_lane(GitBranchSyncAction::FastForwarded, None))
+                .is_some_and(|line| line.contains("main") && line.contains("fast-forwarded"))
+        );
+        assert!(branch_lane_message(&branch_lane(
+            GitBranchSyncAction::Paused,
+            Some("branch diverged and pull.ff=only refuses non-fast-forward"),
+        ))
+        .is_some_and(|line| line.contains("paused") && line.contains("pull.ff=only")));
     }
 }

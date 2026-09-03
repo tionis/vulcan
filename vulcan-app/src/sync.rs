@@ -15,12 +15,13 @@ use vulcan_core::{
 use vulcan_sync::{GitAutomaticMergeValidation, GitEngine};
 
 pub use vulcan_sync::{
-    GitCloneRequest, GitDetachedRecoveryReport, GitDetachedRecoveryRequest, GitInstallation,
-    GitObjectFormat, GitPlatformPolicy, GitPlatformPreflight, GitPlatformProfile, GitRefName,
-    GitRemote, GitRemoteObservation, GitRepository, GitRepositoryLayout, GitRepositoryRequirements,
-    GitSyncAction, GitSyncConflict, GitSyncDeviceId, GitSyncObserver, GitSyncObserverError,
-    GitSyncOptions, GitSyncOutcome, GitSyncPause, GitSyncPauseReason, GitSyncPhase,
-    GitSyncProgress, GitSyncRefs, GitSyncReport, SyncCancellationToken,
+    GitBranchSync, GitBranchSyncAction, GitCloneRequest, GitDetachedRecoveryReport,
+    GitDetachedRecoveryRequest, GitInstallation, GitObjectFormat, GitPlatformPolicy,
+    GitPlatformPreflight, GitPlatformProfile, GitRefName, GitRemote, GitRemoteObservation,
+    GitRepository, GitRepositoryLayout, GitRepositoryRequirements, GitSyncAction, GitSyncConflict,
+    GitSyncDeviceId, GitSyncObserver, GitSyncObserverError, GitSyncOptions, GitSyncOutcome,
+    GitSyncPause, GitSyncPauseReason, GitSyncPhase, GitSyncProgress, GitSyncRefs, GitSyncReport,
+    SyncCancellationToken,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]

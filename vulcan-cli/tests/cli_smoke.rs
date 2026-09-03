@@ -14265,6 +14265,7 @@ fn init_agent_files_writes_agents_template_and_default_skills() {
     assert!(sync_skill.contains("vulcan sync advertise --subscribe-url"));
     assert!(sync_skill.contains("vulcan sync unadvertise"));
     assert!(sync_skill.contains("vulcan sync notifications"));
+    assert!(sync_skill.contains("## Branch lane"));
     assert!(sync_skill.contains("battery-not-low and storage-not-low"));
     assert!(sync_skill.contains("`file`, `change`, `hunk`, and"));
     assert!(sync_skill.contains("never replace a rejected push with unconditional force"));
