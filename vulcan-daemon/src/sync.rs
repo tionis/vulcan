@@ -18,8 +18,8 @@ use vulcan_core::{
     resolve_permission_profile, PermissionGuard, ProfilePermissionGuard, VaultPaths,
 };
 use vulcan_sync::{
-    GitCliEngine, GitRemoteObservation, GitSyncObserver, SyncError, SyncErrorCategory,
-    SyncJobState, SyncState, SyncStatus,
+    GitBranchSync, GitBranchSyncAction, GitCliEngine, GitRemoteObservation, GitSyncObserver,
+    SyncError, SyncErrorCategory, SyncJobState, SyncState, SyncStatus,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -49,10 +49,11 @@ pub fn format_sync_execution(execution: &DaemonSyncExecution) -> String {
         .join(",");
     match execution.report.as_ref() {
         Some(report) => format!(
-            "sync job: wiki `{wiki}` [{triggers}] -> {:?} ({:?}){}",
+            "sync job: wiki `{wiki}` [{triggers}] -> {:?} ({:?}){}{}",
             execution.job.job.state,
             report.sync.outcome,
             format_watch_summary(&execution.job),
+            format_branch_summary(report.sync.branch.as_ref()),
         ),
         None => format!(
             "sync job: wiki `{wiki}` [{triggers}] -> {:?}{}",
@@ -60,6 +61,48 @@ pub fn format_sync_execution(execution: &DaemonSyncExecution) -> String {
             format_watch_summary(&execution.job),
         ),
     }
+}
+
+/// Renders the branch lane of a completed execution, if the report carries
+/// one. Empty when the branch lane did not run.
+fn format_branch_summary(branch: Option<&GitBranchSync>) -> String {
+    let Some(lane) = branch else {
+        return String::new();
+    };
+    let name = lane
+        .branch
+        .as_str()
+        .strip_prefix("refs/heads/")
+        .unwrap_or(lane.branch.as_str());
+    if lane.pushed {
+        format!(" branch `{name}`: {:?}, pushed", lane.action)
+    } else {
+        format!(" branch `{name}`: {:?}", lane.action)
+    }
+}
+
+/// Renders a branch lane failure for unconditional logging: a failed pull
+/// strategy or a failed push. Returns None when the lane needs no attention.
+/// Same redaction posture as other daemon diagnostics: endpoint identity only
+/// (the branch lane never handles subscribe URLs), remote names included.
+#[must_use]
+pub fn format_branch_diagnostic(wiki_id: Option<&str>, branch: &GitBranchSync) -> Option<String> {
+    let wiki = wiki_id.unwrap_or("<unregistered>");
+    let name = branch
+        .branch
+        .as_str()
+        .strip_prefix("refs/heads/")
+        .unwrap_or(branch.branch.as_str());
+    if branch.action == GitBranchSyncAction::Failed {
+        return Some(format!(
+            "branch `{name}` (wiki `{wiki}`) failed: {}",
+            branch.detail.as_deref().unwrap_or("unknown reason"),
+        ));
+    }
+    branch
+        .push_detail
+        .as_deref()
+        .map(|detail| format!("branch `{name}` (wiki `{wiki}`) push failed: {detail}"))
 }
 
 /// Renders the watcher trigger metadata of a supervised job, so a repeating
@@ -600,7 +643,9 @@ mod tests {
     use std::process::Command;
     use tempfile::tempdir;
     use vulcan_app::sync_state::SyncStateStore;
-    use vulcan_sync::{SyncJob, SyncJobState, SyncJobTrigger};
+    use vulcan_sync::{
+        GitBranchSync, GitBranchSyncAction, GitRefName, SyncJob, SyncJobState, SyncJobTrigger,
+    };
 
     fn git(path: &Path, arguments: &[&str]) {
         let status = Command::new("git")
@@ -676,6 +721,89 @@ mod tests {
                 "line should explain the watch trigger ({fragment}): {with_watch}"
             );
         }
+    }
+
+    fn branch_lane_for_test(
+        action: GitBranchSyncAction,
+        detail: Option<&str>,
+        pushed: bool,
+        push_detail: Option<&str>,
+    ) -> GitBranchSync {
+        GitBranchSync {
+            branch: GitRefName::parse("refs/heads/main").expect("branch"),
+            remote: None,
+            upstream: None,
+            tracking: None,
+            before: None,
+            after: None,
+            action,
+            detail: detail.map(str::to_string),
+            pushed,
+            push_detail: push_detail.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn verbose_branch_summary_names_action_and_publication() {
+        assert_eq!(format_branch_summary(None), "");
+        let pushed = branch_lane_for_test(GitBranchSyncAction::FastForwarded, None, true, None);
+        assert_eq!(
+            format_branch_summary(Some(&pushed)),
+            " branch `main`: FastForwarded, pushed"
+        );
+        let quiet = branch_lane_for_test(GitBranchSyncAction::UpToDate, None, false, None);
+        assert_eq!(
+            format_branch_summary(Some(&quiet)),
+            " branch `main`: UpToDate"
+        );
+    }
+
+    #[test]
+    fn branch_diagnostic_surfaces_failures_only() {
+        assert_eq!(
+            format_branch_diagnostic(
+                Some("alpha"),
+                &branch_lane_for_test(
+                    GitBranchSyncAction::Failed,
+                    Some("unsupported pull.ff value `bogus`"),
+                    false,
+                    None,
+                ),
+            ),
+            Some(
+                "branch `main` (wiki `alpha`) failed: unsupported pull.ff value `bogus`"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            format_branch_diagnostic(
+                None,
+                &branch_lane_for_test(
+                    GitBranchSyncAction::Merged,
+                    None,
+                    false,
+                    Some("remote advanced first"),
+                ),
+            ),
+            Some(
+                "branch `main` (wiki `<unregistered>`) push failed: remote advanced first"
+                    .to_string()
+            )
+        );
+        assert_eq!(
+            format_branch_diagnostic(
+                Some("alpha"),
+                &branch_lane_for_test(GitBranchSyncAction::Merged, None, true, None),
+            ),
+            None
+        );
+        assert_eq!(
+            format_branch_diagnostic(
+                Some("alpha"),
+                &branch_lane_for_test(GitBranchSyncAction::UpToDate, None, false, None),
+            ),
+            None
+        );
     }
 
     #[test]

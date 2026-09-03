@@ -16,9 +16,13 @@ use crate::runtime::{
 use crate::semantic_worker::spawn_semantic_worker;
 use crate::service::DaemonServiceDiagnostic;
 use crate::supervisor::{SupervisorError, SyncSupervisor};
-use crate::sync::{execute_next_sync_job_with_state_store_and_engine, format_sync_execution};
+use crate::sync::{
+    execute_next_sync_job_with_state_store_and_engine, format_branch_diagnostic,
+    format_sync_execution,
+};
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 use std::fs::{self, OpenOptions};
@@ -33,6 +37,7 @@ use tempfile::NamedTempFile;
 use tokio::net::TcpListener;
 use vulcan_app::sync::GitSyncOptions;
 use vulcan_app::sync_state::SyncStateStore;
+use vulcan_sync::GitBranchSync;
 
 pub const DAEMON_RUNTIME_VERSION: u32 = 1;
 const RUNTIME_FILE: &str = "runtime.json";
@@ -495,6 +500,7 @@ fn spawn_job_worker(
     thread::spawn(move || {
         let result = (|| {
             let engine = vulcan_sync::GitCliEngine::default();
+            let mut last_branch_diagnostics = BTreeMap::<String, String>::new();
             while !stop.load(Ordering::Acquire) {
                 match execute_next_sync_job_with_state_store_and_engine(
                     &supervisor,
@@ -507,6 +513,16 @@ fn spawn_job_worker(
                         if verbose {
                             eprintln!("{}", format_sync_execution(&execution));
                         }
+                        if let Some(line) = next_branch_diagnostic(
+                            execution.job.job.wiki_id.as_deref(),
+                            execution
+                                .report
+                                .as_ref()
+                                .and_then(|report| report.sync.branch.as_ref()),
+                            &mut last_branch_diagnostics,
+                        ) {
+                            eprintln!("{line}");
+                        }
                     }
                     None => thread::sleep(JOB_POLL),
                 }
@@ -518,6 +534,27 @@ fn spawn_job_worker(
         }
         result
     })
+}
+
+/// Returns a branch lane failure the first time it appears per wiki, so a
+/// persistently failing pull strategy or push does not rely on --verbose to
+/// be noticed, without repeating every cycle. Clears when the lane recovers.
+fn next_branch_diagnostic(
+    wiki_id: Option<&str>,
+    branch: Option<&GitBranchSync>,
+    last: &mut BTreeMap<String, String>,
+) -> Option<String> {
+    let wiki = wiki_id.unwrap_or("<unregistered>").to_string();
+    let diagnostic = branch.and_then(|lane| format_branch_diagnostic(wiki_id, lane));
+    if let Some(line) = diagnostic {
+        if last.get(&wiki) == Some(&line) {
+            return None;
+        }
+        last.insert(wiki, line.clone());
+        return Some(line);
+    }
+    last.remove(&wiki);
+    None
 }
 
 pub fn daemon_status(
@@ -874,6 +911,55 @@ mod tests {
             .expect("daemon result channel")
             .expect("daemon result");
         assert!(!context.runtime_path().exists());
+    }
+
+    #[test]
+    fn branch_diagnostics_deduplicate_until_recovery() {
+        use vulcan_sync::{GitBranchSync, GitBranchSyncAction, GitRefName};
+
+        fn lane(action: GitBranchSyncAction) -> GitBranchSync {
+            GitBranchSync {
+                branch: GitRefName::parse("refs/heads/main").expect("branch"),
+                remote: None,
+                upstream: None,
+                tracking: None,
+                before: None,
+                after: None,
+                action,
+                detail: Some("boom".to_string()),
+                pushed: false,
+                push_detail: None,
+            }
+        }
+
+        let mut last = BTreeMap::new();
+        let failed = lane(GitBranchSyncAction::Failed);
+        let first = next_branch_diagnostic(Some("alpha"), Some(&failed), &mut last);
+        assert!(first.is_some_and(|line| line.contains("alpha") && line.contains("boom")));
+        assert_eq!(
+            next_branch_diagnostic(Some("alpha"), Some(&failed), &mut last),
+            None,
+            "identical failures must not repeat every cycle"
+        );
+        assert_eq!(
+            next_branch_diagnostic(Some("alpha"), None, &mut last),
+            None,
+            "recovery clears without logging"
+        );
+        assert!(
+            next_branch_diagnostic(Some("alpha"), Some(&failed), &mut last).is_some(),
+            "a later failure reports again after recovery"
+        );
+        let mut other = BTreeMap::new();
+        assert_eq!(
+            next_branch_diagnostic(
+                Some("beta"),
+                Some(&lane(GitBranchSyncAction::FastForwarded)),
+                &mut other,
+            ),
+            None,
+            "healthy lanes never report"
+        );
     }
 
     #[test]

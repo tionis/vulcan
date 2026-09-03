@@ -141,9 +141,12 @@ they commit.
   poll, and companion triggers coalesce through one per-wiki supervisor.
 - The daemon is quiet by default. Run `vulcan --verbose daemon start` (or with `--detach`,
   which carries the flag to the background child and its `daemon.log`) for operational stderr
-  lines: one per completed sync job with wiki, triggers, and state/outcome, plus notification
-  advertisement discovery and wake-up enqueueing identified by endpoint origin and fingerprint
-  only. Installed services run at the default quiet level.
+  lines: one per completed sync job with wiki, triggers, state/outcome, watch-trigger detail,
+  and branch-lane action, plus notification advertisement discovery and wake-up enqueueing
+  identified by endpoint origin and fingerprint only. Branch pull-strategy and push failures
+  print unconditionally on first occurrence per wiki (deduplicated until recovery), so a
+  persistently failing branch lane does not need `--verbose` to be noticed. Installed services
+  run at the default quiet level.
 - Provision a companion only from a running daemon. `vulcan daemon companion --output json` is
   non-secret; `--reveal-token` transfers bearer authority and must never be copied into a note,
   synchronized plugin settings, logs, or source control.
