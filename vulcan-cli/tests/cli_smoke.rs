@@ -5453,9 +5453,12 @@ fn sync_notifications_reports_whether_a_notification_server_would_be_used() {
     );
     fs::write(vault.join("Home.md"), "home\n").expect("home note");
     let vault_str = vault.to_str().expect("vault path");
+    // Isolate daemon probing from any ambient developer daemon.
+    let state_home = temporary.path().join("state");
 
     let status = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
         .args([
             "--vault",
             vault_str,
@@ -5477,6 +5480,7 @@ fn sync_notifications_reports_whether_a_notification_server_would_be_used() {
 
     let published = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
         .args([
             "--vault",
             vault_str,
@@ -5496,6 +5500,7 @@ fn sync_notifications_reports_whether_a_notification_server_would_be_used() {
 
     let eligible = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
         .args([
             "--vault",
             vault_str,
@@ -5556,6 +5561,7 @@ fn sync_notifications_reports_whether_a_notification_server_would_be_used() {
     );
     let invalid = Command::cargo_bin("vulcan")
         .expect("binary should build")
+        .env("XDG_STATE_HOME", &state_home)
         .args([
             "--vault",
             vault_str,
