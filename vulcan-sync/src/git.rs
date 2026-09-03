@@ -309,6 +309,18 @@ pub trait GitEngine: Send + Sync {
         message: &str,
     ) -> Result<GitOid, GitEngineError>;
 
+    /// Creates a commit attributing the publisher's Git identity: repository
+    /// configuration falling back to global and system configuration, exactly
+    /// as ordinary Git resolves it. Used for human-administered commits such
+    /// as notification advertisements, where authorship is the audit trail.
+    fn create_commit_with_user_identity(
+        &self,
+        repository: &GitRepository,
+        tree: &GitOid,
+        parents: &[GitOid],
+        message: &str,
+    ) -> Result<GitOid, GitEngineError>;
+
     /// Writes blob bytes directly to the object store without touching the
     /// worktree, the user's index, or any temporary files.
     fn write_blob(&self, repository: &GitRepository, data: &[u8])
@@ -1130,6 +1142,14 @@ impl From<std::io::Error> for GitEngineError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommitIdentity {
+    /// Fixed Vulcan Sync author/committer for device-owned sync state.
+    Vulcan { reproducible: bool },
+    /// Inherit Git's default identity resolution for human-attributed commits.
+    User,
+}
+
 #[derive(Debug, Clone)]
 pub struct GitCliEngine {
     executable: PathBuf,
@@ -1765,20 +1785,39 @@ impl GitCliEngine {
         message: &str,
         reproducible: bool,
     ) -> Result<GitOid, GitEngineError> {
+        self.commit_tree_with_identity(
+            repository,
+            tree,
+            parents,
+            message,
+            CommitIdentity::Vulcan { reproducible },
+        )
+    }
+
+    fn commit_tree_with_identity(
+        &self,
+        repository: &GitRepository,
+        tree: &GitOid,
+        parents: &[GitOid],
+        message: &str,
+        identity: CommitIdentity,
+    ) -> Result<GitOid, GitEngineError> {
         let mut command = self.repository_command(repository);
         command.arg("commit-tree").arg(tree.as_str());
         for parent in parents {
             command.arg("-p").arg(parent.as_str());
         }
-        command
-            .env("GIT_AUTHOR_NAME", "Vulcan Sync")
-            .env("GIT_AUTHOR_EMAIL", "sync@vulcan.invalid")
-            .env("GIT_COMMITTER_NAME", "Vulcan Sync")
-            .env("GIT_COMMITTER_EMAIL", "sync@vulcan.invalid");
-        if reproducible {
+        if let CommitIdentity::Vulcan { reproducible } = identity {
             command
-                .env("GIT_AUTHOR_DATE", "@0 +0000")
-                .env("GIT_COMMITTER_DATE", "@0 +0000");
+                .env("GIT_AUTHOR_NAME", "Vulcan Sync")
+                .env("GIT_AUTHOR_EMAIL", "sync@vulcan.invalid")
+                .env("GIT_COMMITTER_NAME", "Vulcan Sync")
+                .env("GIT_COMMITTER_EMAIL", "sync@vulcan.invalid");
+            if reproducible {
+                command
+                    .env("GIT_AUTHOR_DATE", "@0 +0000")
+                    .env("GIT_COMMITTER_DATE", "@0 +0000");
+            }
         }
         let output = self.execute_with_input(command, "create a commit", message.as_bytes())?;
         let output = ensure_success("create a commit", output)?;
@@ -2856,6 +2895,16 @@ impl GitEngine for GitCliEngine {
         message: &str,
     ) -> Result<GitOid, GitEngineError> {
         self.commit_tree_with_reproducible_identity(repository, tree, parents, message, true)
+    }
+
+    fn create_commit_with_user_identity(
+        &self,
+        repository: &GitRepository,
+        tree: &GitOid,
+        parents: &[GitOid],
+        message: &str,
+    ) -> Result<GitOid, GitEngineError> {
+        self.commit_tree_with_identity(repository, tree, parents, message, CommitIdentity::User)
     }
 
     fn write_blob(

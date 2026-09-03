@@ -27,7 +27,9 @@ explicitly loopback endpoint so local conformance tests do not weaken remote tra
 
 The commit should be parentless because the advertisement is mutable configuration, not history.
 Publishers replace the ref with an exact compare-and-swap lease. The ref is never checked out and
-is outside ordinary branch and tag namespaces.
+is outside ordinary branch and tag namespaces. The commit carries the publisher's Git identity
+(repository configuration falling back to global configuration), attributing who advertised the
+endpoint; it is an ordinary commit in this respect, not a bot-authored one.
 
 The subscribe URL is a read capability. It is confidential repository data and is available to
 every principal that can fetch the advertisement ref. Vulcan must never print or log the complete

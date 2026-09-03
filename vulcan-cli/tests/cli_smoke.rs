@@ -5578,6 +5578,109 @@ fn sync_notifications_reports_whether_a_notification_server_would_be_used() {
 }
 
 #[test]
+fn sync_advertise_attributes_the_publisher_git_identity() {
+    let temporary = TempDir::new().expect("temp dir should be created");
+    let remote = temporary.path().join("remote.git");
+    run_git_ok(
+        temporary.path(),
+        &[
+            "init",
+            "--quiet",
+            "--bare",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    let vault = temporary.path().join("wiki");
+    fs::create_dir(&vault).expect("vault directory");
+    // Deliberately no repository-local user.name/user.email: identity must
+    // resolve through Git configuration like an ordinary commit.
+    run_git_ok(&vault, &["-c", "init.defaultBranch=main", "init"]);
+    run_git_ok(&vault, &["config", "core.autocrlf", "false"]);
+    run_git_ok(
+        &vault,
+        &[
+            "remote",
+            "add",
+            "origin",
+            remote.to_str().expect("remote path"),
+        ],
+    );
+    fs::write(vault.join("Home.md"), "home\n").expect("home note");
+    let vault_str = vault.to_str().expect("vault path");
+
+    let global_config = temporary.path().join("global.gitconfig");
+    fs::write(
+        &global_config,
+        "[user]\n\tname = Global Publisher\n\temail = global@example.invalid\n",
+    )
+    .expect("global config");
+    let system_config = temporary.path().join("system.gitconfig");
+    fs::write(&system_config, "").expect("system config");
+    let advertise = |args: &[&str]| {
+        let mut full = vec![
+            "--vault",
+            vault_str,
+            "--output",
+            "json",
+            "sync",
+            "advertise",
+        ];
+        full.extend(args);
+        Command::cargo_bin("vulcan")
+            .expect("binary should build")
+            .env("GIT_CONFIG_GLOBAL", &global_config)
+            .env("GIT_CONFIG_SYSTEM", &system_config)
+            .args(&full)
+            .assert()
+            .success()
+    };
+    let identity = |revision: &str| {
+        run_git_stdout(
+            &remote,
+            &[
+                "log",
+                "--format=%an%x00%ae%x00%cn%x00%ce",
+                "-n",
+                "1",
+                revision,
+            ],
+        )
+    };
+
+    let published = advertise(&[
+        "--subscribe-url",
+        "https://patch.example/h/global-attribution?pubsub=true",
+    ]);
+    let first = parse_stdout_json(&published)["revision"]
+        .as_str()
+        .expect("published revision")
+        .to_string();
+    assert_eq!(
+        identity(&first),
+        "Global Publisher\x00global@example.invalid\x00Global Publisher\x00global@example.invalid",
+        "advertisement should attribute the global Git identity"
+    );
+
+    run_git_ok(&vault, &["config", "user.name", "Local Override"]);
+    run_git_ok(&vault, &["config", "user.email", "local@example.invalid"]);
+    let rotated = advertise(&[
+        "--subscribe-url",
+        "https://patch.example/h/local-attribution?pubsub=true",
+        "--expected",
+        &first,
+    ]);
+    let second = parse_stdout_json(&rotated)["revision"]
+        .as_str()
+        .expect("rotated revision")
+        .to_string();
+    assert_eq!(
+        identity(&second),
+        "Local Override\x00local@example.invalid\x00Local Override\x00local@example.invalid",
+        "repository-local Git identity should override the global one"
+    );
+}
+
+#[test]
 fn sync_epoch_rollover_reconciles_an_offline_device_without_retaining_old_live_ancestry() {
     let temporary = TempDir::new().expect("temp dir");
     let state_home = temporary.path().join("state");

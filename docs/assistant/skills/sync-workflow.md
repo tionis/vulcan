@@ -85,7 +85,9 @@ apply markers, or `refs/vulcan/**` to make a status look clean.
   Preview with `--dry-run` first. Without `--expected`, the current remote revision is leased
   opportunistically; with it, a diverged ref fails instead of overwriting. Remove it with
   `vulcan sync unadvertise [--expected <rev>]`. Publication builds a parentless commit with
-  object-store plumbing only, so the worktree and user index are never touched.
+  object-store plumbing only, so the worktree and user index are never touched. The commit
+  attributes the publisher's Git identity (repository configuration over global), so rotation
+  history shows who advertised each endpoint.
 - Check whether Vulcan would use a notification server with
   `vulcan sync notifications [--wiki <id>]`: it fetches the advertisement through the
   configured remote (the same device-local fetch the daemon performs, never a publish),

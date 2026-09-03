@@ -258,7 +258,9 @@ pub fn publish_notification_advertisement(
     let blob = engine.write_blob(repository, &payload)?;
     let tree =
         engine.create_single_file_tree(repository, NOTIFICATION_ADVERTISEMENT_FILE, &blob)?;
-    let revision = engine.create_commit(
+    // Human-attributed: the commit carries the publisher's Git identity
+    // (repository, then global configuration) as the audit trail.
+    let revision = engine.create_commit_with_user_identity(
         repository,
         &tree,
         &[],
@@ -580,6 +582,31 @@ mod tests {
     }
 
     #[test]
+    fn published_advertisement_carries_the_publisher_git_identity() {
+        let (_temporary, engine, repository, remote) = init_publish_fixture();
+        let published = publish(&engine, &repository, &remote, "attributed", None);
+        let work_tree = repository
+            .work_tree
+            .as_ref()
+            .expect("publishing repository has a worktree");
+        let identity = run_git_stdout(
+            work_tree,
+            &[
+                "log",
+                "--format=%an%x00%ae%x00%cn%x00%ce",
+                "-n",
+                "1",
+                published.revision.as_str(),
+            ],
+        );
+        assert_eq!(
+            identity,
+            "Vulcan Tests\x00vulcan@example.invalid\x00Vulcan Tests\x00vulcan@example.invalid",
+            "advertisement should attribute the repository Git identity, not a bot identity"
+        );
+    }
+
+    #[test]
     fn rotates_with_exact_lease_and_rejects_stale_leases() {
         let (_temporary, engine, repository, remote) = init_publish_fixture();
         let first = publish(&engine, &repository, &remote, "first", None);
@@ -680,5 +707,22 @@ mod tests {
             "git {arguments:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    fn run_git_stdout(directory: &Path, arguments: &[&str]) -> String {
+        let output = Command::new("git")
+            .args(arguments)
+            .current_dir(directory)
+            .output()
+            .expect("run Git");
+        assert!(
+            output.status.success(),
+            "git {arguments:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8(output.stdout)
+            .expect("Git output should be UTF-8")
+            .trim()
+            .to_string()
     }
 }
