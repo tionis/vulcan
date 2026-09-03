@@ -18,6 +18,8 @@ const MAX_DIAGNOSTIC_PATH_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CONFLICT_BLOB_BYTES: usize = 64 * 1024 * 1024;
 const DEFAULT_GIT_COMMAND_TIMEOUT: Duration = Duration::from_secs(300);
 const COMMAND_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(1);
+#[cfg(unix)]
+const TERMINATION_GRACE_PERIOD: Duration = Duration::from_secs(2);
 const REQUIREMENTS_CACHE_VERSION: u32 = 1;
 const DEVICE_LOCAL_VULCAN_PATHS: [&str; 4] = [
     ".vulcan/config.local.toml",
@@ -4033,13 +4035,32 @@ fn configure_process_group(_command: &mut Command) {}
 
 #[cfg(unix)]
 fn terminate_process_group(child: &mut Child) {
-    if let Ok(process_group) = i32::try_from(child.id()) {
-        // SAFETY: the child was placed into a new process group whose ID is
-        // its validated positive PID; sending SIGKILL does not dereference
-        // memory and is followed by `Child::wait` by the caller.
-        unsafe {
-            libc::kill(-process_group, libc::SIGKILL);
+    let Ok(process_group) = i32::try_from(child.id()) else {
+        let _ = child.kill();
+        return;
+    };
+    // SAFETY: the child was placed into a new process group whose ID is
+    // its validated positive PID; signaling it does not dereference memory
+    // and the caller still reaps with `Child::wait`.
+    unsafe {
+        libc::kill(-process_group, libc::SIGTERM);
+    }
+    // SIGTERM lets Git run its lock-file cleanup handlers; escalate to
+    // SIGKILL only when the process group ignores the grace period.
+    let deadline = Instant::now() + TERMINATION_GRACE_PERIOD;
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return,
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(COMMAND_WAIT_POLL_INTERVAL);
+            }
+            _ => break,
         }
+    }
+    // SAFETY: same process-group reasoning as the SIGTERM above; the grace
+    // period expired without the child exiting.
+    unsafe {
+        libc::kill(-process_group, libc::SIGKILL);
     }
     let _ = child.kill();
 }

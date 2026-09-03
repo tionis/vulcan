@@ -880,6 +880,7 @@ pub fn sync_git_once_with_control(
         return Ok(report);
     }
     let _lock = RepositoryLock::acquire(&report.repository)?;
+    sweep_stale_sync_locks(&report.repository);
     engine.persist_repository_requirements_cache(&report.repository)?;
     let attempts = options.max_retries.max(1);
     for attempt in 0..attempts {
@@ -3015,6 +3016,39 @@ struct RepositoryLock {
     _file: File,
 }
 
+/// Removes stale lock files left in Vulcan-owned Git namespaces by a
+/// force-terminated cycle. Only reachable while the repository lock is
+/// held, so no other Vulcan process can legitimately hold these locks.
+/// Locks outside the private namespaces (including the user's real index
+/// lock) are left untouched.
+fn sweep_stale_sync_locks(repository: &GitRepository) {
+    remove_lock_files(&repository.git_dir.join("vulcan-sync"), 1);
+    remove_lock_files(&repository.git_dir.join("refs").join("vulcan"), 8);
+}
+
+fn remove_lock_files(directory: &Path, depth: usize) {
+    if depth == 0 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(directory) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if file_type.is_dir() {
+            remove_lock_files(&entry.path(), depth - 1);
+        } else if file_type.is_file()
+            && entry.file_name().to_string_lossy().ends_with(".lock")
+            // The fs2 repository lock is not a stale Git lock.
+            && entry.file_name() != "sync.lock"
+        {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 impl RepositoryLock {
     fn acquire(repository: &GitRepository) -> Result<Self, GitSyncError> {
         let lock_path = repository.git_dir.join("vulcan-sync/sync.lock");
@@ -3437,6 +3471,41 @@ mod tests {
     fn commit_all(path: &Path, message: &str) {
         run_git(path, &["add", "--all", "--", "."]);
         run_git(path, &["commit", "--quiet", "-m", message]);
+    }
+
+    #[test]
+    fn stale_private_lock_files_are_swept() {
+        let temporary = TempDir::new().expect("temporary directory");
+        init_repo(temporary.path());
+        fs::write(temporary.path().join("Home.md"), "initial\n").expect("note");
+        commit_all(temporary.path(), "initial");
+        let engine = GitCliEngine::default();
+        let repository = engine
+            .discover_repository(temporary.path())
+            .expect("repository");
+        let git_dir = temporary.path().join(".git");
+        let index_lock = git_dir.join("vulcan-sync").join("index.lock");
+        fs::create_dir_all(index_lock.parent().expect("sync dir")).expect("sync dir");
+        fs::write(&index_lock, b"stale").expect("stale index lock");
+        let ref_lock = git_dir
+            .join("refs")
+            .join("vulcan")
+            .join("sync")
+            .join("profile")
+            .join("live.lock");
+        fs::create_dir_all(ref_lock.parent().expect("ref dir")).expect("ref dir");
+        fs::write(&ref_lock, b"stale").expect("stale ref lock");
+        let user_index_lock = git_dir.join("index.lock");
+        fs::write(&user_index_lock, b"user").expect("user index lock");
+        let unrelated = git_dir.join("vulcan-sync").join("sync.lock");
+        fs::write(&unrelated, b"").expect("repository lock file");
+
+        sweep_stale_sync_locks(&repository);
+
+        assert!(!index_lock.exists());
+        assert!(!ref_lock.exists());
+        assert!(user_index_lock.exists());
+        assert!(unrelated.exists());
     }
 
     fn setup_remote_and_writer() -> (TempDir, PathBuf, PathBuf) {
