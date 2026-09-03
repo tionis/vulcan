@@ -27,6 +27,9 @@ use tempfile::NamedTempFile;
 const SYNC_PROTOCOL_VERSION: u32 = 1;
 const PLATFORM_PREFLIGHT_CACHE_VERSION: u32 = 1;
 const MAX_PLATFORM_PREFLIGHT_CACHE_BYTES: u64 = 256 * 1024;
+/// `merge-tree --write-tree` (used for conflict-free divergence merging)
+/// requires Git 2.38.
+const MINIMUM_GIT_VERSION: (u32, u32, u32) = (2, 38, 0);
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PlatformPreflightCache {
@@ -845,6 +848,7 @@ pub fn sync_git_once_with_control(
         })
     })?;
     let installation = engine.installation()?;
+    require_git_version(&installation)?;
     let repository = engine.discover_repository(vault_path)?;
     let refs = GitSyncRefs::for_options(options)?;
     let safety = engine.safety_state(&repository)?;
@@ -902,6 +906,22 @@ pub fn sync_git_once_with_control(
     }
 
     Err(GitSyncError::RetryLimit { attempts })
+}
+
+fn require_git_version(installation: &GitInstallation) -> Result<(), GitSyncError> {
+    let version = installation.version.clone();
+    if (version.major, version.minor, version.patch) < MINIMUM_GIT_VERSION {
+        return Err(GitSyncError::Git(GitEngineError::UnsupportedRepository {
+            detail: format!(
+                "Vulcan synchronization requires Git {}.{}.{} or newer (`merge-tree --write-tree`); found {}",
+                MINIMUM_GIT_VERSION.0,
+                MINIMUM_GIT_VERSION.1,
+                MINIMUM_GIT_VERSION.2,
+                version.raw
+            ),
+        }));
+    }
+    Ok(())
 }
 
 fn require_filter_drivers(requirements: &GitRepositoryRequirements) -> Result<(), GitSyncError> {
@@ -3090,6 +3110,24 @@ mod tests {
             oid: GitOid::parse("1111111111111111111111111111111111111111").expect("object ID"),
             data: Some(data.to_vec()),
         }
+    }
+
+    #[test]
+    fn git_versions_below_the_merge_tree_floor_are_rejected() {
+        let installation = |major: u32, minor: u32, patch: u32| GitInstallation {
+            engine: crate::GitEngineKind::Cli,
+            executable: PathBuf::from("/usr/bin/git"),
+            version: crate::GitVersion {
+                raw: format!("git version {major}.{minor}.{patch}"),
+                major,
+                minor,
+                patch,
+                vendor_suffix: None,
+            },
+        };
+        assert!(require_git_version(&installation(2, 37, 1)).is_err());
+        assert!(require_git_version(&installation(2, 38, 0)).is_ok());
+        assert!(require_git_version(&installation(2, 47, 0)).is_ok());
     }
 
     #[test]

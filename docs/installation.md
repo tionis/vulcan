@@ -1,8 +1,8 @@
 # Installing Vulcan
 
 Vulcan is distributed as versioned, checksummed archives. Installing the CLI does not register a
-wiki or enable the synchronization daemon. Git must be installed separately for the current Git
-sync backend.
+wiki or enable the synchronization daemon. Git 2.38 or newer must be installed separately for the
+current Git sync backend.
 
 ## Direct archive
 
