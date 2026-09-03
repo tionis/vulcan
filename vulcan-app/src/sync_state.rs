@@ -7,6 +7,8 @@
 use crate::AppError;
 use serde::{Deserialize, Serialize};
 use std::fs;
+#[cfg(unix)]
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use tempfile::NamedTempFile;
@@ -263,6 +265,8 @@ impl SyncStateStore {
         temporary
             .persist(&path)
             .map_err(|error| AppError::operation(error.error))?;
+        #[cfg(unix)]
+        sync_parent_directory(parent)?;
         Ok(())
     }
 
@@ -321,8 +325,10 @@ impl SyncStateStore {
             .sync_all()
             .map_err(AppError::operation)?;
         temporary
-            .persist(path)
+            .persist(&path)
             .map_err(|error| AppError::operation(error.error))?;
+        #[cfg(unix)]
+        sync_parent_directory(parent)?;
         Ok(())
     }
 
@@ -334,6 +340,15 @@ impl SyncStateStore {
             Err(error) => Err(AppError::operation(error)),
         }
     }
+}
+
+/// Fsyncs a directory after an atomic rename so the replacement itself is
+/// durable across a crash, not just the replaced file's bytes.
+#[cfg(unix)]
+fn sync_parent_directory(directory: &Path) -> Result<(), AppError> {
+    File::open(directory)
+        .and_then(|directory| directory.sync_all())
+        .map_err(AppError::operation)
 }
 
 fn apply_marker_path(git_dir: &Path, create: bool) -> Result<PathBuf, AppError> {
