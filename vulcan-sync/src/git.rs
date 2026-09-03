@@ -2318,11 +2318,14 @@ impl GitEngine for GitCliEngine {
         repository: &GitRepository,
         updates: &[(&GitRefName, &GitOid)],
     ) -> Result<(), GitEngineError> {
-        let mut input = String::new();
+        // An explicit transaction keeps the batch atomic even if a future
+        // Git version changes non-transactional stdin semantics.
+        let mut input = String::from("start\n");
         for (reference, target) in updates {
             writeln!(input, "update {reference} {target}")
                 .expect("writing validated refs and object IDs to a String cannot fail");
         }
+        input.push_str("prepare\ncommit\n");
         let mut command = self.repository_command(repository);
         command.args(["update-ref", "--stdin"]);
         ensure_success(
@@ -6486,6 +6489,31 @@ mod tests {
         assert!(engine
             .update_refs(&repository, &[(&first, &changed), (&second, &missing)])
             .is_err());
+        assert_eq!(
+            engine.read_ref(&repository, &first).expect("first ref"),
+            Some(initial.clone())
+        );
+        assert_eq!(
+            engine.read_ref(&repository, &second).expect("second ref"),
+            Some(initial.clone())
+        );
+
+        // Lock contention on a later ref must abort the batch without
+        // applying earlier refs (verified against the Git CLI).
+        let lock = temporary
+            .path()
+            .join(".git")
+            .join(second.as_str().replace('/', std::path::MAIN_SEPARATOR_STR));
+        let lock = lock.with_file_name(format!(
+            "{}.lock",
+            lock.file_name().expect("ref file").to_string_lossy()
+        ));
+        fs::create_dir_all(lock.parent().expect("lock parent")).expect("lock directory");
+        fs::write(&lock, b"").expect("stale ref lock");
+        assert!(engine
+            .update_refs(&repository, &[(&first, &changed), (&second, &changed)])
+            .is_err());
+        fs::remove_file(&lock).expect("clear stale lock");
         assert_eq!(
             engine.read_ref(&repository, &first).expect("first ref"),
             Some(initial.clone())
