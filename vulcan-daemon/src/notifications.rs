@@ -483,6 +483,9 @@ fn set_owner_only_directory(path: &Path) -> Result<(), NotificationStoreError> {
 }
 
 #[cfg(not(unix))]
+// Windows directories inherit their ACL from the device-local state root. Keep
+// the fallible signature shared with Unix so callers preserve one contract.
+#[allow(clippy::unnecessary_wraps)]
 fn set_owner_only_directory(_path: &Path) -> Result<(), NotificationStoreError> {
     Ok(())
 }
@@ -516,6 +519,9 @@ fn validate_owner_only(metadata: &fs::Metadata, path: &Path) -> Result<(), Notif
 }
 
 #[cfg(not(unix))]
+// Keep the fallible signature shared with Unix so callers cannot accidentally
+// omit permission validation on platforms that expose Unix access modes.
+#[allow(clippy::unnecessary_wraps)]
 fn validate_owner_only(
     _metadata: &fs::Metadata,
     _path: &Path,
